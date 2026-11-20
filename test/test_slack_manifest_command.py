@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import re
 from dataclasses import fields
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from urllib.parse import quote
 
@@ -100,6 +100,7 @@ def test_manifest_cli_names_the_command_to_configure(
     out = capsys.readouterr().out
     assert "/kirocrew-jdoe" in out
     assert "kirocrew config set slack.command kirocrew-jdoe" in out
+    assert "restart the gateway" not in out
 
 
 def test_plain_manifest_names_the_command_on_stderr(
@@ -121,9 +122,8 @@ def _dashboard_manifest(path: str) -> dict:
 
 
 class TestDashboardManifest:
-    """``GET /api/slack/manifest`` writes no config, so it returns the command
-    its manifest registers: the ``slack.command`` value a caller that passes
-    ``?alias=`` must set before the gateway answers that app."""
+    """``GET /api/slack/manifest`` writes no config and returns the command its
+    manifest registers, which the gateway answers as it is."""
 
     def test_a_named_alias_returns_the_command_its_manifest_registers(self) -> None:
         body = _dashboard_manifest("/api/slack/manifest?alias=JDoe")
@@ -139,32 +139,38 @@ class TestDashboardManifest:
         assert _dashboard_manifest("/api/slack/manifest")["command"] == default
 
 
-async def _slash_on_an_old_install(command: str, *, owner: bool) -> list[dict]:
-    """Send *command* to a gateway with no ``slack.command`` set (``/kirocrew``).
+class _Session:
+    """Records the bodies posted to a payload's ``response_url``."""
 
-    Returns the bodies posted to the payload's ``response_url``: what the person
-    who typed the command sees in Slack. Every caller sends a name that is not
-    ``/kirocrew``, which must never run, so nothing may be audited as invoked.
+    posted: list[dict]
+
+    async def __aenter__(self) -> _Session:
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+    async def post(self, url: str, **kwargs: dict) -> None:
+        type(self).posted.append(kwargs["json"])
+
+
+async def _slash(
+    command: str, *, owner: bool, text: str = "", orch: MagicMock | None = None
+) -> tuple[list[dict], MagicMock]:
+    """Send *command* to a gateway whose ``slack.command`` is the default.
+
+    Returns what the person who typed it sees in Slack (the bodies posted to
+    the ``response_url``) and the SEL audit mock.
     """
-    posted: list[dict] = []
+    _Session.posted = []
     audit = MagicMock()
-
-    class _Session:
-        async def __aenter__(self) -> _Session:
-            return self
-
-        async def __aexit__(self, *exc: object) -> bool:
-            return False
-
-        async def post(self, url: str, **kwargs: dict) -> None:
-            posted.append(kwargs["json"])
-
-    orch = MagicMock()
+    orch = orch or MagicMock()
     orch.slack_command = "kirocrew"
+    orch._owner_id = "U_OWNER"
     orch._handler_tasks = set()
     payload = {
         "command": command,
-        "text": "",
+        "text": text,
         "user_id": "U_OWNER",
         "response_url": "https://hooks.example.invalid/x",
     }
@@ -172,44 +178,66 @@ async def _slash_on_an_old_install(command: str, *, owner: bool) -> list[dict]:
         patch("kiro_crew.slack.events.aiohttp.ClientSession", _Session),
         patch("kiro_crew.slack.events.is_allowed_user", return_value=owner),
         patch("kiro_crew.slack.events.sel", return_value=audit),
+        patch("kiro_crew.slack.events_slash.code_channel_slash", return_value=False),
     ):
         await slack_events._handle_slash(orch, payload)
         await asyncio.gather(*list(orch._handler_tasks))
-    audit.log_api_access.assert_not_called()
-    return posted
+    return _Session.posted, audit
 
 
-class TestAnOldInstallThatReimportsTheManifest:
-    """An install made before the rename answers ``/kirocrew``. The scope-probe
-    hint and the setup guide's upgrade note both send it back to the bundled
-    manifest, and re-importing that renames the app's command to
-    ``/kirocrew-<alias>`` while ``slack.command`` stays ``kirocrew``."""
+class TestAnyManifestCommandIsAnswered:
+    """Slack delivers only commands this app registered, so ``/kirocrew-<alias>``
+    is answered while ``slack.command`` is still ``kirocrew``: no config set,
+    no restart."""
 
     @pytest.mark.asyncio
-    async def test_the_owner_is_told_which_command_to_configure(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        renamed = _rendered_command("jdoe")
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.events"):
-            posted = await _slash_on_an_old_install(renamed, owner=True)
-        fix = "kirocrew config set slack.command kirocrew-jdoe"
+    async def test_an_alias_command_runs_and_its_help_names_it(self) -> None:
+        posted, audit = await _slash("/kirocrew-alice", owner=True, text="nonsense")
         assert len(posted) == 1
-        assert posted[0]["response_type"] == "ephemeral"
-        assert fix in posted[0]["text"]
-        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-        assert any(fix in message for message in warnings), warnings
+        assert "/kirocrew-alice" in posted[0]["text"]
+        assert "config set" not in posted[0]["text"]
+        outcomes = [c.kwargs["outcome"] for c in audit.log_api_access.call_args_list]
+        assert outcomes == ["allowed"]
 
     @pytest.mark.asyncio
-    async def test_a_caller_who_is_not_the_owner_is_told_nothing(self) -> None:
-        assert await _slash_on_an_old_install(_rendered_command("jdoe"), owner=False) == []
+    async def test_a_sub_command_usage_reply_names_the_typed_command(self) -> None:
+        """Usage strings read ``orch.slack_command``; the owner's typed name is
+        adopted first, so they never point at an unregistered ``/kirocrew``."""
+        orch = MagicMock()
+        posted, _ = await _slash("/kirocrew-alice", owner=True, text="dashboard bad", orch=orch)
+        assert [p["text"] for p in posted] == ["Usage: `/kirocrew-alice dashboard [<N>h|<N>m]`"]
+        assert orch.slack_command == "kirocrew-alice"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("command", ["/other", "/kirocrew-x;id"])
-    async def test_a_name_the_manifest_cannot_render_gets_no_reply(self, command: str) -> None:
-        assert await _slash_on_an_old_install(command, owner=True) == []
+    async def test_a_custom_command_still_runs_after_an_alias_was_adopted(self) -> None:
+        """An app may register a custom ``slack.command`` beside its alias
+        command; adopting the alias as the shown name must not drop the custom
+        one, so the router also matches the live configured value."""
+        orch = MagicMock()
+        orch._cfg = SimpleNamespace(slack=SimpleNamespace(command="crew"))
+        orch.slack_command = "crew"
+        await _slash("/kirocrew-alice", owner=True, text="dashboard bad", orch=orch)
+        assert orch.slack_command == "kirocrew-alice"
+        posted, _ = await _slash("/crew", owner=True, text="dashboard bad", orch=orch)
+        assert [p["text"] for p in posted] == ["Usage: `/crew dashboard [<N>h|<N>m]`"]
 
     @pytest.mark.asyncio
-    async def test_the_reinstall_notice_names_the_rename_before_it_happens(self) -> None:
+    async def test_a_caller_who_is_not_the_owner_is_refused(self) -> None:
+        orch = MagicMock()
+        posted, audit = await _slash(_rendered_command("jdoe"), owner=False, orch=orch)
+        assert [p["text"] for p in posted] == ["⛔ You are not authorized to use this command."]
+        assert audit.log_api_access.call_args.kwargs["outcome"] == "denied"
+        assert orch.slack_command == "kirocrew"  # a refused caller renames nothing
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["/other", "/kirocrew-x;id", "/kirocrewx"])
+    async def test_a_name_the_manifest_cannot_render_is_dropped(self, command: str) -> None:
+        posted, audit = await _slash(command, owner=True)
+        assert posted == []
+        audit.log_api_access.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_reinstall_notice_keeps_the_name_without_a_restart(self) -> None:
         class _PrivateChannelOutsideTheGrant:
             async def probe_channel_history(self, channel_id: str) -> str:
                 return "missing_scope"
@@ -223,3 +251,4 @@ class TestAnOldInstallThatReimportsTheManifest:
         assert len(bodies) == 1
         assert "/kirocrew-<alias>" in bodies[0]
         assert "kirocrew config set slack.command" in bodies[0]
+        assert "then restart" not in bodies[0]

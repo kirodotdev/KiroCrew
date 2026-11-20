@@ -7,9 +7,14 @@ workspace's own per-channel refresh (no second publisher):
 * **The board** (:mod:`.publisher`): one pinned message, edited in place: a
   context line ("Work board · updated HH:MM UTC") and the bold summary
   ("2 working · 1 waiting on you · 1 of 4 done"), then Slack's plan block with
-  one task per worker -- title, state, the current call or last report line.
-  The goal and round are not shown. A worker that waits on a person gets one
-  threaded reply mentioning the owner.
+  one task per worker -- title, state, the current call or last report line,
+  its PR and CI. The goal and round are not shown. A worker that waits on a
+  person gets one threaded reply mentioning the owner.
+* **The Code tab** (``workspace.service._build_diff``): the combined change, the
+  channel's own diff, then each worker's commits under a header naming it.
+* **The wrap-up** (:func:`outcome_lines`): one outcome line per worker.
+* **The context bar** (``workspace.context_bar``): one Workers item with the
+  board's counts (:func:`.model.bar_label`), linked to the pinned board.
 
 Slack's ``agents.sessions.setStatus`` takes no text in a code channel (it has no
 ``loading_messages``), so the aggregate lives in the board header; the native
@@ -71,10 +76,12 @@ def remember(channel_id: str, conductor_key: str, worker_keys: list[str]) -> Non
 
 
 def forget_channel(channel_id: str) -> None:
+    from kiro_crew.slack.code_channels import tabs
     from kiro_crew.slack.code_channels.board import publisher
 
     publisher.forget(channel_id)
     _unsent.pop(channel_id, None)
+    tabs.forget(channel_id)
     pending = _timers.pop(channel_id, None)
     if pending is not None:
         pending[1].cancel()
@@ -105,6 +112,15 @@ def _schedule(channel_id: str, delay: float | None = None) -> bool:
         return False
     service.schedule_refresh(binding, delay=BOARD_DEBOUNCE_SECS)
     return True
+
+
+def retry_later(channel_id: str, delay: float) -> None:
+    """Refresh *channel_id* again after *delay*, board or no board (a tab's own
+    backoff, :mod:`..tabs`): the same clean-context timer. Never raises."""
+    try:
+        _schedule(channel_id, delay=delay)
+    except Exception:
+        logger.debug("code channel board: tab retry not armed", exc_info=True)
 
 
 #: ``channel id -> (loop time due, handle)`` of each channel's pending delayed re-arm.
@@ -236,6 +252,19 @@ def note_ledger_write(conductor_key: str) -> None:
         logger.debug("code channel board: ledger trigger failed", exc_info=True)
 
 
+def note_tab_removed(channel_id: str) -> None:
+    """A tab the board links (a PR tab) was removed from *channel_id*: refresh its board.
+
+    The board message and the Workers tab already sent may link the removed tab;
+    the refresh renders both from the record, which has dropped it. Must be
+    called on the event loop; never raises.
+    """
+    try:
+        _schedule(channel_id)
+    except Exception:
+        logger.debug("code channel board: tab-removal trigger failed", exc_info=True)
+
+
 #: How long a ledger key no code channel is bound to is not looked up again.
 _UNBOUND_TTL_SECS = 30.0
 #: ``ledger key -> monotonic time`` it was last found bound to no channel.
@@ -331,8 +360,11 @@ def reset_for_tests() -> None:
     for _due, handle in _timers.values():
         handle.cancel()
     _timers.clear()
-    from kiro_crew.slack.code_channels.board import publisher
+    from kiro_crew.slack.code_channels import tabs
+    from kiro_crew.slack.code_channels.board import publisher, stops
 
+    tabs.reset_for_tests()
+    stops.reset_for_tests()
     for table in (
         publisher._last_edit,
         publisher._failures,
@@ -343,6 +375,7 @@ def reset_for_tests() -> None:
         publisher._pin_refused_unscoped,
         publisher._unsaved_ts,
         publisher._unsaved_alerts,
+        publisher._tabs_refused,
     ):
         table.clear()
 
@@ -472,9 +505,15 @@ def forget_unbound() -> None:
 
 
 async def publish(binding: Any, snapshot: Any) -> str:
-    """The production board publisher the workspace service is built with."""
-    from kiro_crew.slack.code_channels import surface
+    """The production board publisher the workspace service is built with.
+
+    The Workers tab first (:func:`..tabs.publish_workers`), so the board posted
+    right after can link it; then the board message, deep-linking the channel's
+    own tabs (Workers, Code and each PR's) from what is recorded as ours.
+    """
+    from kiro_crew.slack.code_channels import surface, tabs
     from kiro_crew.slack.code_channels.board import links, publisher, source
+    from kiro_crew.slack.code_channels.surface_store import get_async
 
     link_for = await asyncio.to_thread(links.link_builder)
     state = surface.dashboard_state()
@@ -501,11 +540,31 @@ async def publish(binding: Any, snapshot: Any) -> str:
         return ok
 
     try:
+        code = await _code_tab_shown(binding)
+        from kiro_crew.slack.code_channels.board import stops
+
+        # A Stop from the Workers tab shows within seconds: both edit gaps are
+        # skipped once for the publish that first carries it.
+        # Only a stop still showing (its worker not yet on a newer turn) may
+        # spend the mark; a stale overlay is dropped here and again at each render.
+        snapshot = stops.reconcile(snapshot, state)
+        urgent = stops.take_urgent(
+            r.session_key for r in getattr(snapshot, "rows", ()) if r.stopped
+        )
+        await tabs.publish_workers(binding, snapshot, link_for=link_for, code=code, urgent=urgent)
+        linked = tabs.tabs_for(await get_async(channel), channel, code=code)
+        if snapshot is not None and not source.scope_admits(state, binding):
+            # Asked again after the Workers tab's awaits: the scope may have
+            # changed since the check above.
+            _publish_aggregate(state, binding, None)
+            return _refused_word(surface.dashboard_state(), binding)
         done = await publisher.publish(
             binding,
             snapshot,
             link_for=link_for,
             owner_id=owner,
+            tabs=linked,
+            urgent=urgent,
             admits=admits,
         )
         if done in _NOT_SHOWN:
@@ -527,10 +586,67 @@ async def publish(binding: Any, snapshot: Any) -> str:
         # A deferred edit (the per-board gap), a failed one (backoff) or a live
         # board's stamp deadline is never left stale: the channel's refresh is
         # armed again for when it may run. Taken even when the publish raised,
-        # and never hiding that error.
+        # and never hiding that error. The Workers tab's own gap or backoff
+        # rides the same re-arm (the sooner of the two).
         try:
-            delay = publisher.take_retry(channel)
-            if delay > 0 and not cancelled:
-                _schedule(channel, delay=delay)
+            delays = [d for d in (publisher.take_retry(channel), tabs.take_retry(channel)) if d > 0]
+            if delays and not cancelled:
+                _schedule(channel, delay=min(delays))
         except Exception:
             logger.debug("code channel %s: board re-arm failed", channel, exc_info=True)
+
+
+async def outcome_lines(binding: Any) -> list[str]:
+    """The wrap-up's per-worker outcomes (``• Fix login: PR #12 merged``).
+
+    The board this process last published for THIS binding's conductor, else a
+    fresh scope-checked read filled as a refresh fills it. ``[]`` when the
+    channel's scope refuses the board; the wrap-up asks the scope again right
+    before it posts.
+    """
+    from kiro_crew.slack.code_channels import surface
+    from kiro_crew.slack.code_channels.board import render, source
+    from kiro_crew.slack.code_channels.workspace import core as workspace
+
+    service = workspace.service()
+    snapshot = (
+        service.board(binding.team_id, binding.channel_id, session_key=binding.session_key)
+        if service is not None
+        else None
+    )
+    if snapshot is not None and not source.scope_admits(surface.dashboard_state(), binding):
+        # The cache may predate the channel turning shared (or archived): the
+        # wrap-up shows nothing the board itself may not show there.
+        return []
+    if snapshot is None:
+        # The scope-checked read alone: the channel is being wrapped up, so the
+        # board's publishing side effects (the sidebar aggregate, triggers) do
+        # not start again for it.
+        try:
+            snapshot = await source.read_board(surface.dashboard_state(), binding)
+            if snapshot is not None and service is not None:
+                # Filled as a refresh fills it, so a worker in another
+                # repository shows none of that repository's PRs here either.
+                snapshot = await service.filled(binding, snapshot)
+        except Exception:
+            logger.debug("code channel %s: worker outcomes unreadable", binding.channel_id)
+            snapshot = None
+    if snapshot is None or not snapshot.rows:
+        return []
+    return [render.outcome_line(row) for row in snapshot.rows]
+
+
+async def _code_tab_shown(binding: Any) -> bool:
+    """Whether the channel's Code tab holds its diff (so a link to it lands on something)."""
+    from kiro_crew.slack.code_channels.workspace import core as workspace
+
+    service = workspace.service()
+    if service is None:
+        return False
+    try:
+        record = await asyncio.to_thread(
+            service.store.get, str(binding.team_id or ""), str(binding.channel_id or "")
+        )
+    except Exception:
+        return False
+    return bool(record is not None and record.view_id and record.diff_hash)

@@ -19,6 +19,7 @@ import { settingHelpText } from './settingsTypes'
 const IRREGULAR_TAB_LABEL_KEYS: Record<string, string> = {
   // The tab key is kebab-case; the catalog segment is camelCase.
   'computer-use': 'settings.tabs.computerUse.label',
+  'kiro-account': 'settings.tabs.kiroAccount.label',
   // Owned by the privacy disclosure copy, not the settings tab block.
   privacy: 'privacyDisclosure.settingsLabel',
   'session-environments': 'sessionEnvironments.title',

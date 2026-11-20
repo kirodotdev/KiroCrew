@@ -71,13 +71,14 @@ describe('ArtifactsPage header row at phone width', () => {
     await waitFor(() => expect(screen.getByRole('menuitem', { name: /new folder/i })).toBeTruthy())
   })
 
-  it('gives a desktop a Doc tile and a more-ways-to-add menu instead of the split button', async () => {
+  it('gives a desktop Doc and Canvas tiles and a more-ways-to-add menu instead of the split button', async () => {
     mobile = false
     renderWithProviders(<ArtifactsPage />)
     const row = await waitFor(() => screen.getByRole('group', { name: /create new/i }))
-    // Two peer controls: the Doc tile and the menu trigger.
-    expect(within(row).getAllByRole('button')).toHaveLength(2)
+    // The two blank-start tiles, Doc and Canvas, then the menu trigger.
+    expect(within(row).getAllByRole('button')).toHaveLength(3)
     expect(within(row).getByRole('button', { name: 'Doc' })).toBeTruthy()
+    expect(within(row).getByRole('button', { name: 'Canvas' })).toBeTruthy()
     const trigger = within(row).getByRole('button', { name: /more ways to add an artifact/i })
     fireEvent.keyDown(trigger, { key: 'Enter' })
     await waitFor(() => expect(screen.getByRole('menuitem', { name: /new folder/i })).toBeTruthy())

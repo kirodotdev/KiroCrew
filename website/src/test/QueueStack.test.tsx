@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, render, screen, fireEvent } from '@testing-library/react'
-import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
+import QueueStack, { SubagentDeliveryProgress, isAppMessageQueued, isServerWrittenQueued, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
 import type { ChatMessage } from '../types'
 import { buildOutgoingTurn } from '../chat-core/composer/outgoingTurn'
 import { quoteBlock } from '../chat-core/composer/messageQuote'
@@ -736,7 +736,130 @@ describe('QueueStack restored card', () => {
     const live = render(<QueueStack messages={[queued('live', 'q1')]} />)
     expect(screen.getByTestId('queue-card-hourglass').className).toContain('animate-')
     live.unmount()
-    render(<QueueStack messages={[{ ...queued('restored', 'r1'), meta: { queueId: 'r1', restored: true } }]} />)
+    render(<QueueStack messages={[{ ...queued('restored', 'r1'), meta: { queueId: 'r1', restored: true, held: true } }]} />)
     expect(screen.getByTestId('queue-card-hourglass').className).not.toContain('animate-')
+  })
+
+  it('keeps the hourglass turning on a restored card the server does not hold', () => {
+    render(<QueueStack messages={[{ ...queued('restored', 'r1'), meta: { queueId: 'r1', restored: true } }]} />)
+    expect(screen.getByTestId('queue-card-hourglass').className).toContain('animate-')
+  })
+})
+
+describe('QueueStack held restored card', () => {
+  const restored = (queueId: string): ChatMessage => ({ ...queued('restored words', queueId), meta: { queueId, restored: true, held: true } })
+  const HELD = "Restored after a restart. Won't send on its own."
+
+  it('says in words that a held restored card waits for the person', () => {
+    render(<QueueStack messages={[restored('r1')]} onCancel={() => {}} onInterrupt={() => {}} onEdit={() => {}} />)
+    expect(screen.getByTestId('queue-card-held')).toHaveTextContent(HELD)
+  })
+
+  it('shows no held line where the stack offers no Send now, edit and cancel', () => {
+    const view = render(<QueueStack messages={[restored('r1')]} />)
+    expect(screen.queryByTestId('queue-card-held')).not.toBeInTheDocument()
+    view.rerender(<QueueStack messages={[restored('r1')]} onCancel={() => {}} onEdit={() => {}} />)
+    expect(screen.queryByTestId('queue-card-held')).not.toBeInTheDocument()
+  })
+
+  it('shows no held line on a card that was not restored', () => {
+    render(<QueueStack messages={[queued('live', 'q1')]} onCancel={() => {}} onInterrupt={() => {}} onEdit={() => {}} />)
+    expect(screen.queryByTestId('queue-card-held')).not.toBeInTheDocument()
+  })
+
+  it('reads the server held flag, not restored provenance: a restored card the startup drain accepted shows no line, and shows it once the flag flips', () => {
+    const accepted: ChatMessage = { ...queued('restored words', 'r1'), meta: { queueId: 'r1', restored: true } }
+    const view = render(<QueueStack messages={[accepted]} onCancel={() => {}} onInterrupt={() => {}} onEdit={() => {}} />)
+    expect(screen.queryByTestId('queue-card-held')).not.toBeInTheDocument()
+    view.rerender(<QueueStack messages={[restored('r1')]} onCancel={() => {}} onInterrupt={() => {}} onEdit={() => {}} />)
+    expect(screen.getByTestId('queue-card-held')).toHaveTextContent(HELD)
+  })
+
+  it('puts the held line on its own row under the message, without truncation', () => {
+    render(<QueueStack messages={[restored('r1')]} onCancel={() => {}} onInterrupt={() => {}} onEdit={() => {}} />)
+    const line = screen.getByTestId('queue-card-held')
+    expect(line.className).not.toContain('truncate')
+    expect(line.hasAttribute('title')).toBe(false)
+    expect(line.parentElement?.contains(screen.getByText('restored words'))).toBe(true)
+    expect(line.previousElementSibling?.contains(screen.getByText('restored words'))).toBe(true)
+  })
+
+  it('drops the line while Send now is in flight or accepted, and brings it back when it is declined', () => {
+    const onInterrupt = vi.fn()
+    const view = render(<QueueStack messages={[restored('r1')]} onCancel={() => {}} onInterrupt={onInterrupt} onEdit={() => {}} />)
+    fireEvent.click(screen.getByLabelText('Send now'))
+    expect(onInterrupt).toHaveBeenCalledWith('r1')
+    view.rerender(<QueueStack messages={[restored('r1')]} onCancel={() => {}} onInterrupt={onInterrupt} onEdit={() => {}} pendingIds={new Set(['r1'])} />)
+    expect(screen.queryByTestId('queue-card-held')).not.toBeInTheDocument()
+    view.rerender(<QueueStack messages={[restored('r1')]} onCancel={() => {}} onInterrupt={onInterrupt} onEdit={() => {}} pendingIds={new Set()} />)
+    expect(screen.getByTestId('queue-card-held')).toBeInTheDocument()
+  })
+
+  it('drops the line when the card is cancelled and leaves the queue', async () => {
+    const onCancel = vi.fn()
+    const view = render(<QueueStack messages={[restored('r1')]} onCancel={onCancel} onInterrupt={() => {}} onEdit={() => {}} />)
+    expect(screen.getByTestId('queue-card-held')).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('Cancel queued message'))
+    expect(onCancel).toHaveBeenCalledWith('r1')
+    view.rerender(<QueueStack messages={[]} onCancel={onCancel} onInterrupt={() => {}} onEdit={() => {}} />)
+    await waitFor(() => expect(screen.queryByTestId('queue-card-held')).not.toBeInTheDocument())
+  })
+})
+
+describe('QueueStack collapsed stack with a held front card', () => {
+  it('lines every backing card up with the front card top, one peek higher per depth', () => {
+    const held: ChatMessage = { ...queued('front', 'r1'), meta: { queueId: 'r1', restored: true, held: true } }
+    render(<QueueStack messages={[held, queued('second', 'q2')]} onCancel={() => {}} onInterrupt={() => {}} onEdit={() => {}} />)
+    const boxes = screen.getAllByTestId('queue-card').map(c => c.parentElement as HTMLElement)
+    const y = (el: HTMLElement) => Number(/translateY\((-?[\d.]+)px\)/.exec(el.style.transform)?.[1] ?? 0)
+    const h = (el: HTMLElement) => parseFloat(el.style.height)
+    expect(h(boxes[0])).toBeGreaterThan(h(boxes[1]))
+    // The backing card's top sits above the front card's top.
+    expect(y(boxes[1])).toBeLessThan(y(boxes[0]))
+  })
+})
+
+describe('QueueStack server-written entry (resource wake, MCP-App message)', () => {
+  const WAKE_TEXT = '[Webhook wake]\nresource changed: crux://reviews/CR-9\n[End of webhook wake]'
+  const resourceWake = (queueId: string): ChatMessage => ({
+    role: 'queued', content: WAKE_TEXT, cls: 'msg msg-queued', ts: '',
+    meta: { queueId, kind: 'resource_wake', resourceServer: 'crux', resourceSubscription: 'rsub_1' },
+  }) as ChatMessage
+  const appMessage = (queueId: string): ChatMessage => ({
+    role: 'queued', content: 'clicked approve', cls: 'msg msg-queued', ts: '',
+    meta: { queueId, kind: 'mcp_app_message', appLabel: 'demo' },
+  }) as ChatMessage
+
+  it('isServerWrittenQueued holds for both server kinds and never for the person\'s own entry', () => {
+    expect(isServerWrittenQueued(resourceWake('q1'))).toBe(true)
+    expect(isServerWrittenQueued(appMessage('q2'))).toBe(true)
+    expect(isServerWrittenQueued(queued('my own words', 'q3'))).toBe(false)
+    expect(isServerWrittenQueued(undefined)).toBe(false)
+    // The app-only display predicate keeps its scope.
+    expect(isAppMessageQueued(resourceWake('q1'))).toBe(false)
+  })
+
+  it('a queued resource wake offers no edit, keeps cancel, and shows its text as it arrived', () => {
+    const onCancel = vi.fn()
+    render(<QueueStack messages={[resourceWake('q1')]} onCancel={onCancel} onEdit={vi.fn()} onInterrupt={vi.fn()} />)
+    expect(screen.queryByLabelText('Edit queued message')).toBeNull()
+    const cancel = screen.getByLabelText('Cancel queued message')
+    expect(cancel).toHaveAttribute('title', 'Cancel queued message')
+    fireEvent.click(cancel)
+    expect(onCancel).toHaveBeenCalledWith('q1')
+    expect(screen.getByTestId('queue-card').textContent).toContain('resource changed: crux://reviews/CR-9')
+  })
+
+  it('a queued MCP-App message keeps its read-only card and its app attribution', () => {
+    render(<QueueStack messages={[appMessage('q1')]} onCancel={vi.fn()} onEdit={vi.fn()} />)
+    expect(screen.queryByLabelText('Edit queued message')).toBeNull()
+    expect(screen.getByLabelText('Cancel queued message')).toHaveAttribute('title', 'Cancel queued message')
+    expect(screen.getByTestId('queue-card').textContent).toContain('demo')
+  })
+
+  it('the person\'s own queued message keeps its pencil and its move-back-to-input cancel', () => {
+    render(<QueueStack messages={[queued('my own words', 'q1')]} onCancel={vi.fn()} onEdit={vi.fn()} />)
+    expect(screen.getByLabelText('Edit queued message')).toBeInTheDocument()
+    expect(screen.getByLabelText('Cancel queued message')).toHaveAttribute('title', 'Cancel and move back to input')
   })
 })

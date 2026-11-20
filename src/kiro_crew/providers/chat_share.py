@@ -233,11 +233,13 @@ def claude_spawn_identity(
     except (OSError, ValueError):
         return ""
     account = data.get("oauthAccount") if isinstance(data, dict) else None
-    signed_in = (
-        [account.get("accountUuid"), account.get("organizationUuid")]
-        if isinstance(account, dict)
-        else ("no-account" if data is not None else "no-config")
-    )
+    signed_in: list[Any] | str
+    if isinstance(account, dict):
+        signed_in = [account.get("accountUuid"), account.get("organizationUuid")]
+    elif data is not None:
+        signed_in = "no-account"
+    else:
+        signed_in = "no-config"
     credentials = sorted(
         (name, value)
         for name, value in env.items()
@@ -639,6 +641,7 @@ class ChatSharePlacement:
             work_dir=self._work_dir,
             agent=self._agent,
             sandbox_mode=self._sandbox_tier,
+            spawn_sandbox_mode=self._sandbox_mode,
             extra_env=self._extra_env,
             acp_backend=p._client.backend,
             tool_search=p._tool_search_settings(),

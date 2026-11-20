@@ -262,7 +262,10 @@ version directory. A universal macOS build stages the engine once: its tarball
 is already `darwin-universal`, and `kas_bundle.make_universal_node` fetches the
 other architecture's pinned Node build and `lipo -create`s both into one Mach-O
 at the record's `node_bin` path, probing each slice through `arch -arm64` /
-`arch -x86_64`. The universal build then runs `kas_bundle.trim_for_shipping`:
+`arch -x86_64`. A slice probe that times out is rerun once: the slice that is
+not the host's runs under Rosetta, whose first translation of the new binary
+can outlast the 30-second probe on a loaded runner, and the rerun starts from
+Rosetta's cache. The universal build then runs `kas_bundle.trim_for_shipping`:
 the Node distribution keeps only its binary and `LICENSE` (the engine never
 spawns the distribution's npm, npx or corepack), and the engine loses its C/C++
 sources, headers, source maps and web-tree-sitter's debug build. No reader
@@ -318,7 +321,9 @@ default (off) on every platform while the route is in shadow testing, and the
 relay route runs on the kiro-cli the user installed. Nothing in the build,
 the installer or the shell flips the switch; that stays the user's own step. `BUNDLE_KAS=0 make desktop` opts a build out (the payload is ~55 MB
 compressed, ~370 MB extracted per architecture); the switch then needs
-`kirocrew kas install` first, exactly as a pip install does. `KAS_BUNDLE_URL`
+`kirocrew kas install` first, exactly as a pure-wheel pip install does. CI refuses
+`BUNDLE_KAS=0` (`GITHUB_ACTIONS=true`), so no released artifact ships without the
+engine (the engine guarantee, #39623); the opt-out is for local builds. `KAS_BUNDLE_URL`
 names another manifest host (a mirror serving the same bytes; the pin refuses
 anything else).
 
@@ -742,13 +747,26 @@ same way). Key details:
   one, which fails the whole macOS release (see
   [stt-streaming](../system-specs/modules/stt-streaming.md) for how the runtime
   then authenticates a decoder whose bytes signing rewrote).
-- **Feishu SDK bundled** — every backend installs the `[feishu]` extra
-  (`lark-oapi` and its dependencies). Settings shows no `pip` command for a
-  bundled interpreter and each update replaces the whole bundle, so a channel
-  SDK the build leaves out cannot be added later. Windows ships bytecode only
-  for traced import closures, so its build traces `lark_oapi` too: the channel
-  imports it on the gateway loop. macOS does not trace it (see below), so a
-  macOS gateway with the Feishu channel on compiles it in memory at every start.
+- **Feishu SDK installed on first use, not bundled** — `lark-oapi` is about
+  11,000 files per backend that most users never load. The Feishu Settings
+  panel's **Install** (`POST /api/feishu/sdk/install`, `kiro_crew.sdk_extras`)
+  runs the bundle's pip with `--target --no-deps --require-hashes
+  --only-binary :all:` against `sdk_extras_locks/feishu.txt`, into
+  `<data home>/extras/feishu/<cpXY-platform-machine>/`, outside the signed
+  bundle so updates keep it. pip compiles its bytecode there. The install
+  records a hash of the lock's pins; a release that changes a pin in the lock
+  makes the gateway treat the old install as missing and install the new set
+  the same way. pip downloads
+  from the package mirror the user set up for pip, if any, and falls back once
+  to pypi.org when that mirror cannot serve the files. The gateway
+  appends that directory to `sys.path` before it probes or imports the SDK. The
+  `extras` leaf is READONLY in every agent sandbox and fenced from the agent's
+  file tools, like `browser-harness`. Only the three distributions core lacks
+  are locked (`lark-oapi`, `pycryptodome`, `requests-toolbelt`); the rest of
+  its closure is already in the bundle. A channel that is already enabled when
+  the SDK is missing gets it installed in the background at gateway start and
+  is then started (`feishu.gateway._schedule_sdk_install`), so updating from a
+  bundled build keeps Feishu working.
 - **Dashboard bundled** — the SPA is staged into
   `lib/python3.12/site-packages/kiro_crew/static/dist/` inside the bundle.
 - **Pruned** — `__pycache__`, test dirs, and unused stdlib (tkinter, idlelib,
@@ -785,6 +803,10 @@ shell that started it has exited and nothing restarts it, so the app treats it
 as a plain local Kiro Crew gateway, which the failure dialog's force-retry and
 wedge recovery may stop. A job list that cannot be read keeps the
 service-managed verdict.
+On macOS and Linux, a port check that force-retry or wedge recovery cannot run
+(lsof missing, not executable or timed out) is settled with a real bind before
+the gateway starts again, and a port still in use after the start wait shows the
+restart-required dialog.
 A port held by a process this app cannot attribute to itself, which is what a
 local SSH forward to a remote gateway looks like, is reused only when a remote
 crew is recorded for that port; otherwise the supervisor refuses it
@@ -866,7 +888,12 @@ manager brings the gateway straight back, the shell re-checks the new holder
 instead of starting a second one. A failed stop surfaces the start-failure
 dialog, naming the pid still holding the port, instead of spawning into it. SSH
 forwards, other data folders, unknown owners and Windows keep the existing spawn
-path, and a gateway that answers inside the window is reused as before.
+path, and a gateway that answers inside the window is reused as before. When
+that spawn exits and the owner probe had found a program this app did not
+start on the port, the gateway-failure dialog shows the `foreign-holder`
+refusal naming that program, not the bare exit code. A spawn killed by a
+signal keeps its own message: the port refusal exits with code 1, never by a
+signal.
 
 With no gateway to reuse, the shell locates the backend binary via
 [`find-bin.js`](../../website/electron/find-bin.js), spawns it as `kirocrew
@@ -1262,7 +1289,11 @@ control `kirocrew restart` names when it refuses a gateway the app supervises.
 
 When this launch ends with no usable gateway, the shell shows one dialog
 (`gateway-wait.js` renders it; the supervisor's start-failure record decides
-the state). It always offers **Retry**, plus the actions the state allows:
+the state). It always offers **Retry**, plus the actions the state allows. While
+the app waits for the gateway, the splash counts toward the deadline ("Waiting for gateway… 12s of
+120s"). A timeout on a gateway this app spawned and whose process is still
+running is titled "gateway is not answering" and points at the launch log;
+its Retry keeps that process and waits again. The actions:
 
 - **Add Remote Crew** / **Edit Remote Crew** opens the remote-crew form
   (`runtime/gateway/remote-crew-prompt.js`) to save or correct the crew this
@@ -1285,7 +1316,8 @@ carries internal identifiers and boot diagnostics, so the first view is the
 title, the message and the actions. Unfolding it grows the window to fit the
 log pane, and never shrinks a window the user made taller.
 
-The dialog also explains the refusals that start nothing:
+The dialog also explains the refusals that leave this launch without a local
+gateway:
 
 - **`crew-configured`**: the local gateway is on, but a recorded crew owns this
   port, so the shell does not bind it. Start Local Gateway re-execs on a free
@@ -1303,7 +1335,8 @@ The dialog also explains the refusals that start nothing:
   identified as someone else's; it is still refused, because adopting a holder
   no one identified would post this machine's local secret to it. This is the
   one refusal that shows the launch log and Reveal Log, because this launch
-  wrote the holder's pid and command there.
+  wrote the holder's pid and command there. A holder that does not answer
+  reaches this refusal too, once the gateway this launch spawned past it exits.
 
 After a Start Local Gateway click, the record names the outcome so the next
 dialog describes it: the restarted copy never served a gateway (offered again),
@@ -1623,7 +1656,11 @@ it), and `user-restart.js` (Settings → About's Restart gateway).
   decided by [`close-action.js`](../../website/electron/close-action.js)), and
   creates or removes the tray icon to match `showTrayIcon` (decided by
   [`tray-icon.js`](../../website/electron/tray-icon.js), which keeps the icon on
-  Windows and Linux while the close button hides the window); the composition root delegates quit-time
+  Windows and Linux while the close button hides the window), and hides a
+  minimized main window to the tray when `minimizeToTray` is on (decided by
+  [`minimize-to-tray.js`](../../website/electron/minimize-to-tray.js): never on
+  macOS, on Linux only when the session bus has a StatusNotifier tray host, and
+  only while the tray icon shows); the composition root delegates quit-time
   gateway teardown to the supervisor, which performs the graceful shutdown and
   signal escalation contract. On POSIX,
   [`gateway-stop.js`](../../website/electron/gateway-stop.js) lists the child's
@@ -2078,10 +2115,18 @@ the 2026-11-10 decision "updates never restart a running gateway"):
 - **An apply the quit left behind is finished at the next app start.** If the
   quit-time apply was interrupted or failed, the arm stays. The next start runs
   it in Electron main (`startup-apply.js`) before the gateway spawns and before
-  any window opens, clears the arm, and relaunches once into the new bundle.
-  First it checks governance: the last recorded verdict, and the policy file
-  read again now (`policy-source.js`: a pinned `updates` check or apply command
-  governs), so a provider installed since the last run is not bypassed. A
+  the main window opens, clears the arm, and relaunches once into the new bundle.
+  While the update command runs, the boot splash shows in its own window
+  (`install-splash.js`) with an "Installing update <version>" line. Closing it
+  only hides it (a quit of the app still quits), and launching the app again
+  (on macOS, reopening it) brings it forward and logs
+  `[update] a launch arrived during the start-time apply`. It is hidden when
+  the apply finishes, before the relaunch or the start of the installed
+  version, and destroyed once the main window opens.
+  First the start-time apply checks governance: the last recorded verdict, and
+  the policy file read again now (`policy-source.js`: a pinned `updates` check
+  or apply command governs), so a provider installed since the last run is not
+  bypassed. A
   provider-governed install, or a policy file that cannot be read, runs no
   marker command at start either; the arm stays and the outcome is `governed`.
   Then it probes whether a gateway is still running (a gateway that outlived the

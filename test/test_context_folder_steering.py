@@ -553,7 +553,7 @@ def test_member_turn_survives_a_guide_larger_than_the_envelope(member_env, tmp_p
     """One oversized guide truncates inside the envelope; it never aborts the turn.
 
     ``render_essentials`` refuses an envelope over ``ESSENTIAL_MAX_CHARS``
-    (64,000). A folder guide may legitimately be larger than that on its own
+    (65,000). A folder guide may legitimately be larger than that on its own
     (the per-document read cap is four times it), so the member path must fit
     folder documents by their RENDERED size, not just their count -- a small
     first guide lands, the oversized second is dropped, and the member's own
@@ -603,3 +603,41 @@ def test_member_envelope_keeps_folder_bodies_when_host_declares_native_docs(memb
         steering_dirs=(str(standards),),
     )
     assert envelope_out and MARKER in envelope_out[0]
+
+
+# ── Folder steering is the only steering path on some harnesses: fit real trees ──
+
+
+# Not codex: on main codex is a crew-loads-spec-steering backend
+# (``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING``), so its guides arrive through the spec
+# steering load and its message carries no folder section.
+@pytest.mark.parametrize("provider_type", ["acme-config-authored-harness"])
+def test_global_steering_tree_of_two_guides_is_delivered_whole(tmp_path, home, provider_type):
+    """Regression: a 3,445 + 1,368 byte ``~/.kiro/steering`` tree was cut at 3,300.
+
+    On a harness that does not load ``.kiro/steering`` itself the folder section
+    is the only path those guides have, so the first guide was cut short and the
+    ``inclusion: always`` one never arrived.
+    """
+    steering = home / ".kiro" / "steering"
+    denpa_body = "\n".join(f"DENPA-RULE-{i:03d}: " + "d" * 40 for i in range(62))
+    identity_body = "\n".join(f"IDENTITY-RULE-{i:02d}: " + "g" * 40 for i in range(22))
+    (steering / "denpa.md").write_text(denpa_body + "\n", encoding="utf-8")
+    (steering / "github-identity.md").write_text(
+        "---\ninclusion: always\n---\n" + identity_body + "\n", encoding="utf-8"
+    )
+    total = sum(p.stat().st_size for p in steering.glob("*.md"))
+    assert 4_500 < total < 5_200, total
+
+    msg, _ = _builder(tmp_path).build_message(
+        "hello",
+        True,
+        f"dashboard:{provider_type}",
+        provider_type=provider_type,
+        steering_dirs=(str(steering),),
+    )
+    section = _section(msg)
+    assert denpa_body in section
+    assert identity_body in section
+    assert "[document cut short:" not in section
+    assert "FOLDER STEERING OMISSION" not in section

@@ -49,6 +49,7 @@ from typing import Any
 
 from kiro_crew import platform_compat
 from kiro_crew.sandbox import (
+    app_backend_secret_mask_targets,
     cgroup_scope_argv,
     create_subprocess_limited,
     wrap_argv,
@@ -304,7 +305,13 @@ async def _run_app_build(
 
     for cmd in build_cmds:
         log_lines.append(f"Running {' '.join(cmd)} in {build_dir}...")
-        sandboxed_cmd, _cleanup = await wrap_argv_async(cmd, mode="standard", _prepare=wrap_argv)
+        # The build runs third-party hooks (npm lifecycle scripts, a pip source build).
+        sandboxed_cmd, _cleanup = await wrap_argv_async(
+            cmd,
+            mode="standard",
+            _prepare=wrap_argv,
+            extra_hidden_dirs=await asyncio.to_thread(app_backend_secret_mask_targets),
+        )
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         proc = await create_subprocess_limited(
             *sandboxed_cmd,
@@ -490,9 +497,11 @@ _PART_MODULES: tuple[str, ...] = tuple(
     for leaf in (
         "subprocess_env",
         "git_targets",
+        "gh_credential",
         "caches",
         "sources",
         "recovery",
+        "clone_metadata",
         "checkout",
         "store_art",
         "indexes",
@@ -584,7 +593,6 @@ if _typing.TYPE_CHECKING:
         _EXTERNAL_REGISTRY_FAILURE_CLOCK_SLACK,
         _EXTERNAL_REGISTRY_FAILURE_MAX_BYTES,
         _EXTERNAL_REGISTRY_FAILURE_TTL,
-        _FACADE,
         _MANIFEST_CACHE_GC_GRACE,
         _MANIFEST_CACHE_TTL,
         _MANIFEST_NEGATIVE_CACHE_TTL,
@@ -689,37 +697,65 @@ if _typing.TYPE_CHECKING:
     from kiro_crew.apps.registry_pipeline.checkout import (  # noqa: F401
         _CLONE_TIMEOUT,
         _COMMIT_SHA_RE,
-        _HEAD_READ_LIMIT,
         _HOOKS_NEUTRALIZER_ARGV,
         _KILL_GRACE_PERIOD,
-        _PACKED_REFS_READ_LIMIT,
         _STRICT_SSH_ROUTE_CODE,
         _STRICT_SSH_ROUTE_ERROR,
-        _clone_branch_matches,
         _clone_origin_matches,
         _clone_origin_url,
         _communicate_with_timeout,
         _ensure_directory,
         _git_clone_or_pull,
+        _git_clone_or_pull_with_gh,
         _git_fetch_branch,
         _git_fetch_commit,
         _git_fetch_ref,
         _mkdtemp_settled,
         _names_a_missing_ref,
-        _read_clone_branch,
-        _read_git_metadata_bounded,
         _resolved_clone_commit,
         _rmtree_force_settled,
         _strict_ssh_route_failure,
         _with_network_hint,
     )
+    from kiro_crew.apps.registry_pipeline.clone_metadata import (  # noqa: F401
+        _HEAD_READ_LIMIT,
+        _PACKED_REFS_READ_LIMIT,
+        _clone_branch_matches,
+        _read_clone_branch,
+        _read_git_metadata_bounded,
+    )
+    from kiro_crew.apps.registry_pipeline.gh_credential import (  # noqa: F401
+        _FACADE,
+        _GH_AUDIT_CALLER,
+        _GH_HOST,
+        _GH_OWNER_RE,
+        _GH_PROBE_TIMEOUT,
+        _GH_REPO_RE,
+        _GH_URL_PATH_RE,
+        _gh_access,
+        _gh_credential_env,
+        _gh_refusal_sentence,
+        _github_https_repo,
+        _github_runner,
+        _private_github_shaped,
+        _resolve_gh_git,
+        _run_gh_probe,
+        _shlex,
+        _subprocess,
+        _urlsplit,
+    )
     from kiro_crew.apps.registry_pipeline.git_targets import (  # noqa: F401
         _FETCH_CAUSE_AUTH,
         _FETCH_CAUSE_DNS,
+        _FETCH_CAUSE_GH_MISSING,
+        _FETCH_CAUSE_GH_NO_ACCESS,
+        _FETCH_CAUSE_GH_SIGNED_OUT,
+        _FETCH_CAUSE_GH_STRICT,
         _FETCH_CAUSE_HOST_KEY,
         _FETCH_CAUSE_NETWORK,
         _FETCH_CAUSE_OTHER,
         _FETCH_CAUSE_TIMEOUT,
+        _GH_FETCH_CAUSES,
         _GIT_AUTH_FAILURE_MARKERS,
         _GIT_DNS_FAILURE_MARKERS,
         _GIT_EXEC_NEUTRALIZER_PAIRS,
@@ -730,6 +766,7 @@ if _typing.TYPE_CHECKING:
         _GIT_NO_FSMONITOR_PAIR,
         _GIT_NO_HOOKS_PAIR,
         _GIT_PROXY_FAILURE_MARKERS,
+        _GIT_REPOSITORY_NOT_FOUND_LABEL,
         _PUBLIC_GIT_HOSTS,
         _REGISTRY_FETCH_CAUSES,
         _SSH_METHOD_CHARS,
@@ -781,6 +818,7 @@ if _typing.TYPE_CHECKING:
         Callable,
         StreamingLogLines,
         _adoption_pending,
+        _clear_earlier_memory_consent,
         _install_script_platform_refusal,
         _official_entry,
         _redact_log_via_context,
@@ -838,7 +876,12 @@ if _typing.TYPE_CHECKING:
     )
     from kiro_crew.apps.registry_pipeline.manifests import (  # noqa: F401
         _REGISTRY_ROW_KEYS,
+        _SSH_DESTINATION_MAX_CHARS,
+        _SSH_SIGN_IN_REFUSED,
+        _SSH_SIGN_IN_REFUSED_MAX,
+        _anonymous_ssh_destination,
         _fetch_app_manifest,
+        _is_ssh_sign_in_refusal,
         _merge_manifest,
         _resolve_manifest,
         official_catalog,

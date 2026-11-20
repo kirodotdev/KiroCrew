@@ -228,7 +228,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     return true
   }, [input, slotKey, openSideChat, agentLocked, paneAgentName, readPastes, setPasteBlocks, dispatch, composerRef, mountedRef, slotKeyRef, inputRef, setInput])
 
-  const doSend = useCallback((optionText?: string, steerNow?: boolean | 'auto', onOutcome?: (outcome: PaneSendOutcome) => void) => {
+  const doSend = useCallback((optionText?: string, steerNow?: boolean | 'auto', onOutcome?: (outcome: PaneSendOutcome) => void, ownFiles: readonly string[] = []) => {
     // `optionText` mirrors ChatPage.send's first parameter: the follow-up
     // bar's direct-send gesture (double-click / split button) hands the option
     // label here so it bypasses the setInput race, superseding any composer
@@ -242,6 +242,9 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     //
     // `onOutcome` hears once what an option send came to (a discussion card
     // shows it), in ChatPage.send's delivery classes: see `paneSendOutcome`.
+    //
+    // `ownFiles`: an option send's own uploaded files (a discussion card's
+    // pictures). Only these go with it, never the composer's staged files.
     const text = (optionText || input).trim()
     // A staged quote alone is a sendable message. An option pill's send is its
     // own text and leaves the stage untouched, as it leaves files and pastes.
@@ -279,7 +282,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // gate: no send-without-clear (duplicate) and no clear-without-send (silent
     // loss). Consuming the draft or attachments here would wipe text the user
     // never sent and attach files to a message they never composed.
-    const files = optionText ? [] : pendingFiles
+    const files = optionText ? [...ownFiles] : pendingFiles
     const blocks = optionText ? [] : pasteBlocks
     if (!optionText) {
       setInput('')
@@ -353,10 +356,18 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // `response-late` proves no refusal either; restoring either one here could
     // invite a retry that duplicates a turn already in flight, side effects
     // included, so the optimistic composer row stays pending.
-    void sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: steerNow } : {}) }).then((receipt) => {
+    //
+    // The returned verdict is what ChatInput's prompt stash reads: only
+    // `dispatched` / `queued` or a correlated echo of this send prove the
+    // server holds the message, so only they let a restored draft's stash
+    // entry go. This pane's recovery lives in component state, so a refusal
+    // or an unconfirmed send must leave that entry stored for a reload to find.
+    return sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: steerNow } : {}) }).then((receipt) => {
       // Read before the rulings below settle the bubble: an echo that already
       // proved this send landed outranks a lost or refused answer.
       onOutcome?.(paneSendOutcome(receipt.status, selectSendConfirmed(store.getState(), slotKey, sendId) || (!!crewmate && selectSendAccepted(store.getState(), slotKey, sendId))))
+      const delivered = receipt.status === 'dispatched' || receipt.status === 'queued'
+        || selectSendConfirmed(store.getState(), slotKey, sendId)
       // Receipt policy, owned once in chat-core (issue #9457). This is the
       // PARTIAL copy: doSend is a full send, not only a steer, so the rulings
       // applySteerReceipt owns (echo short-circuit, refused/response-late/
@@ -447,8 +458,9 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       // Blocking ask resolution, owned by doSend and run on every accepted
       // receipt. Guarded independently of the rulings above so a `steered` or
       // `queued` receipt still settles the ask correctly.
-      if (!askAtSend) return
+      if (!askAtSend) return delivered
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch, slotKey)
+      return delivered
     })
   }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, crewmate, slotKey, project, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
 
@@ -482,7 +494,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // showed only when the server echoed it. A stale flag
     // is safe: the server finds no turn, dispatches one, and the receipt's
     // `turn` ruling demotes the steer bubble to a plain row.
-    if (!running && !paneSlot?.running) { doSend(undefined, true); return }
+    if (!running && !paneSlot?.running) return doSend(undefined, true)
     // A command typed mid-turn is still a command, never steered in as text
     // (ChatPage's steer gates on the same matcher).
     if (interceptPaneSlash()) return
@@ -531,7 +543,8 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // (`decisions/points/message_steer.py`); the receipt policy below is unchanged,
     // because a decided send still comes back as a steer's `dispatched` or a
     // queue's `queued`.
-    void sendTurn({ message: txt, slot: slotKey, steer: opts?.auto === true ? 'auto' : true, meta: steerMeta }).then((receipt) => {
+    // The verdict is the prompt stash's delivery signal, as in doSend.
+    return sendTurn({ message: txt, slot: slotKey, steer: opts?.auto === true ? 'auto' : true, meta: steerMeta }).then((receipt) => {
       // Receipt policy, owned once in chat-core (issue #9457) -- the same
       // rulings as ChatPage's steerMutation. applySteerReceipt decides WHICH
       // ruling; the adapter below is this pane's HOW.
@@ -567,6 +580,8 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       if (askAtSteer && (receipt.status === 'dispatched' || receipt.status === 'queued')) {
         void resolveAskAfterSend(receipt.body, askAtSteer, dispatch, slotKey)
       }
+      return receipt.status === 'dispatched' || receipt.status === 'queued'
+        || selectSendConfirmed(store.getState(), slotKey, sendId)
     })
   }, [running, paneSlot?.running, doSend, input, pendingFiles, pasteBlocks, setPasteBlocks, slotKey, dispatch, reportSendFailure, restoreIntoComposer, consumeQuote, recoverQuoteInto, interceptPaneSlash, crewmate, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
 

@@ -186,6 +186,9 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     "agent.sandbox": ("strict", "auto", "off"),
     "agent.yolo_duration": ("30m", "1h", "6h", "12h", "24h", "until_shutdown"),
     "agent.sandbox_allow_no_isolation": (False, True),
+    # On, an agent that mounts the kirocrew-dashboard server may open, read,
+    # message, stop and close the person's other sessions.
+    "agent.session_control": (False, True),
     "dashboard.tailscale.enabled": (False, True),
     "dashboard.tailscale.trust_identity": (False, True),
     "dashboard.tailscale.bind_refresh_chains": (True, False),
@@ -212,6 +215,9 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # Kiro's own Chromium holds none of the person's logins; ``auto`` and
     # ``user_chrome`` hand the agent the person's Chrome, signed in.
     "browser.choice": ("headless", "kiro_chromium", "auto", "user_chrome"),
+    # ``shared`` lets a chat use whatever the one browser is already signed in
+    # to; ``per_session`` gives each chat a container no other chat can see.
+    "browser.isolation": ("per_session", "shared"),
     # Off, password boxes show in the live picture.
     "browser.live.mask_passwords": (True, False),
     # On, Kiro's Chromium starts signed in to the edition's sites.
@@ -222,6 +228,8 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # How many live sessions one creator may hold: a higher number lets an agent
     # that opens sessions hold more of them without asking.
     "session.max_per_creator": tuple(range(MAX_PER_CREATOR_MIN, MAX_PER_CREATOR_MAX + 1)),
+    # On, a new KAS session reuses a stored remote MCP sign-in without asking.
+    "agent.kas_persist_mcp_sign_in": (False, True),
 }
 
 #: Card-editable config paths (``_EDITABLE_CONFIG``) that no value can widen

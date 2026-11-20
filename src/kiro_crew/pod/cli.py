@@ -23,7 +23,7 @@ from kiro_crew.pod import env_overrides as pod_env_overrides
 from kiro_crew.pod import limits as pod_limits
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import runtime as rt
-from kiro_crew.pod.config import PodConfig
+from kiro_crew.pod.config import POD_HEALTH_WAIT_SECS_DEFAULT, PodConfig
 from kiro_crew.sel import sel
 from kiro_crew.tips_text import truncate_summary
 
@@ -57,12 +57,8 @@ def _die(msg: str) -> NoReturn:
     sys.exit(1)
 
 
-# Default health-wait budget for `pod up`, in seconds. A first pod boot does
-# real extra work beyond serving /api/health -- config migration, staging CLI
-# files, minting a fresh .local_secret -- and on a loaded host a healthy
-# gateway was measured needing well past the old 45s wall, so the default is
-# twice that. Override per-run with `pod up --wait-secs` or the env var below.
-POD_HEALTH_WAIT_SECS_DEFAULT = 90
+# The default health-wait budget for `pod up` is POD_HEALTH_WAIT_SECS_DEFAULT
+# (pod.config). Override per-run with `pod up --wait-secs` or the env var below.
 POD_HEALTH_WAIT_SECS_ENV = "KIROCREW_POD_HEALTH_SECS"
 # Floor so a misconfigured tiny value cannot make every boot fail before the
 # gateway has any chance to answer; ceiling so an absurd value cannot wedge

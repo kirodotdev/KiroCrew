@@ -19,7 +19,11 @@ from aiohttp.test_utils import TestServer
 from relay_client_helpers import fixture
 
 from kiro_crew.relay_viewer import cps
-from kiro_crew.relay_viewer.cps import CpsRefused, create_crew_access_token, list_crew_endpoints
+from kiro_crew.relay_viewer.cps import (
+    CpsRefused,
+    create_crew_access_token,
+    list_crew_endpoints,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -205,6 +209,25 @@ async def test_the_mint_with_a_profile_adds_only_the_profile_arn(fake: FakeCps) 
     fake.answer(200, MINT["examples"][0]["body"])
     await create_crew_access_token(fake.url, BEARER, PERSONAL, profile_arn=profile)
     assert [r["body"] for r in fake.requests] == [{"endpointId": PERSONAL, "profileArn": profile}]
+
+
+async def test_the_list_with_a_profile_sends_it_on_every_page(fake: FakeCps) -> None:
+    profile = "arn:aws:codewhisperer:us-east-1:000000000000:profile/EXAMPLEPROFILE"
+    fake.answer(200, page(0))
+    fake.answer(200, page(1))
+    crews = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN, profile_arn=profile)
+    assert [c.endpoint_id for c in crews] == [TEAM, PERSONAL]
+    assert [r["body"] for r in fake.requests] == [
+        {"profileArn": profile},
+        {"profileArn": profile, "nextToken": "page-2-opaque"},
+    ]
+
+
+async def test_the_list_with_no_profile_sends_none_on_any_page(fake: FakeCps) -> None:
+    fake.answer(200, page(0))
+    fake.answer(200, page(1))
+    await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN, profile_arn="")
+    assert [r["body"] for r in fake.requests] == [{}, {"nextToken": "page-2-opaque"}]
 
 
 async def test_the_list_body_is_unchanged_next_to_a_profile_mint(fake: FakeCps) -> None:
@@ -447,19 +470,90 @@ async def test_a_crew_exactly_under_the_relay_domain_is_kept(fake: FakeCps, crew
     assert [c.endpoint_id for c in crews] == [TEAM, PERSONAL]
 
 
+#: Kiro's relay.kiro.dev zone, the address shape CPS lists outside Frankfurt.
+RELAY_ZONE = "relay.kiro.dev"
+
+
+def _in_zone(body: Dict[str, Any]) -> Dict[str, Any]:
+    """*body* with each entry's address moved into Kiro's relay zone."""
+    for entry in body["crewEndpoints"]:
+        entry["crewUrl"] = f"https://{entry['endpointId']}.us-east-1.{RELAY_ZONE}"
+    return body
+
+
 @pytest.mark.parametrize(
-    "crew_url", [f"https://{TEAM}.evil.example.test", f"https://{TEAM}.{DOMAIN}:8443/"]
+    "crew_url",
+    [
+        f"https://{TEAM}.us-east-1.{RELAY_ZONE}",
+        f"https://{TEAM}.eu-central-1.{RELAY_ZONE}/",
+        f"HTTPS://{TEAM.upper()}.US-EAST-1.RELAY.KIRO.DEV",
+        f"https://{TEAM}.kiro-relay.us-east-1.on.aws",
+        f"https://{TEAM}.kiro-relay.eu-central-1.on.aws/",
+        f"HTTPS://{TEAM.upper()}.KIRO-RELAY.EU-CENTRAL-1.ON.AWS",
+        f"https://{TEAM}.us-east-1.kiro-relay.on.aws",
+        # With no domain set the address CPS lists is trusted, so a host outside
+        # relay.kiro.dev is kept on purpose: a new relay Region needs no release.
+        f"https://{TEAM}.evil.example.test",
+        f"https://{TEAM}.{RELAY_ZONE}",
+        f"https://{TEAM}.a.b.{RELAY_ZONE}",
+        f"https://{TEAM}.us-east-1.{RELAY_ZONE}.evil.example.test",
+        f"https://{TEAM}.us-east-1.evil{RELAY_ZONE}",
+        f"https://{TEAM}.{DOMAIN}",
+    ],
 )
-async def test_with_no_relay_domain_the_endpoint_prefix_check_still_applies(
+async def test_with_no_relay_domain_the_crew_address_cps_lists_is_kept(
     fake: FakeCps, crew_url: str
 ) -> None:
-    body = page(1)
-    other = dict(page(0)["crewEndpoints"][0], crewUrl=crew_url)
-    wrong = dict(other, endpointId="otherccccccccccccccccccccccccccc")
-    body["crewEndpoints"][0:0] = [other, wrong]
+    body = _in_zone(page(1))
+    body["crewEndpoints"].insert(0, dict(page(0)["crewEndpoints"][0], crewUrl=crew_url))
     fake.answer(200, body)
     crews = await list_crew_endpoints(fake.url, BEARER)
     assert [c.endpoint_id for c in crews] == [TEAM, PERSONAL]
+
+
+@pytest.mark.parametrize("crew_type", ["TEAM", "PERSONAL"])
+def test_the_address_shape_prod_us_east_1_lists_is_kept(crew_type: str) -> None:
+    # The shape the prod us-east-1 control plane lists: a 32-character endpoint ID
+    # under kiro-relay.us-east-1.on.aws (the ID and name here are made up).
+    endpoint = "q7m2kx9w4bz8n5c3v6t1r0yh2pd8ls4a"
+    raw = {
+        "endpointId": endpoint,
+        "crewUrl": f"https://{endpoint}.kiro-relay.us-east-1.on.aws",
+        "name": "build-host",
+        "crewType": crew_type,
+    }
+    crew = cps._crew_endpoint(raw, "")
+    assert crew is not None and crew.crew_url == raw["crewUrl"] and crew.crew_type == crew_type
+
+
+@pytest.mark.parametrize(
+    "crew_url",
+    [
+        f"https://{TEAM}.-us.{RELAY_ZONE}",
+        f"https://{TEAM}.us_east.{RELAY_ZONE}",
+        f"https://{TEAM}.us-east-1.{RELAY_ZONE}:8443/",
+        f"https://{TEAM}.us-east-1.{RELAY_ZONE}:443",
+        f"https://otherccccccccccccccccccccccccccc.us-east-1.{RELAY_ZONE}",
+        f"https://{TEAM}.",
+        f"https://{TEAM}.kiro-relay.eu-central-1.on.aws.",
+        f"https://{TEAM}.kiro-relay.eu-central-1.on.aws:8443/",
+        f"https://{TEAM}kiro-relay.eu-central-1.on.aws",
+        f"https://x.{TEAM}.kiro-relay.eu-central-1.on.aws",
+        f"https://user@{TEAM}.kiro-relay.eu-central-1.on.aws",
+        f"http://{TEAM}.kiro-relay.eu-central-1.on.aws",
+        f"https://{TEAM}.kiro-relay.eu-central-1.on.aws/path",
+        "https://otherccccccccccccccccccccccccccc.kiro-relay.eu-central-1.on.aws",
+    ],
+)
+async def test_with_no_relay_domain_a_crew_address_that_fails_the_structure_is_left_out(
+    fake: FakeCps, crew_url: str
+) -> None:
+    # No token goes to a host that is not this Crew's own https:// name on the default port.
+    body = _in_zone(page(1))
+    body["crewEndpoints"].insert(0, dict(page(0)["crewEndpoints"][0], crewUrl=crew_url))
+    fake.answer(200, body)
+    crews = await list_crew_endpoints(fake.url, BEARER)
+    assert [c.endpoint_id for c in crews] == [PERSONAL]
 
 
 @pytest.mark.parametrize(

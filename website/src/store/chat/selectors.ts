@@ -135,6 +135,7 @@ export const selectProjectChipLocked = (state: RootState, slot: string | null): 
 const TURN_INJECT_DISPATCHED: Readonly<Record<InjectKind, boolean>> = {
   cron: true,
   mcp_app: true,
+  resource: true,
   recovery: true,
   synthesis: true,
   user_replay: true,
@@ -411,6 +412,23 @@ export const selectTurnInterrupted = (state: RootState, slot?: string | null): b
   // tool rows here. A trailing error row is still the evidence the assistant
   // branch honors, so it decides the same way.
   return sawTrailingError
+}
+
+/**
+ * Whether the composer may offer Resume for `slot`: the transcript shows an
+ * interruption (`selectTurnInterrupted`) AND the gateway does not say
+ * otherwise. The `slots` row carries the gateway's own reading, `interrupted`,
+ * worked out by `is_turn_interrupted` over the server transcript. An idle row
+ * that says `interrupted: false` means the turn handed the floor back, so a tab
+ * whose transcript still ends on the user's row has missed the rows that
+ * answered it. Offering Resume there would rerun a turn that finished. A row
+ * that is running, has no `interrupted` field (an older gateway), or is not in
+ * the list leaves the transcript's reading as it was.
+ */
+export const selectResumeInterrupted = (state: RootState, slot?: string | null): boolean => {
+  if (!selectTurnInterrupted(state, slot)) return false
+  const row = slotRowByKey(state.dashboard.slots, slot ?? state.chat.activeSlot)
+  return !(row && row.running === false && row.interrupted === false)
 }
 
 /**

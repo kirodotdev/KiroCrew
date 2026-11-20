@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         _safe_float,
         _safe_int,
         _usage_scrape_argv,
+        _whoami_says_signed_out,
         _wrap_argv_at_configured_tier,
         _wrap_argv_whoami,
     )
@@ -183,9 +184,37 @@ if TYPE_CHECKING:
         _reset_all_sessions,
         api_sessions_restart,
     )
+    from kiro_crew.dashboard.handlers.sessions_parts.memory_route import (  # noqa: F401
+        _memory_sampler,
+        api_sessions_memory,
+    )
+    from kiro_crew.dashboard.session_memory import SessionMemorySampler  # noqa: F401
+    from kiro_crew.dashboard.handlers.sessions_parts.message_search import (  # noqa: F401
+        _BAD_TIME,
+        _ROW_FIELDS,
+        MAX_HITS_PER_SESSION,
+        MAX_SESSIONS,
+        ROLE_FILTERS,
+        SNIPPET_LEAD,
+        SNIPPET_MAX,
+        SNIPPET_TRAIL,
+        _epoch_param,
+        _excerpt,
+        _keeps_session,
+        _limit_param,
+        _iso_epoch,
+        _read_chain,
+        _redacted,
+        _search,
+        api_sessions_search_messages,
+        MessageQuery,
+        message_hits,
+        message_query,
+    )
     import kiro_crew.dashboard.handlers as _h  # noqa: F401
     from kiro_crew import agent_spec_pins  # noqa: F401
     from kiro_crew import hooks  # noqa: F401
+    from kiro_crew import history_search  # noqa: F401
     from kiro_crew import session_directive  # noqa: F401
     from kiro_crew.agent_discovery import AgentsDirMemo  # noqa: F401
     from kiro_crew.agent_discovery import AmbiguousAgentSpecError  # noqa: F401
@@ -260,7 +289,9 @@ if TYPE_CHECKING:
 from aiohttp import web
 
 from kiro_crew import _facade_mirror
+from kiro_crew import workload_identity as _workload_identity
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
+from kiro_crew.agent_sdk import kas_bundle as _kas_bundle
 from kiro_crew.dashboard.handlers import kiro_usage_api, plan_credit_alerts
 from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
@@ -271,17 +302,22 @@ from kiro_crew.dashboard.handlers.kiro_vault_identity import (
 )
 from kiro_crew.dashboard.handlers.sessions_parts.usage_scrape import (
     _REASON_ACCOUNT_UNPROVEN,
+    _REASON_API_KEY,
+    _REASON_SIGNIN_REQUIRED,
     _WHOAMI_DIFFERENT,
     _WHOAMI_SAME,
     _WHOAMI_UNPROVEN,
     _account_type_only,
+    _credential_rejected,
     _fetch_whoami,
     _fetch_whoami_or_none,
+    _kiro_api_key_configured,
     _normalize_text_usage,
     _parse_usage,
     _redact_strings,
     _same_identity,
     _text_scrape_regresses_api_value,
+    _unavailable_reason,
     _whoami_agreement,
     _wrap_argv_usage_scrape,
 )
@@ -290,7 +326,6 @@ from kiro_crew.dashboard.kiro_readiness import (
     reject_if_kiro_unverified,
     track_kiro_identity,
 )
-from kiro_crew.dashboard.session_memory import SessionMemorySampler
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.kiro_prerequisite import identity_stamp_mismatch, spawn_supervised_oneshot
@@ -301,35 +336,6 @@ from kiro_crew.sandbox import (
 )
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.sessions")
-
-# One sampler per process: it carries the CPU jiffy baseline and the rolling load
-# window, both of which are meaningless if rebuilt per request (a fresh baseline
-# always reports CPU as unknown, and a fresh window is always empty).
-_memory_sampler = SessionMemorySampler()
-
-
-async def api_sessions_memory(request: web.Request) -> web.Response:
-    """GET /api/sessions/memory — per-session and per-task memory footprint."""
-    state: DashboardState = request.app["state"]
-    # Built on the loop, not in the sampling thread: it walks live slot objects.
-    # Pure dict work, so it costs nothing here. Guarded because `state` is a
-    # MagicMock in much of the suite, whose attribute call returns a mock rather
-    # than a dict — the sampler must receive a real mapping or nothing.
-    # Built on the loop, not in the sampling thread: it walks live slot objects,
-    # and it is pure dict work. `hasattr` because a stub state in the suite may not
-    # carry the method at all; validating the VALUE is `_spend_for_session`'s job,
-    # so it is not repeated here — one owner for that rule.
-    aliases = state.spend_slot_by_session() if hasattr(state, "spend_slot_by_session") else None
-    payload = await _memory_sampler.sample(
-        state.sessions,
-        getattr(state, "subagents", None),
-        get_slot=state.get_slot,
-        spend_slot_by_session=aliases,
-        mcp_gateway=getattr(state, "_mcp_gateway_manager", None),
-        breakdown=True,
-    )
-    return web.json_response(payload)
-
 
 _health_cache: dict[str, Any] = {}
 _health_cache_ts: float = 0.0
@@ -512,44 +518,6 @@ def _record_scrape_outcome(success: bool) -> None:
         )
 
 
-#: Pill ``reason`` for an auth-class usage failure: no live credential could be
-#: read, or the API refuses the one that was. The remedy is a fresh sign-in.
-_REASON_SIGNIN_REQUIRED = "signin_required"
-
-
-def _unavailable_reason(api_result: kiro_usage_api.UsageResult) -> str | None:
-    """Pick the pill's ``reason`` for a refresh that ends without a reading.
-
-    An auth-class ``auth_state`` (no live credential was readable, or the API
-    rejected the one that was) reports ``signin_required``: the free API was
-    never answered about this account, and the ``/usage`` scrape needs the same
-    sign-in, so the one remedy is signing in again. Anything the API path could
-    not prove was an auth problem reports no reason -- a spurious "sign in again"
-    on a working sign-in would be the same class of defect in the other direction.
-
-    This is a message only; the scrape decision does not consult it. An empty
-    candidate list does NOT prove kiro-cli cannot authenticate, because kiro-cli
-    may authenticate from a store this module does not enumerate (see
-    :func:`_identity_matches_account`), so the scrape still runs and its own
-    outcome decides what the pill shows.
-    """
-    if api_result.auth_state in (
-        kiro_usage_api.AUTH_NO_CREDENTIAL,
-        kiro_usage_api.AUTH_REJECTED,
-    ):
-        return _REASON_SIGNIN_REQUIRED
-    return None
-
-
-def _credential_rejected(api_result: kiro_usage_api.UsageResult) -> bool:
-    """True when the API refused a credential it was shown, not when none was read.
-
-    Rides the ``signin_required`` marker as ``credential_rejected`` so the
-    dashboard can tell a failed sign-in from a missing one.
-    """
-    return api_result.auth_state == kiro_usage_api.AUTH_REJECTED
-
-
 def _cache_without_scrape(
     api_usage: object,
     identity: dict[str, object] | None,
@@ -627,6 +595,9 @@ def _publish_usage(
     _usage_cache_vault_fp = vault_fp
     _usage_cache_user_id = user_id
     _vault_signin_marker = None
+    from kiro_crew.shared_crew.owner import set_login_email  # owner_name follows it
+
+    set_login_email(payload.get("email"))
 
 
 def _cache_vault_failure(
@@ -699,11 +670,16 @@ def _vault_owns_usage_sync() -> bool:
     must show and whose identity the dashboard names (:func:`fetch_local_identity`).
     Two shapes, both on the KAS harness:
 
-    * the bundle route (``agent.kas_bundle``): the engine runs without kiro-cli
-      and its access-token callback reaches Crew alone, so the vault is the only
-      credential there is -- signed in or not. A signed-out vault then reports
-      ``signin_required`` from the vault path rather than consulting a kiro-cli
-      readiness gate that has nothing to say about this route;
+    * the bundle route (``agent.kas_bundle``, or the automatic switch when
+      kiro-cli's relay cannot run here, ``kas_spawn_takes_bundle``): the engine
+      runs without kiro-cli and its access-token callback reaches Crew alone, so
+      the vault is the only credential there is -- signed in or not. A signed-out
+      vault then reports ``signin_required`` from the vault path rather than
+      consulting a kiro-cli readiness gate that has nothing to say about this
+      route. A host with no Kiro sign-in at all takes that switch (no kiro-cli,
+      or one proven signed out); judged on the flag alone, its poll would reach
+      the gate, whose 503 the dashboard can only show as a failed balance read
+      rather than the sign-in notice;
     * the relay route: the vault owns the spawn only when it holds a usable
       identity (the KAS spawn asks the same :func:`vault_holds_identity`
       question); otherwise kiro-cli owns the login and the kiro-cli path applies.
@@ -726,7 +702,11 @@ def _vault_owns_usage_sync() -> bool:
             # The spawn's own predicate, with its diagnostics at DEBUG: an unusable
             # entry is a spawn-time WARNING, and this runs on every 30s poll of
             # every open tab.
-            return vault_holds_identity(warn=False)
+            if vault_holds_identity(warn=False):
+                return True
+            # No Crew sign-in: the vault still owns usage when the spawn takes the
+            # bundle route anyway, because kiro-cli's relay cannot run here.
+            return _kas_bundle.kas_spawn_takes_bundle(agent)
         return False
     except Exception as exc:  # noqa: BLE001 - an unreadable answer keeps the gated kiro-cli path
         logger.debug("Kiro usage: vault ownership probe failed (%s)", type(exc).__name__)
@@ -812,9 +792,10 @@ async def _refresh_from_vault() -> None:
 
     Called only on a :func:`_vault_owns_usage` verdict, so the vault is
     authoritative: every failure -- including the identity vanishing between that
-    verdict and this read -- reports unavailable (``signin_required`` when
-    auth-class) instead of falling back to kiro-cli, whose readiness gate was
-    skipped and whose login may be a different account.
+    verdict and this read -- reports unavailable, never falling back to kiro-cli.
+    ``signin_required`` is the vault's own verdict only (no identity, a refresh
+    refused or impossible); a ``GetUsageLimits`` refusal of the token it just
+    served is a failed read (learn-cron-dashboard.md, Sessions).
 
     Identity invariant, mirroring the whoami bracketing on the kiro-cli path: the
     vault identity fingerprint is read immediately before the credential and
@@ -837,6 +818,11 @@ async def _refresh_from_vault() -> None:
     so it describes the credential the fingerprints bracket. The enterprise
     profile name rides in from the usage API as it does for the kiro-cli path.
     """
+    if _workload_identity.active():
+        # vault_holds_identity says yes here for the workload identity alone, so the
+        # person vault is neither read nor refreshed: no reading, no sign-in prompt.
+        _publish_usage({"available": False})
+        return
     # Deferred: see _vault_owns_usage_sync.
     from kiro_crew.auth.bridge import default_token_store
     from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
@@ -922,7 +908,8 @@ async def _refresh_from_vault() -> None:
             usage.get("credits_plan", "?"),
         )
         return
-    _cache_vault_failure(before, _unavailable_reason(result), stamp=stamp)
+    no_credential = result.auth_state == kiro_usage_api.AUTH_NO_CREDENTIAL
+    _cache_vault_failure(before, _REASON_SIGNIN_REQUIRED if no_credential else None, stamp=stamp)
 
 
 def _publish_account_unproven(
@@ -1016,7 +1003,9 @@ async def fetch_local_identity() -> dict[str, object] | None:
       proves itself empty: this machine has no sign-in to inherit. ``None``
       for a vault that did not read or holds an entry that did not decrypt --
       the same unknown as a whoami that could not answer, so the launch form
-      asks for an explicit choice instead of proposing the default.
+      asks for an explicit choice instead of proposing the default. A
+      workload-identity host owns its spawn without any person sign-in, so its
+      vault is not read and the answer is ``None``.
     * Otherwise ``kiro-cli whoami``: it resolves the same binary chat spawns and
       runs :func:`_fetch_whoami_or_none` at the configured sandbox tier. ``{}``
       when kiro-cli is absent (non-Kiro provider) or whoami answered with no
@@ -1024,7 +1013,8 @@ async def fetch_local_identity() -> dict[str, object] | None:
       unknown, and a caller must not present the default as if it had been read.
     """
     if await _vault_owns_usage():
-        return await vault_identity()
+        # A workload host's vault is not read, so its sign-in is unknown (None).
+        return None if _workload_identity.active() else await vault_identity()
     kiro_bin = await _resolve_kiro_bin_for_spawn()
     if not kiro_bin:
         return {}
@@ -1389,6 +1379,22 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
             )
 
         skip_usage_api = _is_api_key(identity)
+        # A KIRO_API_KEY in the environment makes the sessions bill THE KEY'S
+        # account, but kiro-cli's `whoami` and `/usage` keep answering from its
+        # stored login whenever one exists (verified on kiro-cli 3.3.0), so every
+        # number below would be the login's while the credits go elsewhere. When
+        # whoami answered with a login that is NOT the key itself, no source here
+        # can name the key's balance: publish that instead of the login's number,
+        # which is the one outcome that misleads the user into thinking nothing is
+        # being spent. An empty identity is a whoami that failed or named no one,
+        # so it proves no login and takes the ordinary path below.
+        if identity and not skip_usage_api and await asyncio.to_thread(_kiro_api_key_configured):
+            logger.info(
+                "Kiro usage: sessions run on KIRO_API_KEY but kiro-cli reports its own "
+                "login; not showing the login's balance as this session's usage"
+            )
+            _publish_usage({"available": False, "reason": _REASON_API_KEY})
+            return None
         if skip_usage_api:
             logger.info("Kiro usage: API-key auth; skipping the API path, using the /usage scrape")
         # The ExternalIdP type and nothing that names the user: no reading could
@@ -1951,6 +1957,8 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers.sessions_parts.live_turn",
     "kiro_crew.dashboard.handlers.sessions_parts.tool_policy",
     "kiro_crew.dashboard.handlers.sessions_parts.restart",
+    "kiro_crew.dashboard.handlers.sessions_parts.message_search",
+    "kiro_crew.dashboard.handlers.sessions_parts.memory_route",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)

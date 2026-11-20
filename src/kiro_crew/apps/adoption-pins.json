@@ -182,6 +182,84 @@
         "route": "/project-scaffolder",
         "icon": "FolderPlus"
       }
+    },
+    {
+      "name": "md-notebook",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-md-notebook",
+      "commit": "ad86662fc977fa3c459a4477021d9076d000d650",
+      "version": "1.0.2",
+      "treeSha256": "6cfe9309f1a6fb880d48f583358d9463dadf5151d66a2ed946df2af699cca0a6",
+      "archiveSha256": "43aa5172339927ceb03c1db7e853528c7ee054231d3d015f8a4d08785aad0bb7",
+      "minAppSdkLevel": 10,
+      "legacyNav": {
+        "route": "/md-notebook",
+        "icon": "NotebookPen"
+      }
+    },
+    {
+      "name": "code-review-sage",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-code-review-sage",
+      "commit": "711261d196f5ea4fa8027bbaa0e4991b11f3d402",
+      "version": "0.9.5",
+      "treeSha256": "f7ca3019c2768e8a1860a19c3b42f56b2772724611816606701dea06323103bd",
+      "archiveSha256": "10946e4f8263ae64f3a866b76e9fc045feaf2cfdc53c207c77937ee6910dcf32",
+      "minAppSdkLevel": 10,
+      "legacyNav": {
+        "route": "/code-review-sage",
+        "icon": "ScanSearch"
+      }
+    },
+    {
+      "name": "agent-worlds",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-agent-worlds",
+      "commit": "433c1e48900b816aa7ff87f400adc6d5dec2eff4",
+      "version": "1.0.2",
+      "treeSha256": "a8302b3b1464d9e9d15390b49b5e559d891f3081766289df11dd7a8273ceef6f",
+      "archiveSha256": "3cbed22f55671500fabc09c07ca8327131992390b3a23dbe506c0fd6ae894150",
+      "minAppSdkLevel": 8,
+      "legacyNav": {
+        "route": "/worlds",
+        "icon": "Gamepad2"
+      }
+    },
+    {
+      "name": "ops-mission-control",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-ops-mission-control",
+      "commit": "92e26de80e09f5ce1cbb2051eab43bd5c919eb31",
+      "version": "0.1.2",
+      "treeSha256": "d87d3c89a5473ccacade61b1ccf6d8d6d0d936dd7f666309eaae850584bf310e",
+      "archiveSha256": "7c509880e56284bc7788d19e6562f514a6884bfc1686989a9d7bc12cdd028474",
+      "minAppSdkLevel": 10,
+      "legacyNav": {
+        "route": "/ops-mission-control",
+        "icon": "Radio"
+      }
+    },
+    {
+      "name": "crew-companion",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-crew-companion",
+      "commit": "2eb2e98469149ea740d7f82b6df701dbf872c9a3",
+      "version": "1.0.1",
+      "treeSha256": "adc679f0cbaabed51d978a660303cb050076eb4ebb277f50600e644d854c5808",
+      "archiveSha256": "abfbd1a0b2729b10d51edb7ef23d88b194b63cf93638fb4d1fcf735845626f44",
+      "minAppSdkLevel": 7,
+      "legacyNav": {
+        "route": "/crew-companion",
+        "icon": "Ghost"
+      }
+    },
+    {
+      "name": "mochi",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-mochi",
+      "commit": "5db17b967894c411621ea6dcfba294da262d4173",
+      "version": "0.1.1",
+      "treeSha256": "86986e6822b953c9fa77b0427f4e899b536233863d935474fcf2aff3881af76f",
+      "archiveSha256": "4e1fd8798ca469d02f698ecedf79c56d5352a4a2b96d95686e0847d5efa99b63",
+      "minAppSdkLevel": 7,
+      "legacyNav": {
+        "route": "/mochi",
+        "icon": "Cat"
+      }
     }
   ]
 }

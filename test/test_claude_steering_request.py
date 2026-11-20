@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -23,6 +24,7 @@ from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_STEER_CONSUMED,
+    EVENT_TEXT_CHUNK,
     METHOD_REQUEST_PERMISSION,
     METHOD_SESSION_STEERING,
     JsonRpcMessage,
@@ -917,3 +919,68 @@ async def test_a_steer_after_the_tool_finished_is_sent():
         wire.end_turn()
         kinds = [e.kind for e in await await_until(turn, what="the turn")]
         assert EVENT_STEER_CONSUMED in kinds
+
+
+_LIVE_STEER = Path(__file__).parent / "fixtures" / "acp_frames" / "claude" / "steering-live.jsonl"
+
+
+def _live_steer_frames() -> list[dict[str, Any]]:
+    lines = _LIVE_STEER.read_text(encoding="utf-8").splitlines()
+    return [json.loads(line) for line in lines[1:] if line.strip()]
+
+
+@pytest.mark.asyncio
+async def test_the_live_claude_steer_capture_replays_through_the_client():
+    """claude-agent-acp 0.94.0's own frames for a steer sent while Bash ran.
+
+    The steer is held while the call is open and sent once its completed update
+    is read; the adapter's ``injected`` answer and the ``end_turn`` terminal then
+    settle it as consumed in that same turn.
+    """
+    frames = _live_steer_frames()
+    init = frames[0]["result"]
+    assert steering_advertised(init) is True
+    assert init["agentInfo"]["version"] == "0.94.0"
+    # The turn's frames: after session/new, up to the id-3 prompt terminal.
+    turn_frames = [f for f in frames if f.get("id") not in (1, 2)]
+    answer = next(f for f in turn_frames if f.get("id") == 4)
+    terminal = next(f for f in turn_frames if f.get("id") == 3)
+    assert answer["result"] == {"outcome": "injected"}
+    assert terminal["result"]["stopReason"] == "end_turn"
+    closed = next(
+        i
+        for i, f in enumerate(turn_frames)
+        if f.get("params", {}).get("update", {}).get("status") == "completed"
+    )
+    opened, running = turn_frames[:closed], turn_frames[closed : turn_frames.index(answer)]
+    after = turn_frames[turn_frames.index(answer) + 1 : turn_frames.index(terminal)]
+
+    async with _Tasks() as spawned:
+        client = _client("0.94.0")
+        client._session_id = "claude-session-1"
+        wire = _Wire(client)
+        turn = await _start_turn(client, spawned)
+        for frame in opened:
+            wire.inbound.put_nowait(JsonRpcMessage.from_dict(frame))
+        await async_wait_until(lambda: client._active_tool_calls.possibly_open)
+
+        assert await client.steer("STEER-WORD-9: also say banana.") is True
+        assert wire.steering_frames() == []  # held while Bash runs
+
+        for frame in running:
+            wire.inbound.put_nowait(JsonRpcMessage.from_dict(frame))
+        steering_id = await wire.next_steering_id()
+        assert _steered_texts(wire) == ["STEER-WORD-9: also say banana."]
+        wire.inbound.put_nowait(JsonRpcMessage.from_dict(dict(answer, id=steering_id)))
+        await async_wait_until(
+            lambda: client._steers_accepted, describe=lambda: client._steers_held
+        )
+        for frame in after:
+            wire.inbound.put_nowait(JsonRpcMessage.from_dict(frame))
+        wire.inbound.put_nowait(JsonRpcMessage.from_dict(dict(terminal, id=PROMPT_ID)))
+
+        events = await await_until(turn, what="the turn")
+        kinds = [e.kind for e in events]
+        assert kinds[-2:] == [EVENT_STEER_CONSUMED, EVENT_COMPLETE]
+        assert events[-1].stop_reason == "end_turn"
+        assert "STUB-OK" in "".join(e.text or "" for e in events if e.kind == EVENT_TEXT_CHUNK)

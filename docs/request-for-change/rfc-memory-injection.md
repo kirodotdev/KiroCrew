@@ -1,12 +1,12 @@
 ---
 title: Memory lifecycle for the session-start memory block
-status: draft
+status: partial
 author: iamwhatever
 created: 2026-11-09
-last-audited: 2026-11-09
-audited-at: 79bff1f741
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: null
-implementation-prs: []
+implementation-prs: [34260, 35194, 35211, 35222, 35231, 35460, 35461, 35789]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,10 @@ superseded-by: []
 
 # RFC: Memory lifecycle for the session-start memory block
 
-- Status: draft
+- Status: partial. A maintainer has signed R1 only (Signed scope, below); R1's
+  authority order is on main from #35222. Shadow-first code for other stages is
+  also on main, each default off and unsigned (#34260, #35194, #35211, #35231,
+  #35460, #35461, #35789); those stages are not decided. Checked at `0c5d8bd5f3`.
 - Author: iamwhatever
 - Created: 2026-11-09
 - Code is cited by symbol and file at `79bff1f741`; the docs lint keeps line

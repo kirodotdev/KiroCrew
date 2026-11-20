@@ -287,6 +287,7 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     # only on change) and the code-channel defaults (folder, agent and model are
     # each checked against what exists now, so a saved default always resolves).
     from kiro_crew.dashboard.slack_code_settings import (
+        DISPATCH_KEY,
         CodeSettingsError,
         validate_code_settings,
     )
@@ -299,6 +300,20 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
         return _deny(str(exc), status=exc.status)
     staged.update(code_staged)
     applied.extend(code_applied)
+    # Helper agents turned on by a first enable (not named in the body) were
+    # decided on the snapshot; the write re-decides on the document it lands on,
+    # so a value stored since (a `kirocrew config set` while a token verifies)
+    # is kept, an explicit off included.
+    follows_enable = DISPATCH_KEY in code_staged and DISPATCH_KEY not in body
+    turned_on: list[bool] = []
+
+    def _unless_stored(section: dict) -> None:
+        if DISPATCH_KEY not in section:
+            section[DISPATCH_KEY] = True
+            turned_on.append(True)
+
+    if follows_enable:
+        staged.pop(DISPATCH_KEY)
 
     # ── Phase 1.5: verify newly pasted tokens against Slack before storing.
     # A token Slack rejects (invalid_auth etc.) fails the save right here,
@@ -325,7 +340,13 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     # file may have gone corrupt between the snapshot and the locked reread),
     # and a refusal must not leave a credential already committed to .env
     # beside config the caller was told did not save. ──
-    _cfg_write = _LockedSectionWrite(path, "slack", staged, merge_nested=("code_channel_defaults",))
+    _cfg_write = _LockedSectionWrite(
+        path,
+        "slack",
+        staged,
+        merge_nested=("code_channel_defaults",),
+        finalize=_unless_stored if follows_enable else None,
+    )
     # Hold the live-config watcher for the whole config+credential transaction:
     # the two files commit separately and a failed .env write rolls the config
     # back, so nothing between here and the end of the block may be applied to
@@ -345,11 +366,18 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
                 await _cfg_write.commit()
             except ConfigReadError:
                 return _deny("config.json is corrupt", status=500)
+            if follows_enable and not turned_on:
+                applied.remove(DISPATCH_KEY)
         if env_updates:
             # A failed .env write undoes the config commit above, so a refused
             # save changes nothing (see _write_env_or_roll_back).
             rollback = functools.partial(_cfg_write.rollback, "Slack") if staged else None
             await _write_env_or_roll_back(env_updates, rollback)
+            # A Slack credential write that changes what an open owner-claim
+            # window pinned closes it: a new token may name another workspace.
+            _claim = getattr(request.app.get("state"), "slack_owner_claim", None)
+            if _claim is not None:
+                _claim.recheck_soon("credential_write")
 
     # Create the configured session folder now, on this user-initiated save,
     # so the reconcile path never has to write the folder store. Best-effort:
@@ -380,11 +408,10 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
         from kiro_crew.dashboard.slack_code_settings import reset_status_cache
 
         reset_status_cache()
-    # Only ``slack.command`` still needs a restart: it is registered in the Slack
-    # app manifest, so no local reload can make Slack route a new trigger. Every
-    # other slack.* field -- including the enterprise allow-list, which the
-    # gateway re-reads through its validated reader on a config change -- is
-    # applied live. A token write, or a first owner ID, is applied by
+    # Every slack.* field is applied live, including ``slack.command`` (the
+    # gateway answers every manifest-registered /kirocrew name, so this only
+    # renames what help shows) and the enterprise allow-list, which the
+    # gateway re-reads through its validated reader on a config change. A token write, or a first owner ID, is applied by
     # POST /api/slack/reconnect; replacing the owner the gateway authorizes needs a
     # restart (Reconnect refuses it: work was admitted under that owner).
     # Answer only once the watcher has applied the write: a narrowed allow-list

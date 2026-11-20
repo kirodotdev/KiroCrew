@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         CHECK_UNCHECKED,
         EXTERNALLY_MANAGED_STAMPS,
         MANAGED_BY_COMMAND,
+        MANAGED_BY_KIROCREW,
         Any,
         AutoUpdateEffect,
         GatewayOrchestrator,
@@ -857,11 +858,20 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
                     # provider path logs the same case at INFO.
                     logger.info("Auto-update is on, but %s — notifying instead", effect.reason)
                 elif cfg.auto_update and not installs:
+                    # `kirocrew update` knows a wheel install's shape: the in-place
+                    # upgrade for a plain pip environment, the installer for pipx. The
+                    # policy source pin refuses it too, so a pinned host gets no step.
+                    step = (
+                        "; to update it, run `kirocrew update` from your own terminal"
+                        if info.get("managed_by") == MANAGED_BY_KIROCREW and not effect.blocked
+                        else ""
+                    )
                     logger.warning(
                         "Auto-update is on, but this install (%s) cannot apply it "
-                        "unattended (%s) — notifying instead",
+                        "unattended (%s) — notifying instead%s",
                         info.get("managed_by") or "unknown",
                         effect.reason,
+                        step,
                     )
                 if self.dashboard_state:
                     self.dashboard_state.push_refresh("update_available")

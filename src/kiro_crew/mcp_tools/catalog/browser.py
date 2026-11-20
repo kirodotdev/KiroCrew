@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from kiro_crew.browser_harness import quick_ask as qa
-from kiro_crew.browser_harness.ops import OPS
+from kiro_crew.browser_harness.ops import OPS, STEPS_CAP
 
 # Re-exported for the registry tests and the prompt gate: the ops the gateway serves.
 BROWSER_OPS: tuple[str, ...] = OPS
@@ -40,9 +40,30 @@ def schemas() -> list[dict[str, Any]]:
                 "parameters. navigate {url}; snapshot (the page as an outline with "
                 "element refs; call it before click/type and again after the page "
                 "changes; elements inside a cross-origin iframe carry refs like f1e3 and "
-                "work like any ref); click {ref | x,y, button?, clicks?: 1|2}; type {ref?, text, "
-                "submit?} (a password field is refused: the user signs in by taking "
-                "over); press_key {key, modifiers?}; hover {ref | x,y}; drag {ref|x,y "
+                "work like any ref); read {ref?, offset?} (the "
+                "page's content as text, the whole page and not only the screen, with "
+                "the text of open shadow roots and same-origin frames after the page "
+                "text; prefer it over screenshots and scrolling to read a page. "
+                "An unselected tab or a closed section (details) is left out, so "
+                "click the tab or open the section first. "
+                "A page longer than one result says where to continue: call read "
+                "again with that offset; a changed digest means the page changed "
+                "between the calls); click {ref | x,y, button?, clicks?: 1|2}; type {ref?, text, "
+                "submit?} or {ref?, steps: [{text} | {key, modifiers?}]} (steps run in "
+                f"order, at most {STEPS_CAP}, and stop at the first refusal, whose result "
+                "names its 0-based `step`; a \\t in text inserts a tab character, not the Tab "
+                "key; a password field is refused: the user signs in by taking "
+                "over); paste {ref?, text, html?} puts rich content (a table, headings, "
+                "lists) into the field in one call: the page's editor gets `html` and "
+                "`text` (the plain version: tab-separated cells, one row per line) as a "
+                "clipboard paste would bring them, and the user's clipboard is not "
+                "touched. It is refused where type is, and also when focus is inside a "
+                "cross-origin frame and no `ref` from that frame (f<n>e<n>) is given. "
+                "`handled: true` means the page cancelled the paste event, as an editor "
+                "that took it does and a field that blocks pasting does too (snapshot to "
+                "check it landed); `handled: false` means it did not and "
+                "`text` was typed instead; "
+                "press_key {key, modifiers?}; hover {ref | x,y}; drag {ref|x,y "
                 "-> to_ref|to_x,to_y}; scroll {ref|x,y?, dx?, dy?}; select_option "
                 "{ref, values}; wait_for {text | textGone | time (s) | load}; "
                 "back; console {limit?}; screenshot {full?, max_dim?, ref?, region?} (writes a PNG, "

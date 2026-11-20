@@ -3,8 +3,8 @@ title: i18n — closing the measurement gap
 status: partial
 author: zezhexu
 created: 2026-08-01
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 1075
 implementation-prs: [1009, 1047, 1107, 1123, 1321, 14228]
 tracking-issues: [1004]
@@ -125,7 +125,7 @@ deliberately from the published table — see the appendix.)
 **Per-locale style guides exist for all nine non-English locales and are
 machine-enforced** (`website/src/i18n/style/*.md` + `*Style.test.ts`). I am aware
 of no comparable public example, though I have not surveyed systematically.
-`zhStyle.test.ts` is the strongest — 21 zero-tolerance
+`zhStyle.test.ts` is the strongest — 22 zero-tolerance
 assertions and a 12-pair terminology denylist gated on the *English* source
 rather than blind substring matching.
 

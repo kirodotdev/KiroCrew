@@ -140,6 +140,15 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "the shared order.",
     ),
     (
+        "A crew's work-item copies read by a hub in one batch",
+        "dashboard/handlers/remote_work_items_pull.py",
+        "The same worker-owned fields and event tails as the per-slot read, for every "
+        "item one hub conductor holds on this crew, on their way to the hub over its "
+        "proxy (remote dispatch, a Feature Preview). It runs the Crew page's "
+        "`_redact_deep`, which runs `redact_via_context`, so both scanners run in the "
+        "shared order.",
+    ),
+    (
         "Conductor work items shown on the Crew page",
         "dashboard/handlers/work_ledger_board.py",
         "Every string in one conductor's work-item board on its way to a browser: "
@@ -1039,5 +1048,21 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "credential redactors (`redact`) would change is dropped rather than sent, "
         "because an operator can paste a token into the list. The login words "
         "beside them are fixed constants.",
+    ),
+    (
+        "A lease refusal in the tunnel status and the gateway log",
+        "relay_client/lease.py",
+        "The lease service's own message, appended to a refused lease's text in "
+        "`/api/tunnel/status` (which teammates can read) and its log line. It is "
+        "kept only as plain ASCII words with no ARN or 12-digit number, passes "
+        "the credential redactor (`redact_via_context`) and is cut to 200 "
+        "characters; anything else leaves the text the gateway wrote itself.",
+    ),
+    (
+        "The prompt a turn sent",
+        "dashboard/handlers/prompt_as_sent.py",
+        "The Context tab's prompt as sent: the text one turn sent the agent, read from "
+        "the in-memory prompt record, passes the exfiltration-URL and credential "
+        "redactors before it reaches the owner's browser.",
     ),
 )

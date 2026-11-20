@@ -495,6 +495,14 @@ async def run_gateway(
 
     start_plaintext_credentials_notice()
 
+    # ── Container memory limit notice ──
+    # One WARNING when the container's memory limit is at or under
+    # agent.resource_critical_gb, naming the settings to lower. Read-only cgroup
+    # read, scheduled in the background and never awaited.
+    from kiro_crew.resource_status_container_limit import start_container_limit_notice
+
+    start_container_limit_notice(cfg)
+
     # ── KAS kiro-cli floor ──
     # A configured KAS on a kiro-cli that cannot select the KAS engine falls back
     # to kiro-cli, with the notice in the log. Scheduled in the background, never
@@ -719,25 +727,25 @@ async def run_gateway(
     # reasoning in embeddings_download.py). Errors are swallowed inside ``send``; a failed
     # heartbeat is invisible by design. ``test_mode`` skips it entirely so the
     # offline E2E gate can never make an outbound request.
-    #
-    # ``acked`` withholds the FIRST heartbeat until the user has actually been
-    # shown the disclosure and its opt-out. Boot runs before the dashboard has
-    # ever rendered, so on a fresh install this thread would otherwise ping
-    # before the user could possibly decline, making the opt-out an offer
-    # arriving after the fact. Established installs are unaffected: the gate
-    # applies only while `is_first_send()` holds.
     if not test_mode:
         with contextlib.suppress(Exception):
             threading.Thread(
                 target=beacon.send,
                 args=(cfg.telemetry.beacon_endpoint, kiro_crew.__version__),
-                kwargs={
-                    "enabled": cfg.telemetry.beacon_enabled,
-                    "acked": cfg.dashboard.privacy_acked,
-                },
+                kwargs={"enabled": cfg.telemetry.beacon_enabled},
                 name="kirocrew-beacon",
                 daemon=True,
             ).start()
+
+    # ── Installed apps (kirocrew.app.present, once per app per UTC day) ──
+    # A background task, never a request path: the first pass waits ten minutes,
+    # then the task re-checks hourly and just after each UTC midnight. The day
+    # it last recorded is stamped next to the beacon's, so restarts the same day
+    # record once. Skipped in test_mode like the beacon.
+    if not test_mode:
+        from kiro_crew.metrics import app_present
+
+        app_present.start()
 
     # Off-loop: resolving a secret:// channel reference reads and decrypts the vault.
     credentials = await asyncio.to_thread(cfg.load_credentials)

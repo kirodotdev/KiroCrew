@@ -23,6 +23,35 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Embedding child: this interpreter, -P, a fixed module; requests travel
         # on its pipes as data, never as argv. No agent input reaches the spawn.
         "embeddings_child.py::spawn",
+        # `kirocrew eval run --suite tasks` (rfc-builtin-eval.md §3-§5). Every argv
+        # below is built by the runner from fixed strings, the suite's case files
+        # and paths the runner created; none comes from the agent or the model.
+        # The case's `build.sh`, run on a fresh empty directory before any agent.
+        "eval/tasks.py::build_repo",
+        # `git add/commit/push` in a repo `build_repo` just made, for the
+        # no-model `--check` gate only; no agent has touched that repo.
+        "eval/tasks.py::apply_reference",
+        # This package's own gateway (`python -P -m kiro_crew gateway --port auto
+        # --no-open --no-tunnel`) in the run's fresh data home; it sandboxes the
+        # agents it spawns itself.
+        "eval/tasks.py::start_gateway",
+        # The harness under test: `kirocrew chat --headless` (this package) or
+        # the operator's `claude` binary, with flags fixed in eval/arms.py and the
+        # case's seed as data. The agent runs INSIDE that harness: Crew confines
+        # it with its own strict sandbox; Claude Code's containment is the
+        # dedicated eval OS user the preflight requires (RFC §4.1, §4.2, §11).
+        "eval/tasks.py::drive_arm",
+        # `--use-operator-credentials` preflight (RFC §4.3): `kiro-cli whoami` or
+        # `claude -p "say ok"`, fixed argv, the operator's own env by their explicit
+        # choice, stdin DEVNULL, a time limit. Runs before any case or agent exists.
+        "eval/arms.py::_probe",
+        # The case's hidden check (`python <suite>/hidden/check.py <origin>`).
+        # Not routed on purpose: the check's child process imports the code the
+        # agent pushed, by design, so a strict-sandbox route is a recorded
+        # follow-up (RFC §14.1). Containment today is the dedicated eval OS user
+        # with no credentials that preflight enforces, a scrubbed env (PATH and
+        # locale only), a time limit, and deletion of the run directory after.
+        "eval/tasks.py::_run_check",
         # Consolidation write child: this interpreter, -P, a fixed module; jobs travel
         # on its pipes as data, never as argv. No agent input reaches the spawn.
         "consolidation_write_child.py::_spawn",
@@ -419,6 +448,13 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # scrubbed that capability would break the feature it is guarding. Gated
         # behind KIROCREW_DEBUG and reachable only from the CLI.
         "cli_perf.py::_sample_out_of_process",
+        # `kirocrew config edit`: the operator's own editor on a copy of config.json.
+        # List argv (no shell): `$EDITOR` (default `vi`) from the operator's shell
+        # environment, plus the path of a file this command just created in a fresh
+        # `mkdtemp` folder. Reached only from that CLI verb. NOT sandbox-routed: the
+        # editor is the operator's terminal tool, and the copy it saves sits in the
+        # sealed config-provenance folder, which no sandboxed process can write.
+        "cli_config.py::_run_editor",
         # `kirocrew app install <git-url>`: the operator's own `git clone` of the
         # URL they typed, and a `git rev-parse HEAD --abbrev-ref HEAD` in the folder
         # it made. Reached only from that CLI verb, never from a tool dispatch
@@ -540,6 +576,24 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         #     helper allowlist, never through argv; the children must reach the
         #     real browser and the loopback relay, so a sandbox would break them.
         "browser_harness/install.py::_run",
+        # ``sdk_extras.py::_lay_down`` (called by ``install_extra``) runs ``<sys.executable> -I -m
+        # pip install --target
+        # <data home>/extras/<extra>/.<tag>.partial --no-deps --require-hashes
+        # --only-binary :all: -r <shipped lock>``. Every token is a module constant, the
+        # shipped hash lock or a data-home path. Two callers, both gateway-owned: the
+        # owner's Install press (owner + local only) and the background install at
+        # gateway start for an enabled, credentialed Feishu channel
+        # (``feishu/gateway.py::_schedule_sdk_install``). Scrubbed PYTHON*/PIP_* env, with
+        # only the user's own index settings (``_configured_index_env``) passed back on
+        # the first attempt; a download failure there retries once against pypi.org.
+        # Not agent-influenced.
+        "sdk_extras.py::_lay_down",
+        # ``sdk_extras.py::_pip_config_list`` runs ``<sys.executable> -m pip config list``
+        # (fixed argv, read-only, 15 s timeout, PYTHON* scrubbed) so the installer can
+        # find the index the user configured for pip. Same two gateway-owned callers
+        # as ``_lay_down``; only its index-url/extra-index-url/trusted-host/cert lines
+        # are used. Not agent-influenced.
+        "sdk_extras.py::_pip_config_list",
         "browser_harness/supervisor.py::_spawn",
         # The KAS engine installer (`kirocrew kas install`, operator terminal, outside
         # the sandbox). `_open_tar` runs the host's `zstd -d -c` on an archive whose
@@ -598,6 +652,11 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # from the loop-less ``kirocrew config pending apply|discard``; the matched call
         # starts no child. The inputs are an operator-typed file name and version.
         "cli_config_pending.py::_resolve",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``) driving ``CronHistoryStore``'s async readers
+        # from the loop-less, read-only ``kirocrew cron history``; the matched calls
+        # start no child. The inputs are an operator-typed job id and run id.
+        "cli_cron_history.py::cron_history",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``) driving ``KasLoginService``'s device-code
         # sign-in and sign-out coroutines from the loop-less ``kirocrew kas

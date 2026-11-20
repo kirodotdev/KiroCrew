@@ -24,9 +24,8 @@ import { createTranscriptVersioner } from '../chat-core/transcript/transcriptVer
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import CollapsibleToolGroup from '../pages/chat/CollapsibleToolGroup'
 import TurnBlock from '../pages/chat/TurnBlock'
-import { createDisplayItemReconciler, hasToolStep, isSynthesisInjection, REASONING_ROLES } from '../pages/chat/groupDisplayItems'
+import { createDisplayItemReconciler, hasToolStep, isSynthesisInjection, opensDisplayTurn, REASONING_ROLES } from '../pages/chat/groupDisplayItems'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
-import { injectOpensTurn } from '../pages/chat/RecoveryCard'
 import { isHiddenSupersededSteer } from '../pages/chat/groupDisplayItems'
 import {
   type MessageRenderer,
@@ -40,6 +39,7 @@ import type { ChatMessage } from '../types'
 import type { TurnItem, DisplayItem } from '../pages/chat/types'
 import { durableMessageId, type UnreadRun } from '../chat-core/transcript/caughtUpMarker'
 import NewMessagesDivider from './NewMessagesDivider'
+import { isToolRefusedRow } from '../lib/toolRowContract'
 
 // ── Types ──
 
@@ -53,8 +53,13 @@ export interface ChatMessageListProps {
   /** Resolve a pending approval. MUST return the request's promise: rejection
    *  reaches the approval row's rollback and the buttons come back. The type
    *  deliberately has no `void` arm so a fire-and-forget handler — the exact
-   *  shape behind #5524 — cannot compile against this boundary. */
-  onApprove?: (approvalId: string, decision: string) => Promise<unknown>
+   *  shape behind #5524 — cannot compile against this boundary.
+   *
+   *  The third argument is the pending row's `meta`, which names the exact
+   *  request the card showed (`permissionRowTarget` in types/approvalTarget.ts):
+   *  the id recurs, so a host that decides by the id alone can resolve a later
+   *  request that took it over. A host that ignores it keeps working. */
+  onApprove?: (approvalId: string, decision: string, meta?: Record<string, unknown>) => Promise<unknown>
   /** Resolve EVERY pending approval in a permission group with one decision
    *  (batch multi-select, Req 4.1-4.4). The host receives all pending approval
    *  ids and MUST route each through the SLOT-scoped approve endpoint (the same
@@ -63,8 +68,10 @@ export interface ChatMessageListProps {
    *  check. Like `onApprove`, MUST return the settle promise so the row's
    *  rollback restores the buttons; it settles per id and surfaces any excluded
    *  call rather than aborting the whole batch. Wired only by hosts whose
-   *  approve path is slot-scoped; left unset elsewhere. */
-  onApproveBatch?: (approvalIds: string[], decision: string) => Promise<unknown>
+   *  approve path is slot-scoped; left unset elsewhere. The third argument is
+   *  each pending row's `meta`, aligned 1:1 with `approvalIds`, so the host can
+   *  bind every decide to its row the way `onApprove` does. */
+  onApproveBatch?: (approvalIds: string[], decision: string, metas?: Record<string, unknown>[]) => Promise<unknown>
   /** Offer the standing-trust tier on pending-approval rows. FAIL-CLOSED: set it
    *  only when `onApprove` routes to an endpoint that RECORDS standing trust
    *  (the slot approve endpoint carries the decision verbatim). Hosts resolving
@@ -150,6 +157,12 @@ export interface ChatMessageListProps {
    *  virtualizer measures the two together. The host decides when a run exists
    *  and lands on the divider (`data-unread-divider`); the list only draws it. */
   unreadRun?: UnreadRun | null
+  /** Fold each finished turn's working steps behind its summary row, leaving
+   *  the reply (TurnBlock's `collapseAll`). A dashboard host passes the user's
+   *  Settings -> Chat -> Show Thinking Inline choice (its inverse,
+   *  `collapseAllSteps`), as the Sessions chat does; default false, so an
+   *  embedded chat keeps showing every step. */
+  collapseAllSteps?: boolean
   /** Mount the rows inside the list's own virtualized scroller. Supplying it
    *  is what makes this component the scroll container: the host drops its
    *  `overflow-y-auto` div and its follow hook, and reaches the scroller
@@ -196,16 +209,17 @@ function msgKey(m: ChatMessage, i: number): string {
  *  draws from has moved, so a streaming flush or a keystroke in the host's
  *  composer re-renders only the row that changed. Produces no DOM of its own:
  *  the measured `data-display-index` wrapper around it is VirtualTranscript's. */
-const ListRow = memo(function ListRow({ item, index, renderItem }: {
+const ListRow = memo(function ListRow({ item, index, renderItem, collapseAllSteps }: {
   item: DisplayItem
   index: number
   renderItem: (item: TurnItem, i: number) => React.ReactNode
+  collapseAllSteps: boolean
 }) {
   // Every row draws translated text and app-language dates, and a language
   // switch reaches a memo boundary only through its own subscription.
   useLanguageGeneration()
   return item.kind === 'turn'
-    ? <TurnBlock turn={item} renderItem={renderItem} />
+    ? <TurnBlock turn={item} renderItem={renderItem} collapseAll={collapseAllSteps} />
     : <>{renderItem(item, index)}</>
 })
 
@@ -234,6 +248,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   onDisplayItems,
   hiddenRow,
   unreadRun,
+  collapseAllSteps = false,
   transcript,
 }: ChatMessageListProps, ref) {
   // Row indexing is inferred from the props that consume it, not a separate
@@ -291,16 +306,18 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     }
 
     for (const item of raw) {
-      // A sub-agent completion is the next turn's input, so it opens a turn the
-      // same way a user message does — the agent's reply belongs below the card.
-      // A turn-dispatching inject (a cron delivery, an app message) is the
-      // prompt of the turn below it too; without it a cron-driven session is one
-      // turn the list mounts whole. A synthesis row also starts a new turn, but
-      // it leads the batch that carries its answer, where the main chat draws it.
+      // A row opens a turn by the rule the Sessions chat groups by
+      // (`opensDisplayTurn`): a user message, an auto-nudge cycle, a sub-agent
+      // completion, or a turn-dispatching inject (a cron delivery, an app
+      // message). Each is the prompt of the turn below it, so the reply belongs
+      // below the row and the row stays out of the turn above: a nudge folded
+      // into the previous cycle's steps would take that cycle's answer with it.
+      // A synthesis row also starts a new turn, but it leads the batch that
+      // carries its answer, where the main chat draws it.
       if (item.kind === 'single' && isSynthesisInjection(item.msg)) {
         flushTurn(true)
         turnItems.push(item)
-      } else if (item.kind === 'single' && (item.msg.role === 'user' || item.msg.role === 'subagent' || injectOpensTurn(item.msg))) {
+      } else if (item.kind === 'single' && opensDisplayTurn(item.msg)) {
         flushTurn(true)
         turns.push(item)
       } else {
@@ -331,16 +348,16 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   )
 
   // tool_call_ids whose call was blocked by a security-policy deny rule or
-  // hook. The gateway appends a hidden "🚫 …" tool message sharing the visible
-  // 🔧 pill's tool_call_id; the pill itself never sees it (only 🔧 messages
+  // hook. The gateway appends a hidden "Refused: …" tool message sharing the visible
+  // Tool: pill's tool_call_id; the pill itself never sees it (only Tool: messages
   // render), so the host computes the set once and passes a flag down. A
-  // user-rejected call also has a 🚫 sibling but carries meta.resolved =
+  // user-rejected call also has a Refused: sibling but carries meta.resolved =
   // 'rejected' on its permission/pill state, which the pill checks first.
   const autoDeniedIds = useMemo(() => {
     const ids = new Set<string>()
     for (const m of versioned.messages) {
       const tcid = m.meta?.tool_call_id as string | undefined
-      if (m.role === 'tool' && tcid && m.content?.startsWith('🚫')) ids.add(tcid)
+      if (m.role === 'tool' && tcid && isToolRefusedRow(m.content)) ids.add(tcid)
     }
     return ids
   }, [versioned])
@@ -353,8 +370,8 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     const key = msgKey(m, i)
     const wrapper = (children: React.ReactNode, isUser = false) => (
       <div key={key} className="px-4 mx-auto w-full py-1" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }} data-chat-scope="">
-        <div className={`group flex flex-col min-w-0 ${isUser ? 'items-end' : ''}`}>
-          <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end' : ''}`}>
+        <div className={`group flex flex-col min-w-0 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}`}>
+          <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}`}>
             {children}
           </div>
         </div>
@@ -425,7 +442,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     const lastPerm = unresolvedPerms[unresolvedPerms.length - 1]
 
     const handleApprove = onApprove && lastPerm?.meta?.approval_id
-      ? (decision: string) => onApprove(lastPerm.meta!.approval_id as string, decision)
+      ? (decision: string) => onApprove(lastPerm.meta!.approval_id as string, decision, lastPerm.meta)
       : undefined
 
     // Batch resolver over EVERY pending id in this group (Req 4.1-4.4). Only
@@ -436,11 +453,13 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     // real trigger by requiring > 1 here. TOOL_DENY calls never surface as
     // pending permissions (backend gate; locked by the T5-guard test), so this
     // id list is deny-free.
-    const batchIds = unresolvedPerms
-      .map(m => m.meta?.approval_id as string | undefined)
-      .filter((x): x is string => !!x)
+    // The rows behind those ids, kept beside them by the same filter so the
+    // host receives each id with its own row's meta.
+    const batchRows = unresolvedPerms.filter(m => !!m.meta?.approval_id)
+    const batchIds = batchRows.map(m => m.meta!.approval_id as string)
+    const batchRowMetas = batchRows.map(m => m.meta!)
     const handleApproveBatch = onApproveBatch && batchIds.length > 1
-      ? (decision: string) => onApproveBatch(batchIds, decision)
+      ? (decision: string) => onApproveBatch(batchIds, decision, batchRowMetas)
       : undefined
     // Every pending call's meta, so the batch row can preview ALL N commands the
     // one click will approve — not just the newest (permissionMeta). The human
@@ -482,7 +501,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   // Render a DisplayItem (single, group, or turn)
   const renderDisplayItem = useCallback((item: DisplayItem, i: number) => {
     const node = item.kind === 'turn'
-      ? <TurnBlock key={'turn-' + i} turn={item} renderItem={renderItem} />
+      ? <TurnBlock key={'turn-' + i} turn={item} renderItem={renderItem} collapseAll={collapseAllSteps} />
       : renderItem(item, i)
     if (!indexRows) return node
     const hidden = hiddenRow != null && (hiddenRow.ts != null
@@ -499,7 +518,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
         {node}
       </div>
     )
-  }, [renderItem, indexRows, hiddenRow])
+  }, [renderItem, indexRows, hiddenRow, collapseAllSteps])
 
   // Layout effect, not passive: see `onDisplayItems`.
   useLayoutEffect(() => { onDisplayItems?.(displayItems) }, [displayItems, onDisplayItems])
@@ -510,8 +529,8 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   // streaming row and across a keystroke in the host's composer (see
   // `versioned`), so every other mounted row bails out of the redraw.
   const renderRowContent = useCallback((item: DisplayItem, i: number) => (
-    <ListRow item={item} index={i} renderItem={renderItem} />
-  ), [renderItem])
+    <ListRow item={item} index={i} renderItem={renderItem} collapseAllSteps={collapseAllSteps} />
+  ), [renderItem, collapseAllSteps])
   const isRowHidden = useCallback((item: DisplayItem, i: number) => (
     hiddenRow != null && (hiddenRow.ts != null
       ? (item.kind === 'single' && item.msg.ts === hiddenRow.ts)

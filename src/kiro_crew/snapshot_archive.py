@@ -183,6 +183,15 @@ _FIRST_VERSION_WITH_NAMED_STORES = 4
 #: restore side has to read the threshold.
 EXPORT_MANIFEST_VERSION = 3
 
+#: Skip reason for a selected component whose tree ROOT is a supported link
+#: (`_LINKABLE_TREE_ROOTS`): the bundle leaves it out rather than follow the link. Not one
+#: of `pinned_fs`'s codes on purpose. Those say "never the intent" (a link INSIDE a tree)
+#: or "lost on the way"; this one is a whole selected component missing, which
+#: `pinned_fs.omits_wanted_data` answers True for, as it does for every code it does not
+#: know. So `--keep` keeps an older bundle that still holds the folder, and `--strict`
+#: reports the bundle incomplete.
+SKIP_LINKED_TREE_ROOT = "linked_tree_root"
+
 
 _FIRST_EXPORT_VERSION_WITH_NAMED_STORES = 3
 
@@ -730,6 +739,11 @@ def _report_skip(reason: str, path: str) -> None:
         print(f"⚠️  Skipping vanished entry during snapshot copy: {safe}")
     elif reason == pinned_fs.SKIP_UNREADABLE_ENTRY:
         print(f"⚠️  Skipping entry this process may not read: {safe}")
+    elif reason == SKIP_LINKED_TREE_ROOT:
+        print(
+            f"⚠️  Not carrying {safe}: it is a link, and a bundle never follows one. Copy "
+            "the folder it names by hand."
+        )
     elif reason == pinned_fs.SKIP_MASKED_BY_SANDBOX:
         print(
             f"⚠️  Not carrying {safe}: this run is inside Kiro Crew's sandbox, which hides "

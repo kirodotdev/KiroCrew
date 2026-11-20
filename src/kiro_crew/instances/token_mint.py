@@ -33,6 +33,7 @@ from kiro_crew.instances.constants import (
     MINT_TIMEOUT_CEILING_SECS,
     TTL_PATTERN,
 )
+from kiro_crew.instances.ssh_tunnel_manager_child_text import _strip_benign_ssh_noise
 from kiro_crew.platform_compat import kill_and_reap
 from kiro_crew.security import redact
 
@@ -63,6 +64,10 @@ REMOTE_BIN_HINT = (
     "if kirocrew is installed elsewhere on this host, set the instance's "
     "remote_bin setting to its path, e.g. ~/.local/bin/kirocrew"
 )
+
+# The first stderr line of the candidate search's no-launcher path. A mint error
+# matches on it rather than on exit 127, which a launcher that ran can return too.
+NO_LAUNCHER_MARKER = "kirocrew binary not found in any of:"
 
 # ttl accepted by `kirocrew token --ttl`: a positive integer with an h/m suffix
 # (e.g. "20h", "30m"). Validated to keep it out of the remote command unchecked.
@@ -267,7 +272,7 @@ def build_candidate_command(
             f'    exec "$b" {subcommand};',
             "  fi;",
             "done;",
-            f'echo "kirocrew binary not found in any of: {", ".join(candidates)}" >&2;',
+            f'echo "{NO_LAUNCHER_MARKER} {", ".join(candidates)}" >&2;',
             'echo "candidate diagnosis:" >&2;',
             f"for b in {expanded}; do",
             '  if [ -L "$b" ]; then',
@@ -420,6 +425,7 @@ def build_remote_token_command(
     ttl: str | None = None,
     port: int | None = None,
     embed_parent_port: int | None = None,
+    embed_forward_port: int | None = None,
 ) -> str:
     """Pick the remote command for the user's stored ``remote_bin``.
 
@@ -427,12 +433,25 @@ def build_remote_token_command(
     the customization, rewriting a leading ``~/`` to ``$HOME/`` (tilde does not
     expand inside double quotes) so kiro-cli resolves over SSH. *remote_bin*
     must already be charset-validated by the caller.
+
+    *embed_forward_port* is the local port of this gateway's forward to the crew,
+    where its pane loads. It travels as ``KIROCREW_EMBED_FORWARD_PORT`` rather than
+    as a flag because a crew whose CLI predates the claim would refuse an unknown
+    flag and fail the mint; it ignores the variable, and its token then
+    carries no forward claim (``apps/pane_ports.py``). Sent only beside a parent
+    port, the claim it pairs with.
     """
     if ttl is not None:
         ttl = _validate_ttl(ttl)
     port = _validate_port(port)
     embed_parent_port = _validate_port(embed_parent_port)
-    return build_remote_command(
+    embed_forward_port = _validate_port(embed_forward_port) if embed_parent_port else None
+    prefix = (
+        f"KIROCREW_EMBED_FORWARD_PORT={embed_forward_port}; " "export KIROCREW_EMBED_FORWARD_PORT; "
+        if embed_forward_port
+        else ""
+    )
+    return prefix + build_remote_command(
         remote_bin,
         _token_subcommand(ttl, port, embed_parent_port),
         candidates,
@@ -614,6 +633,7 @@ async def mint_remote_token(
     ttl: str = "20h",
     remote_port: int | None = None,
     embed_parent_port: int | None = None,
+    embed_forward_port: int | None = None,
     timeout_secs: float = _DEFAULT_MINT_TIMEOUT_SECS,
 ) -> str:
     """SSH to *ssh_host*, run ``kirocrew token``, and return the parsed JWT.
@@ -624,6 +644,8 @@ async def mint_remote_token(
     *embed_parent_port* is passed to ``kirocrew token --embed-parent-port`` so the
     minted token authorizes the parent (embedding) dashboard's loopback origin as
     a CSP frame-ancestor — how the embedded pane renders across ports.
+    *embed_forward_port* names the local port the pane loads on
+    (:func:`build_remote_token_command`).
 
     Raises :class:`TokenMintError` on connection failure, a non-zero remote
     exit, a timeout, or if no token can be parsed from stdout. The token itself
@@ -631,7 +653,11 @@ async def mint_remote_token(
     """
     ttl = _validate_ttl(ttl)
     remote_command = build_remote_token_command(
-        remote_bin, ttl=ttl, port=remote_port, embed_parent_port=embed_parent_port
+        remote_bin,
+        ttl=ttl,
+        port=remote_port,
+        embed_parent_port=embed_parent_port,
+        embed_forward_port=embed_forward_port,
     )
     argv, env = await asyncio.to_thread(
         ssh_spawn_argv_env,
@@ -669,8 +695,11 @@ async def mint_remote_token(
     stderr = stderr_b.decode("utf-8", "replace").strip()
     # stderr is proxy-controlled (WSSH banner etc.); redact credentials/exfil URLs
     # before surfacing it in an exception that may reach logs/status. The token
-    # only ever appears on stdout, never stderr.
-    safe_stderr = redact(stderr) if stderr else ""
+    # only ever appears on stdout, never stderr. ssh's benign advisory lines
+    # (known-hosts, post-quantum KEX) go first, as on the tunnel's exit path, so
+    # they cannot stand in for the real reason.
+    shown_stderr = _strip_benign_ssh_noise(stderr)
+    safe_stderr = redact(shown_stderr) if shown_stderr else ""
 
     if proc.returncode != 0:
         # stderr may carry the "binary not found" diagnostic — safe to log; it
@@ -759,7 +788,7 @@ async def run_remote_kirocrew(
     except asyncio.TimeoutError:
         await kill_and_reap(proc)
         return -1, f"timed out after {timeout_secs}s"
-    err = err_b.decode("utf-8", "replace").strip()
+    err = _strip_benign_ssh_noise(err_b.decode("utf-8", "replace"))
     # Proxy-controlled stderr (e.g. a WSSH banner) can carry credential-looking
     # text or exfil URLs; redact before returning since callers surface this tail.
     safe_err = redact(err) if err else ""

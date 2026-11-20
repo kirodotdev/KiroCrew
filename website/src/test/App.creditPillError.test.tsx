@@ -223,6 +223,35 @@ describe('top-bar credit segment — failed vs loading', () => {
     expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_unavailable'))).toBeNull()
   })
 
+  it.each(['kiro', 'kas'])('shows the API-key mark, not a balance, when sessions run on a KIRO_API_KEY on the %s harness', async (backend) => {
+    // kiro-cli keeps reporting its stored login while the chats bill the key's
+    // account, so the gateway sends `api_key` instead of the login's balance. The
+    // dash must say so, with the info mark that marks a configuration and not a
+    // failed read.
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: backend } })
+    sessionsUsageMock.mockResolvedValue({ usage: { available: false, reason: 'api_key' } })
+    renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
+
+    const label = i18nT('components.kiroAccountModal.credit_usage_api_key')
+    const pill = await screen.findByLabelText(label)
+    expect(pill.textContent).toContain('—')
+    expect(pill.getAttribute('title')).toBe(label)
+    expect(within(pill).getByTestId('kiro-usage-api-key-mark')).toBeInTheDocument()
+    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_checking_2'))).toBeNull()
+    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_no_reading'))).toBeNull()
+  })
+
+  it('renders no API-key mark on a non-kiro harness, which has no Kiro balance to explain', async () => {
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'claude' } })
+    sessionsUsageMock.mockResolvedValue({ usage: { available: false, reason: 'api_key' } })
+    renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
+
+    await waitFor(() => expect(document.querySelector('.tb-capsule')).toBeTruthy())
+    await waitFor(() =>
+      expect(screen.queryByLabelText(i18nT('components.kiroAccountModal.credit_usage_api_key'))).toBeNull(),
+    )
+  })
+
   it('keeps the sign-in-type mark for that account when the config read fails', async () => {
     // The config read decides whether a `none` payload is on a Kiro harness.
     // An account_unproven payload only arises with kiro-cli, so a failed

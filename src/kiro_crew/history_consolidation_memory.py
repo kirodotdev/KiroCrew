@@ -1091,7 +1091,6 @@ def _save_lessons(
                         rule_emb=rule_emb,
                         rule_emb_generation=rule_generation,
                         rule_emb_resolved=True,
-                        defer_backfills=True,
                         # Gated by _gated_lesson_scope above; write_lesson
                         # canonicalises and re-checks admissibility itself.
                         repo_scope=scope,

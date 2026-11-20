@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from source_corpus import repo_files_named, repo_root
+from source_corpus import repo_files_named, repo_root, untraced
 
 import kiro_crew.dashboard.chat_runner as cr
 from kiro_crew.dashboard import chat_turn
@@ -52,58 +52,10 @@ _OWNER_PACKAGE = chat_turn.__name__
 _OWNER_DIR = Path(chat_turn.__file__).resolve().parent
 _GLOBAL_OPS = frozenset({"LOAD_GLOBAL", "STORE_GLOBAL", "DELETE_GLOBAL"})
 
-#: The owners the runner composes. Adding or removing one changes the composition,
-#: so the set is spelled out rather than globbed.
+#: The owners the runner composes: every module of ``chat_turn``, read off the
+#: package directory rather than through the call the runner composes with.
 _OWNER_MODULES = frozenset(
-    {
-        "account_identity",
-        "acp_recovery",
-        "agent_started",
-        "app_agent_binding",
-        "builtin_tools_notice",
-        "context_cap",
-        "crew_log_attribution",
-        "decisions_hooks",
-        "deny_chokepoints",
-        "directives",
-        "eager_spawn",
-        "elicitation_prompt",
-        "file_changes",
-        "mcp_oauth_notice",
-        "mcp_session",
-        "model_fallback",
-        "native_cards",
-        "permission_prompt",
-        "prompt_assembly",
-        "queue_cycle",
-        "queue_drain",
-        "recipient",
-        "recovery",
-        "regenerate_swap",
-        "segment_flush",
-        "session_events",
-        "session_reset",
-        "slash_commands",
-        "steer_queue",
-        "stop_recovery",
-        "stream_chunks",
-        "superseded_steer",
-        "tool_approval",
-        "tool_results",
-        "tool_rows",
-        "turn_admission",
-        "turn_context",
-        "turn_dispatch_gates",
-        "turn_ending",
-        "turn_entry",
-        "turn_failures",
-        "turn_ledgers",
-        "turn_locals",
-        "turn_marker",
-        "turn_reply_seams",
-        "turn_spec_hooks",
-        "turn_stats",
-    }
+    info.name for info in pkgutil.iter_modules([str(_OWNER_DIR)]) if info.name.isidentifier()
 )
 
 #: Every module-level name ``chat_runner`` bound at the base the split was cut from:
@@ -866,27 +818,6 @@ def test_an_owner_imports_the_runner_and_its_siblings_only_for_type_checking() -
     assert offenders == []
 
 
-def test_every_owner_with_a_coroutine_is_in_the_config_dir_guard() -> None:
-    """``test_no_config_dir_in_async`` scans the files it lists, so an owner that
-    gains an ``async def`` must be listed there, or its coroutines escape the guard."""
-    guard = repo_root() / "test" / "test_no_config_dir_in_async.py"
-    listed: set[str] = set()
-    for node in ast.parse(guard.read_text(encoding="utf-8")).body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == "_ASYNC_CHECKED_FILES" for t in node.targets
-        ):
-            listed = {elt.value for elt in node.value.elts if isinstance(elt, ast.Constant)}
-    assert listed, "_ASYNC_CHECKED_FILES not found; this check went stale"
-    assert "dashboard/chat_runner.py" in listed
-    with_coroutines = {
-        f"dashboard/chat_turn/{stem}.py"
-        for stem, source in _owner_sources().items()
-        if any(isinstance(n, ast.AsyncFunctionDef) for n in ast.walk(ast.parse(source)))
-    }
-    assert with_coroutines, "no owner defines a coroutine; this check went stale"
-    assert sorted(with_coroutines - listed) == []
-
-
 def _run_child(tmp_path: Path, script: str, *args: str) -> None:
     result = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script), *args],
@@ -902,6 +833,7 @@ def _run_child(tmp_path: Path, script: str, *args: str) -> None:
 def test_a_fresh_runner_import_loads_every_owner(tmp_path: Path) -> None:
     """Importing the runner imports every owner with it: none loads lazily on a
     later call, so the import order stays the one the one-module file had."""
+    assert _OWNER_MODULES, "chat_turn holds no module -- the owner scan is blind"
     _run_child(
         tmp_path,
         """
@@ -1084,12 +1016,14 @@ def _facade_patched_names() -> set[str]:
     root = repo_root()
     here = Path(__file__).resolve()
     found: set[str] = set()
-    for path in repo_files_named(".py"):
-        parts = path.relative_to(root).parts
-        in_tests = parts[0] == "test" or (parts[0] == "src" and "tests" in parts)
-        if not in_tests or path.resolve() == here:
-            continue
-        found |= _patched_names_in(path.read_text(encoding="utf-8", errors="replace"))
+    # The scan only parses test source, so it runs with the coverage tracer paused.
+    with untraced():
+        for path in repo_files_named(".py"):
+            parts = path.relative_to(root).parts
+            in_tests = parts[0] == "test" or (parts[0] == "src" and "tests" in parts)
+            if not in_tests or path.resolve() == here:
+                continue
+            found |= _patched_names_in(path.read_text(encoding="utf-8", errors="replace"))
     return found
 
 

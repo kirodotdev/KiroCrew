@@ -168,8 +168,19 @@ class TestRefreshFromVault:
         assert sessions_mod._usage_cache == {"available": False}
 
     @pytest.mark.asyncio
-    async def test_auth_rejected_reports_signin(self):
+    async def test_api_refusing_the_served_credential_is_no_reading_not_no_signin(self):
+        # The vault served a live credential, the one the engine runs on, and
+        # GetUsageLimits refused it. A fresh Company SSO sign-in kept the top bar on
+        # "no active Kiro sign-in" because of this mapping; it is a failed read, and
+        # the plain marker renders the "no balance reading yet" dash instead.
         resolve = await _run(_vault(result=api.UsageResult(None, api.AUTH_REJECTED)))
+        assert sessions_mod._usage_cache == {"available": False}
+        assert sessions_mod._vault_signin_marker is None
+        resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_vault_credential_reports_signin(self):
+        resolve = await _run(_vault(result=api.UsageResult(None, api.AUTH_NO_CREDENTIAL)))
         assert sessions_mod._usage_cache == {"available": False, "reason": "signin_required"}
         resolve.assert_not_called()
 
@@ -306,21 +317,58 @@ class TestVaultOwnership:
             assert sessions_mod._vault_owns_usage_sync() is False
         holds.assert_not_called()
 
+    @staticmethod
+    def _takes_bundle(value: bool):
+        return patch(
+            "kiro_crew.agent_sdk.kas_bundle.kas_spawn_takes_bundle",
+            MagicMock(return_value=value),
+        )
+
     def test_kas_without_vault_identity_does_not_own(self):
+        # The relay can run here, so kiro-cli owns the login.
         with (
             patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=_config("kas")),
             self._holds(False) as holds,
+            self._takes_bundle(False) as takes,
         ):
             assert sessions_mod._vault_owns_usage_sync() is False
         holds.assert_called_once_with(warn=False)
+        takes.assert_called_once()
+
+    def test_automatic_bundle_route_owns_with_no_sign_in(self):
+        # A host with no Kiro sign-in at all: kiro-cli is absent or proven signed
+        # out, so the spawn switches to the bundle with ``agent.kas_bundle`` off.
+        # The vault is then the only credential, and the poll must report
+        # ``signin_required`` from it, never the kiro-cli gate's 503 that the
+        # account popup can only show as "could not read your balance".
+        cfg = _config("kas")
+        with (
+            patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=cfg),
+            self._holds(False),
+            self._takes_bundle(True) as takes,
+        ):
+            assert sessions_mod._vault_owns_usage_sync() is True
+        takes.assert_called_once_with(cfg.agent)
+
+    def test_kiro_cli_backend_never_asks_the_route(self):
+        with (
+            patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=_config("kiro")),
+            self._holds(False),
+            self._takes_bundle(True) as takes,
+        ):
+            assert sessions_mod._vault_owns_usage_sync() is False
+        takes.assert_not_called()
 
     def test_unusable_vault_identity_still_owns_and_does_not_warn(self, caplog):
         # This probe runs on every poll; the spawn-time WARNING must not repeat
         # here. Drives the real predicate over a store holding an unusable entry:
         # the vault is still the sign-in (the spawn never falls back to kiro-cli),
         # so usage never relabels kiro-cli's account as this one's.
+        # The launcher is pinned: the remedy text names this install's
+        # ``kirocrew``, and a host where none resolves logs that at WARNING.
         with (
             patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=_config("kas")),
+            patch("kiro_crew.lts_sign_in._launcher", return_value="kirocrew"),
             self._store(self._token(False)),
             caplog.at_level("DEBUG", logger="kiro_crew.auth.bridge"),
         ):

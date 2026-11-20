@@ -405,15 +405,19 @@ def build_message(
         )
         # Not when the harness holds this exact text as the agent's own prompt
         # (recorded from KAS's wire definition) or as its session head; a
-        # compaction re-sends the block.
-        if (
-            agent_prompt
-            and agent_prompt != native_documents.get(f"template://{agent}#prompt")
-            and not _session_head.holds(
-                native_documents, _session_head.AGENT_PROMPT_KEY, agent_prompt
-            )
+        # compaction re-sends the block. A shipped conductor's block is that
+        # recorded text plus the widget pointer, so it carries only the part
+        # after the text the harness holds.
+        block_prompt = agent_prompt
+        native_prompt = native_documents.get(f"template://{agent}#prompt") or ""
+        if native_prompt and agent_prompt.startswith(native_prompt):
+            rest = agent_prompt[len(native_prompt) :]
+            if not rest or rest.startswith("\n"):
+                block_prompt = rest.strip()
+        if block_prompt and not _session_head.holds(
+            native_documents, _session_head.AGENT_PROMPT_KEY, agent_prompt
         ):
-            parts.append(_session_head.agent_prompt_block(agent_prompt))
+            parts.append(_session_head.agent_prompt_block(block_prompt))
         with ctx._prompt_build_embedding_deadline(bool(text), query=text):
             session_ctx = self.build_session_context(
                 session_key,
@@ -500,12 +504,57 @@ def build_message(
                             + ctx._neutralize_structural_markers(_member_section)
                         )
                 parts.append(
-                    "[SESSION RESUMED — the full session context (agent "
-                    "system prompt, memory, lessons, skills) was injected "
-                    "at the original session start and is preserved in the "
-                    "restored conversation history above. Refreshed rules "
-                    "and date/identity follow.]\n" + _resume_rules + session_ctx + _resume_member
+                    "[SESSION RESUMED — the agent system prompt, memory and "
+                    "skills index were injected at the original session start "
+                    "and sit in the restored conversation history above, which "
+                    "may have been compacted. The critical rules and date/identity "
+                    "follow, and the standing lessons and steering, when there "
+                    "are any, are re-sent after them.]\n"
+                    + _resume_rules
+                    + session_ctx
+                    + _resume_member
                 )
+                # Lessons and steering carry rules the user set, and a compacted
+                # restored transcript may have lost them: re-send them under the
+                # post-compaction gates, which keep them out of minimal turns.
+                if not minimal_context:
+                    # The shown-lesson record may name lessons the compaction
+                    # dropped; start it again from the block re-sent here.
+                    if session_key:
+                        self._forget_shown_lessons(session_key)
+                    parts.extend(
+                        _turn.lessons_parts(
+                            self,
+                            session_key=session_key,
+                            project=project,
+                            private_owner=bool(_private_owner),
+                            blocks_reads=blocks_reads,
+                            context_groups=context_groups,
+                            workspace=workspace,
+                            memory_store=memory_store,
+                            model_window=model_window,
+                            essentials=_essentials,
+                            query_text=(
+                                hook_result.text
+                                if hook_result.action == ctx.HOOK_MODIFY
+                                else text[user_text_range[0] : user_text_range[1]]
+                            ),
+                        )
+                    )
+                    parts.extend(
+                        _turn.steering_parts(
+                            agent=agent,
+                            project=project,
+                            context_groups=context_groups,
+                            model_window=model_window,
+                            steering_dirs=steering_dirs,
+                            essentials=_essentials,
+                            provider_type=provider_type,
+                            context_provider=context_provider,
+                            native_launch_sources=native_launch_sources,
+                            steering_off=steering_off,
+                        )
+                    )
             elif minimal_context:
                 parts.append(session_ctx)
             else:
@@ -753,7 +802,7 @@ def build_message(
 
     # Follow-ups trust ACP native history: a second transcript would contradict it.
     logger.info(
-        "🔍 build_message: session_key=%s is_new=%s resumed=%s "
+        "build_message: session_key=%s is_new=%s resumed=%s "
         "has_channel_history=%s injected_parts=%d",
         session_key,
         is_new_session,

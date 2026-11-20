@@ -77,7 +77,7 @@ function createSuccessorHandoff({
    * in a fresh process, which needs an executable to re-exec and one attempt
    * that has not already failed.
    *
-   * @param {boolean} localGatewayOff  this launch started nothing.
+   * @param {boolean} localGatewayOff  this launch runs no gateway.
    * @param {string} remoteTarget      the crew this launch targeted, if any.
    * @returns {boolean}
    */

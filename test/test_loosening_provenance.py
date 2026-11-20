@@ -155,7 +155,7 @@ def test_start_never_replaces_a_copy_a_writer_endorsed_after_its_check(monkeypat
 def test_start_adopts_only_a_json_object_stored_as_kiro_crew_writes_it(
     monkeypatch, leaf, content
 ) -> None:
-    """A malformed file would block Apply; a BOM or CR never equals the loaders' read."""
+    """A malformed file would block Apply; a BOM or CR file waits for the first save."""
     monkeypatch.setattr(lp, "enforcement_active", lambda: True)
     path = config_dir() / leaf
     path.unlink(missing_ok=True)
@@ -321,6 +321,32 @@ def test_tampered_file_loads_the_endorsed_copy_whole(_enforcing) -> None:
     assert _load_data(loader).get("agent", {}).get("sandbox") == "auto"
     loader.write_config_atomically(cfg_path, {"agent": {"sandbox": "off"}}, resolving_pending=True)
     assert _load_data(loader).get("agent", {}).get("sandbox") == "off"
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [_config(sandbox="auto").replace(b"\n", b"\r\n"), b"\xef\xbb\xbf" + _config(sandbox="auto")],
+    ids=["crlf", "byte-order-mark"],
+)
+def test_a_restored_file_with_crlf_or_a_bom_is_not_an_outside_edit(
+    _enforcing, monkeypatch, caplog, stored
+) -> None:
+    """A restore endorses the archive's bytes; the loaders compare their normalized read."""
+    loader = _enforcing
+    monkeypatch.setattr(lp, "_reported", set())
+    cfg_path = config_dir() / "config.json"
+    cfg_path.write_bytes(stored)
+    lp.endorse_installed(cfg_path, stored)  # what a snapshot restore does after its copy
+    caplog.set_level("WARNING", logger="kiro_crew.config.loader")
+
+    assert _load_data(loader)["agent"]["sandbox"] == "auto"
+    assert "not the gateway's own write" not in caplog.text
+    assert lp.pending_changes() == []
+
+    # A real outside edit afterwards is still served as the copy, and still reported.
+    cfg_path.write_bytes(_config(sandbox="off"))
+    assert _load_data(loader)["agent"]["sandbox"] == "auto"
+    assert "config.json on disk is not the gateway's own write" in caplog.text
 
 
 def test_tampered_file_honored_when_not_enforcing(monkeypatch) -> None:

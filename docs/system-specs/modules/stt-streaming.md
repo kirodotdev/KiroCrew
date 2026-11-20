@@ -68,10 +68,9 @@ e.g. Homebrew's), is told to install FFmpeg rather than to reinstall, and the
 fail-closed rule below still holds on every platform whose release does ship one.
 
 **The store is a third location, not a third rule.** A source or Toolbox install on
-a distribution that packages no FFmpeg (Amazon Linux, RHEL without EPEL) previously
-had no decoder it could ever reach, so batch voice was permanently broken with a
-shell command as the only remedy — and on such a host that command was an `echo`
-of the ffmpeg.org URL. `stt.decoder` closes that: it downloads the platform's
+a distribution that packages no FFmpeg (Amazon Linux, RHEL without EPEL) has no
+system decoder it can reach, so without the store batch voice would stay broken.
+`stt.decoder` closes that: it downloads the platform's
 pinned executable from `DECODER_RELEASE` as itself (no archive), bounded by the
 pinned size and checked against the pinned sha256 — the SAME
 `transcribe._PACKAGED_FFMPEG_ARTIFACTS` pin the resolver authenticates — and
@@ -234,7 +233,7 @@ tier is the operator's `agent.sandbox` when that is `cc` or `strict`, and
 `standard` otherwise, so it is never looser than the agent's.
 `~/.codex` is Codex's own store and is not masked, so Codex's own login keeps working.
 Codex refuses to run without real operating-system confinement even when the operator permits unsandboxed execution, which makes it unavailable on Windows.
-The decision is the provider's own predicate, `sandbox.credential_mask_applies(mode)`, which `enforce_sandbox_floor` also uses. It is read at the child's tier. Settings reads it to report `stt_codex_sandbox_unavailable`, and `CodexRpc.start` reads it again before the spawn and refuses with the same code. It is False with no backend and inside a Crew sandbox, where the nested passthrough would drop the credential mask. This PR changes no sandbox file.
+The decision is the provider's own predicate, `sandbox.credential_mask_applies(mode)`, which `enforce_sandbox_floor` also uses. It is read at the child's tier. Settings reads it to report `stt_codex_sandbox_unavailable`, and `CodexRpc.start` reads it again before the spawn and refuses with the same code. It is False with no backend and inside a Crew sandbox, where the nested passthrough would drop the credential mask.
 The environment allowlist excludes API keys and
 unrelated cloud credentials, and no sandbox policy or credential mask is widened. Every server-originated
 request is rejected. Only the following calls are allowed:
@@ -292,7 +291,9 @@ authentication route with the API-key Live creation endpoint.
 
 Source installs add the `voice-codex` extra. POSIX desktop packaging installs it
 separately from the local recognizer, because sealed application bundles cannot
-install missing media packages later. The Windows bundle omits it: Windows has no
+install missing media packages later. If that install fails, the build logs it and
+the bundle ships without Codex dictation, which Settings reports as
+`stt_codex_extra_missing`. The Windows bundle omits it: Windows has no
 agent sandbox, so Codex dictation is unavailable there.
 The native media imports stay lazy until Codex is selected.
 
@@ -947,9 +948,8 @@ preflight below exists for it.** `SIGILL` inside the native load is a process si
 not an exception: it ends the gateway from whichever thread it lands on. Before the
 preflight, a `pywhispercpp` build compiled with AVX-512 on a Broadwell Xeon that has
 none died on every boot's prewarm, the supervisor restarted it, and the loop ran every
-15-25 s until the operator changed `stt.provider` from outside the process
-(kirodotdev/KiroCrew#13179). The prewarm itself is unchanged; it asks `probe` like
-every other caller, and `probe` now refuses before anything is loaded.
+15-25 s until the operator changed `stt.provider` from outside the process. The prewarm asks `probe` like
+every other caller, and `probe` refuses before anything is loaded.
 
 ### Native preflight and the load fuse
 
@@ -1045,15 +1045,10 @@ inference rather than an edge case. A build that cannot be interrogated reports
 `unknown` and `accelerated: false`: the module never guesses, because a guess here
 tells a user to stop expecting a speedup they are not getting.
 
-**There is deliberately no `stt.local_backend` key.** One was built and then removed
-before merge, and the reason is worth keeping: its only reader was the status echo
-that reported whether it had been honoured. No load path consulted it, so naming
-`cuda` on a CPU-only build changed nothing except the sentence the panel printed
-about the value the user had just set. A config key is honoured forever once it
-ships, and a 14-value one whose entire effect is a note about itself is surface with
-no function -- the same objection that retired the adaptive partial-cadence budget in
-this change. `detect()` and the badge stay, because reporting the backend the build
-actually links is the fix; asking for one was never the fix.
+**There is deliberately no `stt.local_backend` key.** No load path could honour one:
+the build links the backend it links, so a key naming `cuda` on a CPU-only build
+would change nothing except a status line about itself. `detect()` and the badge
+report the backend the build actually links instead.
 
 Installing acceleration is a packaging problem (the published wheel links none), and
 a config key cannot solve it. If backend selection ever becomes real it needs a
@@ -1442,7 +1437,7 @@ speech costs 13.6 s) and is kept, because measured per language it is the best m
 available by a wide margin for exactly the users who need one: German 0.063 against
 `small`'s 0.180, Italian 0.114 against 0.239, Portuguese 0.113 against 0.139, and
 code-switched Mandarin-English 0.282, the best reading any model produced on that
-bucket. Its cost is made VISIBLE instead, which is this change's actual subject:
+bucket. Its cost is made VISIBLE instead:
 `GET /api/stt/status` reports the backend and the measured real-time factor.
 
 `PUT /api/config/stt` resolves the model field through `models.canonical_name` rather
@@ -1722,7 +1717,7 @@ The Settings picker (`SttSettings`, through `lib/speechProviders.ts`) renders it
 `_validated_stt_provider` in `config/sections_stt.py` accepts `local`, `apple`, `transcribe`, `off`, and any name an edition registered (see Registered providers). Two classes of stored value fall outside that set and degrade differently, each logging the replacement once per process rather than preventing the gateway from loading a voice setting:
 
 - Persisted `whisper`, `mlx`, `parakeet`, or `faster` (the retired names) degrade to `local`: each was a local recogniser the user had working, and the resident engine recognises the same speech.
-- Any other value degrades to `off`. An unknown value used to degrade to `local`, which put a typo or a guessed value onto the one provider that links a native library into the gateway; a user told to set `stt.provider off` while that library was crashing on model load got the crashing engine back, and learned it only from a WARNING line (kirodotdev/KiroCrew#13179). Failing closed is the one reading that cannot make things worse. `kirocrew config set stt.provider <value>` refuses a value outside the enum at the write, so a stored unknown value can only arrive from a hand edit or an older writer.
+- Any other value degrades to `off`, never to `local`, the one provider that links a native library into the gateway: a typo must not put a user who set `stt.provider off` while that library crashes back onto the crashing engine. Failing closed is the one reading that cannot make things worse. `kirocrew config set stt.provider <value>` refuses a value outside the enum at the write, so a stored unknown value can only arrive from a hand edit or an older writer.
 
 `stt.models` resolves legacy model aliases to a catalog entry; unknown models fall back through the loader's validation path.
 

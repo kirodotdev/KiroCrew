@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F401 - fixture
 from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401 - fixture
+from claude_settings_tier_helpers import empty_claude_settings_tiers
 from redaction_structured_cases import github_classic
 
 import kiro_crew.acp.client as acp_client
@@ -252,6 +253,11 @@ class TestSubstitutionFollow:
     This is the no-sessionId path the earlier suite did not cover.
     """
 
+    @pytest.fixture(autouse=True)
+    def _empty_user_and_managed_tiers(self, tmp_path, _floor_monkeypatch):
+        """The re-seed compares rendered bytes, which the host's ``~/.claude`` would change."""
+        empty_claude_settings_tiers(tmp_path, _floor_monkeypatch)
+
     def _advisory_resp(self):
         # Mirrors what _wait_for_response returns on the advisory: empty dict,
         # plus it sets _last_substitution_model as a side effect (simulated here).
@@ -338,15 +344,15 @@ class TestSubstitutionFollow:
             lambda wire_servers: guard_calls.append(list(wire_servers or []))
         )
         sent = []
-        settings = tmp_path / ".claude" / "settings.local.json"
 
         async def _send(method, params):
             sent.append(list(params.get("mcpServers") or []))
             if len(sent) == 1 and lose_surface:
-                # A link: the one shape that can be neither governed nor left out
-                # of the session's setting sources.
-                settings.unlink()
-                settings.symlink_to(tmp_path / "elsewhere.json")
+                # The path turns unusable (a link, or a sensitive target): the one
+                # shape that can be neither governed nor left out of the session's
+                # setting sources. Patched rather than built with a real symlink,
+                # so the case runs on hosts without symlink privilege.
+                monkeypatch.setattr(acp_client, "_claude_settings_usable", lambda _path: False)
             return len(sent)
 
         waits = 0

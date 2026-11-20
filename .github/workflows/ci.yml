@@ -90,9 +90,11 @@ jobs:
     # dorny/paths-filter runs with `token: ''` (below), so it detects changes
     # with local git instead of the REST API and needs no pull-requests:read.
     # Job-level permissions REPLACE the top-level grant, so contents:read is
-    # restated.
+    # restated. issues:read is for the one read of the open main-red issue
+    # ("Read the open main-red issue" below).
     permissions:
       contents: read
+      issues: read
     outputs:
       only_backend: ${{ steps.decide.outputs.only_backend }}
       only_frontend: ${{ steps.decide.outputs.only_frontend }}
@@ -102,10 +104,18 @@ jobs:
       leaf_tests: ${{ steps.leaf.outputs.leaf_tests }}
       leaf_targets: ${{ steps.leaf.outputs.leaf_targets }}
       leaf_gates: ${{ steps.leaf.outputs.leaf_gates }}
+      # JSON {issue, nodeids} of tests red on main that a pull request's backend
+      # shards deselect, or empty for "run everything" (scripts/ci_main_red_skip.py).
+      # An absent output (this job failed) also runs everything.
+      main_red_skip: ${{ steps.main-red.outputs.main_red_skip }}
       # 'false' only on a fork pull request that touches nothing Windows-shaped
       # (see "Decide the fork Windows scope"). Every other run reads 'true', and
       # an absent output (this job failed) reads as "run", never as a skip.
       windows_tests: ${{ steps.windows-scope.outputs.windows_tests }}
+      # The raw `windows` path bucket below, for EVERY event. Backend Tests
+      # (Windows) takes the reduced or leaf scope only when this reads 'false';
+      # 'true' or an absent output keeps the full Windows suite.
+      windows_paths: ${{ steps.filter.outputs.windows }}
       # Central runner labels: eligible repository/event/actor combinations
       # use CodeBuild. Any other run EXECUTING in this repository uses the
       # `kirocrew-runners` group's own runner label, and a fork running its own
@@ -221,10 +231,14 @@ jobs:
               # Run by build_backend to make bin/ console scripts relocatable.
               - 'packaging/relocate_posix_scripts.py'
               - 'scripts/stamp-distribution.sh'
+              # The smoke install itself: a change to it must run it once.
+              - 'scripts/smoke-linux-packages.sh'
               - '.github/workflows/build-desktop.yml'
-            # Independent of the buckets above. Read only for a FORK pull
-            # request, to decide whether its Backend Tests (Windows) run: the
-            # files that are Windows code by name, the shared platform shims,
+            # Independent of the buckets above. Read for a FORK pull request, to
+            # decide whether its Backend Tests (Windows) run, and on every run to
+            # decide whether Backend Tests (Windows) may take a reduced or leaf
+            # scope (a hit forces its full suite): the files that are Windows
+            # code by name, the shared platform shims,
             # the PowerShell entry points Windows tests drive, and the inputs
             # that shape every Windows shard (dependencies, every conftest, the
             # setup action, the shard plugins, this workflow).
@@ -292,6 +306,26 @@ jobs:
           echo "only_backend=$only_backend"   >> "$GITHUB_OUTPUT"
           echo "only_frontend=$only_frontend" >> "$GITHUB_OUTPUT"
           echo "backend=$BACKEND frontend=$FRONTEND meta=$META full_run=$FULL_RUN -> only_backend=$only_backend only_frontend=$only_frontend"
+
+      # Tests already red on main (`main-red-watch.yml` files one `Main is red:`
+      # issue) fail every pull request opened meanwhile. Read that issue ONCE
+      # per run; the backend shards deselect exactly its node ids. A push,
+      # merge_group or release/** run, a `main-red-fix` or `ci-full-run` label,
+      # a PR body that names the issue, and any read or parse failure all run
+      # everything. The issue body and the PR body reach the script only as
+      # env values. The guards and their tests: scripts/ci_main_red_skip.py.
+      - name: Read the open main-red issue
+        id: main-red
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_BRANCH: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 scripts/ci_main_red_skip.py decide
 
       # A diff that touches ONLY leaf test modules cannot change a production code
       # path, and cannot change another test file's outcome either -- the selector
@@ -740,6 +774,83 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: bash .github/scripts/cancel-superseded-run.sh
 
+  # ── AI review hold (off unless CI_AI_BLOCK_HOLD is set) ──────────────
+  # The two blocking line reviewers (Opus 5.5 Review, GPT 6.1 Review) run in
+  # their own workflows and usually publish a verdict before the lint jobs
+  # finish. A head one of them BLOCKed is replaced by a new push, so the heavy
+  # jobs that start on it test a commit nobody will merge. This job reads the
+  # verdicts that are ALREADY published for the head, once, at the moment the
+  # lint jobs have passed, and `lint-gate` skips when it reports a hold.
+  #
+  # The repository variable CI_AI_BLOCK_HOLD switches it:
+  #   unset (or any other value)  the job is skipped and nothing changes
+  #   shadow    reads, reports what it would hold in the job summary, releases
+  #   enforce   fails with `hold=true` when a lane published BLOCK for the head
+  #
+  # It never waits for a verdict that is not published, and every read it
+  # cannot make releases the heavy jobs (see ai-block-hold.sh). `lint-gate`
+  # keys on the `hold` output and not on this job's result, so a runner fault
+  # or a timeout here releases them too.
+  #
+  # Same-repository pull requests only. A fork's reviewers start after Fast
+  # Gate completes and publish through the fork-* lanes, a merge group and a
+  # push are not reviewed at all, so on those events the job is skipped and
+  # `lint-gate` runs as it always has.
+  #
+  # A held run is red: this job fails, and Coverage Gate fails closed on the
+  # skipped shards and names the hold. Once the lane is green for the head (a
+  # passing re-run or a recorded `/ai-review override`), "Re-run failed jobs"
+  # re-runs this job, which reads the new verdict and releases the heavy jobs.
+  ai-block-hold:
+    name: AI Review Hold
+    needs: [changes, await-fast-gate, backend-lint, frontend-lint]
+    if: >-
+      ${{ !cancelled()
+      && github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && (vars.CI_AI_BLOCK_HOLD == 'shadow' || vars.CI_AI_BLOCK_HOLD == 'enforce')
+      && needs.changes.result == 'success'
+      && needs.await-fast-gate.result == 'success'
+      && contains(fromJSON('["success","skipped"]'), needs.backend-lint.result)
+      && contains(fromJSON('["success","skipped"]'), needs.frontend-lint.result) }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions:
+      # checks:read is what lets this read the review lanes' check-runs and
+      # their annotations. Job-level permissions REPLACE the top-level grant,
+      # so contents:read is restated for the checkout.
+      checks: read
+      contents: read
+    outputs:
+      hold: ${{ steps.read.outputs.hold }}
+    steps:
+      # Sparse, shallow and credential-free, like the barrier's checkout: only
+      # .github/scripts is needed, and the gh reads authenticate with GH_TOKEN.
+      # A checkout that fails must not red the run: the step below releases the
+      # heavy jobs when the script is not there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        continue-on-error: true
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Hold the heavy jobs on a published AI review BLOCK
+        id: read
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # The head sha, not github.sha: the review lanes publish their
+          # check-runs on the PR head, and github.sha is the merge commit.
+          SHA: ${{ github.event.pull_request.head.sha }}
+          MODE: ${{ vars.CI_AI_BLOCK_HOLD }}
+        run: |
+          if [ ! -f .github/scripts/ai-block-hold.sh ]; then
+            echo "::warning::AI Review Hold: the script was not checked out. Releasing the heavy jobs."
+            exit 0
+          fi
+          bash .github/scripts/ai-block-hold.sh
+
   # ── Lint first (RFC "Fewer review loops and fewer escaped bugs", D2) ──
   # The heavy jobs below `need` this one, so a push that fails Backend Lint or
   # Frontend Lint does not start the test shards, Windows legs, e2e or builds.
@@ -760,15 +871,22 @@ jobs:
   # applies the implicit `success()`, which reads every ancestor, not only the
   # direct needs: the lint job skipped on a backend-only or frontend-only diff
   # would skip every heavy job behind a green gate.
+  #
+  # `ai-block-hold` is a need so this job starts after it, and the `hold`
+  # output is the only thing read from it: the output is `true` only when that
+  # job positively read a published AI review BLOCK in enforce mode. Skipped
+  # (the default), green, failed for another reason or timed out, it leaves the
+  # output empty and this job runs.
   lint-gate:
     name: Lint Gate
-    needs: [changes, await-fast-gate, backend-lint, frontend-lint]
+    needs: [changes, await-fast-gate, backend-lint, frontend-lint, ai-block-hold]
     if: >-
       ${{ !cancelled()
       && needs.changes.result == 'success'
       && needs.await-fast-gate.result == 'success'
       && contains(fromJSON('["success","skipped"]'), needs.backend-lint.result)
-      && contains(fromJSON('["success","skipped"]'), needs.frontend-lint.result) }}
+      && contains(fromJSON('["success","skipped"]'), needs.frontend-lint.result)
+      && needs.ai-block-hold.outputs.hold != 'true' }}
     runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
@@ -935,11 +1053,8 @@ jobs:
         # serial run's (measured: 32s serial, ~5s at 8 jobs, same exit code).
         run: isort --check-only src/kiro_crew test conftest.py xdist_budget.py --jobs "$(nproc)"
 
-      - name: Lint (flake8)
-        run: flake8 src/kiro_crew test conftest.py xdist_budget.py
-
-      # mypy is the longest step on the lint path (~150s cold over ~3,900
-      # files, ~5s warm). A pull request restores the cache main last saved,
+      # mypy takes ~150s cold over ~3,900 files and ~5s warm. A pull request
+      # restores the cache main last saved,
       # and mypy's own incremental check re-verifies every module whose source
       # hash (or any dependency's) differs, so the verdict is the cold run's.
       # A push to main never restores: it type-checks cold and saves the result,
@@ -956,8 +1071,82 @@ jobs:
           restore-keys: |
             mypy-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml', 'setup.cfg') }}-
 
-      - name: Type check (mypy)
-        run: mypy src/kiro_crew/
+      # flake8 and mypy read the same checkout and neither reads the other's
+      # output, so they run side by side: in series they are the two longest
+      # steps on the path to `lint-gate` (~2.5 min each), and every heavy job
+      # waits for that gate. Both stay blocking. Each exit status is collected
+      # from its own PID, so one tool failing neither hides the other's verdict
+      # nor stops it early, and a tool that was killed (128+signal, e.g. 137
+      # for SIGKILL from the kernel's OOM killer) fails the step by name like
+      # any other non-zero exit. Output goes to one file per tool and is
+      # printed after both have finished, flake8 first, each under its own
+      # group; two writers on one log would interleave their lines. The group
+      # title carries how long after the step's start the tool finished: the
+      # step's duration is only the slower of the two. If the step is
+      # interrupted first (job timeout, cancellation), whatever each tool had
+      # written is printed before it exits, so a hang is not a blank log.
+      #
+      # flake8 keeps its default of one worker per core and mypy is one
+      # process, so the pair is one process over the core count.
+      - name: Lint and type check (flake8 and mypy, side by side)
+        run: |
+          logs="$RUNNER_TEMP/backend-lint"
+          mkdir -p "$logs"
+
+          # Runs in a background subshell, one per tool: output to the tool's
+          # own file, the second it finished beside it, and the tool's exit
+          # status as the subshell's. TERM is passed on to the tool.
+          timed() {
+            local tool=$1 status=0
+            "$@" > "$logs/$tool.log" 2>&1 &
+            local child=$!
+            trap 'kill "$child" 2>/dev/null' TERM
+            wait "$child" || status=$?
+            echo "$SECONDS" > "$logs/$tool.seconds"
+            exit "$status"
+          }
+
+          report() {
+            local tool
+            for tool in flake8 mypy; do
+              if [ -s "$logs/$tool.seconds" ]; then
+                echo "::group::$tool (finished $(cat "$logs/$tool.seconds")s into the step)"
+              else
+                echo "::group::$tool (did not finish)"
+              fi
+              cat "$logs/$tool.log"
+              echo "::endgroup::"
+            done
+          }
+
+          timed flake8 src/kiro_crew test conftest.py xdist_budget.py &
+          flake8_pid=$!
+          timed mypy src/kiro_crew/ &
+          mypy_pid=$!
+
+          # The tools are stopped last: `kill` is non-zero when one has already
+          # exited, and under `bash -e` that ends the trap, with the failure
+          # status it was about to return anyway.
+          trap 'report; echo "::error::interrupted before flake8 and mypy had both finished; the output above is partial"; kill "$flake8_pid" "$mypy_pid" 2>/dev/null; exit 1' INT TERM
+
+          flake8_status=0
+          wait "$flake8_pid" || flake8_status=$?
+          mypy_status=0
+          wait "$mypy_pid" || mypy_status=$?
+          trap - INT TERM
+
+          report
+
+          failed=0
+          if [ "$flake8_status" -ne 0 ]; then
+            echo "::error title=Lint (flake8)::flake8 exited $flake8_status; its output is in the 'flake8' group above"
+            failed=1
+          fi
+          if [ "$mypy_status" -ne 0 ]; then
+            echo "::error title=Type check (mypy)::mypy exited $mypy_status; its output is in the 'mypy' group above"
+            failed=1
+          fi
+          exit "$failed"
 
       - name: Save the mypy cache (main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -1198,6 +1387,9 @@ jobs:
       # A temp entry a test leaves behind fails the job instead of warning
       # (test/conftest_floor_tmp.py `_TMP_RESIDUE_STRICT_ENV`). Each `Backend Tests*` job below sets it too.
       KIROCREW_TMP_RESIDUE_STRICT: "1"
+      # A gateway crew-log read over budget at a site not on the list fails its test
+      # (test/conftest_floor_read_budget.py); the gateway itself reads `raise` as `report`.
+      KIROCREW_CREW_LOG_READ_BUDGET: raise
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1271,6 +1463,32 @@ jobs:
           echo "reduced=true" >> "$GITHUB_OUTPUT"
           echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
 
+      # As the runner identity: the tests below run unprivileged and cannot
+      # write the job summary. Lists what scripts.ci_main_red_skip deselects.
+      - name: List the tests skipped as red on main
+        env:
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+        run: python3 scripts/ci_main_red_skip.py summary
+
+      # Experiment (#39368): each xdist worker collects the whole shard and
+      # rewrites the asserts of every test file, because a fresh runner has no
+      # cached pyc. This writes those pycs once, one process per core, without
+      # importing a test module, conftest or kiro_crew, into the cache root the
+      # rootdir conftest points pytest at. Full suite only: it is the arm that
+      # takes --file-shard-pins. Same shell as the test step, so the same user
+      # and home, which is what the cache root is derived from. Best effort:
+      # the script exits 0 whatever happens, and a file it did not cache is
+      # rewritten by pytest. It prints its own elapsed seconds.
+      - name: Prewarm assertion rewrites (shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
+        if: ${{ steps.scope.outputs.reduced == 'false' }}
+        shell: /usr/local/bin/ci-shell {0}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          python -m scripts.ci_rewrite_prewarm \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --file-shard-pins scripts/ci_file_shard_pins.txt
+
       - name: Run tests (shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         shell: /usr/local/bin/ci-shell {0}
         # scripts.ci_file_shards assigns each file to one shard before pytest
@@ -1279,9 +1497,9 @@ jobs:
         # Hash assignment is stable, not duration-balanced. Every file's tests
         # and parameters stay together; xdist still uses loadgroup within a job.
         # The full-suite run (not the reduced or leaf ones) also reads
-        # scripts/ci_file_shard_pins.txt, which moves the heaviest files to fixed
-        # shards so the shards' test time comes out even; the slowest shard sets
-        # this job's time. scripts/ci_file_shard_pins.py regenerates it.
+        # scripts/ci_file_shard_pins.txt, which gives every measured file a fixed
+        # shard so the shards' test time comes out even; the slowest shard sets
+        # this job's time. scripts/ci_file_shard_pins.py --every-file regenerates it.
         #
         # Coverage runs on every shard: since the floor moved to >= 3.12 the
         # matrix has a single Python, so there is no --no-cov lane left. Each
@@ -1290,6 +1508,10 @@ jobs:
         # also measures vendored and standalone scripts outside that boundary.
         # The two explicit directories contain already-measured source whose
         # synthetic/app-local module names otherwise make tracing import-order dependent.
+        # `--cov-report=` (empty) writes the data file and prints no terminal
+        # table: the controller spent 227-326 s a shard on that table, on one
+        # core, after the last test ended (run 44434126975). coverage-combine
+        # builds the report from the shard data files.
         env:
           PYTHONPATH: ${{ github.workspace }}
           REDUCED: ${{ steps.scope.outputs.reduced }}
@@ -1297,6 +1519,9 @@ jobs:
           LEAF_REPEAT: "3"
           LEAF_GATES: ${{ needs.changes.outputs.leaf_gates }}
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+          # Node ids red on main, deselected by scripts.ci_main_red_skip (see the
+          # `changes` job). Read by the plugin from the environment only.
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
         run: |
           # Reuse payload-free progress on full, reduced and repeated leaf runs.
           # A worker crash stays red; do not replace it and lose its failure report.
@@ -1306,6 +1531,8 @@ jobs:
           # fixed faulthandler_timeout: a dump of a thread still running Python
           # can segfault the worker, so it must never fire inside a test's budget.
           PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir="$RUNNER_TEMP/pytest-progress" --max-worker-restart=0 -p scripts.ci_faulthandler_budget --faulthandler-grace=30)
+          # Every invocation below also deselects the tests red on main, if any.
+          PROGRESS+=(-p scripts.ci_main_red_skip)
           # An explicit worker count, like the macOS lane's `-n 2`, instead of the
           # xdist budget: that budget reserves 5 GiB a worker for a FULL-suite
           # collection (at 3 GiB it granted a file shard 4 of the fleet runner's 8 cores).
@@ -1412,7 +1639,8 @@ jobs:
             --file-shard-pins scripts/ci_file_shard_pins.txt \
             --cov=kiro_crew --cov=sage_lib \
             --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
-            --cov=src/kiro_crew/apps/builtins/code_review_sage/tests
+            --cov=src/kiro_crew/apps/builtins/code_review_sage/tests \
+            --cov-report=
         # The shard union plus backend-test-ipv6 retains the full test population.
         # The eleven sandbox files -- the two sandbox suites, the two ops git/gh
         # suites, and the seven auto_improvement suites --
@@ -1466,8 +1694,10 @@ jobs:
   #
   # Whole-file shards, assigned before import using the same plugin as POSIX.
   # Eight runners share the work; the per-job timeout remains unchanged.
-  # File hashing avoids full-suite item collection in every worker, but does not
-  # claim equal durations across files or platforms.
+  # scripts/ci_file_shard_pins_windows.txt moves the heaviest files to fixed
+  # shards so the shards' Windows test time comes out even; the slowest shard
+  # sets this job's time. scripts/ci_file_shard_pins.py --platform windows
+  # regenerates it.
   backend-test-windows:
     name: Backend Tests (Windows)
     needs: [changes, await-fast-gate, lint-gate]
@@ -1529,14 +1759,118 @@ jobs:
         shell: bash
         run: python .github/actions/setup-windows-tests/probe.py
 
-      # No surface selector here, unlike the POSIX backend-test job. Narrowing
-      # this job to the cross-surface subset on a frontend-only diff was
-      # measured as a PESSIMISATION: 4 shards x ~18 min = 70 job-min for the
-      # subset, against 62-67 job-min for the whole suite (runs 33412618648 vs
-      # 33406565382). `-n auto` already saturates each runner, so a smaller
-      # file list does not shorten a shard, and the cross-surface files are not
-      # the cheap ones. Running everything is both cheaper and strictly more
-      # coverage, so there is nothing to select.
+      # Same scope rules as backend-test, plus one guard: the reduced and leaf
+      # scopes are taken only when the `changes` job's `windows` path bucket did
+      # NOT hit. The surface and leaf selectors prove a file single-surface or
+      # unaffected on any OS; that bucket names the files that shape Windows
+      # behaviour in particular, so a hit keeps the whole Windows suite. A push
+      # (main or release/**) always runs the full Windows suite, so main keeps
+      # the full Windows backstop it had. Every path that falls back to the
+      # full suite in backend-test falls back here too: selector rc != 0 or
+      # empty output, empty leaf targets, and `ci-full-run` (which leaves
+      # only_frontend and leaf_tests false).
+      #
+      # This replaces the #7337 note that measured the subset as a pessimisation
+      # (4 shards, no pins: 70 job-min vs 62-67 full, runs 33412618648 vs
+      # 33406565382). Re-measured on 8 pinned shards, CodeBuild large runners,
+      # with throwaway draft PRs that forced each scope (#39313, #39314):
+      #   full (main pushes 44376034204, 44365593626): 26.6 min wall, 183-191 job-min
+      #   reduced, 1,342 files (run 44426610212):       8.7 min wall,  60 job-min
+      #   leaf, 1 file + 909 gates (run 44427119854):  13.8 min wall,  64 job-min
+      # No `--collect-only` prewarm: a serial one costs 104-115 s per shard and
+      # saves 42-75 s of worker collection, so it loses on both OSes, with and
+      # without --cov (prewarm probe in run 44426610212). The step before
+      # "Run tests" is a different form: it only rewrites asserts, in parallel,
+      # and imports nothing.
+      - name: Select test scope
+        id: scope
+        shell: bash
+        env:
+          ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
+          LEAF_TESTS: ${{ needs.changes.outputs.leaf_tests }}
+          LEAF_TARGETS: ${{ needs.changes.outputs.leaf_targets }}
+          LEAF_GATES: ${{ needs.changes.outputs.leaf_gates }}
+          WINDOWS_PATHS: ${{ needs.changes.outputs.windows_paths }}
+          EVENT: ${{ github.event_name }}
+          TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+          # The gate list goes to the test step as a FILE: as an env var it is
+          # ~45 KB, past Windows' 32,767-character limit, and every test that
+          # spawns a child with os.environ then fails (measured on #39314).
+          GATES_FILE: ${{ runner.temp }}/leaf-gate-list.txt
+          # Leaf weight budget: the changed files run on EVERY shard, so their
+          # Windows weight must fit the 60-minute job. In run 44376034204 every
+          # file outside scripts/ci_file_shard_pins_windows.txt took <= 30 s on
+          # Windows (40 files <= 1,200 s, ~5 min on 4 workers); pinned files took
+          # up to 1,296 s each (4 of them ~22 min, one xdist group per worker).
+          # Past either cap the full Windows suite runs instead.
+          # shortcut: file counts stand in for per-file seconds; switch to the
+          # measured weights if a leaf run ever nears the timeout.
+          WINDOWS_LEAF_MAX_FILES: "40"
+          WINDOWS_LEAF_MAX_PINNED: "4"
+        run: |
+          if [ "$WINDOWS_PATHS" != "false" ] || [ "$EVENT" = "push" ]; then
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            echo "Full Windows suite: event '$EVENT', windows_paths='$WINDOWS_PATHS' (a push, or a Windows-shaped path)."
+            exit 0
+          fi
+          if [ "$LEAF_TESTS" = "true" ] && [ -n "${LEAF_TARGETS//[[:space:]]/}" ]; then
+            printf '%s\n' "$LEAF_TARGETS" | grep . > "$TARGETS_FILE" || true
+            if [ -s "$TARGETS_FILE" ]; then
+              printf '%s\n' "$LEAF_GATES" | grep . > "$GATES_FILE" || true
+              # The changed files reach pytest as explicit paths, which bypass the
+              # `pytest_ignore_collect` hook, so drop the files Windows never
+              # collects (test/windows-collect-ignore.txt), as the reduced
+              # selector does. Nothing left to run falls back to the full suite.
+              awk 'NR==FNR { sub(/\r$/, ""); sub(/#.*/, ""); gsub(/[[:space:]]/, ""); if ($0 != "") skip["test/" $0] = 1; next } { sub(/\r$/, "") } !($0 in skip)' test/windows-collect-ignore.txt "$TARGETS_FILE" > "$TARGETS_FILE.kept"
+              mv "$TARGETS_FILE.kept" "$TARGETS_FILE"
+              changed="$(grep -vxF -f "$GATES_FILE" "$TARGETS_FILE" || true)"
+              files=$(printf '%s\n' "$changed" | grep -c . || true)
+              pinned=$(printf '%s\n' "$changed" | awk 'NR==FNR { sub(/\r$/, ""); if ($0 !~ /^#/ && NF == 2) pin[$2] = 1; next } { sub(/\r$/, "") } ($0 in pin)' scripts/ci_file_shard_pins_windows.txt - | grep -c . || true)
+              if [ "$files" -ge 1 ] && [ "$files" -le "$WINDOWS_LEAF_MAX_FILES" ] && [ "$pinned" -le "$WINDOWS_LEAF_MAX_PINNED" ]; then
+                echo "reduced=true" >> "$GITHUB_OUTPUT"
+                echo "leaf=true" >> "$GITHUB_OUTPUT"
+                echo "Leaf-test scope: $files changed file(s), $pinned of them pinned heavy."
+                exit 0
+              fi
+              echo "::notice::leaf diff outside the Windows budget ($files Windows-collected changed file(s), $pinned pinned; need 1-$WINDOWS_LEAF_MAX_FILES and <= $WINDOWS_LEAF_MAX_PINNED) -- running the FULL Windows suite."
+              echo "reduced=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::warning::leaf targets arrived empty -- running the FULL Windows suite."
+          fi
+          if [ "$ONLY_FRONTEND" != "true" ]; then
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            echo "Full Windows suite (diff is not frontend-only)."
+            exit 0
+          fi
+          rc=0
+          python scripts/ci-surface-tests.py --surface backend --summary > "$TARGETS_FILE" || rc=$?
+          if [ "$rc" != "0" ] || [ ! -s "$TARGETS_FILE" ]; then
+            echo "::warning::surface selector unusable (rc=$rc) -- running the FULL Windows suite."
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "reduced=true" >> "$GITHUB_OUTPUT"
+          echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
+
+      # Lists what scripts.ci_main_red_skip deselects, in the job summary.
+      - name: List the tests skipped as red on main
+        shell: bash
+        env:
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+        run: python scripts/ci_main_red_skip.py summary
+
+      # Same experiment and contract as backend-test's prewarm step (#39368),
+      # with the Windows pin file and the test step's shell.
+      - name: Prewarm assertion rewrites (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
+        if: ${{ steps.scope.outputs.reduced == 'false' }}
+        shell: bash
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          python -m scripts.ci_rewrite_prewarm \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --file-shard-pins scripts/ci_file_shard_pins_windows.txt
 
       - name: Run tests (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         # bash (Git Bash on windows-latest), not pwsh: the invocation shares
@@ -1569,21 +1903,119 @@ jobs:
         shell: bash
         env:
           PYTHONPATH: ${{ github.workspace }}
+          REDUCED: ${{ steps.scope.outputs.reduced }}
+          LEAF: ${{ steps.scope.outputs.leaf }}
+          # 1, not backend-test's 3: the changed files run on every shard, and
+          # Windows runs them several times slower (the budget in "Select test
+          # scope"). Eight independent shard runs still roll each file 8 times.
+          LEAF_REPEAT: "1"
+          # A file, never the leaf_gates output as env (see "Select test scope").
+          GATES_FILE: ${{ runner.temp }}/leaf-gate-list.txt
+          TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+          # Node ids red on main, deselected by scripts.ci_main_red_skip.
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
         run: |
           # Same as backend-test (#7296): the `python` matcher annotates any
           # traceback in the log, including one printed inside a warning, and
           # never matches a pytest failure.
           echo "::remove-matcher owner=python::"
-          python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards \
+          # An explicit worker count, as in backend-test, instead of the xdist
+          # budget: that budget reserves 5 GiB a worker for a
+          # FULL-suite collection and grants a file shard only 2 of the fleet
+          # runner's 8 cores. The shards are CPU-bound, not memory-bound: at 4
+          # workers one kept 3.6-3.7 of 8 vCPU busy and peaked at 8,603-8,901 of
+          # 16,111 MiB; at 6 it peaked at 9,858-11,234 MiB (runs 44434126975,
+          # 44440752272). So one worker per 2 GiB after 2 GiB for the host,
+          # capped at the core count: 6 on the 16 GiB fleet runner, 4 on a
+          # 4-core hosted runner. The step prints its peak memory after the run.
+          mem_mib=$(python -c "from kiro_crew.platform_compat import host_total_mib; print(host_total_mib(), end='')")
+          by_mem=$(( (mem_mib - 2048) / 2048 ))
+          WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
+          [ "$WORKERS" -ge 1 ] || WORKERS=1
+          echo "pytest workers: $WORKERS"
+          # Host memory in use (total - available), sampled every 5s; the
+          # "Report peak memory" step prints the high-water mark.
+          python -c '
+          import sys, time
+          from kiro_crew.platform_compat import host_available_mib, host_total_mib
+          peak = 0
+          while True:
+              used = host_total_mib() - host_available_mib()
+              if used > peak:
+                  peak = used
+                  with open(sys.argv[1], "w", encoding="utf-8") as handle:
+                      handle.write(str(peak))
+              time.sleep(5)
+          ' "$RUNNER_TEMP/mem-peak-mib" > /dev/null 2>&1 &
+          MEM_SAMPLER=$!
+          trap 'kill "$MEM_SAMPLER" 2>/dev/null || true' EXIT
+          PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir "$RUNNER_TEMP/pytest-progress")
+          # Every invocation below also deselects the tests red on main, if any.
+          PROGRESS+=(-p scripts.ci_main_red_skip)
+          # Reduced and leaf arms as in backend-test: subset lists reach pytest
+          # as --file-shard-targets=PATH, never as arguments; the changed leaf
+          # files run unsharded on every job, the corpus gates sharded once.
+          # Pins balance the FULL suite and apply to it alone.
+          TARGETS=()
+          if [ "$REDUCED" = "true" ]; then
+            while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
+          fi
+          if [ "$LEAF" = "true" ]; then
+            GATES=()
+            if [ -s "$GATES_FILE" ]; then
+              while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then GATES+=("$line"); fi; done < "$GATES_FILE"
+            fi
+            CHANGED=()
+            for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
+              keep=1
+              for gate in ${GATES[@]+"${GATES[@]}"}; do
+                if [ "$target" = "$gate" ]; then keep=0; break; fi
+              done
+              if [ "$keep" = "1" ]; then CHANGED+=("$target"); fi
+            done
+            if [ "${#CHANGED[@]}" -eq 0 ]; then
+              echo "::error::leaf run resolved no changed files -- refusing to report green."
+              exit 1
+            fi
+            if [ "${#GATES[@]}" -gt 0 ]; then
+              printf '%s\n' ${GATES[@]+"${GATES[@]}"} > "$RUNNER_TEMP/leaf-gates.txt"
+              echo "::group::leaf corpus gates (${#GATES[@]} file(s), shard ${{ matrix.group }}/$SHARD_COUNT)"
+              python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
+                --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+                --file-shard-targets="$RUNNER_TEMP/leaf-gates.txt"
+              echo "::endgroup::"
+            fi
+            for pass in $(seq 1 "$LEAF_REPEAT"); do
+              echo "::group::leaf changed files, pass $pass/$LEAF_REPEAT"
+              python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" ${CHANGED[@]+"${CHANGED[@]}"}
+              echo "::endgroup::"
+            done
+            exit 0
+          fi
+          if [ "$REDUCED" = "true" ]; then
+            python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
+              --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+              --file-shard-targets="$TARGETS_FILE"
+            exit 0
+          fi
+          python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards -p scripts.ci_main_red_skip \
             --ci-progress-dir "$RUNNER_TEMP/pytest-progress" \
-            -q -n auto --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
-            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }}
+            -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --file-shard-pins scripts/ci_file_shard_pins_windows.txt
         # Ordinary shards plus backend-test-ipv6 retain every Windows test.
         # Windows has no namespace sandbox, so `userns_available()` is False and every
         # sandbox-dependent test skips. Residual POSIX assumptions in
         # test_dogfood_learnings / test_pr_watchers stay tracked as node ids in
         # test/windows-expected-failures.txt, which is the mechanism a whole-file deselect
         # was standing in for.
+
+      - name: Report peak memory
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          total=$(python -c "from kiro_crew.platform_compat import host_total_mib; print(host_total_mib(), end='')")
+          echo "peak memory in use: $(cat "$RUNNER_TEMP/mem-peak-mib" 2>/dev/null || echo unknown) MiB of ${total} MiB"
 
       - name: Upload Windows pytest progress
         # Job timeout can skip even always() steps; periodic CI_PROGRESS lines
@@ -2360,9 +2792,11 @@ jobs:
             test/test_snapshot_read_only_real_view.py \
             test/test_pinned_order_real_sandbox.py \
             test/test_md_notebook_real_sandbox.py \
+            test/test_app_backend_secret_files_real_sandbox.py \
             test/test_sandbox_hidden_leaf_parent_pins.py \
             test/test_app_credential_mask_dirs.py \
             test/test_app_backend_secret_identity.py \
+            test/test_session_record_directory_sealed.py \
             test/test_member_records_real_sandbox.py \
             test/test_seal_parent_pin_real_sandbox.py \
             test/test_stand_in_stage_real_sandbox.py \
@@ -2994,7 +3428,7 @@ jobs:
     # CodeBuild-hosted runner (pilot); artifact-only job, default size. Rollback: `ubuntu-latest`.
     runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
-    needs: [coverage-combine, frontend-test, frontend-coverage-merge, backend-test, backend-test-ipv6, backend-test-kernel-lock-owner, changes, backend-lint, frontend-lint]
+    needs: [coverage-combine, frontend-test, frontend-coverage-merge, backend-test, backend-test-ipv6, backend-test-kernel-lock-owner, changes, backend-lint, frontend-lint, ai-block-hold]
     # Single source of truth for the floors -- referenced by the check steps,
     # their names, and the summary table so the three can never drift apart.
     #
@@ -3088,6 +3522,7 @@ jobs:
           ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
           BACKEND_LINT: ${{ needs.backend-lint.result }}
           FRONTEND_LINT: ${{ needs.frontend-lint.result }}
+          AI_BLOCK_HOLD: ${{ needs.ai-block-hold.outputs.hold }}
         run: |
           echo "coverage-combine=$CC  frontend-test=$FE  frontend-coverage-merge=$FCM  backend-test=$BE  only_backend=$ONLY_BACKEND  only_frontend=$ONLY_FRONTEND  backend-lint=$BACKEND_LINT  frontend-lint=$FRONTEND_LINT"
           # Empty flags mean the surface-detection job never reported (it failed
@@ -3104,6 +3539,13 @@ jobs:
           if [ "$BACKEND_LINT" = "failure" ] || [ "$BACKEND_LINT" = "cancelled" ] \
             || [ "$FRONTEND_LINT" = "failure" ] || [ "$FRONTEND_LINT" = "cancelled" ]; then
             echo "::error::lint did not pass (backend-lint=$BACKEND_LINT, frontend-lint=$FRONTEND_LINT), so the test shards never started -- failing closed. Fix 'Backend Lint & Type Check' / 'Frontend Lint & Type Check' first; coverage was not measured."
+            exit 1
+          fi
+          # The AI review hold skips `lint-gate` the same way, so name it too:
+          # the shards are skipped because a reviewer BLOCKed this head, not
+          # because coverage fell.
+          if [ "$AI_BLOCK_HOLD" = "true" ]; then
+            echo "::error::the heavy jobs were held because an AI review lane published BLOCK for this head, so the test shards never started -- failing closed. See 'AI Review Hold'; coverage was not measured."
             exit 1
           fi
           # Both test jobs always RUN (only their scope narrows), so both must
@@ -3693,6 +4135,35 @@ jobs:
             exit 1
           }
 
+  # The exported metric schema (src/kiro_crew/metrics/schema_manifest.json) is
+  # append-only: a row, key or value at the merge base must still be there at
+  # head. Its own job, not a step in backend-ratchets, because it judges a
+  # change against a base rather than the whole tree (the Main Ratchet Audit
+  # mirrors backend-ratchets outright). Stdlib only, so no install.
+  metrics-schema-history:
+    name: Metric Schema Only Grows
+    needs: [changes, await-fast-gate]
+    if: needs.changes.outputs.only_frontend != 'true'
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Check that the exported metric schema only grows
+        env:
+          METRICS_SCHEMA_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
+        run: |
+          METRICS_SCHEMA_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$METRICS_SCHEMA_BASE_REF" 'the metric schema gate')" || exit 1
+          export METRICS_SCHEMA_BASE="$METRICS_SCHEMA_BASE_REF"
+          # Self-test first: a weakened rule fails here, not as a silent pass.
+          python3 scripts/check_metrics_schema_history.py --test
+          python3 scripts/check_metrics_schema_history.py
+
   cfn-lint:
     name: CloudFormation Lint
     needs: [changes, await-fast-gate]
@@ -3781,6 +4252,9 @@ jobs:
   # process launched through a junction is matched however Win32_Process spells
   # its ExecutablePath -- so those test files also run once on a real Windows
   # host. No npm ci: the two modules under test require only the Node stdlib.
+  # managed-exec-real-tree.test.js runs a real command under the pinned cmd.exe
+  # to prove a managed update timeout ends the whole tree; it also needs only
+  # the stdlib.
   electron-test-windows:
     name: Electron Shell Tests (Windows port identity)
     needs: [changes, await-fast-gate, lint-gate]
@@ -3802,7 +4276,7 @@ jobs:
 
       - name: Windows port-identity tests
         working-directory: website/electron
-        run: node --test test/windows-port.test.js test/windows-port-junction.test.js test/windows-port-real-junction.test.js test/find-bin-real-ssh.test.js
+        run: node --test test/windows-port.test.js test/windows-port-junction.test.js test/windows-port-real-junction.test.js test/find-bin-real-ssh.test.js test/managed-exec-real-tree.test.js
 
   frontend-test:
     name: Frontend Tests
@@ -4618,6 +5092,30 @@ jobs:
         working-directory: website
         run: node scripts/capture-transcript-row-style.mjs --serve "$RUNNER_TEMP/transcript-row-style"
 
+      # Samples host pressure every 5 s so a gateway ended by its own loop-stall
+      # watchdog can be told apart from a runner that stopped scheduling it.
+      # /proc/pressure and /proc/stat are host-wide inside the container; a gap
+      # in this log's own timestamps means the sampler was frozen too.
+      - name: Start the host pressure sampler
+        id: host-pressure-sampler
+        run: |
+          (
+            set +e
+            cg="/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)"
+            while :; do
+              echo "=== $(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+              for f in /proc/pressure/cpu /proc/pressure/io /proc/pressure/memory \
+                /proc/loadavg "$cg/cpu.stat" "$cg/memory.events"; do
+                echo "--- $f"
+                cat "$f" || echo "read failed: $f"
+              done
+              echo "--- /proc/stat"
+              grep '^cpu ' /proc/stat || echo "read failed: /proc/stat"
+              sleep 5
+            done
+          ) </dev/null >"$RUNNER_TEMP/e2e-host-pressure.log" 2>&1 &
+          echo "$!" >"$RUNNER_TEMP/e2e-host-pressure.pid"
+
       - name: Run E2E and dedicated memory UI evidence in parallel
         # Smoke and UI both read the staged production bundle and share only the
         # read-only dependency/browser installs, with separate homes, ports and
@@ -4644,6 +5142,16 @@ jobs:
           # cannot drift: 30 on the CodeBuild fleet, 40 on the hosted route.
           KIROCREW_E2E_JOB_TIMEOUT_MINUTES: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 30 || 40 }}
         run: exec python scripts/ci_e2e_parallel.py
+
+      # Only after a started sampler: a job that failed before run-as-runner
+      # has no ci-shell, so a run step here could not even start.
+      - name: Stop the host pressure sampler
+        if: ${{ always() && steps.host-pressure-sampler.outcome == 'success' }}
+        run: |
+          pid_file="$RUNNER_TEMP/e2e-host-pressure.pid"
+          if [ -f "$pid_file" ]; then
+            kill "$(cat "$pid_file")" 2>/dev/null || echo "host pressure sampler already gone"
+          fi
 
       - name: Upload read-aloud recovery evidence
         if: ${{ always() }}
@@ -4689,6 +5197,15 @@ jobs:
           path: |
             website/test-results/
             website/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload host pressure samples
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-host-pressure
+          path: ${{ runner.temp }}/e2e-host-pressure.log
           if-no-files-found: ignore
           retention-days: 7
 

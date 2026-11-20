@@ -11,7 +11,7 @@ import { sharedCrewKeys } from '../../hooks/sharedCrew/sharedCrewSocket'
 import { tailscaleInvitesKey } from './TailscaleInvites'
 
 vi.mock('../../api/client', () => ({
-  api: { sharedCrewPeople: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), tailscaleInvites: vi.fn(), sharedCrewSsm: vi.fn(), tailscaleRevokeInvite: vi.fn(), sharedCrewSetPersonDisplay: vi.fn(), kirocrewConfig: vi.fn(), patchConfig: vi.fn() },
+  api: { sharedCrewPeople: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), tailscaleInvites: vi.fn(), sharedCrewSsm: vi.fn(), tailscaleRevokeInvite: vi.fn(), sharedCrewSetPersonDisplay: vi.fn(), kirocrewConfig: vi.fn(), patchConfig: vi.fn(), viewerOwnerOk: vi.fn() },
 }))
 vi.mock('../../components/settingRef/useConfigSchema', () => {
   const schema = new Map([
@@ -63,6 +63,8 @@ function mount() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // The owner by default; the teammate case overrides it for itself only.
+  vi.mocked(api.viewerOwnerOk).mockReset().mockResolvedValue(true)
   // An older gateway: no mode route, so the mode is read from capabilities.
   modeApi.mockResolvedValue(null)
   copy.mockResolvedValue(true)
@@ -123,7 +125,7 @@ describe('PeoplePanel', () => {
     expect(await screen.findByTestId('people-capabilities-error')).toHaveTextContent('capabilities read failed')
     expect(screen.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
     expect(screen.queryByTestId('people-unavailable')).toBeNull()
-    expect(screen.queryByTestId('shared-access-setup')).toBeNull()
+    expect(screen.queryByTestId('people-personal')).toBeNull()
   })
 
   it('degrades when the Crew does not attribute', async () => {
@@ -182,43 +184,49 @@ describe('PeoplePanel', () => {
     mount()
     expect(await screen.findByTestId('people-panel')).toBeInTheDocument()
     expect(screen.getByText('Bob')).toBeInTheDocument()
-    expect(screen.queryByTestId('shared-access-setup')).toBeNull()
+    expect(screen.queryByTestId('people-personal')).toBeNull()
     expect(screen.queryByText(/only you can use it/)).toBeNull()
   })
 
-  it('keeps the setup state when only the viewer has been seen', async () => {
+  it('keeps the sources not set up when only the viewer has been seen', async () => {
     caps.mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available' })
     people.mockResolvedValue({
       schema_version: 1, directory: { state: 'unavailable' }, usage_available: false,
       people: [row('p_a', 'Alice', { is_viewer: true })],
     })
     mount()
-    expect(await screen.findByTestId('shared-access-setup')).toBeInTheDocument()
+    expect(await screen.findByTestId('people-personal')).toBeInTheDocument()
+    expect(screen.getByTestId('source-tailscale')).toHaveAttribute('data-state', 'off')
   })
 
-  it('shows one setup empty state when no shared-access path is configured', async () => {
+  it('shows each source not set up as a dashed card with its setup guide when no shared-access path is configured', async () => {
     caps.mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available' })
     people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, usage_available: false, people: [] })
     mount()
-    expect(await screen.findByTestId('shared-access-setup')).toBeInTheDocument()
+    const tailscale = await screen.findByTestId('source-tailscale')
     expect(screen.queryByTestId('people-panel')).toBeNull()
-    expect(screen.getByText('Set up shared team access')).toBeInTheDocument()
-    expect(screen.getByTestId('setup-path-tailscale-status').textContent).toBe('Not set up')
-    expect(screen.getByTestId('setup-path-kiro_login-status').textContent).toBe('Not available in this build')
-    // Guidance only: no control that does nothing, and links only to existing guides.
+    expect(tailscale).toHaveAttribute('data-state', 'off')
+    expect(tailscale).toHaveClass('border-dashed')
+    expect(screen.getByTestId('source-tailscale-status').textContent).toBe('Not set up')
+    expect(screen.getByTestId('source-ssm')).toHaveClass('border-dashed')
+    // Your organization and Kiro Login are not set up here, so they show only while on.
+    expect(screen.queryByTestId('source-organization')).toBeNull()
+    expect(screen.queryByTestId('source-kiro_login')).toBeNull()
+    // Guidance only: the setup buttons open existing guides.
     expect(actionButtons()).toHaveLength(0)
-    expect(screen.getByTestId('setup-path-tailscale-guide')).toHaveAttribute('href', expect.stringContaining('docs/guides/remote-and-mobile.md#share-one-crew-with-teammates'))
-    expect(screen.queryByTestId('setup-path-kiro_login-guide')).toBeNull()
+    expect(screen.getByTestId('source-tailscale-setup')).toHaveTextContent('Set up Tailscale')
+    expect(screen.getByTestId('source-tailscale-setup')).toHaveAttribute('href', expect.stringContaining('docs/guides/remote-and-mobile.md#share-one-crew-with-teammates'))
+    expect(screen.getByTestId('source-ssm-setup')).toHaveTextContent('Set up AWS SSM')
   })
 
-  it('shows the setup state on an older gateway without the routes', async () => {
+  it('shows the sources on an older gateway without the routes', async () => {
     caps.mockResolvedValue(null)
     people.mockResolvedValue(null)
     mount()
-    expect(await screen.findByTestId('shared-access-setup')).toBeInTheDocument()
+    expect(await screen.findByTestId('source-tailscale')).toHaveAttribute('data-state', 'off')
   })
 
-  it('names each path with the availability the capabilities report', async () => {
+  it('names each source with the availability the capabilities report', async () => {
     caps.mockResolvedValue({
       ...ALL_UNAVAILABLE,
       setup_paths: {
@@ -228,8 +236,8 @@ describe('PeoplePanel', () => {
     })
     people.mockResolvedValue(null)
     mount()
-    expect(await screen.findByTestId('setup-path-tailscale')).toHaveAttribute('data-state', 'degraded')
-    expect(screen.getByTestId('setup-path-tailscale-status').textContent).toBe('On, but not reachable')
+    expect(await screen.findByTestId('source-tailscale')).toHaveAttribute('data-state', 'on')
+    expect(screen.getByTestId('source-tailscale-status').textContent).toBe('On, but not reachable')
   })
 
   it('leaves the setup state once a capability source reports a path available', async () => {
@@ -244,20 +252,20 @@ describe('PeoplePanel', () => {
     people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, usage_available: false, people: [] })
     mount()
     expect(await screen.findByTestId('people-panel')).toBeInTheDocument()
-    expect(screen.queryByTestId('shared-access-setup')).toBeNull()
+    expect(screen.queryByTestId('people-personal')).toBeNull()
   })
 })
 
 describe('PeoplePanel modes', () => {
   const EMPTY: PeopleResponse = { schema_version: 1, directory: { state: 'unavailable' }, usage_available: false, people: [] }
 
-  it('network: the connect card and the People list; no adapter rows and no Remote Control', async () => {
+  it('network: the source cards and the People list; no adapter rows and no Remote Control', async () => {
     caps.mockResolvedValue({ ...SHARED, attribution: 'available' })
     people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
     modeApi.mockResolvedValue(modeBody('network'))
     mount()
     expect(await screen.findByTestId('people-panel')).toBeInTheDocument()
-    expect(screen.getByTestId('share-hero-state')).toHaveTextContent('Available')
+    expect(screen.getByTestId('source-tailscale-status')).toHaveTextContent('Connected')
     expect(screen.queryByTestId('adapter-tailscale')).toBeNull()
     expect(screen.queryByTestId('adapter-kiro_login')).toBeNull()
     expect(screen.queryByTestId('remote-control-tip')).toBeNull()
@@ -279,19 +287,24 @@ describe('PeoplePanel modes', () => {
     expect(screen.queryByText('Remote Control')).toBeNull()
   })
 
-  it('console: read-only Team Access and the validated Console link, with no setup or Remote Control surface', async () => {
+  it('console: the read-only organization card with the validated Console link, and its people "Managed by admin"', async () => {
     caps.mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available' })
     people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
     modeApi.mockResolvedValue(modeBody('console', {
       team_config: { state: 'valid', reason: '', capability: '', cause: '' },
       console: { state: 'available', url: 'https://console.example.test/crews/1' },
+      adapters: { tailscale: { state: 'unavailable', reason: 'not_configured' } },
     }))
     mount()
-    expect(await screen.findByTestId('people-console')).toBeInTheDocument()
-    expect(screen.getByText('Team access')).toBeInTheDocument()
-    expect(screen.getByText('Bob')).toBeInTheDocument()
-    expect(screen.getByTestId('console-link')).toHaveAttribute('href', 'https://console.example.test/crews/1')
-    expect(screen.queryByTestId('shared-access-setup')).toBeNull()
+    const org = await screen.findByTestId('source-organization')
+    expect(org).toHaveAttribute('data-state', 'on')
+    expect(within(org).getByTestId('source-organization-status')).toHaveTextContent('Managed by admin')
+    expect(within(org).getByTestId('source-organization-people')).toHaveTextContent('People: 1')
+    expect(within(org).getByTestId('console-link')).toHaveAttribute('href', 'https://console.example.test/crews/1')
+    expect(within(org).getByTestId('console-link')).toHaveTextContent('Open console')
+    const bob = screen.getByTestId('person-p_b')
+    expect(within(bob).getByTestId('person-source')).toHaveTextContent('Your organization')
+    expect(within(bob).getByTestId('person-managed')).toHaveTextContent('Managed by admin')
     expect(screen.queryByTestId('remote-control-setup')).toBeNull()
     expect(screen.queryByTestId('adapter-tailscale')).toBeNull()
     expect(screen.queryByTestId('tailscale-admin-link')).toBeNull()
@@ -305,7 +318,6 @@ describe('PeoplePanel modes', () => {
     mount()
     expect(await screen.findByTestId('console-link-missing')).toBeInTheDocument()
     expect(screen.queryByTestId('console-link')).toBeNull()
-    expect(screen.getByText('No one has signed in yet.')).toBeInTheDocument()
   })
 
   it('invalid: an error state with the reason code, never the personal surface', async () => {
@@ -317,7 +329,7 @@ describe('PeoplePanel modes', () => {
     mount()
     expect(await screen.findByTestId('people-team-config-invalid')).toBeInTheDocument()
     expect(screen.getByTestId('team-config-reason').textContent).toContain('console_capability_missing')
-    expect(screen.queryByTestId('shared-access-setup')).toBeNull()
+    expect(screen.queryByTestId('people-personal')).toBeNull()
     expect(screen.queryByTestId('remote-control-setup')).toBeNull()
   })
 
@@ -327,17 +339,17 @@ describe('PeoplePanel modes', () => {
     modeApi.mockRejectedValue(new Error('mode down'))
     mount()
     expect(await screen.findByTestId('people-mode-error')).toBeInTheDocument()
-    expect(screen.queryByTestId('shared-access-setup')).toBeNull()
+    expect(screen.queryByTestId('people-personal')).toBeNull()
   })
 
-  it('personal: the setup guidance with every adapter shown honestly', async () => {
+  it('personal: each source shown honestly, the ones not set up dashed', async () => {
     caps.mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available' })
     people.mockResolvedValue(EMPTY)
-    modeApi.mockResolvedValue(modeBody('personal'))
+    modeApi.mockResolvedValue(modeBody('personal', { adapters: { tailscale: { state: 'unavailable', reason: 'not_configured' } } }))
     mount()
     expect(await screen.findByTestId('people-personal')).toBeInTheDocument()
-    expect(screen.getByTestId('shared-access-setup')).toBeInTheDocument()
-    expect(screen.getByTestId('setup-path-kiro_login-status').textContent).toBe('Not available in this build')
+    expect(screen.getByTestId('source-tailscale')).toHaveAttribute('data-state', 'off')
+    expect(screen.getByTestId('source-ssm')).toHaveAttribute('data-state', 'off')
   })
 })
 
@@ -359,15 +371,12 @@ describe('PeoplePanel layout C', () => {
       row('p_c', 'Cleo', { last_seen_at: null }),
     ] })
     modeApi.mockResolvedValue(modeBody('network'))
+    vi.mocked(api.viewerOwnerOk).mockResolvedValue(false)
     mount()
-    const hero = await screen.findByTestId('share-hero')
-    expect(screen.getByTestId('share-hero-state')).toHaveTextContent('Shared on your tailnet')
-    expect(screen.queryByTestId('share-hero-tip')).toBeNull()
-    expect(screen.getByTestId('share-hero-link')).toHaveValue('http://100.64.0.1:5476/')
-    expect(screen.getByTestId('share-hero-copy')).toHaveTextContent('Copy link')
-    expect(screen.queryByTestId('share-hero-step-share')).toBeNull()
-    expect(screen.getByTestId('share-hero-here')).toHaveTextContent('1 here now')
-    expect(hero.textContent).not.toMatch(/reachable/i)
+    await screen.findByTestId('source-tailscale')
+    expect(screen.getByTestId('source-tailscale-body')).toHaveTextContent('Reachable at 100.64.0.1')
+    expect(await screen.findByTestId('share-hero-link')).toHaveValue('http://100.64.0.1:5476/')
+    expect(await screen.findByTestId('share-hero-copy')).toHaveTextContent('Copy link')
     const bob = screen.getByTestId('person-p_b')
     expect(bob).toHaveTextContent('typing in Release plan')
     expect(bob.querySelector('[aria-label="Here now"]')).not.toBeNull()
@@ -387,21 +396,19 @@ describe('PeoplePanel layout C', () => {
     expect(me).not.toHaveTextContent('Last seen')
     expect(me.querySelector('[aria-label="Here now"]')).not.toBeNull()
     expect(me.querySelector('[data-testid="person-edit"]')).not.toBeNull()
-    expect(screen.getByTestId('share-hero-here')).toHaveTextContent('1 here now')
   })
 
-  it('shows the setup state and no link while the listener is off', async () => {
+  it('shows the Tailscale status and no link while the listener is off', async () => {
     caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: { ...DIRECT, state: 'off', urls: [] } })
     people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
     modeApi.mockResolvedValue(modeBody('network'))
     mount()
-    expect(await screen.findByTestId('share-hero-state')).toHaveTextContent('Available')
-    expect(screen.queryByText('Shared on your tailnet')).toBeNull()
+    expect(await screen.findByTestId('source-tailscale-status')).toHaveTextContent('Connected')
+    expect(screen.getByTestId('source-tailscale-body')).not.toHaveTextContent('Reachable at')
     expect(screen.queryByTestId('share-hero-link')).toBeNull()
-    expect(screen.queryByTestId('share-hero-here')).toBeNull()
   })
 
-  it('offers Invite... to the owner, opens the dialog, and lists a pending invite under Invites with a Sent tag and Remove', async () => {
+  it('offers Invite... to the owner, opens the dialog, and lists a pending invite in the People list with a Sent tag, its chip and Remove', async () => {
     caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: DIRECT })
     people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
     modeApi.mockResolvedValue(modeBody('network'))
@@ -409,9 +416,9 @@ describe('PeoplePanel layout C', () => {
     mount()
     const pending = await screen.findByTestId('invite-inv1', {}, { timeout: OWNER_CHAIN_TIMEOUT_MS })
     expect(within(pending).getByText('Sent')).toBeInTheDocument()
-    // Its own sub-heading, below the people it is not counted in.
-    expect(screen.getByTestId('panel-section-header')).toHaveTextContent('Invites1')
-    expect(screen.getByTestId('people-waiting')).toContainElement(pending)
+    expect(within(pending).getByTestId('person-source')).toHaveTextContent('Tailscale')
+    // A row of the one list, below the people it is not counted in.
+    expect(screen.getByTestId('people-list')).toContainElement(pending)
     expect(pending).not.toHaveTextContent('Waiting')
     expect(pending).toHaveTextContent('Remove')
     expect(pending).not.toHaveTextContent('Revoke')
@@ -467,7 +474,7 @@ describe('PeoplePanel layout C', () => {
     people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob')] })
     modeApi.mockResolvedValue(modeBody('network'))
     mount()
-    await screen.findByTestId('share-hero')
+    await screen.findByTestId('source-tailscale')
     expect(screen.queryByTestId('share-hero-invite')).toBeNull()
   })
 
@@ -603,10 +610,10 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     invitesApi.mockResolvedValue(connected() as never)
     mount()
     await screen.findByTestId('share-hero-invite', {}, { timeout: OWNER_CHAIN_TIMEOUT_MS })
-    return screen.getByTestId('share-hero')
+    return screen.getByTestId('source-tailscale')
   }
 
-  it('gives the owner one Invite… entry beside the Tailscale link, with labels only', async () => {
+  it('gives the owner one Invite… on the Tailscale card beside the Tailscale link, with labels only', async () => {
     const hero = await mountOwner()
     const entry = screen.getByTestId('share-hero-invite')
     expect(entry).toHaveTextContent('Invite…')
@@ -672,10 +679,10 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     expect(await screen.findByTestId('share-hero-copy-message-error')).toHaveAttribute('role', 'alert')
   })
 
-  it('labels the owner row "You · Owner" and a never-seen sharee "Sent"; others never seen carry no narration', async () => {
+  it('labels the owner row "You · Host" and a never-seen sharee "Sent"; others never seen carry no narration', async () => {
     await mountOwner()
     const me = screen.getByTestId('person-p_me')
-    expect(me).toHaveTextContent('You · Owner')
+    expect(me).toHaveTextContent('You · Host')
     expect(me).toHaveTextContent('Here now')
     expect(screen.getByTestId('person-p_s')).toHaveTextContent('Sent')
     const cleo = screen.getByTestId('person-p_c')
@@ -693,6 +700,48 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     expect(owner).toHaveTextContent('Crew owner')
     expect(owner).not.toHaveTextContent('You')
     expect(screen.queryByTestId('people-advanced')).toBeNull()
+  })
+
+  it('names an owner known only by a machine name "Crew owner", with the machine name as its detail', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: DIRECT })
+    const host = row('p_o', 'build-host-7', { is_owner: true })
+    host.principal.display.login = ''
+    people.mockResolvedValue({ ...EMPTY, people: [host, row('p_me', 'Pat', { is_viewer: true })] })
+    modeApi.mockResolvedValue(modeBody('network'))
+    mount()
+    const owner = await screen.findByTestId('person-p_o')
+    expect(within(owner).getByTitle('Crew owner')).toBeInTheDocument()
+    expect(within(owner).getByTestId('person-activity')).toHaveTextContent('build-host-7')
+    expect(within(owner).getAllByText('Crew owner')).toHaveLength(1)
+  })
+
+  it('shows a teammate only the sources that are on, never Tailscale "Not set up", which only the owner can change', async () => {
+    vi.mocked(api.viewerOwnerOk).mockResolvedValue(false)
+    caps.mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available' })
+    people.mockResolvedValue({ ...EMPTY, people: [row('p_o', 'Owner', { is_owner: true }), row('p_me', 'Pat', { is_viewer: true, provenance: 'kiro_relay' })] })
+    modeApi.mockResolvedValue(modeBody('network', {
+      adapters: { tailscale: { state: 'unavailable', reason: 'not_configured' } },
+      sources: [
+        { id: 'tailscale', state: 'unavailable', reason: 'not_configured', people: 0 },
+        { id: 'ssm', state: 'unavailable', reason: 'not_configured', people: 0 },
+        { id: 'organization', state: 'unavailable', reason: 'not_offered', people: 0 },
+        { id: 'kiro_login', state: 'available', reason: '', people: 1 },
+      ],
+    }))
+    mount()
+    expect(await screen.findByTestId('source-kiro_login')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByTestId('source-tailscale')).toBeNull())
+    expect(screen.queryByTestId('source-ssm')).toBeNull()
+    expect(screen.queryByText('Not set up')).toBeNull()
+    expect(within(screen.getByTestId('person-p_me')).getByTestId('person-source')).toHaveTextContent('Kiro Login')
+  })
+
+  it('says nothing about per-person work when it is switched off, not failed', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available' })
+    people.mockResolvedValue({ ...EMPTY, usage_off: true, people: [row('p_a', 'Ann')] })
+    mount()
+    expect(await screen.findByTestId('people-list')).toBeInTheDocument()
+    expect(screen.queryByTestId('people-note')).toBeNull()
   })
 
   it('keeps Advanced reachable for an owner whose only answered read is SSM, still switched off', async () => {
@@ -936,10 +985,8 @@ describe('People: one row per person, one invite entry', () => {
     )
     for (const id of ['i1', 'i2', 'i3']) expect(within(await screen.findByTestId(`invite-${id}`)).getByText('Sent')).toBeInTheDocument()
     expect(screen.getByText('People · 3')).toBeInTheDocument()
-    // The invites are counted under their own heading, never in People · N.
-    expect(screen.getByTestId('panel-section-header')).toHaveTextContent('Invites3')
-    expect(within(screen.getByTestId('people-list')).getAllByRole('listitem')).toHaveLength(3)
-    expect(within(screen.getByTestId('people-waiting')).getAllByRole('listitem')).toHaveLength(3)
+    // The invites are rows of the one list, never counted in People · N.
+    expect(within(screen.getByTestId('people-list')).getAllByRole('listitem')).toHaveLength(6)
   })
 
   it('turns an Invites row into the person once they are a member', async () => {
@@ -999,7 +1046,7 @@ describe('People: one row per person, one invite entry', () => {
     const mia = await screen.findByTestId('person-p_m')
     const link = within(mia).getByTestId('person-remove')
     expect(link).toHaveAttribute('href', 'https://login.tailscale.com/admin/users')
-    expect(link).toHaveTextContent('Remove in Tailscale')
+    expect(link).toHaveTextContent('Manage in Tailscale')
     expect(within(mia).queryByTestId('invite-revoke')).toBeNull()
     expect(within(screen.getByTestId('person-p_o')).queryByTestId('person-remove')).toBeNull()
   })
@@ -1019,7 +1066,7 @@ describe('People: one row per person, one invite entry', () => {
     expect(kyle).not.toHaveTextContent('Access follows Tailscale rules')
   })
 
-  it('keeps an accepted share removable under Invites until its person has a row', async () => {
+  it('keeps an accepted share removable in the list until its person has a row', async () => {
     const qc = await mountNetwork([owner()], [invite('i0', { status: 'accepted', accepted_login: 'kyleseaman@gmail.com', email: 'kyleseaman@gmail.com' })])
     const share = await screen.findByTestId('invite-i0')
     expect(share).toHaveTextContent('kyleseaman@gmail.com')
@@ -1073,12 +1120,12 @@ describe('People: one row per person, one invite entry', () => {
     expect(within(kyle).getAllByRole('button')).toHaveLength(2)
   })
 
-  it('personal mode lists an unused email invite under the entry, still removable', async () => {
+  it('personal mode lists an unused email invite in the People list, still removable', async () => {
     caps.mockResolvedValue({ ...ALL_UNAVAILABLE, attribution: 'available' })
     people.mockResolvedValue(EMPTY)
     invitesApi.mockResolvedValue(connected([invite('i1', { email: 'new@example.test' }), invite('l1', { kind: 'link', email: '' })]) as never)
     mount()
-    const waiting = await screen.findByTestId('people-waiting', {}, { timeout: OWNER_CHAIN_TIMEOUT_MS })
+    const waiting = await screen.findByTestId('people-list', {}, { timeout: OWNER_CHAIN_TIMEOUT_MS })
     expect(within(within(waiting).getByTestId('invite-i1')).getByText('Sent')).toBeInTheDocument()
     expect(within(waiting).getByTestId('invite-i1')).toHaveTextContent('Remove')
     expect(within(waiting).queryByTestId('invite-l1')).toBeNull()
@@ -1102,5 +1149,161 @@ describe('People: one row per person, one invite entry', () => {
     expect(screen.queryByTestId('invite-form')).toBeNull()
     fireEvent.click(screen.getByTestId('share-hero-invite'))
     expect(await screen.findByTestId('invite-form')).toBeInTheDocument()
+  })
+})
+
+describe('People: connection sources at once, one list with source chips', () => {
+  const EMPTY: PeopleResponse = { schema_version: 1, directory: { state: 'unavailable' }, usage_available: true, people: [] }
+  const DIRECT = {
+    state: 'active' as const, reason: '', method: 'localapi_unix', owner_login: 'owner@example.test',
+    urls: ['http://crew.tail1234.ts.net:5476/'], addresses: ['100.64.0.1'],
+  }
+  const source = (id: 'tailscale' | 'ssm' | 'organization' | 'kiro_login', state: 'available' | 'unavailable', people = 0) =>
+    ({ id, state, reason: state === 'available' ? '' : 'not_configured', people })
+  const ALL_ON = [source('tailscale', 'available', 2), source('ssm', 'available', 1), source('organization', 'unavailable'), source('kiro_login', 'available', 1)]
+  const SSM_ACTIVE = {
+    state: 'active', reason: '', port: 5476, target: { instance_id: 'i-0abc', region: 'us-west-2' }, command: 'aws ssm start-session', local_url: 'http://localhost:5476/',
+    invites: [
+      { id: 's_open', alias: 'Lee', created_at: 1_700_000_000, joined: true, principal_id: 'p_l' },
+      { id: 's_new', alias: 'devon', created_at: 1_700_000_000, joined: false, principal_id: '' },
+    ],
+  }
+  const tsInvite = (id: string, over: Record<string, unknown> = {}) => ({
+    id, transport: 'tailscale', kind: 'email' as const, email: 'x@example.test', multi_use: false, alias: '', avatar_id: '',
+    created_at: 1_700_000_000, status: 'pending' as const, accepted_login: '', ...over,
+  })
+  const connected = (invites: unknown[]) => ({
+    connected: true, tailnet: 'example', key_expires: '', key_expires_soon: false, key_expired: false, admin_share_url: '', invites,
+  })
+  const person = (id: string, login: string, over: Partial<PeopleResponse['people'][number]> = {}) =>
+    row(id, login, { principal: { id, kind: 'human' as const, display: { name: login, login, captured_at: null } }, usage: null, ...over })
+  const ROWS = () => [
+    person('p_o', 'owner@example.test', { is_viewer: true, is_owner: true, provenance: 'local_operator' }),
+    person('p_t1', 'priya@example.test', { provenance: 'tailscale_serve', member: { alias: '', avatar_id: '', profile_pic_url: '', invite_id: 'i0' } }),
+    person('p_t2', 'sam@example.test', { provenance: 'tailscale_listener', sources: ['tailscale_share' as const], last_seen_at: null }),
+    person('p_l', 'lee@example.test', { provenance: 'ssm_invite' }),
+    person('p_r', 'PRIYA@example.test', { provenance: 'kiro_relay' }),
+    person('p_g', 'jordan@example.test', { sources: ['directory' as const] }),
+  ]
+
+  function mountAll({ teammate = false, sources = ALL_ON, ssm = SSM_ACTIVE as unknown, invites = [tsInvite('i0', { status: 'accepted', accepted_login: 'priya@example.test', email: 'priya@example.test' }), tsInvite('i9', { email: 'new@example.test' })] as unknown[] } = {}) {
+    vi.mocked(api.viewerOwnerOk).mockResolvedValue(!teammate)
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: DIRECT })
+    people.mockResolvedValue({ ...EMPTY, people: ROWS() })
+    modeApi.mockResolvedValue(modeBody('network', { sources }))
+    invitesApi.mockResolvedValue(teammate ? null : connected(invites) as never)
+    vi.mocked(api.sharedCrewSsm).mockResolvedValue(teammate ? null : ssm as never)
+    mount()
+  }
+
+  it('shows every source that is on side by side, each with its status and how many came in', async () => {
+    mountAll()
+    const tailscale = await screen.findByTestId('source-tailscale')
+    expect(tailscale).toHaveAttribute('data-state', 'on')
+    expect(tailscale).not.toHaveClass('border-dashed')
+    expect(within(tailscale).getByTestId('source-tailscale-status')).toHaveTextContent('Connected')
+    expect(within(tailscale).getByTestId('source-tailscale-body')).toHaveTextContent('Reachable at crew.tail1234.ts.net')
+    expect(within(tailscale).getByTestId('source-tailscale-people')).toHaveTextContent('People: 2')
+    const ssm = screen.getByTestId('source-ssm')
+    expect(within(ssm).getByTestId('source-ssm-people')).toHaveTextContent('People: 1')
+    expect(await within(ssm).findByText(/Listening for SSM port forwards on port 5476/)).toBeInTheDocument()
+    expect(screen.getByTestId('source-kiro_login')).toHaveTextContent('Sharing is managed outside Kiro Crew.')
+    // The organization console is not offered, so there is no card for it.
+    expect(screen.queryByTestId('source-organization')).toBeNull()
+  })
+
+  it('gives each source the owner manages its own invite button, opening the dialog on that source', async () => {
+    mountAll()
+    const tsButton = await screen.findByTestId('share-hero-invite', {}, { timeout: OWNER_CHAIN_TIMEOUT_MS })
+    expect(screen.getByTestId('source-tailscale')).toContainElement(tsButton)
+    expect(tsButton).toHaveTextContent('Invite…')
+    const ssmButton = await screen.findByTestId('source-ssm-invite')
+    expect(screen.getByTestId('source-ssm')).toContainElement(ssmButton)
+    expect(ssmButton).toHaveTextContent('Make invite link')
+    // Kiro Login sharing is managed outside Kiro Crew: no invite button.
+    expect(within(screen.getByTestId('source-kiro_login')).queryAllByRole('button')).toHaveLength(0)
+    fireEvent.click(ssmButton)
+    const dialog = await screen.findByTestId('invite-dialog')
+    expect(within(dialog).getByTestId('invite-transport-ssm')).toHaveAttribute('aria-selected', 'true')
+    expect(within(dialog).getByTestId('ssm-form')).toBeVisible()
+  })
+
+  it('locks the invite buttons for a teammate, saying only the owner can invite', async () => {
+    mountAll({ teammate: true })
+    const locked = await screen.findByTestId('source-tailscale-invite-locked')
+    expect(locked).toBeDisabled()
+    expect(locked).toHaveTextContent('Invite…')
+    expect(screen.getByTestId('source-ssm-invite-locked')).toBeDisabled()
+    expect(screen.getByTestId('source-ssm-invite-locked')).toHaveTextContent('Make invite link')
+    expect(locked).toHaveAccessibleDescription('Only the owner of this Crew can invite people.')
+    expect(screen.queryByTestId('share-hero-invite')).toBeNull()
+    expect(screen.queryByTestId('source-ssm-invite')).toBeNull()
+  })
+
+  it('shows SSM not set up as a dashed card with its setup button, after the sources that are on', async () => {
+    mountAll({ sources: [source('tailscale', 'available', 2), source('ssm', 'unavailable'), source('organization', 'unavailable'), source('kiro_login', 'unavailable')], ssm: { ...SSM_ACTIVE, state: 'off', invites: [] } })
+    const ssm = await screen.findByTestId('source-ssm')
+    expect(ssm).toHaveClass('border-dashed')
+    expect(within(ssm).getByTestId('source-ssm-status')).toHaveTextContent('Not set up')
+    expect(within(ssm).getByTestId('source-ssm-setup')).toHaveTextContent('Set up AWS SSM')
+    expect(within(ssm).getByTestId('source-ssm-setup')).toHaveAttribute('href', expect.stringContaining('share-one-crew-over-aws-ssm'))
+    const cards = within(screen.getByTestId('people-sources')).getAllByRole('listitem').map(li => li.getAttribute('data-testid'))
+    expect(cards).toEqual(['source-tailscale', 'source-ssm'])
+  })
+
+  it('lists everyone in one list with the chip of the source they came in through, counting the rows it shows', async () => {
+    mountAll()
+    const list = await screen.findByTestId('people-list')
+    const chip = (id: string) => within(screen.getByTestId(`person-${id}`)).queryByTestId('person-source')?.textContent ?? null
+    expect(chip('p_t1')).toBe('Tailscale')
+    expect(chip('p_t2')).toBe('Tailscale')
+    expect(chip('p_l')).toBe('AWS SSM')
+    expect(chip('p_r')).toBe('Kiro Login')
+    expect(chip('p_g')).toBe('Your organization')
+    // The owner at this machine came in through no source.
+    expect(chip('p_o')).toBeNull()
+    expect(within(screen.getByTestId('person-p_o')).getByText('You · Host')).toBeInTheDocument()
+    // Priya is on Tailscale and on Kiro Login: two rows, and the heading counts
+    // both, so its number matches the rows; the note says why she is there twice.
+    const people = within(list).getAllByTestId(/^person-p_/)
+    expect(people).toHaveLength(6)
+    expect(screen.getByText('People · 6')).toBeInTheDocument()
+    expect(screen.getByTestId('people-list-note')).toHaveTextContent('The same person can appear once for each source they came in through.')
+    // Invites nobody used are rows of the same list, with their chip, and not counted.
+    const ssmInvite = await within(list).findByTestId('ssm-invite-s_new')
+    expect(within(ssmInvite).getByTestId('person-source')).toHaveTextContent('AWS SSM')
+    expect(within(within(list).getByTestId('invite-i9')).getByTestId('person-source')).toHaveTextContent('Tailscale')
+  })
+
+  it('puts Remove only where it works, a Tailscale link everywhere else, and nothing on organization or Kiro Login people', async () => {
+    mountAll()
+    await screen.findByTestId('ssm-invite-s_new', {}, { timeout: OWNER_CHAIN_TIMEOUT_MS })
+    await screen.findByTestId('invite-i9')
+    const rowOf = (id: string) => screen.getByTestId(`person-${id}`)
+    // A person of a single-use Tailscale invite: Remove revokes it.
+    expect(within(rowOf('p_t1')).getByTestId('invite-revoke')).toHaveTextContent('Remove')
+    // Any other Tailscale person: managed in Tailscale.
+    expect(within(rowOf('p_t2')).getByTestId('person-remove')).toHaveTextContent('Manage in Tailscale')
+    expect(within(rowOf('p_t2')).getByTestId('person-remove')).toHaveAttribute('href', 'https://login.tailscale.com/admin/users')
+    // An SSM person: Remove.
+    expect(within(rowOf('p_l')).getByTestId('invite-revoke')).toHaveTextContent('Remove')
+    // An unopened SSM invite: Revoke invite.
+    expect(within(screen.getByTestId('ssm-invite-s_new')).getByTestId('invite-revoke')).toHaveTextContent('Revoke invite')
+    // A single-use Tailscale invite row: Remove.
+    expect(within(screen.getByTestId('invite-i9')).getByTestId('invite-revoke')).toHaveTextContent('Remove')
+    // Organization people are read-only; Kiro Login people are managed outside.
+    expect(within(rowOf('p_g')).getByTestId('person-managed')).toHaveTextContent('Managed by admin')
+    expect(within(rowOf('p_g')).queryByRole('button')).toBeNull()
+    expect(within(rowOf('p_r')).queryByRole('button')).toBeNull()
+    expect(within(rowOf('p_r')).queryByRole('link')).toBeNull()
+    expect(within(rowOf('p_o')).queryByTestId('invite-revoke')).toBeNull()
+  })
+
+  it('gives a teammate no Remove and no Tailscale link, and still names organization people read-only', async () => {
+    mountAll({ teammate: true })
+    await screen.findByTestId('person-p_g')
+    expect(screen.queryByTestId('invite-revoke')).toBeNull()
+    expect(screen.queryByTestId('person-remove')).toBeNull()
+    expect(within(screen.getByTestId('person-p_g')).getByTestId('person-managed')).toBeInTheDocument()
   })
 })

@@ -92,6 +92,9 @@ class TestWindowsRecycledDescendantAgeDisproof:
             lambda handle, **_kwargs: identities.get(handle),
         )
         monkeypatch.setattr(pc, "_open_process_query_handle", open_query)
+        # Every kernel32 seam on this path is faked: a real OpenProcess on a fake PID can
+        # reach a live process and close its real handle through the spy below.
+        monkeypatch.setattr(pc, "_windows_process_query_diagnostic", lambda _pid: "faked")
         monkeypatch.setattr(pc, "_close_process_handle", query_closed.append)
         monkeypatch.setattr(pc, "close_process_handle", closed.append)
         monkeypatch.setattr(pc, "pid_exists", lambda _pid: False)
@@ -189,7 +192,9 @@ class TestWindowsRecycledDescendantAgeDisproof:
 
         # Dropping 103 would discard authority an earlier scan already proved,
         # so the contradiction is reported rather than resolved by guessing.
-        with pytest.raises(OSError, match="Windows descendant handles unavailable"):
+        with pytest.raises(
+            OSError, match="Windows descendant handles unavailable.*query_unvalidated=faked"
+        ):
             pc.descendant_termination_handles(self.ROOT_PID, {103: 9003}, self.ROOT_HANDLE)
 
         assert closed == [9001]

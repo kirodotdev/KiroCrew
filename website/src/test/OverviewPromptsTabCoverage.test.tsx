@@ -301,10 +301,12 @@ describe('PromptsTab detail pane', () => {
 describe('PromptsTab slot picker', () => {
   async function openPicker(slots: ChatSlot[] = []) {
     const ctx = renderTab(slots)
-    // The first row is auto-selected, so the detail header the picker now hangs
-    // off is already on screen — nothing has to be expanded first.
+    // The first row is auto-selected, so the detail header the picker hangs off
+    // needs no expanding. Wait for the button itself, not the detail read: the
+    // selection effect fires that read before React commits the selected row,
+    // so the read can be seen while the header is not on screen yet.
     await waitFor(() => expect(mockApi.promptDetail).toHaveBeenCalled())
-    fireEvent.click(screen.getByRole('button', { name: /Use in Chat/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /Use in Chat/ }))
     expect(await screen.findByText('Send to…')).toBeInTheDocument()
     return ctx
   }
@@ -356,7 +358,8 @@ describe('PromptsTab slot picker', () => {
   it('the Use in Chat button says whether the slot picker is open', async () => {
     renderTab()
     await waitFor(() => expect(mockApi.promptDetail).toHaveBeenCalled())
-    const toggle = screen.getByRole('button', { name: /Use in Chat/ })
+    // Same race as openPicker: the read can be seen before the header commits.
+    const toggle = await screen.findByRole('button', { name: /Use in Chat/ })
 
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     fireEvent.click(toggle)

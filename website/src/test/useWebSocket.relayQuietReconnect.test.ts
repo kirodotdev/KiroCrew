@@ -125,6 +125,91 @@ describe('useWebSocket quiet reconnect through the relay', () => {
     unmount()
   })
 
+  // `QUIET_YOUNG_LIMIT` and `RECONNECT_HEALTHY_MS` in hooks/websocket/connection.ts
+  // and utils/reconnectBackoff.ts.
+  const QUIET_YOUNG_LIMIT = 5
+  const RECONNECT_HEALTHY_MS = 10_000
+
+  it('takes the backoff after five fast quiet closes in a row, and keeps retrying', () => {
+    const { unmount } = openFirst()
+    for (let i = 0; i < QUIET_YOUNG_LIMIT; i++) {
+      act(() => { WS_INSTANCES[i].simulateClose(4401) })
+      act(() => { vi.advanceTimersByTime(0) })
+      act(() => { WS_INSTANCES[i + 1].simulateOpen() })
+    }
+    expect(disconnects).toBe(0)
+
+    // The sixth fast close in a row: offline, and the next socket waits for the backoff.
+    act(() => { WS_INSTANCES[QUIET_YOUNG_LIMIT].simulateClose(4401) })
+    expect(testStore.getState().dashboard.connected).toBe(false)
+    act(() => { vi.advanceTimersByTime(0) })
+    expect(WS_INSTANCES).toHaveLength(QUIET_YOUNG_LIMIT + 1)
+    act(() => { vi.advanceTimersByTime(1000) })
+    expect(WS_INSTANCES).toHaveLength(QUIET_YOUNG_LIMIT + 2)
+
+    // Still retrying, never dead: the next open is connected again.
+    act(() => { WS_INSTANCES[QUIET_YOUNG_LIMIT + 1].simulateOpen() })
+    expect(testStore.getState().dashboard.connected).toBe(true)
+    unmount()
+  })
+
+  it('a socket that stays open ten seconds starts the count over', () => {
+    const { unmount } = openFirst()
+    for (let i = 0; i < 10; i++) {
+      act(() => { vi.advanceTimersByTime(RECONNECT_HEALTHY_MS) })
+      act(() => { WS_INSTANCES[i].simulateClose(4401) })
+      act(() => { vi.advanceTimersByTime(0) })
+      act(() => { WS_INSTANCES[i + 1].simulateOpen() })
+    }
+    expect(disconnects).toBe(0)
+    unmount()
+  })
+
+  it('a laptop sleep after the limit still reconnects once it wakes', () => {
+    const { unmount } = openFirst()
+    for (let i = 0; i <= QUIET_YOUNG_LIMIT; i++) {
+      act(() => { WS_INSTANCES[i].simulateClose(4401) })
+      act(() => { vi.advanceTimersByTime(i < QUIET_YOUNG_LIMIT ? 0 : 1000) })
+      act(() => { WS_INSTANCES[i + 1].simulateOpen() })
+    }
+    const last = WS_INSTANCES.length - 1
+    // The lid closes: the network drop is a plain 1006, and every retry fails until wake.
+    act(() => { WS_INSTANCES[last].simulateClose(1006) })
+    expect(testStore.getState().dashboard.connected).toBe(false)
+    for (let i = 0; i < 4; i++) {
+      act(() => { vi.advanceTimersByTime(10_000) })
+      act(() => { WS_INSTANCES[WS_INSTANCES.length - 1].simulateClose(1006) })
+    }
+    expect(WS_INSTANCES.length).toBe(last + 5)
+    // Awake: the next retry opens.
+    act(() => { vi.advanceTimersByTime(10_000) })
+    act(() => { WS_INSTANCES[WS_INSTANCES.length - 1].simulateOpen() })
+    expect(testStore.getState().dashboard.connected).toBe(true)
+    unmount()
+  })
+
+  it('a gateway restart reconnects with the backoff and a later renewal stays quiet', () => {
+    const { unmount } = openFirst()
+    act(() => { vi.advanceTimersByTime(RECONNECT_HEALTHY_MS) })
+    // The gateway goes away, refuses two handshakes while it starts, then answers.
+    act(() => { WS_INSTANCES[0].simulateClose(1006) })
+    act(() => { vi.advanceTimersByTime(1000) })
+    act(() => { WS_INSTANCES[1].simulateClose(1006) })
+    act(() => { vi.advanceTimersByTime(2000) })
+    act(() => { WS_INSTANCES[2].simulateClose(1006) })
+    act(() => { vi.advanceTimersByTime(4000) })
+    act(() => { WS_INSTANCES[3].simulateOpen() })
+    expect(testStore.getState().dashboard.connected).toBe(true)
+    const before = disconnects
+
+    act(() => { vi.advanceTimersByTime(RECONNECT_HEALTHY_MS) })
+    act(() => { WS_INSTANCES[3].simulateClose(4401) })
+    act(() => { vi.advanceTimersByTime(0) })
+    act(() => { WS_INSTANCES[4].simulateOpen() })
+    expect(disconnects).toBe(before)
+    unmount()
+  })
+
   it('says the session ended when the socket after a 4401 is refused at its upgrade', () => {
     const { unmount } = openFirst()
     act(() => { WS_INSTANCES[0].simulateClose(4401) })

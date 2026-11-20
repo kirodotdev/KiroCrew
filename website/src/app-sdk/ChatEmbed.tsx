@@ -78,6 +78,8 @@ import { sendEmbedStop } from './embedStopTransport'
 import { StopControls } from '../components/chat-input/StopControls'
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 import { useAppApi, useAppInfo } from './index'
+import { permissionRowTarget } from '../types/approvalTarget'
+import { noPendingApprovalError } from '../api/apiError'
 import { appApiSendWire } from './appSendWire'
 import { sendTurn, mintSendId } from '../chat-core/transport/sendTurn'
 import { Composer, type ComposerCapabilities } from '../chat-core/composer/Composer'
@@ -1301,15 +1303,32 @@ function ChatEmbed({
   // approve|reject, so mapping 'trust' onto it silently downgraded a Trust click
   // to a one-shot approve: the card said "Trusted" and the very next tool call
   // prompted again. POST /api/chat/slots/{slot}/approve carries the decision
-  // verbatim plus the request_id, so trust sets the owner slot's policy.
+  // verbatim, so trust sets the owner slot's policy.
+  //
+  // Every decide is bound to the card's row: it names the row's native target
+  // (`origin: 'native'`, the request id and the row's `request_mid`), the form
+  // the route resolves only while that very request is pending. The id alone
+  // recurs, so a card left up for request A would decide a later request B that
+  // took A's id. A row with no native target (no `mid`, or a row the coordinator
+  // injected, which an app token never resolves) sends nothing and is refused
+  // the way a retired request is, so the row rolls back to "no longer pending".
   //
   // Requires the host app to grant '/api/chat' in its allowedApiPaths.
-  const approveMutation = useMutation({
-    mutationFn: ({ id, decision }: { id: string; decision: string }) =>
-      api.post(`/api/chat/slots/${encodeURIComponent(slotKey)}/approve`, {
+  const decideRow = useCallback(
+    (decision: string, meta: Record<string, unknown> | undefined) => {
+      const target = permissionRowTarget(meta, slotKey)
+      if (!target || target.origin !== 'native') return Promise.reject(noPendingApprovalError())
+      return api.post(`/api/chat/slots/${encodeURIComponent(slotKey)}/approve`, {
         action: decision,
-        request_id: id,
-      }),
+        origin: 'native',
+        request_id: target.id,
+        request_mid: target.mid,
+      })
+    },
+    [api, slotKey],
+  )
+  const approveMutation = useMutation({
+    mutationFn: ({ decision, meta }: { decision: string; meta?: Record<string, unknown> }) => decideRow(decision, meta),
     onSettled: () => { void refetch() },
   })
 
@@ -1317,36 +1336,32 @@ function ChatEmbed({
   // approval row's rollback (CollapsibleToolGroup.submitDecision catches it and
   // restores the buttons). mutate() returns void, so a failed POST would leave
   // the row optimistically resolved while the agent stays parked on the
-  // undelivered decision, with no retry path.
+  // undelivered decision, with no retry path. The id comes from the row's own
+  // meta (the target), so the list's id argument is not read.
   const approve = useCallback(
-    (approvalId: string, decision: string) => approveMutation.mutateAsync({ id: approvalId, decision }),
+    (_approvalId: string, decision: string, meta?: Record<string, unknown>) => approveMutation.mutateAsync({ decision, meta }),
     [approveMutation],
   )
 
   // Batch resolver (Req 4.1-4.4): apply one decision to every pending approval
-  // in a group. Each id goes through the SAME slot-scoped approve endpoint the
-  // single path uses (POST /api/chat/slots/{slot}/approve with request_id) —
-  // Task 4 mandates the slot-scoped path for batches, never the bare id-scoped
-  // one-shot resolve (which matches slot futures by bare id with no session
-  // check). Uses allSettled, NOT a fail-fast loop: a call whose verdict changed
-  // between surfacing and resume (Req 4.3-4.4) is surfaced as an excluded
-  // rejection instead of aborting the batch with earlier ids already approved.
-  // Rejects (so the row rolls back) only if EVERY call failed; a partial
-  // success settles as resolved and refetch reconciles the still-pending rows.
+  // in a group. Each row goes through the SAME row-bound slot decide the single
+  // path uses (`decideRow`, with the row's own meta, aligned 1:1 with the ids)
+  // — Task 4 mandates the slot-scoped path for batches, never the bare
+  // id-scoped one-shot resolve. Uses allSettled, NOT a fail-fast loop: a call
+  // whose verdict changed between surfacing and resume (Req 4.3-4.4), or a row
+  // with no target, is surfaced as an excluded rejection instead of aborting
+  // the batch with earlier ids already approved. Rejects (so the row rolls
+  // back) only if EVERY call failed; a partial success settles as resolved and
+  // refetch reconciles the still-pending rows.
   const approveBatch = useCallback(
-    async (approvalIds: string[], decision: string) => {
-      const results = await Promise.allSettled(
-        approvalIds.map(id => api.post(`/api/chat/slots/${encodeURIComponent(slotKey)}/approve`, {
-          action: decision,
-          request_id: id,
-        })),
-      )
+    async (approvalIds: string[], decision: string, metas?: Record<string, unknown>[]) => {
+      const results = await Promise.allSettled(approvalIds.map((_id, i) => decideRow(decision, metas?.[i])))
       void refetch()
       const rejected = results.filter(r => r.status === 'rejected')
       if (rejected.length === approvalIds.length) throw (rejected[0] as PromiseRejectedResult).reason
       return results
     },
-    [api, slotKey, refetch],
+    [decideRow, refetch],
   )
 
   return (

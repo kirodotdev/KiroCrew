@@ -44,12 +44,13 @@ This prints a one-click URL that opens Slack's "Create New App" page with all sc
 🔗 Click to create your Slack app:
 https://api.slack.com/apps?new_app=1&manifest_yaml=...
 
-   Slash command: /kirocrew-<alias> — the gateway answers it once slack.command matches:
+   Slash command: /kirocrew-<alias> — the gateway answers it as soon as the app is installed.
+   Save the name so help text and manifest updates keep it (applies live, no restart):
    kirocrew config set slack.command kirocrew-<alias>
    Slack Code switches rendered: none
 ```
 
-The app's slash command is `/kirocrew-<alias>` (lowercase, cut to Slack's 32-character limit), so people with different aliases in one Enterprise Grid org register different commands. Two aliases that differ only in case, or only after their first 22 characters, still collide; pass `--alias` to pick another. Run the printed `kirocrew config set slack.command` line so the gateway answers it; `kirocrew setup --slack` keeps offering `kirocrew` (or your configured command) as its default.
+The app's slash command is `/kirocrew-<alias>` (lowercase, cut to Slack's 32-character limit), so people with different aliases in one Enterprise Grid org register different commands. Two aliases that differ only in case, or only after their first 22 characters, still collide; pass `--alias` to pick another. The gateway answers `/kirocrew` and any `/kirocrew-<alias>` your app registers right away, with no restart. Run the printed `kirocrew config set slack.command` line too: Settings → Messaging Channels → Slack renders manifest updates from that saved name, so without it an update would rename the command back to `/kirocrew`. The change applies live. `kirocrew setup --slack` keeps offering `kirocrew` (or your configured command) as its default.
 
 ### Step 2. Create the App from the Link
 
@@ -164,8 +165,9 @@ Add it only if you want custom workspace emojis to appear in the emoji picker.
 > **reinstalled** to the workspace. After adding scopes (or importing an
 > updated manifest), go to **Settings → Install App → Reinstall to Workspace**
 > and copy the new Bot Token. Importing a manifest from `kirocrew manifest`
-> renames the app's slash command to `/kirocrew-<alias>`: run the
-> `kirocrew config set slack.command` line it prints, then restart the gateway.
+> renames the app's slash command to `/kirocrew-<alias>`. The gateway answers
+> it right away; run the `kirocrew config set slack.command` line it prints so
+> later manifest updates keep that name. No restart is needed.
 
 ### Step 4. Add User Scopes
 
@@ -203,7 +205,7 @@ and configure that token only in the integration that consumes it.
 | Short Description | Dashboard access, agent, session, and channel controls |
 | Usage Hint | `dashboard [duration] \| agent [name] \| sessions \| #channel` |
 
-The command name you choose here must match the `slack.command` value in `~/.kiro/crew/config.json` (default: `kirocrew`):
+The gateway answers `/kirocrew` and any `/kirocrew-<alias>` without a restart. Save the name you register as `slack.command` (manifest updates are rendered from it); for any other name, set it as `slack.command` in `~/.kiro/crew/config.json` (default: `kirocrew`); it applies without a restart and is also the name help text shows:
 
 ```json
 {
@@ -347,7 +349,7 @@ enabled** in the panel, and Slack keeps working as before.
 | Switch | Manifest additions |
 |---|---|
 | Agent sessions (`slack.agent_sessions`) | `features.agent_view`; bot scope `assistant:write`; events `agent_session_stopped`, `agent_session_title_changed` |
-| Code channels (`slack.code_channels`) | `features.code_channels.enabled: true`; bot scopes `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`, `pins:write` (the work board pins itself); event `agent_session_stopped` |
+| Code channels (`slack.code_channels`) | `features.code_channels.enabled: true`; bot scopes `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`, `pins:write` (the work board pins itself); event `agent_session_stopped`. Slack's manifest editor refuses `code_channel_action` as a bot event, so the manifest does not list it; whether a click on the context bar's Create PR or Stop reaches the app is not yet confirmed in a live workspace. `/create-pr`, `!stop` and Slack's own Stop button do not depend on it |
 
 > **Agent view is one-way.** Slack cannot switch an app from `agent_view` back to
 > `assistant_view` once the manifest is saved in Slack.
@@ -373,12 +375,18 @@ turned code channels on for your workspace; a workspace admin has to enable it.
 For code channels you can also set a default folder, agent, model, reasoning effort and
 approval mode for new code channels; see [Slack integration](../../src/kiro_crew/docs/slack-integration.md#slack-code-agent-sessions-and-code-channels).
 With nothing set, code channels go into a **Code channels** sidebar folder, created the first
-time one is needed and set to run `kirocrew-conductor`. To use another folder, pick it, or
+time one is needed with no agent of its own, so a new code channel runs your default agent.
+A **Code channels** folder an earlier release created with `kirocrew-conductor`, and left as
+it was, is read the same way by code channels. A dashboard **New chat** started in that
+folder still gets `kirocrew-conductor`; clear the folder's agent in the sidebar to change
+that too. To use another folder, pick it, or
 choose **New folder…** in the folder list to create one there.
 
 A conductor only plans and hands off work, so in a code channel it needs **Let code channels
 start helper agents** (`slack.code_channel_dispatch`), the sub-toggle under **Code channels**. It
-is off by default and turning Code channels on does not turn it on. Helpers work in the code
+turns on when you first turn Code channels on, and you can turn it off there or in the same save.
+If a value is already saved, including an off, turning Code channels on keeps it, so an existing
+setup does not change on upgrade. A missing, unreadable or malformed value reads as off. Helpers work in the code
 channel's folder and ask you before changing files, unless that channel is set to approve
 automatically (Trust). When on, the channel's conductor can
 create worker sessions and follow them on its work ledger, only on your own messages, only for
@@ -408,7 +416,18 @@ again, the channel instead gets a **Resume** button that only you can press.
 ### Choosing each code channel's agent
 
 A new code channel starts on the default agent: the **Agent** set here, else the default
-folder's own default agent, else `kirocrew-conductor`. To run a channel on a different
+folder's own default agent, else your default agent (`agent.default_agent`, or `kirocrew`).
+
+**Always use conductor mode** (`slack.code_channel_defaults.conductor_mode`, under the default
+folder, off by default) runs every new code channel in conductor mode on the conductor mode agent
+(`agent.crew_mode_agent`, `kirocrew-conductor` unless you set another). While it is on it
+overrides the **Agent** set here and the folder's agent, and the **Agent** menu is disabled; the
+agent you picked there is kept for when you turn it off. Channels already running keep their
+agent. A conductor hands work to helper agents, so it also needs **Let code channels start
+helper agents**; the card warns while that is off. The LTS edition has no conductor mode, so
+there the switch is hidden and a saved on has no effect.
+
+To run a channel on a different
 agent, use either of these in the channel:
 
 - **The picker in the first message.** The message Kiro Crew posts when a channel opens has
@@ -651,7 +670,7 @@ message being forwarded to the linked session.
 
 ### Slash Commands
 
-The slash command name is configurable via `slack.command` in config (default: `kirocrew`). It must match the command in your Slack app: `kirocrew manifest` registers `/kirocrew-<alias>` and prints the matching `kirocrew config set slack.command` line.
+The gateway answers `/kirocrew`, any `/kirocrew-<alias>` (what `kirocrew manifest` registers), and `slack.command` if you set a custom name (default: `kirocrew`). Help, usage replies, the Home tab and code-channel replies name the command you last typed (`slack.command` until then). Changing `slack.command` applies without a restart.
 
 | Command | Purpose |
 |---------|---------|

@@ -52,7 +52,7 @@ from kiro_crew.dashboard.state import TOOL_STALL_RECOVERY_PREFIX
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.testing.wait import async_wait_until, await_until
 
-pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+pytestmark = pytest.mark.usefixtures("healthy_host_memory", "close_subagent_managers")
 
 _GENERIC_ERROR = "error: process exited (exit 137)"
 

@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
-from kiro_crew.crew_log.checkpoint import CHECKPOINT_DIR, MAX_CHECKPOINT_BYTES
+from kiro_crew.crew_log.checkpoint import CHECKPOINT_DIR
 from kiro_crew.crew_log.schema import KIND_SESSION
 from kiro_crew.crew_log.session_tree import EdgeRecord, OpenedRecord
 from kiro_crew.crew_log.store import log_exception_text
@@ -42,6 +42,18 @@ logger = logging.getLogger("kiro_crew.crew_log.session_tree_projection")
 #: package that is, which is why it gets its own file rather than a name in a unit's
 #: bundle.
 CHECKPOINT_NAME: Final[str] = "session-tree.json"
+#: Beside the checkpoint: present while the last save was refused or failed, so an
+#: operator tool in ANOTHER process (``kirocrew doctor``) can see that the shortcut has
+#: stopped being written. Removed by the next save that lands.
+REFUSAL_NAME: Final[str] = "session-tree.refused.json"
+#: Largest session tree checkpoint this module reads or writes, on both sides. Its own
+#: number, not the crew-log payload ceiling (``MAX_PAYLOAD_BYTES``, 2 MiB): that one
+#: bounds every other savepoint and stays where it is. The tree holds at most
+#: ``TREE_UNIT_CAP`` (4096) records, decisions and spawns, and a row at its string bounds
+#: is about 1.3 KB, so the largest file the caps admit is about 16 MiB. 32 MiB is twice
+#: that, which keeps the ceiling a backstop on those caps and not a limit a store can
+#: reach by growing within them.
+MAX_SESSION_TREE_CHECKPOINT_BYTES: Final[int] = 32 * 1024 * 1024
 #: Serialized-state version. Bump when the stored fields or the fold's semantics
 #: change: a mismatch DISCARDS the file and falls back to a cold rebuild, which costs
 #: one scan and is always correct. Migrating a checkpoint would mean trusting an older
@@ -434,12 +446,12 @@ def _load_checkpoint() -> "_LoadedCheckpoint | None":
     try:
         path = _checkpoint_path()
         size = path.stat().st_size
-        if size > MAX_CHECKPOINT_BYTES:
+        if size > MAX_SESSION_TREE_CHECKPOINT_BYTES:
             logger.warning(
                 "session tree checkpoint is %d bytes, past the %d-byte ceiling; "
                 "discarding it and rebuilding",
                 size,
-                MAX_CHECKPOINT_BYTES,
+                MAX_SESSION_TREE_CHECKPOINT_BYTES,
             )
             return None
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -534,6 +546,50 @@ def _marks_from_json(mark_rows: "dict[Any, Any]") -> "dict[str, ScanIdentity]":
     return scans
 
 
+def _note_refusal(target: Path, reason: str, size: "int | None" = None) -> None:
+    """Leave the marker :func:`checkpoint_refusal` reads. Never raises: the save already
+    failed, and a marker that cannot be written must not turn that into a second fault."""
+    try:
+        from kiro_crew.atomic_write import atomic_write
+
+        marker: dict[str, Any] = {
+            "at": int(time.time() * 1000),
+            "reason": reason,
+            "ceiling": MAX_SESSION_TREE_CHECKPOINT_BYTES,
+        }
+        if size is not None:
+            marker["bytes"] = size
+        atomic_write(
+            target.with_name(REFUSAL_NAME),
+            json.dumps(marker, separators=(",", ":")),
+            fsync=False,
+            newline="",
+        )
+    except Exception:
+        log_exception_text(logger, logging.DEBUG, "session tree checkpoint refusal not recorded")
+
+
+def _clear_refusal(target: Path) -> None:
+    """Remove the marker after a save landed. Never raises."""
+    try:
+        target.with_name(REFUSAL_NAME).unlink(missing_ok=True)
+    except OSError:
+        log_exception_text(logger, logging.DEBUG, "session tree checkpoint refusal not cleared")
+
+
+def checkpoint_refusal() -> "dict[str, Any] | None":
+    """The marker's fields (``at`` in ms, ``reason``, ``ceiling``, and ``bytes`` when the
+    refusal was for size), or ``None`` when the last save landed or none was tried.
+
+    Read from the file, so a process that is not the gateway answers too. Never raises.
+    """
+    try:
+        raw = json.loads(_checkpoint_path().with_name(REFUSAL_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
 def _save_checkpoint(payload: dict[str, Any], path: "Path | None" = None) -> bool:
     """Write the checkpoint atomically. Returns whether it landed. Never raises.
 
@@ -542,25 +598,35 @@ def _save_checkpoint(payload: dict[str, Any], path: "Path | None" = None) -> boo
     came from; ``None`` resolves it here, which is right for a synchronous caller whose
     environment cannot have changed underneath it.
 
+    A refused or failed save logs a WARNING and leaves :data:`REFUSAL_NAME` beside the
+    checkpoint, which ``kirocrew doctor`` reports; the save that next lands removes it.
+
     No ``fsync``, the same choice ``checkpoint.save`` makes for the same reason: what a
     crash leaves unpersisted is an older shortcut or none, and both are states the
     reconciliation already handles. Paying for durability on a value that is explicitly
     disposable would be paying for the wrong thing.
     """
+    target: "Path | None" = path
     try:
         from kiro_crew.atomic_write import atomic_write
 
+        target = path or _checkpoint_path()
         blob = json.dumps(payload, separators=(",", ":"))
-        if len(blob.encode("utf-8")) > MAX_CHECKPOINT_BYTES:
+        size = len(blob.encode("utf-8"))
+        if size > MAX_SESSION_TREE_CHECKPOINT_BYTES:
             logger.warning(
                 "session tree checkpoint would exceed the %d-byte ceiling; not written",
-                MAX_CHECKPOINT_BYTES,
+                MAX_SESSION_TREE_CHECKPOINT_BYTES,
             )
+            _note_refusal(target, "over_ceiling", size)
             return False
         # ``atomic_write`` creates its target's parents itself, which is why there is no
         # ``mkdir`` here -- the same reason ``checkpoint.save`` has none.
-        atomic_write(path or _checkpoint_path(), blob, fsync=False, newline="")
-        return True
+        atomic_write(target, blob, fsync=False, newline="")
     except Exception:
-        logger.debug("session tree checkpoint could not be written", exc_info=True)
+        logger.warning("session tree checkpoint could not be written", exc_info=True)
+        if target is not None:
+            _note_refusal(target, "write_failed")
         return False
+    _clear_refusal(target)
+    return True

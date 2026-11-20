@@ -43,6 +43,15 @@ def gate():
     return _load_gate()
 
 
+@pytest.fixture(autouse=True)
+def _frontend_toolchain_present(gate, _floor_monkeypatch):
+    """A plan under test must not depend on whether this host has Node or ran ``npm ci``."""
+    _floor_monkeypatch.setattr(gate, "frontend_dependencies_installed", lambda: True, raising=False)
+    _floor_monkeypatch.setattr(
+        importlib.import_module("run_scoped_tests"), "_node_launcher", lambda name: f"/usr/bin/{name}"
+    )
+
+
 def _args(**overrides):
     defaults = {"base": "origin/main", "dry_run": True, "full": False}
     defaults.update(overrides)
@@ -524,6 +533,73 @@ def test_a_missing_runner_is_a_selection_error_everywhere_else(gate) -> None:
     """``LauncherMissing`` stays a ``SelectionUntrustworthy`` so single-surface
     callers (the profile's per-surface gates) still exit 2 on it."""
     assert issubclass(gate.LauncherMissing, gate.SelectionUntrustworthy)
+
+
+def test_installed_website_packages_keep_the_cross_surface_set_without_fetching(
+    gate, monkeypatch
+) -> None:
+    """With ``npm ci`` done, a backend diff still runs CI's cross-surface specs,
+    and npx is told never to download a vitest the lockfile did not install."""
+    monkeypatch.setattr(gate, "changed_files", lambda base: ["src/kiro_crew/gateway.py"])
+    _related(monkeypatch, gate, {
+        "backend": ["test/test_gatewayd_diag.py"],
+        "frontend": ["src/test/AcpAdapter.defaults.test.ts"],
+    })
+    plan = gate.build_plan(_args())
+    assert _plan_labels(plan) == ["backend (related)", "frontend (related)"]
+    _label, fe_cmd, _cwd = plan.commands[1]
+    assert fe_cmd[1:4] == ["--no-install", "vitest", "run"]
+
+
+def test_missing_website_packages_skip_the_cross_surface_set_on_a_backend_diff(
+    gate, monkeypatch, capsys
+) -> None:
+    """A fresh worktree has Node but no ``website/node_modules``. A diff that
+    touched no frontend file keeps its backend run and exits 0, naming the fix."""
+    monkeypatch.setattr(gate, "frontend_dependencies_installed", lambda: False)
+    monkeypatch.setattr(gate, "changed_files", lambda base: ["src/kiro_crew/gateway.py"])
+    _related(monkeypatch, gate, {
+        "backend": ["test/test_gatewayd_diag.py"],
+        "frontend": ["src/test/AcpAdapter.defaults.test.ts"],
+    })
+    plan = gate.build_plan(_args())
+    assert _plan_labels(plan) == ["backend (related)"]
+    assert plan.skipped == ["frontend"]
+    assert any(
+        "NOT RUN HERE" in note and "npm ci" in note and "CI runs them" in note
+        for note in plan.notes
+    )
+
+    monkeypatch.setattr(gate, "build_plan", lambda _args: plan)
+    monkeypatch.setattr(
+        gate.subprocess, "run",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 0),
+    )
+    assert gate.main([]) == 0
+    assert "frontend related set NOT run here" in capsys.readouterr().err
+
+
+def test_missing_website_packages_fail_closed_on_a_frontend_diff(
+    gate, monkeypatch, capsys
+) -> None:
+    """A frontend change with nothing installed to test it runs nothing and
+    exits 2: a skip here would pass a frontend diff no spec ever ran on."""
+    monkeypatch.setattr(gate, "frontend_dependencies_installed", lambda: False)
+    monkeypatch.setattr(gate, "changed_files", lambda base: ["website/src/App.tsx"])
+    _related(monkeypatch, gate, {
+        "backend": ["test/test_gatewayd_diag.py"],
+        "frontend": ["src/test/App.deployRoute.test.tsx"],
+    })
+    ran: list[list[str]] = []
+
+    def record_run(cmd, *_a, **_k):
+        ran.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(gate.subprocess, "run", record_run)
+    assert gate.main([]) == 2
+    assert not [cmd for cmd in ran if cmd and cmd[0] != "git"]
+    assert "npm ci" in capsys.readouterr().err
 
 
 def test_backend_only_diff_runs_related_not_full(gate, monkeypatch) -> None:

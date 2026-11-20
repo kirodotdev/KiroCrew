@@ -10,8 +10,10 @@
 import { useMemo, useRef } from 'react'
 import type { AppDispatch, RootState } from '../../store'
 import { sseStatus, setUpdateProgress } from '../../store/dashboardSlice'
+import { noteSignInCommand } from '../../api/signInCommand'
 import type { StatusData } from '../../types'
 import type { FrameData } from './frames'
+import { UPDATE_RESTART_LATCH_TTL_MS, clearGatewayRestart, noteGatewayRestart } from '../../lib/gatewayRestart'
 
 /** sessionStorage key latched when an in-app update reaches its `restarting`
  *  step. The gateway then execs itself and the socket drops; on the next
@@ -24,8 +26,9 @@ export const UPDATE_RESTART_LATCH_KEY = 'mc-update-restarting'
 /** How long the latch stays honored. A restart resolves in seconds; a latch
  *  older than this belongs to an update the user cancelled or that died
  *  before exec, and reloading over an unrelated later reconnect would look
- *  like the app randomly refreshing itself. */
-export const UPDATE_RESTART_LATCH_TTL_MS = 15 * 60 * 1000
+ *  like the app randomly refreshing itself. Defined with the shell's pending
+ *  restart (`lib/gatewayRestart`), which honours a request the same time. */
+export { UPDATE_RESTART_LATCH_TTL_MS }
 
 /** Read-and-clear the restart latch. True only when a fresh latch existed —
  *  the caller reloads exactly once per latched update. Clears a stale latch
@@ -49,11 +52,13 @@ export function handleUpdateProgress(dispatch: AppDispatch, data: FrameData): vo
   // neither `version` nor anything else the tab compares).
   if (prog.step === 'restarting') {
     try { sessionStorage.setItem(UPDATE_RESTART_LATCH_KEY, String(Date.now())) } catch { /* best effort */ }
+    noteGatewayRestart()
   } else if (prog.step === 'failed' || prog.step === 'error' || prog.step === 'done') {
     // A failure AFTER `restarting` was pushed (invalid exe path) means
     // no exec is coming — an armed latch would reload over the next
     // unrelated blip. `done` ends a staged install: no exec is coming, same cleanup.
     try { sessionStorage.removeItem(UPDATE_RESTART_LATCH_KEY) } catch { /* best effort */ }
+    clearGatewayRestart()
   }
   // `done` is kept, not cleared: a staged install (the new version waits for the
   // next restart) ends on it, and the update flow reads it to say so.
@@ -104,6 +109,9 @@ export function useBundleReload(
 
   return useMemo<BundleReload>(() => ({
     onDashboardStatus(data) {
+      // Every frame, ahead of the skip below: the sign-in sentences read it
+      // outside the store.
+      noteSignInCommand(data.sign_in_command)
       // Detect server version change → full reload (actual update)
       const prev = lastVersionRef.current
       const next = data.version

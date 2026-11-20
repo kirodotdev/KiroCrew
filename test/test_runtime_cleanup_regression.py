@@ -95,6 +95,8 @@ def lifecycle(monkeypatch, tmp_path):
             else False
         ),
         kill_pid=kernel.kill_pid,
+        # A kill whose root exited inside the grace waits for the root's group.
+        pgroup_exists=lambda pgid: pgid in kernel.groups.values(),
         file_lock=platform_compat.file_lock,
         open_lock_file=platform_compat.open_lock_file,
     )

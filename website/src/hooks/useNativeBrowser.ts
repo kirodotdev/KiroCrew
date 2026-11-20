@@ -8,7 +8,7 @@ function bridge(): BrowserAPI | null {
 }
 
 /** Selector for SPA chrome that would be occluded by the native layer. */
-const OVERLAY_SELECTOR = '[role="dialog"],[role="alertdialog"],[data-native-overlay]'
+export const OVERLAY_SELECTOR = '[role="dialog"],[role="alertdialog"],[data-native-overlay]'
 
 /**
  * Drive one dashboard Browser panel's NATIVE browser view.

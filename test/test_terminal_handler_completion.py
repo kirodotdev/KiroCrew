@@ -364,7 +364,15 @@ class TestOpenVettedDir:
         with patch.object(terminal.os, "scandir", spy):
             entries, _ = terminal._list_vetted_completions(str(tmp_path), "", False, 10)
         assert [e["name"] for e in entries] == ["visible"]
-        assert seen and all(isinstance(a, int) for a in seen)
+        # The sensitive-path gate each entry is judged by lists the data home's apps/ for
+        # their declared masks, through the same patched scandir; only the listing of
+        # *tmp_path* is the subject here.
+        listed = [
+            a
+            for a in seen
+            if isinstance(a, int) or os.path.realpath(a) == os.path.realpath(tmp_path)
+        ]
+        assert listed and all(isinstance(a, int) for a in listed)
 
     def test_listing_yields_nothing_when_the_directory_cannot_be_pinned(self, tmp_path):
         with patch.object(terminal, "_open_vetted_dir", return_value=None):

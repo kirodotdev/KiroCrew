@@ -45,6 +45,12 @@ is a component's own child, never a value:
 `components={{ mono: <code>{command}</code> }}` with `<mono/>` in the catalog
 string.
 
+One sentence family takes a value without a placeholder: the sign-in sentences
+name `api.client.reauth_command` verbatim, and on a container gateway
+`api/signInCommand.ts` replaces that command, as a whole, with the one the
+gateway sends. A translation keeps its own `reauth_command` inside each of those
+sentences; `ApiClient.coverage.test.tsx` pins it in every catalog.
+
 `LanguageProvider` forces a re-RENDER of the tree on a language change, using
 `cloneElement` (which defeats React's referential-equality bailout) rather than a
 changing `key`. It deliberately does **not** remount, because a remount discards
@@ -241,7 +247,7 @@ other languages keep, so a shared key forces a translator to guess:
 - `schedulePage.type` was both a table column header (the noun "Type") and the
   imperative verb in "Type `delete` to confirm". es/pt/ru picked the noun and
   broke the instruction; zh-CN/hi/bn picked the verb, so the column header read
-  "please enter". It is two keys now, the verb one named `type_verb_to_confirm`.
+  "please enter". It is two keys now, the verb one named `type_token_to_confirm`.
 
 If a value's part of speech is not obvious from the key, **put it in the key**.
 
@@ -261,7 +267,8 @@ ASCII `"{{name}}"` is not enough.
 allowlist you can forget to extend:
 
 - every key whose **name** matches `/confirm/i` and whose English value
-  interpolates a placeholder must be on `QUOTED_OPERAND_CONFIRM_KEYS`, **or**
+  interpolates a placeholder is swept in automatically and must quote its
+  operand in every catalog, **or**
 - listed in `CONFIRM_OPERAND_KEY_EXEMPTIONS` with a reason (today: the #4657
   kind-word forms, where "template" / "crew" already sit next to the name), **or**
 - interpolate **only** placeholder names in `EXEMPT_CONFIRM_PLACEHOLDER_NAMES`
@@ -270,8 +277,12 @@ allowlist you can forget to extend:
   restate it here.
 
 A new confirm key with `{{name}}` and no kind word fails CI until it is quoted
-in all 12 catalogs and added to the pin. The glyph pin then requires **every**
-non-exempt placeholder in a pinned key to be wrapped, not merely one of them.
+in every catalog; it needs no edit to the test. `QUOTED_OPERAND_CONFIRM_KEYS`
+holds only the confirm prompts the sweep cannot see because their names do not
+match `/confirm/i` (`…_title`, `delete_x`, `make_x_live`), and a key the sweep
+already reads fails if it is also listed there. The glyph check requires
+**every** non-exempt placeholder in a checked key to be wrapped, not merely one
+of them.
 After changing English, regenerate `en-XA.json` with `npm run i18n:pseudo`.
 
 **A literal token the user must type must never be a catalog value.** Keep it a

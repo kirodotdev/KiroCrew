@@ -71,19 +71,14 @@ MATE = {"key": "dm-ada", "mode": "member", "agent": "ada"}
 MATE_CHILD = {"key": "chat-4-4", crew_mode.MATE_ROOT_FIELD: "dm-ada"}
 
 
-def _mate_app(monkeypatch: pytest.MonkeyPatch, listed: object) -> web.Application:
-    """The route over a mate thread, its session and a plain row, stamped for real.
-
-    *listed* is Bot ``ada``'s ``show_sessions_in_list`` in the live config.
-    """
+def _mate_app(monkeypatch: pytest.MonkeyPatch) -> web.Application:
+    """The route over a mate thread, its session and a plain row, stamped for real."""
 
     async def _noop() -> None:
         return None
 
     monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", _noop)
     monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda _r: False)
-    cfg = SimpleNamespace(agents={"ada": SimpleNamespace(show_sessions_in_list=listed)})
-    monkeypatch.setattr(crew_mode, "_live_cfg", lambda: cfg)
     monkeypatch.setattr(crew_mode, "_known_mate_roots", set())
     monkeypatch.setattr(crew_mode, "_known_roots", set())
 
@@ -104,22 +99,12 @@ def _mate_app(monkeypatch: pytest.MonkeyPatch, listed: object) -> web.Applicatio
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("listed", [False, None, "yes"])
 async def test_a_persons_read_drops_a_mates_sessions_and_keeps_the_mate_thread(
-    monkeypatch: pytest.MonkeyPatch, listed: object
-) -> None:
-    app = _mate_app(monkeypatch, listed)
-    req = make_mocked_request("GET", "/api/chat/slots", app=app)
-    assert await _keys(req) == {"dm-ada", "chat-3-3"}
-
-
-@pytest.mark.asyncio
-async def test_a_bot_that_shows_its_sessions_keeps_them_in_a_persons_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = _mate_app(monkeypatch, True)
+    app = _mate_app(monkeypatch)
     req = make_mocked_request("GET", "/api/chat/slots", app=app)
-    assert await _keys(req) == {"dm-ada", "chat-4-4", "chat-3-3"}
+    assert await _keys(req) == {"dm-ada", "chat-3-3"}
 
 
 @pytest.mark.asyncio
@@ -127,7 +112,7 @@ async def test_a_bot_that_shows_its_sessions_keeps_them_in_a_persons_read(
 async def test_crew_all_and_an_agents_read_keep_a_mates_sessions(
     monkeypatch: pytest.MonkeyPatch, agent: bool
 ) -> None:
-    app = _mate_app(monkeypatch, False)
+    app = _mate_app(monkeypatch)
     path = "/api/chat/slots" if agent else "/api/chat/slots?crew=all"
     req = make_mocked_request("GET", path, app=app)
     if agent:

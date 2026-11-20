@@ -1132,6 +1132,24 @@ describe('project-report: the page the gateway ships', () => {
     })
   })
 
+  // ------------------------- a long choice is shown and sent whole
+  describe('a long choice on a needs-you card', () => {
+    const LONG = 'Publish rev 22 with the argument-order fix and the memory print, then watch the dry run'
+
+    it('shows the whole option on its button and posts the whole option', () => {
+      const posted = vi.spyOn(window, 'postMessage').mockImplementation(() => {})
+      try {
+        mount({ items: [], for_you: [{ text: 'Rev 22 is ready', ask: 'decide', options: [LONG, 'Hold rev 22'], workstream: '' }] })
+        const button = all('.pr-todo-opt').find((b) => b.textContent === LONG) as HTMLButtonElement
+        expect(button).toBeTruthy()
+        button.click()
+        expect(posted).toHaveBeenCalledWith({ type: 'kirocrew-dashboard:send', text: `"Rev 22 is ready": ${LONG}` }, '*')
+      } finally {
+        posted.mockRestore()
+      }
+    })
+  })
+
   // ------------------------- cards asked before the person wrote in the chat fold
   describe('cards asked before the person wrote in the chat', () => {
     // A reply typed in the chat, an option clicked there and a steer into the running

@@ -4,7 +4,7 @@ import { SquareTerminal, Check, ClipboardCheck, AlertCircle } from 'lucide-react
 import { checkSensitiveCommand } from '../utils/sensitiveCommand'
 import { RUN_IN_TERMINAL_RESULT_FALLBACK_MS } from '../utils/fenceShell'
 import RunInTerminalConfirm from './RunInTerminalConfirm'
-import { RunInTerminalScope } from './runInTerminalScope'
+import { RunInTerminalScope, RunInTerminalOriginSlot } from './runInTerminalScope'
 import { api } from '../api/client'
 
 import { i18nT } from '../i18n/t'
@@ -90,7 +90,14 @@ export type RunInTerminalStatus = 'idle' | 'sent' | 'copied' | 'error'
  * explained with its own notice (a chat on a Session Environment, a cwd still
  * loading), so it leaves `noAnswer` false.
  */
-export function useRunInTerminal({ code, lang, willCopy }: { code: string; lang?: string; willCopy: boolean }): {
+export function useRunInTerminal({ code, lang, willCopy, source }: {
+  code: string
+  lang?: string
+  willCopy: boolean
+  /** Where the command sits, sent with the request so the host can tell the
+   *  chat's crewmate which of its hand-overs ran (`utils/terminalRunNote`). */
+  source?: 'run_yourself'
+}): {
   status: RunInTerminalStatus
   noAnswer: boolean
   /** Forget the last unanswered run, so the caller can offer Run again. */
@@ -100,6 +107,7 @@ export function useRunInTerminal({ code, lang, willCopy }: { code: string; lang?
 } {
   // The host page that renders this chat; only it answers the request.
   const scope = useContext(RunInTerminalScope)
+  const originSlot = useContext(RunInTerminalOriginSlot)
   const [status, setStatus] = useState<'idle' | 'sent' | 'copied' | 'error'>('idle')
   const [pending, setPending] = useState<{ command: string; warnReason: string } | null>(null)
   const [noAnswer, setNoAnswer] = useState(false)
@@ -137,9 +145,11 @@ export function useRunInTerminal({ code, lang, willCopy }: { code: string; lang?
       clearTimeout(resultTimerRef.current)
       resultUnsubRef.current = null
     }
-    const detail = scope == null ? { code: cleaned, reqId, lang } : { code: cleaned, reqId, lang, scope }
+    const base = source ? { code: cleaned, reqId, lang, source } : { code: cleaned, reqId, lang }
+    const origin = originSlot == null ? base : { ...base, originSlot }
+    const detail = scope == null ? origin : { ...origin, scope }
     window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail }))
-  }, [flash, lang, scope])
+  }, [flash, lang, scope, source, originSlot])
 
   const askToRun = useCallback(() => {
     const cleaned = stripPromptChars(code)

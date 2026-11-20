@@ -7,22 +7,72 @@ name: Main Red Watch
 # run fails the same way. This watcher is the missing notice for that red.
 #
 # WHAT IT DOES: when a PUSH run of `CI` on main ends `failure` or `timed_out`, it
-# reads the log of every failed job, collects the `FAILED <node id> - <message>`
-# lines of pytest's short test summary, and opens or updates ONE issue titled
-# `Main is red: <first node id>` under the `main-red` label. The body holds the
+# reads the check-run annotations of every failed job, collects the failing tests
+# the rootdir `conftest.py` annotated there (title: the node id; message:
+# `<node id> - <reason>`), and opens or updates ONE issue titled
+# `ci: Main is red: <first node id>` under the `main-red` label. The issue has
+# the shape of the repository's CI failure form (`.github/ISSUE_TEMPLATE/ci_failure.yml`):
+# its `ci: ` title prefix, its labels `bug` and `area: ci` (created when the
+# repository lacks one, and left off if filing with them fails), and one section per
+# form field in the form's order, filled from what this run knows and
+# `_No response_` where it knows nothing. The body holds the
 # set {node id: first 80 characters of the message}, the first-red SHA and the
 # streak, and one line, `Fix in progress: ...`, that it rewrites on every main run
-# from the open pull requests that cross-reference the issue. When a later push
+# from the open pull requests whose body declares the issue (`Fixes #N`). When a later push
 # run of `CI` ends green, it comments on the issue and closes it.
 #
 # WARN ONLY: it writes an issue and nothing else. It comments on no pull request,
-# assigns nobody and mentions nobody but the author of a pull request that
-# cross-references the issue (the line names who is fixing it). No check of any
+# assigns nobody and mentions nobody but the author of a pull request whose
+# body declares the issue (the line names who is fixing it). No check of any
 # pull request changes. Reverting this one file set removes it.
 #
-# WHEN IT WRITES NOTHING: a failed run with no pytest node id in any failed job
-# log. That covers a Fast Gate barrier timeout (the job waited, no test ran), a
-# Coverage Gate failure and a run that failed before the tests started. A
+# WHY ANNOTATIONS AND NOT THE LOG: the Actions token's read of a job log
+# (`actions/jobs/<id>/logs`) fails in this repository. MEASURED over two weeks of
+# push runs of `CI` on main: 155 ended `failure` and this job started for every
+# one. 28 died on the installation rate limit. In the other 127 a log-reading
+# step failed all 369 of its reads, printed "writing nothing" and filed no issue,
+# while the annotations of 87 of the 155 runs named a failing test. That step
+# discarded the read's stderr, so the reason is not on record; the same request
+# succeeds with a user token. An annotation is a JSON row on the API host, like
+# the job list this step reads, and holds the node id as data. The log is the
+# fallback for a job whose annotations cannot be read, and for a backend test
+# job whose annotations name no test (a shard that died before `conftest.py`
+# wrote them). A failed read of either says why, as a notice and in the job
+# summary. A read refused by the API rate limit is named as that, with the reset
+# time, and ends the reading: a log read after it would fail the same way.
+#
+# WHEN IT OPENS: with no issue open, only when some test is red in two failed
+# jobs of the run, which for a break is the Linux and the Windows shard that
+# both carry it. MEASURED on the same two weeks against 30 verified breaks of
+# main: opening on any named test files 39 issues, 17 of them for a test that
+# was not a break (mostly known flaky tests), and shows 29 of the 30; this rule
+# files 22, none of them for a non-break, and shows 28, at the same delay.
+#
+# A break that only ever fails on one leg (one operating system, one shard) is
+# red in one job of every run, so that rule alone never files it. A run that is
+# red in one job only therefore looks back once: if the previous push run of
+# `CI` on main that reached a verdict was red on the same test file, it opens
+# the issue. MEASURED on the same two weeks: 27 of the 87 runs that named a
+# test were red in one job only; 6 of those had a test file also red in the
+# previous verdict run, each while the two-jobs rule already had an issue open,
+# so the look back files the same 22 issues and no other. The file and not the
+# node id, because a break often fails another test of the file on each run.
+# Nothing is stored: the look back reads the run list, the previous run's jobs
+# and the annotations of its failed jobs, and a read that fails opens nothing.
+# A run that opens nothing ends with a warning, in the log and in the job
+# summary, that names the tests it saw red in one job and what the look back
+# found. Once an issue is open every red run updates it.
+#
+# LIMITS OF AN ANNOTATION: `conftest.py` annotates the first 10 failing tests of
+# a job and counts the rest in a notice, so a job with more names 10 here. 1 of
+# the 229 red backend jobs on main in those two weeks had more than 10.
+#
+# WHEN IT WRITES NOTHING: a failed run with no pytest node id in any failed job.
+# That covers a Fast Gate barrier timeout (the job waited, no test ran), a
+# Coverage Gate failure and a run that failed before the tests started; it says
+# so in a warning with the counts of what it read, never in silence. When
+# failed jobs exist and not one of them could be read, the job FAILS instead, so
+# a watcher that cannot see is red in the Actions list rather than silent. A
 # cancelled run never reaches the job (the gate below). A green run closes an
 # issue only when the full backend suite ran in it (the `Backend Tests` shards'
 # coverage upload ran, which `ci.yml` skips on a frontend-only or leaf-only
@@ -48,7 +98,13 @@ name: Main Red Watch
 # never part of a shell command or a `${{ }}` expression. The script is read from
 # main's default-branch checkout, never from the failing commit.
 #
-# PERMISSIONS: `actions: read` for the run's jobs and their logs; `issues: write`
+# API CALLS: no loop waits and nothing retries. A red run costs the job list, one
+# annotation read per failed job (first 20 jobs; a second read, the log, only for
+# a job whose annotations could not be read or, on a backend test job, name no
+# test) and the issue reads and writes.
+#
+# PERMISSIONS: `actions: read` for the run's jobs and their logs; `checks: read`
+# for the annotations of each failed job's check run; `issues: write`
 # to read, open, edit, comment on and close the issue and to create its label;
 # `contents: read` for the sparse checkout of `.github/scripts`. No pull-request
 # scope: the fix line reads the issue's own timeline.
@@ -68,6 +124,7 @@ on:
 
 permissions:
   actions: read
+  checks: read
   contents: read
   issues: write
 
@@ -106,7 +163,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts
 
       - name: Open, update or close the main-red issue
         env:
@@ -114,6 +173,8 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           # A green run closes the issue only if every job with this name prefix
@@ -125,6 +186,7 @@ jobs:
         run: |
           set -euo pipefail
           script=.github/scripts/main_red_nodeids.py
+          previous=.github/scripts/main_red_previous.py
           work="$RUNNER_TEMP/main-red"
           mkdir -p "$work/logs"
           short_sha="${HEAD_SHA:0:12}"
@@ -185,25 +247,93 @@ jobs:
             exit 0
           fi
 
-          # Red: read the log of each failed job (newest cap 20), as files.
+          # Red: the failing tests of each failed job (first 20), as files. A job's
+          # check run has the job's id, and its annotations name the failing tests:
+          # one read per job. The log is read for a job whose annotations could not
+          # be read, and for a backend test job whose annotations name no test (a
+          # shard that died before conftest wrote them). Every failed read says why,
+          # in the log and in the job summary.
           gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
-            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | .id' \
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | [.id, .name] | @tsv' \
             > "$work/failed-jobs.txt"
+          say() { echo "::$1::$2"; printf -- '- %s\n' "$2" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"; }
+          why() { head -c 300 "$work/read-error.txt" | tr -c '[:print:]' ' '; }
+          rate_limited() { grep -qi 'rate limit' "$work/read-error.txt"; }
+          read_log() {
+            if gh api "repos/$REPO/actions/jobs/$1/logs" \
+              > "$work/logs/$1.log" 2> "$work/read-error.txt"; then
+              logs_read=$((logs_read + 1))
+              return 0
+            fi
+            rm -f "$work/logs/$1.log"
+            return 1
+          }
+          failed="$(grep -c . "$work/failed-jobs.txt" || true)"
           fetched=0
-          while read -r job_id; do
+          readable=0
+          notes_read=0
+          logs_read=0
+          limited=0
+          while IFS=$'\t' read -r job_id job_name; do
             case "$job_id" in ''|*[!0-9]*) continue ;; esac
             if [ "$fetched" -ge 20 ]; then
-              echo "::notice::More than 20 failed jobs; reading the first 20 logs."
+              say notice "More than 20 failed jobs; reading the first 20."
               break
             fi
             fetched=$((fetched + 1))
-            gh api "repos/$REPO/actions/jobs/$job_id/logs" > "$work/logs/$job_id.log" 2>/dev/null \
-              || { echo "::notice::Could not read the log of job $job_id; skipping it."; rm -f "$work/logs/$job_id.log"; }
+            if gh api "repos/$REPO/check-runs/$job_id/annotations?per_page=100" \
+              > "$work/logs/$job_id.json" 2> "$work/read-error.txt"; then
+              readable=$((readable + 1))
+              notes_read=$((notes_read + 1))
+              case "$job_name" in
+                "$PROOF_JOB_PREFIX"*)
+                  if ! python3 "$script" names-test "$work/logs" "$job_id"; then
+                    if read_log "$job_id"; then
+                      say notice "The annotations of job $job_id name no test; read its log too."
+                    elif rate_limited; then
+                      limited=1
+                      break
+                    else
+                      say notice "The annotations of job $job_id name no test and its log could not be read ($(why))."
+                    fi
+                  fi
+                  ;;
+              esac
+              continue
+            fi
+            rm -f "$work/logs/$job_id.json"
+            # A log read after a rate-limited read fails the same way; stop reading.
+            if rate_limited; then
+              limited=1
+              break
+            fi
+            say notice "Could not read the annotations of job $job_id ($(why)); trying its log."
+            if read_log "$job_id"; then
+              readable=$((readable + 1))
+            elif rate_limited; then
+              limited=1
+              break
+            else
+              say notice "Could not read the log of job $job_id ($(why)); skipping it."
+            fi
           done < "$work/failed-jobs.txt"
+          if [ "$limited" = 1 ]; then
+            # The rate_limit endpoint is not counted against the limit.
+            reset="$(gh api rate_limit --jq .resources.core.reset 2>/dev/null || true)"
+            case "$reset" in
+              ''|*[!0-9]*) when="at an unknown time" ;;
+              *) when="at $(date -u -d "@$reset" +%H:%MZ 2>/dev/null || echo "epoch $reset")" ;;
+            esac
+            say warning "The API rate limit of this token is used up (it resets $when). Stopped at job $fetched of $failed failed job(s) and read no log, which would fail the same way."
+          fi
+          if [ "$fetched" -gt 0 ] && [ "$readable" -eq 0 ]; then
+            say error "Could not read the annotations or the log of any of the $fetched failed job(s) of $RUN_URL, so this run cannot say whether main is red on a test."
+            exit 1
+          fi
 
           python3 "$script" extract "$work/logs" > "$work/failures.json"
           if [ "$(jq 'length' "$work/failures.json")" = "0" ]; then
-            echo "No failing pytest node id in $RUN_URL (a barrier timeout, a coverage gate or an early failure); writing nothing."
+            say warning "No failing pytest node id in $RUN_URL: $failed failed job(s), $notes_read annotation set(s) and $logs_read log(s) read, 0 node ids (a barrier timeout, a coverage gate, a job that is not a backend test, or an early failure); writing nothing."
             exit 0
           fi
 
@@ -214,6 +344,7 @@ jobs:
             python3 "$script" render --failures "$work/failures.json" \
               --prev-body "$work/prev-body.md" ${2:+--timeline "$2"} \
               --repo "$REPO" --sha "$HEAD_SHA" --run-id "$RUN_ID" --run-url "$RUN_URL" \
+              --jobs "$work/failed-jobs.txt" --logdir "$work/logs" \
               ${1:+--issue-number "$1"} --out-title "$work/title.txt" --out-body "$work/body.md" || rc=$?
             if [ "$rc" = 10 ]; then
               exit 0
@@ -222,9 +353,11 @@ jobs:
           }
 
           if [ -n "$existing" ]; then
-            # Open pull requests that cross-reference the issue.
+            # Pull requests that cross-reference the issue, with their bodies. The
+            # script keeps those whose body declares the issue: a comment that only
+            # cites it cross-references it too and is not a fix.
             if gh api "repos/$REPO/issues/$existing/timeline?per_page=100" --paginate \
-              --jq '.[] | select(.event == "cross-referenced" and .source.issue.pull_request != null) | {url: .source.issue.html_url, state: .source.issue.state, author: .source.issue.user.login, created: .source.issue.created_at}' \
+              --jq '.[] | select(.event == "cross-referenced" and .source.issue.pull_request != null) | {url: .source.issue.html_url, state: .source.issue.state, author: .source.issue.user.login, created: .source.issue.created_at, body: .source.issue.body}' \
               > "$work/timeline.ndjson"; then
               render "$existing" "$work/timeline.ndjson"
             else
@@ -234,11 +367,100 @@ jobs:
             gh issue edit "$existing" --repo "$REPO" --body-file "$work/body.md"
             echo "Updated #$existing."
           else
+            # No issue is open. A test red in one job only is as often a flake as a
+            # break, so the issue opens when a test is red in two jobs of this run
+            # (a Linux and a Windows leg), or when this run is red in one job and
+            # the previous run of main that reached a verdict was red on the same
+            # test file: a break that shows on one leg only is red in one job of
+            # every run. The run that does not open says which tests it saw and
+            # what the look back found. An open issue is updated either way.
+            #
+            # look_back sets `again` to the shared test files (empty for none) and
+            # `looked` to what it found. It reads the run list (one call), the
+            # previous run's jobs (one call) and the annotations of its failed jobs
+            # (one each, first 20), and only when that run was red. A read that
+            # fails, rate limit included, opens nothing: the look back only ever
+            # adds an issue, and without it the run does what it did before.
+            look_back() {
+              again=""
+              case "$RUN_NUMBER" in ''|*[!0-9]*) looked="This run has no run number to look back from"; return 0 ;; esac
+              case "$WORKFLOW_ID" in ''|*[!0-9]*) looked="This run has no workflow id to look back with"; return 0 ;; esac
+              unread() {
+                if rate_limited; then
+                  looked="The API rate limit of this token is used up, so $1 could not be read"
+                else
+                  looked="Could not read $1 ($(why))"
+                fi
+              }
+              if ! gh api "repos/$REPO/actions/workflows/$WORKFLOW_ID/runs?branch=main&event=push&status=completed&per_page=100" \
+                > "$work/runs.json" 2> "$work/read-error.txt"; then
+                unread "the earlier runs of main"
+                return 0
+              fi
+              if ! prev="$(python3 "$previous" previous-verdict "$work/runs.json" --run-number "$RUN_NUMBER" --repo "$REPO")"; then
+                looked="None of the 100 finished push runs before this one reached a verdict"
+                return 0
+              fi
+              IFS=$'\t' read -r prev_id prev_conclusion prev_url <<< "$prev"
+              if [ "$prev_conclusion" = success ]; then
+                looked="The previous run of main that reached a verdict ($prev_url) was green"
+                return 0
+              fi
+              if ! gh api "repos/$REPO/actions/runs/$prev_id/jobs?per_page=100" --paginate \
+                --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | [.id, .name] | @tsv' \
+                > "$work/prev-failed-jobs.txt" 2> "$work/read-error.txt"; then
+                unread "the jobs of $prev_url"
+                return 0
+              fi
+              mkdir -p "$work/prev-logs"
+              prev_read=0
+              while IFS=$'\t' read -r job_id _; do
+                case "$job_id" in ''|*[!0-9]*) continue ;; esac
+                if [ "$prev_read" -ge 20 ]; then
+                  break
+                fi
+                prev_read=$((prev_read + 1))
+                if ! gh api "repos/$REPO/check-runs/$job_id/annotations?per_page=100" \
+                  > "$work/prev-logs/$job_id.json" 2> "$work/read-error.txt"; then
+                  rm -f "$work/prev-logs/$job_id.json"
+                  if rate_limited; then
+                    unread "the failing tests of $prev_url"
+                    return 0
+                  fi
+                fi
+              done < "$work/prev-failed-jobs.txt"
+              if again="$(python3 "$previous" same-files "$work/logs" "$work/prev-logs")"; then
+                looked="The previous run of main that reached a verdict ($prev_url) was red on the same test file ($again)"
+              else
+                again=""
+                looked="The previous run of main that reached a verdict ($prev_url) was not red on the same test file"
+              fi
+            }
+            if ! once="$(python3 "$script" confirmed "$work/logs")"; then
+              look_back
+              if [ -z "$again" ]; then
+                say warning "$RUN_URL: $once and no main-red issue is open; not opening an issue for a failure seen in one job. $looked."
+                exit 0
+              fi
+              say notice "$RUN_URL: $once. $looked, so an issue is opened."
+            fi
             : > "$work/prev-body.md"
             render ""
+            # The form's labels exist where the form does. A repository without one
+            # (a fork's own main) gets it created here, with no `--force`, so a
+            # label that exists keeps its colour and description. A label must
+            # never cost the issue: if filing with labels fails, it is filed bare.
+            label_args=()
+            for form_label in bug "area: ci"; do
+              gh label create "$form_label" --repo "$REPO" >/dev/null 2>&1 || true
+              label_args+=(--label "$form_label")
+            done
             if [ "$have_label" = 1 ]; then
-              created="$(gh issue create --repo "$REPO" --title "$(< "$work/title.txt")" --body-file "$work/body.md" --label main-red)"
-            else
+              label_args+=(--label main-red)
+            fi
+            if ! created="$(gh issue create --repo "$REPO" --title "$(< "$work/title.txt")" \
+              --body-file "$work/body.md" ${label_args[@]+"${label_args[@]}"} 2> "$work/read-error.txt")"; then
+              say warning "Could not file the issue with its labels ($(why)); filing it without labels."
               created="$(gh issue create --repo "$REPO" --title "$(< "$work/title.txt")" --body-file "$work/body.md")"
             fi
             printf '%s\n' "$created"

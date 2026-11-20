@@ -56,6 +56,7 @@ _SOURCE_GATE_SCRIPTS = (
     "scripts/check_brand_name.py",
     "scripts/check_comment_history.py",
     "scripts/check_focus_cue.py",
+    "scripts/check_emoji_icons.py",
     "scripts/check_feature_map.py",
     "scripts/check_changelog_history.py",
     "scripts/check_decisions_history.py",
@@ -74,7 +75,7 @@ _SOURCE_GATES_JOB = "source-gates"
 #: so needs a step of its own. Every other gate self-tests inside its own step.
 _SOURCE_GATE_SELF_TEST_STEPS = 1
 # Every job in fast-gate.yml, in file order: the stdlib gates share one job so
-# a push holds one runner slot for all fourteen instead of fourteen; the two
+# a push holds one runner slot for all fifteen instead of fifteen; the two
 # pytest-backed ratchets keep their own because each installs the package.
 # Explicit for the same reason as _SOURCE_GATE_SCRIPTS -- a job added without
 # the push/variable clause would be the one job left running on a queue-landed
@@ -113,12 +114,16 @@ _LINT_GATE = "lint-gate"
 _BARRIER_PASSED = "needs.await-fast-gate.result == 'success'"
 #: The two jobs the lint gate aggregates.
 _LINT_JOBS = ("backend-lint", "frontend-lint")
+#: The opt-in AI review hold. It runs after the lint jobs and the gate reads its
+#: `hold` output, so it feeds the gate and cannot wait for it.
+_AI_HOLD = "ai-block-hold"
 #: Cheap jobs that deliberately do NOT wait for lint: lint-first saves the minutes
 #: of heavy jobs, and holding a 10-minute check behind an 8-minute lint adds
 #: latency to its own verdict for no saving.
 _NOT_BEHIND_LINT: dict[str, str] = {
     "lockfile-engines-floor": "10-minute lockfile check; cheaper than the wait",
     "cfn-lint": "10-minute template lint; gives its own early verdict",
+    "metrics-schema-history": "stdlib manifest diff against the base; seconds, no install",
     # These two hold the baselined ratchets. They are OFF the gate path
     # deliberately, and the trade is real: a ratchet failure does not SAVE the
     # matrix, it reds the pull request alongside it. What is bought is the
@@ -170,7 +175,7 @@ def _evaluate_guard(guard: str, values: dict[str, str]) -> bool:
     if expr.startswith("${{") and expr.endswith("}}"):
         expr = expr[3:-2]
     expr = re.sub(
-        r"\b(?:needs\.[\w-]+\.(?:result|outputs\.\w+)|github\.\w+|vars\.\w+)",
+        r"\b(?:needs\.[\w-]+\.(?:result|outputs\.\w+)|github(?:\.\w+)+|vars\.\w+)",
         lambda m: repr(values.get(m.group(0), "")),
         expr,
     )
@@ -209,13 +214,17 @@ def _evaluate_guard(guard: str, values: dict[str, str]) -> bool:
 
 
 def _simulate_pull_request(
-    ci: dict, surface: dict[str, str], forced: dict[str, str] | None = None
+    ci: dict,
+    surface: dict[str, str],
+    forced: dict[str, str] | None = None,
+    context: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Each job's result on a pull_request run, with GitHub's skip semantics.
 
     A job whose `if:` has no status function gets the implicit `success()`, which
     is true only when EVERY ancestor (not just each direct need) succeeded. A job
-    that runs is taken to succeed unless ``forced`` names its result.
+    that runs is taken to succeed unless ``forced`` names its result. ``context``
+    adds or replaces context values (a repository variable, a job output).
     """
     jobs = ci["jobs"]
     forced = forced or {}
@@ -238,6 +247,7 @@ def _simulate_pull_request(
         "github.event_name": "pull_request",
         "github.ref": "refs/pull/1/merge",
         **{f"needs.changes.outputs.{key}": value for key, value in surface.items()},
+        **(context or {}),
     }
     pending = list(jobs)
     while pending:
@@ -509,7 +519,7 @@ class TestTheGatesLiveInTheGateWorkflow:
         assert not strays, f"gate(s) back in ci.yml, racing the matrix again: {strays}"
 
     def test_every_gate_step_runs_unless_the_run_was_cancelled(self, fast_gate: dict) -> None:
-        # One job, fourteen gates: without the condition the first red gate ends
+        # One job, fifteen gates: without the condition the first red gate ends
         # the job and the author learns about the others one push at a time.
         # Exactly `!cancelled()`, not `always()`: a cancelled run (a superseding
         # push) must not keep spending its runner on gates nobody will read.
@@ -1279,6 +1289,7 @@ class TestLintRunsBeforeTheHeavyJobs:
             "changes",
             "await-fast-gate",
             *_LINT_JOBS,
+            _AI_HOLD,
         }
         for lint in _LINT_JOBS:
             assert _LINT_GATE not in self._needs(ci, lint), "a lint job cannot wait on its gate"
@@ -1306,6 +1317,7 @@ class TestLintRunsBeforeTheHeavyJobs:
             "await-fast-gate",
             "cancel-superseded-run",
             *_LINT_JOBS,
+            _AI_HOLD,
             *_NOT_BEHIND_LINT,
         }
         # Reporters that consume the shards reach the gate through them.

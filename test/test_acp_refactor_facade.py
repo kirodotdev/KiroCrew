@@ -30,6 +30,7 @@ from typing import Any, Callable
 from unittest import mock
 
 import pytest
+import source_corpus
 import test_acp_refactor_create_guard as create_guard
 
 import kiro_crew.acp as acp_package
@@ -1728,16 +1729,17 @@ def _facade_patches() -> tuple[tuple[str, int, str, str, str], ...]:
     repo = _SRC.parents[2]
     roots = [repo / "test", *sorted((repo / "src" / "kiro_crew").rglob("tests"))]
     patches: list[tuple[str, int, str, str, str]] = []
-    for root in roots:
-        for path in sorted(root.rglob("*.py")):
-            text = path.read_text(encoding="utf-8")
-            if not create_guard._worth_parsing(text):
-                continue
-            relative = path.relative_to(repo).as_posix()
-            patches.extend(
-                (relative, line, where, facade, name)
-                for line, where, facade, name in _monkeypatch_targets(ast.parse(text))
-            )
+    with source_corpus.untraced():
+        for root in roots:
+            for path in sorted(root.rglob("*.py")):
+                text = path.read_text(encoding="utf-8")
+                if not create_guard._worth_parsing(text):
+                    continue
+                relative = path.relative_to(repo).as_posix()
+                patches.extend(
+                    (relative, line, where, facade, name)
+                    for line, where, facade, name in _monkeypatch_targets(ast.parse(text))
+                )
     return tuple(patches)
 
 

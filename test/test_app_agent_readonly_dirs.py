@@ -199,15 +199,102 @@ class TestTheToolGateRefusesAgentWrites:
             assert security.is_sensitive_write_path(f"~/{prefix}/{leaf}")
 
 
+class TestAnUnreadableDeclarationFencesItsAppsData:
+    """A declaration the gate cannot read cleanly refuses writes under its app's data."""
+
+    @pytest.fixture(autouse=True)
+    def _home(self, home, _floor_monkeypatch):
+        _floor_monkeypatch.setenv("KIROCREW_HOME", str(home))
+        self.home = home
+
+    def _record(self, name: str, text: str) -> None:
+        (self.home / "apps" / f".{name}{agent_readonly_dirs.RECORD_SUFFIX}").write_text(
+            text, encoding="utf-8"
+        )
+
+    def _fenced(self, name: str) -> tuple[bool, bool, bool]:
+        """(write in data refused, write in the move-aside refused, read in data refused)."""
+        inside = self.home / "apps" / name / "data" / "x.md"
+        aside = self.home / "apps" / f".{name}-data-tmp" / "x.md"
+        return (
+            security.is_sensitive_write_path(str(inside)),
+            security.is_sensitive_write_path(str(aside)),
+            security.is_sensitive_path(str(inside)),
+        )
+
+    def test_a_corrupt_record_with_no_manifest_fences_writes_only(self):
+        (self.home / "apps" / "demo" / "data").mkdir(parents=True)
+        self._record("demo", "{not json")
+        assert self._fenced("demo") == (True, True, False)
+
+    def test_an_invalid_entry_fences_its_own_apps_data_only(self):
+        app = self.home / "apps" / "demo"
+        (app / "data").mkdir(parents=True)
+        manifest = {
+            "name": "demo",
+            "version": "1.0.0",
+            "credentialMasks": ["token.json"],
+            "agentReadOnlyDirs": ["/etc"],
+        }
+        (app / "app.json").write_text(json.dumps(manifest), encoding="utf-8")
+        _install(self.home, "other", [])
+
+        assert self._fenced("demo") == (True, True, False)
+        assert self._fenced("other") == (False, False, False)
+
+    def test_a_valid_entry_beside_an_invalid_one_still_fences(self):
+        _install(self.home, "demo", ["notes", "/etc"])
+        assert security.is_sensitive_write_path(
+            str(self.home / "apps" / "demo" / "data" / "notes" / "n.md")
+        )
+
+    def test_the_credential_mask_reader_keeps_its_own_key(self):
+        """The default kind is unchanged: an ``agentReadOnlyDirs`` error is not a mask's."""
+        _install(self.home, "demo", ["/etc"])
+        assert credential_masks.tool_gate_crew_leaves() == credential_masks.ToolGateLeaves((), ())
+
+    # Normal use that writes freely today keeps doing so.
+
+    def test_a_fresh_install_with_no_apps_dir(self):
+        assert not (self.home / "apps").exists()
+        assert self._fenced("demo") == (False, False, False)
+
+    def test_an_app_with_no_manifest_and_no_record(self):
+        (self.home / "apps" / "demo" / "data").mkdir(parents=True)
+        assert self._fenced("demo") == (False, False, False)
+
+    def test_a_clean_manifest_without_the_key(self):
+        app = self.home / "apps" / "demo"
+        (app / "data").mkdir(parents=True)
+        (app / "app.json").write_text('{"name": "demo", "version": "1.0.0"}', encoding="utf-8")
+        assert self._fenced("demo") == (False, False, False)
+
+    def test_a_record_mid_write_leaves_the_published_one_in_force(self):
+        """``atomic_write`` stages a ``.tmp`` beside the record; it is never read as one."""
+        _install(self.home, "demo", [])
+        self._record("demo", '{"name": "demo", "agentReadOnlyDirs": []}')
+        (self.home / "apps" / f".demo{agent_readonly_dirs.RECORD_SUFFIX}.abc.tmp").write_text(
+            '{"name": "de', encoding="utf-8"
+        )
+        assert self._fenced("demo") == (False, False, False)
+
+    def test_a_manifest_mid_copy_is_fenced_as_it_already_is(self):
+        """The ``credentialMasks`` rule already fences a half-copied ``app.json`` whole."""
+        app = self.home / "apps" / "demo"
+        (app / "data").mkdir(parents=True)
+        (app / "app.json").write_text('{"name": "demo", "agentRe', encoding="utf-8")
+        assert self._fenced("demo") == (True, True, True)
+
+
 class TestTheDeclarationsAreListedWithinADeadline:
     """Every caller takes the rows from a bounded listing; the event loop also reuses it."""
 
     @pytest.fixture(autouse=True)
     def _fresh_listing(self, _floor_monkeypatch):
-        _floor_monkeypatch.setattr(paths_targets, "_app_readonly_rows_cache", None)
-        _floor_monkeypatch.setattr(paths_targets, "_app_readonly_rows_pending", None)
+        _floor_monkeypatch.setattr(paths_targets._APP_READONLY_ROWS, "cache", None)
+        _floor_monkeypatch.setattr(paths_targets._APP_READONLY_ROWS, "pending", None)
         self.now = 1000.0
-        _floor_monkeypatch.setattr(paths_targets, "_app_readonly_rows_clock", lambda: self.now)
+        _floor_monkeypatch.setattr(paths_targets, "_app_rows_clock", lambda: self.now)
 
     def _counting_listing(self, monkeypatch, *, gate: threading.Event | None = None):
         listed = paths_targets._list_app_readonly_dir_rows
@@ -226,9 +313,9 @@ class TestTheDeclarationsAreListedWithinADeadline:
     def _let_the_listing_finish():
         # The pool may start a held listing only after every check has refused, so count
         # its starts once it has run.
-        pending = paths_targets._app_readonly_rows_pending
+        pending = paths_targets._APP_READONLY_ROWS.pending
         if pending is not None:
-            pending[1].result(FALLBACK_TIMEOUT_SECS)
+            pending[2].result(FALLBACK_TIMEOUT_SECS)
 
     def test_the_listing_runs_off_the_loop_and_is_reused_until_it_expires(self, home, monkeypatch):
         monkeypatch.setenv("KIROCREW_HOME", str(home))
@@ -243,7 +330,7 @@ class TestTheDeclarationsAreListedWithinADeadline:
         assert all(r and not security.is_unverifiable_path_refusal(r) for r in refusals)
         assert len(threads) == 1 and threads[0] != loop_thread
 
-        self.now += paths_targets._APP_READONLY_ROWS_TTL_SECS
+        self.now += paths_targets._APP_ROWS_TTL_SECS
         _, refusals = asyncio.run(gate_twice())
         assert refusals[0] and len(threads) == 2, "an expired listing is taken again"
 
@@ -254,7 +341,7 @@ class TestTheDeclarationsAreListedWithinADeadline:
         sibling = str(home / "apps" / "demo" / "data" / "other.md")
         monkeypatch.setattr(
             paths_targets,
-            "_APP_READONLY_ROWS_BUDGET_SECS",
+            "_APP_ROWS_BUDGET_SECS",
             0.05,  # flake-ok: the listing is held until the test ends, so it always runs out
         )
         gate = threading.Event()
@@ -279,7 +366,7 @@ class TestTheDeclarationsAreListedWithinADeadline:
         inside = str(_install(home, "demo", ["notes"]) / "notes" / "n.md")
         monkeypatch.setattr(
             paths_targets,
-            "_APP_READONLY_ROWS_BUDGET_SECS",
+            "_APP_ROWS_BUDGET_SECS",
             0.05,  # flake-ok: the listing is held until the test ends, so it always runs out
         )
         gate = threading.Event()
@@ -295,7 +382,7 @@ class TestTheDeclarationsAreListedWithinADeadline:
             # A second full wait would outlast the join below: only a refusal at once returns.
             monkeypatch.setattr(
                 paths_targets,
-                "_APP_READONLY_ROWS_BUDGET_SECS",
+                "_APP_ROWS_BUDGET_SECS",
                 3600.0,  # flake-ok: never waited on; it only has to outlast the bounded join
             )
             caller.start()

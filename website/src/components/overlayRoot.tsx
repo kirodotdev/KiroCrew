@@ -142,7 +142,8 @@ const OffScreenContext = createContext<OffScreenSignal | null>(null)
  *  above it as it does outside the local pane. */
 export function GlobalOverlayScope({ children }: { children: ReactNode }) {
   const value = useMemo(() => ({ container: document.body, hidden: false, inDialog: true }), [])
-  return <OverlayRootContext.Provider value={value}>{children}</OverlayRootContext.Provider>
+  // Visible above every scope, so no enclosing off-screen scope closes its menus.
+  return <OverlayRootContext.Provider value={value}><OffScreenContext.Provider value={null}>{children}</OffScreenContext.Provider></OverlayRootContext.Provider>
 }
 
 /** Takes a subtree's layers off screen while `offScreen`, for content its host
@@ -156,6 +157,9 @@ export function GlobalOverlayScope({ children }: { children: ReactNode }) {
 export function OffScreenOverlayScope({ offScreen, children }: { offScreen: boolean; children: ReactNode }) {
   const parent = useContext(OverlayRootContext)
   const parentContainer = parent?.container ?? document.body
+  // A scope inside another is off screen whenever its ancestor is, so its
+  // menus close when the outer scope goes (the sessions sidebar under <main>).
+  const parentSignal = useContext(OffScreenContext)
   const [container] = useState(() => document.createElement('div'))
   useInsertionEffect(() => {
     parentContainer.appendChild(container)
@@ -164,17 +168,19 @@ export function OffScreenOverlayScope({ offScreen, children }: { offScreen: bool
   const [signal] = useState(() => {
     const listeners = new Set<() => void>()
     const state = { offScreen, listeners }
-    const api: OffScreenSignal & { set: (v: boolean) => void } = {
-      get: () => state.offScreen,
+    const api: OffScreenSignal & { set: (v: boolean) => void; notify: () => void } = {
+      get: () => state.offScreen || (parentSignal?.get() ?? false),
       subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+      notify: () => listeners.forEach(l => l()),
       set: (v) => {
         if (state.offScreen === v) return
         state.offScreen = v
-        listeners.forEach(l => l())
+        api.notify()
       },
     }
     return api
   })
+  useEffect(() => parentSignal?.subscribe(signal.notify), [parentSignal, signal])
   useLayoutEffect(() => {
     // Out of the document while off screen, not just undisplayed: a dialog it
     // holds must not answer a document-level probe (`anotherEscapeOwnerIsOpen`)

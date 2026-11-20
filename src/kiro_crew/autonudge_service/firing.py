@@ -197,10 +197,17 @@ async def _run_timer_callback(self: AutoNudgeService, loop: NudgeLoop) -> None:
     # never armed, so the stale file can kill nothing in between. No
     # ``expired`` here: that event says the loop stopped SHORT of its goal, and
     # this stop is the agent reporting the goal reached.
-    if loop.stop_sentinel_path and Path(loop.stop_sentinel_path).exists():
+    sentinel_found = False
+    if loop.stop_sentinel_path:
+        sentinel_found = await asyncio.to_thread(Path(loop.stop_sentinel_path).exists)
+    if sentinel_found:
         logger.info("AutoNudge: stop sentinel found for %s — deactivating loop", loop.id)
         await _tick_update(self, loop.id, active=False, stopped_reason=STOP_SENTINEL_REASON)
         return
+    # Remote dispatch (preview): pull this board's remote worker reports first, so the
+    # hold and the gate below read them on this tick. A board with no remote item, or
+    # a build with no puller, makes no peer call.
+    await self._pull_remote_reports(loop)
     # The person-wait HOLD, ahead of both bounds: a work-ledger watch whose open items
     # all wait on a person, unchanged since its last delivered turn, has nothing to
     # read. Held, it fires no turn, takes no floor turn (the gate below is never
@@ -842,15 +849,52 @@ def _ledger_person_wait_fp(
     return person_wait_fingerprint(conductor_key, worker_closed=worker_closed)
 
 
+def _ledger_person_wait_asked(conductor_key: str) -> bool:
+    """Whether every open item's question carries a current ``ask`` record. Blocking."""
+    from kiro_crew.probes.work_ledger import person_wait_asked
+
+    return person_wait_asked(conductor_key)
+
+
+async def _pull_remote_reports(self: AutoNudgeService, loop: NudgeLoop) -> None:
+    """Pull a work-ledger watch's remote worker reports into its ledger. Never raises.
+
+    The injected puller (``remote_puller.on_patrol_tick``) is bounded per board and
+    decides itself whether the board needs a pull; the probe cannot reach a peer. It
+    also sweeps retired peer slots to close (``remote_puller.sweep_closes``).
+    """
+    pull = self._remote_report_puller
+    if pull is None or not loop.active or not self._observes_work_ledger(loop):
+        return
+    # The pull files reports, and each filed report pushes a pull-forward
+    # (``conductor_wake`` -> ``fire_now``). Re-arming now would cancel THIS tick, the
+    # one about to read what the pull filed. Held in ``_firing`` for the pull, such a
+    # push is refused (``defer_if_firing``) and its deferral is dropped after: this
+    # tick reads the ledger next. shortcut: a push landing after the pull still re-arms
+    # and costs one extra pull; widen the span if that shows up.
+    held = loop.id not in self._firing
+    if held:
+        self._firing.add(loop.id)
+    try:
+        await pull(loop.slot_key)
+    except Exception:  # noqa: BLE001 - a failed pull must never fail the tick
+        logger.debug("AutoNudge: remote report pull failed for loop %s", loop.id, exc_info=True)
+    finally:
+        if held:
+            self._firing.discard(loop.id)
+            self._pulled_forward.discard(loop.id)
+
+
 async def _holds_for_person_wait(self: AutoNudgeService, loop: NudgeLoop) -> bool:
     """Whether this tick of a work-ledger watch holds because everyone waits on a person.
 
     Holds when every open item is ``blocked`` / ``question`` with reason ``approval``
     or ``needs_human`` AND the ledger's fingerprint equals the one recorded at the
-    loop's last delivered turn (``ledger_seen_fp``). The fingerprint covers only
+    loop's last delivered turn (``ledger_seen_fp``) AND each item carries a current
+    ``ask`` record (``person_wait_asked``, read only once the fingerprint matches). The fingerprint covers only
     worker-owned fields, so a worker's report releases the hold on the next tick with
-    no re-arm (its push also pulls that tick forward); the conductor's own writes
-    leave it held.
+    no re-arm (its push also pulls that tick forward). A conductor ``decide`` or
+    ``close`` clears the ask record and so releases it; its other writes leave it held.
 
     A held tick re-arms at the loop's own interval, the way a quiet tick does, so the
     next check costs one ledger read and no model call. Doubt never holds: an
@@ -866,7 +910,14 @@ async def _holds_for_person_wait(self: AutoNudgeService, loop: NudgeLoop) -> boo
         None, _ledger_person_wait_fp, loop.slot_key, self._worker_closed
     )
     self._ledger_tick_fp[loop.id] = fp or ""
-    if fp and loop.ledger_seen_fp == fp:
+    # Read only once the fingerprint matches: the ask gate is the conductor's write,
+    # so it stays out of the fingerprint and decides the hold alone.
+    held = bool(fp) and loop.ledger_seen_fp == fp
+    if held:
+        held = await asyncio.get_running_loop().run_in_executor(
+            None, _ledger_person_wait_asked, loop.slot_key
+        )
+    if held:
         if not (loop.active and self._loops.get(loop.id) is loop):
             return True
         if not loop.waiting_on_person:

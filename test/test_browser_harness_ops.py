@@ -120,6 +120,7 @@ def test_walker_source_is_one_iife_the_ops_call_methods_on() -> None:
         "resolve",
         "focus",
         "activeField",
+        "paste",
         "selectOption",
         "textPresent",
         "stamp",
@@ -536,6 +537,174 @@ def test_type_refuses_when_focus_did_not_land_or_nothing_is_focused(fake: FakeBr
     assert "type_text" not in fake.helper_names()
 
 
+def _inputs(fake: FakeBrowser) -> list[tuple[str, dict[str, Any]]]:
+    return [(h, kw) for h, kw in fake.calls if h in ("type_text", "press_key")]
+
+
+def test_type_steps_run_text_and_keys_in_order_and_stop_at_the_first_refusal(
+    fake: FakeBrowser,
+) -> None:
+    steps = [{"text": "Users"}, {"key": "Tab"}, {"text": "2,500"}]
+    fake.page["activeField"] = {"focused": True, "password": False, "tag": "input"}
+    out = run(ops.run_op("type", {"steps": steps}, fake.ctx()))
+    assert out == {"ok": True, "ref": None, "steps": 3, "chars": 10}
+    assert _inputs(fake) == [
+        ("type_text", {"text": "Users"}),
+        ("press_key", {"key": "Tab", "modifiers": 0}),
+        ("type_text", {"text": "2,500"}),
+    ]
+
+    # The Tab lands on a password field: the text step aimed at it is refused.
+    fake.calls.clear()
+    fake.page["activeField"] = lambda: {
+        "focused": True,
+        "password": any(h == "press_key" for h, _ in fake.calls),
+        "tag": "input",
+    }
+    out = run(ops.run_op("type", {"steps": steps}, fake.ctx()))
+    assert out["code"] == "password_field" and out["step"] == 2
+    assert out["error"].startswith("step 2 (counting from 0; the steps before it ran): ")
+    assert _inputs(fake) == [
+        ("type_text", {"text": "Users"}),
+        ("press_key", {"key": "Tab", "modifiers": 0}),
+    ]
+    assert "2,500" not in json.dumps(fake.calls)
+
+
+def test_type_steps_are_all_checked_before_anything_runs(fake: FakeBrowser) -> None:
+    fake.page["activeField"] = {"focused": True, "password": False, "tag": "input"}
+    out = run(ops.run_op("type", {"steps": [{"text": "a"}, {"oops": 1}]}, fake.ctx()))
+    assert out["code"] == "bad_steps" and out["step"] == 1
+    assert out["error"].startswith("step 1 (counting from 0): ")
+    for bad in (
+        {"text": "x", "steps": [{"text": "a"}]},
+        {"steps": [{"text": "a"}, {"key": "tab"}]},
+        {"submit": True, "steps": [{"text": "a"}]},
+        {"steps": []},
+        {"steps": [{"key": "Tab"}] * (ops.STEPS_CAP + 1)},
+        {"steps": [{"text": 1}]},
+        {"steps": [{"text": "a", "key": "Tab"}]},
+    ):
+        assert run(ops.run_op("type", bad, fake.ctx()))["code"] == "bad_steps", bad
+    over = [{"text": "x" * ops.TEXT_CAP}, {"text": "y"}]
+    assert run(ops.run_op("type", {"steps": over}, fake.ctx()))["code"] == "bad_text"
+    out = run(ops.run_op("type", {"steps": [{"text": "a"}, {"key": "Bogus"}]}, fake.ctx()))
+    assert out["code"] == "bad_steps" and out["step"] == 1 and "Bogus" in out["error"]
+    assert _inputs(fake) == []
+    steps = {"submit": False, "steps": [{"text": "a"}]}
+    assert run(ops.run_op("type", steps, fake.ctx()))["ok"] is True
+
+
+def test_type_steps_stop_when_a_key_step_lands_on_a_refused_page(fake: FakeBrowser) -> None:
+    from kiro_crew.browser_harness.url_gate import url_allowed
+
+    tab = {"url": "https://example.com/"}
+    fake.helpers["current_tab"] = lambda: dict(tab)
+    fake.helpers["press_key"] = lambda **_kw: tab.update(url="http://169.254.169.254/latest")
+    ctx = _gated_ctx(fake, lambda url: url_allowed(url, frozenset(), 6776))
+    out = run(ops.run_op("type", {"steps": [{"key": "Enter"}, {"text": "x"}]}, ctx))
+    assert out["code"] == "redirect_refused" and out["step"] == 1
+    assert "type_text" not in fake.helper_names()
+
+
+def test_type_steps_stopped_by_an_open_dialog_name_the_step(fake: FakeBrowser) -> None:
+    from kiro_crew.browser_harness.supervisor import HelperError
+
+    def type_text(**_kw: Any) -> None:
+        # The Enter opened a confirm: the page answers nothing until it is answered.
+        if "press_key" in fake.helper_names():
+            raise HelperError("Input.insertText timed out after 5s waiting for the daemon")
+
+    fake.page["activeField"] = {"focused": True, "password": False, "tag": "input"}
+    fake.helpers["type_text"] = type_text
+    fake.helpers["page_info"] = lambda: {
+        "dialog": {"type": "confirm", "message": "Leave?", "defaultPrompt": ""}
+    }
+    steps = [{"text": "q"}, {"key": "Enter"}, {"text": "more"}]
+    out = run(ops.run_op("type", {"steps": steps}, fake.ctx()))
+    assert out["code"] == "dialog_open" and out["step"] == 2
+    assert out["error"].startswith("step 2 (counting from 0; the steps before it ran): ")
+    assert "confirm" in out["error"] and "Leave?" in out["error"]
+
+
+_TABLE = "<table><tr><td>a</td><td>b</td></tr></table>"
+
+
+@pytest.mark.parametrize("handled", [True, False])
+def test_paste_hands_html_and_text_to_the_page_and_types_only_what_it_left(
+    fake: FakeBrowser, handled: bool
+) -> None:
+    """The page's editor gets both formats on one paste event; a page that did not
+    take it (nothing cancelled the event) gets the plain text typed, as ``type`` would."""
+    seen: list[list[Any]] = []
+    fake.page["focus"] = {"ok": True, "focused": True, "activeTag": "div"}
+    fake.page["activeField"] = {"focused": True, "password": False, "tag": "div"}
+    fake.page["paste"] = lambda *a: seen.append(list(a)) or {"ok": True, "handled": handled}
+    out = run(ops.run_op("paste", {"ref": "e1", "html": _TABLE, "text": "a\tb"}, fake.ctx()))
+    assert out == {"ok": True, "ref": "e1", "chars": 3, "handled": handled}
+    assert seen == [["e1", _TABLE, "a\tb"]]
+    typed = [kw for h, kw in fake.calls if h == "type_text"]
+    assert typed == ([] if handled else [{"text": "a\tb"}])
+    assert fake.steps[-1] == "Paste into e1"
+
+
+@pytest.mark.parametrize(
+    ("moved", "code"), [({"password": True}, "password_field"), ({"asked": True}, "asked_field")]
+)
+def test_paste_types_nothing_where_the_page_handler_moved_focus(
+    fake: FakeBrowser, moved: dict[str, Any], code: str
+) -> None:
+    field = {"focused": True, "password": False, "tag": "div"}
+    fake.page["activeField"] = lambda: dict(field)
+    fake.page["paste"] = lambda *_a: field.update(moved) or {"ok": True, "handled": False}
+    out = run(ops.run_op("paste", {"html": _TABLE, "text": "a\tb"}, fake.ctx()))
+    assert out["ok"] is False and out["code"] == code
+    assert "type_text" not in fake.helper_names()
+
+
+def test_paste_types_its_fallback_only_into_the_ref_it_was_given(fake: FakeBrowser) -> None:
+    """A page handler that moved focus off ``ref`` gets no text: the ref is focused
+    again before typing, and one that will not keep focus is refused."""
+    answers = iter(
+        [{"ok": True, "focused": True}, {"ok": True, "focused": False, "activeTag": "input"}]
+    )
+    fake.page["focus"] = lambda *_a: next(answers)
+    fake.page["activeField"] = {"focused": True, "password": False, "tag": "div"}
+    fake.page["paste"] = {"ok": True, "handled": False}
+    out = run(ops.run_op("paste", {"ref": "e1", "html": _TABLE, "text": "a\tb"}, fake.ctx()))
+    assert out["ok"] is False and out["code"] == "not_focusable"
+    assert fake.page_methods().count("focus") == 2
+    assert "type_text" not in fake.helper_names()
+
+
+@pytest.mark.parametrize(
+    ("page", "args", "code"),
+    [
+        ({"focus": {"ok": False, "code": "password_field"}}, {"ref": "e2"}, "password_field"),
+        ({"focus": {"ok": False, "code": "asked_field"}}, {"ref": "e2"}, "asked_field"),
+        ({"activeField": {"focused": True, "password": True}}, {}, "password_field"),
+        ({"activeField": {"focused": True, "asked": True}}, {}, "asked_field"),
+        ({"activeField": {"focused": True, "unreadable": True}}, {}, "focus_in_frame"),
+        ({"activeField": {"focused": False}}, {}, "no_focus"),
+        ({"paste": {"ok": False, "code": "focus_in_frame"}}, {}, "focus_in_frame"),
+        ({}, {"text": 5}, "bad_text"),
+        ({}, {"html": ["<b>x</b>"]}, "bad_html"),
+        ({}, {"html": "x" * (ops.TEXT_CAP + 1)}, "bad_html"),
+    ],
+)
+def test_paste_is_refused_where_type_is(
+    fake: FakeBrowser, page: dict[str, Any], args: dict[str, Any], code: str
+) -> None:
+    fake.page.update({"activeField": {"focused": True, "password": False, "tag": "div"}})
+    fake.page.update(page)
+    args = {"text": "hunter2", "html": "<b>hunter2</b>", **args}
+    out = run(ops.run_op("paste", args, fake.ctx()))
+    assert out["ok"] is False and out["code"] == code
+    assert "type_text" not in fake.helper_names() and fake.steps == []
+    if "paste" not in page:
+        assert "paste" not in fake.page_methods(), "nothing reaches the page"
+
+
 def test_press_key_named_single_and_modifiers(fake: FakeBrowser) -> None:
     assert run(ops.run_op("press_key", {"key": "Enter"}, fake.ctx()))["ok"] is True
     assert fake.calls[-1] == ("press_key", {"key": "Enter", "modifiers": 0})
@@ -886,6 +1055,30 @@ def test_link_to_private_page_is_refused_before_the_card_follows(fake) -> None:
     tab = {"url": "https://example.com/"}
     fake.helpers["current_tab"] = lambda: dict(tab)
     fake.helpers["click"] = lambda **_kw: tab.update(url="http://169.254.169.254/latest")
+    ctx = _gated_ctx(fake, lambda url: url_allowed(url, frozenset(), 6776))
+    out = run(ops.run_op("click", {"x": 1, "y": 2}, ctx))
+    assert out["code"] == "redirect_refused"
+    assert fake.calls[-1] == ("goto", {"url": "about:blank"})
+
+
+def test_a_tab_with_no_document_yet_is_left_to_load(fake) -> None:
+    """A popup reports url "" until its first page commits: sending it to about:blank
+    would cancel the navigation its opener started."""
+    from kiro_crew.browser_harness.url_gate import url_allowed
+
+    fake.helpers["current_tab"] = {"url": ""}
+    ctx = _gated_ctx(fake, lambda url: url_allowed(url, frozenset(), 6776))
+    out = run(ops.run_op("click", {"x": 1, "y": 2}, ctx))
+    assert out["ok"] is True, out
+    assert ("goto", {"url": "about:blank"}) not in fake.calls
+
+
+@pytest.mark.parametrize("tab", ["not-a-dict", {}, {"url": None}])
+def test_a_malformed_current_tab_is_still_refused(fake, tab) -> None:
+    """Only an exact "" url is left to load: the gate stays closed on anything else."""
+    from kiro_crew.browser_harness.url_gate import url_allowed
+
+    fake.helpers["current_tab"] = tab
     ctx = _gated_ctx(fake, lambda url: url_allowed(url, frozenset(), 6776))
     out = run(ops.run_op("click", {"x": 1, "y": 2}, ctx))
     assert out["code"] == "redirect_refused"

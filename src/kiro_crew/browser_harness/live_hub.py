@@ -26,6 +26,20 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.browser_harness.budgets import HOLD_TIMEOUT_S, TAKEOVER_IDLE_S
+from kiro_crew.browser_harness.live_hub_wheel import (  # noqa: F401 - live_hub is their import path
+    MOVES_IN_FLIGHT,
+    WHEEL_MIN_GAP_S,
+    WHEEL_SNAP_PX,
+    WHEEL_TAU_S,
+    WHEELS_IN_FLIGHT,
+    _add_turn,
+    _settle,
+    _wheel_curve,
+    _wheel_glide,
+    _wheel_settle,
+    _wheel_target,
+)
+from kiro_crew.browser_harness.run_budget import RunCount
 from kiro_crew.browser_harness.screencast import (
     LiveConfig,
     LiveStream,
@@ -72,12 +86,16 @@ STATES = frozenset(
 
 #: Longest step label kept; the tool's labels are a few words.
 MAX_STEP_LABEL = 120
+#: Longest label on the cursor an app draws over the live view (:meth:`LiveHub.aim`).
+MAX_AIM_LABEL = 48
 #: Steps kept per turn; older ones fold into the count.
 MAX_STEPS = 200
 #: The whole budget for releasing what the person held when control goes back:
 #: waiting for the event in flight plus every release sent. The input lock stays
 #: shut meanwhile, so a slow page delays the agent by this much at most.
 HELD_RELEASE_DEADLINE_S = 2.0
+
+
 #: How many dashboard tabs one session remembers as showing its card.
 VISIBLE_TABS_CAP = 32
 
@@ -139,6 +157,17 @@ class LiveSession:
     #: drive one daemon tab and a takeover in one chat fences exactly that chat's tab.
     target_id: str = ""
     targets: set[str] = field(default_factory=set)
+    #: The browser context the last bind put this session in ("" is the default):
+    #: the op that follows reads the setting's answer from here, not again.
+    context: str = ""
+    #: The relay an isolated op is bound to (``None`` under ``shared``): every helper
+    #: the op runs is checked against it, so a daemon restart mid-op cannot carry the
+    #: op onto a browser that has no such context.
+    bound_relay: Any = None
+    #: A popup moved ``target_id`` (followed it, or went back to its opener) and no
+    #: answer has told the agent yet. Page-targeted ops are refused while it is set;
+    #: the next answer the route returns carries it and clears it.
+    tab_moved: dict[str, Any] | None = None
     #: The relay the last stream ran on, kept after the stream stops so the finished
     #: card's "Open in Chrome" can still activate the retained tab.
     last_relay: Relay | None = None
@@ -163,6 +192,9 @@ class LiveSession:
     #: event takes the label of the step it reported (:meth:`LiveHub.record_op`).
     step_seq: int = 0
     last_step: str = ""
+    #: The ops run and the current repeat run, against ``browser.run``. Starts again on a
+    #: takeover (:meth:`LiveHub.claim`) and when the chat's session ends (:meth:`LiveHub.reset_run`).
+    run: RunCount = field(default_factory=RunCount)
     #: The loop op's counters for the card's loop line (:meth:`LiveHub.loop`), or
     #: ``None``. Kept after the loop stops, so the card says why, until the next op.
     loop: dict[str, Any] | None = None
@@ -204,9 +236,23 @@ class LiveSession:
     #: Held around each forwarded event, so a release waits for the event in
     #: flight before it reads what that event left down.
     input_fence: asyncio.Lock = field(default_factory=asyncio.Lock)
+    #: Pointer moves sent to the page and not yet acknowledged (at most
+    #: ``MOVES_IN_FLIGHT``): every other event, and a release, waits for them.
+    moves: list[asyncio.Task[int]] = field(default_factory=list)
+    #: Wheel turns still gliding ``(loop time it came, dx, dy)`` (frame px), how much
+    #: of them is sent ``[dx, dy]``, the latest wheel event the steps go out as, the
+    #: task sending them, and whether the rest goes in one step.
+    wheel_marks: list[tuple[float, int, int]] = field(default_factory=list)
+    wheel_sent: list[int] = field(default_factory=lambda: [0, 0])
+    wheel_at: dict[str, Any] = field(default_factory=dict)
+    wheel_task: asyncio.Task[None] | None = None
+    wheel_now: bool = False
     #: A release of control is sending the held input's releases: the lock is still
     #: shut, but no card event is forwarded and no new release starts.
     releasing: bool = False
+    #: Where the cursor drawn over the live view points (:meth:`LiveHub.aim`):
+    #: ``{"x", "y", "label", "seq"}`` in viewport CSS px, or ``None`` before any aim.
+    aim: dict[str, Any] | None = None
 
     @property
     def relay(self) -> Relay | None:
@@ -296,6 +342,8 @@ def live_event(sess: LiveSession) -> dict[str, Any]:
         "ask": sess.ask.wire() if sess.ask is not None and not sess.ask.outcome else None,
         "started_at_ms": int(sess.started_ms),
         "ended_at_ms": int(sess.ended_ms),
+        # Only once something aimed: older readers see the fields they always had.
+        **({"aim": dict(sess.aim)} if sess.aim is not None else {}),
     }
 
 
@@ -560,6 +608,27 @@ class LiveHub:
             del sess.steps[: len(sess.steps) - MAX_STEPS]
         self._emit(sess)
 
+    def aim(self, session_key: str, x: float, y: float, label: str = "") -> bool:
+        """Point the cursor drawn over *session_key*'s live view at (*x*, *y*), viewport CSS px.
+
+        Drawn by the card over the frame, never inside the page. ``True`` when a
+        stream shows the session now; ``False`` (and nothing sent) with no stream or a
+        point that is not two finite numbers.
+        """
+        sess = self._sessions.get(session_key)
+        if sess is None or sess.stream is None:
+            return False
+        if not all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+            for v in (x, y)
+        ):
+            return False
+        seq = int((sess.aim or {}).get("seq", 0)) + 1
+        text = str(label or "")[:MAX_AIM_LABEL]
+        sess.aim = {"x": round(float(x), 1), "y": round(float(y), 1), "label": text, "seq": seq}
+        self._emit(sess)
+        return True
+
     def turn_ended(self, session_key: str) -> None:
         """The turn is over: the stream stops, the lock opens, the card folds to one line.
 
@@ -656,6 +725,9 @@ class LiveHub:
         go; past ``HELD_RELEASE_DEADLINE_S`` the remaining releases are dropped.
         """
         async with sess.input_fence:
+            await _settle(sess.moves)
+            sess.moves = []
+            await _wheel_settle(sess, drop=True)
             ups = held.drain()
         if not ups or stream is None or not stream.session_id:
             return
@@ -677,6 +749,12 @@ class LiveHub:
             logger.info("browser live: releasing held input of %s timed out", sess.session_key)
 
     # ── the replay recorder's events ───────────────────────────────────────
+
+    def reset_run(self, session_key: str) -> None:
+        """The chat's ``browser.run`` repeat count starts again."""
+        sess = self._sessions.get(session_key)
+        if sess is not None:
+            sess.run = RunCount()
 
     def op_mark(self, session_key: str) -> OpMark:
         """Note where an op begins; :meth:`record_op` turns it into its replay event."""
@@ -850,6 +928,50 @@ class LiveHub:
         sess.target_id = str(target_id)
         sess.targets.add(sess.target_id)
 
+    def context_of(self, session_key: str) -> str:
+        """The browser context the last bind put this session in; ``""`` is the default."""
+        sess = self._sessions.get(session_key)
+        return sess.context if sess is not None else ""
+
+    def bind_context(self, session_key: str, context: str, relay: Any = None) -> None:
+        """Record the browser context this session's ops run in from now on, and the
+        relay it lives on when the context is not the default."""
+        sess = self._session(session_key)
+        sess.context = context
+        sess.bound_relay = relay
+
+    def bound_relay(self, session_key: str) -> Any:
+        """The relay the session's isolated op is pinned to, or ``None``."""
+        sess = self._sessions.get(session_key)
+        return sess.bound_relay if sess is not None else None
+
+    def add_target(self, session_key: str, target_id: str) -> None:
+        """Make *target_id* one of this session's tabs without moving its current tab."""
+        self._session(session_key).targets.add(str(target_id))
+
+    def note_tab_moved(self, session_key: str, notice: dict[str, Any]) -> None:
+        """Record that a popup moved this session's tab and no answer has said so yet.
+
+        *notice* holds ``popup`` (a popup was followed) and/or ``popup_closed`` (the
+        session went back to a closed popup's opener); a later move of the same kind
+        replaces the earlier one.
+        """
+        sess = self._session(session_key)
+        sess.tab_moved = {**(sess.tab_moved or {}), **notice}
+
+    def pending_tab_move(self, session_key: str) -> dict[str, Any] | None:
+        """The unreported tab move, if any, left in place."""
+        sess = self._sessions.get(session_key)
+        return dict(sess.tab_moved) if sess is not None and sess.tab_moved else None
+
+    def take_tab_move(self, session_key: str) -> dict[str, Any] | None:
+        """The unreported tab move, cleared: the caller is about to report it."""
+        sess = self._sessions.get(session_key)
+        if sess is None or not sess.tab_moved:
+            return None
+        notice, sess.tab_moved = sess.tab_moved, None
+        return notice
+
     def owner_of_target(self, target_id: str) -> str | None:
         """The session key that owns *target_id*, if any session does."""
         for key, sess in self._sessions.items():
@@ -969,6 +1091,15 @@ class LiveHub:
         stream, sess.stream = sess.stream, None
         await stream.stop()
 
+    def forget(self, session_key: str) -> None:
+        """Drop the session of a chat that closed, so no tab is sent its card again.
+
+        :meth:`snapshot_events` sends every kept session to each newly connected
+        tab, and the card routes refuse a closed chat's key (404
+        ``unknown_session``). A chat reopened on the key starts a fresh session.
+        """
+        self._sessions.pop(session_key, None)
+
     def _tick_for(self, sess: LiveSession) -> Callable[[TickStats], Awaitable[None]]:
         async def _on_tick(stats: TickStats) -> None:
             changed = stats.rung != sess.rung or round(stats.fps) != round(sess.fps)
@@ -1036,6 +1167,7 @@ class LiveHub:
             sess.park_resumed = False
         sess.claim_turn = sess.turn_id
         sess.seen_at = self._clock()
+        sess.run = RunCount()
         sess.released.clear()
         task = sess.op_task
         if task is not None and not task.done():
@@ -1213,6 +1345,10 @@ class LiveHub:
         if sess.input_rect is not None and not _inside_scope(parsed, sess.input_rect, scale):
             # A scoped takeover (a human_check): only the widget's box takes input.
             return 0
+        # Before it goes out: a frame the page sends while this event is handled (a
+        # press can take 40 ms) is already one the person is driving (see
+        # ``LiveStream.note_input``).
+        stream.note_input()
         async with sess.input_fence:
             if (
                 sess.releasing
@@ -1222,10 +1358,42 @@ class LiveHub:
             ):
                 # Handed back while this event waited behind the one in flight.
                 raise LookupError("not_in_control")
-            sent = await dispatch_input(
-                stream.relay, stream.session_id, event, scale=scale, held=sess.held
-            )
-        stream.note_input()
+            # This takeover's held input, read once: a hand-back during a wait below
+            # swaps in a fresh one, and a press sent after must land in the one the
+            # hand-back releases.
+            held = sess.held
+            # A move goes out without waiting for the last move's acknowledgement, at
+            # most MOVES_IN_FLIGHT of them (Chrome folds queued moves into one), so a
+            # slow slider handler never holds the newest position back; any other
+            # event waits for them, so a press or key never overtakes a move.
+            if parsed.type == "mouse" and parsed.action == "move":
+                sess.moves = [t for t in sess.moves if not t.done()]
+                if len(sess.moves) >= MOVES_IN_FLIGHT:
+                    await _settle(sess.moves[:1])
+                    sess.moves = sess.moves[1:]
+                task = asyncio.ensure_future(
+                    dispatch_input(stream.relay, stream.session_id, event, scale=scale, held=held)
+                )
+                # A move the page refused is one lost position, read here so it is
+                # never an unretrieved task error.
+                task.add_done_callback(lambda t: t.cancelled() or t.exception())
+                sess.moves.append(task)
+                # Its send starts before this returns: the next event's send comes after.
+                await asyncio.sleep(0)
+                sent = 1
+            elif parsed.type == "wheel":
+                # Chrome takes a CDP wheel as one jump, so the turn glides instead: a
+                # share of it each frame (_wheel_glide).
+                await _add_turn(sess, stream, event, parsed.dx, parsed.dy, scale, held)
+                sent = 1
+            else:
+                await _settle(sess.moves)
+                sess.moves = []
+                # A press or key lands where the scroll has finished going.
+                await _wheel_settle(sess)
+                sent = await dispatch_input(
+                    stream.relay, stream.session_id, event, scale=scale, held=held
+                )
         if self.recorder is not None:
             # Validated already (parse_input_event raised otherwise). The recorder keeps
             # no typed text: keystrokes count as characters, never as what was typed.

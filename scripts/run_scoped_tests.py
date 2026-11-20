@@ -638,8 +638,11 @@ def frontend_argv(targets: list[str] | None) -> list[str]:
     # `validated_targets` is the real protection and is strictly stronger anyway:
     # it rejects a leading `-` outright rather than asking the runner to stop
     # parsing.
+    # `--no-install`: without the lockfile's install, npx would download whatever
+    # vitest the registry serves today and run THAT against the specs.
     return [
         _node_launcher("npx"),
+        "--no-install",
         "vitest",
         "run",
         *validated_targets(targets, REPO_ROOT / "website"),
@@ -1087,7 +1090,10 @@ def _self_test() -> int:
     except SelectionUntrustworthy:
         pass
     fe = frontend_argv(["src/test/i18nGateTable.test.ts"])
-    check("frontend reduced argv is vitest run", [Path(fe[0]).stem, *fe[1:3]] == ["npx", "vitest", "run"])
+    check(
+        "frontend reduced argv is a no-install vitest run",
+        [Path(fe[0]).stem, *fe[1:4]] == ["npx", "--no-install", "vitest", "run"],
+    )
     # Regression trap: `vitest run -- <paths>` silently stops filtering and runs
     # the WHOLE suite (measured: 1,474 files / 22,939 tests) while the gate still
     # reports a narrow scope.
@@ -1289,13 +1295,17 @@ def _self_test() -> int:
         return build
 
     # Pick a prefix of the real specs that is one batch under 24,000 but over
-    # cmd.exe's limit -- exactly the #22727 shape.
+    # cmd.exe's limit -- exactly the #22727 shape. The joined length grows by one
+    # space plus the spec per target, so it is summed here; rebuilding the argv
+    # per spec re-validated every earlier spec on disk each time (quadratic).
+    # The batching calls below still build and validate the chosen subset.
     fe_subset: list[str] = []
+    length = len(" ".join(frontend_argv(fe_tree[:1]))) - len(fe_tree[0]) - 1
     for spec in fe_tree:
-        trial = fe_subset + [spec]
-        if len(" ".join(frontend_argv(trial))) > ARGV_CHAR_LIMIT:
+        length += len(spec) + 1
+        if length > ARGV_CHAR_LIMIT:
             break
-        fe_subset = trial
+        fe_subset.append(spec)
     check("the repro subset is a realistic size", len(fe_subset) > 50)
     bare_batches = argv_batches(_fe_build("/usr/bin/npx"), fe_subset)
     check(

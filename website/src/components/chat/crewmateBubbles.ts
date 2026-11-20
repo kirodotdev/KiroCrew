@@ -65,7 +65,7 @@ const MACHINERY_ROLES: ReadonlySet<string> = new Set([
   ...REASONING_ROLES,
 ])
 
-/** A turn's progress rows: tool calls (the 🔧 line and its hidden ✅ / 🚫
+/** A turn's progress rows: tool calls (the Tool: line and its hidden Approved: / Refused:
  *  siblings) and thinking. Never drawn in the chat; a run reads past them. */
 const PROGRESS_ROLES: ReadonlySet<string> = new Set(['tool', ...REASONING_ROLES])
 

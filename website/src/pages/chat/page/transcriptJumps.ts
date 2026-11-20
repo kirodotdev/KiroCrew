@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, type MutableRefObject } from 'react'
 
 import type { useMessageSearch } from '../../../hooks/useMessageSearch'
+import { clearMessageJump, usePendingMessageJump } from '../../../lib/pendingMessageJump'
 import { store, useAppSelector } from '../../../store'
 import type { ChatMessage } from '../../../types'
 import { pickSearchScrollBehavior, scrollCurrentMatchIntoView } from '../../../utils/searchScroll'
 import { resolveMsgIndex } from '../../../utils/shareUrl'
+import type { MarkJump } from './jumpMark'
 import { drawnSuccessorIdx } from './transcriptPins'
 
 interface TranscriptJumpsOptions {
@@ -22,7 +24,8 @@ interface TranscriptJumpsOptions {
   initialMsgRef: MutableRefObject<string | null>
   initialMidRef: MutableRefObject<string | null>
   initialSidRef: MutableRefObject<string | null>
-  setHighlightTs: (ts: string | null) => void
+  /** The landing highlight of a row this hook was sent to (`landedTs`). */
+  markJump: MarkJump
   /** The pins' jump, which pages back for a message not yet loaded. */
   handleJumpToPinnedMessage: (messageTs: string, mid: string | undefined, opts: { origin: 'link' }) => void
 }
@@ -45,7 +48,7 @@ export function useTranscriptJumps({
   initialMsgRef,
   initialMidRef,
   initialSidRef,
-  setHighlightTs,
+  markJump,
   handleJumpToPinnedMessage,
 }: TranscriptJumpsOptions) {
   // Track the timestamp of the previous search-nav step so we can tell "user is
@@ -160,9 +163,22 @@ export function useTranscriptJumps({
     initialMidRef.current = null
     setTimeout(() => {
       navToDisplayIndex(di, { behavior: 'auto', align: 'center' })
-      setHighlightTs(messages[msgIdx].ts ?? targetTs)
-      setTimeout(() => setHighlightTs(null), 3000)
+      const markedMid = (messages[msgIdx].meta as Record<string, unknown> | undefined)?.mid
+      markJump(messages[msgIdx].ts ?? targetTs, true, typeof markedMid === 'string' ? markedMid : undefined)
     }, 500)
   }, [messages, messageToDisplayIdx, slotHasMore, slotOldestIndex, handleJumpToPinnedMessage, activeSlot, cursorIsForActiveSlot]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A jump another surface asked for (Search all chats), taken once its chat is
+  // the active one and the loaded window belongs to it. It goes through the pins'
+  // jump, which scrolls to a loaded message or pages back to an older one, and
+  // reports a message that is gone as the dead link it is.
+  const pendingJump = usePendingMessageJump()
+  useEffect(() => {
+    if (!pendingJump || pendingJump.slotKey !== activeSlot || !cursorIsForActiveSlot) return
+    const liveChat = store.getState().chat
+    if (liveChat.slotCursorKey !== liveChat.activeSlot) return
+    clearMessageJump(pendingJump)
+    handleJumpToPinnedMessage(pendingJump.ts, pendingJump.mid, { origin: 'link' })
+  }, [pendingJump, activeSlot, cursorIsForActiveSlot, handleJumpToPinnedMessage])
   return { jumpToSearchResult }
 }

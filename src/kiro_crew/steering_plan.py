@@ -12,14 +12,14 @@ verdict is read from the writer itself; where a harness loads it, the plan says 
    documents the agent's own ``resources`` name: ``harness`` for those, ``no``
    for the rest, and ``harness`` with ``agent_spec_unread`` when the plan cannot
    tell which spec serves the chat.
-4. The Claude Code seam and Codex load them through ``steering_resources_part``,
+4. The Claude Code seam, Codex, OpenCode and Pi load them through ``steering_resources_part``,
    only for the Kiro Crew default agent. The documents come from
    :func:`kiro_crew.context_assembly.agent_spec.steering_resource_documents`, the
    same list the loader joins: ``yes`` for each it keeps, ``no`` for one it reads
    and withholds, ``no`` for a listed file it does not pick up, and a row of its own
    for a document it loads from outside the two trees (``AGENTS.md`` on Claude
-   Code; Codex reads the project's ``AGENTS.md`` itself, so the load and the list
-   leave it out).
+   Code; Codex, OpenCode and Pi read the project's ``AGENTS.md`` themselves, so the
+   load and the list leave it out).
 5. Every other harness has no path for them: ``no``.
 
 Folder steering (``steering_dirs``) is rendered by Crew on every harness; the caller

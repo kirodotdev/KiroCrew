@@ -1252,7 +1252,7 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
         slot.purge_chunks()
         slot.append(
             "error",
-            f"❌ {_entitle_text}",
+            f"Error: {_entitle_text}",
             "msg msg-err",
             meta=_terminal_error_meta(exc),
         )
@@ -1309,7 +1309,7 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
                 slot.purge_chunks()
                 slot.append(
                     "error",
-                    f"❌ {_entitle_text}",
+                    f"Error: {_entitle_text}",
                     "msg msg-err",
                     meta=_terminal_error_meta(exc),
                 )
@@ -1341,7 +1341,7 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
                     slot.purge_chunks()
                     slot.append(
                         "error",
-                        f"❌ {_entitle_text}",
+                        f"Error: {_entitle_text}",
                         "msg msg-err",
                         meta=_terminal_error_meta(exc),
                     )

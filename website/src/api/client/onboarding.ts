@@ -69,6 +69,13 @@ export interface KiroPrerequisiteStatus {
    * absence (undefined ⇒ not permitted), never treat it as true.
    */
   unsandboxed_exec_permitted?: boolean
+  /**
+   * The setup page may name `agent.sandbox_allow_unsandboxed_exec`: the deployment
+   * names its workload identity (`KIROCREW_WORKLOAD_IDENTITY`), as a team Crew pod
+   * does, and no governance floor requires a sandbox. Owner only; false for anyone
+   * else and absent on older gateways.
+   */
+  container_boundary_hint?: boolean
   /** Runtime-enforced harness ids whose credential mask cannot apply at the effective tier. */
   sandbox_blocked_backends?: string[]
   /** Machine-readable: 'transient' | 'foreign_sandbox' | 'no_backend' | ''. */
@@ -194,6 +201,13 @@ export interface KasBundleStatus {
   /** The last install's failure, as the remedy text; '' when none. */
   error: string
   /**
+   * Why this host cannot run the engine (its glibc, OS or architecture), as the
+   * full sentence a refused install reports; '' when it can, or once installed.
+   * Every install on such a host is refused, so no Install or Retry is offered.
+   * Optional: an older gateway sends no such key.
+   */
+  host_unsupported?: string
+  /**
    * The route the last KAS spawn in this gateway took, or null before the first.
    * `automatic` is true when Crew's own engine was chosen without `agent.kas_bundle`:
    * kiro-cli's relay cannot run here (`reason`: 'no_kiro_cli' | 'kiro_cli_signed_out'),
@@ -206,6 +220,13 @@ export interface KasBundleStatus {
     reason: string
     summary: string
   } | null
+  /**
+   * True when a new chat would fail for lack of Kiro Crew's own sign-in: KAS
+   * is the main harness and its next spawn takes the bundle route with no
+   * usable sign-in. The gateway decides; false for a non-owner, when unknown,
+   * and from an older gateway that sends no such key.
+   */
+  chat_needs_sign_in?: boolean
 }
 
 export interface KasLoginStatus {

@@ -452,6 +452,18 @@ def register_external_app(
             return AppResult(
                 ok=False, name=name, error=f"could not clear earlier Bot access for {name!r}: {exc}"
             )
+        # Memory consent an earlier install under this name left behind goes too; if
+        # it cannot be removed, nothing is registered.
+        from kiro_crew.memory_provider.consent import revoke_app
+
+        try:
+            revoke_app(name)
+        except (OSError, ValueError) as exc:
+            return AppResult(
+                ok=False,
+                name=name,
+                error=f"could not clear earlier memory consent for {name!r}: {exc}",
+            )
         dest.mkdir(parents=True, exist_ok=True)
         meta = InstalledApp(
             name=name,

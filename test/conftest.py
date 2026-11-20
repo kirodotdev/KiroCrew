@@ -279,6 +279,7 @@ from conftest_opt_in import (  # noqa: E402,F401 -- bound for pytest and importe
 # Per-test resets of process-global kiro_crew state, and the network fences.
 from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importers
     _approve_every_mcp_launch,
+    _cold_source_link_settings,
     _cold_vault_read_audit,
     _crewmate_dynamic_capabilities_on,
     _disable_dev_fleet_background_tasks,
@@ -286,14 +287,19 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _drop_live_config_snapshot,
     _ensure_event_loop,
     _fake_computer_use_backend,
+    _forget_app_declared_row_listings,
     _forget_app_turn_approver,
     _forget_enterprise_profile_pin,
     _forget_gatewayd_telemetry_override,
     _forget_legacy_auth_sweep_clean_roots,
     _forget_mount_source_sweep_pacing,
+    _forget_observed_people,
+    _forget_offered_instance_types,
+    _forget_registry_ssh_sign_in_refusals,
     _forget_sandbox_launch_mark,
     _forget_tracing_switch,
     _fresh_aws_bin_dir_trust,
+    _fresh_config_load_debug_memories,
     _fresh_dev_fleet_service_reads,
     _fresh_hardlink_spec_warnings,
     _fresh_reexec_environment,
@@ -301,12 +307,15 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _history_cleanup_throttle_closed,
     _inline_taskq_pump,
     _isolate_advertised_model_cache,
+    _isolate_context_store_caches,
     _isolate_display_verdicts,
     _isolate_kiro_window_cache,
+    _isolate_member_identity_cache,
     _ledger_create_ignores_live_memory,
     _no_boot_heap_freeze,
     _no_boot_sandbox_sweep,
     _no_carried_auto_update_effect,
+    _no_host_posture_published,
     _no_inherited_git_proxy_env,
     _no_live_catalog_network,
     _no_live_kernel_memory_pressure,
@@ -324,15 +333,22 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_env_boot_record_and_ownership,
     _reset_live_execution_records,
     _reset_materialized_agents_snapshot,
+    _reset_resource_subscription_state,
     _reset_runtime_ownership_tables,
     _reset_safety_override_between_tests,
     _reset_session_switch_locks,
+    _reset_subagent_not_due_memo,
     _restore_autonudge_singleton,
     _restore_default_child_watcher,
     _session_memory_scope_sample_unshared,
     _shut_down_shared_pools_in_session,
     _small_default_host,
     forget_home_bound_caches,
+)
+
+# Per-test resets of process-global kiro_crew.acp state.
+from conftest_resets_acp import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_kas_agent_config_error_reports,
 )
 
 # The in-memory Slack client and the Slack state resets.
@@ -343,8 +359,6 @@ from conftest_slack import (  # noqa: E402,F401 -- bound for pytest and importer
     _enterprise_bypass,
     _reset_options_control_state,
 )
-
-from kiro_crew.testing import synthetic_credentials as _synthetic_credentials  # noqa: E402
 
 # ``make_dir_link`` lives in kiro_crew.testing.links so the app-embedded test
 # packages, which never see this conftest, share the one copy. Re-exported so
@@ -384,6 +398,7 @@ REDOS_SCALING_FLOOR_SECONDS = 0.25
 _PEM_DASHES = "-" * 5
 _PEM_TAIL_HALF = f"ATE KEY{_PEM_DASHES}\nMIIBOgIBAAJBAKJ2\n"
 
+
 #: Credential shapes a message cap can SEVER. Each half is clean on its own, so
 #: scrubbing the two pieces separately sees nothing, while a reader shown them one
 #: after the other sees the key -- the platform renders the markup away.
@@ -402,28 +417,50 @@ _PEM_TAIL_HALF = f"ATE KEY{_PEM_DASHES}\nMIIBOgIBAAJBAKJ2\n"
 #: published format (``AIza`` and 35 letters and digits, so no half carries markup of
 #: its own); a bare 40-character run and an AWS key ID stay visible and would prove
 #: nothing here.
-_STRADDLE_KEY = "AIza" + _synthetic_credentials.synth(35, seed=17)
-CREDENTIAL_STRADDLE_SHAPES = [
-    pytest.param(
-        f"[{_STRADDLE_KEY[:4]}](https://ex.test/a,b)", _STRADDLE_KEY[4:], id="link-target-comma"
-    ),
-    pytest.param(
-        "Authorization: Bearer",
-        " abcdefghijklmnopqrstuvwxyz0123456789",
-        id="header-whitespace",
-    ),
-    pytest.param(f"{_STRADDLE_KEY[:8]}_", f"_{_STRADDLE_KEY[8:]}", id="underscore-emphasis"),
-    pytest.param(f"{_STRADDLE_KEY[:8]}~", f"~{_STRADDLE_KEY[8:]}", id="tilde-emphasis"),
-    pytest.param(
-        f"https://evil.test/?q={_STRADDLE_KEY[:14]}", f"{_STRADDLE_KEY[14:]}.", id="url-punctuation"
-    ),
-    pytest.param(
-        f"[l](https://ex.test/x/{_STRADDLE_KEY[:8]}", f"{_STRADDLE_KEY[8:]})", id="cut-inside-a-url"
-    ),
-    pytest.param(f"{_PEM_DASHES}BEGIN RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor"),
-    pytest.param(f"{_PEM_DASHES}BEG**IN** RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor-markup-split"),
-    pytest.param(_STRADDLE_KEY[:8], _STRADDLE_KEY[8:], id="no-markup-at-all"),
-]
+#:
+#: Read as ``from conftest import CREDENTIAL_STRADDLE_SHAPES``. Built on first read
+#: by the module ``__getattr__`` below, so collecting a file that never asks for it
+#: does not import the redaction stack ``synthetic_credentials`` reaches
+#: (test/test_conftest_import_budget.py holds that line).
+def _credential_straddle_shapes() -> list:
+    from kiro_crew.testing import synthetic_credentials as _synthetic_credentials
+
+    _STRADDLE_KEY = "AIza" + _synthetic_credentials.synth(35, seed=17)
+    return [
+        pytest.param(
+            f"[{_STRADDLE_KEY[:4]}](https://ex.test/a,b)", _STRADDLE_KEY[4:], id="link-target-comma"
+        ),
+        pytest.param(
+            "Authorization: Bearer",
+            " abcdefghijklmnopqrstuvwxyz0123456789",
+            id="header-whitespace",
+        ),
+        pytest.param(f"{_STRADDLE_KEY[:8]}_", f"_{_STRADDLE_KEY[8:]}", id="underscore-emphasis"),
+        pytest.param(f"{_STRADDLE_KEY[:8]}~", f"~{_STRADDLE_KEY[8:]}", id="tilde-emphasis"),
+        pytest.param(
+            f"https://evil.test/?q={_STRADDLE_KEY[:14]}",
+            f"{_STRADDLE_KEY[14:]}.",
+            id="url-punctuation",
+        ),
+        pytest.param(
+            f"[l](https://ex.test/x/{_STRADDLE_KEY[:8]}",
+            f"{_STRADDLE_KEY[8:]})",
+            id="cut-inside-a-url",
+        ),
+        pytest.param(f"{_PEM_DASHES}BEGIN RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor"),
+        pytest.param(
+            f"{_PEM_DASHES}BEG**IN** RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor-markup-split"
+        ),
+        pytest.param(_STRADDLE_KEY[:8], _STRADDLE_KEY[8:], id="no-markup-at-all"),
+    ]
+
+
+def __getattr__(name: str):
+    if name == "CREDENTIAL_STRADDLE_SHAPES":
+        shapes = _credential_straddle_shapes()
+        globals()[name] = shapes
+        return shapes
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def assert_rejected_without_backtracking(
@@ -1756,3 +1793,14 @@ def held_flag(monkeypatch):
     monkeypatch.setattr(agent_mod, "_main_spec_skip_generation", None)
     monkeypatch.setattr(agent_mod, "_main_spec_held_pass_at", None)
     return agent_mod
+
+
+@pytest.fixture
+def no_ambient_kiro_api_key(monkeypatch):
+    """Run the credit-pill refresh as an install with no ``KIRO_API_KEY``.
+
+    With the key set the refresh publishes the ``api_key`` marker and reads no balance
+    (sessions bill the key, not kiro-cli's login), so a test of the reading itself must
+    not inherit an operator's key from the shell that launched pytest.
+    """
+    monkeypatch.delenv("KIRO_API_KEY", raising=False)

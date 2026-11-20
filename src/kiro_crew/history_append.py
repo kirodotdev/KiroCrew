@@ -17,7 +17,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -133,6 +133,35 @@ def _store_ingested_images(path: Path, content: str, images: Sequence[str]) -> s
         content = "\n".join(markup if line == image else line for line in content.split("\n"))
         content = content.replace(f"\n\n{image_location_note(image)}", "", 1)
     return content
+
+
+def store_ingested_images(
+    self: ConversationLog,
+    key: str,
+    content: str,
+    images: Sequence[str],
+    *,
+    refuse: Callable[[], bool] | None = None,
+) -> str:
+    """*content* naming a stored copy of each of *images* in *key*'s attachments.
+
+    For a row that reaches the session other than through :meth:`append`: a channel
+    message routed to a linked dashboard slot, whose window the slot itself saves.
+    Same copy and rewrite as an appended row's *ingested_images*, under the same
+    session lock. Blocking: call off the event loop.
+
+    Decided under that lock, the one ``delete_session`` reclaims attachments under:
+    a permanent delete of *key* in flight, or *refuse* answering true (the caller's
+    witness that the session was deleted before the lock was taken), stores nothing
+    and returns *content* unchanged, so a copy never recreates a deleted session's
+    attachments.
+    """
+    if not images:
+        return content
+    with self._locked(key):
+        if self.delete_in_flight(key) or (refuse is not None and refuse()):
+            return content
+        return _store_ingested_images(self._path(key), content, images)
 
 
 def append(

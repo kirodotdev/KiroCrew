@@ -35,6 +35,7 @@ from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.decisions import outcomes
 from kiro_crew.history import ConversationLog
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 STRIP = {
     "turn_id": "turn-7",
@@ -58,6 +59,20 @@ def clean_registry():
     outcomes.reset()
     yield
     outcomes.reset()
+
+
+@pytest.fixture
+def generous_decision_log_append(monkeypatch):
+    """Lift the decision-log append deadline for tests that read a published strip.
+
+    ``model_route`` publishes a strip row only after ``decisions.log.append`` wrote
+    it, and that append gives up after ``_APPEND_TIMEOUT_SECONDS`` (0.5 s). On a
+    loaded Windows runner the lock wait outlasts it, the row is dropped, and the
+    test reads a strip missing a turn. Raised to a lost-run bound, not removed.
+    """
+    from kiro_crew import platform_log_append
+
+    monkeypatch.setattr(platform_log_append, "_APPEND_TIMEOUT_SECONDS", FALLBACK_TIMEOUT_SECS)
 
 
 def _slot(key: str = "chat-strip-1") -> _ChatSlot:

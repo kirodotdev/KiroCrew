@@ -214,11 +214,14 @@ your work pool — Issue Radar crews label issues `claimed`, humans assign
 themselves. A candidate someone else already owns is excluded, listed in the
 plan as skipped with the reason, never dispatched over.
 
-**Capacity decides the wave, not your plan.** As your prompt says,
-`resource_status` decides the wave, every wave a reseed wave included (`unknown` is a reading that
-FAILED and queues like `tight`). Say what you queued in the plan. Each time an
-in-flight item lands, read `resource_status` again and dispatch from the queue
-the same way. Keep the patrol loop armed while anything is queued. If a wave
+**Keep the host healthy, as your prompt's host-health rule says**: it names the
+goal, what `resource_status` and a posture wake tell you, and the hard bounds.
+
+**Capacity decides the wave, not your plan.** So `resource_status` decides the
+wave, every wave a reseed wave included (`unknown` is a reading that FAILED and
+counts as `tight`). Say what you queued in the plan. Each time an
+in-flight item lands, read `resource_status` again and dispatch from the queue.
+Keep the patrol loop armed while anything is queued. If a wave
 dispatched nothing and no patrol is armed yet, arm
 `monitor_start(watch="work-ledger")` yourself, since no create or bind reply
 will arm one. The ledger's cap and the server's slot limits are the only
@@ -265,6 +268,8 @@ from you. It carries the item's goal, its acceptance condition, and the
 instruction to report through `work_report`. Without `work_dispatch`, or to
 bind an existing session to a new item (Patrol step 4), read
 `<this skill's dir>/references/manual-dispatch.md` and follow its four steps in order.
+
+**A file the person gave you travels as its path, as your prompt's send-files rule says.** A pasted screenshot shows up as `[image: <name>] <absolute path>`; copy that path into the seed or `session_send` message.
 
 **A `pr_checks` seed says how the pull request is opened.** Tell the worker to open it non-draft — `gh pr create` without `--draft` — or to run `gh pr ready` before it reports done. A completion claim that arrives on a draft whose checks have not finished costs a whole verify cycle that answers `refused`, which you surface to the user rather than retry.
 
@@ -417,8 +422,8 @@ Each cycle:
    |---|---|---|
    | `progress` | informational | nothing |
    | `done` | the worker CLAIMS acceptance is met | verify (step 3) |
-   | `blocked` | an external dependency stopped the work | clear it or re-plan around it; when you answer the worker, `session_send` it, then `work_ledger_record` `action=decide` |
-   | `question` | your own decision is needed | `session_send` the answer, then `work_ledger_record` `action=decide`; `session_read_message` the reply |
+   | `blocked` | an external dependency stopped the work | clear it or re-plan around it; when you answer the worker, `session_send` it with `steer: true`, then `work_ledger_record` `action=decide` |
+   | `question` | your own decision is needed | `session_send` the answer with `steer: true`, then `work_ledger_record` `action=decide`; `session_read_message` the reply |
 
    **A person's steer outranks your decision.** When the person types into a
    worker from the Crew panel, its item gets a `steer` event (`kind: steer`, the
@@ -440,17 +445,19 @@ Each cycle:
    needed only for (a)-(e) in your rules; the conductor tail in your prompt
    sets the check. If none applies, decide it yourself: take the
    worker's recommendation (or the safest reversible default when it names
-   none), record `action=decide`, `session_send` it to the worker, and tell the
+   none), record `action=decide`, `session_send` it to the worker with
+   `steer: true`, and tell the
    person in one line what you decided. For example, a plain design choice
    (which of two layouts, which file holds a helper) is yours; a choice that
    deletes another contributor's branch is (c); a choice that needs a token
    only the person holds is (a).
 
    When every open item waits on a person (`approval`, or a `needs_human` that
-   passed that check), put the ask in front of the user on that turn: your patrol then holds, takes no
-   turns and does not extend, and the goal popover shows it waiting on the user.
-   A worker's new report releases it; your own writes (decide, goal, close) do
-   not, so answer the user's question or re-dispatch to move it.
+   passed that check), put the ask in front of the user on that turn and record
+   it with `work_ask_record`: your patrol then holds, takes no turns and does not
+   extend, and the goal popover shows it waiting on the user. Without a current
+   ask record it does not hold. A worker's new report releases it, and so do your
+   `decide` and `close` (they clear the ask); `goal` does not.
 
    **Whenever you relay an item's question to the person, load and call
    `work_ask_record` in that turn** (`item_id`, `what`, `why`,
@@ -527,7 +534,8 @@ Each cycle:
    finally done with — that is what ends it. An item that passed is already
    closed by step 3's one write; a separate `close` is for `rejected` and
    `abandoned`. **Closing the item and closing
-   its session happen together.** When a work item reaches a terminal verdict
+   its session happen together**, unless your prompt's worker-reuse rule gives
+   that worker the next item. When a work item reaches a terminal verdict
    (accepted, rejected, abandoned/void) and its loop is stopped,
    `session_close` that child session in the same cycle — a finished worker
    has nothing left to re-arm. That `session_close` and your next
@@ -538,15 +546,16 @@ Each cycle:
    actively driving, and never a session you did not dispatch. **Closing an item cuts its worker's
    report channel**: from then on its `work_report` is refused `item_closed`,
    and it cannot `session_send` to you. The close reply warns when that
-   worker's session is still open. If the worker still has work for you,
-   `create` a new item and `bind` it to the SAME session, then `session_send`
-   it the new item's goal; its `work_brief` and `work_report` resolve to the
-   new item. A session holds one open item at a time, so binding one whose
+   worker's session is still open. Whether that session takes the next item or
+   a fresh one does is your prompt's worker-reuse rule. To reuse it, `create`
+   the new item, `bind` it to that session, then `session_send` it the new
+   item's goal with `steer: true`; its `work_brief` and `work_report` resolve
+   to the new item. A session holds one open item at a time, so binding one whose
    item is still open is refused `worker_already_dispatched`. `action=decide` records an
    instruction you want the worker to read out of `work_brief`; it is the ONE
    field the worker treats as an instruction, so keep it to a decision.
-5. `session_read_message` for detail the record does not carry — a question's
-   substance, a stall's shape. Never for a verdict: the ledger is that.
+5. `session_read_message` for detail the record does not carry, as your
+   prompt's read-message rule says.
 
    **Check each worker for drift.** A report is the worker's own claim, so a
    worker building the wrong thing looks fine until acceptance. On every patrol
@@ -570,8 +579,8 @@ Each cycle:
    **When the lines show the item itself is wrong** (already done on main,
    mis-scoped, needing a split, a bar that cannot be met), re-plan that item now
    (Close the round).
-6. **A patrol wake gets one line**, as your prompt's patrol-reply rule says,
-   and more only in the cases it names. Never stop bare after your tool
+6. **Reply to a patrol wake as your prompt's patrol-reply rule says**, and
+   write more only in the cases it names. Never stop bare after your tool
    calls: that keeps the empty-response recovery.
 
 ### Close the round
@@ -665,7 +674,9 @@ carry on in the same chat and try again at the next round close.
 
 The user can message you any time. Apply a changed goal **at the round
 boundary** — that is the re-plan point, and cancelling mid-round throws away
-finished work.
+finished work. A request that adds separate work is not a changed goal for the
+running items: make it its own item now, as your prompt's worker-reuse rule
+says.
 
 **Record the goal first, every time it changes.** When the user gives a new goal
 or changes the scope, call `work_ledger_record` `action=goal` FIRST, before you
@@ -679,17 +690,10 @@ running, deal with that item now — `session_stop` it and `close` its ledger it
 or `session_send` the correction straight into it with `steer: true`. Do not
 tear down the whole round for one item.
 
-**Steer corrections, queue everything else.** A plain `session_send` to a busy
-worker waits for its current turn to end. Pass `steer: true` for a correction, a
-changed direction, or "stop, that is already done": it lands in the running
-turn, and on an idle worker it starts or queues a turn like a plain send. Leave `steer` off for answers
-to a `question`, seeds, and anything that can wait for the turn boundary.
-A steer does not withdraw what is already queued: if `session_read_message`
-reports a non-zero `queue_depth`, those messages still run after the turn, so
-say in the steered message which earlier instruction it supersedes.
-
-The same rule holds for a fleet: send a correction to several workers with
-`session_broadcast` with `mode: steer`.
+**Steer every direct follow-up; never queue it.** Follow your prompt's direct-worker
+communication rule after the seed. For a fleet, use `session_broadcast` with
+`mode: steer`. If `session_read_message` reports a non-zero `queue_depth`, name
+which earlier instruction the steer supersedes.
 
 ## When a conductor dispatched you
 
@@ -758,10 +762,9 @@ alone). A `pending_overdue` item is never asked: `references/rare-cases.md` give
 4. **The loop is never stopped for a question.** It stays armed, and the first
    cycle after the user answers picks the answer up and resumes the item.
 
-On one of the two signals, end the patrol in two steps. First send the user
-ONE final report: what landed, what is left, and the links. Then, in a later
-step, call `autonudge_stop`. The final report is your last message to the
-user. Before that final report, `session_close` each one whose item is
+On one of the two signals, end the patrol as your prompt's patrol rules say:
+ONE final report, then `autonudge_stop` in a later step. Before that final
+report, `session_close` each one whose item is
 terminal, and leave open any child still holding a pending human question or
 driving an unmerged PR (Patrol step 4).
 

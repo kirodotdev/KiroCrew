@@ -36,6 +36,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from kiro_crew.cli_chat_stdin import STDIN_MESSAGE
+
 #: Exit codes, one per way a run ends (rfc-builtin-eval.md §12.5).
 EXIT_DONE = 0
 EXIT_ERROR = 1
@@ -148,6 +150,10 @@ class Result:
 def options_from_args(args: argparse.Namespace) -> Options:
     """Validate the flags of one headless run; raise :class:`UsageError` on a bad set."""
     message = args.message or ""
+    if message == STDIN_MESSAGE:
+        # `-m -` reads stdin only on the interactive chat; sent here it would
+        # seed an unattended run with the text "-" and drop the piped message.
+        raise UsageError("-m - does not read stdin with --headless; use --message-file PATH")
     if getattr(args, "message_file", None):
         if message:
             raise UsageError("give -m or --message-file, not both")
@@ -631,11 +637,14 @@ def spend_slots(roots: set[str], since: float) -> set[str]:
 
 
 def ledger_asks(items: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """Items the board reads as waiting on the person (``awaits_person``), or with a recorded ask."""
+    """Items the board reads as waiting on the person (``awaits_person``), or with the
+    conductor's current ask record (a ``human_approval`` item it asks about after a
+    ``done``). The board sends ``ask`` only while it is current, so an item whose newer
+    report the main chat is still checking is neither."""
     out = []
     for item in items:
         ask = item.get("ask")
-        if item.get("awaits_person") or (ask and item.get("state") == "open"):
+        if item.get("awaits_person") or (isinstance(ask, dict) and item.get("state") == "open"):
             text = (ask.get("what") or "") if isinstance(ask, dict) else ""
             out.append(
                 {

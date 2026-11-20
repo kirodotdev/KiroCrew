@@ -194,10 +194,12 @@ any choice that fits none, so a worker with a recommendation reports
 `question` without it. A wait on a build, service or other item
 carries no reason. It is refused on `progress` and `done`, and every report
 replaces it. When every open item waits on a person (`approval` or
-`needs_human`) and nothing on the ledger changed since the conductor's last
-turn, the conductor's `work-ledger` watch holds: no turns, no extension, and
-the goal popover says it is waiting on you. A worker's new report releases it;
-the conductor's own writes do not.
+`needs_human`), the conductor relayed each with a current `ask` record
+(`work_ask_record`), and nothing on the ledger changed since the conductor's
+last turn, the conductor's `work-ledger` watch holds: no turns, no extension,
+and the goal popover says it is waiting on you. A worker's new report releases
+it, and so does a `decide` or `close` (both clear the `ask`); the conductor's
+other writes do not.
 
 **`wake_at` says a `progress` report is a wait until a known time.** The item is
 not flagged `stale` before that time, so the conductor mode sidebar does not call the
@@ -237,6 +239,32 @@ delivers names the item with `reason=report_undelivered`. The flag is not a
 ledger write: the next `work_brief` or `work_report` call that gets through
 clears it. A conductor that sees it checks the worker's session and pull request
 and tells you what it finds, rather than calling the worker stalled.
+
+**A change of the host's posture wakes it too.** The host posture is the worse
+of memory (`ample`, `tight`, `critical`, as `resource_status` reads it) and disk
+(a temp root low on space or inodes is `tight`, under 3% space or 200 inodes
+`critical`). When it changes, every conductor with an active `work-ledger`
+patrol is woken once, with the reading:
+`[work-ledger wake] host posture is tight (memory 3.1 GB free; /tmp LOW on space, 6% space free, 40% inodes free (90000 inodes))`.
+A patrol held because every open item waits on a person is released by a
+posture change too, so the wake still reaches the conductor.
+The same posture again wakes nobody, and `ample` wakes nobody until a worse
+posture was seen. While it stays `tight`, one more wake comes each time free
+memory falls another 1 GB, or the worst temp root another 2 points of free space,
+below the reading at the last posture wake (under `critical`, 0.5 GB and 1 point);
+a recovery wakes nobody and becomes the new reference:
+`[work-ledger wake] host posture still tight and worse (memory 2.9 GB free, was 4.0 GB at the last wake)`.
+These share the posture's hourly wake budget, so a value that flaps cannot keep
+waking it. A worker bound to an open item also wakes it when its process tree
+first holds a quarter of host memory (again only after it drops below a fifth),
+or, while the host is `tight` or `critical`, grows 2 GB since the last wake about it:
+`[work-ledger wake] worker it_1a2b3c4d grew to 16.2 GB (27% of RAM; +3.1 GB since the last wake)`.
+That wake is charged to the item's own budget. It reads the sizes the session
+watchdog already measures, so it is off when `session.watchdog_rss_max_mb` is 0,
+and `resource_status` then says so. For a conductor, `resource_status` also lists each worker
+bound to an open item on its own board, by item id: its memory, process count,
+largest test run, whether a turn is running, and the free space of its working
+volume. No other session is shown.
 
 Reports belong at real milestones, not on a timer.
 `summary` is capped at 500 characters.
@@ -319,7 +347,8 @@ unfinished work — a stub written before the real content, a pull request green
 before the last commit.
 
 A conductor stops patrolling only when every item is terminal (accepted,
-rejected or abandoned), or when the user says stop, in words or through a round
+rejected or abandoned) and nothing is queued (a queued item has no ledger row
+yet), or when the user says stop, in words or through a round
 or time budget they set. An item that fails acceptance three times is closed
 `rejected` and the rest keep going. A decision that needs a person parks only
 that item: the conductor asks about it and keeps patrolling the others. The

@@ -142,5 +142,10 @@ async def _start_aea_tunnel(
             state.tunnel_manager = tunnel_mgr
             if relay_selected(cfg):
                 from kiro_crew.remote_control.guard import install_for_relay
+                from kiro_crew.remote_control.hosting import hosting_by_default
 
-                install_for_relay(tunnel_mgr, current_context().tunnel)
+                guard = install_for_relay(tunnel_mgr, current_context().tunnel)
+                if guard is not None and hosting_by_default(cfg.tunnel):
+                    from kiro_crew.remote_control import default_notice
+
+                    guard.on_first_connect(lambda: default_notice.announce(state))

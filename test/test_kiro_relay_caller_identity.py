@@ -30,11 +30,14 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from token_auth_helpers import clear_nonces  # noqa: F401 -- the autouse fixture registers by import
 
-from kiro_crew.apps.proxy_auth import PRINCIPAL_NONE, PRINCIPAL_OWNER_SESSION
+from kiro_crew.apps.proxy_auth import PRINCIPAL_OWNER_SESSION
 from kiro_crew.apps.routes_proxy import _proxy_principal
 from kiro_crew.dashboard import relay_headers
 from kiro_crew.dashboard import server as dashboard_server
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import (
+    is_host_owner_dashboard_request,
+    is_owner_dashboard_request,
+)
 from kiro_crew.dashboard.kiro_relay import caller as relay_caller
 from kiro_crew.dashboard.kiro_relay import ingress as relay_ingress
 from kiro_crew.dashboard.kiro_relay import limits
@@ -90,7 +93,10 @@ async def _echo(request: web.Request) -> web.Response:
             "app": request.get("app"),
             "auth_token": request.get("auth_token"),
             "is_dashboard_user": request.get("is_dashboard_user"),
-            "owner": is_owner_dashboard_request(request),
+            # Who the caller is, and separately whether the owner gate admits them:
+            # a team Crew teammate passes it (``shared_crew.teammate_access``).
+            "owner": is_host_owner_dashboard_request(request),
+            "owner_gate": is_owner_dashboard_request(request),
             "principal_kind": kind,
             "principal_owner": owner_id,
             "audit_actor": audit_actor(request, "dashboard_user"),
@@ -565,9 +571,10 @@ async def test_a_teammate_is_never_the_owner(owner_id: str) -> None:
     assert body["user"] == f"relay:{TEAMMATE}"
     assert body["is_dashboard_user"] is True
     assert body["owner"] is False
-    # The app proxy's claim for a teammate names no owner.
-    assert body["principal_kind"] == PRINCIPAL_NONE
-    assert body["principal_owner"] == ""
+    assert body["owner_gate"] is True
+    # An app backend reads a teammate's session as the owner's, under their own name.
+    assert body["principal_kind"] == PRINCIPAL_OWNER_SESSION
+    assert body["principal_owner"] == f"relay:{TEAMMATE}"
 
 
 @pytest.mark.asyncio
@@ -635,14 +642,6 @@ _LIMIT_CASES = [
     ("personal", "GET", "/api/secrets", {}, limits.LOCAL_CREDENTIAL),
     ("team", "DELETE", "/api/secrets/GITHUB_TOKEN", {}, limits.LOCAL_CREDENTIAL),
     ("personal", "POST", "/api/shutdown", {}, limits.SHUTDOWN),
-    ("team", "GET", "/apps/notes/ui/index.html", {}, limits.APPS_OFF_FOR_TEAMMATES),
-    ("team", "POST", "/apps/notes/api/save", {}, limits.APPS_OFF_FOR_TEAMMATES),
-    ("team", "GET", "/api/apps", {}, limits.APPS_OFF_FOR_TEAMMATES),
-    ("team", "GET", "/api/apps/issue-radar/repos", {}, limits.APPS_OFF_FOR_TEAMMATES),
-    ("team", "GET", "/api/apps/issue-radar/issues", {}, limits.APPS_OFF_FOR_TEAMMATES),
-    ("team", "POST", "/api/apps/notes/enable", {}, limits.APPS_OFF_FOR_TEAMMATES),
-    ("team", "GET", "/api/publish-providers", {}, limits.APPS_OFF_FOR_TEAMMATES),
-    ("team", "POST", "/api/app-store/refresh", {}, limits.APPS_OFF_FOR_TEAMMATES),
 ]
 
 
@@ -690,20 +689,24 @@ def test_a_path_not_in_canonical_form_is_refused(path, expected) -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_owner_keeps_apps_and_ordinary_routes() -> None:
-    """The app limit is a teammate's only, and ordinary routes stay reachable."""
-    async with TestClient(TestServer(_app(_personal()))) as client:
+@pytest.mark.parametrize("crew", ["personal", "team"])
+async def test_the_owner_and_a_teammate_keep_apps_and_ordinary_routes(crew: str) -> None:
+    """No remote limit tells a teammate from the owner: apps and ordinary routes pass."""
+    build, user = (_personal, OWNER) if crew == "personal" else (_team, TEAMMATE)
+    async with TestClient(TestServer(_app(build()))) as client:
         ingress = _personal_like(client)
         for path in (
             "/apps/notes/ui/index.html",
+            "/api/apps",
             "/api/apps/issue-radar/repos",
             "/api/publish-providers",
+            "/api/app-store/refresh",
             "/api/sessions",
             "/api/instancesx",
             "/api/apps/dev-fleet/pod-tokens",
             "/api/webhooks",
         ):
-            resp = await client.get(path, headers=_relayed(ingress, OWNER))
+            resp = await client.get(path, headers=_relayed(ingress, user))
             assert resp.status == 200, path
 
 

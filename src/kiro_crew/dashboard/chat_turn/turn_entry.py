@@ -716,6 +716,11 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # call time.
     _seen_tool_identity: dict[str, tuple[str, str]] = {}
     turn._seen_tool_identity = _seen_tool_identity
+    # Identified call key -> digests of the (title, kind) the SEL last recorded
+    # for it, so a tool_call_update that changes neither writes no `refined` row.
+    # Keyed like `_failed_write_calls`, so the first-source map bounds the count,
+    # and the digests bound each entry's size.
+    turn._sel_tool_labels = {}
     # tool_call_id -> the receipt selector of a ``session_send`` call
     # (``session_send_receipts.call_selector`` over its raw arguments), so its
     # completed result can pick up what the gateway delivered.
@@ -1009,6 +1014,11 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # the member section instead of running the member with no bounds.
     _member_session_start_pending = False
     turn._member_session_start_pending = _member_session_start_pending
+    # A slim resume (a new provider session over a restored history) owes the
+    # lessons and steering its compacted history may have lost. Armed at the
+    # session claim and narrowed at prompt assembly; the settle re-arms the
+    # reinjection when the owed blocks were not delivered.
+    turn._slim_resume_pending = False
     # Recoverable tool refusals (host-gate policy deny / read-only bash gate)
     # recorded during this turn as (redacted_title, reason). Each deny also gets
     # its reason steered in-band (see _refusal_notices); this ledger is what the

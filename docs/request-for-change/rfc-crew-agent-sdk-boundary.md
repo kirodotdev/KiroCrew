@@ -4,8 +4,8 @@ status: partial
 revision: v4
 author: zejiangg, with Kiro
 created: 2026-08-28
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
 implementation-prs:
   - "PR 1 — the boundary gate and its baseline: scripts/check_agent_sdk_boundary.py,

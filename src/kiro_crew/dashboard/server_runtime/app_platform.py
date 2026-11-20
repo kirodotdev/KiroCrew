@@ -1,8 +1,8 @@
 """The app platform's boot work in ``start_dashboard``.
 
 Warming the PreToolUse gate's builtin app names and the materialized-agent snapshot,
-reconciling every enabled app's resources, and starting the app backends, in one
-wave, with the App SDK gateway hooks system.
+and starting the app backends (whose boot pass also reconciles each admitted enabled
+app's resources), in one wave, with the App SDK gateway hooks system.
 """
 
 from __future__ import annotations
@@ -57,23 +57,6 @@ async def _warm_materialized_agents() -> None:
         )
     except Exception:  # noqa: BLE001 — a warm failure only costs one fallback
         logger.debug("Failed to warm materialized agent names", exc_info=True)
-
-
-async def _reconcile_app_resources() -> None:
-    """Reconcile resources (agents / skills / crons / MCP) for every ENABLED app.
-    Registration otherwise happens only in the enable path, so an app that
-    gains agents or skills in a later version never registers them for a user
-    who already enabled it. Runs on the executor: it walks the apps tree and
-    writes into ~/.kiro/agents.
-    """
-    from kiro_crew.apps.bridges import reconcile_enabled_app_resources
-
-    try:
-        await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(), reconcile_enabled_app_resources
-        )
-    except Exception as exc:  # noqa: BLE001 — never block gateway startup
-        logger.warning("App resource reconcile failed: %s", exc)
 
 
 async def _start_app_backends(app: web.Application, state: DashboardState) -> None:

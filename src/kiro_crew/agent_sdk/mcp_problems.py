@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 #: block's still-starting row both read this one name, so they cannot drift.
 MCP_STATUS_CAP = 256
 
-#: How long an unattended run (a webhook, cron job, heartbeat, task-runner step
-#: or workflow step) holds its first prompt for the agent spec's MCP servers to
+#: How long an unattended run (a webhook, cron job, heartbeat, task-runner step,
+#: workflow step or sub-agent spawn) holds its first prompt for the agent spec's MCP servers to
 #: report. The session's own init drain gives up a second after the first server
 #: reports, which a slow ``node`` server misses; nobody can reconnect it by hand
 #: in these runs, so they wait longer. Bounded, so a server that never answers

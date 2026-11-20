@@ -294,6 +294,26 @@ describe('SlackPanel read-only session', () => {
   })
 })
 
+/* ── placeholder tone ─────────────────────────────────────────────────────── */
+
+describe('SlackPanel placeholder tone', () => {
+  // The colour itself is measured per palette in SlackPanel.placeholderTone.test.ts;
+  // this pins that every placeholder the panel renders sits under the class.
+  it('puts every field with a placeholder under the faded-placeholder class', async () => {
+    const { container } = seed({ session_folder: 'Slack' })
+    await hydrated()
+
+    const fields = [...container.querySelectorAll<HTMLElement>('input[placeholder], textarea[placeholder]')]
+    expect(fields.map(f => f.getAttribute('placeholder'))).toEqual(expect.arrayContaining([
+      'U0123ABC456', 'E0123ABC456', 'kirocrew',
+    ]))
+    const bare = fields
+      .filter(f => !f.closest('[class*="[&_:is(input,textarea)::placeholder]:text-muted/"]'))
+      .map(f => f.getAttribute('placeholder'))
+    expect(bare).toEqual([])
+  })
+})
+
 /* ── TagListEditor ────────────────────────────────────────────────────────── */
 
 describe('SlackPanel enterprise allowlist editor', () => {
@@ -381,19 +401,43 @@ describe('SlackPanel save payload', () => {
       show_thinking: true,
       session_folder: '',
       auto_link_sessions: false,
-      show_in_session_list: true,
+      show_in_session_list: false,
     })
     expect(await screen.findByText('Saved.', undefined, { timeout: 5_000 })).toBeInTheDocument()
   })
 
-  it('lists Slack conversations by default and saves the switch turned off', async () => {
+  it('leaves the owner out of a save that did not edit it, so a claim confirmed meanwhile stays', async () => {
+    const { save } = seed()
+    await hydrated()
+
+    fireEvent.change(screen.getByPlaceholderText('kirocrew'), { target: { value: 'crew' } })
+    fireEvent.click(saveBtn())
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).not.toHaveProperty('owner_id')
+  })
+
+  it('leaves Slack conversations out by default and saves the switch turned on', async () => {
     const { save } = seed()
     await hydrated()
 
     const toggle = screen.getByRole('switch', { name: 'Show Slack conversations in the session list' })
-    // A gateway that sends no value reads as on, the gateway's own default.
-    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    // A gateway that sends no value reads as off, the gateway's own default.
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
     expect(screen.getByText('Lists conversations that start in Slack with your other sessions.')).toBeInTheDocument()
+    fireEvent.click(toggle)
+    fireEvent.click(saveBtn())
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ show_in_session_list: true })
+  })
+
+  it('shows a stored on as on and saves it turned off', async () => {
+    const { save } = seed({ show_in_session_list: true })
+    await hydrated()
+
+    const toggle = screen.getByRole('switch', { name: 'Show Slack conversations in the session list' })
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(toggle)
     fireEvent.click(saveBtn())
 
@@ -401,17 +445,12 @@ describe('SlackPanel save payload', () => {
     expect(save.mock.calls[0][0]).toMatchObject({ show_in_session_list: false })
   })
 
-  it('shows a stored off as off and saves it turned back on', async () => {
-    const { save } = seed({ show_in_session_list: false })
+  it.each([false, undefined])('shows a stored %s as off', async (stored) => {
+    seed({ show_in_session_list: stored })
     await hydrated()
 
     const toggle = screen.getByRole('switch', { name: 'Show Slack conversations in the session list' })
     expect(toggle).toHaveAttribute('aria-checked', 'false')
-    fireEvent.click(toggle)
-    fireEvent.click(saveBtn())
-
-    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
-    expect(save.mock.calls[0][0]).toMatchObject({ show_in_session_list: true })
   })
 
   it('saves the auto-connect toggle once it is flipped on, with no target to pick', async () => {
@@ -434,7 +473,7 @@ describe('SlackPanel save payload', () => {
     const { save } = seed()
     await hydrated()
 
-    fireEvent.click(screen.getByRole('switch', { name: 'File sessions in a folder' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'File sessions in a different folder' }))
     expect(screen.getByPlaceholderText('Slack')).toHaveValue('')
     fireEvent.click(saveBtn())
 
@@ -446,7 +485,7 @@ describe('SlackPanel save payload', () => {
     const { save } = seed({ session_folder: 'Inbox' })
     await hydrated()
 
-    expect(screen.getByRole('switch', { name: 'File sessions in a folder' })).toHaveAttribute(
+    expect(screen.getByRole('switch', { name: 'File sessions in a different folder' })).toHaveAttribute(
       'aria-checked',
       'true',
     )
@@ -461,7 +500,7 @@ describe('SlackPanel save payload', () => {
     const { save } = seed({ session_folder: 'Inbox' })
     await hydrated()
 
-    fireEvent.click(screen.getByRole('switch', { name: 'File sessions in a folder' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'File sessions in a different folder' }))
     expect(screen.queryByPlaceholderText('Slack')).not.toBeInTheDocument()
     fireEvent.click(saveBtn())
 

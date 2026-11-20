@@ -1,13 +1,14 @@
 /** The dock over the lanes. Its field is the search row's controls: the lane
  *  cycle button and the sort and filter menu (status chips with the Recent
- *  window, sort, folder order, dormant collapse, tags, models, folders), with
- *  the label tables its rows and chips name. Its shelf, under the search
- *  capsule, holds the active filter chips (tags, models, status, hides) and the
+ *  window, sort, folder order, dormant collapse, tags, models, "Started by",
+ *  folders), with the label tables its rows and chips name. Its shelf, under the
+ *  search capsule, holds the active filter chips (tags, models, "Started by",
+ *  status, hides) and the
  *  list-level notices (seed, crew names, read failures, close refusal, folder
  *  writes and order, create, rename, title, peer sessions). */
 import { Fragment, useLayoutEffect, useRef } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { X, ArrowUpDown, EyeOff, ZapOff, ChevronRight, Clock, Check, List, ListTree, Pin, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
+import { X, ArrowUpDown, TextSearch, EyeOff, ZapOff, ChevronRight, Clock, Check, List, ListTree, Pin, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import FolderGlyph from '../../components/FolderGlyph'
 import { useQuery } from '@tanstack/react-query'
@@ -28,11 +29,13 @@ import { type RecentUnit, RECENT_WINDOW_PRESETS, formatRecentWindow } from '../r
 import { STALE_COLLAPSE_PRESETS_MS } from '../staleCollapse'
 import { SORT_LABEL_KEY, type SortKey } from '../chat/sessionOrder'
 import { i18nT } from '../../i18n/t'
+import { openGlobalChatSearch } from '../../components/globalChatSearch/globalChatSearchStore'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { fmtList } from '../../i18n/format'
 import type { SessionFilterKey } from './types'
 import { SESSION_FILTERS } from './filters'
 import { modelFilterLabel } from './models'
+import { CreatorFilterChip, CreatorFilterSection } from './creatorFilterMenu'
 import { DisclosureChevron } from './chrome'
 import { keepRowInMenuView } from '../../lib/menuRowReveal'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
@@ -185,7 +188,7 @@ function RemoteCrewNamesError() {
 export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode; shelf: React.ReactNode } {
   const { activeFilters, activeModelKeys, activeModelRows, activeTagIds, activeTagNames, autoTitleError,
     availableLanes, boardLaneActive, changeRecentUnit, clearHiddenFilters, clearModelFilter, clearTagFilter,
-    closeRefused, columnsError, columnsFailed, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError,
+    closeRefused, columnsError, columnsFailed, creatorFilter, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError,
     dismissUnfiledAboveFoldersError, dispatch,
     filterCounts, filterHiddenFolders, filterSortOpen, filtersPaused, pausedFilters, flatLaneActive, folderActionError, groupByKind, toggleGroupByKind,
     folderFilterRows, folderOfflineNotice, folderReorderHint, folderReorderHintRef, folderRowsDrawn, folderSortMode,
@@ -299,6 +302,12 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     window presets' number formatting among them) were part of the
                     longest task of opening the chat page. */}
                 <RenderWhenOpen render={() => (<>
+                {/* Search all chats: every matching message across chats (⌘⇧F). */}
+                <DropdownMenuItem onSelect={openGlobalChatSearch} data-testid="search-all-chats">
+                  <TextSearch size={14} className="shrink-0" aria-hidden="true" />
+                  <span className="flex-1 truncate">{i18nT('components.globalChatSearch.title')}</span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
                 <FilterMenuLabel>{i18nT('pages.chatSidebar.filter')}</FilterMenuLabel>
                 {SESSION_FILTERS.map(filterDef => {
                   const active = activeFilters.has(filterDef.key)
@@ -719,13 +728,8 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                       role="menuitemcheckbox"
                       aria-checked={unfiledAboveFolders}
                     >
-                      <span
-                        aria-hidden="true"
-                        className={`w-3.5 h-3.5 shrink-0 rounded-[3px] border flex items-center justify-center ${unfiledAboveFolders ? 'border-accent bg-accent text-accent-fg' : 'border-border bg-transparent'}`}
-                      >
-                        {unfiledAboveFolders && <Check size={10} strokeWidth={3} />}
-                      </span>
                       <span className="flex-1">{i18nT('pages.chatSidebar.unfiled_sessions_above_folders')}</span>
+                      {unfiledAboveFolders && <Check size={14} className="text-accent shrink-0" aria-hidden="true" />}
                     </DropdownMenuItem>
                   </>
                 )}
@@ -970,6 +974,9 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     })}
                   </>
                 )}
+                {/* "Started by", on a Shared Crew only: a session property like the
+                    model, so not gated on the lane either. */}
+                <CreatorFilterSection view={creatorFilter} />
                 {/* Folders sit LAST on purpose: the list grows with the user's
                     folder count, so anything below it would get pushed out of
                     easy reach. Being last, it can simply overflow into the
@@ -1147,6 +1154,8 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
           </div>
         )
       })()}
+      {/* The "Started by" chip, in its own row for the same AUTOSDE reason. */}
+      <CreatorFilterChip view={creatorFilter} />
       {/* The Crew Mode chip in its own row, above the status chips, for the same
           AUTOSDE reason as the tag, model and hides chips: the status-chip row
           below holds the base branch's four filter chips and must not grow

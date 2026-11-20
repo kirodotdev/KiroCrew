@@ -673,7 +673,9 @@ export function InstanceFormFields({
       {isFargate ? null : (
       <label htmlFor={`${idPrefix}-ttl`} className="flex flex-col gap-1 text-[13px] text-muted">
         {i18nT('pages.settings.instancesPanel.token_ttl')}
-        <input id={`${idPrefix}-ttl`} aria-label={i18nT('pages.settings.instancesPanel.token_ttl')} className={inputCls} value={values.ttl} onChange={e => set('ttl', e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.20h')} />
+        {/* The placeholder is DEFAULT_TTL, a machine value the field parses, so it
+            is data to the render-time i18n scan rather than untranslated prose. */}
+        <input id={`${idPrefix}-ttl`} aria-label={i18nT('pages.settings.instancesPanel.token_ttl')} className={inputCls} value={values.ttl} onChange={e => set('ttl', e.target.value)} placeholder={DEFAULT_TTL} data-i18n-opaque="" />
         {!ttlValid ? (
           <span className="text-[12px] text-danger leading-snug">
             {i18nT('pages.settings.remoteCrewPanel.ttl_must_be_hours_or_minutes')}

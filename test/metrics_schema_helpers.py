@@ -44,6 +44,14 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Tuple
 
+# is_additive is re-exported: the tests call schema.is_additive.
+from kiro_crew.metrics.schema_manifest import (  # noqa: F401
+    FIXED_FIELDS,
+    is_additive,
+    manifest_rows,
+    value_tokens,
+)
+
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
 PACKAGE = SRC / "kiro_crew"
@@ -850,25 +858,11 @@ def build_manifest(
 
 # -- the two checks ------------------------------------------------------------
 
-#: Row fields that never change once a row is in the manifest.
-FIXED_FIELDS = ("kind", "unit", "scope", "temporality")
-
-
-def _values(spec: Dict[str, Any], field: str = "values") -> Optional[set]:
-    """A key's value list as comparable tokens (``True`` and ``1`` stay apart)."""
-    if field not in spec:
-        return None
-    return {json.dumps(v) for v in spec[field]}
-
-
-def _rows(document: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    return {row["name"]: row for row in document.get("metrics", [])}
-
 
 def check_code(document: Dict[str, Any], code_rows: Dict[str, Dict[str, Any]]) -> List[str]:
     """Where the manifest and the code disagree, one line per problem, naming the metric."""
     problems: List[str] = []
-    manifest = _rows(document)
+    manifest = manifest_rows(document)
     hint = "run: python test/metrics_schema_helpers.py --write"
     for name in sorted(set(code_rows) | set(manifest)):
         code, row = code_rows.get(name), manifest.get(name)
@@ -915,7 +909,7 @@ def _check_keys(name: str, listed: Dict[str, Any], sent: Dict[str, Any], hint: s
         if spec.get("status") == "deprecated":
             problems.append(f"{where} is deprecated; a deprecated key is never reused")
             continue
-        listed_values, code_values = _values(spec), _values(code)
+        listed_values, code_values = value_tokens(spec), value_tokens(code)
         if (listed_values is None) != (code_values is None):
             state = "closed" if code_values is not None else "open"
             problems.append(
@@ -924,7 +918,7 @@ def _check_keys(name: str, listed: Dict[str, Any], sent: Dict[str, Any], hint: s
             continue
         if listed_values is None or code_values is None:
             continue
-        retired = _values(spec, "deprecated_values") or set()
+        retired = value_tokens(spec, "deprecated_values") or set()
         for value in sorted(code_values & retired):
             problems.append(f"{where} value {value} is deprecated; it is never reused")
         for value in sorted(code_values - listed_values - retired):
@@ -934,50 +928,6 @@ def _check_keys(name: str, listed: Dict[str, Any], sent: Dict[str, Any], hint: s
                 f"{where} value {value} is listed but the code can no longer send it; "
                 "move it to deprecated_values instead"
             )
-    return problems
-
-
-def is_additive(old: Dict[str, Any], new: Dict[str, Any]) -> List[str]:
-    """What *new* takes away from *old*, one line per problem; empty when it only grows.
-
-    Allowed: new rows, keys and values; a row, key or value moving from active
-    to deprecated. Everything else that differs is a problem.
-    """
-    problems: List[str] = []
-    old_rows, new_rows = _rows(old), _rows(new)
-    for name, before in sorted(old_rows.items()):
-        after = new_rows.get(name)
-        if after is None:
-            problems.append(f"{name}: row removed (a removal or a rename); deprecate it instead")
-            continue
-        for field in FIXED_FIELDS:
-            if before.get(field) != after.get(field):
-                problems.append(
-                    f"{name}: {field} changed from {before.get(field)!r} to {after.get(field)!r}"
-                )
-        if before.get("status") == "deprecated" and after.get("status") != "deprecated":
-            problems.append(f"{name}: a deprecated row was made active again")
-        old_keys, new_keys = before.get("attributes", {}), after.get("attributes", {})
-        for key, old_spec in sorted(old_keys.items()):
-            new_spec = new_keys.get(key)
-            where = f"{name}: attribute {key!r}"
-            if new_spec is None:
-                problems.append(f"{where} removed; deprecate it instead")
-                continue
-            if old_spec.get("status") == "deprecated" and new_spec.get("status") != "deprecated":
-                problems.append(f"{where} was deprecated and is active again")
-            old_values, new_values = _values(old_spec), _values(new_spec)
-            if (old_values is None) != (new_values is None):
-                problems.append(f"{where} changed between an open and a closed value set")
-                continue
-            if old_values is None or new_values is None:
-                continue
-            old_gone = _values(old_spec, "deprecated_values") or set()
-            new_gone = _values(new_spec, "deprecated_values") or set()
-            for value in sorted(old_values - new_values - new_gone):
-                problems.append(f"{where} value {value} removed; deprecate it instead")
-            for value in sorted(old_gone - new_gone):
-                problems.append(f"{where} deprecated value {value} was dropped or reused")
     return problems
 
 

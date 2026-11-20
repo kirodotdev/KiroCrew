@@ -425,6 +425,7 @@ export function TeamsPanel() {
       {/* ── Bot setup steps ── */}
       <SettingsSection title={i18nT('pages.settings.teamsPanel.connect_the_azure_bot')}>
         <SettingsCard index={1}>
+          <div>
           <ol className="text-[13px] text-text m-0 pl-5 space-y-1.5 list-decimal">
             <li>
               {i18nT('pages.settings.teamsPanel.expose_this_gateway_over')} <strong>{i18nT('pages.settings.teamsPanel.public_https')}</strong> {i18nT('pages.settings.teamsPanel.tunnel_or_reverse_proxy_see_the_note_above_note')}
@@ -454,6 +455,7 @@ export function TeamsPanel() {
               <Trans i18nKey="pages.settings.teamsPanel.side_load_app_with_bot_id" components={{ field: <code>{i18nT('pages.settings.teamsPanel.botid')}</code> }} />
             </li>
           </ol>
+          </div>
         </SettingsCard>
       </SettingsSection>
 
@@ -518,7 +520,7 @@ export function TeamsPanel() {
           />
           {/* Optional per-channel session filing. Off by default: Teams
               conversations stay unfiled in the sidebar, as before. */}
-          <div className="border-t border-border mt-4 pt-4">
+          <div className="border-t border-border mt-3 pt-3">
             <SettingsToggle
               label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
               hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
@@ -589,7 +591,7 @@ export function TeamsPanel() {
       </SettingsSection>
 
       {/* ── Save (hidden on read-only remote sessions) ── */}
-      {!ro && <div className="flex items-center gap-3 mt-1 mb-4">
+      {!ro && <div className="flex flex-row-reverse flex-wrap items-center gap-3 mt-3 mb-4 max-w-[720px]">
         <Btn primary onClick={handleSave} disabled={saveMut.isPending || !!pctErr}>
           {saveMut.isPending ? i18nT('pages.settings.teamsPanel.saving') : i18nT('pages.settings.teamsPanel.save_teams_settings')}
         </Btn>

@@ -35,6 +35,7 @@ from kiro_crew.messaging.tables import (
     _is_row_candidate,
     _table_run_end,
 )
+from kiro_crew.option_marker_scan import option_labels
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security.exfil import redact_exfiltration_urls
 from kiro_crew.security.redaction import redact_credentials
@@ -451,7 +452,7 @@ def extract_options(text: str) -> tuple[str, list[str]]:
     m = _OPTIONS_RE.search(text)
     if not m:
         return text, []
-    choices = [c.strip() for c in m.group("labels").split("|") if c.strip()]
+    choices = option_labels(m.group("labels"))
     before = text[: m.start()].rstrip()
     after = text[m.end() :].strip()
     cleaned = before + ("\n" + after if after else "") if before else after

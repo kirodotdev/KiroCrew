@@ -8,15 +8,14 @@
  *  and the pending question cards. No model call. */
 import { useCallback, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowDown, Check, ChevronDown, ChevronLeft, ChevronRight, Loader, Loader2, MessageCircleQuestionMark, MessageSquare, Pause, CircleStop, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, Check, ChevronLeft, ChevronRight, Loader, Loader2, MessageCircleQuestionMark, MessageSquare, Pause, PencilLine, CircleStop, X } from 'lucide-react'
 import { safeGetItem, safeSetItem } from '../../../utils/safeStorage'
 import { useCrewBack, type CrewBack } from '../../../components/crew/useCrewBack'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu'
 import { api } from '../../../api/client'
 import type { CrewWorker, ConductorModeRun } from '../../../types'
 import type { SessionSummary } from '../../../types/sessionSummary'
 import { timedPoll, usePollRule } from '../../../lib/pollRule'
-import { crewBoardQueryKey, CREW_BOARD_POLL_MS, type WorkBoardItem, type WorkBoardResponse } from '../../../api/crewBoard'
+import { crewBoardQueryKey, CREW_BOARD_GC_MS, CREW_BOARD_POLL_MS, type WorkBoardItem, type WorkBoardResponse, type WorkDiscussion } from '../../../api/crewBoard'
 import { artifactEntries } from '../../crewBoardRows'
 import { fmtList, fmtRelative } from '../../../i18n/format'
 import { fmtMinutes } from '../../../lib/crewWork'
@@ -58,7 +57,7 @@ function joinNames(names: string[]): string {
 
 /** The recap: ONE plain sentence from the counts and the names that wait. */
 export function conductorModeRecap(c: ConductorModeCounts, waitingNames: string[], hasQuestion: boolean): string {
-  if (c.total === 0) return i18nT('components.crewMode.conductor_mode_recap_empty')
+  if (c.total === 0 && waitingNames.length === 0 && !hasQuestion) return i18nT('components.crewMode.conductor_mode_recap_empty')
   const head = i18nT('components.crewMode.conductor_mode_recap_head', { done: c.done, total: c.total })
   const names = [...waitingNames]
   if (hasQuestion) names.push(i18nT('components.crewMode.conductor_mode_recap_main_chat'))
@@ -69,9 +68,9 @@ export function conductorModeRecap(c: ConductorModeCounts, waitingNames: string[
   return i18nT('components.crewMode.conductor_mode_recap_quiet', { head })
 }
 
-/** The Recap from the session summary (GET /api/chat/slots/{slot}/summary, a free
- *  read that never generates): the first goal's latest status
- *  line, else its title. '' when the summary is off or has no goal yet. */
+/** Context for a Recap with no live milestone state or ask: the first goal's
+ *  latest progress line from the cached session summary (GET only, no generation).
+ *  The caller keeps authoritative state wording ahead of this prose. */
 export function summaryRecap(summary: SessionSummary | undefined, milestoneTitles: readonly string[]): string {
   // A stale summary may name a state the milestones have moved past.
   if (!summary?.enabled || summary.stale || !summary.intents?.length) return ''
@@ -271,7 +270,7 @@ export function latestChange(text: string): { text: string; stamp: string; at: n
   return { text: entry, stamp: s ? s[0] : '', at: Number.isFinite(at) ? at : null }
 }
 
-type MilestoneState = 'done' | 'not_done' | 'needs_you' | 'running' | 'waiting' | 'quiet' | 'stuck' | 'next'
+type MilestoneState = 'done' | 'not_done' | 'needs_you' | 'discussing' | 'running' | 'waiting' | 'quiet' | 'stuck' | 'next'
 
 /** A report a worker said only a person can move (`reason` approval / needs_human). */
 const PERSON_REASONS = new Set(['approval', 'needs_human'])
@@ -308,9 +307,16 @@ export function milestoneState(item: WorkBoardItem, waiting: boolean): Milestone
   const open = item.status === 'progress' || item.status === 'blocked' || item.status === 'question'
   // Needs you only when the person must act: a pending approval of the item's
   // member (`waiting`), or an unanswered blocked / question report whose reason
-  // names a person. An answer -- the conductor's or the person's own steer, a
-  // dismiss included -- ends it, and so does a turn running again (the worker moved on).
-  if (waiting || ((item.status === 'blocked' || item.status === 'question') && PERSON_REASONS.has(item.reason || '') && !reportAnswered(item) && item.alive !== 'running')) return 'needs_you'
+  // names a person. The board's own `awaits_person` decides the report: it read
+  // the answers, the worker's model turn and the conductor's current ask record (a
+  // worker question the conductor has not relayed stays the conductor's), while its
+  // `alive` also counts background work, which never answers the person. An older
+  // board has no `awaits_person`, and its `alive` running was the model turn.
+  const asksPerson = item.awaits_person ?? ((item.status === 'blocked' || item.status === 'question') && PERSON_REASONS.has(item.reason || '') && hasAsk(item) && !reportAnswered(item) && item.alive !== 'running')
+  if (waiting || asksPerson) return 'needs_you'
+  // A discussion its worker hosts, while that worker is still there and not
+  // quiet (the goal-board template's rule); a stalled host falls through below.
+  if (discussionOf(item) && item.alive !== 'closed' && !item.orphaned && !item.stale) return 'discussing'
   if (item.alive === 'running') return 'running'
   // Stuck only when nothing is left to move it: its session closed on an open
   // report, or the board is orphaned (no main chat reads its reports). A done
@@ -337,6 +343,16 @@ function onConductor(item: WorkBoardItem): boolean {
   return (item.status === 'blocked' || item.status === 'question') && !reportAnswered(item)
 }
 
+/** The discussion an open item's worker hosts, or null: the one its last
+ *  report carried, which the next report replaces. */
+export function discussionOf(item: WorkBoardItem): WorkDiscussion | null {
+  const d = item.discussion
+  return item.state === 'open' && d && typeof d === 'object' && typeof d.phase === 'string' && d.phase ? d : null
+}
+
+/** A thread link the board may draw: the server's own LINKABLE rule. */
+const THREAD_LINK = /^(?:https?:\/\/|\/(?:artifacts|chat|schedule|capabilities|settings)\b)/
+
 function minutesBetween(a: string | null | undefined, b: string | number | null | undefined): number {
   const ta = a ? Date.parse(a) : NaN
   const tb = typeof b === 'number' ? b : b ? Date.parse(b) : NaN
@@ -350,6 +366,7 @@ const STATE_ICON: Record<MilestoneState, JSX.Element> = {
   not_done: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--muted)_18%,transparent)] text-muted"><X size={12} strokeWidth={2.5} /></span>,
   needs_you: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--warn)_20%,transparent)] crew-tone-warn"><AlertTriangle size={11} strokeWidth={2.5} /></span>,
   running: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--aim)_18%,transparent)] conductor-mode-accent"><Loader size={12} className="motion-safe:animate-spin" /></span>,
+  discussing: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--aim)_18%,transparent)] conductor-mode-accent"><MessageSquare size={11} strokeWidth={2.5} /></span>,
   waiting: <span className="block w-5 h-5 rounded-full border-[1.5px] border-[color-mix(in_srgb,var(--muted)_70%,transparent)]" />,
   // Quiet and stuck are the conductor's to pick up, so they are muted: only
   // needs_you takes the warm colour.
@@ -363,7 +380,16 @@ const WRAP = 'min-w-0 [overflow-wrap:anywhere]'
 
 function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoardItem; state: MilestoneState; waitingOn: string; now: number; onOpen?: () => void }) {
   let sub: JSX.Element | string = ''
-  if (state === 'done') {
+  const talk = state === 'discussing' ? discussionOf(item) : null
+  if (talk) {
+    const mins = Number(talk.minutes) || 0
+    const text = [
+      i18nT('components.crewMode.conductor_mode_ms_discussing'),
+      i18nT('components.crewMode.conductor_mode_ms_discussing_round', { round: Number(talk.round) || 0 }),
+      ...(mins > 0 ? [fmtMinutes(mins)] : []),
+    ].join(' · ')
+    sub = <span className={WRAP} title={text} data-testid="conductor-mode-discussing">{text}</span>
+  } else if (state === 'done') {
     const link = artifactEntries(item).find(([, v]) => /^https?:\/\//.test(v))
     sub = <>
       <span className={WRAP}>{firstSentence(item.summary)}</span>
@@ -418,15 +444,62 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
   return (
     <li className="flex items-start gap-2.5 py-1.5" data-testid="conductor-mode-milestone" data-state={state}>
       <span className="mt-0.5 shrink-0">{STATE_ICON[state]}</span>
-      <span className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0">
         {/* A milestone with a crew member opens it, so a blocked one is one click from where it is decided. */}
         {onOpen
           ? <button type="button" onClick={onOpen} data-testid="conductor-mode-milestone-open" className={`block max-w-full text-left text-[13px] font-medium [overflow-wrap:anywhere] hover:underline ${state === 'next' ? 'text-muted' : 'text-text'}`}>{item.title}</button>
           : <span className={`block text-[13px] font-medium [overflow-wrap:anywhere] ${state === 'next' ? 'text-muted' : 'text-text'}`}>{item.title}</span>}
         <span className={`flex flex-wrap items-baseline gap-x-1 min-w-0 text-[12px] ${state === 'needs_you' ? 'crew-tone-warn' : 'text-muted'}`}>{sub}</span>
-      </span>
+        {talk && <DiscussionDetail id={item.item_id} d={talk} />}
+      </div>
       <span className={`shrink-0 text-[11px] tabular-nums mt-0.5 ${state === 'running' ? 'conductor-mode-accent font-medium' : 'text-muted'}`}>{right}</span>
     </li>
+  )
+}
+
+/** One titled list in the discussion panel. A row is text, or [bold, rest]. */
+function TalkSection({ label, rows }: { label: string; rows: (string | [string, string])[] }) {
+  const shown = rows.filter(r => (Array.isArray(r) ? r[0] || r[1] : r))
+  if (!shown.length) return null
+  return (
+    <div className="mt-1.5 first:mt-0">
+      <div className="text-[10.5px] font-semibold text-muted">{label}</div>
+      <ul className="list-disc pl-4 text-text">
+        {shown.map((r, n) => <li key={n} className={WRAP}>{Array.isArray(r)
+          ? <>{r[0] && <b className="font-semibold">{r[0]}</b>}{r[0] && r[1] ? ': ' : ''}{r[1]}</>
+          : r}</li>)}
+      </ul>
+    </div>
+  )
+}
+
+/** The discussing row's counts and, behind a toggle, what the discussion holds:
+ *  direction, agreed, disputed with each side, being checked, the latest lines and
+ *  the thread link. A question for the person is the Needs your input card's, not this. */
+function DiscussionDetail({ id, d }: { id: string; d: WorkDiscussion }) {
+  const [open, setOpen] = useState(false)
+  const list = <T,>(v: T[] | undefined): T[] => (Array.isArray(v) ? v : [])
+  const agreed = list(d.agreed).filter(x => typeof x === 'string')
+  const checking = list(d.checking).filter(x => typeof x === 'string')
+  const disputed = list(d.disputed).filter(x => x && typeof x === 'object')
+  const recent = list(d.recent).filter(x => x && typeof x === 'object')
+  const thread = typeof d.thread === 'string' && d.thread.length <= 2048 && THREAD_LINK.test(d.thread) ? d.thread : ''
+  const panelId = `conductor-mode-talk-${id.replace(/[^A-Za-z0-9_-]/g, '_')}`
+  return (
+    <div className="text-[12px]" data-testid="conductor-mode-talk">
+      <div className="text-muted" data-testid="conductor-mode-talk-counts">{i18nT('components.crewMode.conductor_mode_talk_counts', { agreed: agreed.length, disputed: disputed.length, checking: checking.length })}</div>
+      <button type="button" className="mt-0.5 text-[11px] conductor-mode-accent hover:underline" aria-expanded={open} aria-controls={panelId} onClick={() => setOpen(v => !v)} data-testid="conductor-mode-talk-toggle">
+        {i18nT(open ? 'components.crewMode.conductor_mode_talk_hide' : 'components.crewMode.conductor_mode_talk_show')}
+      </button>
+      <div id={panelId} hidden={!open} className="mt-1 rounded border-l-2 border-[var(--aim)] bg-bg-hover/40 px-2 py-1.5" data-testid="conductor-mode-talk-panel">
+        <TalkSection label={i18nT('components.crewMode.conductor_mode_talk_direction')} rows={typeof d.direction === 'string' && d.direction ? [d.direction] : []} />
+        <TalkSection label={i18nT('components.crewMode.conductor_mode_talk_agreed')} rows={agreed} />
+        <TalkSection label={i18nT('components.crewMode.conductor_mode_talk_disputed')} rows={disputed.map(x => [String(x.point || ''), String(x.sides || '')] as [string, string])} />
+        <TalkSection label={i18nT('components.crewMode.conductor_mode_talk_checking')} rows={checking} />
+        <TalkSection label={i18nT('components.crewMode.conductor_mode_talk_recent')} rows={recent.map(x => [String(x.who || ''), String(x.text || '')] as [string, string])} />
+        {thread && <a className="mt-1.5 inline-block text-[11px] conductor-mode-accent hover:underline" href={thread} target="_blank" rel="noreferrer" title={thread} data-testid="conductor-mode-talk-thread">{i18nT('components.crewMode.conductor_mode_talk_thread')}</a>}
+      </div>
+    </div>
   )
 }
 
@@ -534,27 +607,35 @@ function MemberRow({ node, open, gutter, onToggle, onOpen, current, pausedIn }: 
 }
 
 /** The open ledger items that wait on the PERSON: the board read's own
- *  `awaits_person` (goal-board's "needs you" rule, minus a report the conductor or
- *  the person has answered since, the same test as the sidebar's count), less an
- *  item whose tool approval already has its own card (`covered`). Exported for tests. */
+ *  `awaits_person`, which already needs the conductor's current ask record (a
+ *  worker question the conductor has not relayed is the conductor's), the same test
+ *  as the sidebar's count. Less an item whose tool approval already has its own
+ *  card (`covered`). An item with no `ask` (an older gateway) is not listed: there
+ *  is no question to show. Exported for tests. */
 export function personAsks(items: readonly WorkBoardItem[], covered: ReadonlySet<string> = new Set()): WorkBoardItem[] {
-  return items.filter(item => !!item.awaits_person && !covered.has(item.item_id))
+  return items.filter(item => !!item.awaits_person && hasAsk(item) && !covered.has(item.item_id))
+}
+
+/** The conductor recorded a current ask for the person (the board sends `ask` only then). */
+function hasAsk(item: WorkBoardItem): boolean {
+  return !!item.ask?.what
 }
 
 function clip(text: string, n: number): string {
   return text.length > n ? `${text.slice(0, n - 1)}…` : text
 }
 
-/** One item that waits on the person: which task, what it asks, and goal-board's
- *  Reply: one Write a reply button and, when the conductor offered answers, one
- *  Suggested answers menu holding them (two controls in the row). Each only FILLS
- *  the chat box (`onAct`); the person still presses send, and the line under the
- *  buttons says so. With a crew member on screen (`onAct` absent) the row offers
- *  the way back to the main chat (`back`: "Back to main chat", or "Open main chat"
- *  reopening a closed one), the same as the panel's Back row. */
+/** One item that waits on the person, from the conductor's current ask record
+ *  (`item.ask`, sent only while no newer report superseded it): what it needs, why
+ *  only the person can decide, one button per answer with what it leads to, the
+ *  conductor's pick marked, and Write a reply as the secondary way. A record with no
+ *  options borrows goal-board's `asks` labels. Every button only FILLS the chat box
+ *  (`onAct`); the person still presses send, and the line above the buttons says so.
+ *  The worker's own prose is never shown here: it is a status line, not a question.
+ *  With a crew member on screen (`onAct` absent) the answers are listed and the row offers
+ *  the way back to the main chat (`back`), the same as the panel's Back row. */
 function PersonAskRow({ root, item, options, onAct, back }: { root: string; item: WorkBoardItem; options: readonly string[]; onAct?: (text: string) => void; back: CrewBack }) {
   const draft = (answer: string) => i18nT('components.crewMode.conductor_mode_reply_draft', { t: clip(item.title, 70), id: item.item_id, answer })
-  const small = 'inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium border border-border hover:bg-bg-hover max-w-full'
   // Dismiss: the server writes a person steer on the item, so every surface drops
   // the ask until a newer report asks again. The board is re-read either way.
   // It names the report on screen, so a newer ask filed since the last poll is
@@ -566,6 +647,18 @@ function PersonAskRow({ root, item, options, onAct, back }: { root: string; item
     onSettled: () => { void queryClient.invalidateQueries({ queryKey: crewBoardQueryKey(root) }) },
   })
   const dismissHint = i18nT('components.crewMode.conductor_mode_dismiss_hint', { t: clip(item.title, 70) })
+  const ask = item.ask
+  if (!ask?.what) return null
+  const answers = ask.options.length ? ask.options : options.map(label => ({ label, outcome: '' }))
+  const answerBody = (a: { label: string; outcome: string }) => (
+    <>
+      <span className="flex items-center gap-1.5 min-w-0">
+        <span className="font-medium break-words">{a.label}</span>
+        {a.label === ask?.pick && <span className="shrink-0 px-1 rounded bg-accent-subtle text-accent text-[11px]" data-testid="conductor-mode-person-ask-pick">{i18nT('components.crewMode.conductor_mode_ask_pick')}</span>}
+      </span>
+      {a.outcome && <span className="block text-[11px] text-muted break-words">{a.outcome}</span>}
+    </>
+  )
   return (
     <article className="rounded-lg border border-warn bg-card px-2.5 py-2 space-y-1 text-text" data-testid="conductor-mode-person-ask" data-item={item.item_id}>
       <div className="flex items-center gap-2 min-w-0">
@@ -578,32 +671,37 @@ function PersonAskRow({ root, item, options, onAct, back }: { root: string; item
           </button>
         )}
       </div>
-      {/* The row holds no unsaved input (Reply only fills the chat box), so the hand-off loses nothing. */}
+      {/* The row holds no unsaved input (every button only fills the chat box), so the hand-off loses nothing. */}
       {dismiss.isError && <ErrorNotice variant="inline" message={errMessage(dismiss.error)} askAgent />}
-      {item.summary && <p className="pl-[22px] text-[12px] text-text/85 break-words line-clamp-3" title={item.summary} data-testid="conductor-mode-person-ask-text">{item.summary}</p>}
+      <div className="pl-[22px] space-y-0.5">
+        <p className="text-[12px] text-text break-words" data-testid="conductor-mode-person-ask-what">{ask.what}</p>
+        {ask.why && <p className="text-[12px] text-text/80 break-words" data-testid="conductor-mode-person-ask-why">{i18nT('components.crewMode.conductor_mode_ask_why', { why: ask.why })}</p>}
+      </div>
+      <div className="pl-[22px] space-y-1">
+          {/* Above the answers, so it reads as theirs: a click drafts, it never acts. */}
+          {onAct && answers.length > 0 && <p className="text-[11px] text-muted" data-testid="conductor-mode-person-ask-hint">{i18nT('components.crewMode.conductor_mode_option_title')}</p>}
+          {answers.length > 0 && (
+            <ul className="space-y-1" data-testid="conductor-mode-person-ask-actions">
+              {answers.map(a => (
+                <li key={a.label}>
+                  {onAct ? (
+                    <button type="button" onClick={() => onAct(draft(clip(a.label, 200)))} data-testid="conductor-mode-person-ask-option" data-pick={a.label === ask.pick ? 'yes' : undefined}
+                      className="w-full flex items-start gap-1.5 text-left px-2 py-1 rounded-md text-[12px] border border-border hover:bg-bg-hover">
+                      <PencilLine size={12} aria-hidden="true" className="shrink-0 mt-0.5 text-muted" />
+                      <span className="min-w-0">{answerBody(a)}</span>
+                    </button>
+                  ) : (
+                    <div className="px-2 py-1 text-[12px]" data-testid="conductor-mode-person-ask-option" data-pick={a.label === ask.pick ? 'yes' : undefined}>{answerBody(a)}</div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          {ask.pick && ask.pick_why && <p className="text-[11px] text-muted break-words" data-testid="conductor-mode-person-ask-pick-why">{i18nT('components.crewMode.conductor_mode_ask_pick_why', { why: ask.pick_why })}</p>}
+          {onAct && <button type="button" className="text-[12px] text-muted underline underline-offset-2 hover:text-text" onClick={() => onAct(draft(''))} data-testid="conductor-mode-person-ask-reply">{i18nT('components.crewMode.conductor_mode_reply')}</button>}
+      </div>
       {reportId && <p className="pl-[22px] text-[11px] text-muted" data-testid="conductor-mode-person-ask-dismiss-note">{i18nT('components.crewMode.conductor_mode_dismiss_note')}</p>}
-      {onAct ? (
-        <div className="pl-[22px] space-y-1">
-          <div className="flex items-center gap-1.5" data-testid="conductor-mode-person-ask-actions">
-            <button type="button" className={`${small} conductor-mode-accent`} onClick={() => onAct(draft(''))} data-testid="conductor-mode-person-ask-reply">{i18nT('components.crewMode.conductor_mode_reply')}</button>
-            {options.length > 0 && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button type="button" className={small} data-testid="conductor-mode-person-ask-answers">{i18nT('components.crewMode.conductor_mode_answers')}<ChevronDown size={12} aria-hidden="true" /></button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="max-w-[280px]">
-                  {options.map(o => (
-                    <DropdownMenuItem key={o} onSelect={() => onAct(draft(clip(o, 200)))} data-testid="conductor-mode-person-ask-option">
-                      <span className="break-words">{clip(o, 80)}</span>
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-          </div>
-          <p className="text-[11px] text-muted" data-testid="conductor-mode-person-ask-hint">{i18nT('components.crewMode.conductor_mode_option_title')}</p>
-        </div>
-      ) : (
+      {!onAct && (
         <div className="pl-[22px] space-y-1">
           <button type="button" onClick={back.back} data-testid="conductor-mode-person-ask-open-main"
             className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium conductor-mode-accent hover:bg-bg-hover">
@@ -703,8 +801,11 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   const [view, setView] = useState<'status' | 'list'>('status')
   const [doneOpen, setDoneOpen] = useState(false)
   // The work ledger through the Crew page's own read (GET /api/crew-board), same key and cadence.
+  // A board shown in the last CREW_BOARD_GC_MS paints at once on entry, and every
+  // entry still reads it again (`refetchOnMount: 'always'`), so the cached copy is
+  // replaced as soon as the read answers.
   const boardInterval = usePollRule(`crew-board:${root}`, CREW_BOARD_POLL_MS, active, crewBoardQueryKey(root))
-  const board = useQuery({ queryKey: crewBoardQueryKey(root), queryFn: () => timedPoll(`crew-board:${root}`, () => api.crewBoard(root)) as Promise<WorkBoardResponse>, enabled: !!root && active, refetchInterval: boardInterval, retry: false })
+  const board = useQuery({ queryKey: crewBoardQueryKey(root), queryFn: () => timedPoll(`crew-board:${root}`, () => api.crewBoard(root)) as Promise<WorkBoardResponse>, enabled: !!root && active, refetchInterval: boardInterval, gcTime: CREW_BOARD_GC_MS, refetchOnMount: 'always', retry: false })
   // ISO timestamps from the board: a byte compare orders them, no locale involved.
   const items = useMemo(() => [...(board.data?.items ?? [])].sort((a, b) => { const x = a.created_at || '', y = b.created_at || ''; return x < y ? -1 : x > y ? 1 : 0 }), [board.data])
   const goalText = (board.data?.conductor?.goal || '').replace(/\s+/g, ' ').trim()
@@ -753,22 +854,38 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   const quiet = openMs.some(m => m.state === 'quiet' || (m.state === 'next' && m.item.stale))
   // "moving" only while a milestone runs; with nothing running, stuck or quiet
   // (waiting or next only) there is no pulse.
-  const moving = openMs.some(m => m.state === 'running')
+  // A discussion pulses only while its host is mid-turn.
+  const moving = openMs.some(m => m.state === 'running' || (m.state === 'discussing' && m.item.alive === 'running'))
   // The run's one state: what is live here first, then the gateway's verdict.
   // The main chat's own tool approval waits on the person too, though its turn still runs.
   const rootSlot = slots.find(s => s.key === root)
+  const working = moving || c.running > 0 || !!board.data?.conductor_working
+    || !!rootSlot?.running || !!rootSlot?.subagents_running || !!rootSlot?.preparing || !!rootSlot?.compacting
   const runState = conductorModeRunState({
     paused: !!pause, needsYou: needCount > 0 || !!rootSlot?.pending_approval, hasGoal: !!goalText, items: items.length, run: board.data?.run,
-    working: moving || c.running > 0 || !!rootSlot?.running,
+    working,
   })
   const openItem = (item: WorkBoardItem) => {
     const w = workers.find(x => x.ledger_item === item.item_id)
     return w && !w.remote_crew ? () => open(w) : undefined
   }
-  const recap = summaryRecap(summary.data, items.map(i => i.title))
-    || (items.length
-      ? milestoneSentence(msDone, items.length, milestones.filter(m => m.state === 'needs_you').map(m => m.item.title), milestones.filter(m => m.state === 'running').map(m => m.item.title), milestones.filter(m => m.state === 'stuck').map(m => m.item.title), milestones.filter(m => m.state === 'quiet').map(m => m.item.title))
-      : conductorModeRecap(c, waitingNames, questionCount > 0))
+  const waitingMs = milestones.filter(m => m.state === 'needs_you')
+  // An approval already named by its milestone is not repeated as a worker.
+  // Unbound approvals and the main chat's own asks still belong in the Recap.
+  const rootApprovalName = rootSlot?.pending_approval ? rootSlot.title || goalFull || i18nT('components.crewMode.conductor_mode_needs_you') : ''
+  const recapWaiting = [...new Set([
+    ...waitingMs.map(m => m.item.title),
+    ...approvals.filter(a => !waitingMs.some(m => m.item.item_id === workers.find(w => w.key === a.worker)?.ledger_item)).map(a => a.title),
+    ...(rootApprovalName ? [rootApprovalName] : []),
+  ])]
+  if (questionCount > 0) recapWaiting.push(i18nT('components.crewMode.conductor_mode_recap_main_chat'))
+  const factsRecap = items.length
+    ? milestoneSentence(msDone, items.length, recapWaiting, milestones.filter(m => m.state === 'running' || m.state === 'discussing').map(m => m.item.title), milestones.filter(m => m.state === 'stuck').map(m => m.item.title), milestones.filter(m => m.state === 'quiet').map(m => m.item.title))
+    : conductorModeRecap(c, [...waitingNames, ...(rootApprovalName ? [rootApprovalName] : [])], questionCount > 0)
+  // Cached prose supplies context only when there is no live state to contradict.
+  const recap = recapWaiting.length || working || stuck || quiet || runState === 'working'
+    ? factsRecap
+    : summaryRecap(summary.data, items.map(i => i.title)) || factsRecap
 
   return (
     <div className="h-full flex flex-col min-h-0" data-testid="conductor-mode-crew-panel" data-view={view}>
@@ -859,7 +976,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
                 </ol>
               </>}
           </section>
-          {/* (4) Recap: one line from the session summary. */}
+          {/* (4) Recap: live facts, else descriptive session context. */}
           <section data-testid="conductor-mode-recap-section" className="space-y-0.5">
             <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{i18nT('components.crewMode.conductor_mode_recap_title')}</h3>
             <p className="text-[13px] leading-snug text-text [overflow-wrap:anywhere]" data-testid="conductor-mode-recap">{recap}</p>

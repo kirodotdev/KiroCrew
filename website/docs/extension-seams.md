@@ -433,7 +433,8 @@ theme, including the first render for the initially-active theme, because the
 "previous theme" ref starts empty. Keep it idempotent and cheap. `shell/branding.ts`
 wraps the call in a `try`/`catch` so an edition-owned effect that throws cannot take
 down the shell, but it still logs. `favicon` is handled the same generic way: the
-core has no per-theme favicon and falls back to `/logo.png`.
+core has no per-theme favicon and falls back to a tile of `dashboard.instance_label`'s
+initial on the theme accent when that label is set, else to `/logo.png`.
 
 **Readout-capsule segments.** `registerCapsuleSegment([{ id, order?, component, hideOnMobile? }])`
 mounts a status segment INSIDE the header's readout capsule, sharing its border,
@@ -642,7 +643,7 @@ unoffered method draws nothing.
 
 **Remote-instance provisioner forms.**
 `registerRemoteProvisionerRenderer({ kind, component })` supplies the launch form
-that Settings → Remote Crew → "Set up a new one" draws for one provisioner
+that Settings → Remote Crew → Add Crew → "Set up a new Crew" draws for one provisioner
 the backend offers. It keys on `kind`, not `id`, for the same reason as the seam
 above: `id` is what `POST /api/cloud/launch` names in `provider_id` (an id the
 server does not offer is refused with `unknown_provisioner`), while `kind` exists

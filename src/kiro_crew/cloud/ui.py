@@ -60,15 +60,15 @@ def info(msg: str) -> None:
 
 
 def ok(msg: str) -> None:
-    print(f"  {GREEN}✓{RESET} {msg}", flush=True)
+    print(f"  {GREEN}OK{RESET} {msg}", flush=True)
 
 
 def warn(msg: str) -> None:
-    print(f"  {YELLOW}⚠{RESET} {msg}", flush=True)
+    print(f"  {YELLOW}Warning:{RESET} {msg}", flush=True)
 
 
 def fail(msg: str) -> None:
-    print(f"  {RED}✗{RESET} {msg}", flush=True)
+    print(f"  {RED}Error:{RESET} {msg}", flush=True)
 
 
 def detail(msg: str) -> None:
@@ -123,7 +123,7 @@ def _choose_prompt(title: str, options: list[tuple[str, str]], default_index: in
     """Numbered fallback picker for non-TTY input."""
     print(f"  {BOLD}{title}{RESET}")
     for i, (label, sub) in enumerate(options):
-        marker = f"{GREEN}◉{RESET}" if i == default_index else f"{DIM}○{RESET}"
+        marker = f"{GREEN}(*){RESET}" if i == default_index else f"{DIM}( ){RESET}"
         star = f" {GREEN}(recommended){RESET}" if i == default_index else ""
         print(f"    {marker} {BOLD}{label}{RESET}{star}")
         if sub:
@@ -204,7 +204,7 @@ def _choice_lines(title: str, options: list[tuple[str, str]], selected: int) -> 
         f"    {DIM}Use ↑/↓ and Enter, or press 1-{len(options)}.{RESET}",
     ]
     for i, (label, sub) in enumerate(options):
-        marker = f"{GREEN}◉{RESET}" if i == selected else f"{DIM}○{RESET}"
+        marker = f"{GREEN}(*){RESET}" if i == selected else f"{DIM}( ){RESET}"
         star = f" {GREEN}(recommended){RESET}" if i == selected else ""
         lines.append(f"    {marker} {BOLD}{label}{RESET}{star}")
         if sub:

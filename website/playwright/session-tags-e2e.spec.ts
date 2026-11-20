@@ -478,10 +478,17 @@ test.describe('E2E: sidebar tag columns', () => {
     const done = tags.find((t: { name: string }) => t.name === 'Done').id
     const colTodo = await (await request.post('/api/chat/tag-columns', { data: { tag_ids: [todo], mode: 'any' } })).json()
     const colDone = await (await request.post('/api/chat/tag-columns', { data: { tag_ids: [done], mode: 'any' } })).json()
+    // The socket's connect snapshot can render the row before the page's own
+    // slot-list read returns. A reply serialized before the drop but applied
+    // after the drop's slots push puts the pre-drop row back, and nothing
+    // pushes again. So the drag waits until that read has finished (as in 8).
+    const slotListRead = page.waitForResponse(r =>
+      r.request().method() === 'GET' && new URL(r.url()).pathname === '/api/chat/slots')
     await page.goto('/chat')
     await page.waitForSelector(`[data-testid="column-${colDone.id}"]`)
     // Slot row must be present in the ToDo column before we can drag it
     await page.waitForSelector(`[data-testid="column-${colTodo.id}"] [data-slot-key="${slotKey}"]`, { timeout: 10_000 })
+    await (await slotListRead).finished()
 
     await page.evaluate(([sKey, targetColId]) => {
       const source = document.querySelector(`[data-slot-key="${sKey}"]`) as HTMLElement

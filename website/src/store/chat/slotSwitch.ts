@@ -6,7 +6,7 @@
 import { createAction, createAsyncThunk, type ActionReducerMapBuilder } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
 import type { ChatMessage } from '../../types'
-import { emitSlotRead } from '../../lib/slotReadRelay'
+import { emitSlotRead, newerTs, newestServerRowTs } from '../../lib/slotReadRelay'
 import { devLog, inspectorOn } from '../../dev/scrollInspector'
 import { armConfirmedCloseHold, markSlotRead, confirmOrphanUnread, removeSlotOptimistic } from '../dashboardSlice'
 import { slotLastTsOf } from '../slotLastTs'
@@ -275,10 +275,10 @@ export const switchSlot = createAsyncThunk<
         // badges for messages nobody displayed. `pending` assigns activeSlot
         // atomically before this thunk body runs, so a superseded request
         // observes someone else's key here.
-        if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
+        if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, newerTs(_newestSlotTs(), newestServerRowTs(walked.messages)))
         return { ...walked, comparableTotal: first.total }
       }
-      if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
+      if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, newerTs(_newestSlotTs(), newestServerRowTs(first.messages)))
       return first
     } catch (e) {
       // A thrown error crosses the thunk boundary as `miniSerializeError(e)`,
@@ -554,6 +554,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       const { key, messages: fetchedMessages, hasMore, queue, nextBefore } = action.payload
       if (isUnsafeKey(key)) return
       if (state.activeSlot !== key) return  // user switched away during fetch
+      if (state.slotOpenFailed === key) state.slotOpenFailed = null
       // The user's open of this session has landed (see `ChatState.userOpen`):
       // only its own gesture load, never a plain switch that superseded it.
       const openArg = action.meta?.arg
@@ -905,6 +906,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       // The run mirrors stay as they are: they describe the selected chat's
       // run, which `pending` seeded and live frames keep current, so a turn
       // still running there keeps its Stop.
+      state.slotOpenFailed = target
       state.messages = []
       setPagingCursor(state, false, 0)
       state.slotLoading = false

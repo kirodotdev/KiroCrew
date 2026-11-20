@@ -307,6 +307,10 @@ class SubagentManager:
         except AttributeError:
             pass  # test doubles without the setter
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
+        # Actual outer task -> (run id, parent), retained until task completion.
+        # Independent of completed-record eviction and the pre-cleanup _tasks pop;
+        # task keys also keep overlapping recovery attempts of one id distinct.
+        self._run_task_owners: dict[asyncio.Task[None], tuple[str, str]] = {}
         # Teardown gates for runs whose terminal report has started, keyed by id and
         # OUTLIVING both dicts above. A "delivered" tombstone excludes a folder from
         # restart orphan reconciliation, so it must not be written while the child is
@@ -915,6 +919,7 @@ class SubagentManager:
     _is_startup_stalled = _monitor_surface._is_startup_stalled
     _note_tool_dispatch = staticmethod(_monitor_surface._note_tool_dispatch)
     _note_tool_result = staticmethod(_monitor_surface._note_tool_result)
+    _note_tool_update = staticmethod(_monitor_surface._note_tool_update)
     _clear_tool_dispatch = staticmethod(_monitor_surface._clear_tool_dispatch)
     _retire_subagent_oracle = staticmethod(_monitor_surface._retire_subagent_oracle)
     _stall_verdict = _monitor_surface._stall_verdict
@@ -975,6 +980,7 @@ class SubagentManager:
     queued_count_for_async = _run_surface.queued_count_for_async
     published_queued_depths = _run_surface.published_queued_depths
     published_queued_labels = _run_surface.published_queued_labels
+    has_current_execution_for = _run_surface.has_current_execution_for
     has_in_memory_pending_work_for = _run_surface.has_in_memory_pending_work_for
     has_unfinished_report_for = _run_surface.has_unfinished_report_for
     queued_count_or_none_async = _run_surface.queued_count_or_none_async

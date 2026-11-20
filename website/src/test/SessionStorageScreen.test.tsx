@@ -3,6 +3,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import SessionStorageScreen from '../pages/system/SessionStorageScreen'
+import { fmtBytes } from '../i18n/format'
 import {
   consumeChatHandoff, installSoftNavigate, __resetErrorJournalForTests, __resetNavSeamForTests,
 } from '../utils/errorReport'
@@ -173,6 +174,33 @@ describe('SessionStorageScreen (inventory)', () => {
     inventory = baseInventory({ reclaim_blocked_reason: 'This instance shares its store.' })
     renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
     await waitFor(() => expect(screen.getByText('This instance shares its store.')).toBeTruthy())
+  })
+
+  /** Claude Code's own store is said beside the totals, never added into them. */
+  it('says what Claude Code keeps for mapped Claude chats, beside the totals', async () => {
+    inventory = baseInventory({ claude_code: { bytes: 4_500_000, sessions: 3 } })
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    const line = `Claude Code also keeps at least ${fmtBytes(4_500_000)} for 3 Claude chats. Storage does not remove it.`
+    await waitFor(() => expect(screen.getByText(line)).toBeTruthy())
+    // The totals line is the server's totals, unchanged by the figure.
+    expect(screen.getByText(new RegExp(`${fmtBytes(27_400_000_000)} on disk`))).toBeTruthy()
+  })
+
+  it('uses the singular for one Claude chat', async () => {
+    inventory = baseInventory({ claude_code: { bytes: 2048, sessions: 1 } })
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    const line = `Claude Code also keeps at least ${fmtBytes(2048)} for 1 Claude chat. Storage does not remove it.`
+    await waitFor(() => expect(screen.getByText(line)).toBeTruthy())
+  })
+
+  it.each([
+    ['zero', { claude_code: { bytes: 0, sessions: 0 } }],
+    ['absent', {}],
+  ])('says nothing about Claude Code when the figure is %s', async (_label, over) => {
+    inventory = baseInventory(over)
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText('Refactor the ACP adapter')).toBeTruthy())
+    expect(document.body.textContent ?? '').not.toMatch(/Claude Code/)
   })
 
   /** The payload has no per-store split, and the screen must not invent one. */

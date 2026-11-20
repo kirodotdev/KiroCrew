@@ -30,7 +30,9 @@ Four families make up the floor:
 Each family lives in an owner module beside this one, and this module is the
 import path of every name they define: ``argv_floor_git`` holds release
 detection, ``argv_floor_self`` the subcommand floors and the credential-mint
-predicates, ``argv_floor_ssh`` the ssh self-target floor, and
+predicates, ``argv_floor_ssh`` the ssh self-target floor, ``argv_floor_ssh_gate`` the
+gate that decides whether a line can run an ssh verb, ``argv_floor_ssh_bodies`` that
+floor's reading of substitution bodies, and
 ``argv_floor_hosts`` the names and addresses that floor counts as this host.
 A read through this module answers with the owner's object, and a write
 reaches every owner that binds the name (:mod:`kiro_crew._facade_mirror`).
@@ -74,13 +76,17 @@ logger = logging.getLogger(__name__)
 #   ``argv_floor_self`` -- the product's own subcommand floors and the credential-mint
 #   predicates
 #   ``argv_floor_hosts`` -- the names and addresses the ssh floor counts as this host
+#   ``argv_floor_ssh_gate`` -- the gate that decides whether a line can run an ssh verb
 #   ``argv_floor_ssh`` -- the ssh self-target floor
+#   ``argv_floor_ssh_bodies`` -- the ssh floor's reading of substitution bodies
 #   ``argv_floor_git`` -- release detection and the protected-branch push target
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.security.argv_floor_self",
     "kiro_crew.security.argv_floor_hosts",
+    "kiro_crew.security.argv_floor_ssh_gate",
     "kiro_crew.security.argv_floor_ssh",
+    "kiro_crew.security.argv_floor_ssh_bodies",
     "kiro_crew.security.argv_floor_git",
 )  # the loop below imports them in this order
 for _owner in _OWNERS:
@@ -126,7 +132,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _HOST_VERDICT_CACHE_CAP,
         _HOST_VERDICT_LOCK,
         _HOST_VERDICT_PENDING,
+        _HOST_VERDICT_SETTLED,
         _HOST_VERDICT_STAMP,
+        _HOST_VERDICT_WAIT_KEY,
+        _HOST_VERDICT_WAIT_SECS,
         _HOSTS_FILE_CACHE,
         _HOSTS_FILE_READ_CAP,
         _HOSTS_FILE_READ_CHUNK,
@@ -148,6 +157,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _OWN_HOST_RESOLVE_STAMP,
         _fcntl,
         _host_is_self,
+        _host_verdict_wait_left,
         _hosts_file_key,
         _hosts_file_paths,
         _hosts_file_verdict,
@@ -174,6 +184,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.security.argv_floor_self import (  # noqa: F401
         _DEV_MODE_CONFIRM_FLAG,
+        _HEREDOC_DATA_PROGRAMS,
+        _HEREDOC_OPENER_RE,
+        _PYTHON_ACCEPTED_NAMES,
+        _PYTHON_BODY_NODE_CAP,
+        _PYTHON_INERT_CALL_NAMES,
+        _PYTHON_INERT_CTORS,
+        _PYTHON_WRITE_METHODS,
         _RAW_ASSIGNMENT_RE,
         _SELF_CLOUD_DESTRUCTIVE_VERBS,
         _SELF_FLOOR_MACHINERY_RE,
@@ -181,7 +198,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SELF_FLOOR_QUOTE_JUNK_RE,
         _SELF_IMPORT_RE,
         _SELF_MODULE_SPELLINGS,
+        _any_decorated_heredoc_tag,
+        _assign_target_rebinds,
+        _ast_arg_is_constant,
+        _ast_call_is_inert,
+        _ast_expr_is_inert,
         _bare_kill_raw_bodies,
+        _heredoc_data_view,
+        _import_rebinds_accepted_name,
         _is_credential_mint,
         _is_dev_mode_out_of_root_confirm,
         _is_kill_by_name_program,
@@ -196,6 +220,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _kill_prefix_keeps_anchor,
         _matches_self_subcommand,
         _operands_lead_with,
+        _python_body_is_data,
         _quoted_assignment_scripts,
         _self_cli_operands,
         _self_floor_can_fire,
@@ -228,10 +253,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LINE_ASSIGNMENT_RE,
         _MAIN_READING,
         _MAX_SSH_READING_DEPTH,
-        _QUOTED_SEP_SENTINELS,
         _RSYNC_RSH_ASSIGN_RE,
         _SSH_COMMAND_OPTION_KEYS,
-        _SSH_FAMILY_VERBS,
         _SSH_FORWARD_OPT_LETTERS,
         _SSH_ROUTING_OPTION_KEYS,
         _SSH_VALUELESS_SHORT_FLAGS,
@@ -242,27 +265,42 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _bounded_ssh_reading,
         _brace_alternatives,
         _brace_expansions,
-        _cannot_name_ssh_verb,
         _command_value_names_self_endpoint,
+        _escaped,
         _function_call_binds_self,
-        _glob_can_name_ssh_verb,
         _is_ssh_to_self,
         _judge_ssh_to_self,
         _mask_quoted_separators,
+        _may_name_ssh_verb,
         _operand_targets_self,
         _proxyjump_value_targets_self,
-        _reaches_self_over_ssh,
         _remote_forward_value_targets_self,
         _resolve_line_assignments,
         _routing_option_key_value_targets_self,
         _routing_option_value_targets_self,
+        _splice_static_substitutions,
         _ssh_family_verb,
         _ssh_reading_depth,
         _ssh_verb_basename,
         _unmask_separators,
     )
+    from kiro_crew.security.argv_floor_ssh_bodies import (  # noqa: F401
+        _line_may_name_ssh_verb,
+        _live_substitutions,
+        _reaches_self_over_ssh,
+        _substitution_reaches_self,
+    )
+    from kiro_crew.security.argv_floor_ssh_gate import (  # noqa: F401
+        _GATE_WORD_SEPARATORS,
+        _QUOTED_SEP_SENTINELS,
+        _SSH_FAMILY_VERBS,
+        _cannot_name_ssh_verb,
+        _gate_words,
+        _glob_can_name_ssh_verb,
+    )
 if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.atomic_write import on_event_loop as _event_loop_running  # noqa: F401
+    from kiro_crew.security import argv_rules as _argv_rules  # noqa: F401
     from kiro_crew.security import shell_normalizer as _shell_normalizer  # noqa: F401
     from kiro_crew.security.denied_rules import (  # noqa: F401
         _GIT_PUBLISH_UNGATED,
@@ -287,8 +325,11 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     )
     from kiro_crew.security.shell_commands import (  # noqa: F401
         _double_quoted_substitution_bodies,
+        _heredoc_body_substitutions,
         _proven_body_spans,
+        _without_quoted_heredoc_text,
         heredoc_text_spans,
+        read_commands,
     )
     from kiro_crew.security.shell_normalizer import (  # noqa: F401
         _AMBIGUOUS_EXPANSION_RE,
@@ -314,12 +355,14 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _matching_close_paren,
         _nested_shell_payloads,
         _only_single_quoted_openers,
+        _opens_comment,
         _program_basename,
         _push_option_matches,
         _push_token_redirection,
         _push_token_shell_read,
         _redirect_consumes_next,
         _resolve_param_defaults,
+        _self_tokens,
         _shell_join_continuations,
         _shell_payload_walk,
         _shell_quote_walk,

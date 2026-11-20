@@ -7,6 +7,8 @@ for, and which messaging channels ``setup`` configures.
 """
 
 import json
+import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -56,6 +58,28 @@ class TestSetupWorkspaceDir:
             _setup_workspace_dir()
         output = capsys.readouterr().out
         assert "Default:" in output
+
+    @pytest.mark.parametrize("interactive", [True, False])
+    def test_refused_answer_keeps_the_configured_folder(
+        self, tmp_path, monkeypatch, capsys, interactive
+    ):
+        configured = tmp_path / "kc-quoted"
+        ws_file = tmp_path / "workspace_dir"
+        ws_file.write_text(f"{configured}\n")
+        monkeypatch.setattr("kiro_crew.cli_setup._workspace_dir_file", lambda: ws_file)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: interactive, raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: interactive, raising=False)
+        with patch("builtins.input", side_effect=["work", ""]) as mock_input:
+            from kiro_crew.cli_setup import _setup_workspace_dir
+
+            _setup_workspace_dir()
+        output = capsys.readouterr().out
+        assert "Cannot create work: not an absolute path" in output
+        assert "platform default" not in output
+        assert mock_input.call_count == (2 if interactive else 1)
+        if not interactive:
+            assert f"Keeping the configured folder: {configured}" in output
+        assert ws_file.read_text().strip() == str(configured)
 
 
 class TestSetupTimezone:
@@ -634,13 +658,16 @@ class TestConfigDirOverride:
         monkeypatch.setattr("builtins.input", lambda _: next(inputs))
 
         seen: list[tuple[Path, bool]] = []
+        test_thread = threading.get_ident()
         real = pc.restrict_to_owner
 
         def _spy(path):
             # Record what the lockdown saw: the path, and whether the tokens
-            # were already readable there at that moment.
-            p = Path(path)
-            seen.append((p.parent, "xoxb-test" in p.read_text(encoding="utf-8")))
+            # were already readable there at that moment. This thread only: the
+            # SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                p = Path(path)
+                seen.append((p.parent, "xoxb-test" in p.read_text(encoding="utf-8")))
             return real(path)
 
         monkeypatch.setattr(pc, "restrict_to_owner", _spy)

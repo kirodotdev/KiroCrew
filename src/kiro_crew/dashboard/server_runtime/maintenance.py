@@ -260,6 +260,30 @@ def _kick_session_search_index(state: DashboardState) -> None:
         except Exception:  # noqa: BLE001 — a warm-up must never stop indexing
             logger.warning("Session search warm-up failed", exc_info=True)
 
+    async def _session_vector_fill() -> None:
+        """Embed the chunk store's pending text while ``session.semantic_search`` is on.
+
+        Here rather than in the index worker because the embedding model is this
+        process's singleton. Each step blocks on an embed, so it runs on a thread
+        and the loop only sleeps between steps. See ``history_vectors_fill``.
+        """
+        log = state.conversation_log
+        if log is None:
+            return
+        from kiro_crew.history_vectors_fill import FILL_IDLE_PAUSE_SECS, VectorFill
+
+        fill = VectorFill(log)
+        try:
+            while not shutdown_event.is_set():
+                try:
+                    pause = await asyncio.to_thread(fill.step)
+                except Exception:  # noqa: BLE001 — search must survive a bad store
+                    logger.warning("Session vector fill step failed", exc_info=True)
+                    pause = FILL_IDLE_PAUSE_SECS
+                await asyncio.sleep(pause)
+        finally:
+            fill.close()
+
     async def _session_index_supervisor() -> None:
         log = state.conversation_log
         if log is None:
@@ -274,6 +298,7 @@ def _kick_session_search_index(state: DashboardState) -> None:
         # absolute path, because the child would otherwise resolve it against
         # its own working directory and create it there.
         supervisor = SessionIndexWorkerSupervisor(log._dir)
+        fill_task: "asyncio.Task[None] | None" = None
         try:
             await asyncio.to_thread(_migrate_index_schema)
             # A failed FIRST spawn is not treated differently from a child that dies
@@ -286,6 +311,10 @@ def _kick_session_search_index(state: DashboardState) -> None:
             # exits immediately.
             await asyncio.to_thread(supervisor.start)
             await asyncio.to_thread(_warm_search)
+            if not supervisor.gave_up:
+                # The fill drains what the worker chunks, so it lives as long as
+                # the worker's supervision does.
+                fill_task = asyncio.create_task(_session_vector_fill())
             while not supervisor.gave_up:
                 wait_secs = await asyncio.to_thread(supervisor.poll)
                 await asyncio.sleep(wait_secs)
@@ -294,6 +323,8 @@ def _kick_session_search_index(state: DashboardState) -> None:
         except Exception:  # noqa: BLE001 — search must survive a bad indexer
             logger.warning("Session search index supervisor failed", exc_info=True)
         finally:
+            if fill_task is not None:
+                fill_task.cancel()
             # The child is reaped OFF this loop. ``terminate`` and ``join``
             # block, and a shutdown must not freeze the loop for seconds
             # (no-blocking-call-on-event-loop).

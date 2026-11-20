@@ -7,6 +7,7 @@
 // ipc-registrar.test.js. It fakes only what registerShell needs.
 
 const { test } = require("node:test");
+const { EventEmitter } = require("node:events");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const Module = require("node:module");
@@ -45,6 +46,7 @@ function loadRegistrar() {
 function harness({ opener, gatewayLocal = true, portOwner = "kirocrew", main = null }) {
   const handlers = new Map();
   const probes = [];
+  const raised = [];
   // Reading BaseWindow is the first thing building the real opener does.
   const built = [];
   const createIpcRegistrar = loadRegistrar();
@@ -68,6 +70,7 @@ function harness({ opener, gatewayLocal = true, portOwner = "kirocrew", main = n
         return wc && wc.id === "relay-view" ? null : { fake: "window" };
       },
       getMainWindow: () => main,
+      showMainWindow: (o) => { raised.push(o); return true; },
       security: { configureSession: () => {}, isGatewayLocalForWindow: () => gatewayLocal },
       menu: { buildApplicationMenu: () => {} },
     },
@@ -83,8 +86,11 @@ function harness({ opener, gatewayLocal = true, portOwner = "kirocrew", main = n
     openPane: handlers.get("relay-crew:open-pane"),
     paneBounds: handlers.get("relay-crew:pane-bounds"),
     paneOverlay: handlers.get("relay-crew:pane-overlay"),
+    paneInactive: handlers.get("relay-crew:pane-inactive"),
     paneClose: handlers.get("relay-crew:pane-close"),
+    openRequests: handlers.get("relay-crew:open-requests"),
     probes,
+    raised,
     built,
   };
 }
@@ -165,7 +171,8 @@ function paneOpener(dashboard) {
   const steer = [];
   const handle = {
     setBounds: (r) => steer.push(["bounds", r]),
-    setVisible: (v) => steer.push(["visible", v]),
+    setOverlay: (v) => steer.push(["overlay", v]),
+    setInactive: (v) => steer.push(["inactive", v]),
     close: () => steer.push(["close"]),
   };
   return {
@@ -213,7 +220,7 @@ test("relay-crew:open-pane checks the ID, the local-dashboard gate, the main win
   }
 });
 
-test("pane bounds, overlay and close steer the pane only from the dashboard view that opened it", async () => {
+test("pane bounds, overlay, inactive and close steer the pane only from the dashboard view that opened it", async () => {
   const main = mainWindow();
   const wc = main._mcView.webContents;
   const o = paneOpener(main._mcView);
@@ -221,18 +228,24 @@ test("pane bounds, overlay and close steer the pane only from the dashboard view
   assert.equal(await h.paneBounds(from(wc), ID, { x: 10, y: 20, width: 300, height: 200 }, { width: 1000, height: 800 }), undefined);
   assert.equal(await h.paneOverlay(from(wc), ID, true), undefined);
   assert.equal(await h.paneOverlay(from(wc), ID, false), undefined);
+  assert.equal(await h.paneInactive(from(wc), ID, true), undefined);
+  assert.equal(await h.paneInactive(from(wc), ID, false), undefined);
   assert.equal(await h.paneClose(from(wc), ID), undefined);
   assert.deepEqual(o.steer, [
     ["bounds", { x: 10, y: 20, width: 300, height: 200 }],
-    ["visible", false],
-    ["visible", true],
+    ["overlay", true],
+    ["overlay", false],
+    ["inactive", true],
+    ["inactive", false],
     ["close"],
   ]);
   for (const active of ["true", 1, null, undefined]) {
     assert.equal(await h.paneOverlay(from(wc), ID, active), undefined);
+    assert.equal(await h.paneInactive(from(wc), ID, active), undefined);
   }
+  assert.equal(await h.paneInactive(from(wc), "not-an-endpoint", true), undefined);
   assert.equal(await h.paneClose(from(wc), "not-an-endpoint"), undefined);
-  assert.equal(o.steer.length, 4, "a bad argument changes nothing");
+  assert.equal(o.steer.length, 6, "a bad argument changes nothing");
 
   const remote = mainWindow({ url: "https://remote.example/chat" });
   const refusals = [
@@ -247,10 +260,68 @@ test("pane bounds, overlay and close steer the pane only from the dashboard view
     const r = harness({ opener: b, main: win });
     await r.paneBounds(ev, ID, { x: 0, y: 0, width: 10, height: 10 }, { width: 1000, height: 800 });
     await r.paneOverlay(ev, ID, true);
+    await r.paneInactive(ev, ID, true);
     await r.paneClose(ev, ID);
     assert.deepEqual(b.steer, [], label);
   }
   const never = harness({ opener: null, main });
   assert.equal(await never.paneClose(from(wc), ID), undefined);
   assert.deepEqual(never.built, [], "steering never builds an opener");
+});
+
+test("relay-crew:open-pane from another local dashboard window hands only the ID to the listening main dashboard, raised in that call", async () => {
+  const main = mainWindow();
+  const frame = main._mcView.webContents.mainFrame;
+  const wc = Object.assign(new EventEmitter(), { id: "main-dashboard", mainFrame: frame, sent: [] });
+  wc.send = (channel, ...args) => wc.sent.push([channel, ...args]);
+  wc.isDestroyed = () => false;
+  main._mcView.webContents = wc;
+  const RECT = { x: 0, y: 48, width: 500, height: 400 };
+  const VIEWPORT = { width: 500, height: 400 };
+  const o = paneOpener(null);
+  const h = harness({ opener: o, main });
+  const other = otherWindow();
+  assert.deepEqual(await h.openPane(from(other), ID, RECT, VIEWPORT), { ok: false, error: "UNAVAILABLE" },
+    "nothing listens yet: refused, not held");
+  assert.deepEqual(h.raised, []);
+  // Only the main window's dashboard can listen.
+  await h.openRequests(from(other), true);
+  assert.deepEqual(await h.openPane(from(other), ID, RECT, VIEWPORT), { ok: false, error: "UNAVAILABLE" });
+  await h.openRequests(from(wc), true);
+  assert.deepEqual(await h.openPane(from(other), ID, RECT, VIEWPORT), { ok: true, window: true });
+  assert.deepEqual(wc.sent, [["relay-crew:open-request", ID]]);
+  assert.deepEqual(h.raised, [{ focus: true }]);
+  assert.deepEqual(o.calls, [], "the asking window opens no pane itself");
+  assert.deepEqual(await h.openPane(from(other, { url: DASHBOARD_URL }), ID, RECT, VIEWPORT), { ok: false, error: "UNAVAILABLE" },
+    "a subframe of another window is refused");
+  // A new document drops it.
+  wc.emit("did-navigate", {}, DASHBOARD_URL, 200);
+  assert.deepEqual(await h.openPane(from(other), ID, RECT, VIEWPORT), { ok: false, error: "UNAVAILABLE" },
+    "a reloaded main dashboard is not handed anything until it listens again");
+  await h.openRequests(from(wc), true);
+  await h.openRequests(from(wc), false);
+  assert.deepEqual(await h.openPane(from(other), ID, RECT, VIEWPORT), { ok: false, error: "UNAVAILABLE" }, "unsubscribed");
+  assert.equal(wc.sent.length, 1);
+  for (let i = 0; i < 20; i += 1) await h.openRequests(from(wc), i % 2 === 0, 100 + i);
+  assert.equal(wc.listenerCount("did-navigate"), 1, "one listener however often it resubscribes");
+});
+
+test("an unsubscribe that lands after the resubscribe it preceded leaves the main dashboard listening", async () => {
+  const main = mainWindow();
+  const frame = main._mcView.webContents.mainFrame;
+  const wc = Object.assign(new EventEmitter(), { id: "main-dashboard", mainFrame: frame, sent: [] });
+  wc.send = (channel, ...args) => wc.sent.push([channel, ...args]);
+  wc.isDestroyed = () => false;
+  main._mcView.webContents = wc;
+  const h = harness({ opener: paneOpener(null), main });
+  await h.openRequests(from(wc), true, 1);
+  // A remount: unsubscribe 2, subscribe 3; the gate lets 3 land first.
+  await h.openRequests(from(wc), true, 3);
+  await h.openRequests(from(wc), false, 2);
+  assert.deepEqual(await h.openPane(from(otherWindow()), ID, { x: 0, y: 48, width: 500, height: 400 }, { width: 500, height: 400 }),
+    { ok: true, window: true });
+  // A new document numbers from 1 again.
+  wc.emit("did-navigate", {}, DASHBOARD_URL, 200);
+  await h.openRequests(from(wc), true, 1);
+  assert.equal((await h.openPane(from(otherWindow()), ID, { x: 0, y: 48, width: 500, height: 400 }, { width: 500, height: 400 })).ok, true);
 });

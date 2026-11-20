@@ -1504,14 +1504,14 @@ class TestBgSessionDashboardBranch:
             await await_until(opened, what="the browser auto-open")
 
         printed = stdout.getvalue()
-        assert "👻 Dashboard:\n" in printed
+        assert "Dashboard:\n" in printed
         assert "?token=" in browser.call_args.args[0]
         if tty:
             assert printed.count("   http://127.0.0.1:6779?token=") == 2
         else:
             assert "?token=" not in printed
             assert printed.count("   http://127.0.0.1:6779\n") == 2
-            assert "👻 Sign in:   run kirocrew token for a sign-in link\n" in printed
+            assert "Sign in:   run kirocrew token for a sign-in link\n" in printed
 
 
 class TestInitServicesLoopResponsiveness:

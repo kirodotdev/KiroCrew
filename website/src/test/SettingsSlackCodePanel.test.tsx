@@ -18,6 +18,7 @@ import { SlackPanel } from '../pages/settings/SlackPanel'
 import { slackCodePayload, slackCodeDraftFrom } from '../pages/settings/SlackCodePanel'
 import { forgetSlackInstallReading, useInstallRecheckFailed } from '../pages/settings/SlackManifestUpdate'
 import { markModelsDegraded } from '../providers/modelListHealth'
+import { turnOffCrewModeAsLts } from './crewModeOff'
 
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async () => ({
@@ -73,7 +74,8 @@ function config(over: Partial<SlackConfigData> = {}): SlackConfigData {
       project_dir: null, project_source: '', slack_agent: 'kirocrew',
     },
     code_channel_warnings: [],
-    code_channel_auto_folder: { name: 'Code channels', agent: 'kirocrew-conductor', id: null },
+    code_channel_auto_folder: { name: 'Code channels', legacy_agent: 'kirocrew-conductor', id: null },
+    code_channel_conductor_agent: 'kirocrew-conductor',
     code_channel_agents: ['builder', 'reviewer'],
     ...over,
   }
@@ -107,6 +109,8 @@ describe('Slack Code payload', () => {
     expect(slackCodePayload({ ...saved, effort: 'high' }, saved)).toEqual({ code_channel_defaults: { reasoning_effort: 'high' } })
     expect(slackCodePayload({ ...saved, folder: '', switches: { agent_sessions: false, code_channels: true } }, saved)).toEqual({
       code_channels: true,
+      // An enabling save always carries the helper-agents value the card shows.
+      code_channel_dispatch: false,
       code_channel_defaults: { folder: null },
     })
   })
@@ -114,6 +118,16 @@ describe('Slack Code payload', () => {
   it('stores the inherit model as unset', () => {
     const saved = slackCodeDraftFrom(config({ code_channel_defaults: { folder: null, agent: null, model: 'claude-x', reasoning_effort: null } }))
     expect(slackCodePayload({ ...saved, model: 'auto' }, saved)).toEqual({ code_channel_defaults: { model: null } })
+  })
+
+  it('leaves out a conductor mode edit config.local.json locks, keeping the rest', () => {
+    const saved = slackCodeDraftFrom(config())
+    const edited = { ...saved, conductorMode: true, effort: 'high' }
+    expect(slackCodePayload(edited, saved)).toEqual({ code_channel_defaults: { reasoning_effort: 'high', conductor_mode: true } })
+    // Pinned or unreadable: the switch is shown disabled, so a draft edit made
+    // before the lock landed is never sent (it would refuse the whole save).
+    expect(slackCodePayload(edited, saved, true)).toEqual({ code_channel_defaults: { reasoning_effort: 'high' } })
+    expect(slackCodePayload({ ...saved, conductorMode: true }, saved, true)).toEqual({})
   })
 
   it('reads an unset or unknown approval mode as Ask and stores Ask as unset', () => {
@@ -246,7 +260,10 @@ describe('Code channels card', () => {
     expect(preview).not.toHaveTextContent('kirocrew-conductor')
   })
 
-  it('turning Code channels on leaves dispatch off and says what turning it on does', async () => {
+  it('with no first enable read, turning Code channels on sends the off it shows and says what turning it on does', async () => {
+    // Also the stale-card case: the GET read no first enable (a value stored, or
+    // config.json unreadable then), so the server must not decide helpers on
+    // from files the card never showed.
     const { save } = seed()
     await hydrated()
     expect(screen.queryByTestId('slack-code-dispatch')).toBeNull()
@@ -260,7 +277,54 @@ describe('Code channels card', () => {
     expect(screen.queryByTestId('slack-code-dispatch-off')).toBeNull()
     fireEvent.click(saveBtn())
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ code_channels: true, code_channel_dispatch: false })
+  })
+
+  it('turning Code channels on while config.local.json owns helper agents sends no helper value', async () => {
+    const { save } = seed({ code_channel_dispatch_overlay: true, code_channel_dispatch_overlay_state: 'unreadable' })
+    await hydrated()
+    fireEvent.click(screen.getByRole('switch', { name: 'Code channels' }))
+    await screen.findByTestId('slack-code-dispatch')
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
     expect(save.mock.calls[0][0]).toMatchObject({ code_channels: true })
+    expect(save.mock.calls[0][0]).not.toHaveProperty('code_channel_dispatch')
+  })
+
+  it('a first enable of Code channels turns helper agents on with it', async () => {
+    const { save } = seed({ code_channel_dispatch_on_enable: true })
+    await hydrated()
+    fireEvent.click(screen.getByRole('switch', { name: 'Code channels' }))
+    const sub = await screen.findByTestId('slack-code-dispatch')
+    expect(within(sub).getByRole('switch', { name: 'Let code channels start helper agents' })).toBeChecked()
+    expect(sub).toHaveTextContent('On by default when you first turn on Code channels.')
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ code_channels: true, code_channel_dispatch: true })
+  })
+
+  it('an off chosen in the enabling save is sent, so it is stored as an explicit off', async () => {
+    const { save } = seed({ code_channel_dispatch_on_enable: true })
+    await hydrated()
+    fireEvent.click(screen.getByRole('switch', { name: 'Code channels' }))
+    const toggle = await screen.findByRole('switch', { name: 'Let code channels start helper agents' })
+    fireEvent.click(toggle)
+    expect(toggle).not.toBeChecked()
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ code_channels: true, code_channel_dispatch: false })
+  })
+
+  it('turning Code channels back off before saving leaves helper agents as saved', async () => {
+    const { save } = seed({ code_channel_dispatch_on_enable: true })
+    await hydrated()
+    const cc = screen.getByRole('switch', { name: 'Code channels' })
+    fireEvent.click(cc)
+    await screen.findByTestId('slack-code-dispatch')
+    fireEvent.click(cc)
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).not.toHaveProperty('code_channels')
     expect(save.mock.calls[0][0]).not.toHaveProperty('code_channel_dispatch')
   })
 
@@ -308,18 +372,18 @@ describe('Code channels card', () => {
     expect(within(screen.getByTestId('slack-code-dispatch-overlay')).getByRole('alert')).toBeInTheDocument()
     expect(screen.getByTestId('slack-code-dispatch-overlay')).not.toHaveTextContent(/^Off,/)
   })
-  it('with nothing configured, files into an auto-created Code channels folder run by the conductor', async () => {
+  it('with nothing configured, files into an auto-created Code channels folder on the default agent', async () => {
     seed({ code_channels: true }, status(), [])
     await hydrated()
     const card = await screen.findByTestId('slack-code-defaults', {}, CHAINED)
-    await waitFor(() => expect(within(card).getByLabelText('Default folder')).toHaveTextContent('Code channels (created automatically · kirocrew-conductor)'), CHAINED)
+    await waitFor(() => expect(within(card).getByLabelText('Default folder')).toHaveTextContent('Code channels (created automatically)'), CHAINED)
     // The hint names the picker that holds New folder…, since the row is
     // only visible once that picker is open.
     expect(card).toHaveTextContent('No folders yet. To create one, open Default folder and pick New folder…')
     const preview = screen.getByTestId('slack-code-preview')
     expect(preview).toHaveTextContent('Code channels (created automatically)')
-    expect(preview).toHaveTextContent('kirocrew-conductor')
-    expect(preview).toHaveTextContent('Inherited from folder')
+    expect(preview).not.toHaveTextContent('kirocrew-conductor')
+    expect(preview).toHaveTextContent(/Agent\s*kirocrew\s*Inherited from Slack/)
   })
 
   it('uses an existing Code channels folder as the default row, with its own agent', async () => {
@@ -334,6 +398,181 @@ describe('Code channels card', () => {
     // Listed once, as the default row, not again among the folders.
     await userEvent.click(within(card).getByLabelText('Default folder'))
     expect(screen.getAllByRole('option', { name: /Code channels/ })).toHaveLength(1)
+  })
+
+  it('reads the legacy conductor on an existing Code channels folder as no folder agent', async () => {
+    const auto = { id: 'cccccccccccc', name: 'Code channels', order: 2, default_agent: 'kirocrew-conductor' }
+    seed({ code_channels: true }, status(), [...FOLDERS, auto])
+    await hydrated()
+    const card = await screen.findByTestId('slack-code-defaults', {}, CHAINED)
+    await waitFor(() => expect(within(card).getByLabelText('Default folder')).toHaveTextContent('Code channels (default)'), CHAINED)
+    const preview = screen.getByTestId('slack-code-preview')
+    expect(preview).not.toHaveTextContent('kirocrew-conductor')
+    expect(preview).toHaveTextContent(/Agent\s*kirocrew\s*Inherited from Slack/)
+  })
+
+  describe('Always use conductor mode', () => {
+    it('is hidden where conductor mode is not offered (LTS)', async () => {
+      turnOffCrewModeAsLts()
+      seed({ code_channels: true })
+      await screen.findByTestId('slack-code-defaults', {}, CHAINED)
+      expect(screen.queryByTestId('slack-code-conductor-mode')).toBeNull()
+      expect(screen.queryByRole('switch', { name: 'Always use conductor mode' })).toBeNull()
+    })
+
+    it('a stored on is inert where conductor mode is not offered: the default agent stays usable', async () => {
+      turnOffCrewModeAsLts()
+      seed({
+        code_channels: true,
+        code_channel_defaults: { folder: null, agent: 'reviewer', model: null, reasoning_effort: null, conductor_mode: true },
+      })
+      const card = await screen.findByTestId('slack-code-defaults', {}, CHAINED)
+      await waitFor(() => expect(within(card).getByLabelText('Default agent')).toHaveTextContent('reviewer'))
+      expect(within(card).getByLabelText('Default agent')).not.toBeDisabled()
+      expect(screen.getByTestId('slack-code-preview')).toHaveTextContent(/Agent\s*reviewer\s*Set here/)
+    })
+
+    it('overrides the default agent: the field is disabled with a note and the preview names the conductor mode agent', async () => {
+      const { save } = seed({
+        code_channels: true,
+        code_channel_dispatch: true,
+        code_channel_defaults: { folder: 'bbbbbbbbbbbb', agent: 'reviewer', model: null, reasoning_effort: null },
+      })
+      const toggle = await screen.findByRole('switch', { name: 'Always use conductor mode' }, CHAINED)
+      expect(screen.getByTestId('slack-code-conductor-mode')).toHaveTextContent('Every new code channel starts on kirocrew-conductor, which plans the work and hands it to helper agents. This overrides the default agent and the folder\'s agent.')
+      // The info tip (the glyph's title while hidden) names the helpers switch.
+      expect(within(screen.getByTestId('slack-code-conductor-mode')).getByTitle(/“Let code channels start helper agents” too/)).toBeInTheDocument()
+      const agentField = within(screen.getByTestId('slack-code-defaults')).getByLabelText('Default agent')
+      expect(agentField).not.toBeDisabled()
+      fireEvent.click(toggle)
+      await waitFor(() => expect(agentField).toBeDisabled())
+      // The stored pick stays shown, and comes back when the switch goes off.
+      expect(agentField).toHaveTextContent('reviewer')
+      expect(screen.getByTestId('slack-code-defaults')).toHaveTextContent('Always use conductor mode picks the agent while it is on.')
+      // Helper agents are on, so no warning.
+      expect(screen.queryByTestId('slack-code-conductor-helpers-off')).toBeNull()
+      const preview = screen.getByTestId('slack-code-preview')
+      expect(preview).toHaveTextContent(/Agent\s*kirocrew-conductor\s*Conductor mode/)
+      fireEvent.click(saveBtn())
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+      expect(save.mock.calls[0][0]).toMatchObject({ code_channel_defaults: { conductor_mode: true } })
+      expect(save.mock.calls[0][0].code_channel_defaults).not.toHaveProperty('agent')
+      expect(save.mock.calls[0][0]).not.toHaveProperty('code_channel_dispatch')
+    })
+
+    it('warns, without saving anything, while it is on and helper agents are off', async () => {
+      const { save } = seed({
+        code_channels: true,
+        code_channel_dispatch: false,
+        code_channel_defaults: { folder: null, agent: null, model: null, reasoning_effort: null, conductor_mode: true },
+      })
+      const warning = await screen.findByTestId('slack-code-conductor-helpers-off', {}, CHAINED)
+      expect(warning).toHaveTextContent('Helper agents are off, so the conductor can\'t hand out work. Turn on Let code channels start helper agents under Code channels on this page.')
+      // The setting's name in the warning is a link to that toggle: it scrolls to it and focuses it.
+      const scroll = vi.fn()
+      const before = Element.prototype.scrollIntoView
+      Element.prototype.scrollIntoView = scroll
+      try {
+        fireEvent.click(within(warning).getByRole('button', { name: 'Let code channels start helper agents' }))
+      } finally {
+        Element.prototype.scrollIntoView = before
+      }
+      const helpersSwitch = screen.getByRole('switch', { name: 'Let code channels start helper agents' })
+      expect(helpersSwitch).toHaveFocus()
+      expect(scroll).toHaveBeenCalled()
+      // Turning helpers on in the draft clears it; the switch itself never sets them.
+      fireEvent.click(screen.getByRole('switch', { name: 'Let code channels start helper agents' }))
+      await waitFor(() => expect(screen.queryByTestId('slack-code-conductor-helpers-off')).toBeNull())
+      fireEvent.click(screen.getByRole('switch', { name: 'Let code channels start helper agents' }))
+      fireEvent.click(screen.getByRole('switch', { name: 'Always use conductor mode' }))
+      expect(screen.queryByTestId('slack-code-conductor-helpers-off')).toBeNull()
+      fireEvent.click(saveBtn())
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+      expect(save.mock.calls[0][0]).not.toHaveProperty('code_channel_dispatch')
+    })
+
+    it('hides the stale-agent warnings while it decides the agent', async () => {
+      seed({
+        code_channels: true,
+        code_channel_dispatch: true,
+        code_channel_defaults: { folder: null, agent: 'ghost', model: null, reasoning_effort: null, conductor_mode: true },
+        code_channel_warnings: ['agent_missing'],
+      })
+      await screen.findByRole('switch', { name: 'Always use conductor mode' }, CHAINED)
+      expect(screen.queryByText(/“ghost” is no longer installed/)).toBeNull()
+      // Turned off, the dormant pick is live again and the warning is back.
+      fireEvent.click(screen.getByRole('switch', { name: 'Always use conductor mode' }))
+      expect(await screen.findByText(/“ghost” is no longer installed/)).toBeInTheDocument()
+    })
+
+    it('is disabled and says so when config.local.json sets it', async () => {
+      seed({
+        code_channels: true,
+        code_channel_dispatch: true,
+        code_channel_defaults: { folder: null, agent: null, model: null, reasoning_effort: null, conductor_mode: true },
+        code_channel_conductor_mode_overlay_state: 'pinned',
+        code_channel_dispatch_overlay_path: '~/.kiro/crew/config.local.json',
+      })
+      const toggle = await screen.findByRole('switch', { name: 'Always use conductor mode' }, CHAINED)
+      await waitFor(() => expect(toggle).toHaveAttribute('aria-disabled', 'true'))
+      expect(screen.getByTestId('slack-code-conductor-mode-overlay')).toHaveTextContent(/^On, set in ~\/\.kiro\/crew\/config\.local\.json, which overrides/)
+    })
+
+    it('follows a pin that lands after the draft was seeded, not the kept draft', async () => {
+      // Off when the page opened; then config.local.json pins it on and the config
+      // is read again (Check again). The page keeps its draft, but the card must
+      // show and preview the pinned value the bind and the save use.
+      const { queryClient } = seed({ code_channels: true, code_channel_dispatch: true })
+      const toggle = await screen.findByRole('switch', { name: 'Always use conductor mode' }, CHAINED)
+      expect(toggle).not.toBeChecked()
+      vi.mocked(api.getSlackConfig).mockResolvedValue(config({
+        code_channels: true,
+        code_channel_dispatch: true,
+        code_channel_defaults: { folder: null, agent: null, model: null, reasoning_effort: null, conductor_mode: true },
+        code_channel_conductor_mode_overlay_state: 'pinned',
+      }))
+      await act(async () => { await queryClient.refetchQueries() })
+      await waitFor(() => expect(screen.getByRole('switch', { name: 'Always use conductor mode' })).toBeChecked())
+      expect(screen.getByTestId('slack-code-preview')).toHaveTextContent(/Agent\s*kirocrew-conductor\s*Conductor mode/)
+      expect(within(screen.getByTestId('slack-code-defaults')).getByLabelText('Default agent')).toBeDisabled()
+    })
+
+    it('is disabled with an error when config.local.json cannot be read', async () => {
+      seed({
+        code_channels: true,
+        code_channel_defaults: { folder: null, agent: 'ghost', model: null, reasoning_effort: null, conductor_mode: true },
+        code_channel_warnings: ['agent_missing'],
+        code_channel_conductor_mode_overlay_state: 'unreadable',
+        code_channel_dispatch_overlay_path: '~/.kiro/crew/config.local.json',
+      })
+      const toggle = await screen.findByRole('switch', { name: 'Always use conductor mode' }, CHAINED)
+      await waitFor(() => expect(toggle).toHaveAttribute('aria-disabled', 'true'))
+      const note = screen.getByTestId('slack-code-conductor-mode-overlay')
+      expect(note).toHaveAttribute('data-state', 'unreadable')
+      expect(note).toHaveTextContent(/^Off: ~\/\.kiro\/crew\/config\.local\.json can't be read, so this switch is off and can't be changed here/)
+      // The toggle draws the value in force (off), not the stored on.
+      expect(toggle).not.toBeChecked()
+      // Whether config.local.json turns the switch off is unknown, so it counts as
+      // off everywhere (the bind, the save, this card): the default agent is what
+      // runs, its picker is usable and its stale warning shows.
+      expect(within(screen.getByTestId('slack-code-defaults')).getByLabelText('Default agent')).not.toBeDisabled()
+      expect(screen.getByText(/“ghost” is no longer installed/)).toBeInTheDocument()
+      expect(screen.queryByTestId('slack-code-conductor-helpers-off')).toBeNull()
+      expect(screen.getByTestId('slack-code-preview')).not.toHaveTextContent('Conductor mode')
+    })
+
+    it('reads a saved on back and sends null when turned off', async () => {
+      const { save } = seed({
+        code_channels: true,
+        code_channel_defaults: { folder: null, agent: null, model: null, reasoning_effort: null, conductor_mode: true },
+      })
+      const toggle = await screen.findByRole('switch', { name: 'Always use conductor mode' }, CHAINED)
+      await waitFor(() => expect(toggle).toBeChecked())
+      fireEvent.click(toggle)
+      fireEvent.click(saveBtn())
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+      expect(save.mock.calls[0][0]).toMatchObject({ code_channel_defaults: { conductor_mode: null } })
+    })
   })
 
   it('offers the shipped agents the server lists, conductor and team lead included', async () => {
@@ -563,7 +802,7 @@ describe('Code channels card', () => {
     // The preview names the agent that runs instead, not the missing one.
     const preview = screen.getByTestId('slack-code-preview')
     expect(preview).not.toHaveTextContent('ghost')
-    expect(preview).toHaveTextContent(/Agent\s*kirocrew-conductor\s*Inherited from folder/)
+    expect(preview).toHaveTextContent(/Agent\s*kirocrew\s*Inherited from Slack/)
   })
 
   it('previews the inherited agent when the picked one is not in the folder', async () => {

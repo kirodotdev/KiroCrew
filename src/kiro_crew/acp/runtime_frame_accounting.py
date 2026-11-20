@@ -218,6 +218,10 @@ def unrouted_child_frames(self: AcpRuntime) -> int:
     ``routes_roster_children_to`` holds only at the instant it is asked. The
     owner of a lost frame is not always known, so every session on the runtime
     reads the same count.
+
+    A turn replayed for a ``session/load`` that asked for its replay
+    (``require_replay``, the KAS resume) is not counted: the load drops its own
+    replay by design (``_note_dropped_frame``).
     """
     return self._unrouted_child_frames
 
@@ -399,7 +403,9 @@ def _end_roster_overflow_episode(self: AcpRuntime) -> None:
     self._roster_overflow_summary_at = 0.0
 
 
-def _note_dropped_frame(self: AcpRuntime, session_id: object, method: object) -> None:
+def _note_dropped_frame(
+    self: AcpRuntime, session_id: object, method: object, *, replay: bool = False
+) -> None:
     """Count one unroutable frame, flushing a summary at most once per interval.
 
     Replaces a per-frame log line (see the drop-accounting constants above).
@@ -410,15 +416,24 @@ def _note_dropped_frame(self: AcpRuntime, session_id: object, method: object) ->
     Both arguments are backend-controlled and deliberately typed `object`:
     they are normalized through `_drop_key_part`, which is the only thing
     that keeps a wrong-typed value from raising in the shared reader.
+
+    *replay* marks a turn the engine replayed for a ``session/load`` of this
+    session that asked for its replay and is still in flight
+    (``_load_replay_frames``, kept only with ``require_replay``). The load
+    drops its own replay by design, so the frame is counted
+    ``method_class=replay``, apart from the hang signature, and is no frame
+    lost on its way to a session.
     """
     key = (_drop_key_part(session_id), _drop_key_part(method))
     # Hang-resilience series: classify the drop by method so dashboards
     # can alert on the hang signature (dropped permission requests or
     # updates). ``method_class`` is a
-    # closed 3-value enum — the raw method (backend-controlled) never
+    # closed 4-value enum — the raw method (backend-controlled) never
     # becomes an attribute value.
     _m = method if isinstance(method, str) else ""
-    if _m == METHOD_REQUEST_PERMISSION:
+    if replay:
+        _mclass = "replay"
+    elif _m == METHOD_REQUEST_PERMISSION:
         _mclass = "permission"
     elif _m in self._notification_aliases().session_update:
         # EVERY session-update spelling this host uses classifies as
@@ -429,7 +444,7 @@ def _note_dropped_frame(self: AcpRuntime, session_id: object, method: object) ->
         _mclass = "update"
     else:
         _mclass = "other"
-    if session_id != _DROP_NO_SESSION and _mclass != "other":
+    if session_id != _DROP_NO_SESSION and _mclass in ("permission", "update"):
         # A frame of the kind a native sub-agent streams, lost on its way to a
         # session (``unrouted_child_frames``).
         self._unrouted_child_frames += 1

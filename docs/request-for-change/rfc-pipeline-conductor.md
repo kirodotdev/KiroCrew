@@ -3,8 +3,8 @@ title: Pipeline Conductor — the issue pipelines as a conductor use case
 status: partial
 author: Raymond Chen
 created: 2026-09-01
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr:
 implementation-prs: [7238, 8034, 8035, 8036]
 tracking-issues: []

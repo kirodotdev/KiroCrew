@@ -322,14 +322,10 @@ class TestLocalToken:
         assert row["resources"] == "token-issued"
 
     @pytest.mark.asyncio
-    async def test_an_app_backend_mint_is_attributed_to_the_app(
+    async def test_an_app_backend_mint_is_refused_and_attributed_to_the_app(
         self, monkeypatch, fake_sel
     ) -> None:
-        """The owning app's name reaches the audit row, not the response or the token.
-
-        The token carries no ``app`` claim because the owner-dashboard check refuses an
-        app-scoped token.
-        """
+        """No token is signed for an app backend; the app's name reaches the audit row."""
         from kiro_crew import member_memory_auth as auth
 
         peer_pid = 4242
@@ -359,15 +355,13 @@ class TestLocalToken:
                 headers={"X-Local-Secret": "right"},
             )
         )
-        assert resp.status == 200
-        body = json.loads(resp.body)
-        assert body == {"token": "issued-value", "expires_in": core_mod.MAX_SESSION_TTL_SECS}
-        assert minted["owner"] == "owner-1"
-        assert minted["extra"] == {"owner_mint": "1"}
+        assert resp.status == 403
+        assert json.loads(resp.body)["code"] == "member_owner_token_refused"
+        assert minted == {}
         row = fake_sel.log_api_access.call_args.kwargs
         assert row["operation"] == "token.local"
-        assert row["outcome"] == "success"
-        assert row["resources"] == "token-issued app=demo-app"
+        assert row["outcome"] == "denied"
+        assert row["resources"] == "app-backend-refused app=demo-app"
 
     @pytest.mark.asyncio
     async def test_unix_peer_match_with_valid_secret_issues_a_token(
@@ -659,14 +653,14 @@ class TestLogout:
             "kiro_crew.dashboard.handlers.core.check_peer_is_self",
             lambda _s: PeerCredResult.MATCH,
         )
-        revoke = MagicMock()
-        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions", revoke)
+        revoke = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions_async", revoke)
         resp = await core_mod.api_logout(
             _req(remote="", app={"local_secret": "right"}, headers={"X-Local-Secret": "right"})
         )
         assert resp.status == 200
         assert json.loads(resp.body) == {"ok": True}
-        revoke.assert_called_once()
+        revoke.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_unix_peer_mismatch_is_refused(self, monkeypatch, fake_sel) -> None:
@@ -695,10 +689,10 @@ class TestLogout:
         """Fail-closed: an unpersisted revocation must never report success."""
         monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
 
-        def _boom():
+        async def _boom():
             raise OSError("read-only trust dir")
 
-        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions", _boom)
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions_async", _boom)
         resp = await core_mod.api_logout(
             _req(app={"local_secret": "right"}, headers={"X-Local-Secret": "right"})
         )
@@ -710,14 +704,14 @@ class TestLogout:
     @pytest.mark.asyncio
     async def test_successful_revocation_is_audited(self, monkeypatch, fake_sel) -> None:
         monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
-        revoke = MagicMock()
-        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions", revoke)
+        revoke = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions_async", revoke)
         resp = await core_mod.api_logout(
             _req(app={"local_secret": "right"}, headers={"X-Local-Secret": "right"})
         )
         assert resp.status == 200
         assert json.loads(resp.body) == {"ok": True}
-        revoke.assert_called_once()
+        revoke.assert_awaited_once()
         assert fake_sel.log_api_access.call_args.kwargs["outcome"] == "success"
 
 

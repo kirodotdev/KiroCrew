@@ -223,7 +223,9 @@ def _paired(run: BenchRun, results: Sequence[dict[str, Any]]) -> list[dict[str, 
             value = row.get("abstain_retrieval")
             return float(value) if value is not None else None
         if dim == "M8":
-            return (0.0 if row["leaked"] else 1.0) if row.get("cat") == "forget" else None
+            if row.get("cat") == "forget":
+                return 0.0 if row["leaked"] else 1.0
+            return None
         if dim in ("M9", "M10", "M11", "M12"):
             return None
         if "r" in row and k in row["r"]:

@@ -10,6 +10,10 @@ declare global {
     platform?: string
     isElectron?: boolean
     linuxFrameless?: boolean
+    /** This shell answers frameless-Linux application-menu IPC. Optional:
+     *  absent on a shell older than the feature, whose `menuItems` guard is
+     *  still Windows-only and returns `[]` for a Linux window. */
+    linuxAppMenu?: boolean
     getPathForFile?: (file: File) => string
     windowControl?: (action: string) => void
   }
@@ -95,6 +99,10 @@ declare global {
      *  Chromium's gesture-scroll events (macOS only). Optional: absent in a
      *  browser and on an older shell. See lib/scrollTouch. */
     onScrollTouch?: (cb: (phase: unknown) => void) => () => void
+    /** macOS Natural scrolling: `true` on, `false` off, `null` not known yet
+     *  (macOS only). Optional: absent in a browser and on an older shell. See
+     *  lib/scrollTouch `shellNaturalScrolling`. */
+    getNaturalScrolling?: () => unknown
     /** `menuBarOverlap` is false when macOS placed the fullscreen window below
      *  the menu bar (a notched display), so no band needs keeping clear. */
     onFullScreenChanged: (cb: (isFullScreen: boolean, menuBarOverlap: boolean) => void) => () => void
@@ -131,6 +139,20 @@ declare global {
   interface TrayIconAPI {
     get: () => Promise<TrayIconState>
     set: (show: boolean) => Promise<TrayIconState>
+  }
+
+  /** Whether minimizing hides the window to the tray. Offered on Windows, and
+   *  on Linux when the desktop has a tray; it can be turned on only while the
+   *  tray icon shows. */
+  interface MinimizeToTrayState {
+    on: boolean
+    offered: boolean
+    canEnable: boolean
+  }
+
+  interface MinimizeToTrayAPI {
+    get: () => Promise<MinimizeToTrayState>
+    set: (on: boolean) => Promise<MinimizeToTrayState>
   }
 
   /** First-run setup's "connect to a crew on another machine" exit. `start`
@@ -367,6 +389,9 @@ declare global {
     /** A plain quit and relaunch with no update command of its own; an armed
      *  update is applied by the quit it triggers. Absent on an older shell. */
     relaunch?: () => Promise<UpdateResult>
+    /** Whether `relaunch` would be accepted from this window: false where the
+     *  shell's local-dashboard gate refuses it. Absent on an older shell. */
+    canRelaunch?: () => Promise<boolean>
     getInfo?: () => Promise<(UpdateInfo & { lastState?: UpdateState | null }) | undefined>
     setChannel?: (channel: string) => Promise<UpdateResult>
     setAutoDownload?: (enabled: boolean) => Promise<UpdateResult>
@@ -382,6 +407,7 @@ declare global {
     localGatewayAPI?: LocalGatewayAPI
     closeActionAPI?: CloseActionAPI
     trayIconAPI?: TrayIconAPI
+    minimizeToTrayAPI?: MinimizeToTrayAPI
     remoteCrewSetupAPI?: RemoteCrewSetupAPI
     gatewayRestartAPI?: GatewayRestartAPI
     remoteCrewPaneAPI?: RemoteCrewPaneAPI

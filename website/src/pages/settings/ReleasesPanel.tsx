@@ -358,8 +358,8 @@ export default function ReleasesPanel() {
       )}
 
       {current && (
-        <Card>
-          <div ref={currentRef} className="scroll-mt-4" data-testid="releases-current">
+        <div ref={currentRef} className="scroll-mt-4" data-testid="releases-current">
+          <Card>
             <CardTitle className="mb-1 flex-wrap">
               <Sparkles size={15} className="lucide-inline" aria-hidden="true" />
               {i18nT('pages.settings.releases.whats_new_in', { version: current.version })}
@@ -392,13 +392,13 @@ export default function ReleasesPanel() {
               </p>
             )}
             <ReleaseNotes release={current} older={olderReleased(current)} alwaysLinkCommits summarize />
-          </div>
-        </Card>
+          </Card>
+        </div>
       )}
 
       {earlier.length > 0 && (
-        <Card>
-          <div ref={earlierRef} className="scroll-mt-4" data-testid="releases-earlier">
+        <div ref={earlierRef} className="scroll-mt-4" data-testid="releases-earlier">
+          <Card>
             <CardTitle className="flex-wrap">
               <History size={15} className="lucide-inline" aria-hidden="true" />
               {current ? i18nT('pages.settings.releases.earlier_title') : i18nT('pages.settings.releases.releases_title')}
@@ -425,8 +425,8 @@ export default function ReleasesPanel() {
                 </Btn>
               </div>
             )}
-          </div>
-        </Card>
+          </Card>
+        </div>
       )}
     </div>
   )

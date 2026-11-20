@@ -267,13 +267,20 @@ async def api_acp_backend_status(request: web.Request) -> web.Response:
         return denial
     backends = await asyncio.to_thread(_snapshot)
     runs_on_kas = await asyncio.to_thread(_kiro_selection_runs_on_kas)
+    cli_runs_on_kas = await asyncio.to_thread(_kiro_cli_runs_on_kas)
     crewmates = await asyncio.to_thread(_crewmate_harness)
     # ``kiro_selection_runs_on_kas``: the stored pick is Kiro CLI and sessions run it
     # on KAS (``agent_sdk.backends.KIRO_SELECTION_BACKEND``). The panel offers the
     # one-click save of KAS on it, so the setting says what runs.
+    # ``kiro_cli_runs_on_kas``: a Kiro CLI pick would run on KAS here, whatever is
+    # stored, so while KAS runs the panel offers no switch to Kiro CLI.
     # ``crewmate_harness``: what a Crew bot with no pin of its own runs on, and which
     # setting decided it (``crewmate_harness.inherited_harness_source``).
-    body: Dict[str, Any] = {"backends": backends, "kiro_selection_runs_on_kas": runs_on_kas}
+    body: Dict[str, Any] = {
+        "backends": backends,
+        "kiro_selection_runs_on_kas": runs_on_kas,
+        "kiro_cli_runs_on_kas": cli_runs_on_kas,
+    }
     if crewmates is not None:
         body["crewmate_harness"] = crewmates
     return web.json_response(body)
@@ -299,6 +306,17 @@ def _kiro_selection_runs_on_kas() -> bool:
         return kiro_selection_runs_on_kas()
     except Exception:
         logger.debug("could not read whether Kiro CLI runs on KAS", exc_info=True)
+        return False
+
+
+def _kiro_cli_runs_on_kas() -> bool:
+    """BLOCKING. ``False`` on any failure: the Kiro CLI row then offers its switch."""
+    try:
+        from kiro_crew.kiro_on_kas_notice import kiro_cli_runs_on_kas
+
+        return kiro_cli_runs_on_kas()
+    except Exception:
+        logger.debug("could not read whether a Kiro CLI pick would run on KAS", exc_info=True)
         return False
 
 

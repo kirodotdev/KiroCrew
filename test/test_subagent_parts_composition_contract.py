@@ -689,8 +689,13 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     ),
     "_mint_agent_id": ("method", "(self) -> 'str'"),
     "_note_startup_progress": ("method", "(self, info: 'SubagentInfo') -> 'None'"),
-    "_note_tool_dispatch": ("staticmethod", "(info: 'SubagentInfo', event: 'Any') -> 'None'"),
+    "_note_tool_dispatch": (
+        "staticmethod",
+        "(info: 'SubagentInfo', event: 'Any', backend: 'str | None' = None, "
+        "servers: 'tuple[str, ...]' = ()) -> 'None'",
+    ),
     "_note_tool_result": ("staticmethod", "(info: 'SubagentInfo', event: 'Any') -> 'None'"),
+    "_note_tool_update": ("staticmethod", "(info: 'SubagentInfo', event: 'Any') -> 'None'"),
     "_notify_cap_raised": ("method", "(self) -> 'None'"),
     "_notify_orphan": (
         "async method",
@@ -892,6 +897,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
         "(self, batch_id: 'str', parent_session_key: 'str', batch_total: 'int', held_secs: 'float') -> 'None'",
     ),
     "get": ("method", "(self, agent_id: 'str') -> 'SubagentInfo | None'"),
+    "has_current_execution_for": ("method", "(self, parent_session_key: 'str') -> 'bool'"),
     "has_fenced_children": ("method", "(self, parent_session_key: 'str') -> 'bool'"),
     "has_in_memory_pending_work_for": (
         "method",

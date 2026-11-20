@@ -14,6 +14,7 @@ import asyncio
 import inspect
 
 import pytest
+from source_corpus import untraced
 
 from kiro_crew.notifications import bridge_actions as actions_mod
 from kiro_crew.notifications.bridge_actions import ActionOutcome, BridgeActionRegistry
@@ -327,20 +328,23 @@ def test_only_the_approval_note_slack_and_telegram_reach_the_registry():
     root = Path(inspect.getfile(kiro_crew)).parent
     importers = []
     binders = []
-    for path in root.rglob("*.py"):
-        rel = path.relative_to(root).as_posix()
-        if rel in _B4_READERS:
-            continue
-        source = path.read_text(encoding="utf-8")
-        if "bridge_actions.bind(" in source or ".link_message(" in source:
-            binders.append(rel)
-        for node in ast.walk(ast.parse(source)):
-            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+    # The walk only parses source text and runs no package code, so pausing the
+    # coverage tracer loses no measured line.
+    with untraced():
+        for path in root.rglob("*.py"):
+            rel = path.relative_to(root).as_posix()
+            if rel in _B4_READERS:
                 continue
-            module = getattr(node, "module", None) or ""
-            names = [alias.name for alias in node.names]
-            if any(m in module or any(m in n for n in names) for m in _B4_NAMES):
-                importers.append(rel)
+            source = path.read_text(encoding="utf-8")
+            if "bridge_actions.bind(" in source or ".link_message(" in source:
+                binders.append(rel)
+            for node in ast.walk(ast.parse(source)):
+                if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                    continue
+                module = getattr(node, "module", None) or ""
+                names = [alias.name for alias in node.names]
+                if any(m in module or any(m in n for n in names) for m in _B4_NAMES):
+                    importers.append(rel)
     assert importers == []
     assert binders == []
     assert actions_mod.BridgeActionRegistry is BridgeActionRegistry

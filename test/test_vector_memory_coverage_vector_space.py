@@ -372,6 +372,8 @@ class TestLessonDedupPaths:
             )
             == "imported"
         )
+        # An import stores no vector; a write compares only against stored ones.
+        store.backfill_missing_embeddings(pace=False)
         result = store.write_lesson(inferred, source="consolidation")
         assert not result
         assert result.outcome is LessonWriteOutcome.DEDUPED
@@ -615,8 +617,8 @@ class TestLessonDedupPaths:
         assert store.write_lesson("Rotate the signing credentials every ninety days")
         assert len(store.get_lessons()) == 2
 
-    def test_lazy_vector_backfill_is_capped_per_call(self, tmp_path: Path) -> None:
-        """Legacy NULL-vector lessons are repaired inline, but only a few per write."""
+    def test_a_lesson_write_embeds_no_stored_lesson(self, tmp_path: Path) -> None:
+        """Legacy NULL-vector lessons keep no vector from a write: the sweep embeds them."""
         legacy = [
             "Alpha zeppelins hover",
             "Beta walruses migrate",
@@ -634,14 +636,14 @@ class TestLessonDedupPaths:
 
         table = {rule: _unit(i) for i, rule in enumerate(legacy)}
         table[new_rule] = _unit(7)
-        store.embed_fn = _TableEmbedder(table)
+        embedder = _TableEmbedder(table)
+        store.embed_fn = embedder
         assert store.write_lesson(new_rule)
 
+        # One embed, for the submitted rule; no stored lesson was embedded or rewritten.
+        assert embedder.calls == [new_rule]
         new_key = _lesson_key(new_rule)
-        backfilled = [
-            e for e in store.get_lessons() if e["key"] != new_key and e["embedding"] is not None
-        ]
-        assert len(backfilled) == vm._MAX_BACKFILLS_PER_CALL
+        assert [e for e in store.get_lessons() if e["key"] != new_key and e["embedding"]] == []
 
     def test_a_vector_from_a_previous_space_is_left_null(self, tmp_path: Path) -> None:
         store = _store(tmp_path)

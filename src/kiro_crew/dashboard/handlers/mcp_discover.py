@@ -18,9 +18,11 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import edition
 from kiro_crew.agent import SharedAgentHomeRefused
 from kiro_crew.dashboard.handlers._shared import rebuild_agent_spec
 from kiro_crew.dashboard.handlers.mcp import (
+    _builtin_server_refusal,
     _find_server_spec_anywhere,
     _get_mcp_lock,
     _is_valid_mcp_name,
@@ -29,6 +31,7 @@ from kiro_crew.dashboard.handlers.mcp import (
     _set_kirocrew_entry,
 )
 from kiro_crew.discovery_featured import featured_entries
+from kiro_crew.extension_governance import extension_install_denied
 from kiro_crew.external_text import redact_external_text as _redact_external
 from kiro_crew.mcp_cleanup import mcp_entry_is_muted
 from kiro_crew.mcp_providers.base import (
@@ -447,6 +450,16 @@ async def official_install_plan(server_id: str) -> tuple[str, dict[str, Any], st
     route answers. Also read by a crewmate's capability request, which writes the same
     spec into the crewmate's own file instead of the global config.
     """
+    if edition.is_lts():
+        # RFC D13: the ``mcp`` term says which servers may be installed, asked by
+        # registry id before the entry is fetched or anything is written.
+        denied = await asyncio.to_thread(extension_install_denied, "mcp", server_id)
+        if denied:
+            raise OfficialPlanError(
+                403,
+                "blocked_by_policy",
+                _redact_external(f"Blocked by governance policy: {denied}"),
+            )
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get("official")
     if provider is None or not provider.is_available():
@@ -456,7 +469,9 @@ async def official_install_plan(server_id: str) -> tuple[str, dict[str, Any], st
             provider.fetch_detail(server_id), timeout=_DETAIL_TIMEOUT_SECS
         )
     except (ProviderUnavailableError, asyncio.TimeoutError) as exc:
-        logger.warning("MCP install fetch failed for %s: %s", server_id, exc)
+        # The id and the error can carry a caller's credential, so only the kind
+        # of failure is logged.
+        logger.warning("MCP install fetch failed (%s)", type(exc).__name__)
         raise OfficialPlanError(
             503, "provider_unavailable", "Provider 'official' is not available"
         ) from None
@@ -487,6 +502,11 @@ async def _install_from_official(request: web.Request, server_id: str) -> web.Re
     # written spec (and filling any env vars) — is the consent step before
     # the process can ever spawn. Install never flips anything on.
     enable_now = False
+    # An install lands disabled, so one under a Kiro Crew server's own name
+    # would mute that server through the store.
+    builtin = await _builtin_server_refusal(name)
+    if builtin is not None:
+        return builtin
 
     async with _get_mcp_lock():
         existing = await asyncio.to_thread(_find_server_spec_anywhere, name)

@@ -3,10 +3,16 @@ import { useQuery } from '@tanstack/react-query'
 import { Clock, AppWindow } from 'lucide-react'
 import type { MessageQuoteRole, MessageQuote } from '../../../chat-core/composer/messageQuote'
 import type { ChatMessage, ChatSlot } from '../../../types'
-import type { CapabilityFix, FreshSessionState, RepairImagesState } from '../ErrorCard'
+import { isAuthRequired, type CapabilityFix, type FreshSessionState, type RepairImagesState } from '../ErrorCard'
+import { isKasSignedOut } from '../gatewayNotice'
+import { signedInNow } from '../../developer/kiroSignInState'
+import { KIRO_SIGN_IN_NOTICE_POLL_MS } from '../../../components/KiroSignInNotice'
+import { useOutageFailure } from '../../../hooks/useOutageFailure'
+import { appPathname } from '../../../lib/basePath'
 import { isHiddenInvisibleAssistantRow } from '../../../utils/invisibleText'
 import { type MessageRenderer, mergeRenderers, type MessageRenderContext, resolveRenderer, threadMidOf } from '../../../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from '../transcriptRenderers'
+import { authRequiredIsNewest } from '../transcriptRenderers'
 import { useStableCallbackProps } from '../useStableCallbackProps'
 import { api, type PlanStepInput } from '../../../api/client'
 import type { FileChangeEntry } from '../../../components/FileChangeChips'
@@ -19,6 +25,7 @@ import { canForkAtWindow } from '../pagination'
 import { messageRowKey, turnLeadKey, msgIdentityKey } from '../ChatPageMessageContent'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import { MessageSearchScope } from '../../../hooks/SearchHighlightContext'
+import { isJumpTarget } from '../../../hooks/JumpRevealContext'
 import { UserMessage, AssistantMessage } from '..'
 import type { TurnStats } from '../AssistantMessage'
 import { warmBriefBodyOf } from '../../../components/chat/WarmBriefCard'
@@ -41,6 +48,7 @@ import type { RefusedPressAction } from './turnActions'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
 import { continuesAuthorRun } from '../../../api/sharedCrewUi'
 import type { SteerRetractAction, SteerRetractRefusalNotice } from '../../../hooks/useSteerRetract'
+import { isToolCallRow } from '../../../lib/toolRowContract'
 
 /** ChatPage's tool rows derive their auto-denied state inside ToolCallLine;
  *  the registry default that reads this set is never reached here. Frozen and
@@ -106,6 +114,10 @@ interface TranscriptRenderingOptions {
   handleFork: (visibleIndex: number, messageId?: string, explicitDirection?: 'head') => Promise<boolean>
   forkDirectionChoice?: boolean
   highlightTs: string | null
+  /** The row a `link` jump landed on; it wears the landing highlight. */
+  landedTs: string | null
+  /** The marked message's own id; only it, among rows sharing the marked `ts`, is marked. */
+  jumpMid: string | null
   selectSessionTab: (key: string) => void
   linkPreviewsOn: boolean
   socialShareOn: boolean
@@ -178,7 +190,7 @@ const restartGatewayFromError = (): Promise<unknown> => api.restartGateway()
 export function useTranscriptRendering({
   embedded, mode, popout, filteredSlots, connected, activeSlot, voiceRecoverySlot, appToolCallIds, mcpAppPanel, messages, messagesRef, slotRunning, toolDisclosure, setToolDisclosureFor, slotState,
   activityOpen, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, chatConfig, activeSlotRemoteBound, automationId, setAutomationOpen, handleArtifactOpen, handleFileOpen,
-  handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress, handleOpenCrewTab,
+  handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, landedTs, jumpMid, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress, handleOpenCrewTab,
   decideRow, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
   openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
   handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,
@@ -214,6 +226,28 @@ export function useTranscriptRendering({
     enabled: !!activeSlot,
     staleTime: 15_000,
   })
+  // Whether Kiro's own sign-in works now, read only while the chat's latest
+  // turn ended on a row whose fix is that sign-in: the row offers Resume once
+  // it does. Keyed by the row, so a read from before it (which can predate the
+  // sign-out) never counts; under the sign-in card's key, so a sign-in there
+  // re-reads it; re-read every minute, for a frame signed in from another
+  // window; and a failed later read withdraws Resume instead of trusting the
+  // kept data. Popout and embed frames (by path) show a failed read on the row
+  // unless it came from a gateway outage; the dashboard window, a chat
+  // embedded in one of its pages included, leaves it to the app-level notice.
+  const newestError = messages.findLast(m => m.role === 'error')
+  const signedOutRow = interrupted && newestError !== undefined && isAuthRequired(newestError) && isKasSignedOut(newestError) && authRequiredIsNewest(messages) ? newestError : undefined
+  const { data: kasStatus, error: kasStatusError, isError: kasStatusFailed, errorUpdatedAt: kasStatusErrorAt, refetch: refetchKasStatus } = useQuery({
+    queryKey: ['kas-login', signedOutRow?.meta?.mid ?? signedOutRow?.ts],
+    queryFn: api.kasLoginStatus,
+    enabled: signedOutRow !== undefined,
+    staleTime: 0,
+    refetchInterval: KIRO_SIGN_IN_NOTICE_POLL_MS,
+  })
+  const kasStatusOutage = useOutageFailure(kasStatusFailed, kasStatusErrorAt, () => refetchKasStatus({ cancelRefetch: false }))
+  const path = appPathname()
+  const framed = path.startsWith('/popout/') || path.startsWith('/embed/')
+  const kiroSignedIn = kasStatus !== undefined && kasStatusError === null && signedInNow(kasStatus)
   // Copy on select is device-only, so it is not in chatConfig (which syncs to
   // other browsers); Settings → Chat writes the same key.
   const [copyOnSelect] = usePersistedBool('mc-chat-copy-on-select', false)
@@ -315,9 +349,8 @@ export function useTranscriptRendering({
   // they replace, plus a few page-only shape entries. Order inside this array
   // is the page's precedence order, unchanged from the if-chain it replaces:
   // the shared dashboard set (sub-agent completion, launch cards, tool,
-  // thinking, file, nudge, recovery inject, workflow completion, error), then
-  // permission, undrawn, hidden invisible assistant, and the conversational
-  // bubble. Roles none of these claim fall to the registry defaults (`undrawn`
+  // thinking, file, nudge, workflow completion, error), then permission,
+  // undrawn, hidden invisible assistant, and the conversational bubble. Roles none of these claim fall to the registry defaults (`undrawn`
   // for queued/system/done and the reasoning roles; `tool_lifecycle` for raw
   // wire shapes the store normalizes away; the stop-event card, the notice
   // card and the MCP OAuth banner -- P5-c deleted the page's copies of those
@@ -356,8 +389,8 @@ export function useTranscriptRendering({
     const msgTimeFull = fmtMessageTimeFull(m.ts)
     return (
       <MessageSearchScope key={key} messageIdx={i}>
-      <div className={`group flex flex-col min-w-0 ${isUser ? 'items-end' : ''} ${m.ts && m.ts === highlightTs ? 'animate-msg-highlight rounded-lg' : ''}`}>
-        <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end' : ''}`}>
+      <div data-jump-target={isJumpTarget(m, landedTs, jumpMid) || isJumpTarget(m, highlightTs, jumpMid) ? m.ts : undefined} className={`group flex flex-col min-w-0 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''} ${isJumpTarget(m, landedTs, jumpMid) ? 'animate-msg-landed rounded-lg' : isJumpTarget(m, highlightTs, jumpMid) ? 'animate-msg-highlight rounded-lg' : ''}`}>
+        <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}`}>
           {isUser ? (
             <UserMessage
               content={m.content}
@@ -435,8 +468,8 @@ export function useTranscriptRendering({
       },
     }
     // The dashboard's shared row set (pages/chat/transcriptRenderers.tsx --
-    // tool lines and launch cards, thinking block, nudge, recovery inject, the
-    // two completion cards, the error card with Continue), wired with this
+    // tool lines and launch cards, thinking block, nudge, the two completion
+    // cards, the error card with Continue), wired with this
     // page's behaviours through its options; ChatPane calls the same factory
     // with fewer. Only rows that are genuinely page-specific follow it. The
     // stop-event card, the notice card and the MCP OAuth banner are NOT among
@@ -472,6 +505,8 @@ export function useTranscriptRendering({
       onPickModel: openModelPickerFromError,
       onOpenDefaultModel: embedded || popout ? undefined : openDefaultModelSetting,
       onOpenSignIn: embedded || popout ? undefined : openKiroSignIn,
+      kiroSignedIn,
+      kiroSignInCheckError: framed && !kasStatusOutage ? kasStatusError : null,
       onOpenTurnLimit: embedded || popout ? undefined : openTurnLimitSetting,
       // The repeat-start remedy (#13791). The restart itself is owner-gated on
       // the server; a refusal comes back as an ApiError the card shows.
@@ -518,7 +553,7 @@ export function useTranscriptRendering({
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleForkWithModel, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleForkWithModel, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, landedTs, jumpMid, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, kiroSignedIn, kasStatusError, kasStatusOutage, framed, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role
@@ -530,6 +565,7 @@ export function useTranscriptRendering({
       running: slotRunning,
       key,
       onFileOpen: handleFileOpen,
+      onArtifactOpen: handleArtifactOpen,
       hideCardOwnedOAuth: connectionsUiOn,
       autoDeniedIds: NO_AUTO_DENIED,
       // The shared row set returns `ctx.row(...)`; the row must be a KEYED
@@ -546,15 +582,15 @@ export function useTranscriptRendering({
     // By reference: the merged list's tail is an SDK default, not the bubble.
     return (entry ?? bubbleRenderer).render(m, ctx)
   // eslint-disable-next-line react-hooks/exhaustive-deps -- messagesRef is a useRef (stable for the page's lifetime) that the rule cannot see across the owner boundary; listing it would also put the flush-volatile `messages` name the dep-hygiene ratchet (TurnBlock.rowMemo.test.tsx) bans back in this array
-  }, [chatPageRenderers, bubbleRenderer, slotRunning, handleFileOpen, connectionsUiOn])
+  }, [chatPageRenderers, bubbleRenderer, slotRunning, handleFileOpen, handleArtifactOpen, connectionsUiOn])
 
   // Hoisted out of the row map so every TurnBlock receives the SAME function
   // identity per render — an inline closure there re-created it per row per
   // render and defeated memo(TurnBlock) even when the turn identity was stable
   // (see createTurnGrouper). It depends on nothing row-specific.
   const renderTurnItem = useCallback((it: TurnItem, _j: number) => {
-    // Skip hidden tool messages (✅/🚫 completions) to avoid empty py-1 wrappers
-    if (it.kind === 'single' && it.msg.role === 'tool' && !it.msg.content.startsWith('🔧')) return null
+    // Skip hidden tool messages (Approved:/Refused: completions) to avoid empty py-1 wrappers
+    if (it.kind === 'single' && it.msg.role === 'tool' && !isToolCallRow(it.msg.content)) return null
     // Same for hidden invisible-only assistant rows: renderMessage draws
     // nothing for them, and the bare wrapper would still stack py-1 spacers,
     // one per quiet monitor cycle.

@@ -1,12 +1,12 @@
 ---
 title: A Dashboard card can send its reply in one click
-status: draft
+status: implemented
 author: chenmingwei23
 created: 2026-10-20
-last-audited: 2026-10-20
-audited-at: 999fcd1292
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: 22493
-implementation-prs: [22379]
+implementation-prs: [33203]
 tracking-issues: [22367]
 supersedes: []
 superseded-by: []
@@ -14,9 +14,14 @@ superseded-by: []
 
 # RFC: A Dashboard Card Can Send Its Reply in One Click
 
-> **Status:** `draft`. Acceptance is requested from a maintainer; the status
-> flips to `accepted` when one records it in section 7 with the date. Nothing is
-> on main. Verified at `999fcd1292`: in
+> **Status:** `implemented`. Maintainer bolichen97 signed the direction in the
+> approving review of [#33203](https://github.com/kirodotdev/KiroCrew/pull/33203)
+> ("an ordinary feature behind a per-crewmate preview, off by default"), which
+> merged on 2026-11-09 after the first attempt,
+> [#22379](https://github.com/kirodotdev/KiroCrew/pull/22379), closed unmerged.
+> On main at `cdb601611f`: `dashboard/card_send.py` and the
+> `kirocrew-dashboard:send` message in the built-in dashboard templates.
+> Section 7 below was not updated when it merged. The baseline, verified at `999fcd1292`: in
 > `website/src/pages/members/CrewDynamicDashboard.tsx`, a page's
 > `kirocrew-dashboard:act` message is validated by `actText` and handed to `onAct`,
 > which `MembersPageSidePanel.tsx` implements as `suggestPaneDraft` plus
@@ -277,7 +282,8 @@ in `card_send.py` pinned by a test:
   is refused;
 - existing sub-agents: steer (a follow-up queues work that runs after the card turn),
   retry, continue;
-- nudge loops: create, update, fire; monitors: create, update, restart.
+- nudge loops: create, update, fire; monitors: create, update, restart;
+- resource subscriptions: subscribe (each later change starts a wake turn).
 
 Stop, cancel, status and read routes are not delegation and stay open. The check is on
 the route, so it holds whether or not the agent spec pre-allows the tool that calls it.

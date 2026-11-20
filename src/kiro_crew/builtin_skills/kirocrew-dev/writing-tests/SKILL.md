@@ -172,10 +172,9 @@ that fakes the default home (`beacon.is_default_home`), the platform or a
 privilege depends on the production check it answers. Change the fake and the
 check in the same pull request: a new check means searching `test/` for the
 tests that reach it, and removing a fake means searching for every assertion that
-still relies on it. Two parallel pull requests, one dropping the `home` fixture's
-default-home fake and one adding a default-home check to `off_offer_due()`, were
-each green alone and red together on every run of `main`. Keep the fake scoped to
-the class that needs it. Full telling:
+still relies on it. Otherwise one pull request that drops a fixture's fake and
+another that adds a check reading it are each green alone and red together on
+`main`. Keep the fake scoped to the class that needs it. Full rule:
 [testing-conventions.md](../../../../../docs/system-specs/common/testing-conventions.md#a-faked-host-condition-changes-with-the-check-that-reads-it).
 
 ### 1c. A child process inherits pytest's CWD, which is the repo root
@@ -302,10 +301,10 @@ cutover path must stub **both** `_run_cmd` and `_dropin_path`.
 ## Rule 2 — Determinism: seven classes, one correct fix each
 
 Never "fix" a flake with a rerun, a longer `sleep`, a weakened assertion, or a skip.
-Full detail and examples: testing-conventions § Determinism. Its short form, twelve
+Full detail and examples: testing-conventions § Determinism. Its short form, thirteen
 MUST rules, is the
 [Determinism contract](../../../../../docs/system-specs/common/testing-conventions.md#determinism-contract-read-this-first)
-at the top of that document, and the checklist below opens with the same twelve.
+at the top of that document, and the checklist below opens with the same thirteen.
 
 The seven classes, the tell that identifies each, and the ONE correct fix for each are in
 [testing-conventions.md](../../../../../docs/system-specs/common/testing-conventions.md)
@@ -336,6 +335,10 @@ Prove a test rather than trusting a green run: 20 repeats at `-n0`, 10 at `-n 4`
 its neighbours, and a shuffled order. A FIX to a flaky test also shows the forced
 condition (a coarse clock, a late executor, a delay at the named seam) red on the parent
 commit and green on the fix (testing-conventions § Proving a determinism fix).
+
+Run that proof on a real machine of the OS the test fails on, the parent first, and put
+it in the PR's `## Real-machine verification` (testing-conventions § Real-machine
+verification).
 
 The sixth class has a tell of its own: **the run ends early, not red.** On Windows a test that
 blocks past `--timeout` is not failed, its xdist worker is killed, and with
@@ -412,6 +415,9 @@ a worker. Ship its floor entry in `test/conftest_resets.py` with the change, not
 your own test file, and find the new state with the `git diff ... | grep` line in
 [testing-conventions.md](../../../../../docs/system-specs/common/testing-conventions.md)
 § 4 Order dependence and shared state ("That rule did not stop #37659").
+A switch or allowlist snapshot (`= True`, `= frozenset()`) that a handler test publishes
+through the real write path is the same leak and needs the same floor entry; that section
+has the second grep line for those spellings (`_cold_source_link_settings`).
 
 ## Rule 3 — Cross-platform: macOS, Linux (x86_64 + arm64), Windows
 
@@ -600,6 +606,8 @@ naming the shape; the contract line holds the detail and its numbers. The helper
       ([class 4](../../../../../docs/system-specs/common/testing-conventions.md#4-order-dependence-and-shared-state))
 - [ ] D12: proven by repeats, a shuffled order and, for a fix, the forced condition
       ([proving a fix](../../../../../docs/system-specs/common/testing-conventions.md#proving-a-determinism-fix))
+- [ ] D13: no dependence on the host's `PATH`; pin the resolver or set `PATH` to `tmp_path` and plant the tool
+      ([what the host lends](../../../../../docs/system-specs/common/testing-conventions.md#what-the-host-lends-the-suite-and-must-not))
 
 ### Specialised traps (search when your test touches X)
 
@@ -631,6 +639,10 @@ naming the shape; the contract line holds the detail and its numbers. The helper
 - [ ] A collection-time probe that can construct a process singleton (`sel()`, a config
       loader) RETIRES it before its temp home is removed — the session floor only resets
       singletons at the first test's setup, and a live one re-creates the deleted path
+- [ ] A constructor-less `AcpSessionHandle` comes from `bare_session_handle()`
+      (`test/session_handle_helpers.py`), never `AcpSessionHandle.__new__` — a bare
+      handle built by hand breaks on merge when a handle method starts reading a new
+      runtime attribute (`test_bare_session_handle_guard.py` enforces it)
 - [ ] Every `MagicMock` attribute the code under test converts or compares (`int()`,
       `len()`, `bool()`, `<`) is set explicitly in the mock helper — `int(MagicMock())`
       is 1, and a drain loop reads that as "one still pending" until its deadline. A
@@ -668,6 +680,10 @@ naming the shape; the contract line holds the detail and its numbers. The helper
       change's own delta, not the amount over (testing-conventions § Merge-safe
       ratchets and counts; the flake-pattern ratchet's K21 refuses a new count pinned
       `==` a literal or a `_BASELINE`/`_TOTAL`-style constant in a tree-scanning test)
+- [ ] No change detector: a test never hand-copies a registry's size or members, a
+      workflow's steps or a module's imports and compares the copy; it derives the
+      set from source, asserts each member's property and that the set is non-empty
+      (testing-conventions § No change-detector tests; K22 / J7 refuse a new pin)
 - [ ] A test whose contract IS a real symlink is listed in `test/requires-real-symlinks.txt`;
       one that needs a directory that resolves elsewhere uses `make_dir_link`
 - [ ] No `AsyncMock` standing in for a synchronous method; every `cancel()` awaited. A

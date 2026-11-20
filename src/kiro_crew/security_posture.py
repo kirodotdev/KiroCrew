@@ -72,11 +72,31 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # only to REFUSE a file whose rules, crons or carried files hold a
         # credential-shaped string. It returns no redacted text.
         "crewmate_bundle.py",
+        # The on-demand channel SDK installer: `redact_url` cuts pip's output and
+        # the index it names to scheme and host before they reach the gateway log
+        # and the install error, so a mirror credential in a URL is never logged.
+        # It is not an agent-output egress path.
+        "sdk_extras.py",
         # Pure helper: `_run_apply_child` redacts the tail of the boot-time
         # `kirocrew update` child's output before it is stored as the armed update's
         # `pending_apply_error`. It emits nothing itself; the dashboard status route
         # that serves that stored text is the egress.
         "update_boot_apply.py",
+        # Gate-side log line: `_log_rule` redacts a lesson rule only for the store's
+        # own INFO lines. The stored rule is unchanged and nothing else is emitted.
+        "learn.py",
+        # The Claude child tool title on the parent session, redacted as the event is
+        # built, like acp/session_handle_dispatch.py above. The event reaches the
+        # browser through the runner's native cards, which are registered sinks.
+        "acp/session_handle_claude_children.py",
+        # The no-tools notice row's agent name, redacted before the row is handed to
+        # `append_and_surface`; the transcript broadcast is the registered sink.
+        "dashboard/agent_no_tools_notice.py",
+        # Pure derivation: `shape_snapshot` takes the redactor as an argument
+        # (`redact`) and applies it to each bound field value before a widget block
+        # reads it; the module emits nothing. The widget routes that serve the
+        # snapshot are the egress.
+        "dashboard/widget_snapshot.py",
         # Pure helper: `redact_note` returns a redacted copy and emits nothing. Its
         # only caller is `notifications/bridge.py`, the registered sink that hands
         # the copy to a transport.
@@ -134,6 +154,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # used solely to name the offending field in the refusal, never emitted as
         # content, so this classifies a name rather than being an output boundary.
         "artifact_store/dashboard_package.py",
+        # Validator only, the same ground: a dashboard package's `widgets` refusal
+        # quotes what the author wrote (an id, a field name, a tone key), so the
+        # refusal sentence is redacted before it is raised. Nothing it returns is
+        # content; it scrubs its own error text, not an egress payload.
+        "artifact_store/dashboard_widgets.py",
         # Drives the backup redaction pass and reports what it did, but applies no
         # redactor itself: the outbound bytes are rewritten in `snapshot_redact.py`,
         # which is the registered sink. What matches the call-site scan here are the
@@ -189,6 +214,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Capture-side as well: redacts thread replies as they are READ from
         # Slack, for the model's fenced thread-replies block. No output of its own.
         "slack/thread_replies.py",
+        # Capture-side as well: redacts plan-canvas comments as they are READ from
+        # Slack (getCanvas), before they reach the session. No output of its own.
+        "slack/code_channels/comments.py",
         # Seam grading only: `_redact_all` is the grader `render_chunks` hands the
         # shared splitter, so a cut cannot leave a key's halves in two adjacent
         # messages. The Weixin answer's display redaction happens before it, at
@@ -241,6 +269,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # (``_redacted_detail``) into its failure, which reaches the operator
         # through the same registered sink and the git routes' own progress feed.
         "platform/release_apply.py",
+        # Pure helper: the CapabilityManager seam redacts a governance refusal's
+        # reason (a caller's package id, an edition's skill names) into the
+        # CapabilityResult it returns. It emits nothing itself; the dashboard
+        # capability handlers that serve the result are the egress.
+        "platform/capability_bound.py",
         # Same shape for a source install: redacts the tail of the npm build log
         # (an install can echo a registry URL carrying credentials) before it
         # becomes the failure message that the update paths show on their
@@ -648,6 +681,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # bound for a third party -- so it is defensive input hygiene, not an egress
         # sink.
         "mcp_tools/browser.py",
+        # Inbound sanitization, same shape: the browser `read` op redacts the whole
+        # page text before paging it, so a credential cannot be split across two
+        # pages and slip past the shim's per-page redaction above.
+        "browser_harness/ops.py",
         # Comparison-only: applies the redactors to compute a match identity and
         # discards the result. The two files being merged can hold the same
         # message with and without redaction, so a raw comparison would keep both
@@ -899,6 +936,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/server_runtime/workflow_startup.py",
         "dashboard/handlers/sessions.py",
         "dashboard/handlers/sessions_parts/history_reads.py",
+        # Search all chats: the same redacted titles and excerpts on the same
+        # dashboard history surface as history_reads.py.
+        "dashboard/handlers/sessions_parts/message_search.py",
         "dashboard/handlers/sessions_parts/summaries.py",
         "dashboard/handlers/sessions_parts/tool_policy.py",
         "dashboard/handlers/sessions_parts/usage_scrape.py",
@@ -1128,6 +1168,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cli_commands_cron.py",
         "cli_commands_eval.py",
         "cli_commands_learn.py",
+        # Operator's own terminal during `kirocrew cron history`: redacts a run's
+        # job name, summary, error and trace exactly as the dashboard history
+        # routes do, before printing the local run store to the operator who owns
+        # it. Same classification as `cli_commands_cron.py` above.
+        "cli_cron_history.py",
         # Slack sub-surfaces whose posted output is covered by the two Slack rows.
         "slack/events.py",
         "slack/events_home_tab.py",

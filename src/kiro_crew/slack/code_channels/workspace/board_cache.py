@@ -200,19 +200,27 @@ class BoardCache:
         except Exception:
             return False
 
-    def running_helpers(self, binding: Any) -> int:
-        """How many of the channel's helper agents the watch last saw running.
+    @staticmethod
+    def _worker_projects(board: Any) -> dict[str, str]:
+        """``slot key -> project`` of each board row's live worker session (on the loop)."""
+        from kiro_crew.slack.code_channels import surface
+        from kiro_crew.slack.code_channels.workspace.service import _find_slot
 
-        The sessions of its last pass (the conductor's workers and the sessions
-        filed in its folder), the channel's own session left out. ``0`` when the
-        board's scope refuses the channel: the reply points at a board it is not
-        shown, and the count would say what that board withholds.
+        state = surface.dashboard_state()
+        slots = {
+            r.session_key: _find_slot(state, r.session_key) for r in getattr(board, "rows", ())
+        }
+        return {k: str(getattr(s, "project", "") or "") for k, s in slots.items() if s is not None}
+
+    def watched_sessions(self, binding: Any) -> set[str]:
+        """The slot keys of the sessions the channel's watch last saw.
+
+        Its helper agents and the sessions filed in its folder, the channel's own
+        session left out. Empty when the board's scope refuses the channel: the
+        Stop reply would count what that board withholds.
         """
         if not self._board_still_admitted(binding):
-            return 0
+            return set()
         key = f"{binding.team_id or ''}:{binding.channel_id or ''}"
         own = str(binding.session_key or "").removeprefix("dashboard_")
-        seen = self._seen.get(key, {})
-        return sum(
-            1 for k, (run, _g) in seen.items() if run and k.removeprefix("dashboard_") != own
-        )
+        return {k.removeprefix("dashboard_") for k in self._seen.get(key, {})} - {own}

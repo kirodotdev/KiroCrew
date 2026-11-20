@@ -397,6 +397,8 @@ class TestAdoptionFollowsTheSecretIdentity:
 def _hidden_paths_of_a_third_party_spawn(app_env, tmp_path, monkeypatch) -> tuple[Path, list[str]]:
     import kiro_crew.apps.backend as bmod
 
+    # The gateway-secret mask names files under the real home; keep the spawn's list in tmp.
+    monkeypatch.setenv("HOME", str(tmp_path))
     key = _seed_key(app_env, monkeypatch)
     seen = _spy_spawn(bmod, monkeypatch)
     _install_plain(tmp_path, _APP)

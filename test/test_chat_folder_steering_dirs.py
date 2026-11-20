@@ -60,7 +60,7 @@ def _slot(mode: str = "chat", agent: str = "") -> Any:
     "context_is_new,provider_has_history,needs_reinjection,expected",
     [
         (True, False, False, True),  # fresh provider session
-        (True, True, False, False),  # resumed: original injection already held
+        (True, True, False, True),  # resumed: a compacted history lost it
         (False, False, True, True),  # reinjection after compaction
         (False, False, False, False),  # warm template turn
     ],
@@ -73,7 +73,6 @@ def test_template_chat_resolves_only_on_session_start_turns(
             _slot(),
             _Exec(None),
             context_is_new=context_is_new,
-            provider_has_history=provider_has_history,
             needs_reinjection=needs_reinjection,
         )
         is expected
@@ -89,7 +88,6 @@ def test_warm_v2_member_turn_still_resolves_folder_steering():
             _slot("member", "eng-crew"),
             _Exec("m-123"),
             context_is_new=False,
-            provider_has_history=True,
             needs_reinjection=False,
         )
         is True
@@ -111,7 +109,6 @@ def test_warm_turn_without_a_v2_member_envelope_does_not_resolve(slot, execution
             slot,
             execution,
             context_is_new=False,
-            provider_has_history=True,
             needs_reinjection=False,
         )
         is False

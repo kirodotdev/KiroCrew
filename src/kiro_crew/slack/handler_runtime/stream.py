@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         _THINKING_PLACEHOLDER,
         ACTIVATION_REVIEW,
         DELIVERY_DEBT_NOTICE,
+        LINE_BREAKS,
         OPTIONS_RE_LINE,
         SLACK_MSG_LIMIT,
         TRUNCATION_NOTICE,
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
         ends_plain_sentence,
         is_control_tag_tail,
         is_wait_identity,
+        line_start,
         logger,
         redact,
         redact_credentials,
@@ -141,7 +143,7 @@ def _filter_options_brackets(text: str, bracket_hold: str, stream_buffer: str) -
                     stream_buffer += bracket_hold
                 bracket_hold = ""
                 continue
-            elif ch == "\n":
+            elif ch in LINE_BREAKS:
                 # A head still open at its line's end: the line grammar decides it,
                 # dropping a marker it accepts (a lookalike closer) and releasing
                 # every other byte; then the break is judged on its own.
@@ -173,7 +175,7 @@ def _settle_options_head(stream_buffer: str, head: str) -> str:
     cleaned = OPTIONS_RE_LINE.sub("", head)
     if cleaned != head:
         return cleaned
-    line = stream_buffer[stream_buffer.rfind("\n") + 1 :]
+    line = stream_buffer[line_start(stream_buffer, len(stream_buffer)) :]
     if line and OPTIONS_RE_LINE.search(line + head) is not None:
         return ""
     return head

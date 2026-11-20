@@ -202,8 +202,8 @@ class TestCronListVerbose:
 
         assert out.startswith("2 cron job(s): 2 active, 0 paused\n")
         # Legacy bullet/arrow + [kind] tag preserved.
-        assert "• alpha (✅ active) [agent]" in out
-        assert "• beta (✅ active) [agent]" in out
+        assert "• alpha (active) [agent]" in out
+        assert "• beta (active) [agent]" in out
         assert "  → line one\nline two" in out
         assert "  → single line" in out
 
@@ -214,7 +214,7 @@ class TestCronListVerbose:
         job.last_error = "boom!"
         svc._save()
         out = _call_tool_inner("cron_list", {"verbose": True})
-        assert "⚠️ last error: boom!" in out
+        assert "Warning: last error: boom!" in out
 
     def test_verbose_includes_last_result_line(self, home):
         svc = CronService(base_dir=home)

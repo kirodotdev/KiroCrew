@@ -5,7 +5,15 @@
  * actions.
  */
 
-import { normalizeInstalledApps, normalizeInstalledApp } from '../../components/appstore/types'
+import {
+  normalizeInstalledApps,
+  normalizeInstalledApp,
+  type MarketInstallConfirm,
+  type MarketListingResponse,
+  type MarketListingsResponse,
+  type MarketRegistriesResponse,
+  type MarketSignInView,
+} from '../../components/appstore/types'
 import { i18nT } from '../../i18n/t'
 import { SESSION_CONTROL_STATUS_PATH_RE } from '../../lib/sessionControlStatusPath'
 import { ApiError, toApiError } from '../apiError'
@@ -102,7 +110,7 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
     setAppBotGrants: (name: string, bots: string[]) => put('/api/apps/' + encodeURIComponent(name) + '/bot-grants', { bots }).then(j) as Promise<AppBotGrants>,
     installApp: (source: string) => post('/api/apps/install', { source }).then(j),
     // grantsConsent names the staged entries the owner was shown; only those are approved.
-    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; bots?: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[]; workerAutoApprove?: string[]; reachableByUserSessions?: string[]; desktopCapabilities?: string[]; frameSources?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {
+    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; bots?: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[]; workerAutoApprove?: string[]; reachableByUserSessions?: string[]; desktopCapabilities?: string[]; frameSources?: string[]; browserSites?: string[]; browser?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {
       sessionApprovalConsent,
       // Only a consent whose disclosure named member threads says so; the
       // server refuses a consent that omits a scope the live manifest declares.
@@ -212,6 +220,20 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
         reader.releaseLock()
       }
     },
+    // Kiro Space stores as App Store sources (`apps/routes_market_registry.py`).
+    // The open-source build has no store provider: the first answers `offers: []`.
+    getMarketRegistries: () => fetch('/api/apps/market/registries').then(j) as Promise<MarketRegistriesResponse>,
+    setMarketRegistries: (added: string[]) => put('/api/apps/market/registries', { added }).then(j) as Promise<{ ok: boolean; added: string[] }>,
+    marketSignIn: (id: string) => post('/api/apps/market/registries/' + encodeURIComponent(id) + '/signin', {}).then(j) as Promise<MarketSignInView>,
+    marketSignOut: (id: string) => post('/api/apps/market/registries/' + encodeURIComponent(id) + '/signout', {}).then(j) as Promise<MarketSignInView>,
+    listMarketListings: (registry: string) => fetch('/api/apps/market/listings?' + new URLSearchParams({ registry })).then(j) as Promise<MarketListingsResponse>,
+    getMarketListing: (registry: string, ref: string) => fetch('/api/apps/market/listing?' + new URLSearchParams({ registry, ref })).then(j) as Promise<MarketListingResponse>,
+    prepareMarketInstall: (ref: string, account?: string, registry?: string) => post('/api/apps/market/install', {
+      ref,
+      ...(account === undefined ? {} : { account }),
+      ...(registry === undefined ? {} : { registry }),
+    }).then(j) as Promise<{ ok: boolean; stagingId: string; confirm: MarketInstallConfirm }>,
+    confirmMarketInstall: (stagingId: string, confirmed: boolean) => post('/api/apps/market/install/confirm', { stagingId, confirmed }).then(j) as Promise<{ ok: boolean; name?: string; discarded?: boolean }>,
     registerApp: (body: object) => post('/api/apps/register', body).then(j),
   }
 

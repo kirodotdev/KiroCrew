@@ -14,20 +14,20 @@ vi.mock('../../api/client', async (importOriginal) => {
       onboardingImportScan: vi.fn(),
       onboardingImportApply: vi.fn(),
       onboardingImportState: vi.fn(),
+      kirocrewConfig: vi.fn(),
+      patchConfig: vi.fn(),
     },
   }
 })
 
 const markOnboarded = vi.fn()
 const markImportOnboarded = vi.fn()
-const markPrivacyAcked = vi.fn()
 
-/** The real first-run host, with the completion flags a brand-new install reads. */
-function Host() {
+/** The real first-run host, with the given completion flags. */
+function Host({ importOnboarded = false }: { importOnboarded?: boolean }) {
   const firstRun = useFirstRunChapters({
     onboarded: false,
-    importOnboarded: false,
-    privacyAcked: false,
+    importOnboarded,
     themeBootReady: true,
     markOnboarded,
   })
@@ -35,10 +35,8 @@ function Host() {
     <FirstRunChapters
       firstRun={firstRun}
       onboarded={false}
-      privacyAcked={false}
       markOnboarded={markOnboarded}
       markImportOnboarded={markImportOnboarded}
-      markPrivacyAcked={markPrivacyAcked}
     />
   )
 }
@@ -63,10 +61,9 @@ describe('first run: Ask the agent from the importer', () => {
     await waitFor(() => {
       expect(screen.queryByRole('heading', { name: 'We could not scan agent setup' })).not.toBeInTheDocument()
     })
-    // Nothing was imported or skipped, so no chapter is marked done and the Privacy
-    // chapter, which follows a finished import, does not open over the chat.
+    // Nothing was imported or skipped, so no chapter is marked done and the tour,
+    // which follows a finished import, does not open over the chat.
     expect(markImportOnboarded).not.toHaveBeenCalled()
-    expect(markPrivacyAcked).not.toHaveBeenCalled()
     expect(markOnboarded).not.toHaveBeenCalled()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 
@@ -77,47 +74,18 @@ describe('first run: Ask the agent from the importer', () => {
   })
 })
 
-/** First run with Import done and Privacy due, whose ack write always fails. */
-function PrivacyDueHost() {
-  const firstRun = useFirstRunChapters({
-    onboarded: false,
-    importOnboarded: true,
-    privacyAcked: false,
-    themeBootReady: true,
-    markOnboarded,
-  })
-  return (
-    <FirstRunChapters
-      firstRun={firstRun}
-      onboarded={false}
-      privacyAcked={false}
-      markOnboarded={markOnboarded}
-      markImportOnboarded={markImportOnboarded}
-      markPrivacyAcked={markPrivacyAcked}
-    />
-  )
-}
-
-describe('first run: closing Privacy after a failed save', () => {
+describe('first run: Import setup leads straight to Customize', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     localStorage.clear()
-    markPrivacyAcked.mockRejectedValue(new Error('403'))
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ dashboard: { user_role: '', user_technical_level: '' } } as never)
+    vi.mocked(api.patchConfig).mockResolvedValue({} as never)
   })
 
-  it('hides it without finishing first run, and the next load shows it again', async () => {
-    const first = renderWithProviders(<PrivacyDueHost />)
-    // The status reads are not mocked here, so the chapter shows its unknown-status form.
-    await userEvent.click(await screen.findByRole('button', { name: 'Continue without changes' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Close' }))
-
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument())
+  it('opens the tour once import is done, with no Privacy chapter before it', async () => {
+    renderWithProviders(<Host importOnboarded />)
+    expect(await screen.findByText('Pick your look')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument()
     expect(markOnboarded).not.toHaveBeenCalled()
-    expect(markPrivacyAcked).toHaveBeenCalledTimes(1)
-
-    // Nothing was recorded, so a fresh page load derives the chapter again.
-    first.unmount()
-    renderWithProviders(<PrivacyDueHost />)
-    expect(await screen.findByRole('dialog', { name: 'Privacy' })).toBeInTheDocument()
   })
 })

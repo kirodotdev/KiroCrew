@@ -38,13 +38,18 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.sections import KiroCrewAgentConfig
 from kiro_crew.dashboard.chat_folders_paths import _validate_project_dir
+from kiro_crew.dashboard.conditional_get import conditional_json_response
 from kiro_crew.dashboard.handlers._shared import _read_session_key, requesting_slot_project
 from kiro_crew.dashboard.handlers.agents import (
     _agent_roster_row,
     _name_would_be_masked,
     _roster_mask,
 )
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.crew_board_flight import BoardAnswer, shared_board
+from kiro_crew.dashboard.handlers.source_providers import (
+    is_host_owner_dashboard_request,
+    is_owner_dashboard_request,
+)
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
 from kiro_crew.executors import discovery_executor
 from kiro_crew.members import is_member_session_key
@@ -300,6 +305,68 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
     named_project = (
         request.rel_url.query.get("project_path", "") if owner and not session_key else ""
     )
+    scope = project_dir
+    if named_project:
+        # Screened here, once per request, so a refused path is audited for every
+        # caller that named it, not only for the one whose build a burst shared.
+        scope = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), _named_project_scope, named_project
+        )
+    # Unmasked values are the machine owner's alone: a Shared Crew teammate clears
+    # the owner gate above but reads masked, as every redaction seam treats them.
+    redact = not (owner and is_host_owner_dashboard_request(request))
+    # Single flight (see crew_board_flight): reads that arrive together share one
+    # build that started after each of them arrived; nothing is kept afterwards, so
+    # a read still sees every change made before it. The key holds everything the
+    # answer depends on besides the config and the disk: the chat (its harness pin),
+    # the directory its project agents come from, and who is reading.
+    answer = await shared_board(
+        "agents.catalog",
+        repr((id(state), session_key, str(scope or ""), owner, redact)),
+        lambda: _build_catalog(session_key, scope, owner, redact),
+    )
+    if answer.status != 200:
+        return web.Response(body=answer.body, status=answer.status, content_type="application/json")
+    return await conditional_json_response(request, answer.body)
+
+
+def _named_project_scope(named_project: str) -> Path | None:
+    """The directory a ``?project_path=`` names, or ``None`` when it may not be read.
+
+    The shared screen runs first: on Windows `realpath` on a UNC path IS the
+    outbound SMB probe, so the folder validator only ever sees the screened,
+    already local, canonical path.
+    """
+    screened = hooks.validate_file_path(named_project)
+    resolved = ""
+    if not screened:
+        # The screen fences sensitive paths itself, so this is where
+        # a sensitive request is refused: audit it here.
+        sel().log_api_access(
+            caller="dashboard",
+            operation="agents.catalog",
+            outcome="denied",
+            resources=named_project,
+            error="refused by path screen",
+        )
+    elif os.path.isabs(os.path.expanduser(named_project)):
+        resolved, _error = _validate_project_dir(screened)
+    return Path(resolved) if resolved else None
+
+
+def _body(response: web.Response) -> bytes:
+    """*response*'s JSON body as bytes, for a shareable (status, bytes) pair."""
+    return bytes(response.body or b"")  # type: ignore[arg-type]
+
+
+async def _build_catalog(
+    session_key: str, scope: Path | None, owner: bool, redact: bool
+) -> BoardAnswer:
+    """One build of the catalog answer.
+
+    Takes plain values, never the request: the build is shared and outlives the
+    caller that started it.
+    """
     try:
         # The picker's fetch is the one moment, after boot, that an agent removed
         # OUTSIDE the gateway (a package uninstall, a hand-deleted file) is
@@ -312,26 +379,6 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
         # still noticed on the first fetch after it.
         def _refreshed_templates() -> tuple[list[AgentInfo], frozenset[str]]:
             _refresh_for_catalog(owner=owner)
-            scope = project_dir
-            if named_project:
-                # The shared screen runs first: on Windows `realpath` on a UNC
-                # path IS the outbound SMB probe, so the folder validator only
-                # ever sees the screened, already local, canonical path.
-                screened = hooks.validate_file_path(named_project)
-                resolved = ""
-                if not screened:
-                    # The screen fences sensitive paths itself, so this is where
-                    # a sensitive request is refused: audit it here.
-                    sel().log_api_access(
-                        caller="dashboard",
-                        operation="agents.catalog",
-                        outcome="denied",
-                        resources=named_project,
-                        error="refused by path screen",
-                    )
-                elif os.path.isabs(os.path.expanduser(named_project)):
-                    resolved, _error = _validate_project_dir(screened)
-                scope = Path(resolved) if resolved else None
             discovered = list_agents(project_dir=scope)
             # From the WHOLE scan, not the template choices: a crewmate may be
             # bound to an agent the template list withholds.
@@ -345,15 +392,19 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
         own_setup = await asyncio.to_thread(_own_setup_by_name, config)
     except Exception:
         logger.warning("Agent execution catalog could not be loaded", exc_info=True)
-        return web.json_response(
-            {
-                "error": "Agent choices could not be loaded. Retry the catalog.",
-                "code": "agent_catalog_unavailable",
-            },
-            status=503,
+        return BoardAnswer(
+            503,
+            _body(
+                web.json_response(
+                    {
+                        "error": "Agent choices could not be loaded. Retry the catalog.",
+                        "code": "agent_catalog_unavailable",
+                    },
+                    status=503,
+                )
+            ),
         )
 
-    redact = not owner
     rows = []
     for name, member in config.agents.items():
         row = _agent_roster_row(name, "global", member, redact=redact)
@@ -378,31 +429,30 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
     # roster's default crewmate alias. The picker's "default for new sessions"
     # row reads and writes this one.
     template = default_template(config)
-    return web.json_response(
-        {
-            "agents": rows,
-            "default_agent": _roster_mask(template) if redact else template,
-            # What a picker needs to badge a ``markdown_only`` row it cannot run:
-            # the harness this chat (or, with no chat, a new session) runs, the
-            # harnesses that refuse such an agent (the badge's condition), and
-            # the ones that load it (the badge's remedy). None names a backend
-            # here; all come from the registry and harness facts.
-            "session_backend": _session_backend(config, session_key),
-            "markdown_refused_backends": _markdown_refused_backends(),
-            "markdown_spec_backends": sorted(
-                backend_to_stored(b) for b in ACP_BACKENDS_MARKDOWN_AGENT_SPECS
-            ),
-            # Crew Mode: the conductor a chat switches to when it is turned on
-            # (`agent.crew_mode_agent`), and the whole conductor family, which a
-            # normal chat's agent picker leaves out so Crew Mode is the way in.
-            "crew_mode_agent": (
-                _roster_mask(crew_mode.crew_mode_agent(config))
-                if redact
-                else crew_mode.crew_mode_agent(config)
-            ),
-            "conductor_agents": [
-                _roster_mask(agent) if redact else agent
-                for agent in sorted(crew_mode.conductor_agents(config))
-            ],
-        }
-    )
+    payload = {
+        "agents": rows,
+        "default_agent": _roster_mask(template) if redact else template,
+        # What a picker needs to badge a ``markdown_only`` row it cannot run:
+        # the harness this chat (or, with no chat, a new session) runs, the
+        # harnesses that refuse such an agent (the badge's condition), and
+        # the ones that load it (the badge's remedy). None names a backend
+        # here; all come from the registry and harness facts.
+        "session_backend": _session_backend(config, session_key),
+        "markdown_refused_backends": _markdown_refused_backends(),
+        "markdown_spec_backends": sorted(
+            backend_to_stored(b) for b in ACP_BACKENDS_MARKDOWN_AGENT_SPECS
+        ),
+        # Crew Mode: the conductor a chat switches to when it is turned on
+        # (`agent.crew_mode_agent`), and the whole conductor family, which a
+        # normal chat's agent picker leaves out so Crew Mode is the way in.
+        "crew_mode_agent": (
+            _roster_mask(crew_mode.crew_mode_agent(config))
+            if redact
+            else crew_mode.crew_mode_agent(config)
+        ),
+        "conductor_agents": [
+            _roster_mask(agent) if redact else agent
+            for agent in sorted(crew_mode.conductor_agents(config))
+        ],
+    }
+    return BoardAnswer(200, _body(web.json_response(payload)))

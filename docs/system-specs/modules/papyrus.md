@@ -918,10 +918,8 @@ imports it nor names it where it could act on it:
 - **Backend.** No module outside `src/kiro_crew/apps/builtins/` imports
   `kiro_crew.apps.builtins.papyrus`. The gateway reaches the app only the way it
   reaches every built-in: by name through `BUILTIN_NAMES`, importing the package and
-  calling its `register_routes` at boot. The `app.task.completed` counter labels an
-  app by whether it is a shipped built-in (`metrics.feature_usage.OFFICIAL_APP_IDS`
-  is `BUILTIN_NAMES`), so the core holds no Papyrus row; the app passes its own id to
-  `record_app_task`.
+  calling its `register_routes` at boot. The app records no metric of its own;
+  `kirocrew.app.task.completed`, which counted its compiles, is retired.
 - **Frontend.** The SPA imports the app's UI only through the `/papyrus` row of
   `website/src/apps/builtinRegistry.ts`; the app's tests live in its own directory.
 - **What still names the app, and why.** The five `papyrus-*` skills ship in

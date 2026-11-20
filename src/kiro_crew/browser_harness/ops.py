@@ -35,6 +35,7 @@ pure function of ``(op, args, ctx)``.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 import json
 import logging
@@ -51,6 +52,7 @@ from kiro_crew.browser_harness.budgets import CHANGE_AFTER_S, CHANGE_BEFORE_S
 from kiro_crew.browser_harness.frames import FRAME_READ_CAP, split_frame_ref
 from kiro_crew.browser_snapshots import SNAPSHOT_DIR_NAME
 from kiro_crew.browser_snapshots import prune as prune_snapshots
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +64,12 @@ OPS: tuple[str, ...] = (
     "navigate",
     "back",
     "snapshot",
+    "read",
     "click",
     "drag",
     "scroll",
     "type",
+    "paste",
     "press_key",
     "hover",
     "select_option",
@@ -147,17 +151,22 @@ CHANGE_READ_S = 3.0
 _CHANGES_LEFT_OUT = "`changes` left out: the page could not be read around the action"
 SCROLL_DEFAULT_PX = 300
 TEXT_CAP = 20_000
+#: Most steps one ``type {steps}`` call runs: the whole list stays one op inside
+#: the short op budget (``budgets.OP_TIMEOUT_S``).
+STEPS_CAP = 50
 _URL_MAX = 4096
 
 _SleepFn = Callable[[float], Awaitable[None]]
 
 
 def _load_walker() -> str:
-    """The walker as one JavaScript expression: the file minus its leading comments."""
-    lines = WALKER_PATH.read_text(encoding="utf-8").splitlines()
-    while lines and (not lines[0].strip() or lines[0].lstrip().startswith("//")):
-        lines.pop(0)
-    return "\n".join(lines).strip()
+    """The walker as one JavaScript expression, without its comment lines or indents.
+
+    Every page call resends it as ONE line to the Harness daemon, which reads at most
+    64 KiB per line (``test_browser_walker_ipc_line.py`` pins the margin).
+    """
+    lines = (line.strip() for line in WALKER_PATH.read_text(encoding="utf-8").splitlines())
+    return "\n".join(line for line in lines if line and not line.startswith("//"))
 
 
 # Read once per process: the file ships in the package and never changes at runtime.
@@ -352,11 +361,15 @@ def _frame_url_allowed(ctx: OpContext, url: str) -> bool:
 async def _refuse_current_url(ctx: OpContext) -> dict[str, Any] | None:
     """Judge the active tab before reading it, including a link's landing."""
     tab = await ctx.helper("current_tab")
-    url = str(tab.get("url") or "") if isinstance(tab, dict) else ""
-    # The gateway's empty recovery/new tab has no page content to expose.
-    if url == "about:blank":
+    reported = tab.get("url") if isinstance(tab, dict) else None
+    # The gateway's empty recovery/new tab has no page content to expose, and a
+    # popup that has not committed its first document yet reports url "": sending
+    # it to about:blank would cancel the navigation its opener started. Only those
+    # exact strings pass; a malformed answer (no dict, no url, a non-string) is
+    # still judged, and refused.
+    if reported in ("about:blank", ""):
         return None
-    return await _refuse_committed_url(ctx, url)
+    return await _refuse_committed_url(ctx, str(reported or ""))
 
 
 #: The walker counts the screenshot guards read: fields the person filled through a
@@ -690,7 +703,8 @@ async def _refuse_committed_url(ctx: OpContext, url: str) -> dict[str, Any] | No
     return refusal(
         "redirect_refused",
         f"the page redirected to {url[:120]}, which is not a public http(s) URL or a "
-        "loopback origin the user listed; the tab was moved to about:blank",
+        "loopback origin the user listed (or, for an app's own session, not one of the "
+        "pages the app may browse); the tab was moved to about:blank",
     )
 
 
@@ -805,6 +819,90 @@ async def _snapshot(ctx: OpContext, _args: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+#: The longest ``content`` one ``read`` returns. Below :data:`TEXT_CAP` so the
+#: header the tool shim puts in front of it still fits the shim's 20,000 cap.
+READ_CONTENT_CAP = TEXT_CAP - 2_000
+#: How far back a truncated page is scanned for whitespace; longer than any
+#: credential the redactor matches.
+READ_CUT_SCAN = 512
+
+
+async def _read(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+    if args.get("format", "text") != "text":
+        return refusal("bad_format", "only text is supported")
+    offset = args.get("offset", 0)
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        return refusal("bad_offset", "offset must be a whole number of characters, 0 or more")
+    ref = args.get("ref")
+    if ref is not None and not _is_ref(ref):
+        return refusal("bad_ref", f"not a valid ref: {ref!r}; call snapshot first")
+    if split_frame_ref(ref) is not None:
+        return refusal(
+            "bad_ref",
+            f"read cannot be scoped to {ref}, an element of a cross-origin frame; "
+            "read the page without a ref",
+        )
+    await _step(ctx, "Read the page text")
+    data = await _page(ctx, "read", ref)
+    if isinstance(data, dict) and data.get("code") == "ref_stale":
+        return refusal("ref_stale", f"ref {ref} is not on the current page; re-snapshot")
+    if not isinstance(data, dict) or not isinstance(data.get("content"), str):
+        return refusal("read_error", "the page returned no content")
+    # Redacted and fence-neutralized whole, before paging: a token split across
+    # two pages would match in neither, and neutralizing after paging grows a
+    # page past the shim's cap, which then drops text no `next_offset` covers.
+    # Imported here: the MCP server loads this module before it answers the tool
+    # list, and test_mcp_listing_import_budget caps what that list may load.
+    from kiro_crew.context_assembly.markers import _neutralize_fence_markers
+
+    content = data["content"]
+    if data.get("truncated"):
+        # The walker may cut a credential mid-word. Withhold that word before
+        # redaction, but scan back at most READ_CUT_SCAN characters: a page with
+        # no whitespace near its end loses only that tail, not all its text.
+        floor = max(0, len(content) - READ_CUT_SCAN)
+        end = len(content)
+        while end > floor and not content[end - 1].isspace():
+            end -= 1
+        content = content[:end]
+    content, _ = redact_exfiltration_urls(content)
+    content, _ = redact_credentials(content)
+    content = _neutralize_fence_markers(content)
+    total = len(content)
+    if offset > total:
+        return refusal("bad_offset", f"offset {offset} is past the end ({total} characters)")
+    page = content[offset : offset + READ_CONTENT_CAP]
+    out: dict[str, Any] = {
+        "ok": True,
+        "url": str(data.get("url", "")),
+        "title": str(data.get("title", "")),
+        "content": page,
+        "offset": offset,
+        "total": total,
+        "digest": hashlib.sha256(content.encode("utf-8", "surrogatepass")).hexdigest()[:12],
+    }
+    if offset + len(page) < total:
+        out["next_offset"] = offset + len(page)
+    if data.get("truncated"):
+        out["truncated"] = True
+    counts = [data.get("skippedFrames"), data.get("deepRoots")]
+    skipped, deep = (c if isinstance(c, int) and not isinstance(c, bool) else 0 for c in counts)
+    notes = []
+    if skipped > 0:
+        notes.append(
+            f"{skipped} cross-origin frame(s) or embedded document(s) were not read; "
+            "their text is not included"
+        )
+    if deep > 0:
+        notes.append(
+            f"{deep} shadow root(s) or frame(s) nested past the read depth were not read; "
+            "read a ref inside them"
+        )
+    if notes:
+        out["note"] = "; ".join(notes)
+    return out
+
+
 async def _click(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     point = await _point(ctx, args, "ref", "x", "y")
     if isinstance(point, dict):
@@ -863,33 +961,66 @@ async def _scroll(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "x": x, "y": y, "dx": dx, "dy": dy}
 
 
+async def _focus_ref(ctx: OpContext, ref: Any) -> dict[str, Any] | None:
+    """Focus *ref* before typing; the refusal, or ``None`` once it holds focus."""
+    if not _is_ref(ref):
+        return refusal("bad_ref", f"not a valid ref: {ref!r}; call snapshot first")
+    focused = await _page(ctx, "focus", ref)
+    if not isinstance(focused, dict) or not focused.get("ok"):
+        code = focused.get("code") if isinstance(focused, dict) else None
+        if code == "password_field":
+            return _password_refusal(ref)
+        if code == "asked_field":
+            return _asked_refusal(ref)
+        return refusal("ref_stale", f"ref {ref} is not on the current page; re-snapshot")
+    if not focused.get("focused"):
+        why = " (disabled)" if focused.get("disabled") else ""
+        why += " (readonly)" if focused.get("readOnly") else ""
+        if focused.get("activeTag"):
+            why += f"; focus stayed on <{focused['activeTag']}>"
+        return refusal(
+            "not_focusable",
+            f"ref {ref} did not take focus{why} -- refusing to type into another field",
+        )
+    return None
+
+
+def _known_key(key: Any) -> bool:
+    """*key* is one ``press_key`` presses: ``Space``, a named key, or one character."""
+    return isinstance(key, str) and (key == "Space" or key in _NAMED_KEYS or len(key) == 1)
+
+
 async def _type(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+    if args.get("steps") is not None:
+        # ``browser_harness.type_steps``, resolved at call time: it imports this module.
+        module = importlib.import_module("kiro_crew.browser_harness.type_steps")
+        return await module.run(ctx, args)  # type: ignore[no-any-return]
     text = args.get("text")
     if not isinstance(text, str):
         return refusal("bad_text", "type needs a `text` string")
     if len(text) > TEXT_CAP:
         return refusal("bad_text", f"text longer than {TEXT_CAP} characters")
     ref = args.get("ref")
+    field = await _focus_field(ctx, ref)
+    if not field["ok"]:
+        return field
+    await _step(ctx, f"Type into {ref or field['tag'] or 'the field'}")
+    await ctx.helper("type_text", text=text)
+    submitted = bool(args.get("submit"))
+    if submitted:
+        await ctx.helper("press_key", key="Enter", modifiers=0)
+    return {"ok": True, "ref": ref, "chars": len(text), "submitted": submitted}
+
+
+async def _focus_field(ctx: OpContext, ref: Any) -> dict[str, Any]:
+    """Focus *ref* when given, then judge whatever holds focus: where input lands.
+
+    Answers ``{"ok": True, "tag"}`` or the refusal ``type`` and ``paste`` share.
+    """
     if ref is not None:
-        if not _is_ref(ref):
-            return refusal("bad_ref", f"not a valid ref: {ref!r}; call snapshot first")
-        focused = await _page(ctx, "focus", ref)
-        if not isinstance(focused, dict) or not focused.get("ok"):
-            code = focused.get("code") if isinstance(focused, dict) else None
-            if code == "password_field":
-                return _password_refusal(ref)
-            if code == "asked_field":
-                return _asked_refusal(ref)
-            return refusal("ref_stale", f"ref {ref} is not on the current page; re-snapshot")
-        if not focused.get("focused"):
-            why = " (disabled)" if focused.get("disabled") else ""
-            why += " (readonly)" if focused.get("readOnly") else ""
-            if focused.get("activeTag"):
-                why += f"; focus stayed on <{focused['activeTag']}>"
-            return refusal(
-                "not_focusable",
-                f"ref {ref} did not take focus{why} -- refusing to type into another field",
-            )
+        refused = await _focus_ref(ctx, ref)
+        if refused is not None:
+            return refused
     # Whatever holds focus now is where the text lands: never a password box.
     active = await _page(ctx, "activeField")
     if not isinstance(active, dict) or not active.get("focused"):
@@ -900,12 +1031,45 @@ async def _type(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
         return _password_refusal(ref)
     if active.get("asked"):
         return _asked_refusal(ref)
-    await _step(ctx, f"Type into {ref or active.get('tag') or 'the field'}")
-    await ctx.helper("type_text", text=text)
-    submitted = bool(args.get("submit"))
-    if submitted:
-        await ctx.helper("press_key", key="Enter", modifiers=0)
-    return {"ok": True, "ref": ref, "chars": len(text), "submitted": submitted}
+    return {"ok": True, "tag": active.get("tag") or ""}
+
+
+async def _paste(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+    text, html = args.get("text"), args.get("html")
+    if not isinstance(text, str):
+        return refusal("bad_text", "paste needs a `text` string (the plain version)")
+    if html is not None and not isinstance(html, str):
+        return refusal("bad_html", "`html` must be a string")
+    if len(text) > TEXT_CAP:
+        return refusal("bad_text", f"text longer than {TEXT_CAP} characters")
+    if len(html or "") > TEXT_CAP:
+        return refusal("bad_html", f"html longer than {TEXT_CAP} characters")
+    ref = args.get("ref")
+    field = await _focus_field(ctx, ref)
+    if not field["ok"]:
+        return field
+    # The walker hands both to the page as a paste event; the clipboard is never written.
+    pasted = await _page(ctx, "paste", ref, html or "", text)
+    if not isinstance(pasted, dict) or not pasted.get("ok"):
+        if isinstance(pasted, dict) and pasted.get("code") == "focus_in_frame":
+            return refusal(
+                "focus_in_frame",
+                "focus is inside a cross-origin frame; pass the field's `ref` from the "
+                "frame (f<n>e<n>) so the paste lands there",
+            )
+        return refusal("ref_stale", f"{ref or 'the focused field'} left the page; re-snapshot")
+    await _step(ctx, f"Paste into {ref or field['tag'] or 'the field'}")
+    handled = bool(pasted.get("handled"))
+    if not handled:
+        # A script's paste event inserts nothing by itself, so a field whose page did
+        # not take it gets the plain text the way ``type`` puts it there. The page's
+        # handler may have moved focus, so the ref is focused again (or, with none,
+        # whatever holds focus is judged) before the text lands.
+        field = await _focus_field(ctx, ref)
+        if not field["ok"]:
+            return field
+        await ctx.helper("type_text", text=text)
+    return {"ok": True, "ref": ref, "chars": len(text), "handled": handled}
 
 
 def _password_refusal(ref: Any) -> dict[str, Any]:
@@ -941,10 +1105,10 @@ async def _press_key(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     key = args.get("key")
     if not isinstance(key, str) or not key:
         return refusal("bad_key", "press_key needs a `key`")
+    if not _known_key(key):
+        return refusal("bad_key", f"unknown key: {key!r} (named keys or a single character)")
     if key == "Space":
         key = " "
-    if key not in _NAMED_KEYS and len(key) != 1:
-        return refusal("bad_key", f"unknown key: {key!r} (named keys or a single character)")
     modifiers = _modifier_mask(args.get("modifiers"))
     if len(key) == 1 or modifiers:
         # A printable key is a character typed into whatever holds focus: the same
@@ -1540,10 +1704,12 @@ _HANDLERS: dict[str, Callable[[OpContext, dict[str, Any]], Awaitable[dict[str, A
     "navigate": _navigate,
     "back": _back,
     "snapshot": _snapshot,
+    "read": _read,
     "click": _click,
     "drag": _drag,
     "scroll": _scroll,
     "type": _type,
+    "paste": _paste,
     "press_key": _press_key,
     "hover": _hover,
     "select_option": _select_option,

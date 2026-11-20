@@ -56,6 +56,7 @@ def _run_cli_sh(
     extra_args: tuple[str, ...] = (),
     extra_env: dict[str, str] | None = None,
     existing_pipx_venv: bool = False,
+    packaged_engine: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
     argv, env, run_root, _argv_file = _prepare_installer(
         case, key, with_pipx=True, extra_env=extra_env, existing_pipx_venv=existing_pipx_venv
@@ -63,7 +64,15 @@ def _run_cli_sh(
     bin_dir = run_root / "home" / ".local" / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     launcher = bin_dir / "kirocrew"
-    launcher.write_text(_RECORDER, encoding="utf-8")
+    text = _RECORDER
+    if packaged_engine:
+        # The launcher's interpreter answers the packaged-engine probe "yes", the
+        # way a platform wheel's own Python does.
+        probe = bin_dir / "packaged-python"
+        probe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        probe.chmod(0o755)
+        text = f"#!{probe}\n" + _RECORDER
+    launcher.write_text(text, encoding="utf-8")
     launcher.chmod(0o755)
     log = run_root / "kirocrew-calls"
     env["FAKE_KIROCREW_LOG"] = str(log)
@@ -84,7 +93,20 @@ def test_cli_sh_runs_kas_install_after_the_wheel_by_default(
     assert "Downloading the built-in KAS engine" in out
     # Kiro Crew itself is installed first; the engine is fetched by the new CLI.
     assert out.index("Installed kirocrew") < out.index("Downloading the built-in KAS engine")
-    assert "could not download the built-in KAS engine" not in result.stderr
+    assert "could not install the built-in KAS engine" not in result.stderr
+
+
+def test_cli_sh_downloads_nothing_when_the_wheel_carries_the_engine(
+    tmp_path: Path, signing_key: SigningKey
+) -> None:
+    """A platform wheel's engine is found through the installed interpreter, so
+    `kas install` (which an LTS build refuses before sign-in) never runs."""
+    result, calls, _launcher = _run_cli_sh(tmp_path / "case", signing_key, packaged_engine=True)
+
+    assert result.returncode == 0, result.stderr
+    assert calls == [], calls
+    assert "The built-in KAS engine is part of this install" in result.stdout
+    assert "Downloading the built-in KAS engine" not in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -107,19 +129,20 @@ def test_cli_sh_no_kas_skips_the_engine(
     assert "Downloading the built-in KAS engine" not in result.stdout
 
 
-def test_cli_sh_failed_engine_download_warns_with_the_retry_command(
+def test_cli_sh_failed_engine_download_fails_a_first_install_with_the_retry_command(
     tmp_path: Path, signing_key: SigningKey
 ) -> None:
+    """Engine guarantee: a first install never ends "installed" without
+    its engine. The code is in place, so the run names the retry and exits 1."""
     result, calls, launcher = _run_cli_sh(
         tmp_path / "case", signing_key, extra_env={"FAKE_KIROCREW_EXIT": "1"}
     )
 
-    # The install itself succeeded, so the run does too.
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
     assert calls == ["kas install"], calls
     assert "Installed kirocrew" in result.stdout
-    assert "could not download the built-in KAS engine" in result.stderr
-    assert f"Retry when online: {launcher} kas install" in result.stderr
+    assert "ERROR: could not install the built-in KAS engine" in result.stderr
+    assert f"Retry now when online: {launcher} kas install" in result.stderr
 
 
 def test_cli_sh_interrupted_engine_download_stops_the_install(
@@ -133,7 +156,7 @@ def test_cli_sh_interrupted_engine_download_stops_the_install(
 
     assert result.returncode == 130, result.stderr
     assert calls == ["kas install"], calls
-    assert "could not download" not in result.stderr
+    assert "could not install the built-in KAS engine" not in result.stderr
     assert "Next steps:" not in result.stdout
 
 
@@ -155,8 +178,8 @@ def test_cli_sh_host_that_cannot_run_the_engine_gets_no_retry_advice(
     assert "a chat cannot start here" in result.stderr
     assert "pass --no-kas to skip this step" in result.stderr
     assert "Next steps:" not in result.stdout
-    assert "Retry when online" not in result.stderr
-    assert "could not download" not in result.stderr
+    assert "Retry now when online" not in result.stderr
+    assert "could not install the built-in KAS engine" not in result.stderr
 
 
 def test_cli_sh_rerun_on_a_host_that_cannot_run_the_engine_still_exits_0(
@@ -226,3 +249,79 @@ def test_install_sh_never_turns_the_bundle_route_on() -> None:
         stripped = line.strip()
         if "kas_bundle true" in stripped and not stripped.startswith("#"):
             assert stripped.startswith(("echo ", "ok ", "detail ", "info ")), line
+
+
+@pytest.mark.parametrize(
+    "home",
+    [None, "data-home", ""],
+    ids=["custom-home", "relative-home", "unset"],
+)
+def test_cli_sh_next_steps_name_the_data_home_only_when_it_is_set(
+    tmp_path: Path, signing_key: SigningKey, home: str | None
+) -> None:
+    # The harness sets KIROCREW_HOME to the absolute <run_root>/data-home and runs
+    # from <run_root>, so "data-home" is the same folder spelled relative; an
+    # empty value is the installer's "unset".
+    extra_env = None if home is None else {"KIROCREW_HOME": home}
+    result, _calls, launcher = _run_cli_sh(tmp_path / "case", signing_key, extra_env=extra_env)
+
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    block = out[out.index("Next steps:") : out.index("Need a non-default port")]
+    if home != "":
+        data_home = str(launcher.parents[3].resolve() / "data-home")
+        export_line = f'  export KIROCREW_HOME="{data_home}"\n'
+        assert f"This install used the data home {data_home}" in block, block
+        assert export_line in block, block
+        assert block.index(export_line) < block.index("kirocrew gateway"), block
+    else:
+        assert block == (
+            "Next steps:\n"
+            "  kirocrew gateway            # start the dashboard now (http://localhost:5476)\n"
+            "  kirocrew service install    # needs sudo on Linux; run it 24/7 as a service"
+            " (survives logout, restarts on crash)\n"
+            "  kirocrew --help             # everything else\n"
+            "\n"
+        ), block
+
+
+def test_cli_sh_engine_unsupported_ending_names_the_data_home(
+    tmp_path: Path, signing_key: SigningKey
+) -> None:
+    """The ending that replaces the next steps still names the data home."""
+    result, _calls, launcher = _run_cli_sh(
+        tmp_path / "case", signing_key, extra_env={"FAKE_KIROCREW_EXIT": "3"}
+    )
+
+    assert result.returncode == 3, result.stderr
+    data_home = launcher.parents[3].resolve() / "data-home"
+    assert f'  export KIROCREW_HOME="{data_home}"\n' in result.stderr, result.stderr
+
+
+def test_cli_sh_data_home_export_ignores_an_exported_cdpath(
+    tmp_path: Path, signing_key: SigningKey
+) -> None:
+    """A `cd` that finds the directory through CDPATH echoes it; the export stays one path."""
+    result, _calls, launcher = _run_cli_sh(
+        tmp_path / "case",
+        signing_key,
+        extra_env={"KIROCREW_HOME": "data-home", "CDPATH": "."},
+    )
+
+    assert result.returncode == 0, result.stderr
+    data_home = launcher.parents[3].resolve() / "data-home"
+    assert f'  export KIROCREW_HOME="{data_home}"\n' in result.stdout, result.stdout
+
+
+def test_cli_sh_data_home_export_expands_a_leading_tilde(
+    tmp_path: Path, signing_key: SigningKey
+) -> None:
+    """A quoted `~/...` home is expanded against HOME, as the app does, not made a `~` folder."""
+    result, _calls, launcher = _run_cli_sh(
+        tmp_path / "case", signing_key, extra_env={"KIROCREW_HOME": "~/data-home"}
+    )
+
+    assert result.returncode == 0, result.stderr
+    data_home = launcher.parents[2].resolve() / "data-home"
+    assert f'  export KIROCREW_HOME="{data_home}"\n' in result.stdout, result.stdout
+    assert not (launcher.parents[3] / "~").exists()

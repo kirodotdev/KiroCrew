@@ -28,7 +28,8 @@ from kiro_crew.config.loader import ACTIVATION_REVIEW
 from kiro_crew.sel import sel
 from kiro_crew.session import unlink_queued_temp_paths
 from kiro_crew.slack.enterprise import validated_self_user_id
-from kiro_crew.slack.handler import is_allowed_user
+from kiro_crew.slack.handler import is_allowed_user, is_shared_user
+from kiro_crew.slack.shared_access import prime_shared_user
 from kiro_crew.slack.transport_dispatch import flat_dm_session_key
 
 if TYPE_CHECKING:
@@ -166,7 +167,8 @@ async def _handle_message_deleted(orch: GatewayOrchestrator, event: dict) -> Non
     _del_thread_ts = event.get("previous_message", {}).get("thread_ts")
     _del_channel = event.get("channel", "")
     _del_user = event.get("previous_message", {}).get("user", "")
-    if deleted_ts and _del_channel and is_allowed_user(_del_user):
+    await prime_shared_user(_del_user, orch)
+    if deleted_ts and _del_channel and (is_allowed_user(_del_user) or is_shared_user(_del_user)):
         # Same key the turn was queued under, or the cancellation misses it: a
         # deleted top-level message in a single-session DM belongs to the
         # channel's session, not to its own timestamp.

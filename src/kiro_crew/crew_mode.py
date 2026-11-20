@@ -101,11 +101,6 @@ DISPATCHER_FIELD: Final[str] = "crew_dispatched_by"
 #: (``docs/request-for-change/rfc-crewmate-workers-under-the-crewmate.md``).
 MATE_ROOT_FIELD: Final[str] = "mate_root"
 MATE_DISPATCHER_FIELD: Final[str] = "mate_dispatched_by"
-#: On a mate thread's own row only: its Bot's ``show_sessions_in_list`` switch.
-#: False (the default) leaves the sessions it dispatched out of the person's lists,
-#: for the Bot's Sessions tab; True keeps them listed. Read by :func:`list_view`
-#: and the dashboard's ``crewModeView``.
-MATE_LISTED_FIELD: Final[str] = "show_sessions_in_list"
 #: The slot ``mode`` of a mate thread: ``members.DM_SLOT_MODE``, spelled here because
 #: this module is a leaf (``test_crew_mode_mate_stamps`` pins the two equal).
 MATE_SLOT_MODE: Final[str] = "member"
@@ -494,9 +489,6 @@ def stamp_rows(
         row.pop(DISPATCHER_FIELD, None)
         row.pop(MATE_ROOT_FIELD, None)
         row.pop(MATE_DISPATCHER_FIELD, None)
-        row.pop(MATE_LISTED_FIELD, None)
-        if key in mate_roots:
-            row[MATE_LISTED_FIELD] = mate_lists_sessions(row.get("agent"))
         if key in roots or key in mate_roots:
             continue
         seen = {key}
@@ -591,26 +583,14 @@ def workers_of(rows: Iterable[Mapping[str, Any]], root_key: str) -> list[Mapping
 VIEW_ALL: Final[str] = "all"
 
 
-def mate_lists_sessions(agent: Any) -> bool:
-    """Whether Bot *agent* keeps its sessions in the person's lists, by the live config.
-
-    Its ``show_sessions_in_list`` switch; off when unset, unread or not a bool. No I/O.
-    """
-    cfg = _live_cfg()
-    agents = getattr(cfg, "agents", None)
-    record = agents.get(agent) if isinstance(agents, Mapping) and isinstance(agent, str) else None
-    return getattr(record, "show_sessions_in_list", False) is True
-
-
 def list_view(rows: list[dict[str, Any]], view: str, *, agent: bool) -> list[dict[str, Any]]:
     """The session list's Crew Mode view of stamped *rows*.
 
     A session a Crew Mode root dispatched is that root's to show (its side panel's
     worker list), so a PERSON's list leaves it out unless *view* is ``all``. A
     session a live mate thread dispatched (:data:`MATE_ROOT_FIELD`) is the mate's
-    Sessions tab's to show and is left out the same way, unless the mate's Bot
-    turned on ``show_sessions_in_list`` (:data:`MATE_LISTED_FIELD` on the mate
-    thread's row); the mate thread itself stays. An *agent*'s read keeps every row
+    Sessions tab's to show and is left out the same way; the mate thread itself
+    stays, and a session whose mate thread is not in *rows* (closed) stays too. An *agent*'s read keeps every row
     by default: its folder, status and lineage tools resolve their own and their
     children's rows from this list.
 
@@ -620,7 +600,7 @@ def list_view(rows: list[dict[str, Any]], view: str, *, agent: bool) -> list[dic
     """
     if view == VIEW_ALL or agent:
         return rows
-    hiding = {r["key"] for r in rows if r.get(MATE_LISTED_FIELD) is False and r.get("key")}
+    hiding = {r["key"] for r in rows if r.get("mode") == MATE_SLOT_MODE and r.get("key")}
     return [r for r in rows if not r.get(WORKER_FIELD) and r.get(MATE_ROOT_FIELD) not in hiding]
 
 

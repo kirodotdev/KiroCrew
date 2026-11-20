@@ -27,8 +27,11 @@ def _core_imports(root: Path) -> list[tuple[str, str | None, str]]:
         text = path.read_text(encoding="utf-8")
         if "kiro_crew" not in text:
             continue
+        rel = path.relative_to(root)
         for node in ast.walk(ast.parse(text)):
-            site = f"{path.relative_to(root)}:{getattr(node, 'lineno', 0)}"
+            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            site = f"{rel}:{node.lineno}"
             if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 if node.module.split(".")[0] == "kiro_crew":
                     found += [(node.module, alias.name, site) for alias in node.names]

@@ -58,7 +58,7 @@ _KNOWN_SEAMS = frozenset(
         "_APP_WINDOW_EXCLUDED_PATHS",
         "_app_api_allowlist",
         "generate_token",
-        "revoke_all_sessions",
+        "revoke_all_sessions_async",
         "time",
         "_get_secret",
         "_sel_fn",

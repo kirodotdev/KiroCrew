@@ -384,6 +384,11 @@ def _hoist(orch: GatewayOrchestrator, creds: dict[str, str]) -> None:
     # previous owner authorized.
     slack_handler.set_owner_id(orch._owner_id)
     slack_handler.set_allowed_users(set(orch._allowed_users))
+    # Shared users (slack.shared_access) were confirmed by the previous bot, maybe
+    # in another workspace: none stands until the new client confirms them again.
+    from kiro_crew.slack import shared_access
+
+    shared_access.install(None)
     if orch.dashboard_state is not None:
         # Owner notices and dashboard-sent DMs address this owner.
         orch.dashboard_state.owner_id = orch._owner_id
@@ -411,6 +416,13 @@ async def _reconnect(orch: GatewayOrchestrator) -> dict[str, Any]:
     _cancel_give_up(orch)
     try:
         creds = await _read_credentials()
+        from kiro_crew.slack.owner_claim import OwnerClaim
+
+        claim = getattr(orch.dashboard_state, "slack_owner_claim", None)
+        if isinstance(claim, OwnerClaim) and creds.get(CRED_OWNER_ID, ""):
+            # A saved owner ends an owner-claim window before this attempt can
+            # open a second Socket Mode connection on the same app token.
+            await claim.close("owner_saved")
         if orch._owner_id and creds.get(CRED_OWNER_ID, "") != orch._owner_id:
             # Every Slack message waiting in a queue, a hold or a running turn
             # was admitted under the current owner; changing it in place would

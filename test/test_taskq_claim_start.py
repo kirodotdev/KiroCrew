@@ -22,7 +22,7 @@ from kiro_crew.taskq.store import TaskStore, TaskStoreUnavailable
 from kiro_crew.testing.wait import async_wait_until, await_until
 from kiro_crew.testing.wait import finished as _finished
 
-pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+pytestmark = pytest.mark.usefixtures("healthy_host_memory", "close_subagent_managers")
 
 
 @pytest.fixture

@@ -325,6 +325,33 @@ def test_a_declined_switch_keeps_the_client_that_issued_the_pair(vendor):
     assert ClientStore().read(key)[0].client_id == "A"
 
 
+def test_forgetting_an_owner_grant_revokes_it_and_deletes_its_pair_and_client(vendor, monkeypatch):
+    """Only the named server's key goes: its pair revoked once, then its client."""
+    revoked: list[str] = []
+
+    async def _revoke(slug, tokens, store=None):
+        # The revoke still finds the client it authenticates with.
+        assert ClientStore().read(slug)[0] is not None
+        revoked.append(slug)
+        return True
+
+    monkeypatch.setattr(crew_oauth_dcr, "revoke", _revoke)
+    gone, kept = crew_oauth.custom_key("acme", MCP), crew_oauth.custom_key("acme", MCP + "/v2")
+    client = asyncio.run(crew_oauth_dcr.prepare_custom(gone, MCP, {"clientId": "A"})).client
+    for key in (gone, kept):
+        crew_oauth_dcr.keep_client(key, client, crew_oauth.Tokens("at", "rt", None, ""))
+
+    asyncio.run(crew_oauth.forget_owner_grants({"acme": MCP}))
+
+    assert revoked == [gone]
+    assert not TokenStore().present(gone) and ClientStore().read(gone)[0] is None
+    assert TokenStore().present(kept) and ClientStore().read(kept)[0] is not None
+    # A client left without its pair (an expired one was dropped) goes with no revoke.
+    TokenStore().delete(kept)
+    asyncio.run(crew_oauth.forget_owner_grants({"acme": MCP + "/v2"}))
+    assert revoked == [gone] and ClientStore().read(kept)[0] is None
+
+
 def test_a_grant_runs_the_post_grant_hook_once_and_a_failure_does_not(monkeypatch):
     from kiro_crew.connections import mint
 

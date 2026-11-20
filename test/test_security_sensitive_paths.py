@@ -1305,8 +1305,8 @@ class TestAdaptiveHomeTargetsExpiry:
             return None
 
         # Where the list sits in each signature: first for the builder, second for
-        # the matcher that forwards to it.
-        positions = {"_home_dir_targets": 0, "_path_in_home_dirs": 1}
+        # the matchers that forward to it.
+        positions = {"_home_dir_targets": 0, "_path_in_home_dirs": 1, "_matches_gate_rows": 1}
         named: list[str] = []
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):

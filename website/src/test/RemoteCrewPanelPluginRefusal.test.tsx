@@ -2,7 +2,9 @@
  * The Session Manager plugin row when the plugin is installed but refused by the
  * gateway's safety check: the reason is said in the reader's language from the
  * kind of refusal the gateway names, the diagnosis is the alert, and the steps
- * and the ownership command's note sit under it as plain text.
+ * and the ownership command's note sit under it as plain text. A plugin that
+ * is simply not installed gets a plain next step instead: admin rights for a
+ * sudo install, AWS's install page when the gateway has no command.
  */
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -10,9 +12,12 @@ import { renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 import {
   REMOTE_CREW_PREFLIGHT_GUIDE_URL,
+  SESSION_MANAGER_PLUGIN_INSTALL_URL,
   awsCliRefusalCopy,
   awsCliRefusalReport,
   credentialHelperMissingSentence,
+  envCredentialsSentence,
+  pluginMissingSteps,
   pluginRefusalCopy,
   pluginRefusalReport,
 } from '../pages/settings/remoteCrewPluginRefusal'
@@ -99,7 +104,7 @@ async function openSetup(preflight: CloudPreflight) {
   vi.mocked(api.cloudPreflight).mockResolvedValue(preflight)
   const u = userEvent.setup()
   renderWithProviders(<RemoteCrewPanel />)
-  await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+  await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
   const notice = (await screen.findByText(/^Found at \/usr\/local\/sessionmanagerplugin/)).closest('[role="alert"]') as HTMLElement
   expect(notice).not.toBeNull()
   return { notice, row: notice.closest('li') as HTMLElement }
@@ -285,7 +290,7 @@ describe('RemoteCrewPanel refused AWS CLI', () => {
     vi.mocked(api.cloudPreflight).mockResolvedValue(cliRefused())
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     const notice = (await screen.findByText(/^Your AWS credentials were not checked\. Found at \/opt\/homebrew\/bin\/aws, /)).closest('[role="alert"]') as HTMLElement
     expect(notice).toHaveTextContent(/belongs to another user account \(workbrew, user ID 502\)/)
     expect(within(notice).getByText('executable is owned by another user (uid 502)')).toBeInTheDocument()
@@ -328,5 +333,101 @@ describe('RemoteCrewPanel refused AWS CLI', () => {
   it('has nothing to say once credentials resolve or when no CLI was refused', () => {
     expect(awsCliRefusalCopy(cliRefused({ reachable: true, account: '1234' }))).toBeNull()
     expect(awsCliRefusalCopy(cliRefused({ aws_cli_refused_path: '' }))).toBeNull()
+  })
+})
+
+describe('RemoteCrewPanel env-var AWS credentials', () => {
+  const PARTIAL = 'aws: [ERROR]: Partial credentials found in env, missing: AWS_SECRET_ACCESS_KEY'
+  const failed = (over: Partial<CloudPreflight>): CloudPreflight => ({
+    ...PREFLIGHT_OK, reachable: false, account: '', detail: PARTIAL, ...over,
+  })
+
+  async function credentialsRow(preflight: CloudPreflight) {
+    vi.mocked(api.cloudPreflight).mockResolvedValue(preflight)
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
+    return (await screen.findByText('AWS credentials')).closest('li') as HTMLElement
+  }
+
+  it('leads with the profile to create and puts the CLI’s own error under it', async () => {
+    const row = await credentialsRow(failed({ env_credentials: true }))
+    const lead = within(row).getByText(envCredentialsSentence())
+    expect(lead).toHaveTextContent(/^Create an AWS profile: run aws configure sso or aws configure in a terminal/)
+    expect(lead).not.toHaveTextContent(/Partial credentials/)
+    const notice = lead.closest('[role="alert"]') as HTMLElement
+    expect(notice).not.toBeNull()
+    const raw = within(notice).getByText(PARTIAL)
+    expect(raw.className).toMatch(/\bfont-mono\b/)
+  })
+
+  it('still shows the CLI’s error as the failure when the credentials are not env vars', async () => {
+    const row = await credentialsRow(failed({ env_credentials: false, detail: 'aws: [ERROR]: Unable to locate credentials' }))
+    expect(within(row).getByText(/^aws: \[ERROR\]: Unable to locate credentials/)).toBeInTheDocument()
+    expect(row).not.toHaveTextContent(/Create an AWS profile/)
+  })
+})
+
+describe('RemoteCrewPanel plugin row when the plugin is not installed', () => {
+  const DPKG = 'p=$(mktemp) && curl -fsSL https://example.invalid/smp.deb -o "$p" && sudo dpkg -i "$p"'
+  const BREW = 'brew install --cask session-manager-plugin'
+
+  /** A preflight whose plugin is simply missing, with *command* as the remedy. */
+  function missing(command: string): CloudPreflight {
+    return { ...PREFLIGHT_OK, session_manager_plugin: false, session_manager_plugin_command: command }
+  }
+
+  async function pluginRow(preflight: CloudPreflight) {
+    vi.mocked(api.cloudPreflight).mockResolvedValue(preflight)
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
+    return (await screen.findByText('Session Manager plugin')).closest('li') as HTMLElement
+  }
+
+  it('picks the step from the command: admin rights for sudo, AWS’s page for none, nothing for brew', () => {
+    const link = { href: SESSION_MANAGER_PLUGIN_INSTALL_URL, label: 'Open AWS’s Session Manager plugin install page' }
+    expect(pluginMissingSteps(missing(DPKG))).toEqual({
+      text: 'Installing it needs admin rights (sudo) on the computer that runs Kiro Crew. If you don’t have them, ask an administrator to install AWS’s Session Manager plugin there, then re-check.',
+      link,
+    })
+    expect(pluginMissingSteps(missing(''))).toEqual({
+      text: 'Install it on the computer that runs Kiro Crew by following AWS’s steps, then re-check.',
+      link,
+    })
+    expect(pluginMissingSteps(missing(BREW))).toBeNull()
+    // "sudo" only as part of another word is not a sudo step.
+    expect(pluginMissingSteps(missing('pseudoinstall smp'))).toBeNull()
+    // Installed, or installed and refused (pluginRefusalCopy owns that row): no step.
+    expect(pluginMissingSteps(PREFLIGHT_OK)).toBeNull()
+    expect(pluginMissingSteps(refused({ session_manager_plugin_command: CHOWN }))).toBeNull()
+  })
+
+  it('says a sudo install needs admin rights and links AWS’s page before the command', async () => {
+    const row = await pluginRow(missing(DPKG))
+    const step = within(row).getByText(/^Installing it needs admin rights \(sudo\)/)
+    const link = within(row).getByRole('link', { name: /Open AWS’s Session Manager plugin install page/ })
+    expect(link).toHaveAttribute('href', SESSION_MANAGER_PLUGIN_INSTALL_URL)
+    const command = within(row).getByText(DPKG)
+    // Read before it is run: the step and the link sit above the command.
+    expect(step.compareDocumentPosition(command) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(link.compareDocumentPosition(command) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The not-installed status is still the row's detail, not an alert.
+    expect(within(row).getByText(/^Not installed — needed to reach the crew/)).toBeInTheDocument()
+    expect(within(row).queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('points at AWS’s page when the gateway has no install command', async () => {
+    const row = await pluginRow(missing(''))
+    expect(within(row).getByText(/^Install it on the computer that runs .* by following AWS’s steps/)).toBeInTheDocument()
+    expect(within(row).getByRole('link', { name: /Open AWS’s Session Manager plugin install page/ })).toHaveAttribute('href', SESSION_MANAGER_PLUGIN_INSTALL_URL)
+    expect(within(row).queryByRole('button', { name: /Copy command/i })).not.toBeInTheDocument()
+  })
+
+  it('adds no step to a Homebrew command, which needs no sudo', async () => {
+    const row = await pluginRow(missing(BREW))
+    expect(within(row).getByText(BREW)).toBeInTheDocument()
+    expect(row).not.toHaveTextContent(/admin rights/)
+    expect(within(row).queryByRole('link')).not.toBeInTheDocument()
   })
 })

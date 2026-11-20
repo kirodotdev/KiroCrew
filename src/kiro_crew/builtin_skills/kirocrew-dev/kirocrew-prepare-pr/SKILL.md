@@ -34,8 +34,7 @@ make it green" is the full loop. A hold turns off Phase 4's auto-merge, nothing 
 - Say in one line which mode you picked, so the user can redirect.
 
 **Never `gh pr merge` without `--auto`, and never bypass a required review or
-check.** Auto-merge hands the merge to GitHub, which lands it only once the repo's
-own required reviews and checks pass.
+check.** GitHub lands it once required reviews and checks pass.
 
 ## Kiro Crew CI at a glance
 
@@ -47,7 +46,7 @@ Every PR names an issue of this repository on a line of its own: `Closes #N` (th
 merge closes it) or `Part of #N` (it stays open). The `Issue Gate` lane checks it.
 It is paused today (`GATE_ENFORCED: "false"`); write the line anyway.
 
-No issue yet? Open one from `.github/ISSUE_TEMPLATE/` BEFORE Phase 1. The tier
+No issue yet? Open one BEFORE Phase 1, drafted by `feature-request` step 4. The tier
 table (T1-T4; T3 and T4 wait for `triaged`) and the Captain's triage are in
 `references/ci.md` § Issue tiers.
 
@@ -56,12 +55,12 @@ table (T1-T4; T3 and T4 wait for `triaged`) and the Captain's triage are in
 `PR Readiness` is the one required status: it folds every lane into one verdict
 and one `readiness:` label. The real merge gate is a human approval plus
 `PR Readiness`. Fix a red `Fast Gate` first: the heavy matrix and the fork AI
-lanes wait on it. For what any other lane checks, whether it blocks and how to
-clear it, fork PRs and the merge queue included, read `references/ci.md`.
+lanes wait on it. For any other lane (what it checks, if it blocks, how to
+clear it, fork PRs, the merge queue), read `references/ci.md`.
 
 ## Review-ready — the definition
 
-All five, together:
+All six, together:
 
 1. `pr_status.py` exits **0** — `PR Readiness` status and `readiness: passed`
    label green. `readiness: maintainer review` is not a failure to fix: the
@@ -74,6 +73,8 @@ All five, together:
 5. **Every raised concern answered on the PR** — see "Dispositions" below. A
    red `macOS Tests (on demand)` run on the current head counts as a concern:
    it is not required, but fix it or show the same test red on main.
+6. `## Real-machine verification` (testing-conventions § Real-machine
+   verification): base red, head green, cleaned up; or `N/A -- <why>`.
 
 When the diff adds or changes a test, review-ready also means the body carries that
 test's determinism proof: the repeats and a shuffled order, and for a fix to a flaky
@@ -90,9 +91,8 @@ Ask in order:
 1. **Is it legitimate?** Verify the code, reachable input, call path and consequence.
 2. **Is it proportional?** Stay within the frozen goal and actual code shape;
    reject speculative hardening, single-caller abstractions and unnecessary redesign.
-   Out of goal: rebut or defer. A defect in code this PR adds or
-   changes is always in scope and gets fixed; 'out of goal' applies only to new scope — a
-   new feature, surface, or hardening this PR does not need.
+   Out of goal (new feature, surface or hardening the PR does not need): rebut
+   or defer. A defect in code this PR adds or changes is always in scope and gets fixed.
 3. **Did an earlier round of this PR add the mechanism?** Check
    `pr_findings.py --rounds`. Before editing, compare (a) repair it and (b) remove
    it. For each, state the effect on the goal AND the defect it was added
@@ -161,7 +161,7 @@ Answering is prose work. It never needs a push and never widens the diff.
 |---|---|---|
 | `fixed` | you changed the code | the change and the SHA |
 | `rebutted` | the code stays correct as-is | the evidence it does not hold, **or** the reasoning it is disproportional |
-| `accepted-and-deferred` | the work is already decided, just out of scope here — unlike `needs-a-decision`, nothing is being asked | why, plus an issue whose body names a task someone can pick up. The issue MUST carry the `deferred-finding` label, an assignee (the owner) and a `Due: YYYY-MM-DD` line in its body — the Disposition Deferral Check replies to a disposition whose issue lacks any of the three. The Captain tiers it like any other issue. Note the server-side asymmetry: the GPT lane's convergence rules do not accept a deferral as a ruling on a security / data-loss / corruption finding, so a deferred one of those is re-raised every round until fixed, rebutted as not-a-defect, or overridden |
+| `accepted-and-deferred` | the work is decided, just out of scope here — unlike `needs-a-decision`, nothing is asked | why, plus an issue whose body names a task someone can pick up. The issue MUST carry the `deferred-finding` label, an assignee (the owner) and a `Due: YYYY-MM-DD` line in its body — the Disposition Deferral Check replies to a disposition whose issue lacks any of the three. The Captain tiers it like any other issue. Server-side, the GPT lane's convergence rules do not accept a deferral as a ruling on a security / data-loss / corruption finding, so a deferred one of those is re-raised every round until fixed, rebutted as not-a-defect, or overridden |
 | `needs-a-decision` | the outcome depends on a maintainer ruling | the question, put to the maintainer directly — do **not** file an issue for it |
 
 **What must be answered:**
@@ -200,7 +200,7 @@ one head:
 ```
 
 Use `false-positive` or `not-applicable` for what follows; the other classes need an
-issue or a link ([Risk release records](docs/ci/ci-and-reviews.md#risk-release-records)).
+issue or a link ([Risk release records](https://github.com/kirodotdev/KiroCrew/blob/main/docs/ci/ci-and-reviews.md#risk-release-records)).
 
 `fable` is the Opus lane; `scope` is Security Scope Review. Decide it yourself —
 do not ask — when all four hold:
@@ -218,12 +218,12 @@ do not ask — when all four hold:
 
 Start the reason with `agent:` so a reader can tell it from a person's ruling,
 and post it with `gh pr comment <n> --body "<the command>"`, naming one lane
-(`all` only when one ruling truly covers every lane). It binds that SHA alone: a
+(`all` only when one ruling covers every lane). It binds that SHA alone: a
 new push needs a fresh judgment. Fork lanes honour it like same-repo ones (the
 handler re-runs the bound fork lane run), and PR Readiness counts this lane's
 same-head BLOCKs posted before the record as adjudicated: the only same-head exit,
 better than a new head. **Report
-every override afterwards** — lane, span, SHA and reason — in the Phase 4 report.
+every override** (lane, span, SHA, reason) in the Phase 4 report.
 
 ## Scripts — decisions come from exit codes
 
@@ -255,7 +255,7 @@ their module docstring instead.
 | `pre_push_gate.py` | 2 / 3 | **optional, advisory**: runs the cheap CI gates on the diff, prints every failure, records a proof for the tree; nothing refuses a push (`references/pre-push-gate.md`) | **0 proof written · 50 a gate failed · 51 a gate could not run, no skip, or a dirty tree · 52 `--verify` found no proof · 2 env** |
 | `pr_status.py [pr#]` | 3 | readiness, rollup, threads, current-head runs and reviewer stamps; `--reviewers` pins the fleet; `--json` appends a machine line | **0 clean · 10 running · 20 failing/findings · 2 env** |
 | `regen_shared.py [base]` | 1 | rebuild shared generated files after the rebase (`references/split-and-regen.md`) | **0 · 20 rewrote · 2 env** |
-| `green_age.py [--base B] [--pr N]` | 3 | has the base moved in this PR's files since its CI ran? Information, never a gate | **0 fresh · 30 STALE · 31 STALE but the re-sync cap is spent, hand over · 2 env** |
+| `green_age.py [--base B] [--pr N]` | 3 | has the base moved in this PR's files since its CI ran? Information, never a gate | **0 fresh · 30 STALE · 2 env** |
 | `pr_findings.py [pr#]` | 3 | failing log tails, unresolved threads, reviewer findings with stable `span=` ids, whole-design items first | 0 · 2 env |
 | `pr_findings.py [pr#] --rounds` | 1 / 3 | the loop's cross-round memory, read from the PR thread: goal, dispositions per judged head, spans, self-added code, mechanisms, recurrence | **0 · 30 retrospective due · 2 env** |
 | `local_review.py --base origin/<base>` | 2 | writes one review brief per profile reviewer, extracted from CI's own workflow | 0 · 40 parity failure · 2 env |
@@ -307,8 +307,8 @@ error (exit 2). So an **uncommitted `.prepare-pr.toml` edit is ignored**.
 
 **`single_commit` governs history handling in one place.** When `true`, run the
 squash (Phase 1.4) and the post-squash guard (Phase 3.1); when `false`, skip both
-and keep the branch's history. Kiro Crew allows at most **two** commits per PR:
-squash to one unless a mechanical follow-up is worth keeping separable.
+and keep the branch's history. PRs are squash-merged by default; CI does not count
+commits; the squash makes each push one reviewed commit.
 
 Design + `.prepare-pr.toml` schema: `docs/request-for-change/rfc-prepare-pr-portability.md`.
 
@@ -382,7 +382,7 @@ may edit it.
    **0** → the per-round spans and self-added counts feed question 3.
 1. **Commit, only if there are changes.** Commit by name through the guard: `python3 $SKILL_DIR/scripts/push_guard.py --commit -m "<subject>" -- <path>...` (or `-F <file>`), listing every path you changed: new, removed, and both sides of a move. It refuses (41) while anything you did not name is staged. Never `git commit -a` or a bare `git commit`. Use a Conventional-Commits subject (`feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert`).
 2. **Sync base.** `git fetch origin` — **this MUST succeed**; on failure, STOP and report it. Then `git rebase refs/remotes/origin/<base>` (full name: a local `origin/<base>` branch would win). Resolve unambiguous conflicts yourself; ask about an ambiguous large one. Before each `git rebase --continue`, `push_guard.py --check-index` must exit **0**.
-3. **Pre-squash guard** (`single_commit` only). `--squash` (step 4) runs it first, before the commit-count signal is gone.
+3. **Pre-squash guard** (`single_commit` only). `--squash` (step 4) runs it first, while foreign commits can still be seen.
 4. **Squash to one commit** (`single_commit` only). Write the message (subject, then detail) to `$(git rev-parse --absolute-git-dir)/prepare-pr-commit-msg-<branch>.txt` (`/` as `-`; consumed), or pass `--squash FILE` (kept), then `python3 $SKILL_DIR/scripts/push_guard.py --base <base> --squash`. It commits the branch's **tree**, never an index, with hooks and signing. **0** → squashed; **40** → STOP, read stderr: commits ahead, all yours → its `--max-ahead N`, once; paths it did not commit → read each diff, name them after `--` only if all yours; **41**/**64** → follow the remedy; **2** → env.
 5. **Reconcile code and description.** Run `python3 $SKILL_DIR/scripts/diff_signals.py` and `git diff origin/<base>...HEAD`. **First read *Writing register: Age 5* below** — the body says what changed and why; the diff is the evidence, and the body never restates it. Make the body **complete** (covers every flagged `!` signal), **accurate** (no claim the diff does not support), and shaped to the PR description contract. **Scaffold it from the template:** `cat "$(git rev-parse --show-toplevel)/.github/PULL_REQUEST_TEMPLATE.md"`, fill every section, never from memory; drop the CLA placeholder. A `fix`/`revert` PR fills `## Pattern harvest`; a `fix:` PR runs `prove.py` and pastes the `Proof:` line it prints under `## Tests`; a diff that takes something away lists one `Reader:` line per reader — PR Hygiene checks both and `--check-body` does not. **A tightening diff makes `## Backwards compatibility` a `Breaking:` line with a writer sweep re-run on fresh `origin/<base>` before the final push.** Write the body to `$(git rev-parse --absolute-git-dir)/prepare-pr-body.md` — the one file the check reads, never committed — then run `python3 $SKILL_DIR/scripts/diff_signals.py --check-body`: **20** names a changed area the body never mentions — name it or drop it from the diff, never pad the prose to hide it. **21** means `What changed` has too many words or table rows — cut the recital, not the facts. **22**: add the template sections it names. **24**: fix or re-run `prove.py` for the `Proof:` line it prints. If the diff itself is wrong, fix it and amend by name: `push_guard.py --amend -- <path>...`.
 
@@ -524,19 +524,6 @@ comes after a record, never instead of one:
    tests for the files the line names, push with the SHA-pinned lease, and post ONE
    comment: `Rebased: main moved in <files> since this head went green (<old-base> -> <new-base>); CI re-running.`
    Exit 30 does NOT override the no-push-while-runs-are-in-flight rule above.
-   **31** → the re-sync cap is spent: do NOT rebase, report which files the base
-   keeps moving in, and hand the PR to the user. The script decides that from the
-   count of the `Rebased: main moved in` comments posted by the PR's author or by
-   a member of the project, so after three
-   green-age re-syncs on one PR it stops being your judgement call. Each re-sync
-   discards a green the PR had already earned, which is the cost the cap exists to
-   bound. **The way back is a member of the project commenting `Re-sync budget
-   reset`**, which restarts the count and grants another three. The PR's author
-   cannot: the loop drives a PR as its author, so a budget it could re-arm bounds
-   nothing. The account you run as may be such a member, so **ask for the reset,
-   never post one** — one you wrote is the cap deciding nothing. Do not clear the
-   count by deleting the `Rebased: main moved in` comments either; they are the
-   record it is read from.
 
    Then `python3 $SKILL_DIR/scripts/pr_status.py <pr#> --reviewers <profile reviewer names>`.
    **Always pin the fleet** (Kiro Crew: `--reviewers gpt,opus`): bare `pr_status.py`
@@ -628,7 +615,7 @@ outage is a rerun later, not a code fix.
 ## PR description contract
 
 Phase 1.5 checks the body against the diff. When `.github/PULL_REQUEST_TEMPLATE.md`
-is absent, the nine sections are in `references/pr-description-contract.md`.
+is absent, the ten sections are in `references/pr-description-contract.md`.
 
 ### Two checks, two strengths
 
@@ -678,7 +665,9 @@ Before publishing, reread section 3 and rewrite any sentence that needs a second
 ### Screenshots
 
 Capture each affected surface in its meaningful variants **by looking at the change
-yourself** with the `web-verify` skill. A video renders as a player only alone in
+yourself** with the `web-verify` skill, in the full application chrome (nav/sidebar
+and the whole page or dialog in context), not a cropped element shot. A video renders
+as a player only alone in
 its own paragraph.
 
 - **Attach, never commit.** Capture into `$KIROCREW_SCRATCH/evidence/` or the
@@ -697,7 +686,7 @@ its own paragraph.
   later round regenerates the body.
 - **Verify:** `gh api repos/<owner>/<repo>/pulls/<n> --jq .body | grep -c user-attachments` MUST print the number of files attached.
 - **Limits and formats:** PNG, JPEG, GIF, WebP, MP4, MOV, WebM; 10 MB per image or GIF, 100 MB per video. **No SVG**, attached or committed: the reviewer's Read tool opens it as markup, not pixels, so both lanes skip it; export a PNG.
-- **Push access is required; without it, commit the evidence.** `--attach` uploads through an endpoint that 404s on read permission (cli/cli#14302), so a fork contributor has none. They either drag it into the description in the web UI (same `user-attachments` URL, same limits) or `git add -f temp-screenshots/<topic>/after.png` and reference the path; the fork lanes read the committed bytes, 10 MB per file, video included, same formats (another format is skipped with a warning naming it); a bigger recording is dragged in, not committed. Once merged, the blob is in `main`'s history for good; why: `references/rationale.md`.
+- **Push access is required for upstream `--attach`; without it, upload off-PR first and commit only as the last resort.** `--attach` on the upstream PR uploads through an endpoint that 404s on read permission (cli/cli#14302), so a fork contributor has none. One order of preference, binaries off the PR until nothing else works: (1) `--attach` on your OWN fork even without upstream write (you are admin there): `gh api -X PATCH repos/<you>/<fork> -f has_issues=true` then `gh issue create --repo <you>/<fork> --attach <file> ...`, which mints account-scoped `user-attachments` URLs that render cross-repo -- read them from the issue body and embed upstream (keep that issue as a reusable upload holder: GitHub retains unlinked media only ~30 days and whether deleting the source issue orphans the asset is undocumented, so keeping it is the safe default); (2) drag the file into the description in the web UI (same `user-attachments` URL, same limits); (3) only when neither upload path is available, `git add -f temp-screenshots/<topic>/after.png` and reference the path -- the fork lanes read the committed bytes, 10 MB per file, video included, same formats (another format is skipped with a warning naming it); a bigger recording is dragged in, not committed. Raw `raw.githubusercontent.com` URLs are NOT evidence -- `pr-attachment-evidence.sh` admits only `github.com/user-attachments/assets/...`, so a raw link reaches no review lane. A committed blob is in `main`'s history for good once merged; why: `references/rationale.md`.
 - Non-media evidence (a JSON dump, a perf baseline) goes in a fenced block in a PR
   comment; link its permalink.
 

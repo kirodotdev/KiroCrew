@@ -12,8 +12,9 @@
  *
  *   Follow OS -> "system" · Dark -> "dark" · Light -> "light"
  *
- * @param {unknown} pref  `data-mode-pref`: "system" | "dark" | "light", or ""
- *   on a dashboard build predating that attribute.
+ * @param {unknown} pref  `data-mode-pref`: "system" | "dark" | "light" |
+ *   "schedule", or "" on a dashboard build predating that attribute. Scheduled
+ *   has no `themeSource` of its own, so it takes the resolved-mode fallback.
  * @param {unknown} resolvedMode  `data-mode`: "dark" | "light". Used only as the
  *   fallback when `pref` is missing/unrecognised, which keeps an older bundle at
  *   its previous behaviour instead of forcing it to "system".

@@ -75,6 +75,7 @@ def test_the_view_joins_observed_people_with_session_creators():
     assert bob["sessions_created"] == 2 and bob["first_seen_at"] is None
     assert view["directory"] == {"state": "unavailable"}
     assert view["usage_available"] is False and alice["usage"] is None
+    assert view["usage_off"] is True
 
 
 def test_an_unknown_viewer_is_never_marked_as_a_row():
@@ -98,4 +99,38 @@ def test_usage_is_reported_when_a_source_is_wired_and_unavailable_when_it_fails(
     people.register_usage_source(_broken)
     view = people.people_view(ALICE, [])
     assert view["usage_available"] is False
+    assert view["usage_off"] is False, "a reader that failed is not usage switched off"
     assert view["people"][0]["usage"] is None
+
+
+def test_usage_switched_off_is_not_a_failure():
+    people.observe(ALICE)
+
+    def _off() -> dict[str, dict[str, int]]:
+        raise people.UsageOff("fair admission is off")
+
+    people.register_usage_source(_off)
+    view = people.people_view(ALICE, [])
+    assert view["usage_available"] is False
+    assert view["usage_off"] is True
+
+
+def test_a_teammate_reads_the_owner_row_by_the_owners_one_name(monkeypatch):
+    """A session the owner started keeps the label stamped then (the machine name);
+    every reader gets `owner_name`, so the owner and their relay row count once."""
+    from dataclasses import replace
+
+    from kiro_crew.shared_crew import owner
+    from kiro_crew.shared_crew.contracts import DisplaySnapshot
+
+    monkeypatch.setattr(owner, "owner_name", lambda **_: "owner@example.com")
+    stamped = local_operator_principal("local-app")
+    stamped = replace(stamped, display=DisplaySnapshot(name="linux-e2e", login=""))
+    view = people.people_view(ALICE, [_row(stamped)])
+    (row,) = [r for r in view["people"] if r["is_owner"]]
+    assert row["principal"]["display"]["name"] == "owner@example.com"
+    assert all(
+        r["principal"]["display"]["name"] != "owner@example.com"
+        for r in view["people"]
+        if not r["is_owner"]
+    )

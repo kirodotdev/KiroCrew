@@ -228,6 +228,9 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # event, reopen, close): small fixed-shape bodies, so the route keeps a 4 KiB
     # cap of its own, well under the shared default.
     "handlers/browser_live.py::_run": ("_MAX_BODY_BYTES", _BOUNDED_EXPLICIT),
+    # An app page's media button: a session key, an action and one number, so the
+    # route caps the body at 1 KiB, well under the shared default.
+    "handlers/browser_media.py::api_browser_media": ("_MAX_BODY_BYTES", _BOUNDED_EXPLICIT),
     # A quick-ask answer: an id, an action and at most a few values of 1 KiB each,
     # so the route caps the body at 8 KiB, well under the shared default.
     "handlers/browser_ask.py::api_browser_ask_answer": (
@@ -421,6 +424,12 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_api/slot_create.py::api_chat_slot_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
     # A hub's decision on a remote work item: one string, capped by the store.
     "handlers/remote_work_item.py::api_chat_slot_work_item_patch": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
+    # A hub's batch read: at most 32 items, each a slot key, 16 event ids, a stamp
+    # and a digest, all capped by the route itself, well under the default.
+    "handlers/remote_work_items_pull.py::api_chat_work_items_pull": (
         "<default>",
         _BOUNDED_CONTROL_FIELDS,
     ),

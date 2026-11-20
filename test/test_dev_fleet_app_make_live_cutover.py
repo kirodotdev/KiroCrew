@@ -12,6 +12,7 @@ import json
 import os
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,7 +20,12 @@ from dev_fleet_app_helpers import _reset_make_live_committed_latch  # noqa: F401
 from dev_fleet_app_helpers import _reset_shutdown_admission_state  # noqa: F401 - fixture
 from dev_fleet_app_helpers import _sweep_staged_sync_tempdirs  # noqa: F401 - fixture
 from dev_fleet_app_helpers import _venv_maps_to_the_synced_checkout  # noqa: F401 - fixture
-from dev_fleet_app_helpers import _POSIX_ONLY, _mk_make_live_wt, _stub_make_live
+from dev_fleet_app_helpers import (
+    _POSIX_ONLY,
+    _mk_make_live_wt,
+    _stub_make_live,
+    simulate_live_platform,
+)
 
 import kiro_crew.apps.builtins.dev_fleet.server as mod
 from kiro_crew.apps.builtins.dev_fleet import live as live_mod
@@ -44,6 +50,64 @@ def test_sd_value_rejects_control_char_paths():
     for bad in ["/a\nb", "/a\x00b", "/a\tb", "/a\x1fb", "/a\x7fb", "/a\rb"]:
         with pytest.raises(mod._UnsafeUnitValue):
             mod._sd_value(bad)
+
+
+@_POSIX_ONLY
+def test_dropin_path_keeps_the_gateway_path_after_the_venv(monkeypatch):
+    """The drop-in PATH is the target venv, then the gateway's own PATH, then the
+    fixed bin dirs, each once. A relative, empty or control-character entry is left
+    out. Without the gateway's entries the restarted gateway loses, say, the
+    version manager's ``node`` that the live unit had on PATH."""
+    monkeypatch.setenv("HOME", "/srv/kc-home")
+    monkeypatch.setenv(
+        "PATH", "/opt/mise/node/bin:/usr/bin:relative/bin::/opt/bad\x01bin:/opt/mise/node/bin"
+    )
+    wt = Path("/srv/kc-wt")
+    content = mod._dropin_content(wt, wt / ".venv" / "bin" / "kirocrew")
+    assert content.splitlines()[-1] == (
+        "Environment=PATH=/srv/kc-wt/.venv/bin:/opt/mise/node/bin:/usr/bin"
+        ":/srv/kc-home/.local/bin:/usr/local/bin:/bin"
+    )
+
+
+@_POSIX_ONLY
+def test_launchd_launcher_path_keeps_the_gateway_path_after_the_venv(monkeypatch):
+    """The macOS launcher a cutover writes builds its PATH the same way as the
+    systemd drop-in, so the agent's own entries (a Homebrew ``node``) stay on it."""
+    monkeypatch.setenv("HOME", "/srv/kc-home")
+    monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/bin:./bin")
+    backend = live_mod.gateway_service.LaunchdBackend(
+        AsyncMock(), lambda: "dev.kirocrew.gateway", platform="darwin", which=lambda _n: None
+    )
+    wt = Path("/srv/kc-wt")
+    script = backend._render(wt, wt / ".venv" / "bin" / "kirocrew")
+    assert (
+        "PATH='/srv/kc-wt/.venv/bin:/opt/homebrew/bin:/usr/bin"
+        ":/srv/kc-home/.local/bin:/usr/local/bin:/bin'"
+    ) in script.splitlines()
+
+
+@_POSIX_ONLY
+def test_cutover_path_drops_the_venv_bin_of_the_checkout_it_replaces(monkeypatch):
+    """The gateway's PATH starts with the venv bin of the checkout it runs from. A
+    cutover replaces that checkout, so its venv bin leaves the new PATH and a run
+    of cutovers does not grow it. Another checkout's venv bin stays."""
+    monkeypatch.setenv("HOME", "/srv/kc-home")
+    monkeypatch.setenv("PATH", "/srv/kc-old/.venv/bin:/srv/kc-other/.venv/bin:/opt/node/bin")
+    monkeypatch.setattr(
+        live_mod.gateway_service, "sys", SimpleNamespace(executable="/srv/kc-old/.venv/bin/python")
+    )
+    wt = Path("/srv/kc-wt")
+    kcbin = wt / ".venv" / "bin" / "kirocrew"
+    expected = (
+        "/srv/kc-wt/.venv/bin:/srv/kc-other/.venv/bin:/opt/node/bin"
+        ":/srv/kc-home/.local/bin:/usr/local/bin:/usr/bin:/bin"
+    )
+    assert mod._dropin_content(wt, kcbin).splitlines()[-1] == f"Environment=PATH={expected}"
+    launchd = live_mod.gateway_service.LaunchdBackend(
+        AsyncMock(), lambda: "dev.kirocrew.gateway", platform="darwin", which=lambda _n: None
+    )
+    assert f"PATH='{expected}'" in launchd._render(wt, kcbin).splitlines()
 
 
 @pytest.mark.asyncio
@@ -118,7 +182,7 @@ async def test_restart_gateway_darwin_requests_graceful_stop(monkeypatch):
     stop service.") whatever the seatbelt profile allows. A regression to the
     legacy form makes Restart fail on every Mac, so the shape is asserted here.
     """
-    monkeypatch.setattr(live_mod, "sys", MagicMock(platform="darwin"))
+    simulate_live_platform(monkeypatch, "darwin")
     monkeypatch.setattr(
         live_mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
     )
@@ -155,7 +219,7 @@ async def test_restart_gateway_darwin_requests_graceful_stop(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_restart_gateway_darwin_refuses_stale_loaded_contract(monkeypatch):
-    monkeypatch.setattr(live_mod, "sys", MagicMock(platform="darwin"))
+    simulate_live_platform(monkeypatch, "darwin")
     monkeypatch.setattr(
         live_mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
     )
@@ -179,7 +243,7 @@ async def test_restart_gateway_darwin_refuses_stale_loaded_contract(monkeypatch)
 @pytest.mark.asyncio
 async def test_restart_gateway_darwin_not_active(monkeypatch):
     """No loaded agent -> refuse, without attempting a kickstart."""
-    monkeypatch.setattr(live_mod, "sys", MagicMock(platform="darwin"))
+    simulate_live_platform(monkeypatch, "darwin")
     monkeypatch.setattr(
         live_mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
     )
@@ -499,7 +563,7 @@ async def test_live_worktree_path_prefers_pointer_over_service(monkeypatch, tmp_
     monkeypatch.setattr(live_mod, "_LIVE_WORKTREE", None, raising=False)
     # Even with a systemd probe that would return a different path, the pointer
     # takes priority.
-    monkeypatch.setattr(live_mod, "sys", MagicMock(platform="linux"))
+    simulate_live_platform(monkeypatch, "linux")
     monkeypatch.setattr(
         live_mod, "shutil", MagicMock(which=MagicMock(return_value="/usr/bin/systemctl"))
     )

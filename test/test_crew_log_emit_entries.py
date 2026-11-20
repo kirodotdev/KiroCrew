@@ -469,7 +469,7 @@ def test_chat_runner_records_the_input_and_refusal_on_a_blocked_expansion():
         ]
         if turn_file.name != "__init__.py"
     )
-    assert "🔒 Prompt blocked" in src
+    assert "Prompt blocked" in src
 
     def _emit_attr(node, name):
         # A crew_log_emit.<name>(...) call, however the module is aliased.
@@ -498,12 +498,12 @@ def test_chat_runner_records_the_input_and_refusal_on_a_blocked_expansion():
             for stmt in body:
                 if (
                     isinstance(stmt, ast.Expr)
-                    and _string_in(stmt.value, "🔒 Prompt blocked")
+                    and _string_in(stmt.value, "Prompt blocked")
                     and body not in blocks
                 ):
                     blocks.append(body)
 
-    assert blocks, "no block appends the '🔒 Prompt blocked' notice"
+    assert blocks, "no block appends the 'Prompt blocked' notice"
 
     def _co_located(block):
         received_at = None

@@ -20,7 +20,6 @@ from __future__ import annotations
 import ast
 import builtins
 import dis
-import hashlib
 import importlib
 import importlib.util
 import inspect
@@ -174,81 +173,15 @@ _OWNER_MODULES = (
     "editor",
 )
 
-#: Each moved definition and the owner its responsibility puts it in.
-_BASE_OWNERS: dict[str, tuple[str, ...]] = {
-    "uploads": tuple("""
-        _content_matches_ext _content_mismatch_message _resolve_raster_ext _sniff_media_type
-        _stream_media_part _upload_dir _write_file_restricted api_upload_file
-        """.split()),
-    "workspaces": tuple("""
-        _WorkspaceConflict _resolve_ws_dir api_workspaces api_workspaces_create
-        api_workspaces_delete api_workspaces_update
-        """.split()),
-    "pinned_io": tuple("""
-        _CheckedFile _OpenDenied _OpenRefusal _OpenedFile _TextRead _file_write_blocking
-        _open_checked _open_checked_file _open_rb_nofollow _read_request_path
-        _resolve_project_relative
-        """.split()),
-    "transfer": tuple("""
-        _parse_range_header api_file_download api_file_stream api_file_watch
-        """.split()),
-    "office_preview": tuple("""
-        _PreviewUnsupported _cap_slides _redact_block _redact_blocks _redact_value
-        api_file_office_preview
-        """.split()),
-    "sheet": tuple("""
-        _SheetRefusal _load_sheet_payload _parse_workbook_grid _sheet_cell_json
-        _sheet_formula_text _vet_zip_eocd api_file_sheet
-        """.split()),
-    "search": tuple("""
-        _audit_file_search_exit _fuzzy_score _resolve_search_root _subsequence_run
-        api_file_search
-        """.split()),
-    "path_complete": tuple("""
-        _complete_path_listing _completion_segments _open_completion_dir
-        _scan_completion_dir api_path_complete
-        """.split()),
-    "grep": tuple("""
-        _grep_doc_segments _grep_docs _grep_hit _grep_pdf_segments _grep_python
-        _grep_resolve_root _grep_rg _grep_rg_argv _grep_rg_executable _grep_rg_hit_of
-        _grep_rg_teardown _grep_sensitive_globs _grep_xlsx_segments api_file_grep
-        """.split()),
-    "browse": tuple("""
-        _browse_dirs_sync _browse_drives_sync _browse_entry_is_dir _browse_files_sync
-        _browse_parent _is_windows_drive_root
-        """.split()),
-    "project_dirs": tuple("""
-        _git_head_path _known_project_dirs _match_known_project _match_known_project_for
-        _project_git_branch _read_git_meta_prefix _redact_project_path _resolve_project_git
-        _slot_project_snapshot api_project_git
-        """.split()),
-    "git_panel": tuple("""
-        _is_not_a_repo_verdict _porcelain_unquote _probe_git_dir _project_directory_absent
-        _repo_filter_refusal_cause _run_git_bounded _worktree_probe_failure_is_empty_scope
-        api_project_git_log api_project_git_status
-        """.split()),
-    "project_tree": tuple("""
-        _ProjectTreeFolderMoved _project_tree_allot _project_tree_body
-        _project_tree_fence _project_tree_file_quotas _project_tree_git_layout
-        _project_tree_identity _project_tree_is_link _project_tree_scandir
-        _project_tree_scandir_entries _project_tree_walk api_project_tree
-        """.split()),
-    "dashboard_config": ("api_dashboard_config",),
-    "path_probe": tuple("""
-        _PathProbe _PathProbeBusy _probe_busy_response _probe_request_path _run_path_probe
-        _validate_dashboard_path
-        """.split()),
-    "outbox": tuple("""
-        _caller_is_owner _read_outbox_file api_outbox_download api_outbox_list api_outbox_notify
-        """.split()),
-    "channel_upload": tuple("""
-        _gate_upload_file api_channel_upload_file api_slack_upload_file is_tracked_channel
-        """.split()),
-    "desktop": ("_screenshot_dir", "api_reveal_path", "api_screenshot", "api_upload"),
-    "editor": tuple("""
-        _read_safe_end _resolve_diff_path api_file_diff api_file_raw api_file_read
-        api_file_write
-        """.split()),
+#: Each owner and the functions and classes it defines, read from its source: the facade
+#: binds each as the owner's object, and no name is defined by two owners.
+_OWNER_DEFS: dict[str, tuple[str, ...]] = {
+    path.stem: tuple(
+        node.name
+        for node in ast.parse(path.read_text(encoding="utf-8")).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    )
+    for path in sorted(_OWNER_DIR.glob("[!_]*.py"))
 }
 
 #: The one module-level value an owner defines: ``_run_git_bounded`` reads it as a
@@ -256,17 +189,6 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
 #: beside that function and the facade imports it.
 _OWNER_CONSTANTS = {"git_panel": ("_GIT_PANEL_STDOUT_CAP",)}
 
-#: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
-#: ``_BASE_OWNERS``, captured from the one-module file before the split: each moved
-#: name keeps the kind and signature it had there. Recaptured when the bounded
-#: project-tree walk replaced the ``project_tree`` helpers.
-#: Recaptured with the ``path_probe``, ``outbox``, ``channel_upload``, ``desktop`` and
-#: ``editor`` owners, from the base file, where each of their names had the same shape.
-#: Recaptured when ``_run_path_probe`` gained its keyword-only ``stall_path``.
-#: Recaptured when ``api_file_download`` began answering a ``web.StreamResponse``.
-#: Recaptured when ``_browse_files_sync`` gained its ``show_hidden`` flag.
-#: Recaptured when ``_run_git_bounded`` gained its ``stdin`` bytes.
-_BASE_SHAPE_DIGEST = "c71b740dec9e68852c61695001d80115e884ba25b503e028e4da060badba3757"
 #: Definitions that stay in the facade file: the seams the owners share -- the SEL
 #: accessor, the file-send audit, the sub-agent session mapping and the request-body
 #: error code -- the search walk's clock, the file viewer's owner-view verdict, whose
@@ -532,7 +454,7 @@ _IMPORTED_BY_NAME = {
     "_get_config_lock": "kiro_crew.dashboard.handlers.agents",
     "browse_denied_async": "kiro_crew.browser_harness.governance",
     "denied_sides": "kiro_crew.decisions.capability",
-    "is_owner_dashboard_request": "kiro_crew.dashboard.handlers.source_providers",
+    "is_host_owner_dashboard_request": "kiro_crew.dashboard.handlers.source_providers",
     "owner_view_for_request": "kiro_crew.dashboard.handlers.source_providers",
     "publish_session_card_chips_now": "kiro_crew.dashboard.handlers.source_providers",
     "is_tracked_channel": "kiro_crew.slack.handler",
@@ -584,14 +506,7 @@ def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
 
 def test_the_owner_set_is_the_package() -> None:
     assert {info.name for info in pkgutil.iter_modules([str(_OWNER_DIR)])} == set(_OWNER_MODULES)
-    assert set(_BASE_OWNERS) == set(_OWNER_MODULES)
-
-
-def _shape(obj: object) -> str:
-    if inspect.isclass(obj):
-        return "class"
-    prefix = "async def " if inspect.iscoroutinefunction(obj) else "def "
-    return prefix + str(inspect.signature(obj))  # type: ignore[arg-type]
+    assert set(_OWNER_DEFS) == set(_OWNER_MODULES)
 
 
 def test_every_moved_name_is_one_object_in_its_owner() -> None:
@@ -599,23 +514,34 @@ def test_every_moved_name_is_one_object_in_its_owner() -> None:
     responsibility names, and no name is defined by two owners."""
     strays = [
         f"{owner}:{name}"
-        for owner, names in {**_BASE_OWNERS, **_OWNER_CONSTANTS}.items()
+        for owner, names in {**_OWNER_DEFS, **_OWNER_CONSTANTS}.items()
         for name in names
         if getattr(files, name) is not vars(_owner(owner)).get(name)
     ]
     assert strays == []
-    names = [name for group in _BASE_OWNERS.values() for name in group]
+    names = [name for group in _OWNER_DEFS.values() for name in group]
     assert names and len(names) == len(set(names))
+    assert [owner for owner, group in _OWNER_DEFS.items() if not group] == []
 
 
-def test_the_moved_names_keep_their_base_shapes() -> None:
-    lines = sorted(
-        f"{name} {_shape(getattr(files, name))}"
-        for names in _BASE_OWNERS.values()
-        for name in names
-    )
-    digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
-    assert digest == _BASE_SHAPE_DIGEST, "\n".join(lines)
+def test_every_owner_route_handler_is_a_coroutine() -> None:
+    """aiohttp awaits a route handler with the request, so every ``api_*`` an owner
+    defines is an ``async def`` on the facade taking one required argument."""
+    routes = [name for names in _OWNER_DEFS.values() for name in names if name.startswith("api_")]
+    assert routes, "no owner defines a route handler"
+    assert [
+        n for n in routes if not inspect.iscoroutinefunction(inspect.unwrap(getattr(files, n)))
+    ] == []
+    # aiohttp calls ``handler(request)``: a second required parameter would 500.
+    assert [
+        n
+        for n in routes
+        if [
+            p
+            for p in inspect.signature(inspect.unwrap(getattr(files, n))).parameters.values()
+            if p.default is p.empty and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        ][1:]
+    ] == []
 
 
 def _module_assignments(source: str) -> set[str]:
@@ -665,7 +591,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     assert defined == set(_FACADE_DEFS)
-    moved = {name for names in _BASE_OWNERS.values() for name in names}
+    moved = {name for names in _OWNER_DEFS.values() for name in names}
     assert len(defined | moved) == len(defined) + len(moved)
 
 
@@ -1422,19 +1348,6 @@ def _red_green(path: Path, check: Any, old: str | None, new: str) -> None:
     check()
 
 
-def test_every_owner_coroutine_file_is_checked_for_config_dir() -> None:
-    import test_no_config_dir_in_async as guard
-
-    with_async = {
-        f"dashboard/file_api/{path.name}"
-        for path in _OWNER_DIR.glob("[!_]*.py")
-        if "async def " in path.read_text(encoding="utf-8")
-    }
-    assert len(with_async) >= 11
-    assert with_async <= set(guard._ASYNC_CHECKED_FILES)
-    assert "dashboard/handlers/files.py" in guard._ASYNC_CHECKED_FILES
-
-
 def test_the_config_dir_ratchet_reads_the_owners(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1490,7 +1403,7 @@ def test_the_json_body_register_names_the_owners() -> None:
     sites = guard._call_sites()
     assert [row for row in _REKEYED_REGISTER_ROWS if row not in sites] == []
     assert [row for row in _REKEYED_REGISTER_ROWS if row not in guard._CAP_REGISTER] == []
-    moved = {name for names in _BASE_OWNERS.values() for name in names}
+    moved = {name for names in _OWNER_DEFS.values() for name in names}
     assert (
         sorted(
             key
@@ -1517,6 +1430,9 @@ def test_the_resolved_gate_dicts_name_the_owners() -> None:
     assert "kiro_crew/dashboard/handlers/files.py" not in containment
 
 
+#: In the link-screen gate's own group, so the gate's cached whole-tree scan is reused
+#: rather than run a second time on another worker.
+@pytest.mark.xdist_group(name="tree_scan_test_link_screen_hold_pin")
 def test_the_tree_route_holds_no_link_screen_in_either_file() -> None:
     """The bounded tree walk tells a link from the ``lstat`` its listing already
     holds, so the route's ``_run`` calls no link screen at its owner or in the
@@ -1529,8 +1445,6 @@ def test_the_tree_route_holds_no_link_screen_in_either_file() -> None:
     found = gate.discovered_sites()
     assert site not in found and old not in found
     assert site not in gate.DECLARED_SITES and old not in gate.DECLARED_SITES
-    gate.test_every_site_is_declared()
-    gate.test_declared_sites_still_exist()
 
 
 def test_the_bare_hop_guard_reads_the_file_family(

@@ -94,6 +94,7 @@ from kiro_crew.work_vocab import (
     WORK_ASK_OUTCOME_CHARS,
     WORK_ASK_WHAT_CHARS,
     WORK_ASK_WHY_CHARS,
+    WORK_CONDUCTOR_RETIRE_REASONS,
     worker_statuses,
 )
 
@@ -161,6 +162,7 @@ _RECORD_FIELDS: tuple[str, ...] = (
     "fails",
     "concurrency_cap",
     "new_goal",
+    "reason",
 )
 
 #: Fields ``work_ledger_read`` forwards as a query string. Same defence as
@@ -672,14 +674,13 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                 "its report channel is now cut (bind a new item to it to restore it). "
                 "A close that carries verdict records it first, then closes: settle "
                 "a pass with action=close state=accepted verdict=pass. If the verdict "
-                "write is refused the item stays open. "
-                "Caps refuse rather than truncate, naming the field. The whole write is "
-                "one 64 KB crew-log line as JSON (a non-ASCII character can count up to twelve "
-                "bytes), so a write at every field cap with non-ASCII text can be "
-                "refused work_entry_too_large before anything is written. A write about "
-                "an item from before the record whose committed acceptance is wider "
-                "than a line is refused work_item_too_large until an accept with a "
-                "smaller acceptance records the item whole."
+                "write is refused the item stays open. 'retire' frees your crew-bound item "
+                "for another crew; owner-sent turns only. "
+                "Caps refuse rather than truncate, naming the field. A write that does "
+                "not fit one 64 KB crew-log line as JSON (non-ASCII counts up to twelve "
+                "bytes) is refused work_entry_too_large. An older item whose acceptance "
+                "is wider than a line is refused work_item_too_large until an accept "
+                "with a smaller acceptance records it whole."
             ),
             "inputSchema": {
                 "type": "object",
@@ -694,6 +695,7 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                             "close",
                             "goal",
                             "accept",
+                            "retire",
                         ],
                         "description": "Which write to perform.",
                     },
@@ -772,6 +774,7 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                             "item count again. Needs `goal`. Rewording keeps the count."
                         ),
                     },
+                    "reason": {"type": "string", "enum": list(WORK_CONDUCTOR_RETIRE_REASONS)},
                 },
                 "required": ["action"],
             },

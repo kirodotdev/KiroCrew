@@ -189,7 +189,10 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // ⌘, on macOS (the OS-standard Preferences chord, and the one
   // electron/app-menu.js advertises); Option/Alt+, stays a Mac alias because a
   // Mac browser can claim ⌘, as its own Preferences accelerator before the page
-  // sees it, which would leave no keyboard route to Settings.
+  // sees it, which would leave no keyboard route to Settings. With shortcuts off
+  // that alias obeys the toggle like every other shortcut; the on/off switch
+  // stays reachable by keyboard through the shortcuts reference (its
+  // Option/Alt+K alias), which holds it.
   //
   // Windows/Linux is DELIBERATELY Alt+, not the Ctrl+, conventional default (see
   // PR #783). Ctrl+, is how a Chinese IME types a comma, so a Ctrl+, binding is a
@@ -241,6 +244,10 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // chat header's pop-out button. Not browser-reserved: a browser tab hands the
   // keydown to the page, and claiming it cancels the browser's Open File.
   { id: 'pop-out-session', group: 'actions', dispatch: 'registry', defaults: both({ key: 'o', mod: true }) },
+  // ⌘⇧F / Ctrl+Shift+F — Search all chats: the cross-chat twin of ⌘F, which
+  // searches the open chat (useMessageSearch reads `e.key === 'f'`, and Shift
+  // makes it `F`, so the two never fire together).
+  { id: 'search-all-chats', group: 'actions', dispatch: 'registry', defaults: both({ key: 'f', mod: true, shift: true }) },
   // Dispatched by ChatInput, not the global handler; listed for the reference.
   { id: 'optimize-prompt', group: 'actions', dispatch: 'code', defaults: both({ key: 'Enter', mod: true, shift: true }) },
   // ⌘↑ on macOS / Ctrl+↑ elsewhere — edit the last user message.
@@ -256,11 +263,17 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // handler (chat-input/keyboard.ts); listed for the reference.
   { id: 'list-indent', group: 'actions', dispatch: 'code', defaults: both({ key: 'Tab' }) },
   { id: 'list-outdent', group: 'actions', dispatch: 'code', defaults: both({ key: 'Tab', shift: true }) },
+  // Dispatched by ChatInput's composer (usePromptStash), not the global handler;
+  // listed for the reference. Claimed only while the composer has focus.
+  { id: 'stash-prompt', group: 'actions', dispatch: 'code', defaults: both({ key: 's', mod: true }) },
   // Literal Ctrl on every platform — see isAgentMonitorChord for why this one
   // does NOT follow the ⌘-on-Mac convention (`ctrl`, not `mod`, on both).
   { id: 'agent-monitor', group: 'actions', dispatch: 'code', defaults: both({ key: 'g', ctrl: true }) },
   // Bare Escape, handled by a capture-phase listener; listed for the reference.
   { id: 'stop-speaking', group: 'actions', dispatch: 'code', defaults: both({ key: 'Escape' }) },
+  // Bare Escape in the message box while a turn runs, handled by the composer's
+  // own key gate (chat-input/stopKey.ts); listed for the reference.
+  { id: 'stop-turn', group: 'actions', dispatch: 'code', defaults: both({ key: 'Escape' }) },
   // Bare Up/Down, handled by NotificationFeed while one of its rows has focus
   // (inbox page and bell sheet); listed for the reference.
   { id: 'notification-prev', group: 'actions', dispatch: 'code', defaults: both({ key: 'ArrowUp' }) },
@@ -298,7 +311,7 @@ export type ShortcutOverrides = Partial<Record<string, Chord | null>>
 /**
  * A chord a user may store: a non-empty key plus at least one non-shift
  * modifier. A bare key or Shift+key would fire mid-typing. `stop-speaking`
- * (bare Escape) is a `code` entry and never reaches this check.
+ * and `stop-turn` (bare Escape) are `code` entries and never reach this check.
  */
 export function isValidChord(c: Partial<Chord> | null | undefined): c is Chord {
   if (!c || typeof c.key !== 'string' || c.key.trim() === '') return false

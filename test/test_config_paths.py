@@ -438,6 +438,66 @@ class TestWindowsSystemDirExtendedLength:
         assert paths._is_windows_system_dir(Path("\\\\?\\D:\\kirocrew-scratch")) is False
 
 
+class TestScratchRootExtendedLengthSpelling:
+    @staticmethod
+    def _windows_with_verbatim_resolve(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+        # On Windows ``resolve()`` keeps a ``\\?\`` prefix the operator typed while the crew
+        # homes and the workspace base resolve plain. A no-op ``resolve()`` lets the prefix
+        # survive into the validator exactly that way on every runner.
+        user_home = tmp_path / "home"
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setenv("USERPROFILE", str(user_home))
+        monkeypatch.setenv("KIROCREW_HOME", str(user_home / ".kiro" / "crew"))
+        monkeypatch.setattr(paths, "_windows_system_dirs", lambda: [])
+        monkeypatch.setattr(Path, "resolve", lambda self, *a, **k: self)
+        return user_home
+
+    @pytest.mark.parametrize(
+        ("target", "expected_reason"),
+        [
+            ("data_home", "a crew home"),
+            ("profiles", "a crew home"),
+            ("user_home", "a crew home"),
+            ("workspace", "the workspace"),
+        ],
+    )
+    @pytest.mark.parametrize("prefixed", [False, True], ids=["plain", "extended"])
+    def test_every_spelling_of_a_protected_tree_is_refused(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        target: str,
+        expected_reason: str,
+        prefixed: bool,
+    ) -> None:
+        import kiro_crew.agent_scratch as agent_scratch
+
+        user_home = self._windows_with_verbatim_resolve(monkeypatch, tmp_path)
+        protected = {
+            "data_home": paths.config_dir(),
+            "profiles": paths.config_dir() / "profiles",
+            "user_home": user_home,
+            "workspace": user_home / "workplace",
+        }[target]
+        value = ("\\\\?\\" + str(protected)) if prefixed else str(protected)
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", value)
+        monkeypatch.setattr(paths, "_scratch_root_override_pin", paths._UNSET)
+
+        assert paths._validate_scratch_root_override() == (None, expected_reason)
+        assert agent_scratch.scratch_root() == paths.config_dir() / "scratch"
+
+    def test_extended_spelling_of_an_unprotected_root_is_kept_as_typed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._windows_with_verbatim_resolve(monkeypatch, tmp_path)
+        value = "\\\\?\\" + str(tmp_path / "elsewhere" / "scratch")
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", value)
+        monkeypatch.setattr(paths, "_scratch_root_override_pin", paths._UNSET)
+
+        assert paths._validate_scratch_root_override() == (Path(value), None)
+
+
 class TestLedgerRoot:
     def test_link_is_refused_without_touching_its_target(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

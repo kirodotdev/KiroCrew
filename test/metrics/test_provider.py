@@ -1248,3 +1248,101 @@ class TestResetForTestingWaitsOutInFlightWorker:
             # out.
             wait_until(lambda: provider_mod._check_in_flight is False, timeout=10)
             reset_for_testing()
+
+
+class TestConfigApplierDoesNotWaitOnTheFlush:
+    """A ``telemetry.*`` settings write waits for this applier; a flush waits on exports."""
+
+    def test_the_applier_returns_while_the_old_provider_is_still_flushing(self, monkeypatch):
+        import asyncio
+
+        import kiro_crew.metrics.provider as provider_mod
+
+        reset_for_testing()
+        release = threading.Event()
+        flushing = threading.Event()
+        flushed = []
+
+        def _blocked_flush(doomed):
+            flushing.set()
+            release.wait(timeout=10)
+            flushed.append(doomed)
+
+        doomed = object()
+        monkeypatch.setattr(provider_mod, "_flush_detached_provider", _blocked_flush)
+        monkeypatch.setattr(provider_mod, "_provider", doomed)
+        try:
+            asyncio.run(asyncio.wait_for(provider_mod._on_config_change(object()), timeout=30))
+            assert provider_mod._provider is None, "the old provider was not detached"
+            assert flushing.wait(timeout=5), "the old provider was never flushed"
+            assert flushed == []
+        finally:
+            release.set()
+            reset_for_testing()
+        assert flushed == [doomed]
+
+    def test_no_thread_to_start_returns_false_without_flushing(self, monkeypatch):
+        from kiro_crew.metrics import provider_flush
+
+        class _NoThread:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                raise RuntimeError("can't start new thread")
+
+        monkeypatch.setattr(provider_flush, "Thread", _NoThread)
+        flushed = []
+        doomed = object()
+        assert provider_flush.flush_in_background(doomed, flushed.append) is False
+        assert flushed == []
+        assert provider_flush.join_all(0)
+
+    def test_no_thread_to_start_flushes_off_the_loop(self, monkeypatch):
+        import asyncio
+
+        import kiro_crew.metrics.provider as provider_mod
+        from kiro_crew.metrics import provider_flush
+
+        reset_for_testing()
+        doomed = object()
+        flushed = []
+        monkeypatch.setattr(provider_mod, "_provider", doomed)
+        monkeypatch.setattr(provider_flush, "flush_in_background", lambda *args: False)
+        monkeypatch.setattr(
+            provider_mod,
+            "_flush_detached_provider",
+            lambda provider: flushed.append((provider, threading.get_ident())),
+        )
+
+        async def apply_change():
+            loop_thread = threading.get_ident()
+            await asyncio.wait_for(provider_mod._on_config_change(object()), timeout=30)
+            return loop_thread
+
+        try:
+            loop_thread = asyncio.run(apply_change())
+            assert provider_mod._provider is None, "the old provider was not detached"
+            assert len(flushed) == 1
+            assert flushed[0][0] is doomed
+            assert flushed[0][1] != loop_thread, "the fallback flushed on the event loop"
+        finally:
+            reset_for_testing()
+
+    def test_reset_for_testing_refuses_while_a_flush_is_stuck(self, monkeypatch):
+        import kiro_crew.metrics.provider as provider_mod
+        from kiro_crew.metrics import provider_flush
+
+        reset_for_testing()
+        release = threading.Event()
+        provider_flush.flush_in_background(object(), lambda _doomed: release.wait(timeout=10))
+        try:
+            monkeypatch.setattr(
+                provider_mod, "_RESET_WAIT_BOUND_SECS", 0.05  # flake-ok: an Event holds the flush
+            )
+            with pytest.raises(RuntimeError, match="background provider flush"):
+                provider_mod.reset_for_testing()
+        finally:
+            release.set()
+            assert provider_flush.join_all(10)
+            reset_for_testing()

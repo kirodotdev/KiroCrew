@@ -437,6 +437,10 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
     # not provision optional native runtimes, just as it does not grant Linux
     # namespaces or supply the Darwin kernel. Its absence is not FAISS evidence.
     exempt_scripts = {
+        # Reads the open main-red issue over the GitHub API on a pull request
+        # run and lists what PR CI deselects. It judges no code and its input
+        # exists only once CI runs on a pushed head.
+        "scripts/ci_main_red_skip.py",
         # Chooses WHICH tests to run for the changed surface; not itself a gate.
         "scripts/ci-surface-tests.py",
         # Linux-only E2E orchestration, not a static scan: boots isolated
@@ -460,6 +464,11 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # lives under .github/scripts). Network orchestration with no verdict of
         # its own, for the same reason as the barrier it probes.
         "scripts/cancel-superseded-run.sh",
+        # Reads the AI review lanes' check-runs for the pull request head over
+        # the GitHub API and holds ci.yml's heavy jobs on a published BLOCK (it
+        # lives under .github/scripts). It judges no code and its input exists
+        # only once the review workflows have run on a pushed head.
+        "scripts/ai-block-hold.sh",
         # Computes which test_*.py files a non-leaf PR added or modified (via git
         # diff against base.sha from the pull_request event payload). The scope
         # depends on the PR base commit, which only exists once the PR event

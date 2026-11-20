@@ -7,6 +7,10 @@ import os
 import platform
 import re
 from collections.abc import Iterator
+from typing import TYPE_CHECKING, TypeAlias
+
+if TYPE_CHECKING:
+    from kiro_crew.option_marker_scan import MarkerRun
 
 # Positive-identity marker injected into the environment of every subprocess
 # tree KiroCrew spawns (the ACP provider, MCP probes, gateway pool backends).
@@ -655,7 +659,7 @@ _RAW_OPTIONS_RE_LINE = re.compile(
 
 # TRAILER (``re.DOTALL``, ``\Z`` anchor) — for the Discord/Telegram/WeCom
 # renderers, which match the marker only at the very END of the message and
-# allow it to span newlines (the body's negated class admits ``\n``). Trailing
+# admit ``\n`` in the body, though the matcher refuses labels holding a break. Trailing
 # ``\s*`` before ``\Z``. Same optional markdown-link close as LINE (same
 # ``[^\s()]`` inner class, disjoint from the trailing ``\s*``, so ReDoS-safe).
 # ``re.MULTILINE`` is there ONLY so the optional leading-wrapper group can anchor
@@ -755,6 +759,19 @@ def _line_marker_candidates(pattern: re.Pattern[str], text: str) -> Iterator[re.
         head = text.find("[OPTIONS:", end)
 
 
+if TYPE_CHECKING:
+    #: What a marker matcher yields: a pattern match, or a line's run of siblings.
+    MarkerMatch: TypeAlias = re.Match[str] | MarkerRun
+
+
+def _sibling_marker(text: str, start: int, end: int) -> re.Match[str] | None:
+    """``text[start:end]`` as a line marker whose labels balance, else ``None``."""
+    match = _RAW_OPTIONS_RE_LINE.fullmatch(text, start, end)
+    if match is None or _marker_labels_have_unmatched_opener(match.group("labels")):
+        return None
+    return match
+
+
 class _MarkerMatcher:
     """A candidate pattern plus the balance decision the pattern cannot make.
 
@@ -775,17 +792,57 @@ class _MarkerMatcher:
         """The candidate pattern's source."""
         return self._pattern.pattern
 
-    def finditer(self, text: str) -> Iterator[re.Match[str]]:
-        """Every candidate whose terminator is its own, in order."""
+    def finditer(self, text: str) -> Iterator[MarkerMatch]:
+        """Every marker whose terminator is its own, in order.
+
+        A line is accepted or refused whole. The pattern finds each line's final
+        candidate, and :func:`markers_before` decides the rest of that line: a
+        candidate inside an unclosed head is refused, and the sibling markers
+        before it are yielded with it as one :class:`MarkerRun`. Siblings join
+        only when the final marker offers a label, as the web parser's
+        ``findOptionMarkers`` does, so ``[OPTIONS: A] [OPTIONS:]`` keeps
+        ``[OPTIONS: A]`` as text instead of emptying the message.
+        """
+        # Imported here so a server that only lists its tools never loads the walk.
+        from kiro_crew.option_marker_scan import (
+            HEAD_CAP,
+            MarkerRun,
+            as_newlines,
+            crosses_line,
+            head_count,
+            markers_before,
+            option_labels,
+        )
+
+        source = text
+        text = as_newlines(source)
+        if head_count(text) > HEAD_CAP:
+            return
         if self._pattern is _RAW_OPTIONS_RE_LINE:
             candidates = _line_marker_candidates(self._pattern, text)
         else:
             candidates = self._pattern.finditer(text)
         for match in candidates:
-            if not _marker_labels_have_unmatched_opener(match.group("labels")):
+            labels = match.group("labels")
+            if crosses_line(labels) or _marker_labels_have_unmatched_opener(labels):
+                continue
+            before = markers_before(
+                text,
+                match.start(),
+                MARKER_OPENERS,
+                MARKER_CLOSERS,
+                lambda start, end: _sibling_marker(text, start, end),
+            )
+            if before is None:
+                continue
+            if before and option_labels(match.group("labels")):
+                yield MarkerRun(before[0], match, source)
+            elif text is not source:
+                yield MarkerRun(match, match, source)
+            else:
                 yield match
 
-    def search(self, text: str) -> re.Match[str] | None:
+    def search(self, text: str) -> MarkerMatch | None:
         """The first accepted marker, or ``None``.
 
         A refused candidate cannot hide an accepted one inside its span: the body
@@ -874,6 +931,9 @@ def _glued_marker_candidates(text: str) -> Iterator[tuple[re.Match[str], str]]:
     The candidate rules shared by the dashboard reflow and the channel relocation;
     see :func:`reflow_and_label_glued_option_marker` for why each rule exists.
     """
+    from kiro_crew.option_marker_scan import as_newlines
+
+    text = as_newlines(text)
     # One fence walker for the whole text, advanced to each candidate in turn.
     # Every candidate starts at a line start (``^`` under MULTILINE), so the slice
     # fed between two candidates always ends on a line boundary and the walker's
@@ -993,6 +1053,8 @@ def relocate_glued_tail_marker(text: str) -> str:
     """
     if "[OPTIONS:" not in text:
         return text
+    from kiro_crew.option_marker_scan import as_newlines
+
     last = None
     for last in _glued_marker_candidates(text):
         pass
@@ -1004,7 +1066,7 @@ def relocate_glued_tail_marker(text: str) -> str:
         return text
     moved = text[: m.start()] + remainder + "\n" + m.group(0) + rest
     # Moved prose that opens a fence (``~~~py``) would swallow the marker.
-    if _in_open_fence(moved, m.start() + len(remainder) + 1):
+    if _in_open_fence(as_newlines(moved), m.start() + len(remainder) + 1):
         return text
     return moved if OPTIONS_RE_TRAILER.search(moved) else text
 
@@ -1386,6 +1448,10 @@ def _rightmost_unfinished_marker(text: str) -> int:
     diverging byte, so an adversarial buffer repeating failing sentinels
     walks linearly. Returns ``-1`` when no admissible occurrence exists.
     """
+    from kiro_crew.option_marker_scan import line_start
+
+    # An ``[OPTIONS`` tail that holds a line break can never close: labels never cross one.
+    last_line = line_start(text, len(text))
     last_close = text.rfind("]")
     cursors = []
     for sentinel, prefix_re in _MARKER_SENTINELS:
@@ -1401,7 +1467,7 @@ def _rightmost_unfinished_marker(text: str) -> int:
             # occurrence means the tail is not still-streaming -- and every
             # remaining occurrence sits further left of that closer too.
             break
-        if prefix_re.match(text, pos) is not None:
+        if (sentinel != "[OPTIONS" or pos >= last_line) and prefix_re.match(text, pos) is not None:
             return pos
         nxt = text.rfind(sentinel, 0, pos)
         if nxt != -1:
@@ -1425,8 +1491,10 @@ def _leading_wrapper_start(text: str, idx: int) -> int:
         run -= 1
     if run == idx:
         return idx
-    line_start = text.rfind("\n", 0, run) + 1
-    if text[line_start:run].strip(" \t") == "":
+    from kiro_crew.option_marker_scan import line_start
+
+    start = line_start(text, run)
+    if text[start:run].strip(" \t") == "":
         return run
     return idx
 
@@ -1804,7 +1872,7 @@ BANNER = r"""
   | ' <| | '_/ _ \ | (__| '_/ -_) V  V /
   |_|\_\_|_| \___/  \___|_| \___|\_/\_/
 
-  👻 Your personal AI agent
+  Your personal AI agent
 """
 
 # Max length of an auto-nudge loop's ``banner`` -- the SHORT transcript row shown
@@ -1883,6 +1951,13 @@ DENY_CAUSE_AUDIT_UNAVAILABLE = "audit_unavailable"
 #: call is refused the same way, so the notice says to use another tool rather
 #: than retry or rename (``DENY_CAUSE_INVALID_NAME`` is the model's own name).
 DENY_CAUSE_UNREADABLE_IDENTITY = "unreadable_identity"
+#: How much of an exit-2 hook's stderr becomes the block reason the model reads.
+#: A deny hook writes that reason for the model, often as a recovery instruction
+#: (what to do first, what to run instead), so the bound leaves room for a few
+#: sentences. The excerpt keeps the head, where the hook's author starts it.
+#: ``run_script_hook`` has already redacted the whole stream, so the cut cannot
+#: sever a secret.
+HOOK_DENY_REASON_MAX_CHARS = 2000
 #: The session handle refused a call whose tool_call frame its per-turn
 #: provenance caches could not retain (too many calls in flight, or an input
 #: over the payload bound), so kind, identity and target are unknown. Nothing

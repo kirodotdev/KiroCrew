@@ -8,7 +8,11 @@ import json
 from typing import TYPE_CHECKING, Literal
 
 from kiro_crew.dashboard.chat_utils import _tool_identity_fields, slack_mirror_is_paused
-from kiro_crew.dashboard.deny_override import deny_override_enabled, override_decision
+from kiro_crew.dashboard.deny_override import (
+    deny_key_note_label,
+    deny_override_enabled,
+    override_decision,
+)
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_APPROVAL_NO_BUDGET,
     DENY_CAUSE_APPROVAL_TIMEOUT,
@@ -24,6 +28,7 @@ from kiro_crew.dashboard.turn_dispatch import (
     format_approval_timeout_card,
 )
 from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE
+from kiro_crew.safety_override import yolo_policy_permits
 from kiro_crew.security.readonly_bash import (
     command_invokes_git,
     is_read_only_bash,
@@ -31,6 +36,7 @@ from kiro_crew.security.readonly_bash import (
 )
 from kiro_crew.shared_crew.decisions import open_slot_approval, settle_slot_approval
 from kiro_crew.slack.handler import resolve_linked_approval
+from kiro_crew.tool_row_prefix import tool_row
 from kiro_crew.trust_patterns import (
     approval_command,
     approval_display_command,
@@ -154,7 +160,7 @@ async def _on_permission_prompt(
             # when steering is unavailable (that leaves exactly
             # today's behaviour). slot/state withheld for the same
             # reason: each cascaded tool already appends a visible
-            # 🚫 row, and the inject card's summary line is keyed on
+            # Refused: row, and the inject card's summary line is keyed on
             # causes this one is not.
             _batch_cascade_steered = await _steer_policy_notice(
                 client,
@@ -175,7 +181,12 @@ async def _on_permission_prompt(
         await _reject_attributed(
             client, event.request_id, attribution="exempt: user-originated cascade"
         )
-        slot.append("tool", f"🚫 {_title} (rejected)", "msg msg-tool", meta=_tool_meta(event))
+        slot.append(
+            "tool",
+            tool_row("refused", f"{_title} (rejected)"),
+            "msg msg-tool",
+            meta=_tool_meta(event),
+        )
         # Mark the permission as resolved so UI shows rejection
         perm_meta: dict[str, str] = {
             "request_id": str(event.request_id),
@@ -340,6 +351,12 @@ async def _on_permission_prompt(
             # The card shows the refused command itself, redacted as the
             # label is, so the person reads what an allow would run.
             perm_meta["deny_override_command"] = _safe_full
+    from kiro_crew import web_ask_rule
+
+    if getattr(turn, "_web_ask", ""):
+        # An organisation's ``ask`` on this web call: a later trust grant's sweep
+        # of pending cards does not answer it (``web_ask_rule``).
+        perm_meta[web_ask_rule.CARD_META_KEY] = "1"
     # A decline known before the row exists is born into the row. Spec:
     # docs/system-specs/modules/app-notifications.md, "Sound events" (permission row).
     if tool_approval_timeout_secs() <= 0:
@@ -556,14 +573,8 @@ async def _on_permission_prompt(
     # resolves the future, and no decision is recorded until this try's
     # `finally`.
     #
-    # ABOVE the window computation on purpose, not just below it:
-    # `test_dashboard_approval_window.py` pins this branch's source
-    # shape by slicing a fixed-length window starting at that
-    # assignment, so anything inserted after it pushes the awaited
-    # call and both cards out of the window the test reads. For the
-    # same reason this comment does not quote the assignment itself:
-    # the test locates the window by searching for that text, and a
-    # second copy above it would move the window to the wrong place.
+    # The source pin on this branch is `test_refusal_inband_notice.py`'s: it
+    # anchors on the timeout card's call, not on the window assignment below.
     crew_log_emit.on_approval_requested(
         _crew_log_sid,
         _crew_log_turn_no,
@@ -579,6 +590,22 @@ async def _on_permission_prompt(
         since=_trace_asked,
     )
     _approval_window = min(state.approval_timeout_for(slot), tool_approval_timeout_secs())
+    # Whether turning YOLO on would have answered this prompt, for the timeout
+    # card's advice. Read before the wait from what is already in scope. Not when
+    # YOLO is already active, since the prompt still reached a person (the grant
+    # does not reach this chat, or skipped this call); not when policy does not
+    # permit YOLO, which then cannot be turned on; not for a deny-rules
+    # override card, which only the owner's own click approves (deny_override);
+    # not when no auto-approve answers this request (a card's turn, a held Bot
+    # limit or an organisation's web ``ask``: ``_no_auto_approve``); not for a child
+    # call the YOLO rung never takes (``child_unconditional_grant_eligible``).
+    _yolo_covers = not (
+        state.is_yolo_active()
+        or not yolo_policy_permits()
+        or _override_offer is not None
+        or turn._no_auto_approve
+        or not event.child_unconditional_grant_eligible
+    )
     _unattended_wait = slot.unattended
     _approval_card: str | None = None
     try:
@@ -631,7 +658,15 @@ async def _on_permission_prompt(
             _log_title,
             _approval_window,
         )
-        _approval_card = format_approval_timeout_card(_approval_window)
+        # Named as ``_note_override_used`` names it: redacted, then labelled.
+        _override_rule = (
+            deny_key_note_label(_redact_display_text(_override_offer.key))
+            if _override_offer is not None
+            else ""
+        )
+        _approval_card = format_approval_timeout_card(
+            _approval_window, yolo_covers=_yolo_covers, rule=_override_rule
+        )
         _host_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT
         _host_deny_reason = (
             "the approval prompt went unanswered for " f"{max(1, round(_approval_window))}s"
@@ -996,7 +1031,12 @@ async def _on_permission_prompt(
                 # a call ran with a security rule stepped aside.
                 _note_override_used(slot, _override_offer)
             _approved_title = _redact_display_text(event.title)
-            slot.append("tool", f"✅ {_approved_title}", "msg msg-tool", meta=_tool_meta(event))
+            slot.append(
+                "tool",
+                tool_row("approved", _approved_title),
+                "msg msg-tool",
+                meta=_tool_meta(event),
+            )
             sel().log_tool_invocation(
                 session_key=session_key,
                 agent=slot.agent or "kirocrew",
@@ -1098,11 +1138,13 @@ async def _on_permission_prompt(
             ),
         )
         if _safety_reason:
-            _reject_label = f"🚫 {_safe_reject_title} (cancelled — {_safety_reason})"
+            _reject_label = tool_row(
+                "refused", f"{_safe_reject_title} (cancelled — {_safety_reason})"
+            )
         elif outcome == "rejected_once":
-            _reject_label = f"🚫 {_safe_reject_title} (rejected — this call only)"
+            _reject_label = tool_row("refused", f"{_safe_reject_title} (rejected — this call only)")
         else:
-            _reject_label = f"🚫 {_safe_reject_title} (rejected)"
+            _reject_label = tool_row("refused", f"{_safe_reject_title} (rejected)")
         slot.append("tool", _reject_label, "msg msg-tool")
         # NOTE: Do NOT append to _refusal_reasons here.
         # This is an interactive user denial — the user chose to reject

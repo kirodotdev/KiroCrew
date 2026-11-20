@@ -43,6 +43,27 @@ function dashboardRetryPath(navigatedUrl, backendUrl, fallback = "") {
 }
 
 /**
+ * `path` resolved against the gateway at `backendUrl`, or the gateway root when
+ * it would leave that origin. A same-origin page can carry a `//host` pathname,
+ * which a relative resolve turns into another host.
+ */
+function dashboardUrlFor(backendUrl, path = "") {
+  const root = new URL(backendUrl);
+  if (!path) return root.toString();
+  try {
+    const target = new URL(path, root);
+    // `blob:` and `filesystem:` URLs report their inner origin, so the scheme
+    // has to match too.
+    if (target.protocol === root.protocol && target.origin === root.origin) {
+      return target.toString();
+    }
+  } catch {
+    // Falls back to the root below.
+  }
+  return root.toString();
+}
+
+/**
  * How long the sign-in request may take before the page loads anyway. The boot
  * path starts the liveness monitor only after the load, so a gateway that
  * wedges mid-exchange must not hold it off forever.
@@ -75,4 +96,9 @@ async function loadDashboardWithToken(webContents, url, token) {
   if (!webContents.isDestroyed()) webContents.loadURL(url);
 }
 
-module.exports = { createTokenRetryHandler, dashboardRetryPath, loadDashboardWithToken };
+module.exports = {
+  createTokenRetryHandler,
+  dashboardRetryPath,
+  dashboardUrlFor,
+  loadDashboardWithToken,
+};

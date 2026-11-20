@@ -783,12 +783,16 @@ async def test_begin_idc_sends_the_canonical_start_url(tmp_path, monkeypatch, ty
 
 
 @pytest.mark.parametrize(
-    "typed",
-    ["http://acme.awsapps.com/start", "https://acme.awsapps.com/start?x=1", "https://[acme"],
+    "typed, reason",
+    [
+        ("http://acme.awsapps.com/start", "not_https"),
+        ("https://acme.awsapps.com/start?x=1", "characters"),
+        ("https://acme.awsapps.com:abc/start", "not_a_url"),
+    ],
 )
 @pytest.mark.asyncio
 async def test_begin_idc_refuses_an_unusable_start_url_before_calling_aws(
-    tmp_path, monkeypatch, typed
+    tmp_path, monkeypatch, typed, reason
 ):
     service, _ = _service(tmp_path)
 
@@ -796,8 +800,10 @@ async def test_begin_idc_refuses_an_unusable_start_url_before_calling_aws(
         raise AssertionError("SSO-OIDC must not be called for a refused start URL")
 
     monkeypatch.setattr(builder_id, "register_client", _never)
-    with pytest.raises(InvalidStartUrlError, match="awsapps.com/start"):
+    with pytest.raises(InvalidStartUrlError, match="awsapps.com/start") as refused:
         await service.begin_device("idc", start_url=typed)
+    # The broken rule's name, which the dashboard form says in the user's language.
+    assert getattr(refused.value, "reason", None) == reason
     assert service._pending == {}
 
 
@@ -1621,8 +1627,8 @@ async def test_poll_idc_asks_the_relay_viewer_control_plane_first(tmp_path, monk
 
 @pytest.mark.parametrize(
     "enabled, url",
-    [(False, _GAMMA_CPS), (True, "")],
-    ids=["viewer-off", "url-unset"],
+    [(False, _GAMMA_CPS), (True, ""), (True, "http://management.rejected.kiro.example")],
+    ids=["viewer-off", "url-unset", "url-rejected"],
 )
 @pytest.mark.asyncio
 async def test_poll_idc_without_the_viewer_asks_only_the_prod_control_planes(

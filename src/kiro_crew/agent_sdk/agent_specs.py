@@ -130,8 +130,14 @@ def authored_spec_is_toolless(agent: str, work_dir: Any = None) -> bool:
     return client_mcp_array.authored_agent_spec_is_toolless(agent, work_dir)
 
 
-def authored_spec_toolless_verdict(agent: str, work_dir: Any = None) -> bool | None:
+def authored_spec_toolless_verdict(
+    agent: str, work_dir: Any = None, *, backend: str | None = None
+) -> bool | None:
     """Like :func:`authored_spec_is_toolless`, but ``None`` when no spec exists. Blocking.
+
+    *backend* is the backend the caller's session starts on. On KAS the background
+    helper is judged as KAS is sent it (``client_mcp_array.kas_lite_spec_is_toolless``);
+    any other backend, or no backend, judges the file as the harness loads it.
 
     ``False`` means a spec exists and it mounts something, or it exists and the
     reader will not answer for it: two specs declaring the name (ambiguous), a
@@ -146,11 +152,16 @@ def authored_spec_toolless_verdict(agent: str, work_dir: Any = None) -> bool | N
 
     from kiro_crew.acp import client_mcp_array, session_mcp
     from kiro_crew.agent import agent_spec_path, kiro_agents_dir_path
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
     from kiro_crew.agent_spec_format import agent_spec_candidates
     from kiro_crew.config.paths import project_agents_dir
 
     spec = session_mcp.agent_spec_snapshot(agent, work_dir=work_dir)
     if spec is not None:
+        if backend == ACP_BACKEND_KAS:
+            sent = client_mcp_array.kas_lite_spec_is_toolless(agent, work_dir)
+            if sent is not None:
+                return sent
         return client_mcp_array.spec_is_toolless(spec)
     try:
         if agent_spec_path(agent) is not None:

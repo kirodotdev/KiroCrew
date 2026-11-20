@@ -19,6 +19,7 @@ from test_config_patch import _make_app, _patch, tmp_config  # noqa: F401
     "path,value,status",
     [
         ("dashboard.remote_editor.editor", "vscode", 200),
+        ("dashboard.remote_editor.editor", "kiro", 200),
         ("dashboard.remote_editor.editor", "", 200),
         # Becomes the link's URL scheme, so only a listed editor is written.
         ("dashboard.remote_editor.editor", "javascript", 400),

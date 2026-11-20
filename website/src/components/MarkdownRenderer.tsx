@@ -76,6 +76,7 @@ import {
   MdSourceCtx,
   MdBlockStartCtx,
   ParagraphNoticeSlotCtx,
+  BasePathCtx,
   ChatProjectDirCtx,
   PathActionCtx,
   PathProbeCtx,
@@ -96,7 +97,8 @@ import { linkAddress, useLinkAddressTip } from './markdown/linkAddressTip'
 import { MD_FLOW_ROOT_CLS, MD_PARAGRAPH_CLS } from './markdown/typography'
 import { InlineCode } from './markdown/InlineCode'
 import { MarkdownTable } from './markdown/MarkdownTable'
-import { ImgWithFallback } from './markdown/ImgWithFallback'
+import { ImgWithFallback, parentDirOf } from './markdown/ImgWithFallback'
+import { WINDOWS_ABS_PATH_RE } from '../utils/urlTransform'
 import { DeferredMedia, MdSourceEl } from './markdown/remoteMedia'
 import { MermaidBlock } from './markdown/MermaidBlock'
 import { PlantUmlBlock } from './markdown/PlantUmlBlock'
@@ -135,11 +137,29 @@ type MdAnchorProps = React.AnchorHTMLAttributes<HTMLAnchorElement> & ExtraProps 
   [SESSION_REF_TRAILING]?: string
 }
 
+/** Whether a link's visible text is a URL of the issue, pull request or merge
+ *  request that its href points to, as for a bare URL or an autolink. The label
+ *  is parsed like the href, Jira hosts included. Parsing drops a trailing slash
+ *  and lowercases the host, and a label without a scheme gets `https://`. An
+ *  empty label also counts, because it holds no text to keep. */
+function labelIsSourceUrl(label: string, source: PullRequestLink, jiraHosts: readonly string[]): boolean {
+  const text = label.trim()
+  if (!text) return true
+  let candidate = text
+  try {
+    new URL(text)
+  } catch {
+    candidate = `https://${text}`
+  }
+  return parseSourceLinkUrl(candidate, [], jiraHosts)?.url === source.url
+}
+
 function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: MdAnchorProps) {
   const override = useContext(LinkOverrideCtx)
   const probeEnabled = useContext(PathProbeCtx)
   const actions = useContext(PathActionCtx)
   const chatProjectDir = useContext(ChatProjectDirCtx)
+  const basePath = useContext(BasePathCtx)
   // The override is resolved FIRST and wins outright — Issue Radar's in-app
   // issue/PR affordance must keep beating a link preview. Feeding `null` into
   // the unfurl gate for a claimed href also means a claimed link is never
@@ -173,6 +193,12 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   const target = useUnfurlHref(claimed || source ? null : href)
   const meta = useLinkMeta(target ?? undefined, target !== null)
   let localHref: string | null = null
+  // Set when `localHref` is a relative link joined to the previewed document.
+  let docRelative = false
+  // The previewed file's folder: '' for a file at the POSIX root, `~` for one
+  // directly in the home folder. null when no rooted document names itself, or
+  // when this host has no open handler and so nothing could follow the link.
+  const docDir = basePath && (actions.onFileOpen || actions.onFolderOpen) && (basePath.startsWith('/') || basePath.startsWith('~/') || WINDOWS_ABS_PATH_RE.test(basePath)) ? parentDirOf(basePath) : null
   if (href?.startsWith('/')) {
     try {
       const decodedHref = decodeURIComponent(href)
@@ -186,16 +212,37 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
     // probe's confirmation changes the click (see `onPathClick`), so a
     // relative link to something that is not a file stays an ordinary link.
     //
-    // A RELATIVE destination is taken only inside a chat transcript, the one
-    // host that says which folder it is relative to (`ChatProjectDirCtx`).
-    // A previewed document's `[x](./CHANGELOG.md)` is relative to that
-    // document, which nothing here joins to, so it keeps its plain link rather
-    // than opening a same-named file from the gateway's directory. `~/` names
-    // the gateway user's home on every host, so it needs no project.
+    // A RELATIVE destination needs a folder it is relative to. A previewed
+    // document (`BasePathCtx`, the file's own absolute path) supplies its
+    // directory, the same base its relative images use, so the link is joined
+    // to it here and probed as an absolute path. `..` is kept for the
+    // backend's realpath, as the image join keeps it. A chat transcript
+    // supplies its project (`ChatProjectDirCtx`), which `usePathResolution`
+    // joins. With neither, a relative link keeps its plain link rather than
+    // opening a same-named file from the gateway's directory. `~/` names the
+    // gateway user's home on every host, so it needs no base.
     try {
       const decodedHref = decodeURIComponent(href)
-      const relativeOk = decodedHref.startsWith('~/') || chatProjectDir != null
-      if (relativeOk && isPathCandidate(splitLineRef(decodedHref).path)) localHref = decodedHref
+      const path = splitLineRef(decodedHref).path
+      if (decodedHref.startsWith('~/')) {
+        if (isPathCandidate(path)) localHref = decodedHref
+      } else if (docDir != null) {
+        // The shape test runs on the JOINED path: an authored link to a bare
+        // `sibling.md` carries no separator of its own, and once joined it is
+        // a rooted path like any other.
+        // A `?query` or `#heading` suffix is for the browser, not part of the
+        // file name, so it is cut from the RAW href before decoding: an
+        // encoded `%23` is a filename character and stays.
+        // shortcut: the heading itself is not revealed, only the file opens.
+        const rel = decodeURIComponent(href.replace(/[?#].*$/, '')).replace(/^\.\//, '')
+        const joined = docDir + (WINDOWS_ABS_PATH_RE.test(docDir) ? '\\' : '/') + rel
+        if (isPathCandidate(splitLineRef(joined).path)) {
+          localHref = joined
+          docRelative = true
+        }
+      } else if (chatProjectDir != null && isPathCandidate(path)) {
+        localHref = decodedHref
+      }
     } catch { /* keep it a normal link */ }
   }
   // Where the link goes, for the code spans in its label (`InsideLinkCtx`): a
@@ -300,7 +347,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   // `missing` guards hold a confirmed file/dir and a route to their own paths.
   const missingFileLink = pathResolution.candidate
     && pathResolution.kind === 'missing'
-    && isFileLinkDest(pathResolution.splitPath)
+    && (docRelative || isFileLinkDest(pathResolution.splitPath))
   // askAgent on: a transcript link holds no draft (the host composer's draft is
   // persisted per slot), and a blocked or failed reveal is gateway-side.
   const reveal = useRevealFailure(localHref ?? undefined)
@@ -397,6 +444,29 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   }
   if (!href) return keep(<span {...sp(node)}>{children}</span>)
   if (claimed) return keep(<>{claimed}</>)
+  const forgeLabel = source ? forgeChipLabel(source) : null
+  if (source && (source.provider === 'jira' || forgeLabel) && !labelIsSourceUrl(textOf(children), source, jiraHosts)) {
+    // Text the author wrote in place of the URL stays visible: the chip would
+    // replace it with a reference built from the URL. The provider's mark
+    // beside the text still identifies the source. A Jira link points at the
+    // parser's canonical url, as the Jira chip does: a Jira source skips the
+    // `safeHttpUrl` check, so its raw href may carry credentials.
+    return keep(
+      <a
+        {...sp(node)}
+        href={source.provider === 'jira' ? source.url : href}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={href}
+        className="text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent"
+      >
+        <span className="mr-1 inline-flex align-middle">
+          <SourceProviderMark provider={source.provider} size={12} />
+        </span>
+        <InsideLinkCtx.Provider value={linkKind}>{children}</InsideLinkCtx.Provider>
+      </a>,
+    )
+  }
   if (source?.provider === 'jira') {
     const jira = source
     return keep(
@@ -414,7 +484,6 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       </span>,
     )
   }
-  const forgeLabel = source ? forgeChipLabel(source) : null
   if (source && forgeLabel) {
     return keep(
       <span className="group inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-accent/10 px-1.5 py-px align-baseline text-[13px] mc-md-ref-chip transition-colors hover:border-border hover:bg-accent/20 focus-within:border-border">

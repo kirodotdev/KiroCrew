@@ -344,8 +344,8 @@ def test_raise_acp_error_type_and_tags(error, available, expected_text, expected
         pytest.param(
             "kas",
             True,
-            "Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro "
-            "Agent → Kiro sign-in, then send your message again.",
+            "Not signed in to Kiro. Sign in from Settings → Kiro account, then send your "
+            "message again.",
             id="host-auth-backend-tags-sign-in",
         ),
         pytest.param(
@@ -366,6 +366,20 @@ def test_session_expired_sign_in_tag_follows_the_backend(backend, auth_required,
         f"{sign_in_text} Switching models will not help — this "
         "is a sign-in issue, not a backend error."
     )
+
+
+def test_kas_sign_in_required_frame_is_tagged_for_the_sign_in_card():
+    """KAS 3.4's first prompt with no sign-in: its own errorType, no expiry wording."""
+    frame = {
+        "code": -32000,
+        "message": "Sign in to Kiro to send a prompt.",
+        "data": {"errorType": "SignInRequiredError", "retryErrorType": "CLIENT_ERROR"},
+    }
+    with pytest.raises(acp_client.AcpError) as caught:
+        acp_client._raise_acp_error(frame, None, backend="kas")
+    assert caught.value.auth_required is True
+    assert caught.value.transient is False
+    assert str(caught.value).startswith("Not signed in to Kiro. Sign in from Settings")
 
 
 # What an access refusal looks like from each side: the bare Bedrock-shaped

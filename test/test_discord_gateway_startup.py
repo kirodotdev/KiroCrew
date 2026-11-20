@@ -352,6 +352,27 @@ class TestSlashMenu:
         )
 
 
+class TestOwnerDm:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("allowed", "expected"), [(["u1"], ["u1"]), (["u1", "u2"], [])], ids=["owner", "two"]
+    )
+    async def test_only_the_sole_owners_dm_is_reopened(
+        self, registry, monkeypatch, allowed, expected
+    ) -> None:
+        """A restart drops the DM pairing the owner-DM predicate places a mirror by."""
+        opened: list[str] = []
+
+        async def _create_dm_channel(self: Any, user_id: str) -> str:
+            opened.append(user_id)
+            return "dm-1"
+
+        monkeypatch.setattr(_Client, "create_dm_channel", _create_dm_channel, raising=False)
+        await _start(_orch(_discord_allowed_user_ids=allowed))
+        await _finish_registrations()
+        assert opened == expected
+
+
 class TestApprovalMode:
     @pytest.mark.parametrize(
         ("override", "configured", "expected"),

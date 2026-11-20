@@ -38,7 +38,7 @@ type MembersPageProfileCardProps = Parameters<typeof MembersPageProfileCard>[0]
 
 type Slot = { key: string; title: string; created_by: string; mate_root?: string }
 
-function mountCard(slots: Slot[], openSessionGuarded = vi.fn()) {
+function mountCard(slots: Slot[], openSessionGuarded = vi.fn(), openSessionInPanel = vi.fn()) {
   const ref = { current: () => false }
   const member = { name: 'mate', slot_key: 'chat-mate' }
   const props = {
@@ -47,7 +47,7 @@ function mountCard(slots: Slot[], openSessionGuarded = vi.fn()) {
     rosterView: { isRunning: () => false, activeView: member },
     thread: { activeSlot: '', freshStart: { isPending: false }, askFreshStart: vi.fn(), confirmedSlot: '' },
     sidePanel: {
-      profileCardW: 400, activeMemberKey: 'mate', openCrewView: vi.fn(), openSessionGuarded,
+      profileCardW: 400, activeMemberKey: 'mate', openCrewView: vi.fn(), openSessionGuarded, openSessionInPanel,
       drivingSessions: slots,
     },
     schedules: {
@@ -72,7 +72,7 @@ function mountCard(slots: Slot[], openSessionGuarded = vi.fn()) {
   } as unknown as MembersPageProfileCardProps
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(<QueryClientProvider client={qc}><MembersPageProfileCard {...props} /></QueryClientProvider>)
-  return { openSessionGuarded, navigate: props.navigate as unknown as ReturnType<typeof vi.fn> }
+  return { openSessionGuarded, openSessionInPanel, navigate: props.navigate as unknown as ReturnType<typeof vi.fn> }
 }
 
 describe('MembersPageProfileCard Sessions tab rows', () => {
@@ -88,16 +88,12 @@ describe('MembersPageProfileCard Sessions tab rows', () => {
     expect(named.textContent).toContain('Fix the parser')
   })
 
-  it('expands the clicked row in place and never opens the session', async () => {
-    crewWorkerRecap.mockResolvedValue({
-      key: 'chat-named', root: 'mate', title: 'Fix the parser', ledger_item: '', status: '', reason: '',
-      state: '', summary: '', decision: '', pr: null, pr_url: '', artifacts: {}, last_update: '',
-      open_approvals: 0, approvals: [], open_questions: 0, live: true,
-    })
-    const { openSessionGuarded, navigate } = mountCard([{ key: 'chat-named', title: 'Fix the parser', created_by: 'mate', mate_root: 'mate' }])
-    fireEvent.click(await screen.findByTestId('mate-session-toggle'))
-    expect((await screen.findByTestId('mate-recap-empty')).textContent).toBe('No report yet')
-    expect(crewWorkerRecap).toHaveBeenCalledWith('mate', 'chat-named')
+  it('opens the clicked row in the side panel, not in place and not on the chat page', async () => {
+    const { openSessionGuarded, openSessionInPanel, navigate } = mountCard([{ key: 'chat-named', title: 'Fix the parser', created_by: 'mate', mate_root: 'mate' }])
+    fireEvent.click(await screen.findByTestId('mate-session-open'))
+    expect(openSessionInPanel).toHaveBeenCalledWith('chat-named')
+    expect(screen.queryByTestId('mate-recap')).toBeNull()
+    expect(crewWorkerRecap).not.toHaveBeenCalled()
     expect(openSessionGuarded).not.toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
   })

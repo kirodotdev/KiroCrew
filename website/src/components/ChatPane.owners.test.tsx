@@ -86,6 +86,7 @@ describe('ChatPane module boundary', () => {
   it('exports every value name its consumers import', () => {
     expect(Object.keys(facadeModule).sort()).toEqual(expect.arrayContaining([
       'default',
+      'useChatPaneUploads',
     ]))
   })
 })

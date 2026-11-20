@@ -142,7 +142,7 @@ type WakeScope =
   | { ownedOnly: true; isDefaultCrew?: never }
   | { ownedOnly?: false; isDefaultCrew: boolean }
 
-export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefaultCrew, ownedOnly = false, dense = false, initialAdding = false, chromeless = false, hideKindBadge = false, heading, blurb, emptyLine, pinnedHint, onDraftChange, onSavingChange, onRequestCancel, onNavigateAway }: WakeScope & {
+export default function CrewWakeSection({ crew, memberId, memberStore, agentTemplate, isDefaultCrew, ownedOnly = false, dense = false, initialAdding = false, chromeless = false, hideKindBadge = false, heading, blurb, emptyLine, pinnedHint, onDraftChange, onSavingChange, onRequestCancel, onNavigateAway }: WakeScope & {
   crew: string
   /** The crew's IMMUTABLE id (its slug), which is what a private schedule's
    *  `member_id` holds and what a new one is bound to. Separate from `crew`, the
@@ -150,6 +150,8 @@ export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefau
    *  already its own slug — and conflating them made every such crewmate read as
    *  having no schedules. See `wakesCrew`. */
   memberId: string
+  /** The crew's memory store, so a new schedule can be filed in its home folder. */
+  memberStore?: string
   agentTemplate?: string
   /** Pin the rows' stacked layout on, for a host that is narrow on a wide screen
    *  (the Crewmates panel column). See `WakeRow`'s own note on `dense`. Also collapses the two
@@ -428,6 +430,7 @@ export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefau
                the roster row's own identity and cannot collide that way. Unconditional:
                JobForm applies the default-crew rule itself. */
             memberId={crew}
+            memberStore={memberStore}
             lockedAgentHint={pinnedHint}
             providerAgent={agentTemplate}
             onSaved={onCreated}

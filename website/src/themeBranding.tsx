@@ -40,7 +40,9 @@ export interface ThemeBranding {
   /** Hide topBar / topBarAside on narrow (mobile) viewports. Default false. */
   topBarHideOnMobile?: boolean
   /** Decorative overlays (widgets, transitions), mounted unless the user turns
-   *  Overlays off for that theme in Settings > Display > Theme > Experience. */
+   *  Overlays off for that theme in Settings > Display > Theme > Experience.
+   *  They render in the shell's click-through decor slot, so a part that must
+   *  take clicks (a close button) sets `pointer-events: auto` on itself. */
   overlays?: ComponentType[]
   /** Side-effect fired once when this theme becomes active (off→on switch),
    *  e.g. a boot chime. Must be idempotent / cheap. */

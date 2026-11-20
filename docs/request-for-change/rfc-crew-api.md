@@ -3,10 +3,10 @@ title: Crew API — a stable, versioned HTTP API for clients of the Kiro Crew ga
 status: partial
 author: headless-crew (crewmate), with kirocrew-worker
 created: 2026-10-31
-last-audited: 2026-10-31
-audited-at: 4e605b0d2b
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
-implementation-prs: [34104]
+implementation-prs: [34104, 39564, 39921]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Crew API
 
-- Status: partial. A maintainer accepted the design on 2026-11-14, with open question Q7 decided. The first Owner-tier route is built: [#34104](https://github.com/kirodotdev/KiroCrew/pull/34104) serves `GET /v1/crew/owner/bots` (`src/kiro_crew/dashboard/routes/crew_api.py`), the twin of `GET /api/members`. The rest is not built. This document changes no code.
+- Status: partial. A maintainer accepted the design on 2026-11-14, with open question Q7 decided. The first Owner-tier route is built: [#34104](https://github.com/kirodotdev/KiroCrew/pull/34104) serves `GET /v1/crew/owner/bots` (`src/kiro_crew/dashboard/routes/crew_api.py`), the twin of `GET /api/members`. [#39564](https://github.com/kirodotdev/KiroCrew/pull/39564), merged 2026-11-20, adds phase 1's local authorization: the four routes `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` and `/oauth/revoke` (`src/kiro_crew/dashboard/routes/local_authorization.py`), though no `/v1` route accepts the token yet. The rest is not built. This document changes no code.
 - Machine-readable contract: the OpenAPI 3.1 drafts in [`assets/crew-api/`](assets/crew-api/crew-public.yaml):
   `crew-public.yaml` (the Public tier), `crew-owner.yaml` (the Owner tier) and `components.yaml`
   (shared schemas). Both `openapi-spec-validator` and `@redocly/cli lint` pass on them with the
@@ -589,7 +589,9 @@ listed here so the count is not read as "everything the gateway exposes":
 |---|---|---|---|---|
 | `/v1/crew/owner/instance/*` | Control plane: health, configuration, upgrade and rollback, start and stop | The owner | 3 | No OpenAPI yet |
 | The wrapped Owner route for the Bot roster | Wraps `GET /api/members` | The owner | 1b | In `crew-owner.yaml` |
-| Local authorization: `GET /oauth/authorize`, `POST /oauth/token`, `POST /oauth/revoke`, `GET /.well-known/oauth-authorization-server` on the local gateway | A client on the same machine asks for a grant | Programs on the same machine; consent needs the owner in the dashboard | 1a | No OpenAPI; parameters follow OAuth 2.1 and RFC 8414 |
+| Local authorization: `GET /oauth/authorize`, `POST /oauth/token`, `POST /oauth/revoke`, `GET /.well-known/oauth-authorization-server` on the local gateway | A client on the same machine asks for a grant | Programs on the same machine; consent needs the host owner's credential through the Owner API | 1a | No OpenAPI; parameters follow OAuth 2.1 and RFC 8414 |
+| The owner's side of local authorization: `GET /v1/crew/owner/grant-requests`, `POST /v1/crew/owner/grant-requests/{request_id}/decision` (amendment, 2026-11-19) | The host owner lists the waiting grant requests and approves or denies one | Host-owner credential, including authenticated remote access; Shared Crew teammates and app credentials get 403 `owner_only`. Rule 5 of this RFC (the Owner tier is for the owner only) already requires this | 1a | In `crew-owner.yaml` (amendment) |
+| Reading one request and ending a local grant: `GET /v1/crew/owner/grant-requests/{request_id}`, `DELETE /v1/crew/owner/grants/{id}` for a grant made through local authorization (amendment, 2026-11-20, proposed) | The host owner reads how one request was answered and which grant it led to, and revokes that grant | Host-owner credential; Shared Crew teammates and app credentials get 403 `owner_only`, by rule 5 | 1a | In `crew-owner.yaml` (amendment) |
 | Embed page: `GET /embed` and its sign-in routes | The embedded page where the user signs in and answers approvals; `/embed?approval=<id>` shows one approval | Reachable without a token; reads no conversation data | 2 | No OpenAPI yet |
 | Site connection: `GET /connect/start`, `GET /connect/callback` | Connects the user's account at an app's site when the app's MCP server needs it | Reachable without a token; accepts only a one-time code and `state` | 2 | No OpenAPI yet |
 | `POST /v1/chat/completions` | Frozen transition route | The owner and local apps | Exists today | Not specified here |
@@ -597,6 +599,42 @@ listed here so the count is not read as "everything the gateway exposes":
 
 The routes that are reachable without a token need a specification as detailed as the `/v1`
 operations before phase 2 starts ([Q8](#open-questions)).
+
+**Local authorization: how the app waits for the owner** (amendment, 2026-11-19; proposed with the
+pull request that builds the four routes, and in force once a maintainer merges it).
+
+A machine that runs Kiro Crew as a server often has no browser, and the owner answers some time
+after the app asks. So `GET /oauth/authorize` never grants by itself:
+
+1. The first call records a grant request and answers that it waits: 202 with `request_id`,
+   `user_code`, `expires_at` and `interval` for a program that accepts `application/json`, else a
+   page that reloads.
+2. The owner approves or denies the request. With a dashboard this is the consent page; without
+   one it is an Owner route. The owner can narrow the requested scopes, never widen them. An app
+   credential cannot answer a request.
+3. The app asks again with `request_id` and the same parameters, no sooner than `interval`
+   seconds. Once the owner answered, the gateway redirects to the app's loopback `redirect_uri`
+   with a one-time code, or with `error=access_denied`.
+
+The four routes answer only a request made directly from this machine; one that arrives through
+the relay or another entry gets 404. Each request and grant stores a `namespace` field, fixed to
+`default`. The access token is a JWT with `typ` `kiro-crew-local+jwt`, valid 5 minutes. The two Owner routes the owner answers through are added to `crew-owner.yaml` with this amendment; they are not counted in the 59. Proposals
+to be confirmed: a request waits 10 minutes, a code lives 60 seconds, a refresh token expires
+after 24 hours unused and 7 days in all, and at most 5 requests wait per `client_id` and 20 in all.
+
+**Local authorization: what the owner reads and ends** (amendment, 2026-11-20; proposed, to be
+accepted by a maintainer):
+
+1. `GET /v1/crew/owner/grant-requests/{request_id}` returns one request, answered or not. It is
+   added to `crew-owner.yaml` and is not counted in the 59. The request stays readable until it
+   and its code have expired, or for as long as the grant it led to exists; after that it is 404.
+2. A `GrantRequest` also carries `decided_at`, `decided_by` (the kind of caller, never a token),
+   `granted_scopes` (only when approved) and `grant_id` (set once the app redeemed its code).
+   `requested_bots` is left out: `GET /oauth/authorize` has no parameter for a Bot range yet.
+3. `DELETE /v1/crew/owner/grants/{id}`, already in this RFC, is served for grants made through
+   local authorization. Every token under the grant is refused from the next request. A second
+   call answers the same 200 until the grant's own expiry, then 404. Such a grant has no outside
+   issuer, so nothing is sent over the control channel.
 
 ### 9. Versioning and compatibility
 

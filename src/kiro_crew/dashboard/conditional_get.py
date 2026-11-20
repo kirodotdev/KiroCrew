@@ -168,7 +168,7 @@ def _accepts_gzip(request: web.Request) -> bool:
     return weight is not None and weight > 0
 
 
-def _gzip_bytes(body: bytes) -> bytes:
+def gzip_bytes(body: bytes) -> bytes:
     # Level 1: the cheapest level still shrinks repetitive JSON several-fold. zlib
     # releases the GIL while it compresses, so the call runs in a worker thread.
     comp = zlib.compressobj(1, zlib.DEFLATED, 31)
@@ -193,6 +193,6 @@ async def conditional_json_response(request: web.Request, body: bytes) -> web.Re
     if is_not_modified(request, headers["ETag"]):
         return web.Response(status=304, headers=headers)
     if len(body) >= GZIP_MIN_BYTES and _accepts_gzip(request):
-        body = await asyncio.to_thread(_gzip_bytes, body)
+        body = await asyncio.to_thread(gzip_bytes, body)
         headers["Content-Encoding"] = "gzip"
     return web.Response(body=body, content_type="application/json", headers=headers)

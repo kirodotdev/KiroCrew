@@ -611,7 +611,7 @@ class TestApprovalModes:
         # Deny-by-default: auto-approve must NOT silently approve on bad hook output.
         client.approve_tool.assert_not_called()
         client.reject_tool.assert_called_once_with("req-1")
-        assert [m["content"] for m in _tool_messages(slot)] == ["🚫 fs_write (hook error)"]
+        assert [m["content"] for m in _tool_messages(slot)] == ["Refused: fs_write (hook error)"]
 
     @pytest.mark.asyncio
     @pytest.mark.xdist_group(name="serial")
@@ -636,7 +636,7 @@ class TestApprovalModes:
         assert [json.loads(m["cls"])["resolved"] for m in msgs if m["role"] == "permission"] == [
             "rejected"
         ]
-        assert "🚫 fs_write (rejected)" in [m["content"] for m in msgs]
+        assert "Refused: fs_write (rejected)" in [m["content"] for m in msgs]
 
     @pytest.mark.asyncio
     async def test_interactive_approve_with_empty_hooks(self, tmp_path):

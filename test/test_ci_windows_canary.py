@@ -210,14 +210,17 @@ def test_shard_selection_and_checks_stay_intact(jobs):
     )
     assert "continue-on-error" not in job
     step = next(s for s in job["steps"] if s.get("name", "").startswith("Run tests (Windows shard"))
+    # The full-suite arm, the last invocation (the leaf and reduced arms are held
+    # by test_ci_file_shards.py).
     command = re.sub(
-        r"\s+", " ", step["run"].split("python -m pytest", 1)[1].replace("\\\n", " ")
+        r"\s+", " ", step["run"].rsplit("python -m pytest", 1)[1].replace("\\\n", " ")
     ).strip()
     assert command == (
-        "-p scripts.ci_pytest_progress -p scripts.ci_file_shards "
+        "-p scripts.ci_pytest_progress -p scripts.ci_file_shards -p scripts.ci_main_red_skip "
         '--ci-progress-dir "$RUNNER_TEMP/pytest-progress" '
-        '-q -n auto --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" '
-        '--file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }}'
+        '-q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" '
+        '--file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} '
+        "--file-shard-pins scripts/ci_file_shard_pins_windows.txt"
     )
     assert step["shell"] == "bash"
     upload = next(s for s in job["steps"] if s.get("name") == "Upload Windows pytest progress")

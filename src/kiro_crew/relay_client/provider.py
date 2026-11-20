@@ -9,11 +9,11 @@ refuse to start any provider under ``--no-tunnel`` or without dashboard token au
 
 :func:`public_tunnel_provider` builds this provider for the public composition root,
 which calls it only when ``kiro_crew.edition_locks.relay_selected`` says
-``tunnel.relay_enabled`` is on (off by default) and the build does not lock local
+``tunnel.relay_enabled`` asks for it (``remote_control.hosting``) and the build does not lock local
 enables, and installs the no-op ``DefaultTunnelProvider`` otherwise. That rule lives
 outside this package so a composition with the relay off never imports it. The
-provider's host token source is the lease client when ``tunnel.relay_lease_url``
-names a lease service, and the refusing default otherwise. An edition that composes
+provider's host token source is the lease client, on ``tunnel.relay_lease_url`` or,
+when that is empty, on the built-in Kiro control plane URL. An edition that composes
 its own context puts its own provider in the slot and never reaches this function,
 so the relay client is never chosen over an edition's provider.
 """
@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional
 from kiro_crew.relay_client.client import STATE_CONNECTED, STATE_ERROR, RelayClient
 from kiro_crew.relay_client.ingress import CrewIngress, LoopbackIngress
 from kiro_crew.relay_client.lease import (
+    SECRET_URI_PREFIX,
     SIGN_IN_CREDENTIAL,
     TOKEN_TYPE_API_KEY,
     TOKEN_TYPES,
@@ -43,6 +44,7 @@ from kiro_crew.relay_client.protocol import (
     is_loopback_host,
 )
 from kiro_crew.relay_client.token_source import HostTokenSource, UnavailableHostTokenSource
+from kiro_crew.remote_control.hosting import relay_requested
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.kiro_relay.ingress import RelayIngress as GatewayRelayIngress
@@ -67,9 +69,11 @@ class RelaySettings:
     The lease answer's ``hostUrl`` and ``crewUrl`` take precedence over
     ``host_url`` and ``crew_domain``, which ``config.json`` never sets: an edition
     with its own host token source passes them when it builds the settings.
-    ``lease_url`` names the lease service; while it is empty there is no host
-    token source. ``lease_credential`` says where the Crew's credential for that
-    service is, never the credential itself.
+    ``lease_url`` names the lease service; while it is empty the Crew leases from
+    the built-in URL, unless an edition named the relay. ``lease_credential`` says where the Crew's credential for that
+    service is, never the credential itself. Empty, with no ``lease_token_type``, means
+    the Crew's own Kiro sign-in, as ``kiro-sign-in`` does (:attr:`uses_sign_in`),
+    unless the host has an agent workload identity.
     """
 
     enabled: bool
@@ -84,8 +88,9 @@ class RelaySettings:
     def from_config(cls, cfg: Any) -> "RelaySettings":
         tunnel = getattr(cfg, "tunnel", None)
         return cls(
-            # ``is True``: a stand-in config object answers any attribute truthily.
-            enabled=getattr(tunnel, "relay_enabled", False) is True,
+            # A stand-in config object answers any attribute truthily, so only the
+            # one rule's answer turns it on.
+            enabled=relay_requested(tunnel),
             host_url="",
             crew_domain="",
             lease_url=_setting_text(tunnel, "relay_lease_url"),
@@ -103,10 +108,11 @@ class RelaySettings:
 
         With a lease service the relay's names come from each lease answer
         (``hostUrl`` and ``crewUrl``), so ``host_url`` and ``crew_domain`` may stay
-        empty. Without one, only an edition that builds the settings names the
-        relay, so both must be set: no name is guessed.
+        empty. With no lease URL and neither name, the Crew leases from the built-in
+        URL (:func:`~kiro_crew.relay_client.lease.built_in_lease_url`). An edition
+        that names the relay must name both: no name is guessed.
         """
-        if not self.lease_url:
+        if not self.lease_url and not self.uses_built_in_lease:
             for name, value in (
                 ("the relay host URL", self.host_url),
                 ("the relay Crew domain", self.crew_domain),
@@ -129,7 +135,20 @@ class RelaySettings:
             problem = lease_url_problem(self.lease_url)
             if problem is not None:
                 raise RelaySettingsError(f"tunnel.relay_lease_url: {problem}")
-            if self.lease_credential == SIGN_IN_CREDENTIAL:
+        if self.lease_url or self.uses_built_in_lease:
+            if self.uses_sign_in and self.lease_credential and _workload_identity_named():
+                # A workload host never leases as a person (``kiro_crew.workload_identity``).
+                raise RelaySettingsError(
+                    f"tunnel.relay_lease_credential is {SIGN_IN_CREDENTIAL}, but this Crew "
+                    "runs on its workload identity: name the JWT-SVID file instead"
+                )
+            signs_in = self.uses_sign_in and not (
+                # An empty credential is the sign-in only on a personal Crew: a host with
+                # an agent workload identity keeps the refusal by name.
+                not self.lease_credential
+                and _agent_identity_enabled()
+            )
+            if signs_in:
                 # The sign-in names its own TokenType.
                 if self.lease_token_type:
                     raise RelaySettingsError(
@@ -140,12 +159,59 @@ class RelaySettings:
                 problem = credential_reference_problem(self.lease_credential)
                 if problem is not None:
                     raise RelaySettingsError(problem)
-            if self.lease_token_type and self.lease_token_type not in TOKEN_TYPES:
+            if self.lease_token_type and self.uses_workload_identity:
+                # A team Crew's config copied into a pod: the JWT-SVID goes with no
+                # TokenType whatever this says, so the pod still leases.
+                logger.warning(
+                    "tunnel.relay_lease_token_type is ignored: this Crew leases on its "
+                    "workload identity, which sends no TokenType"
+                )
+            elif self.lease_token_type and self.lease_token_type not in TOKEN_TYPES:
                 # Not echoed: a credential pasted in here by mistake stays out of logs.
                 raise RelaySettingsError(
                     "tunnel.relay_lease_token_type must be empty or one of "
                     + ", ".join(sorted(TOKEN_TYPES))
                 )
+
+    @property
+    def uses_built_in_lease(self) -> bool:
+        """Whether the Crew leases from the built-in URL: no lease URL and no relay names.
+
+        An edition that sets ``host_url`` or ``crew_domain`` never gets it.
+        """
+        return not (self.lease_url or self.host_url or self.crew_domain)
+
+    @property
+    def uses_sign_in(self) -> bool:
+        """Whether the Crew leases on its own Kiro sign-in: a personal Crew.
+
+        ``kiro-sign-in`` says so, and so does an empty credential with no token type.
+        A team Crew names its type (``API_KEY``), so an empty credential there is
+        still refused by name; so is one on a host with an agent workload identity,
+        which :meth:`validate` checks when the provider starts.
+        """
+        if self.lease_credential == SIGN_IN_CREDENTIAL:
+            return True
+        return not (self.lease_credential or self.lease_token_type)
+
+    @property
+    def uses_workload_identity(self) -> bool:
+        """Whether the Crew leases on its own JWT-SVID: the SVID file on a workload host.
+
+        On a host with ``KIROCREW_WORKLOAD_IDENTITY`` set, ``tunnel.relay_lease_credential``
+        naming the file ``KIROCREW_WORKLOAD_IDENTITY_SVID_FILE`` names is the JWT-SVID
+        (:mod:`kiro_crew.workload_identity`). Any other file, and a ``secret://``
+        reference, stays a crew API key. Reads the environment only.
+        """
+        credential = self.lease_credential
+        if not credential or credential == SIGN_IN_CREDENTIAL:
+            return False
+        if credential.startswith(SECRET_URI_PREFIX) or not _workload_identity_named():
+            return False
+        from kiro_crew import workload_identity
+
+        svid_file = (os.environ.get(workload_identity.ENV_SVID_FILE) or "").strip()
+        return bool(svid_file) and _same_path(credential, svid_file)
 
     @property
     def is_team_crew(self) -> bool:
@@ -178,6 +244,41 @@ def _setting_text(tunnel: Any, name: str) -> str:
     value = getattr(tunnel, name, "")
     # ``isinstance``: a stand-in config object answers any attribute with an object.
     return value.strip() if isinstance(value, str) else ""
+
+
+def _same_path(a: str, b: str) -> bool:
+    """Whether *a* and *b* name one path, as written (``~`` expanded, ``..`` folded)."""
+    return os.path.normpath(os.path.expanduser(a)) == os.path.normpath(os.path.expanduser(b))
+
+
+def _workload_identity_named() -> bool:
+    from kiro_crew import workload_identity
+
+    return workload_identity.active()
+
+
+def _agent_identity_enabled() -> bool:
+    """Whether this host has a workload identity, so it must not lease as a person.
+
+    True when the deployment names the Crew's own workload identity
+    (:func:`kiro_crew.workload_identity.active`) or the platform's agent identity
+    seam reports one. Read when the provider starts, never while the context is
+    being composed. A failed lookup counts as a workload identity, so it never
+    falls to the sign-in.
+    """
+    from kiro_crew import workload_identity
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    if workload_identity.active():
+        return True
+
+    return bool(
+        safe_context_call(
+            lambda: current_context().agent_identity.enabled(),
+            fallback=True,
+            log_message="agent_identity.enabled lookup failed; refusing the sign-in default",
+        )
+    )
 
 
 def gateway_listener() -> tuple[str, int]:
@@ -355,15 +456,23 @@ def _crew_version() -> str:
 
 
 def lease_token_source(settings: RelaySettings) -> Optional[HostTokenSource]:
-    """The lease client for *settings*, or ``None`` while no lease service is set.
+    """The lease client for *settings*, or ``None`` when an edition names the relay.
 
+    An empty ``lease_url`` leases from the built-in URL, which each call reads.
     Construction does no I/O: the credential, the instance ID and the first call
     all wait for the relay client's first request for a host token.
     """
-    if not settings.lease_url:
+    if not settings.lease_url and not settings.uses_built_in_lease:
         return None
-    if settings.lease_credential == SIGN_IN_CREDENTIAL:
+    if settings.uses_sign_in:
         return _sign_in_lease_source(settings)
+    if settings.uses_workload_identity:
+        return LeaseHostTokenSource(
+            lease_url=settings.lease_url,
+            credential=settings.lease_credential,
+            crew_version=_crew_version(),
+            workload=True,
+        )
     return LeaseHostTokenSource(
         lease_url=settings.lease_url,
         credential=settings.lease_credential,

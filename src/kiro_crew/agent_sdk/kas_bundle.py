@@ -28,6 +28,7 @@ place (``test_mirrored_owner_storage``).
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from collections.abc import Callable, Mapping
 from types import ModuleType
@@ -61,6 +62,7 @@ if TYPE_CHECKING:
         installed_versions,
         kas_engines_root,
         parse_manifest,
+        remove_version,
         sweep_stale_staging,
     )
 
@@ -91,6 +93,7 @@ _OWNED: dict[str, str] = {
         "installed_bundle",
         "installed_versions",
         "kas_engines_root",
+        "remove_version",
         "sweep_stale_staging",
     )
 }
@@ -103,14 +106,18 @@ __all__ = [
     "KAS_VERSION_OVERRIDE_ENV",
     "bundle_spawn_argv",
     "engine_install_snapshot",
+    "ensure_engine_at_startup",
     "engine_spec_permissions_supported",
+    "host_unsupported_reason",
     "install_pinned_engine",
     "installed_engine_label",
     "kas_bundle_route",
     "kas_route",
     "kas_spawn_takes_bundle",
     "last_kas_route",
+    "last_relay_takes_crew_sign_in",
     "pinned_version",
+    "relay_takes_crew_sign_in",
     "require_loadable_host",
     "sha256_bytes",
     "sha256_file",
@@ -184,6 +191,22 @@ def require_loadable_host() -> None:
     owner.host_node_key()
 
 
+def host_unsupported_reason() -> str:
+    """Why the engine cannot run on this host, as the install would refuse; ``''`` when it can.
+
+    The same text a refused install reports, so the dashboard can say it before
+    anyone presses Install, and offer no Install or Retry on a host where every
+    attempt is refused.
+    """
+    from kiro_crew.acp.kas_engine_install import host_unsupported_message
+
+    try:
+        require_loadable_host()
+    except _owner("KasHostUnsupported").KasHostUnsupported as exc:
+        return host_unsupported_message(str(exc))
+    return ""
+
+
 def sha256_bytes(data: bytes) -> str:
     """Hex sha256 of bytes already read, so a caller verifies the buffer it parses."""
     import hashlib
@@ -195,7 +218,9 @@ def bundle_spawn_argv(installed: InstalledKasBundle) -> list[str]:
     """The exact argv the harness spawns for *installed*, for diagnostics."""
     from kiro_crew.acp.kas_transport import build_kas_bundle_argv
 
-    return build_kas_bundle_argv(str(installed.node_bin), str(installed.acp_server))
+    return build_kas_bundle_argv(
+        str(installed.node_bin), str(installed.acp_server), environ=os.environ
+    )
 
 
 def kas_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
@@ -278,6 +303,17 @@ def route_chosen_by_sharing_preview(route: Any) -> bool:
     )
 
 
+def bundle_route_lacks_sign_in() -> bool:
+    """Whether the next KAS spawn takes the bundle route with no usable Crew sign-in.
+
+    ``acp.kas_route.bundle_route_lacks_sign_in``, for the dashboard. Blocking;
+    never raises, and False when it cannot be worked out.
+    """
+    from kiro_crew.acp.kas_route import bundle_route_lacks_sign_in as lacks
+
+    return lacks()
+
+
 def crew_sign_in_starts_spawn() -> bool:
     """Whether the next KAS spawn starts on Kiro Crew's usable sign-in alone.
 
@@ -295,12 +331,33 @@ def relay_runs_on_kiro_cli_sign_in() -> bool:
     ``acp.kas_route.relay_runs_on_kiro_cli_sign_in`` on this process's environment,
     for the dashboard. Blocking (config and kiro-cli reads); never raises.
     """
-    import os
     from pathlib import Path
 
     from kiro_crew.acp.kas_route import relay_runs_on_kiro_cli_sign_in as runs
 
     return runs(environ=os.environ, home=Path.home())
+
+
+def last_relay_takes_crew_sign_in() -> bool | None:
+    """Whether Crew's own sign-in can start the relay the last KAS spawn took.
+
+    ``None`` when the last spawn took no relay (none yet, or the bundle). A relay
+    pinned to kiro-cli's launcher runs on kiro-cli's sign-in alone unless Crew's
+    vault answers it too (``crew_auth``); any other relay takes either sign-in.
+    """
+    from kiro_crew.acp.kas_route import last_spawn_route
+
+    return relay_takes_crew_sign_in(last_spawn_route())
+
+
+def relay_takes_crew_sign_in(route: Any) -> bool | None:
+    """:func:`last_relay_takes_crew_sign_in` for one *route*, such as the one a
+    failing runtime's own sign-in sentence names (``host_auth.kas_sentence_route``)."""
+    from kiro_crew.acp.kas_route import REASON_KIRO_CLI_LAUNCHER
+
+    if route is None or route.bundle:
+        return None
+    return route.reason != REASON_KIRO_CLI_LAUNCHER or route.crew_auth
 
 
 def last_kas_route() -> dict[str, Any] | None:
@@ -325,6 +382,13 @@ def install_pinned_engine(
     from kiro_crew.acp.kas_engine_install import install_pinned_engine as _install
 
     return _install(base_url, caller=caller, on_progress=on_progress)
+
+
+def ensure_engine_at_startup() -> None:
+    """Install this release's pinned engine at gateway start when no root has it."""
+    from kiro_crew.acp.kas_engine_startup import ensure_engine_at_startup as _ensure
+
+    _ensure()
 
 
 def installed_engine_label() -> str | None:

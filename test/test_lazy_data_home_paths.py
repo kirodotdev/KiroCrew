@@ -42,6 +42,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import source_corpus
 
 from conftest import requires_symlinks
 
@@ -274,7 +275,8 @@ def _frozen_path_constants_for(src: Path, paths_module: Path) -> tuple[str, ...]
 
 class TestNoImportTimePathResolution:
     def test_no_module_level_path_constants(self) -> None:
-        offenders = _frozen_path_constants()
+        with source_corpus.untraced():
+            offenders = _frozen_path_constants()
         assert not offenders, (
             "Data-home path resolved at import time. Convert each to "
             "an override hook + accessor -- see the module docstring of this file "

@@ -14,7 +14,7 @@ import type { TailscaleInvitesStatus } from '../api/sharedCrewInvites'
 import { sharedCrewKeys as keys } from '../hooks/sharedCrew/sharedCrewSocket'
 import { PeoplePanel } from '../pages/settings/PeoplePanel'
 import { InviteEntry, sharedCrewAccessKey, tailscaleInvitesKey } from '../pages/settings/TailscaleInvites'
-import { CreatorFilterBar, CreatorFilteredSessions, useSharedCrewListView } from '../pages/chat-sidebar/CreatorFilter'
+import { SharedCrewReadNotices, useSharedCrewListView } from '../pages/chat-sidebar/CreatorFilter'
 import { SessionCollabStrip } from '../pages/chat/shared-crew/SessionCollabStrip'
 import { SessionPresence } from '../pages/chat/shared-crew/PresenceChips'
 import { MessageByline } from '../pages/chat/shared-crew/MessageByline'
@@ -28,7 +28,7 @@ vi.mock('../api/client', () => ({ api: {
   sharedCrewCapabilities: vi.fn(), sharedCrewPeople: vi.fn(), sharedCrewMode: vi.fn(),
   sharedCrewViewer: vi.fn(), sharedCrewPresence: vi.fn(), sharedCrewDecisions: vi.fn(),
   sharedCrewSendState: vi.fn(), sharedCrewTypingLease: vi.fn(), sharedCrewWork: vi.fn(),
-  sharedCrewCapacity: vi.fn(), sharedCrewSessions: vi.fn(), sharedCrewAccess: vi.fn(),
+  sharedCrewCapacity: vi.fn(), sharedCrewAccess: vi.fn(),
   tailscaleInvites: vi.fn(), sharedCrewSsm: vi.fn(), tailscaleUploadAvatar: vi.fn(), mobileConnectMethods: vi.fn(),
   kirocrewConfig: vi.fn(), patchConfig: vi.fn(),
 } }))
@@ -57,7 +57,6 @@ const presence = { schema_version: 1, session_key: 's1', entries: [{ principal: 
 const decisions = { schema_version: 1, session_key: 's1', items: [{ decision_id: 'd1', kind: 'approval', session_key: 's1', state: 'pending', revision: 1, initiator: person('p_other'), responder: null, outcome: '', resolved_at: null }] }
 const lease = { schema_version: 1, session_key: 's1', holder: person('p_other'), revision: 1, expires_at: 0 }
 const queued = { work_id: 'w1', session_key: 's1', operation: 'chat_turn', state: 'queued', revision: 1, accepted_at: 0, expires_at: 0, deadline_at: null, reason: null }
-const page = { schema_version: 1, items: [{ key: 'one', title: 'Saved session' }], total_matching: 1, hidden_by_filter: 0, next_cursor: '' }
 const reads = [
   { method: 'sharedCrewCapabilities', key: keys.capabilities, data: capabilities },
   { method: 'sharedCrewMode', key: keys.mode, data: mode },
@@ -95,7 +94,6 @@ beforeEach(() => {
   vi.mocked(api.tailscaleUploadAvatar).mockResolvedValue({ avatar_id: 'picture' })
   vi.mocked(api.sharedCrewWork).mockResolvedValue({ items: [queued] } as never)
   vi.mocked(api.sharedCrewCapacity).mockResolvedValue(null)
-  vi.mocked(api.sharedCrewSessions).mockResolvedValue(page)
 })
 afterEach(() => { for (const qc of clients.splice(0)) qc.clear() })
 
@@ -156,7 +154,7 @@ describe('Shared Crew cached forms', () => {
 
 function Sidebar() {
   const view = useSharedCrewListView()
-  return <>{view.filterAvailable && <CreatorFilterBar value={view.filter} onChange={view.setFilter} />}{view.filter !== 'all' && <CreatorFilteredSessions creator={view.filter} q="" connected onOpen={() => {}} onClear={() => view.setFilter('all')} />}</>
+  return <>{view.noticesAvailable && <SharedCrewReadNotices />}{view.creatorFilterShown && <span data-testid="started-by-shown">{[...view.creatorKeys].join(',')}</span>}</>
 }
 function Lock() {
   const lock = useComposerTypingLock('s1')
@@ -178,23 +176,23 @@ describe('Shared Crew failure owners', () => {
     vi.mocked(api[read.method]).mockResolvedValue(read.data as never)
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
-    expect(await screen.findByTestId('creator-filter')).toBeInTheDocument()
+    expect(await screen.findByTestId('started-by-shown')).toBeInTheDocument()
   })
 
-  it.each(reads.slice(0, 3))('sidebar retains the filter and filtered page when $method fails', async read => {
-    window.localStorage.setItem('kc.shared-crew.creator-filter.crew-failure-test', 'mine')
+  it.each(reads.slice(0, 3))('sidebar keeps the "Started by" selection when $method fails', async read => {
+    window.localStorage.setItem('kc.shared-crew.creator-filter.crew-failure-test', '["mine"]')
     const { qc } = mount(<Sidebar />)
-    const row = await screen.findByText('Saved session')
-    const select = screen.getByTestId('creator-filter')
+    const shown = await screen.findByTestId('started-by-shown')
+    await waitFor(() => expect(shown).toHaveTextContent('mine'))
     vi.mocked(api[read.method]).mockRejectedValue(new Error('sidebar failed'))
     await refresh(qc, read.key)
     expect(await screen.findByRole('alert')).toHaveTextContent('sidebar failed')
-    expect(screen.getByTestId('creator-filter')).toBe(select)
-    expect(screen.getByText('Saved session')).toBe(row)
+    expect(screen.getByTestId('started-by-shown')).toBe(shown)
+    expect(shown).toHaveTextContent('mine')
     vi.mocked(api[read.method]).mockResolvedValue(read.data as never)
     await refresh(qc, read.key)
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
-    expect(screen.getByText('Saved session')).toBe(row)
+    expect(screen.getByTestId('started-by-shown')).toHaveTextContent('mine')
   })
 
   it.each(reads)('chat reports $method once and keeps cached attribution and typing state', async read => {
@@ -294,15 +292,6 @@ describe('Shared Crew failure owners', () => {
     expect(await screen.findByTestId('queued-send-capacity-error')).toHaveTextContent('capacity failed')
   })
 
-  it('keeps a cached session page on a failed refetch', async () => {
-    const { qc } = mount(<CreatorFilteredSessions creator="mine" q="" connected onOpen={() => {}} onClear={() => {}} />)
-    const row = await screen.findByText('Saved session')
-    vi.mocked(api.sharedCrewSessions).mockRejectedValue(new Error('page failed'))
-    await refresh(qc, [...keys.sessions('mine', ''), ''])
-    expect(await screen.findByTestId('creator-filter-error')).toHaveTextContent('page failed')
-    expect(screen.getByText('Saved session')).toBe(row)
-  })
-
   it('phone dialog reports capabilities failure outside chat and retries', async () => {
     const qc = client()
     qc.removeQueries({ queryKey: keys.capabilities })
@@ -334,7 +323,7 @@ describe('Shared Crew failure owners', () => {
     const qc = client()
     qc.setQueryData(keys.capabilities, null)
     mount(<><Sidebar /><MobileConnectModal kinds={['login_link']} onClose={() => {}} /></>, qc)
-    expect(screen.queryByTestId('creator-filter')).toBeNull()
+    expect(screen.queryByTestId('started-by-shown')).toBeNull()
     expect(screen.queryByTestId('tailnet-direct-link')).toBeNull()
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.getByRole('button', { name: 'Create sign-in link' })).toBeInTheDocument()

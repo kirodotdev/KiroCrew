@@ -22,8 +22,6 @@ export const sharedCrewKeys = {
   people: ['shared-crew', 'people'] as const,
   mode: ['shared-crew', 'mode'] as const,
   viewer: ['shared-crew', 'viewer'] as const,
-  sessionsAll: ['shared-crew', 'sessions'] as const,
-  sessions: (creator: string, q: string) => ['shared-crew', 'sessions', creator, q] as const,
   work: (sessionKey: string) => ['shared-crew', 'work', sessionKey] as const,
   presence: (sessionKey: string) => ['shared-crew', 'presence', sessionKey] as const,
   decisions: (sessionKey: string) => ['shared-crew', 'decisions', sessionKey] as const,

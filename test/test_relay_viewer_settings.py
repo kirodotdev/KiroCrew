@@ -91,10 +91,12 @@ def test_an_https_or_loopback_url_is_kept(tmp_path, monkeypatch, url) -> None:
         "not a url",
     ],
 )
-def test_an_unsafe_url_is_ignored_with_a_warning(tmp_path, monkeypatch, caplog, url) -> None:
+def test_an_unsafe_url_is_kept_with_a_warning(tmp_path, monkeypatch, caplog, url) -> None:
+    # Kept as set, so the viewer refuses it as not set up instead of reading it as
+    # empty (which means the built-in control plane). Every reader checks it again.
     with caplog.at_level(logging.WARNING):
         cfg = _load(tmp_path, monkeypatch, {"relay_viewer_cps_url": url})
-    assert cfg.tunnel.relay_viewer_cps_url == ""
+    assert cfg.tunnel.relay_viewer_cps_url == url
     assert any("tunnel.relay_viewer_cps_url ignored" in r.getMessage() for r in caplog.records)
 
 

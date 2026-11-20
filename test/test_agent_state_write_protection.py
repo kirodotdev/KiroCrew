@@ -114,6 +114,13 @@ class TestAgentStateSidecarWriteProtection:
         # Both data-home spellings, so a legacy install is gated too.
         assert len(matches) == 2, entries
 
+    @pytest.mark.parametrize("prefix", _PREFIXES)
+    def test_session_records_are_write_protected_for_agent_tools(self, prefix: str) -> None:
+        """A record forged with the file-write tool would attest a session key."""
+        record = f"{prefix}/session-tokens/session_token_{'a' * 64}.sig"
+        assert is_sensitive_write_path(record)
+        assert is_sensitive_write_path(str(Path.home() / record[2:]))
+
     def test_sibling_data_home_paths_unaffected(self) -> None:
         """A prefix-neighbour of the entry must not be caught by it."""
         # A different file that shares the string prefix stays writable.

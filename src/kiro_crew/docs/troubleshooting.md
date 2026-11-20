@@ -28,8 +28,10 @@ current run and up to four earlier ones, `gateway.log.prev` and `logs/gateway-bo
 crash reports, `versions.txt` and `manifest.json`. Every text file in it passes
 through the credential redaction first, and the command prints how many secrets it
 removed. Home-directory paths are shortened to `~`, and this machine's current
-host name is replaced with `<host>`. A name the machine had before, or another
-spelling of it, can remain, so look through the zip before you attach it.
+host name is replaced with `<host>`, including its escaped, percent-encoded and
+IDNA spellings. A name the machine had before, the domain after a short name, a
+name followed by `-`, `_` or a digit, or a less common spelling of the name can
+remain, so look through the zip before you attach it.
 It then prints a GitHub new-issue link on the bug-report form; drag the
 zip into that issue. The link fills in the version and the release channel from
 the build's own release record. When the build cannot prove its channel, the
@@ -782,11 +784,12 @@ nothing.
 
 ### Kiro Crew files belong to another account
 
-`kirocrew doctor`, the gateway log, Settings and the New Bot dialog say that some
-files in your data home (`~/.kiro/crew` unless you set `KIROCREW_HOME`) belong to
-another account, usually `root`, so Kiro Crew can't read them. When the notice
-says the files "can't be used by this account" instead, they are already yours
-but their permissions keep you out: skip to step 6.
+`kirocrew doctor`, the gateway log, a refused `kirocrew gateway` start, Settings
+and the New Bot dialog say that some files in your data home (`~/.kiro/crew`
+unless you set `KIROCREW_HOME`) belong to another account, usually `root`, so
+Kiro Crew can't read them. When the notice says the files "can't be used by this
+account" instead, they are already yours but their permissions keep you out:
+skip to step 6.
 
 This almost always means Kiro Crew was started as root once, for example with
 `sudo kirocrew ...`. `sudo` keeps your `HOME`, so that run wrote root-owned files

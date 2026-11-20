@@ -781,6 +781,11 @@ _EVENT_PERMISSION_REQUEST_KIND = "permission_request"
 #: owes the in-band notice that corrects kiro-cli's "User denied tool
 #: execution". ``hook_deny`` is not here: its reason is the gate's own.
 _WEBHOOK_DENY_NOTICE: dict[str, tuple[str, str]] = {
+    "web_ask_rule": (
+        DENY_CAUSE_SURFACE_POLICY,
+        "the organization's policy asks a person before this web call, and a webhook "
+        "turn has no person to ask",
+    ),
     "no_hook_store": (
         DENY_CAUSE_SURFACE_POLICY,
         "this webhook turn has no hook gate to authorize a tool call, so every call is refused",
@@ -1021,6 +1026,14 @@ async def _run_hook_inner(
                     # downgrade to, so the downgrade is deny.
                     approve = False
                     deny_error = "child_low_fidelity"
+            if approve:
+                # An organisation's ``ask`` on a KAS web call (``web_ask_rule``):
+                # nobody is attached to a webhook turn, so it is refused.
+                from kiro_crew.web_ask_rule import held_phrases
+
+                if held_phrases(event):
+                    approve = False
+                    deny_error = "web_ask_rule"
             if approve:
                 # An auto-approve tier is a statement about a PROGRAM name,
                 # and the shell re-resolves that name through a PATH that can

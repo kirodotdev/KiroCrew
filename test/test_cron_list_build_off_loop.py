@@ -6,7 +6,8 @@ exfiltration-URL pass and the credential pass. For a few hundred jobs with long
 results that took hundreds of milliseconds, all of it on the gateway loop.
 Pinned here: the rows are built and encoded in a worker thread from copies of
 the jobs, the loop-owned reads (run claims, the slot registry) stay on the
-loop, and the payload is redacted exactly as before.
+loop, and the payload is redacted exactly as before. The list cuts a long last
+result or error to a redacted preview; ``GET /api/crons/{id}`` carries it whole.
 """
 
 from __future__ import annotations
@@ -18,9 +19,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from redaction_structured_cases import github_classic
 
+from kiro_crew import redaction_seams
 from kiro_crew.cron import CronJob, CronSchedule
-from kiro_crew.dashboard.handlers.cron import api_crons
-from kiro_crew.dashboard.handlers.cron_board import _job_snapshot
+from kiro_crew.dashboard import chat_utils_display
+from kiro_crew.dashboard.chat_utils_display import _clear_display_redaction_cache
+from kiro_crew.dashboard.handlers.cron import api_cron_get, api_crons
+from kiro_crew.dashboard.handlers.cron_board import _LIST_TEXT_PREVIEW, _job_snapshot
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.security.redaction_switch import owner_view
 
@@ -114,6 +118,66 @@ class TestApiCrons:
             body = json.loads((await api_crons(_request(jobs))).body)
             expected = _truth(f"{SECRET} run 1")
         assert body["jobs"][0]["last_result"] == expected
+
+
+class TestResultPreview:
+    @pytest.mark.asyncio
+    async def test_the_list_cuts_a_long_result_after_redacting_it(self, monkeypatch):
+        """A credential the cut lands in shows as the redaction tag, never as its head,
+        and the one-job read masks it too, with the owner's redaction setting off."""
+        monkeypatch.setattr(redaction_seams, "_redaction_off", True)
+        _clear_display_redaction_cache()
+        head = "x" * (_LIST_TEXT_PREVIEW - 11) + " "
+        result = f"{head}{_TOKEN} tail\n" + "y" * 20_000
+        request = _request([_job(1, last_result=result)])
+        body = json.loads((await api_crons(request)).body)
+        preview = body["jobs"][0]["last_result"]
+        assert preview == _truth(result)[:_LIST_TEXT_PREVIEW]
+        assert _TOKEN[:8] not in preview
+        request.match_info = {"job_id": "j1"}
+        whole = json.loads((await api_cron_get(request)).body)["last_result"]
+        assert whole == _truth(result)
+        assert _TOKEN not in whole
+
+    @pytest.mark.asyncio
+    async def test_a_list_re_read_redacts_no_unchanged_result_again(self, monkeypatch):
+        """What makes a re-read fast: the display redaction's cache answers it, with
+        the owner's redaction setting off (the shipped default) too."""
+        monkeypatch.setattr(redaction_seams, "_redaction_off", True)
+        _clear_display_redaction_cache()
+        seen: list[int] = []
+        real = chat_utils_display.display_battery
+
+        def recording(text, **kw):
+            seen.append(len(text))
+            return real(text, **kw)
+
+        monkeypatch.setattr(chat_utils_display, "display_battery", recording)
+        result = "".join(f"step {i}: checked 14 dashboards, 0 alerts\n" for i in range(500))
+        request = _request([_job(1, last_result=result)])
+        first = json.loads((await api_crons(request)).body)["jobs"][0]["last_result"]
+        assert first == result[:_LIST_TEXT_PREVIEW]
+        assert len(result) in seen
+        seen.clear()
+        await api_crons(request)
+        assert len(result) not in seen
+
+    @pytest.mark.asyncio
+    async def test_the_one_job_read_carries_the_whole_result(self):
+        result = "line of output\n" * 2_000
+        request = _request([_job(1, last_result=result), _job(2)])
+        request.match_info = {"job_id": "j1"}
+        row = json.loads((await api_cron_get(request)).body)
+        assert row["id"] == "j1"
+        assert row["last_result"] == _truth(result)
+
+    @pytest.mark.asyncio
+    async def test_the_one_job_read_of_an_unknown_job_is_a_404(self):
+        request = _request([_job(1)])
+        request.match_info = {"job_id": "gone"}
+        resp = await api_cron_get(request)
+        assert resp.status == 404
+        assert json.loads(resp.body)["code"] == "job_not_found"
 
 
 class TestJobSnapshot:

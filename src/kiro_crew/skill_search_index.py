@@ -338,6 +338,11 @@ class SkillSearchIndex:
         # connection object, which is what check_same_thread=False stops policing.
         self._lock = threading.RLock()
         self._epoch_warned = False
+        # (connection, data_version, rows) from the last metadata_snapshot read.
+        # See metadata_snapshot for what invalidates it.
+        self._metadata_memo: tuple[sqlite3.Connection, int, dict[str, tuple[str, dict]]] | None = (
+            None
+        )
 
     # ── connection ──
 
@@ -346,6 +351,7 @@ class SkillSearchIndex:
         with self._lock:
             conn, self._conn = self._conn, None
             self._unusable = True
+            self._metadata_memo = None
             if conn is not None:
                 conn.close()
 
@@ -423,22 +429,40 @@ class SkillSearchIndex:
     # ── writing ──
 
     def metadata_snapshot(self) -> dict[str, tuple[str, dict]]:
-        """One bulk read of derived global metadata; project grants never enter it."""
+        """One bulk read of derived global metadata; project grants never enter it.
+
+        Every ``list_skills`` call (so every chat turn) asks for this, and the
+        table holds a row per skill file ever indexed. Each row's ``sqlite3`` step
+        releases the GIL, so beside a busy thread a full read costs seconds. The
+        rows are therefore kept from the last read and served again while nothing
+        has written the table: ``PRAGMA data_version`` moves when another
+        connection (any process) commits, and :meth:`store_metadata`, this
+        connection's only writer, drops the memo. An unchanged table costs one
+        pragma instead of a row read per skill. Callers get fresh dicts each time,
+        as before, so mutating a result cannot reach the memo.
+        """
         with self._lock:
             db = self._db()
             if db is None:
                 return {}
             try:
-                result = {}
-                for path, fingerprint, raw in db.execute(
-                    "SELECT path, fingerprint, metadata FROM skill_metadata"
-                ):
-                    meta = json.loads(raw)
-                    if isinstance(meta, dict) and all(
-                        isinstance(k, str) and isinstance(v, str) for k, v in meta.items()
+                version = db.execute("PRAGMA data_version").fetchone()[0]
+                memo = self._metadata_memo
+                if memo is not None and memo[0] is db and memo[1] == version:
+                    result = memo[2]
+                else:
+                    self._metadata_memo = None
+                    result = {}
+                    for path, fingerprint, raw in db.execute(
+                        "SELECT path, fingerprint, metadata FROM skill_metadata"
                     ):
-                        result[path] = (fingerprint, meta)
-                return result
+                        meta = json.loads(raw)
+                        if isinstance(meta, dict) and all(
+                            isinstance(k, str) and isinstance(v, str) for k, v in meta.items()
+                        ):
+                            result[path] = (fingerprint, meta)
+                    self._metadata_memo = (db, version, result)
+                return {path: (fp, dict(meta)) for path, (fp, meta) in result.items()}
             # RecursionError: the file is agent-writable, and a deeply nested cell
             # exceeds the decoder's depth rather than its grammar.
             except (sqlite3.Error, ValueError, RecursionError):
@@ -449,6 +473,8 @@ class SkillSearchIndex:
         if not rows:
             return True
         with self._lock:
+            # This connection's own commits do not move its data_version.
+            self._metadata_memo = None
             db = self._db()
             if db is None:
                 return False

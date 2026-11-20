@@ -54,10 +54,13 @@
             "pending_approval_info": null,
             "last_activity_ts": "",
             "last_agent_ts": "",
+            "unread_ts": "",
+            "unread_failed": false,
             "waiting_for_input": false,
             "needs_input": false,
             "interrupted": false,
             "interrupted_stale": false,
+            "interrupted_by_sign_in": false,
             "stop_state": "idle",
             "wait_state": null,
             "created": "<stamp>",
@@ -120,6 +123,8 @@
             "pin_rev": 0,
             "manual_rank": null,
             "manual_rev": 0,
+            "last_read_ts": null,
+            "read_epoch": null,
             "links": [],
             "subagents_running": false,
             "subagents_queued": 0,
@@ -186,7 +191,7 @@
         "data": {
           "slot": "chat-golden-1",
           "role": "tool",
-          "content": "🔧 Running: @probe/probe_codeword",
+          "content": "Tool: Running: @probe/probe_codeword",
           "ts": "<ts>",
           "cls": "msg msg-tool",
           "meta": {
@@ -227,7 +232,7 @@
         "data": {
           "slot": "chat-golden-1",
           "tool_call_id": "toolu_bdrk_01UH1EFFgmZ9kJD2zNmRFuXv",
-          "content": "🔧 Running: @probe/probe_codeword",
+          "content": "Tool: Running: @probe/probe_codeword",
           "meta": {
             "input": "{\n  \"__tool_use_purpose\": \"User asked for the codeword.\"\n}",
             "purpose": "User asked for the codeword."
@@ -314,10 +319,13 @@
             "pending_approval_info": null,
             "last_activity_ts": "<stamp>",
             "last_agent_ts": "<stamp>",
+            "unread_ts": "<stamp>",
+            "unread_failed": false,
             "waiting_for_input": true,
             "needs_input": false,
             "interrupted": false,
             "interrupted_stale": false,
+            "interrupted_by_sign_in": false,
             "stop_state": "idle",
             "wait_state": null,
             "created": "<stamp>",
@@ -380,6 +388,8 @@
             "pin_rev": 0,
             "manual_rank": null,
             "manual_rev": 0,
+            "last_read_ts": null,
+            "read_epoch": null,
             "links": [],
             "subagents_running": false,
             "subagents_queued": 0,
@@ -419,7 +429,7 @@
   "transcript": {
     "dashboard_chat-golden-1.jsonl": [
       "{\"_type\": \"metadata\", \"created_at\": \"<created_at>\", \"last_consolidated\": 0, \"memory_mode\": \"persistent\", \"model\": \"\", \"autocompact_pct\": null, \"tab_id\": \"<tab_id:1>\"}",
-      "{\"role\": \"tool\", \"content\": \"\\ud83d\\udd27 Running: @probe/probe_codeword\", \"ts\": \"<ts>\", \"source_thread\": \"dashboard\", \"source_user\": \"dashboard\", \"meta\": {\"tool_call_id\": \"toolu_bdrk_01UH1EFFgmZ9kJD2zNmRFuXv\", \"purpose\": \"User asked for the codeword.\", \"input\": \"{\\n  \\\"__tool_use_purpose\\\": \\\"User asked for the codeword.\\\"\\n}\", \"kind\": \"unknown\", \"tool_name\": \"probe_codeword\", \"mcp_server\": \"probe\", \"mid\": \"<mid:1>\", \"done\": true, \"output\": \"tangerine-42\"}}",
+      "{\"role\": \"tool\", \"content\": \"Tool: Running: @probe/probe_codeword\", \"ts\": \"<ts>\", \"source_thread\": \"dashboard\", \"source_user\": \"dashboard\", \"meta\": {\"tool_call_id\": \"toolu_bdrk_01UH1EFFgmZ9kJD2zNmRFuXv\", \"purpose\": \"User asked for the codeword.\", \"input\": \"{\\n  \\\"__tool_use_purpose\\\": \\\"User asked for the codeword.\\\"\\n}\", \"kind\": \"unknown\", \"tool_name\": \"probe_codeword\", \"mcp_server\": \"probe\", \"mid\": \"<mid:1>\", \"done\": true, \"output\": \"tangerine-42\"}}",
       "{\"role\": \"assistant\", \"content\": \"tangerine-42\", \"ts\": \"<ts>\", \"source_thread\": \"dashboard\", \"source_user\": \"dashboard\", \"meta\": {\"mid\": \"<mid:2>\"}}"
     ]
   }

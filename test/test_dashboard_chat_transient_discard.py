@@ -206,7 +206,7 @@ class TestRunChatTransientRetryImageDiscard:
         state.sessions.discard_conversation.assert_not_awaited()
         state.sessions.reset.assert_not_awaited()
         assert slot._queue == []
-        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
         assert slot._poisoned_reset_used is False
 
     @pytest.mark.asyncio
@@ -232,7 +232,7 @@ class TestRunChatTransientRetryImageDiscard:
 
         state.sessions.discard_conversation.assert_not_awaited()
         assert slot._queue == []
-        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
         assert slot._poisoned_reset_used is True
 
     @pytest.mark.asyncio
@@ -267,7 +267,7 @@ class TestRunChatTransientRetryImageDiscard:
         state.sessions.discard_conversation.assert_not_awaited()
         state.sessions.reset.assert_not_awaited()
         assert slot._queue == []
-        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
         assert slot._poisoned_reset_used is False
 
     @pytest.mark.asyncio
@@ -401,7 +401,7 @@ class TestRunChatTransientRetryPoisonedDiscard:
             await _run_chat(state, slot, "hello")
             await self._drain_bg(state)
 
-        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
         state.sessions.discard_conversation.assert_not_awaited()
         state.sessions.reset.assert_not_awaited()
         # The exhausted cycle is counted toward the consecutive streak.
@@ -477,7 +477,7 @@ class TestRunChatTransientRetryPoisonedDiscard:
         state.sessions.reset.assert_not_awaited()
         # Cycle 1 ❌ + cycle 2 escalation notice, then the recovered answer.
         errs = self._err_texts(slot)
-        assert any(t.startswith("❌") for t in errs)
+        assert any(t.startswith("Error:") for t in errs)
         assert any("keeps rejecting" in t for t in errs)
         assert any("recovered-after-discard" in t for t in self._assistant_texts(slot))
         # Attempt accounting: two full ladders + the single recovery prompt.
@@ -531,7 +531,7 @@ class TestRunChatTransientRetryPoisonedDiscard:
         # No turn ever landed: the one-shot stays consumed.
         assert slot._poisoned_reset_used is True
         # Terminal ❌ surfaced after the failed recovery and again on cycle 3.
-        assert sum(1 for t in self._err_texts(slot) if t.startswith("❌")) >= 2
+        assert sum(1 for t in self._err_texts(slot) if t.startswith("Error:")) >= 2
 
     @pytest.mark.asyncio
     async def test_cancelled_turn_does_not_rearm_poisoned_one_shot(self, tmp_path, monkeypatch):
@@ -640,7 +640,7 @@ class TestRunChatTransientRetryPoisonedDiscard:
         # later cycle whose canary succeeds, and the streak keeps accruing.
         assert slot._poisoned_reset_used is False
         assert slot._prestream_exhausted_cycles == 2
-        assert sum(1 for t in self._err_texts(slot) if t.startswith("❌")) >= 2
+        assert sum(1 for t in self._err_texts(slot) if t.startswith("Error:")) >= 2
 
     @pytest.mark.asyncio
     async def test_canary_empty_reply_is_not_positive_evidence(self, tmp_path, monkeypatch):

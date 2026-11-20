@@ -57,3 +57,45 @@ def test_a_bom_only_strips_one_leading_mark_not_interior_content(monkeypatch):
     assert [r["line"] for r in records] == [1, 2]
     assert all("error" not in r for r in records)
     assert records[1]["item"] == "a\ufeffb"
+
+
+def _run_batch_stdin_bytes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], data: bytes
+) -> tuple[list[dict], str, int]:
+    # A real pipe on Windows: text-mode stdin decodes in the ANSI code page, so the
+    # wrapper is cp1252 here; the reader must take the bytes and decode UTF-8 itself.
+    monkeypatch.setattr(m.sys, "stdin", io.TextIOWrapper(io.BytesIO(data), encoding="cp1252"))
+    code = 0
+    try:
+        m._explain_batch(None, "-", "", "", "")
+    except SystemExit as exc:
+        code = int(exc.code or 0)
+    out, err = capsys.readouterr()
+    return [json.loads(line) for line in out.splitlines() if line.strip()], err, code
+
+
+def test_piped_stdin_bytes_are_decoded_as_utf8_not_the_code_page(monkeypatch, capsys):
+    scope = sorted(SCOPE_CATALOG)[0]
+    request = json.dumps({"scope": scope, "item": "x"}).encode()
+
+    with_bom, _, code = _run_batch_stdin_bytes(
+        monkeypatch, capsys, b"\xef\xbb\xbf" + request + b"\n"
+    )
+    assert code == 0
+    assert len(with_bom) == 1 and "error" not in with_bom[0]
+    assert with_bom[0]["line"] == 1
+
+    accented = json.dumps({"scope": scope, "item": "Jos\u00e9"}, ensure_ascii=False).encode()
+    assert b"\xc3\xa9" in accented
+    records, _, code = _run_batch_stdin_bytes(monkeypatch, capsys, accented + b"\r\n")
+    assert code == 0
+    assert records[0]["item"] == "Jos\u00e9"
+
+
+def test_piped_stdin_that_is_not_utf8_is_refused_like_a_file(monkeypatch, capsys):
+    records, err, code = _run_batch_stdin_bytes(
+        monkeypatch, capsys, b'{"scope":"tools","item":"\xe9"}\n'
+    )
+    assert code == 1
+    assert records == []
+    assert "Cannot read the batch file: it is not UTF-8 text" in err

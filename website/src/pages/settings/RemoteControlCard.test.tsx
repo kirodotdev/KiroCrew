@@ -4,7 +4,7 @@ import { renderWithProviders } from '../../test/helpers'
 import { copyCode } from '../../utils/clipboard'
 
 vi.mock('../../api/client', () => ({
-  api: { remoteControl: vi.fn(), turnOffRemoteControl: vi.fn() },
+  api: { remoteControl: vi.fn(), turnOffRemoteControl: vi.fn(), viewerOwnerOk: vi.fn() },
 }))
 vi.mock('../../utils/clipboard', () => ({ copyCode: vi.fn(async () => true) }))
 
@@ -21,6 +21,7 @@ const state = (over: Partial<RemoteControlState>): RemoteControlState => ({
 
 const get = api.remoteControl as ReturnType<typeof vi.fn>
 const put = api.turnOffRemoteControl as ReturnType<typeof vi.fn>
+const ownerOk = api.viewerOwnerOk as ReturnType<typeof vi.fn>
 
 describe('RemoteControlCard', () => {
   afterEach(() => {
@@ -211,5 +212,39 @@ describe('RemoteControlCard', () => {
     renderWithProviders(<RemoteControlCard />)
     fireEvent.click(await screen.findByRole('button', { name: 'Turn off' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('gateway unreachable')
+  })
+
+  it('shows a teammate the status about this Crew, with no Turn off and no terminal hint', async () => {
+    get.mockResolvedValue(state({ requested: true, running: true }))
+    ownerOk.mockResolvedValue(false)
+    renderWithProviders(<RemoteControlCard />)
+    expect(await screen.findByTestId('remote-control-owner-only')).toHaveTextContent(
+      "Only the Crew's owner can turn Remote Control off.",
+    )
+    expect(screen.getByText('Remote Control is on. People with access can reach this Crew through the Kiro relay.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Turn off' })).toBeNull()
+    expect(screen.queryByTestId('remote-control-off-effect')).toBeNull()
+    expect(put).not.toHaveBeenCalled()
+  })
+
+  it('shows the owner the status read-only over the relay, with no Turn off', async () => {
+    get.mockResolvedValue(state({ requested: true, running: true, relayed: true }))
+    ownerOk.mockResolvedValue(true)
+    renderWithProviders(<RemoteControlCard />)
+    expect(await screen.findByTestId('remote-control-local-only')).toHaveTextContent(
+      "It can't be turned off through the relay.",
+    )
+    expect(screen.getByText(/Remote Control is on\./)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Turn off' })).toBeNull()
+    expect(screen.queryByTestId('remote-control-off-effect')).toBeNull()
+    expect(put).not.toHaveBeenCalled()
+  })
+
+  it('keeps Turn off for the owner', async () => {
+    get.mockResolvedValue(state({ requested: true, running: true }))
+    ownerOk.mockResolvedValue(true)
+    renderWithProviders(<RemoteControlCard />)
+    expect(await screen.findByRole('button', { name: 'Turn off' })).toBeInTheDocument()
+    expect(screen.queryByTestId('remote-control-owner-only')).toBeNull()
   })
 })

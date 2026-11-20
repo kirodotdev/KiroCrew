@@ -60,7 +60,9 @@ _rule_blocks: OrderedDict[str, str] = OrderedDict()
 def _scrub(text: str) -> str:
     from kiro_crew.context_assembly import markers
 
-    return markers._scrub_turn_lesson(markers._neutralize_fence_markers(text))
+    return markers._scrub_turn_lesson(
+        markers.neutralize_memory_frame(markers._neutralize_fence_markers(text))
+    )
 
 
 def provider_name(route: MemoryRoute) -> str:

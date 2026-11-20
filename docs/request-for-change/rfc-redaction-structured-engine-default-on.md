@@ -3,8 +3,8 @@ title: The structured credential detectors are on by default
 status: superseded
 author: Crew Tasks Bot, directed by mbriones98
 created: 2026-11-09
-last-audited: 2026-11-09
-audited-at: 76fc1c61e8
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr:
 implementation-prs: [29369, 31863, 29423]
 tracking-issues: [22552, 31895, 31690, 31692]

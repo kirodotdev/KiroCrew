@@ -11,6 +11,7 @@
     {"id": "sync-io-in-async", "cmd": ["{py}", "scripts/check_sync_io_in_async.py"], "self_test": true, "paths": ["^src/", "^\\.github/sync-io-in-async(-fs)?-baseline\\.txt$", "^scripts/(check_sync_io_in_async|ratchet_scope)\\.py$"], "slow": "20.7 s", "ci": {"file": "ci.yml", "text": "scripts/check_sync_io_in_async.py"}},
     {"id": "file-line-cap", "cmd": ["{py}", "scripts/check_file_line_cap.py"], "self_test": true, "ci": {"file": "ci.yml", "text": "scripts/check_file_line_cap.py"}},
     {"id": "lockdown-before-publish", "cmd": ["{py}", "scripts/check_lockdown_before_publish.py"], "ci": {"file": "ci.yml", "text": "scripts/check_lockdown_before_publish.py"}},
+    {"id": "metrics-schema-history", "cmd": ["{py}", "scripts/check_metrics_schema_history.py"], "self_test": true, "base_env": "METRICS_SCHEMA_BASE", "ci": {"file": "ci.yml", "text": "scripts/check_metrics_schema_history.py"}},
     {"id": "comment-history", "cmd": ["{py}", "scripts/check_comment_history.py"], "self_test": true, "base_env": "COMMENT_HISTORY_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_comment_history.py"}},
     {"id": "brand-name", "cmd": ["{py}", "scripts/check_brand_name.py"], "self_test": true, "base_env": "BRAND_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_brand_name.py"}},
     {"id": "harness-parity", "cmd": ["{py}", "scripts/check_harness_parity.py"], "self_test": true, "base_env": "HARNESS_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_harness_parity.py"}},
@@ -22,6 +23,7 @@
     {"id": "changelog-history", "cmd": ["{py}", "scripts/check_changelog_history.py"], "self_test": true, "base_env": "CHANGELOG_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_changelog_history.py"}},
     {"id": "decisions-history", "cmd": ["{py}", "scripts/check_decisions_history.py"], "self_test": true, "base_env": "DECISIONS_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_decisions_history.py"}},
     {"id": "focus-cue", "cmd": ["{py}", "scripts/check_focus_cue.py"], "self_test": true, "base_env": "FOCUS_CUE_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_focus_cue.py"}},
+    {"id": "emoji-icons", "cmd": ["{py}", "scripts/check_emoji_icons.py"], "self_test": true, "base_env": "EMOJI_ICON_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_emoji_icons.py"}},
     {"id": "memory-store-seam", "cmd": ["{py}", "scripts/check_memory_store_seam.py"], "self_test": true, "base_env": "MEMSTORE_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_memory_store_seam.py"}},
     {"id": "docs-lint", "cmd": ["bash", "scripts/docs-lint.sh"], "self_test": ["{py}", "scripts/docs_lint.py", "--test"], "os": ["linux", "darwin"], "tool": "bash", "ci": {"file": "fast-gate.yml", "text": "./scripts/docs-lint.sh"}},
     {"id": "vendor-manifest", "cmd": ["{py}", "scripts/verify_vendor_manifest.py"], "ci": {"file": "fast-gate.yml", "text": "scripts/verify_vendor_manifest.py"}}

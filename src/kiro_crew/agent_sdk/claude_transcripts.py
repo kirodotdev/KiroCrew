@@ -16,7 +16,9 @@ It sits behind the agent-SDK boundary so the consumers outside it (the subagent
 prune) reach Claude's store, and Claude's provider label, without importing the
 ACP layer. :func:`claude_session_dir` spells the sibling directory for a reader:
 the subagents' transcripts Claude Code files there are what
-``acp.claude_background_calls`` reads.
+``acp.claude_background_calls`` reads. :func:`claude_session_paths` hands the
+Storage report the same three paths, behind the same checks, to size and never
+to remove.
 """
 
 from __future__ import annotations
@@ -81,27 +83,30 @@ def _reason(exc: OSError) -> str:
     return exc.strerror or type(exc).__name__
 
 
-def delete_claude_session_files(session_id: str, cwd: str) -> bool:
-    """Delete Claude Code's transcript files for *session_id* run in *cwd*.
+#: One of a session's three paths: the path, the directory it must stay inside, and
+#: the fixed label a log line names it by (never the path, which carries the
+#: session id and the user's working directory).
+_Target = tuple[Path, Path, str]
 
-    Returns whether the cleanup completed: ``True`` when every path is gone
-    (including one that never existed), ``False`` when the id is not UUID-shaped,
-    *cwd* is empty or unspellable, no config directory resolves, a path is a
-    symlink or escapes its root, or a delete failed. A false answer deletes
-    nothing it was not sure of, so a caller that retries (the subagent prune)
-    keeps its retry record.
+
+def _session_targets(session_id: str, cwd: str, action: str) -> tuple[_Target, ...] | None:
+    """The three paths Claude Code keeps for *session_id* run in *cwd*, or ``None``.
+
+    ``None`` when the id is not UUID-shaped, *cwd* is empty or unspellable, no
+    config directory resolves, ``projects/``, the project directory or
+    ``file-history/`` is a symlink, or a path is a symlink or escapes its root.
+    The one gate every reader and the delete go through, so what may be sized and
+    what may be deleted cannot drift. *action* prefixes the refusal log line.
     """
     if not isinstance(session_id, str) or not _SESSION_ID_RE.fullmatch(session_id):
-        return False
+        return None
     project_name = claude_project_dir_name(cwd)
     root = claude_config_dir()
     if project_name is None or root is None:
-        return False
+        return None
     projects = root / "projects"
     project = projects / project_name
     history = root / "file-history"
-    # Logged by a fixed label, never by path: a path carries the session id and
-    # the user's working directory.
     directories = (
         (projects, "projects directory"),
         (project, "project directory"),
@@ -115,14 +120,30 @@ def delete_claude_session_files(session_id: str, cwd: str) -> bool:
     try:
         for directory, label in directories:
             if directory.is_symlink():
-                logger.error("claude transcript cleanup: refusing a symlinked %s", label)
-                return False
+                logger.error("%s: refusing a symlinked %s", action, label)
+                return None
         for target, parent, label in targets:
             if target.is_symlink() or not _is_safe_path(target, parent):
-                logger.error("claude transcript cleanup: refusing the %s", label)
-                return False
+                logger.error("%s: refusing the %s", action, label)
+                return None
     except OSError as exc:
-        logger.warning("claude transcript cleanup: cannot inspect the store (%s)", _reason(exc))
+        logger.warning("%s: cannot inspect the store (%s)", action, _reason(exc))
+        return None
+    return targets
+
+
+def delete_claude_session_files(session_id: str, cwd: str) -> bool:
+    """Delete Claude Code's transcript files for *session_id* run in *cwd*.
+
+    Returns whether the cleanup completed: ``True`` when every path is gone
+    (including one that never existed), ``False`` when the id is not UUID-shaped,
+    *cwd* is empty or unspellable, no config directory resolves, a path is a
+    symlink or escapes its root, or a delete failed. A false answer deletes
+    nothing it was not sure of, so a caller that retries (the subagent prune)
+    keeps its retry record.
+    """
+    targets = _session_targets(session_id, cwd, "claude transcript cleanup")
+    if targets is None:
         return False
     succeeded = True
     for target, _parent, label in targets:
@@ -141,8 +162,22 @@ def delete_claude_session_files(session_id: str, cwd: str) -> bool:
     return succeeded
 
 
+def claude_session_paths(session_id: str, cwd: str) -> tuple[Path, ...]:
+    """The three paths :func:`delete_claude_session_files` would delete, for a reader.
+
+    Behind the same checks, so a session the delete would refuse yields no path:
+    ``()`` when the id is not UUID-shaped, *cwd* is empty or unspellable, no
+    config directory resolves, or a component is a symlink or escapes its root.
+    A path is returned whether or not it exists; nothing here lists a directory.
+    """
+    targets = _session_targets(session_id, cwd, "claude transcript sizing")
+    return () if targets is None else tuple(target for target, _parent, _label in targets)
+
+
 __all__ = [
+    "PROVIDER_LABEL_CLAUDE",
     "claude_project_dir_name",
+    "claude_session_paths",
     "claude_session_dir",
     "delete_claude_session_files",
     "is_claude_provider_label",

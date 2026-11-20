@@ -431,6 +431,33 @@ describe('switchSlot.pending', () => {
     expect(state.slotRunning).toBe(false)
   })
 
+  it('a transient failure marks the open as failed until a load of it lands, whatever the notice does', () => {
+    let state = { ...initial, activeSlot: 'old' }
+    state = reducer(state, { type: 'chat/switchSlot/pending', meta: { arg: 'new', requestId: 'r1', requestStatus: 'pending' } })
+    state = reducer(state, { type: 'chat/switchSlot/rejected', meta: { arg: 'new', requestId: 'r1', requestStatus: 'rejected' }, error: { message: 'fail' } })
+    expect(state.slotOpenFailed).toBe('new')
+    state = reducer(state, { type: 'chat/clearSwitchSlotGone' })
+    expect(state.slotOpenFailed).toBe('new')
+    state = reducer(state, { type: 'chat/switchSlot/pending', meta: { arg: 'new', requestId: 'r2', requestStatus: 'pending' } })
+    state = reducer(state, {
+      type: 'chat/switchSlot/fulfilled', meta: { arg: 'new', requestId: 'r2', requestStatus: 'fulfilled' },
+      payload: { key: 'new', messages: [], hasMore: false, queue: [], nextBefore: 0 },
+    })
+    expect(state.slotOpenFailed).toBeNull()
+  })
+
+  it('a refresh that loads the failed chat clears its failed open too', () => {
+    let state = { ...initial, activeSlot: 'old' }
+    state = reducer(state, { type: 'chat/switchSlot/pending', meta: { arg: 'new', requestId: 'r1', requestStatus: 'pending' } })
+    state = reducer(state, { type: 'chat/switchSlot/rejected', meta: { arg: 'new', requestId: 'r1', requestStatus: 'rejected' }, error: { message: 'fail' } })
+    expect(state.slotOpenFailed).toBe('new')
+    state = reducer(state, {
+      type: 'chat/refreshSlot/fulfilled', meta: { arg: 'new', requestId: 'r2', requestStatus: 'fulfilled' },
+      payload: { key: 'new', messages: [], hasMore: false, queue: [], nextBefore: 0, running: false },
+    })
+    expect(state.slotOpenFailed).toBeNull()
+  })
+
   it('rejected skips clear if user already switched to another slot', () => {
     let state = { ...initial, activeSlot: 'old' }
     // First switch pending

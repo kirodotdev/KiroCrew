@@ -13,11 +13,13 @@ as ``kiro_crew.apps.manager.<name>``, and a patch there reaches this module too
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import math
 import os
 import re
+import stat
 import threading
 import time
 from collections import OrderedDict
@@ -81,6 +83,91 @@ def _is_sidecar_entry(entry_name: str) -> bool:
     record lists the app twice. Every walk of ``apps_dir()`` skips these.
     """
     return entry_name.startswith(".")
+
+
+#: How old the apps folder's mtime must be before a scan keyed on it is reused.
+#: Filesystem timestamps are coarse (a kernel tick on Linux, 2 s on FAT), so two
+#: changes inside one tick can leave the same mtime; a scan taken that soon after
+#: the last change is not trusted.
+_RECORDED_NAMES_SETTLE_NS = 3_000_000_000
+
+#: apps folder path -> (its (st_dev, st_ino, st_mtime_ns), the names found there).
+_recorded_names_cache: dict[str, tuple[tuple[int, int, int], tuple[str, ...]]] = {}
+
+#: The signature of a cached scan that must not be reused; its names are still kept.
+_STALE_SIGNATURE = (-1, -1, -1)
+
+#: Errors that mean an app entry or its record is not there (or not a directory).
+_MISSING_RECORD_ERRNOS = frozenset((errno.ENOENT, errno.ENOTDIR, errno.ELOOP))
+
+
+def _recorded_app_names(root: Path) -> tuple[str, ...]:
+    """Sorted names of the entries under *root* that hold an ``installed.json``.
+
+    The walk costs a stat per entry, and each stat gives up the GIL, so a folder of
+    stray record-less entries makes every listing slow beside a busy thread. The
+    result is reused while the folder's own stat is unchanged: adding, removing or
+    renaming an entry moves its mtime, and ``_write_installed`` touches the folder
+    so a record written into an existing entry moves it too. Callers still read
+    each record, so an in-place edit, or a record removed, shows at once. An entry
+    listed before stays listed while it exists, so a record moved aside and back
+    shows at once too.
+
+    shortcut: a record created inside an entry this process never listed, by
+    anything other than ``_write_installed`` (a hand edit), is listed after the
+    folder next changes.
+    """
+    try:
+        st = root.stat()
+    except OSError:
+        return ()
+    if not stat.S_ISDIR(st.st_mode):
+        return ()
+    settled = time.time_ns() - st.st_mtime_ns >= _RECORDED_NAMES_SETTLE_NS
+    signature = (st.st_dev, st.st_ino, st.st_mtime_ns)
+    cached = _recorded_names_cache.get(str(root))
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    listed_before = frozenset(cached[1]) if cached is not None else frozenset()
+    names: list[str] = []
+    skipped = 0
+    inspection_failed = False
+    with os.scandir(root) as entries:
+        for entry in entries:
+            if _is_sidecar_entry(entry.name):
+                continue
+            try:
+                # Unlike Path.is_dir, DirEntry.is_dir raises on a symlink loop.
+                if not entry.is_dir():
+                    continue
+            except OSError as exc:
+                if exc.errno not in _MISSING_RECORD_ERRNOS:
+                    inspection_failed = True
+                continue
+            if entry.name in listed_before:
+                names.append(entry.name)
+                continue
+            try:
+                record_st = os.stat(os.path.join(entry.path, INSTALLED_META_FILENAME))
+            except OSError as exc:
+                if exc.errno in _MISSING_RECORD_ERRNOS:
+                    skipped += 1
+                else:
+                    inspection_failed = True
+                continue
+            if stat.S_ISREG(record_st.st_mode):
+                names.append(entry.name)
+            else:
+                skipped += 1
+    if skipped:
+        logger.info("%s: skipped %d entries with no %s", root, skipped, INSTALLED_META_FILENAME)
+    result = tuple(sorted(names))
+    # A recent or incomplete scan is not reused, but its names are still kept.
+    _recorded_names_cache[str(root)] = (
+        signature if settled and not inspection_failed else _STALE_SIGNATURE,
+        result,
+    )
+    return result
 
 
 def app_data_dir(name: str) -> Path:
@@ -682,6 +769,20 @@ def _write_installed(
             protected_app_state.set_owner_disabled(name, True)
         meta_path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(meta_path, json.dumps(body, indent=2) + "\n")
+        # A record written into an existing entry does not move the apps folder's
+        # mtime, which is what other processes key their listing on. Cached scans
+        # here go stale but keep their names (see _recorded_app_names).
+        for key, (_, kept) in list(_recorded_names_cache.items()):
+            _recorded_names_cache[key] = (_STALE_SIGNATURE, kept)
+        from kiro_crew.apps import execution  # module, not name: the facade serves names
+
+        execution.invalidate_shipped_builtin_apps()  # an install, update or re-registration
+        try:
+            os.utime(meta_path.parent.parent)
+        except OSError:
+            logger.warning(
+                "could not touch %s; other processes may list stale apps", meta_path.parent.parent
+            )
         # The credential masks the manifest declares must outlive it beside the data
         # (apps.credential_masks). Best-effort here: the update and the uninstall
         # refresh the record again, strictly, before they move the data.
@@ -947,14 +1048,14 @@ def _freeze_declared(
     declared = _declared_grant_entries(grant_source(manifest))
     # An explicit-only family is approved only by entries a stored set names, so a
     # set that defers to the manifest approves nothing in it (``point_grants``).
-    frozen = {
-        family: (
-            base[family]
-            if family in base
-            else [] if family in _EXPLICIT_ONLY_FAMILIES else declared[family]
-        )
-        for family in STAGED_GRANT_FAMILIES
-    }
+    frozen = {}
+    for family in STAGED_GRANT_FAMILIES:
+        if family in base:
+            frozen[family] = base[family]
+        elif family in _EXPLICIT_ONLY_FAMILIES:
+            frozen[family] = []
+        else:
+            frozen[family] = declared[family]
     try:
         # The app's write lock, which every write of its set holds (``write_grants_text``),
         # in any thread or process: nothing an owner stores, and no uninstall's
@@ -1043,7 +1144,9 @@ def _declared_grant_entries(permissions: Any) -> dict[str, list[str]]:
 #: Families an install or a first registration never approves on its own: the install
 #: prompt does not show them, so they wait for the owner on the app's page like an
 #: update's new entries. ``bots``: the owner decides which Bots an app reaches.
-_OWNER_APPROVED_FAMILIES = (BOT_GRANT_FAMILY,)
+#: ``browserSites``: the pages the app's own agent drives the browser on unasked.
+#: ``browser``: the verbs ``ctx.browser`` and ``BrowserView`` use on its own slots' tabs.
+_OWNER_APPROVED_FAMILIES = (BOT_GRANT_FAMILY, "browserSites", "browser")
 
 
 def _consented_grant_entries(permissions: Any) -> dict[str, list[str]]:
@@ -1446,12 +1549,8 @@ _config_keys_refresh_lock = threading.Lock()
 
 
 def _scan_installed_app_config_keys(root: Path) -> frozenset[str]:
-    if not root.is_dir():
-        return frozenset()
     keys: set[str] = set()
-    for entry in root.iterdir():
-        if _is_sidecar_entry(entry.name) or not entry.is_dir():
-            continue
+    for entry in (root / name for name in _recorded_app_names(root)):
         manifest = get_app_manifest(entry.name)
         try:
             installed = _read_installed(entry.name, manifest=manifest)

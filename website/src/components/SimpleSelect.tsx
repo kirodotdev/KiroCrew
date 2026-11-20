@@ -62,6 +62,15 @@ export interface SimpleSelectProps {
    *  Honoured on the Radix path only: on touch the trigger IS the selected
    *  `<option>`, so the label is unavoidably visible there. */
   labelsInListOnly?: boolean
+  /** Keep every plain-text row of the open list on one line: a label that does
+   *  not fit is cut with an ellipsis and shows in full on hover (`title`). The
+   *  full text stays in the DOM, so a screen reader still reads all of it. Radix
+   *  copies the selected row's text into the collapsed trigger, where it is cut
+   *  the same way; that copy takes no pointer events, so the trigger itself
+   *  carries the chosen label as its `title` unless the caller passes one. For a
+   *  list of free-form names (people, machines) whose length the caller cannot
+   *  bound. Radix path only: a native `<option>` already shows its whole text. */
+  truncateLabels?: boolean
   /** Per-option trailing badge in the open list (same order as `options`); leave
    *  an entry undefined for a row with nothing to say. `source` picks the colour,
    *  `label` is the already-translated text.
@@ -115,7 +124,7 @@ export interface SimpleSelectProps {
   'data-ui-location'?: string
 }
 
-const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, optionIcons, value, onChange, action, clearLabel, triggerFallback, labelsInListOnly, optionBadges, disabled, busy, style, id, className, contentClassName, 'aria-label': ariaLabel, 'aria-describedby': ariaDescribedBy, title, 'data-ui-location': uiLocationId }: SimpleSelectProps, forwardedRef: ForwardedRef<HTMLElement>) {
+const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, optionIcons, value, onChange, action, clearLabel, triggerFallback, labelsInListOnly, truncateLabels, optionBadges, disabled, busy, style, id, className, contentClassName, 'aria-label': ariaLabel, 'aria-describedby': ariaDescribedBy, title, 'data-ui-location': uiLocationId }: SimpleSelectProps, forwardedRef: ForwardedRef<HTMLElement>) {
   const isTouch = useIsTouchDevice()
   // While busy the control refuses picks but stays focusable, so native
   // `disabled` is dropped; the refusal is carried by the `aria-*` attributes and
@@ -208,7 +217,7 @@ const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, o
         }}
         disabled={nativeDisabled}
       >
-        <SelectTrigger id={id} aria-label={ariaLabel} aria-describedby={ariaDescribedBy} title={title} {...marker} {...busyAttrs} busy={busy} className={className}>
+        <SelectTrigger id={id} aria-label={ariaLabel} aria-describedby={ariaDescribedBy} title={title ?? (truncateLabels && value !== '' && selectable(value) ? label(value, options.indexOf(value)) : undefined)} {...marker} {...busyAttrs} busy={busy} className={className}>
           <SelectValue placeholder={triggerFallback ?? clearLabel ?? (value || '—')}>
             {/* Children override the selected item's text. Passed only when there
                 IS a selectable non-empty value, so an unset control still falls
@@ -231,7 +240,9 @@ const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, o
             const badge = opt === '' ? undefined : optionBadges?.[i]
             const icon = optionIcons?.[i]
             return (
-              <SelectItem key={opt} value={toRadix(opt)} textValue={label(opt, i)}>
+              // `[&>span]:min-w-0` lets the item's text slot (Radix ItemText, which
+              // takes no className) shrink to the row, so the label can truncate.
+              <SelectItem key={opt} value={toRadix(opt)} textValue={label(opt, i)} className={truncateLabels ? '[&>span]:min-w-0' : undefined}>
                 {badge ? (
                   // `min-w-0 max-w-full` so the row can SHRINK inside a panel the
                   // viewport clamped below the caller's floor: the note truncates and
@@ -261,6 +272,8 @@ const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, o
                     <span aria-hidden="true" className="shrink-0">{icon}</span>
                     <span className="min-w-0 truncate">{label(opt, i)}</span>
                   </span>
+                ) : truncateLabels ? (
+                  <span className="block truncate" title={label(opt, i)}>{label(opt, i)}</span>
                 ) : label(opt, i)}
               </SelectItem>
             )

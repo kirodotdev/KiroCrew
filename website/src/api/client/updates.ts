@@ -6,6 +6,7 @@
 
 import type { UpdateCheckResult } from '../../types'
 import { askAppConfirm } from '../../lib/appConfirm'
+import { clearGatewayRestart, noteGatewayRestart } from '../../lib/gatewayRestart'
 import { i18nT } from '../../i18n/t'
 import { asWorkInFlight, WorkConfirmDeclined, workInFlightNotice, type WorkInFlight } from '../../utils/workInFlight'
 import type { ClientTransport } from './transport'
@@ -35,15 +36,23 @@ export function createUpdatesEndpoints({ post, del, j, jfetch: fetch }: ClientTr
    * a network failure after a 200 as the expected path rather than an error.
    */
   const restartGateway = async () => {
-    const first = await post('/api/restart', { force: false })
-    if (first.status === 409) {
-      const work = asWorkInFlight(await first.clone().json().catch(() => null))
-      if (work) {
-        await confirmRestartUnderWork(work)
-        return post('/api/restart', { force: true }).then(j)
+    // Noted before asking: the socket can drop before this call answers.
+    noteGatewayRestart()
+    try {
+      let res = await post('/api/restart', { force: false })
+      if (res.status === 409) {
+        const work = asWorkInFlight(await res.clone().json().catch(() => null))
+        if (work) {
+          await confirmRestartUnderWork(work)
+          res = await post('/api/restart', { force: true })
+        }
       }
+      if (!res.ok) clearGatewayRestart()
+      return await j(res)
+    } catch (err) {
+      if (err instanceof WorkConfirmDeclined) clearGatewayRestart()
+      throw err
     }
-    return j(first)
   }
 
   const lifecycle = {

@@ -492,16 +492,16 @@ def _withdrawal_message() -> str:
     the second leaves every other model available, so each has its own sentence. Asked
     only on the refusal path, so a permitted write pays nothing for it.
     """
+    from kiro_crew.decisions import capability as _cap
     from kiro_crew.decisions import gate as _gate
-    from kiro_crew.decisions.capability import (
-        is_decisions_denied,
-        is_local_preset,
-        names_local_preset,
-    )
 
     endpoint, model = _gate.configured_endpoint(), _gate.configured_provider_model(None)
-    local = is_local_preset(endpoint, model, serving=False) or names_local_preset(endpoint, model)
-    if is_decisions_denied(local=local):
+    if _cap.edition_refuses(_cap.provider_id(endpoint, model)):
+        return "this decision model is turned off in the LTS edition"
+    local = _cap.is_local_preset(endpoint, model, serving=False) or _cap.names_local_preset(
+        endpoint, model
+    )
+    if _cap.is_decisions_denied(local=local):
         return "decision models are turned off by your administrator"
     return "this decision model is not allowed by your administrator"
 

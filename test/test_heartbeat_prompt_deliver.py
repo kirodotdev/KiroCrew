@@ -52,7 +52,7 @@ class TestPromptDashboardDeliver:
 
         state, slot = dashboard_state
         await orchestrator._deliver_result(
-            "💓 Heartbeat", "CR check", "Fix these comments", "prompt:dashboard:chat-1"
+            "Heartbeat", "CR check", "Fix these comments", "prompt:dashboard:chat-1"
         )
         slot.enqueue_or_run_prompt.assert_called_once()
         call_args = slot.enqueue_or_run_prompt.call_args
@@ -74,7 +74,7 @@ class TestPromptDashboardDeliver:
         sel_mock = MagicMock()
         monkeypatch.setattr("kiro_crew.slack.gateway.sel", lambda: sel_mock)
         await orchestrator._deliver_result(
-            "💓 Heartbeat", "CR check", "Fix these", "prompt:dashboard:chat-99"
+            "Heartbeat", "CR check", "Fix these", "prompt:dashboard:chat-99"
         )
         assert any("not found" in r.message for r in caplog.records)
         # notify must NOT fire when slot is missing (avoids dead-link notifications)
@@ -90,7 +90,7 @@ class TestPromptDashboardDeliver:
     async def test_prompt_sends_notification_once(self, orchestrator, dashboard_state):
         state, slot = dashboard_state
         await orchestrator._deliver_result(
-            "💓 Heartbeat", "CR check", "Fix these", "prompt:dashboard:chat-1"
+            "Heartbeat", "CR check", "Fix these", "prompt:dashboard:chat-1"
         )
         state.notify.assert_called_once()
         call_args = state.notify.call_args
@@ -114,14 +114,14 @@ class TestPromptDashboardDeliver:
         state, slot = dashboard_state
         slot.enqueue_or_run_prompt.return_value = ran
         await orchestrator._deliver_result(
-            "💓 Heartbeat", "CR check", "Fix these", "prompt:dashboard:chat-1"
+            "Heartbeat", "CR check", "Fix these", "prompt:dashboard:chat-1"
         )
         slot.enqueue_or_run_prompt.assert_called_once()
         assert "Fix these" in slot.enqueue_or_run_prompt.call_args.args[0]
         assert state.push_slots_update.call_count == int(ran)
         if ran:
             state.notify.assert_called_once_with(
-                "heartbeat", "💓 Heartbeat", "CR check\n\nFix these", meta={"slot": "chat-1"}
+                "heartbeat", "Heartbeat", "CR check\n\nFix these", meta={"slot": "chat-1"}
             )
         else:
             state.notify.assert_not_called()
@@ -133,7 +133,7 @@ class TestPromptDashboardDeliver:
         caplog.set_level(logging.DEBUG, logger="kiro_crew.slack.gateway")
         orchestrator.dashboard_state = None
         await orchestrator._deliver_result(
-            "💓 Heartbeat", "CR check", "Fix these", "prompt:dashboard:chat-1"
+            "Heartbeat", "CR check", "Fix these", "prompt:dashboard:chat-1"
         )
         # Assert the observability log fires so a silent regression removing
         # the logger.debug would fail the test (not just the no-crash case).
@@ -148,7 +148,7 @@ class TestPromptDashboardDeliver:
         caplog.set_level(logging.DEBUG, logger="kiro_crew.slack.gateway")
         state, _ = dashboard_state
         await orchestrator._deliver_result(
-            "💓 Heartbeat", "CR check", "Fix these", "prompt:dashboard:"
+            "Heartbeat", "CR check", "Fix these", "prompt:dashboard:"
         )
         state.get_slot.assert_not_called()
         state.resolve_slot.assert_not_called()
@@ -162,7 +162,7 @@ class TestPromptDashboardDeliver:
         state, slot = dashboard_state
         oversize = "x" * (MAX_PROMPT_BYTES + 1000)
         await orchestrator._deliver_result(
-            "💓 Heartbeat", "CR check", oversize, "prompt:dashboard:chat-1"
+            "Heartbeat", "CR check", oversize, "prompt:dashboard:chat-1"
         )
         delivered = slot.enqueue_or_run_prompt.call_args.args[0]
         assert len(delivered.encode("utf-8")) <= MAX_PROMPT_BYTES
@@ -178,7 +178,7 @@ class TestPromptDashboardDeliver:
         from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
 
         state, slot = dashboard_state
-        title = "💓 Heartbeat"
+        title = "Heartbeat"
         summary = "CR check"
         prefix_bytes = len(f"{title}\n\n".encode("utf-8"))
         ascii_pad_len = MAX_PROMPT_BYTES - prefix_bytes - 1
@@ -195,7 +195,7 @@ class TestPromptDashboardDeliver:
         from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
 
         state, slot = dashboard_state
-        title = "💓 Heartbeat"
+        title = "Heartbeat"
         summary = "CR check"
         prefix_bytes = len(f"{title}\n\n".encode("utf-8"))
         content = "x" * (MAX_PROMPT_BYTES - prefix_bytes)
@@ -241,12 +241,12 @@ class TestDashboardSlotInjectDeliver:
         state._slots = {"chat-1-1776476208": slot}
         state.resolve_slot = lambda name: DashboardState.resolve_slot(state, name)
 
-        await orchestrator._deliver_result("💓 Heartbeat", "test", "result", "dashboard:chat-1")
+        await orchestrator._deliver_result("Heartbeat", "test", "result", "dashboard:chat-1")
         assert [(m["role"], m["content"], m["cls"]) for m in slot.messages] == [
-            ("assistant", "💓 Heartbeat\n\nresult", "msg msg-a")
+            ("assistant", "Heartbeat\n\nresult", "msg msg-a")
         ]
         state.notify.assert_called_once_with(
-            "heartbeat", "💓 Heartbeat", "test\n\nresult", meta={"slot": "chat-1-1776476208"}
+            "heartbeat", "Heartbeat", "test\n\nresult", meta={"slot": "chat-1-1776476208"}
         )
 
     @pytest.mark.asyncio()
@@ -257,7 +257,7 @@ class TestDashboardSlotInjectDeliver:
         state.resolve_slot.return_value = None
         sel_mock = MagicMock()
         monkeypatch.setattr("kiro_crew.slack.gateway.sel", lambda: sel_mock)
-        await orchestrator._deliver_result("💓 Heartbeat", "test", "result", "dashboard:chat-99")
+        await orchestrator._deliver_result("Heartbeat", "test", "result", "dashboard:chat-99")
         state.notify.assert_not_called()
         # SEL audit event fires on not_found for inject path too
         sel_mock.log_api_access.assert_called_once()
@@ -501,9 +501,7 @@ class TestSlotPrefixMatch:
 
         state.resolve_slot = lambda name: DashboardState.resolve_slot(state, name)
 
-        await orchestrator._deliver_result(
-            "💓 Heartbeat", "test", "result", "prompt:dashboard:chat-1"
-        )
+        await orchestrator._deliver_result("Heartbeat", "test", "result", "prompt:dashboard:chat-1")
         state.notify.assert_called_once()
         meta = state.notify.call_args[1]["meta"]
         assert meta["slot"] == "chat-1-1776476208"
@@ -518,9 +516,7 @@ class TestSlotPrefixMatch:
 
         state.resolve_slot = lambda name: DashboardState.resolve_slot(state, name)
 
-        await orchestrator._deliver_result(
-            "💓 Heartbeat", "test", "result", "prompt:dashboard:chat-1"
-        )
+        await orchestrator._deliver_result("Heartbeat", "test", "result", "prompt:dashboard:chat-1")
         slot.enqueue_or_run_prompt.assert_called_once()
         prompt, _, passed_state = slot.enqueue_or_run_prompt.call_args.args
         assert prompt.endswith("result")

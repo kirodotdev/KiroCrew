@@ -372,7 +372,7 @@ async def test_the_reconcile_announces_a_finished_run_as_finished(agent_root: Pa
     assert captured, "the finished orphan must produce a notification"
     note = captured[0]
     assert (
-        "✅ finished before gateway restart" in note
+        "completed: finished before gateway restart" in note
     ), f"a finished answer is a whole result; got {note!r}"
     assert "cut off mid-turn" not in note, "the finished answer must not be called a fragment"
     tomb = read_tombstone("window-orphan")

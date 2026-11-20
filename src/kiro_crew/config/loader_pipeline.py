@@ -25,7 +25,11 @@ from kiro_crew.config import migration as _migration
 from kiro_crew.config import sections as _sections
 from kiro_crew.config import windows_exec_adoption
 from kiro_crew.config.fields import _coerce_bool, _safe_str
-from kiro_crew.config.integration_sections import AppSettingsConfig, AwsConfig
+from kiro_crew.config.integration_sections import (
+    AppSettingsConfig,
+    AwsConfig,
+    TemplateSettingsConfig,
+)
 from kiro_crew.config.loader_agents import _crew_autocompact_pct
 from kiro_crew.config.loader_builders import (
     _build_agent_config,
@@ -34,6 +38,7 @@ from kiro_crew.config.loader_builders import (
     _build_telemetry_config,
     _clamp_security_bounds,
     _default_memory_mode_from,
+    _market_registry_ids,
     _read_backend_choice,
     _registry_entry,
     mark_member_backend_inherited,
@@ -797,6 +802,28 @@ def _parse_app_settings(raw: Any) -> dict[str, AppSettingsConfig]:
     return apps
 
 
+def _parse_template_settings(raw: Any) -> dict[str, TemplateSettingsConfig]:
+    """The ``templates`` table: one :class:`TemplateSettingsConfig` per template name.
+
+    Total: a table that is not an object, or an entry that is not one, reads as
+    absent, so every template keeps its own pin. A name no installed template
+    carries simply matches nothing.
+    """
+    if not isinstance(raw, dict):
+        logger.warning(
+            "Config 'templates' is not a JSON object (got %s); every template keeps its pin",
+            type(raw).__name__,
+        )
+        return {}
+    templates: dict[str, TemplateSettingsConfig] = {}
+    for name, entry in raw.items():
+        if not isinstance(name, str) or not name or not isinstance(entry, dict):
+            continue
+        model = _sections.SectionReader(TemplateSettingsConfig, entry).get("model")
+        templates[name] = TemplateSettingsConfig(model=model if isinstance(model, str) else "")
+    return templates
+
+
 def build_config(
     doc: ConfigDocument, config_cls: type[KiroCrewConfig] = KiroCrewConfig
 ) -> KiroCrewConfig:
@@ -1076,7 +1103,6 @@ def build_config(
                     # Hand-editable, and a safety switch: only a real bool is
                     # honoured; anything else reads as the default (off).
                     dashboard_card_send=crew.read("dashboard_card_send", _safe_bool),
-                    show_sessions_in_list=crew.read("show_sessions_in_list", _safe_bool),
                     # Same guard family as model/triggers: config.json is
                     # hand-editable, so a junk value must collapse to 0
                     # (inherit the global window), never crash the load.
@@ -1153,6 +1179,7 @@ def build_config(
                 description=store.get("description"),
                 embedding_provider=store.get("embedding_provider"),
                 owner_member=store.get("owner_member"),
+                former_owner=store.get("former_owner"),
                 memory_version=store.get("memory_version"),
                 provider_mode=(
                     mode
@@ -1164,6 +1191,7 @@ def build_config(
         memory_stores[DEFAULT_MEMORY_STORE] = MemoryStoreConfig()
 
     apps = _parse_app_settings(data.get("apps", {}))
+    templates = _parse_template_settings(data.get("templates", {}))
 
     # The top-level keys read against KiroCrewConfig's own fields, and the slack
     # keys that land on top-level fields under the same names. Against the base
@@ -1248,6 +1276,7 @@ def build_config(
         memory_stores=memory_stores,
         default_memory_store=default_memory_store_val,
         apps=apps,
+        templates=templates,
         stt=_build_stt_config(stt_data),
         # Every numeric knob is clamped to the same ceiling the MCP tool
         # schemas enforce, so a hand-edited config.json cannot ask for an
@@ -1285,6 +1314,7 @@ def build_config(
             for r in (data.get("registries") or [])
             if isinstance(r, dict) and r.get("repo")
         ],
+        market_registries=_market_registry_ids(data.get("market_registries")),
         mcp_gateway=_build_mcp_gateway_config(mcp_gateway_data),
         mcp=_build_mcp_config(mcp_data),
         instances=_build_instances_config(connect_timeout_raw, instances_data, mint_timeout_raw),

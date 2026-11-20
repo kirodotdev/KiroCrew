@@ -1,11 +1,11 @@
 import { useEffect, useState, lazy, Suspense, type ReactNode } from 'react'
 import { TOPBAR_FOCUS_Z, TOPBAR_Z } from '../../lib/themeDecorLayer'
-import { kiroUsageSegment } from './kiroUsageReadout'
+import { kiroSignInSegment, kiroUsageSegment } from './kiroUsageReadout'
 import { metricsSegment, MetricsErrorNotice } from './metricsReadout'
 import { ResourcePostureChip } from './resourcePostureChip'
 import { Bell, Fullscreen, Loader2, Menu, Plug, Unplug } from 'lucide-react'
 import { motion } from 'framer-motion'
-import { isWinElectron } from '../../lib/electron'
+import { isWinElectron, isLinuxFramelessElectron, shellServesLinuxAppMenu } from '../../lib/electron'
 import { setNativeBadgeCount } from '../platform/electronBridge'
 import { SELECTION_INERT_ATTR } from '../../pages/chat/useSelectionInertOverlays'
 import { PackLoaderImage } from '../../pages/chat/PackLoaderImage'
@@ -31,15 +31,24 @@ import MilestonesIndicator, { MilestonesPill } from '../../components/milestones
 import MilestonesSheet from '../../components/milestones/MilestonesSheet'
 import { useExplorePreviewSwitch } from '../../components/milestones/useMilestones'
 import { useExplorePreview } from '../../hooks/usePreviewFlag'
+import { isEmbeddedPane } from '../../lib/embedded'
 
 // Lazy, like App.tsx's update-found popup: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
 const UpdatePill = lazy(() => import('../../components/UpdatePill'))
 // The switcher with its Team Crews group, lazy so the relay list's code stays
-// out of the app core. Only the desktop app has the bridge it needs.
+// out of the app core. The group renders nothing while the relay viewer is off.
 const TeamCrewsSwitcher = lazy(() => import('../../components/TeamCrewsGroup'))
-const hasRelayCrewBridge = () =>
-  typeof (window as { relayCrewAPI?: { open?: unknown } }).relayCrewAPI?.open === 'function'
+
+/** The Crew switcher with Team Crews (the plain one until its code loads); an SSH
+ *  pane's own bar is the plain one, as it never lists Team Crews. */
+function CrewSwitcher() {
+  return !isEmbeddedPane() ? (
+    <Suspense fallback={<InstanceTabBar variant="inline" />}>
+      <TeamCrewsSwitcher variant="inline" />
+    </Suspense>
+  ) : <InstanceTabBar variant="inline" />
+}
 
 // Corner radius, in px, of the top bar's Liquid Glass pills (the search
 // trigger, the readout capsule; components/FeedbackPill.tsx carries the same
@@ -161,7 +170,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
   const {
     connected, gatewayConnecting, updateAvailable, authRequired, gatewayStatusMsg, gatewayStatusAnnounce, relayRetrying, focusModeChord, focusModeExitMsgVisible, focusChromeInert, dispatch, colorTheme, resolvedMode, branding, avatar, isMobile, focusMode,
     toggleFocusMode, focusActive, topPeek, topPeekSurface, topChromeShown, quickSearchLauncher, commandPalette,
-    setKiroUsageOpen, kiroUsageState, usageSegmentHidden, metrics, capsuleCollapsed, setCapsuleCollapsed,
+    setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroSignInPrompt, openKiroSignIn, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, setReportProblemOpen,
     requestFeature, toggleNav, mobileSingle, membersRoute, membersBarPending, mobileNavOpen, topbarSearch,
   } = shell
@@ -251,12 +260,32 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
         {!mobileSingle && (
         <div className="tb-left relative h-full">
           <div className="tb-measure">
-          {/* Windows only: the application menu shares this cluster. It needs no
-              width reservation of its own: the identity group is sized by its own
-              grid track, and the menu growing from the hamburger to its six
-              labels therefore consumes the GROUP's width -- which its collapse
-              ladder responds to -- instead of eating the centred search's. */}
-          {!isMobile && isWinElectron && <WindowsTitlebarMenu />}
+          {/* The application menu shares this cluster. Its name reflects the
+              platform it is modelled on, and it serves every frameless surface:
+              Windows, and Linux under a CSD Wayland compositor, which draws no
+              menu bar of its own. A framed window is excluded because its
+              compositor draws that bar itself.
+              It needs no width reservation of its own: the identity group is
+              sized by its own grid track, and the menu growing from the
+              hamburger to its six labels therefore consumes the GROUP's width
+              -- which its collapse ladder responds to -- instead of eating the
+              centred search's.
+              `!isMobile` is deliberate, and this surface stays desktop-only:
+              below MOBILE_BREAKPOINT the trigger is hidden, and the native
+              accelerators Menu.setApplicationMenu installs host every action
+              that carries one. The accelerator-less items in
+              electron/app-menu.js have no host at that width -- the same gap a
+              Windows window has, which hides its native bar outright.
+              The Linux term also asks the SHELL, not just the window:
+              `shellServesLinuxAppMenu` is the installed shell saying its
+              `menuItems` guard admits this surface. The two halves install
+              separately, so an older shell reports `linuxFrameless` while
+              still answering [] -- mounting on the window alone would paint a
+              trigger whose popups open empty. Windows keeps its original
+              single term, having never needed the capability. */}
+          {!isMobile
+            && (isWinElectron || (isLinuxFramelessElectron && shellServesLinuxAppMenu))
+            && <WindowsTitlebarMenu />}
 
           {/* Route-history Back/Forward (#8258). Desktop layout only: on mobile
               the platform owns Back (left-edge swipe), and the drill-in surfaces
@@ -293,11 +322,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
           )}
           {/* Desktop app only: the same switcher, plus Team Crews while the relay
               viewer is on. Until its code loads, the plain switcher stands in. */}
-          {hasRelayCrewBridge() ? (
-            <Suspense fallback={<InstanceTabBar variant="inline" />}>
-              <TeamCrewsSwitcher variant="inline" />
-            </Suspense>
-          ) : <InstanceTabBar variant="inline" />}
+          <CrewSwitcher />
           </div>
         </div>
         )}
@@ -314,7 +339,9 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             width and the sessions toggle stays on the gutter. */}
         {mobileSingle && (
           <div data-testid="topbar-lead" className="relative h-full flex items-center gap-1.5 min-w-0">
-            <InstanceTabBar variant="inline" />
+            {/* The same switcher as the wide bar, so a note's Open on a Team Crew
+                (`?relay_crew=`) is read at every width. */}
+            <CrewSwitcher />
             {getTopBarWidgets().map(w => (
               <ErrorBoundary key={w.id} scope={`topbar-widget:${w.id}`} fallback={null}>
                 <w.component />
@@ -586,7 +613,9 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             }
             if (!capsuleCollapsed) {
             if (!isMobile) segments.push(metricsSegment(metrics, seg))
-            const usage = kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUsageOpen }, seg, isMobile)
+            const usage = kiroSignInPrompt
+              ? kiroSignInSegment(openKiroSignIn, seg, isMobile)
+              : kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUsageOpen }, seg, isMobile)
             if (usage) segments.push(usage)
             }
             // Extension slot: downstream-registered capsule segments (e.g. an
@@ -757,7 +786,11 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             noHandoffReason="The gateway is offline, so a hand-off to the agent cannot be delivered."
             message={gatewayStatusAnnounce}
             messageClassName="text-danger-text"
-            className="absolute left-0 right-0 top-full z-[1] pointer-events-none justify-center h-6 font-medium bg-danger-subtle border-b border-danger/30"
+            // z-40: on the Crewmates page the identity stack hangs its name
+            // chip below the bar (fixed, z-30, in this header's stacking
+            // context: `.topbar-glass` has a transform). The offline message
+            // is the transient one and the phone's only one, so it wins.
+            className="absolute left-0 right-0 top-full z-40 pointer-events-none justify-center h-6 font-medium bg-danger-subtle border-b border-danger/30"
             testId="mobile-offline-strip"
           />
         )}

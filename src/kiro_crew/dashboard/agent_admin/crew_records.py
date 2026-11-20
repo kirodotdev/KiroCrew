@@ -369,46 +369,6 @@ async def _mark_first_greeting_owed(name: str, cfg: object) -> None:
     await asyncio.to_thread(mark_welcome_owed, name, config=cfg, kind=WELCOME_KIND_GOAL)
 
 
-def _teammate_create_refusal(request: web.Request, body: dict) -> web.Response | None:
-    """The 403 for a teammate's create that sets a Crew-level field, or ``None``.
-
-    A teammate's Bot reaches no more than a teammate's session: it boots the
-    built-in agent spec (``kirocrew``; a spec is the tool grants and MCP servers its
-    sessions run with, so choosing another is the owner's, as editing one is),
-    opens in the default approval mode, works in a workspace of its own, and is a
-    person-created Bot (so it is on every teammate's roster). Refused rather than
-    rewritten, so the caller learns which field is the owner's.
-    """
-    owner_fields = []
-    if str(body.get("kiro_agent") or "").strip() != "kirocrew":
-        owner_fields.append("kiro_agent")
-    if body.get("approval_mode"):
-        owner_fields.append("approval_mode")
-    if body.get("source", "kirocrew") != "kirocrew":
-        owner_fields.append("source")
-    # The owner's crew routing reads `triggers` to pick which Bot answers, which
-    # is Crew-level routing, not something a teammate session sets.
-    if body.get("triggers"):
-        owner_fields.append("triggers")
-    # A named workspace binds the Bot to an existing folder (another Bot's or the
-    # owner's), which a teammate session cannot choose; empty means its own.
-    if str(body.get("workspace") or "").strip():
-        owner_fields.append("workspace")
-    if not owner_fields:
-        return None
-    from kiro_crew.dashboard.handlers.members import _audit_teammate_denied
-
-    _audit_teammate_denied(request, "agent.create", "fields=" + ",".join(owner_fields))
-    return web.json_response(
-        {
-            "error": "only the Crew owner can set " + ", ".join(owner_fields),
-            "code": "owner_only",
-            "fields": owner_fields,
-        },
-        status=403,
-    )
-
-
 async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     """POST /api/agents — create a new Kiro Crew agent.
 
@@ -427,17 +387,9 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
 
 async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
     """The create itself — see :func:`api_kirocrew_agents_create`."""
-    from kiro_crew.dashboard.handlers.members import _teammate_admitted
-    from kiro_crew.shared_crew.routes_identity import _relay_teammate
-
-    # A team Crew teammate creates a Bot as they start a session. The grant is
-    # audited only once the body passed the teammate check below, so a refused
-    # create never leaves an `allowed` row.
-    teammate = _relay_teammate(request)
-    if not teammate:
-        denied = await _require_owner(request, "agent.create")
-        if denied is not None:
-            return denied
+    denied = await _require_owner(request, "agent.create")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except Exception:
@@ -446,15 +398,6 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "body must be an object", "code": "body_not_object"}, status=400
         )
-    if teammate:
-        refused = _teammate_create_refusal(request, body)
-        if refused is not None:
-            return refused
-        await _teammate_admitted(request, "agent.create")
-        # An unset mode opens the Bot's thread in trust
-        # (MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE), which a teammate cannot give a
-        # session, so a teammate's Bot is pinned to normal approvals.
-        body["approval_mode"] = "normal"
     name = body.get("name", "")
     if not isinstance(name, str):
         return web.json_response(
@@ -661,6 +604,21 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # Start from a kept memory store instead of a fresh one: the store a deleted
+    # crewmate left behind, named explicitly (member_memory_adopt). Absent or
+    # empty keeps the fresh allocation; a name is checked against the store's
+    # recorded identity under the namespace lock, never matched by crew name.
+    adopt_store = body.get("adopt_memory_store", "")
+    if not isinstance(adopt_store, str) or (
+        adopt_store and memory_store_binding_defect(adopt_store) is not None
+    ):
+        return web.json_response(
+            {
+                "error": "adopt_memory_store must name a kept memory store",
+                "code": "invalid_adopt_memory_store",
+            },
+            status=400,
+        )
     # Absent or empty means a workspace of the crew's own, allocated with the
     # record (member_workspace.provision_member_workspace); a name is the explicit
     # opt-in to share one, stored as given like every other create always did.
@@ -712,6 +670,21 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    if adopt_store:
+        # The adopted thread key is the deleted Bot's: a slot still live there is
+        # closed before anything is published, or nothing is.
+        from kiro_crew.dashboard.handlers.members import retire_stale_member_slot
+
+        snapshot = await asyncio.to_thread(KiroCrewConfig.load)
+        if not await retire_stale_member_slot(request.app.get("state"), snapshot, adopt_store):
+            return web.json_response(
+                {
+                    "error": "The deleted bot's chat is still open and could not be closed; "
+                    "nothing was created",
+                    "code": "member_thread_busy",
+                },
+                status=409,
+            )
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         # The config key is an id and the name the user typed is its label
@@ -839,9 +812,21 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
 
         from kiro_crew._sqlite_compat import sqlite3
 
+        # Only the store's own refusal tells the dialog to drop the pick; a host
+        # or storage failure leaves it, since the store is still there to take.
+        adopt_refused = False
         try:
             try:
-                await _drained_to_thread(provision_member_memory, cfg, name)
+                if adopt_store:
+                    from kiro_crew.member_memory_adopt import adopt_member_memory
+
+                    try:
+                        await _drained_to_thread(adopt_member_memory, cfg, name, adopt_store)
+                    except UnknownMemoryStore:
+                        adopt_refused = True
+                        raise
+                else:
+                    await _drained_to_thread(provision_member_memory, cfg, name)
                 new_workspace = await _drained_to_thread(provision_member_workspace, cfg, name)
                 await _drained_to_thread(
                     lambda: persist_member_config(
@@ -853,7 +838,8 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
                     cfg, name, new_workspace, previous_workspace=previous_workspace
                 )
                 allocated = cfg.agents[name].memory_store
-                if allocated != previous_store:
+                # An adopted store was never allocated here: it stays as it was.
+                if allocated != previous_store and not adopt_store:
                     await _drained_to_thread(
                         lambda: retire_unpublished_allocation(
                             cfg,
@@ -887,9 +873,8 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             # A memory database the host could not create (locked, read-only,
             # a disk I/O error) is the same refusal as a directory it could not
             # make: said with its code instead of escaping as a bare 500.
-            return web.json_response(
-                {"error": str(exc), "code": "member_memory_unavailable"}, status=409
-            )
+            code = "adopt_memory_unavailable" if adopt_refused else "member_memory_unavailable"
+            return web.json_response({"error": str(exc), "code": code}, status=409)
     # Eager copy (``rfc-mate-owned-agent-config`` §5.4), FIRST. The crewmate owns
     # a custom-agent file in ``~/.kiro/mates/agents/<name>.json``, copied from
     # whatever ``kiro_agent`` resolves to right now (its chosen template), with
@@ -924,6 +909,14 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
     # session naming that crew would take the chat default instead. Creation is
     # therefore always a change by `_effort_inputs` (None -> a tuple).
     await _refresh_session_defaults(request, name)
+    if adopt_store:
+        from kiro_crew import member_goals
+        from kiro_crew.member_memory_adopt import turn_off_kept_check_ins
+
+        try:
+            await asyncio.to_thread(turn_off_kept_check_ins, cfg.agents[name].member_id, name)
+        except (member_goals.GoalError, member_goals.GoalsUnreadable, OSError):
+            logger.warning("new Bot %s: could not turn off the kept check-ins", name, exc_info=True)
     if body.get("first_greeting") is True:
         await _mark_first_greeting_owed(name, cfg)
     if request_id:
@@ -936,7 +929,7 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
         operation="agent.create",
         outcome="success",
         source="dashboard",
-        resources=name,
+        resources=f"{name} memory_store={adopt_store}" if adopt_store else name,
     )
     return _created_response(cfg, name)
 
@@ -948,13 +941,24 @@ def _created_response(cfg: KiroCrewConfig, name: str) -> web.Response:
     memory; ``member_config_for_id`` resolves it and never a name or slug), so a
     client that must bind something to the crew it just made -- the Meet
     CrewMates flow's schedule -- can do so without going back through the
-    mutable display name.
+    mutable display name. A stored workspace that is not configured adds the
+    ``warnings`` line the update route answers.
     """
-    return web.json_response(
-        {
-            "ok": True,
-            "name": name,
-            "memory_store": cfg.agents[name].memory_store,
-            "member_id": cfg.agents[name].member_id,
-        }
-    )
+    from kiro_crew.member_workspace import DEFAULT_WORKSPACE
+
+    agent = cfg.agents[name]
+    result: dict[str, object] = {
+        "ok": True,
+        "name": name,
+        "memory_store": agent.memory_store,
+        "member_id": agent.member_id,
+    }
+    # Read from the stored record, not the request, so a repeat of the same
+    # request_id is answered with the same warning as the create.
+    ws = agent.workspace
+    if ws and ws not in cfg.workspaces and ws not in (DEFAULT_WORKSPACE, cfg.default_workspace):
+        logger.warning("crew %r bound to unconfigured workspace %r", name, ws)
+        result["warnings"] = [
+            f"workspace '{ws}' is not configured; the crew shares a fallback workspace directory"
+        ]
+    return web.json_response(result)

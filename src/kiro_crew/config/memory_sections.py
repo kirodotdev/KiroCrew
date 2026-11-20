@@ -270,8 +270,12 @@ class MemoryConfig:
             "Run Embeddings in a Child Process",
             "Load the embedding model and run inference in a separate low-priority "
             "process, so embedding work never competes with the gateway itself. Off "
-            "by default: the model runs inside the gateway. Takes effect at the next "
-            "model load.",
+            "by default: the model runs inside the gateway. The child cannot yet stop "
+            "a long background embedding when you ask for one, so a search or prompt "
+            "can wait behind it and fall back to keyword results; turn it on only if "
+            "the gateway itself is slow under embedding load. If the child cannot "
+            "start, the model loads inside the gateway instead. Takes effect at the "
+            "next model load.",
         ),
     )
     consolidation_write_child_process: bool = field(
@@ -1052,6 +1056,13 @@ class MemoryStoreConfig:
     owner_member: str = field(
         default="",
         metadata=_meta("Owner Member", "Display label of the Bot owning this memory store."),
+    )
+    former_owner: str = field(
+        default="",
+        metadata=_meta(
+            "Former Owner",
+            "The name the deleted bot that left this kept member store showed; display only.",
+        ),
     )
     memory_version: int = field(
         default=1,

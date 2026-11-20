@@ -45,6 +45,7 @@ from kiro_crew.dashboard.chat_utils import (
     TRANSIENT_NOTICE_RETRYING,
     TRANSIENT_RETRY_KIND,
 )
+from kiro_crew.dashboard.chat_utils_injected_rows import KIRO_CLI_SIGN_IN_KIND
 from kiro_crew.dashboard.recovery_replays import ReplayFamily
 from kiro_crew.llm_helpers import TRANSIENT_RETRIES, PromptBusyExhaustedError
 from kiro_crew.recovery.ladder import SESSION_RECOVERY_MAX_ATTEMPTS
@@ -136,7 +137,8 @@ _PLAIN = ("error", None)
 _ARMS: dict[str, _Arm] = {
     "auth-required": _Arm(
         events=lambda: [Raise(AcpAuthRequired("Not signed in"))],
-        rows=[_PLAIN],
+        # The Kiro CLI harness: the row asks for kiro-cli's own sign-in commands.
+        rows=[("error", KIRO_CLI_SIGN_IN_KIND)],
         card="Not signed in",
         reset=True,
         label=_UNNAMED,

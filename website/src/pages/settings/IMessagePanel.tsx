@@ -280,7 +280,7 @@ export function IMessagePanel() {
           )}
           {/* Optional per-channel session filing. Off by default: iMessage
               conversations stay unfiled in the sidebar. */}
-          <div className="border-t border-border mt-4 pt-4">
+          <div className="border-t border-border mt-3 pt-3">
             <SettingsToggle
               label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
               hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
@@ -340,7 +340,7 @@ export function IMessagePanel() {
       </SettingsSection>
 
       {/* ── Save (hidden on read-only / unsupported hosts) ── */}
-      {!ro && <div className="flex items-center gap-3 mt-1 mb-4">
+      {!ro && <div className="flex flex-row-reverse flex-wrap items-center gap-3 mt-3 mb-4 max-w-[720px]">
         <Btn primary onClick={handleSave} disabled={saveMut.isPending}>
           {saveMut.isPending ? i18nT('pages.settings.iMessagePanel.saving') : i18nT('pages.settings.iMessagePanel.save')}
         </Btn>

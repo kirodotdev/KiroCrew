@@ -125,6 +125,40 @@ def _prune_dead_descendants(saved: dict[int, ChildRecord]) -> list[int]:
     return [pid for pid in saved if pid not in dead]
 
 
+#: How often a kill re-reads whether the group a root left behind has emptied.
+_GROUP_EXIT_POLL_SECS = 0.05
+
+
+async def _wait_for_group_exit(pgid: int, deadline: float) -> None:
+    """Wait until process group *pgid* has no member left, or until *deadline* (loop time).
+
+    The group of a root whose identity held at the SIGTERM and that exited inside
+    the kill's grace. The SIGTERM went to every member through the live root, so a
+    member still there is still stopping, or has exited and is not yet reaped by
+    the init it was reparented to. ``pgroup_exists`` counts both, which is the
+    reading the checks after the kill take, so the wait ends only once they would
+    agree that the group is gone. A root that exits between the identity read and
+    the signal leaves a group no SIGTERM reached; that costs the rest of the grace.
+
+    The root's number cannot be reissued while its group has a member. A number
+    the kernel reissues to a new group leader after the group emptied reads as
+    still there, which costs the rest of the grace and never a signal. Nothing is
+    signalled here either: a member still standing at *deadline* is left to the
+    survivor tracking that follows.
+
+    The probe runs on the loop, not on the subprocess executor: it is a signal-0
+    probe of the group (on macOS also the kernel's group listing) that cannot
+    block, and a hung tree walk holding that executor would otherwise hold the
+    probe, and the kill, past *deadline*.
+    """
+    loop = asyncio.get_running_loop()
+    while platform_compat.pgroup_exists(pgid):
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return
+        await asyncio.sleep(min(_GROUP_EXIT_POLL_SECS, remaining))
+
+
 def _untrack_killed_root(pid: int, start_token: str | None) -> None:
     """Retire the killed root's PID-registry entry, by identity when it has one.
 
@@ -755,6 +789,11 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
         # Read before the kill clears it: the group fallback needs the
         # incarnation this process was spawned as, not the empty successor.
         instance = self._process_instance
+        # Read before the signal too: while the root's identity holds, the
+        # SIGTERM goes through it to its whole group, and only that group is
+        # waited out below.
+        root_held = self._root_identity() == "holds"
+        grace_ends = asyncio.get_running_loop().time() + self._KILL_TERM_TIMEOUT
         orphaned_group = await self._signal_tree(pid, platform_compat.SIGTERM, instance=instance)
         escalated = False
         try:
@@ -798,6 +837,14 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
                 await asyncio.shield(escalate())
                 raise
             await escalate()
+        elif root_held and not escalated:
+            # The root went down inside the grace, but its group need not have:
+            # the sandbox launcher dies on the SIGTERM at once, and the agent it
+            # forked into the same group closes the root's pipes as it exits, so
+            # wait() returns while that agent is still exiting or not yet
+            # reaped. Pruning now would retain it as a survivor, and a reset's
+            # survivor check would force-kill a process the SIGTERM already ended.
+            await _wait_for_group_exit(pid, grace_ends)
         # Before the handle is dropped, whatever the ladder reached: see
         # _release_stdin for the tree this is the whole teardown of.
         _release_stdin(self._process)

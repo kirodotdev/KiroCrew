@@ -1146,9 +1146,11 @@ const chatSlice = createSlice({
         if (slot === state.activeSlot) return
         if ((state.slotPaneNextBefore?.[k] ?? 0) !== before) return
         const cur = state.slotMessages[k] ?? []
+        // The backend never stores `meta.pastes`, so re-collapse this page's sent pastes first.
+        const restored = mergePreservedPastes(cur, messages)
         // Identity is meta.mid only, as for the active walk: an overlapping
         // page must not reach the list as a duplicate row key.
-        const fresh = messages.filter(m => !isRedeliveredMessage(cur, m.meta))
+        const fresh = restored.filter(m => !isRedeliveredMessage(cur, m.meta))
         const merged = [...fresh, ...cur]
         // Paging older is exactly when a parked block's anchor becomes loaded,
         // as on the active walk; without this a split pane showed the restored
@@ -1389,7 +1391,7 @@ export { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, 
 export {
   selectActiveSlotProject, selectComposerBusy, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendAttempts, selectSendConfirmed, selectSlotMessages,
   selectPendingTurn, selectSlotPendingApproval, selectSlotRunEpoch, selectSlotStreamState, selectSlotToolLog, selectTrailingSendUnconfirmed,
-  selectSlotTurnFromWake, selectTurnInterrupted,
+  selectResumeInterrupted, selectSlotTurnFromWake, selectTurnInterrupted,
   QUIET_END_SERVER, QUIET_END_TOOL,
 } from './chat/selectors'
 export { clearSwitchSlotGone, setSwitchSlotGone, switchSlot, switchSlotNoticeCopy, type SwitchSlotArg } from './chat/slotSwitch'

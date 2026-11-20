@@ -47,6 +47,7 @@ import { decisionStripFieldOf } from '../pages/chat/decisionRecord'
 import { agentNoToolsAgent, resolveGatewayNotice } from '../pages/chat/gatewayNotice'
 import AgentNoToolsNotice from '../pages/chat/AgentNoToolsNotice'
 import StopEventCard from '../pages/chat/StopEventCard'
+import RecoveryCard, { resolveInjectCard } from '../pages/chat/RecoveryCard'
 import { warmBriefBodyOf } from '../components/chat/WarmBriefCard'
 import { grillRowId } from '../components/chat/GrillCard'
 import { grillKeysSentAfter } from './protocol/grillMarker'
@@ -64,6 +65,7 @@ import { turnHadPolicyBlock } from './turnPolicyBlock'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { isRejectedDecision } from '../utils/approvalDecision'
 import { useReportRowActive } from '../pages/chat/rowActivity'
+import { isToolCallRow, stripToolCallLead } from '../lib/toolRowContract'
 
 // Lazy: only a KAS session with a folder agent's hooks ever draws this row, so it
 // stays out of the App chunk (Bundle Size Gate).
@@ -237,7 +239,7 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
   const [copyOutcome, setCopyOutcome] = React.useState<CopyOutcome>('idle')
   const copyResetTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
   React.useEffect(() => () => { if (copyResetTimer.current) clearTimeout(copyResetTimer.current) }, [])
-  // A finished call is NOT re-roled: the backend writes the result onto the 🔧
+  // A finished call is NOT re-roled: the backend writes the result onto the Tool:
   // row's own `meta.output` (`_on_tool_result` in dashboard/chat_turn/tool_results.py; '' for a
   // terminal frame with no renderable output), so the role alone left every
   // completed call in a polled transcript on the loader. Same rule as the
@@ -253,7 +255,7 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
   // raw command, matching the main chat. The raw label is the fallback, and is
   // not hard-truncated — CSS truncation keeps one line without destroying the
   // text for the expanded panel or the file probe.
-  const rawLabel = (message.content || '').replace(/^🔧\s*/, '').split('\n')[0]
+  const rawLabel = stripToolCallLead(message.content).split('\n')[0]
   const purpose = typeof message.meta?.purpose === 'string' ? message.meta.purpose : ''
   // Without a purpose, the title the main chat shows by default (simplified
   // tool names): the transport title `Running: <cmd>` is a LIVE verb, so on a
@@ -275,11 +277,11 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
   // Status icon + colour mirror the store-connected tool row so an embedded
   // transcript reads with the same visual grammar as a main session: spinner
   // while running, green dot when done, amber alert for auto-denied (a policy or
-  // hook block, detected by the HOST from the hidden 🚫 sibling message and
-  // passed in, since this pill only ever renders the visible 🔧 message), red
+  // hook block, detected by the HOST from the hidden Refused: sibling message and
+  // passed in, since this pill only ever renders the visible Tool: message), red
   // slash when user-rejected, amber lock when awaiting approval.
   const isAutoDenied = !isRejected && !!autoDenied
-  // Auto-denied is TERMINAL even though the 🔧 message never becomes a
+  // Auto-denied is TERMINAL even though the Tool: message never becomes a
   // tool_result (isDone) — the gate blocked the call, nothing further runs —
   // so it must escape both the loader icon and the spin animation.
   const Icon = isRejected ? CircleSlash : isAutoDenied ? CircleAlert : isDone ? CircleDot : hasPendingPerm ? Lock : LoaderCircle
@@ -311,7 +313,7 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
   // meta (`_tool_meta` in chat_turn/tool_rows.py / `_on_tool_result` in
   // chat_turn/tool_results.py), and the
   // embed's transcript response carries them. `message.content` is only the
-  // "🔧 title" line, so when either payload is present the expanded row renders
+  // "Tool: title" line, so when either payload is present the expanded row renders
   // the main chat's own `ToolDetails` (Input/Output tabs) instead of repeating
   // the title. The content panel below stays as the fallback for rows that
   // predate the persisted payloads.
@@ -566,6 +568,12 @@ export interface AssistantBubbleOptions {
   /** Show the reply's action row without hover, for a host whose playback the
    *  browser blocked (the recovery notice points at More → Read aloud). */
   revealActions?: boolean
+  /** Copy a mouse selection in the reply as the drag ends (Settings -> Chat ->
+   *  Copy on Select). Absent: off. */
+  copyOnSelect?: boolean
+  /** Draw link previews under the reply's links (Settings -> Chat -> Link
+   *  Previews). Absent: off. */
+  linkPreviews?: boolean
 }
 
 /**
@@ -639,6 +647,8 @@ export function renderAssistantBubble(
       onRegenerate={opts.onRegenerate}
       onSpeak={opts.onSpeak}
       revealActions={opts.revealActions}
+      copyOnSelect={opts.copyOnSelect}
+      linkPreviews={opts.linkPreviews}
       redactions={opts.redactionSlot ? (m.meta as Record<string, unknown> | undefined)?.redactions : undefined}
       // The Blocked link chip and its card on every host: whether a link
       // renders live is the server's decision about the text, whoever draws
@@ -674,7 +684,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     roles: ['system'],
     match: isSkillLoadRow,
     render: (m, ctx) => ctx.row(
-      <SkillLoadCard message={m} disclosureKey={ctx.key} />,
+      <SkillLoadCard message={m} disclosureKey={ctx.key} onArtifactOpen={ctx.onArtifactOpen} />,
     ),
   },
   {
@@ -701,6 +711,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
         message={m}
         onFileOpen={ctx.onFileOpen}
         onFolderOpen={ctx.onFolderOpen}
+        onArtifactOpen={ctx.onArtifactOpen}
         disclosureKey={ctx.key}
       />,
       true,
@@ -762,9 +773,9 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
   {
     id: 'tool',
     roles: ['tool'],
-    // A tool role also carries the hidden 🚫 deny sibling, which is read for the
+    // A tool role also carries the hidden Refused: deny sibling, which is read for the
     // auto-denied flag and never drawn.
-    match: m => !!m.content?.startsWith('🔧'),
+    match: m => isToolCallRow(m.content),
     render: (m, ctx) => {
       const tcid = m.meta?.tool_call_id as string | undefined
       return toolRow(m, ctx, !!tcid && ctx.autoDeniedIds.has(tcid))
@@ -774,6 +785,26 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     id: 'tool_lifecycle',
     roles: ['tool_call', 'tool_result'],
     render: (m, ctx) => toolRow(m, ctx),
+  },
+  {
+    // Shape-matched (`'*'` plus a role check) so a host's role-keyed `inject`
+    // row, such as ChatPage's bubble, cannot outrank the card.
+    id: 'recovery_inject',
+    roles: ['*'],
+    match: m => m.role === 'inject' && resolveInjectCard(m) !== null,
+    render: (m, ctx) => {
+      const parsed = resolveInjectCard(m)
+      if (!parsed) return null
+      return ctx.row(<RecoveryCard parsed={parsed} disclosureKey={ctx.key} />)
+    },
+  },
+  {
+    // Model-only: the refusal's own `notice` row already shows the person.
+    // Shape-matched for the same reason as `recovery_inject`.
+    id: 'automation_notice_inject',
+    roles: ['*'],
+    match: m => m.role === 'inject' && (m.meta as { injectKind?: unknown } | undefined)?.injectKind === 'automation_notice',
+    render: () => null,
   },
   {
     id: 'inject',

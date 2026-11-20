@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import threading
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -265,18 +266,24 @@ class TestWarnIfKiroCliOutdated:
         would mean the dashboard never comes up at all.
         """
         orch = _make_orchestrator()
+        release = threading.Event()
 
         def _hang(**kwargs: Any) -> str:
-            time.sleep(5)  # outlives the budget pinned below
+            # Held until the asserts are done, so it outlives the budget pinned below.
+            # The loop's teardown joins this worker thread, so it must not outlive the test.
+            release.wait(30)
             return "/opt/pinned/bin/kiro-cli"
 
-        with caplog.at_level("WARNING"):
-            with patch.object(gw, "_KIRO_CLI_RESOLVE_TIMEOUT_SECS", 0.01):
-                with patch("kiro_crew.kiro_cli.resolve_kiro_cli", side_effect=_hang):
-                    with patch("asyncio.create_subprocess_exec") as spawn:
-                        await orch._warn_if_kiro_cli_outdated()
-        spawn.assert_not_called()
-        assert "exceeded" in caplog.text
+        try:
+            with caplog.at_level("WARNING"):
+                with patch.object(gw, "_KIRO_CLI_RESOLVE_TIMEOUT_SECS", 0.01):
+                    with patch("kiro_crew.kiro_cli.resolve_kiro_cli", side_effect=_hang):
+                        with patch("asyncio.create_subprocess_exec") as spawn:
+                            await orch._warn_if_kiro_cli_outdated()
+            spawn.assert_not_called()
+            assert "exceeded" in caplog.text
+        finally:
+            release.set()
 
     @pytest.mark.asyncio
     async def test_unspawnable_binary_is_silent(self, capsys):

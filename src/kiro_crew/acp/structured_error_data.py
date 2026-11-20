@@ -18,9 +18,17 @@ provider sentence was lost from the usage-limit row and the "temporarily
 unavailable" retry never matched. :func:`provider_data_text` returns the text
 those readers should treat as the provider field.
 
-Only this shape is read differently: a ``data`` mapping that names a string
-``errorType``, next to a ``message`` that is not the fixed ``Internal error``
-boilerplate. A string ``data``, an ``errorKind`` mapping (claude-agent-acp) and
+opencode does the same for a provider failure it relays, with its own key::
+
+    {"code": -32603,
+     "message": "Internal error: <provider text>",
+     "data": {"errorName": "APIError", "service": "session"}}
+
+so the many-image pixel cap, among others, reached the user as the raw frame.
+
+Only these shapes are read differently: a ``data`` mapping that names a string
+``errorType`` or ``errorName``, next to a ``message`` that is not the fixed
+``Internal error`` boilerplate. A string ``data``, an ``errorKind`` mapping (claude-agent-acp) and
 a frame with no ``data`` read exactly as before.
 
 Split out of ``transport_errors.py`` to keep that module under the file-line cap.
@@ -42,7 +50,9 @@ def structured_data_prose(error: object) -> str:
     if not isinstance(error, dict):
         return ""
     data = error.get("data")
-    if not isinstance(data, Mapping) or not isinstance(data.get("errorType"), str):
+    if not isinstance(data, Mapping):
+        return ""
+    if not isinstance(data.get("errorType"), str) and not isinstance(data.get("errorName"), str):
         return ""
     message = error.get("message")
     if not isinstance(message, str):

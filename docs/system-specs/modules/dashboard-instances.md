@@ -10,7 +10,7 @@ The instance store is two modules and one route, each with one job:
 | Piece | Where | What it owns |
 |---|---|---|
 | registry | `dashboard_templates/catalog.py` | the built-in templates and the operator's own, one loader |
-| instance | `dashboard_templates/instance.py`, with `instance_adopt.py` for the adopt-only-while-empty form and `instance_read.py` for the link-refusing opens of a reader without the lock | the copy, its versions, rollback, state, history |
+| instance | `dashboard_templates/instance.py`, with `instance_adopt.py` for the adopt-only-while-empty form, `instance_read.py` for the link-refusing opens of a reader without the lock, and `instance_remove.py` for the import card's Undo of an adopted page | the copy, its versions, rollback, state, history |
 | route | `dashboard/handlers/member_dashboard.py` | what the frame reads |
 
 The agent-facing surface is separate and MCP-only: `dashboard/handlers/agent_panel_dashboard.py`, behind the `dashboard/handlers/agent_panel.py` facade, serves the `/api/agent-panel/dashboard/{fields,types,write,save,templates,preview,apply,rollback}` routes (`record` and `snapshot` have their own modules, `agent_panel_record.py` and `agent_panel_snapshot.py`), `dashboard_agentic.py` checks and records agentic field writes and the mistake book, and `dashboard_feed.py` is the O(fields) subscription channel a filled page reads fold values through.
@@ -116,7 +116,7 @@ It applies to a Persistent chat only (an unset memory mode counts as one): an In
 or Temporary chat may not open sessions, so switching it to the conductor adopts nothing.
 With no page in force, the Bot's Dashboard tab on `/members` shows the suggestions
 page (`CrewDashboardEmpty`), and the turn block says so and lists no fields and no upkeep
-pointer. A shipped page named for the Bot is drawn as before. The decision is made
+pointer. A shipped page named for the Bot is drawn. The decision is made
 ONCE, by `dashboard_agentic.shows_suggestions` (template instance served, record `empty`,
 no page named for the slug, no package on screen): the read route sends it as
 `suggestions: true` and the website draws what that says, and `turn_block` asks the same
@@ -237,7 +237,9 @@ Three more rules hold for the operator root only:
 A live dashboard answers "what is true now", which is the wrong tool for "what was true
 when this went wrong". A snapshot is the second question, and it is the field values plus
 everything needed to know what they meant: template id, template version, instance
-version, values, seq.
+version, values, seq. This store is the RFC design and is not in the tree; the agent
+panel's `snapshot` route (`agent_panel_snapshot.py`) is a different thing, a PNG of the
+page in force kept under the data home.
 
 Each is required. A bag of numbers with no template is a page nobody can redraw; a page
 with no seq cannot be placed against the log it came from; values with no instance
@@ -344,11 +346,11 @@ them, and the parity rule is about the pair being committed.
 `MAX_RETAINED_VERSIONS` (20) versions one Bot keeps therefore hold at most 60 MiB
 of pages. A page passes
 two size checks -- this store's before it becomes a version, and the frame's before the
-document that renders it is assembled -- and two independent numbers meant the store
-could refuse a page the frame would happily draw. It did: `project-report` is over
-147,000 bytes and is `DEFAULT_TEMPLATE_ID`, so under a private 64 KiB ceiling no
-Bot could adopt it, and a root session that adopted anything else could never come
-back to the page it starts on. The frame is where the cost is actually paid, which
+document that renders it is assembled -- and two independent numbers would let the
+store refuse a page the frame would happily draw: `project-report` is over 170,000
+bytes and is `DEFAULT_TEMPLATE_ID`, so under a smaller store ceiling no Bot could
+adopt it, and a root session that adopted anything else could never come back to the
+page it starts on. The frame is where the cost is actually paid, which
 makes it the honest place for the number; `test_dashboard_templates_builtin.py` asserts
 the identity and takes every shipped template through preview and apply.
 
@@ -386,18 +388,13 @@ previews only: a session's page has no person route.
 
 A Bot's page changes only through its own `dashboard_apply`, `dashboard_rollback` and
 the person's Keep, and every version stays on disk, so `dashboard_rollback` is how a
-change is undone. The person's structure lock that once froze the page, its
-**Lock dashboard layout** switch, its badge, its `POST /api/members/{slug}/dashboard/lock`
-route and its LOCKED turn-block line are gone.
+change is undone. There is no lock switch, lock route or LOCKED turn-block line.
 
-A `crew-panels/<slug>.dashboard-lock` file written before the removal is neither read
-nor rewritten, and no migration runs: `read` serves `instance.json`, every commit goes
-through, and the page in force is the record. While a lock held, `_commit` refused every
-version, so the record still names the page the lock held unless the Bot's own shell
-rewrote `instance.json`; that version is still in `versions/`, so `dashboard_rollback`
-reaches it. A record written before the `package` key existed now follows the older
-package rule (`keeps_older_package_rule`) whether or not a lock file is beside it, as an
-unlocked record always did. Deleting a Bot leaves such a file where it is.
+A leftover `crew-panels/<slug>.dashboard-lock` file is neither read nor rewritten, and
+no migration runs: `read` serves `instance.json`, every commit goes through, and the
+page in force is the record. A record written before the `package` key existed follows
+the older package rule (`keeps_older_package_rule`) whether or not a lock file is
+beside it. Deleting a Bot leaves such a file where it is.
 
 ## Every commit syncs the upkeep helpers
 
@@ -530,7 +527,7 @@ the page and the read below both refuse a slug alone (`missing_member`).
 To fill the frame, the tab reads
 `GET /api/members/{slug}/dashboard?member=<name>&preview=1`, which serves the staged
 page through the same renderer, the same masking pass and the same owner gate as the
-live one (a relay teammate admitted to the live page is refused the staged one), with `preview: true` in the body and `instance_version` left at the current
+live one, with `preview: true` in the body and `instance_version` left at the current
 version. Nothing staged answers 404 `no_preview`, which the tab says in words (the page
 was kept, discarded or expired) with the same way back to the live page.
 

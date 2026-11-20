@@ -3,8 +3,8 @@ title: The Ultra Mode conductor takes stated defaults instead of asking
 status: implemented
 author: kirocrew agent session, directed by iamwhatever
 created: 2026-11-06
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 31878
 implementation-prs: [31822]
 tracking-issues: []

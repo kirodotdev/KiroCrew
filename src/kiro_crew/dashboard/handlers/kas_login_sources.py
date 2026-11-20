@@ -34,7 +34,7 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +151,14 @@ async def api_kas_login_sources(request: web.Request) -> web.Response:
     """GET /api/kas-login/sources -- which stored sign-in sessions run as."""
     from kiro_crew import edition, lts_sign_in
 
+    # Same audited gate as the sign-in routes it describes: the owner and
+    # Shared Crew teammates with owner rights pass; app and internal callers get
+    # a SEL-recorded 403 before any store read or ``whoami``.
+    from kiro_crew.dashboard.handlers.kas_login import _require_owner
+
+    denied = await _require_owner(request, "kas_login_sources")
+    if denied is not None:
+        return denied
     try:
         stored, crew_fields, relay = await asyncio.to_thread(_read_stores)
     except Exception:  # noqa: BLE001 - never an anonymous 500 for a status read
@@ -159,7 +167,8 @@ async def api_kas_login_sources(request: web.Request) -> web.Response:
             {"error": "Could not read the stored sign-ins.", "code": "sign_in_sources_failed"},
             status=500,
         )
-    owner = is_owner_dashboard_request(request)
+    # The signed-in account's email is the machine owner's to see.
+    owner = is_host_owner_dashboard_request(request)
     crew = _account(crew_fields, with_email=False)
     cli: dict[str, str] = {}
     identity: Optional[dict[str, object]] = None

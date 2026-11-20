@@ -32,7 +32,7 @@ import {
   DialogTitle,
 } from '../../components/ui/dialog'
 import ErrorNotice from '../../components/ErrorNotice'
-import { fmtList } from '../../i18n/format'
+import { fmtList, fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import {
   type CurrentLaunch,
@@ -40,6 +40,7 @@ import {
   type GatewayStatus,
   launchIsApprovable,
   launchPreviewErrorKey,
+  notApprovableKey,
   readLaunchPreviews,
   stubErrorKey,
   type McpView,
@@ -884,7 +885,7 @@ export function McpManagement({
               // other "why" lives in the row's Details.
               const hint =
                 refusal && !launchIsApprovable(refusal)
-                  ? i18nT('pages.mcpManagement.approval_not_approvable_here')
+                  ? i18nT(notApprovableKey(refusal), { cap: fmtNumber(refusal.launch_cap ?? NaN) })
                   : null
               // A paused, approvable row draws two buttons. Below md they get a
               // full-width line under the name: in the `auto` track their width

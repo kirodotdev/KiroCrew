@@ -340,10 +340,13 @@ The `objects` slot fold (`crew_log/projection_objects.py`) keeps the newest reco
 
 A proposal is part of the conversation, so it is recorded twice in one step: a
 `card` row in the slot's transcript (display-only, drawn where it was proposed) and
-the opener here. `mid` is that row's id and is what joins the two. Every outcome
-patches the row in place and appends a closer, so the conversation with each card in
-its final state is reconstructible from this log alone -- the openers say where and
-what, the newest closer per id says how it ended. Only names are recorded: no card
+the opener here. `mid` is that row's id and is what joins the two. The opener's
+`mid` names the row the card was first drawn at; a repeated proposal can draw the
+waiting card again at a later row without a new entry. Every outcome
+patches the card's newest row in place and appends a closer, so the conversation with
+each card in its final state is reconstructible from this log alone -- the openers say
+where each card was first drawn and what it was, the newest closer per id says how it
+ended. Only names are recorded: no card
 parameter, no edited field and no typed value reaches either record. The live state
 -- revisions, apply steps, the tab driving a guide -- stays the card and guide
 stores', and a re-preview writes nothing here. `card/finished` may repeat for one id

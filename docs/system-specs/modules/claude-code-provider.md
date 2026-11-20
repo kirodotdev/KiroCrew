@@ -5,8 +5,9 @@
 `AgentConfig.provider` admits only the ACP provider, and
 `KiroCrewConfig.create_provider_factory()` constructs `AcpProvider`. Harness
 choice is a separate field, `agent.acp_backend`. The public baseline currently
-selects kiro-cli (`ACP_BACKEND_KIRO`, the empty string), Claude, KAS, Codex,
-OpenCode, Pi, goose and DeepSeek -- every id in `ACP_BACKENDS_KNOWN`. DeepSeek is
+selects kiro-cli (`ACP_BACKEND_KIRO`, the empty string), Claude, KAS, Strands,
+Codex, OpenCode, Pi, goose, DeepSeek, Copilot, MiMo Code and Antigravity -- every id
+in `ACP_BACKENDS_KNOWN` (`BASELINE_SELECTABLE_BACKENDS`). DeepSeek is
 selectable because Crew's gate plugin routes its tool calls through the host
 permission gate (`Routing.VERIFIED_GATE_EXTENSION`, `agent_sdk/backends_routing.py`).
 `test_baseline_ships_every_known_backend` pins the baseline as
@@ -1072,10 +1073,10 @@ chunks of each compaction in flight (`CompactionSummaries`, bounded by
 dropped), and the `completed` `EVENT_COMPACTION_STATUS` carries the update's summary,
 else the chunks, as its `title`, redacted and cut at a word, so a credential the cut
 would split is dropped. A `cancelled` or `failed` end drops the chunks. The dashboard
-writes `✅ Conversation compacted: <summary>`
+writes `Conversation compacted: <summary>`
 (`chat_utils._broadcast_compaction_result`), folded behind the compaction card's
-chevron as kiro-cli's summary is; with no summary the row stays `✅ Conversation
-compacted.`. The messaging channels show no summary. Frames:
+chevron as kiro-cli's summary is; with no summary the row stays `Conversation
+compacted.`. Saved rows that lead with U+2705 still draw the card. The messaging channels show no summary. Frames:
 `test/fixtures/acp_frames/claude/compaction-summary.jsonl`; contract tests:
 `test/test_claude_compaction_summary.py`.
 
@@ -1443,6 +1444,10 @@ keeps verbatim, or a symlinked `projects`, `file-history`, project directory or
 leaf deletes nothing and answers not done, so the prune keeps its retry record and
 `spawn_release` answers `not_disposed`. A persistent session's store is never
 touched, and nothing is sent over the wire to delete the adapter's session.
+Those checks are one private gate (`_session_targets`), which
+`claude_session_paths` also goes through when the Storage report sizes a mapped
+Claude chat's three paths, read only
+([session-storage](session-storage.md#what-claude-code-keeps)).
 
 ### Standing rule
 

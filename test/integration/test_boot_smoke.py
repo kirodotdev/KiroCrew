@@ -458,6 +458,8 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.config.loader_snapshots", "_MATERIALIZED_REFRESH_APPLIED"): "counter",
     ("kiro_crew.config.loader_snapshots", "_MATERIALIZED_REFRESH_ISSUED"): "counter",
     ("kiro_crew.context", "_store_cache_generation"): "counter",
+    # Bumped per recorded app declaration so the tool gate retires a listing; no home state.
+    ("kiro_crew.apps.credential_masks", "_generation"): "counter",
     ("kiro_crew.dashboard.handlers.updates_check", "_last_update_check"): "clock",
     # When the shared-crew admission service last read its config: a monotonic
     # stamp the harness zeroes and each boot sets again when it builds its service.
@@ -465,6 +467,10 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     # The SSM listener's last answer: every boot replaces it with a new value from its
     # own config (off, or the port it bound), so no earlier boot's answer carries over.
     ("kiro_crew.shared_crew.ssm", "_listener"): "rebuilt by each boot",
+    # Which apps have a public id, mapped to their version: each boot's
+    # refresh_public_app_ids swaps in a new dict read from that boot's install
+    # records, so no earlier boot's map carries over.
+    ("kiro_crew.metrics.feature_usage", "_public_app_ids"): "rebuilt by each boot",
     # When telemetry consent was last re-read, and whether a re-read is in
     # flight: a boot that outlasts the recheck window starts one. The consent
     # itself (``_built_consent``) does not change here.

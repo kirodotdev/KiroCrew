@@ -1,12 +1,12 @@
 ---
 title: Live browser in chat -- Browser Harness behind a gateway CDP relay, watched and taken over from the transcript
-status: draft
+status: implemented
 author: bolichen97
 created: 2026-10-31
-last-audited: 2026-10-31
-audited-at: 0301f8b34f
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr:
-implementation-prs: []
+implementation-prs: [26950]
 tracking-issues: [22561]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,12 @@ superseded-by: []
 
 # RFC: Live Browser in Chat
 
-**Status:** `draft`. Nothing here is on main. Main was read at `0301f8b34f`.
+**Status:** `implemented`. The whole stack, the removal included, shipped in
+[#26950](https://github.com/kirodotdev/KiroCrew/pull/26950) (merged 2026-11-04) as `src/kiro_crew/browser_harness/`, on maintainer
+bolichen97's owner decision recorded on that pull request
+([comment](https://github.com/kirodotdev/KiroCrew/pull/26950#issuecomment-6569794150))
+and the matching `/ai-review override first-principles` comments; checked at
+`0c5d8bd5f3`. The paragraph below is the pre-merge record. Main was read at `0301f8b34f`.
 A prototype of the whole design is on the `feat/browser-live-harness` branch,
 read at `278f08eec6`. This document records the decisions that prototype makes
 so a maintainer can accept or reject them before any of its code lands. It is

@@ -300,7 +300,7 @@ def test_the_publish_wrapper_rearms_the_channels_refresh(monkeypatch):
     armed: list[tuple] = []
     monkeypatch.setattr(board_pkg, "_schedule", lambda ch, delay=None: armed.append((ch, delay)))
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         publisher._retry_at[binding.channel_id] = 7.0
         return "deferred"
 
@@ -317,7 +317,7 @@ def test_the_publish_wrapper_rearms_the_channels_refresh(monkeypatch):
 def test_the_publish_wrapper_rechecks_the_scope_before_anything_is_sent(monkeypatch):
     sent: list = []
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         sent.append(snapshot)
         return "updated"
 
@@ -920,10 +920,16 @@ def test_the_redaction_sees_the_raw_text_before_any_rewrite(monkeypatch):
     """A rewrite (here a host name inside a key) must not break a credential's shape first."""
     key = SAMPLE_SLACK_BOT_TOKEN
     monkeypatch.setattr(model, "_host_names", lambda: (key[-8:-4],))
+    seen: list[str] = []
+    real = model._redact
+    monkeypatch.setattr(model, "_redact", lambda text: seen.append(text) or real(text))
     step = model.step_text(
         model.Activity(tool_kind="execute", tool_input=json.dumps({"command": f"aws --key {key}"}))
     )
     assert key[-4:] not in step and key[:8] not in step
+    # M1: the rewrite alone erases this key, so the order is what is checked: the
+    # redactor's first input still holds the key whole, and it took the key out.
+    assert seen and key in seen[0] and key not in real(seen[0])
 
 
 @pytest.mark.parametrize(
@@ -1005,7 +1011,7 @@ def test_the_retry_is_taken_even_when_the_publish_raises(monkeypatch):
     armed: list[tuple] = []
     monkeypatch.setattr(board_pkg, "_schedule", lambda ch, delay=None: armed.append((ch, delay)))
 
-    async def boom(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def boom(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         publisher._retry_at[binding.channel_id] = 15.0
         raise RuntimeError("pin step blew up")
 
@@ -1024,7 +1030,7 @@ def test_the_retry_is_taken_even_when_the_publish_raises(monkeypatch):
 def test_a_huge_command_is_scrubbed_without_quadratic_backtracking(filler):
     """A 80k-character heredoc must not stall the board pass (it was minutes before)."""
     key = SAMPLE_SLACK_BOT_TOKEN
-    command = f"{filler} {key} x.internal"
+    command = f"{key} {filler} x.internal"  # the key inside the cut (M2)
     hits: list[str] = []
     # Bounded by input size, not wall time: the rewrite sees at most 8x the cut.
     original = model._host_paths_out
@@ -1108,6 +1114,7 @@ def test_work_aggregate_rides_the_slot_frame_and_its_patch():
 # ── green round: the watch's own refresh, status, DNS and the wrap-up ───────
 
 repo = suite.repo
+_repo_template = suite._repo_template
 
 
 def test_the_watch_refreshes_through_the_channels_stored_binding(
@@ -1627,7 +1634,7 @@ def test_a_stop_caught_by_the_publish_scope_check_keeps_the_board_owed(monkeypat
     monkeypatch.setattr(surface, "dashboard_state", lambda: None)
     sent: list = []
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         stopped[0] = True  # the person pressed Stop during the publisher's awaits
         if not admits():
             return "out_of_scope"

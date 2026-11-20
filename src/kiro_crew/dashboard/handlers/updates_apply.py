@@ -364,6 +364,21 @@ async def _read_update_request(
     return str(when), version.strip(), None if armed_at is None else float(armed_at)
 
 
+def _update_record_busy() -> web.Response:
+    """A cancel found the armed-update record unreadable past the read retry; the client retries.
+
+    Call this inside the ``except`` block, where ``exc_info`` still sees it.
+    """
+    logger.warning("update: the armed-update record stayed unreadable", exc_info=True)
+    return web.json_response(
+        {
+            "error": "The update record is busy, so nothing changed: try again",
+            "code": "update_record_busy",
+        },
+        status=503,
+    )
+
+
 async def api_update_apply(request: web.Request) -> web.Response:
     """POST /api/update: ARM the update for the next start; install nothing now.
 
@@ -388,7 +403,10 @@ async def api_update_apply(request: web.Request) -> web.Response:
         return parsed
     when, named_version, named_armed_at = parsed
     if when == WHEN_CANCEL:
-        removed = await asyncio.to_thread(update_next_start.disarm, named_armed_at)
+        try:
+            removed = await asyncio.to_thread(update_next_start.disarm, named_armed_at)
+        except OSError:
+            return _update_record_busy()
         if removed is None:
             # The record was re-armed since the caller read it: not the one it named.
             return web.json_response(

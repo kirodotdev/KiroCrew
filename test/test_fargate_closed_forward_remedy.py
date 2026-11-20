@@ -244,6 +244,9 @@ class _FakeStream:
         chunk, self._payload = self._payload[:n], self._payload[n:]
         return chunk
 
+    def at_eof(self) -> bool:
+        return not self._payload
+
 
 class _FakeProc:
     returncode = 0

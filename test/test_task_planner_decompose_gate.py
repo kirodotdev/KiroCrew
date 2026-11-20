@@ -121,3 +121,43 @@ def test_no_ctx_denies_by_default(audit_rows):
     assert audit_rows() == [("execute_bash", "denied", "r1", "no_hook_store", _DECOMPOSITION)]
     provider.reject_tool.assert_awaited_once_with("r1")
     provider.approve_tool.assert_not_awaited()
+
+
+@pytest.mark.parametrize("edition", ["lts", "oss"])
+def test_an_org_ask_on_a_kas_web_call_is_refused_during_decomposition(
+    audit_rows, monkeypatch, edition
+):
+    """``web_ask_rule``: decomposition has nobody to ask, so in LTS KAS's ask on an
+    organisation's web rule is refused; an ``oss`` build approves it as before."""
+    from types import SimpleNamespace
+
+    from kiro_crew import web_ask_rule
+
+    monkeypatch.setattr(web_ask_rule, "edition", SimpleNamespace(is_lts=lambda: edition == "lts"))
+    provider = MagicMock()
+
+    async def _stream(message: str):
+        yield LLMEvent(
+            kind="permission_request",
+            title="web_fetch",
+            request_id="r1",
+            harness_tool_id="web_fetch",
+            kas_builtin_ids=True,
+            kas_managed_ask=True,
+        )
+        yield LLMEvent(kind="text_chunk", text='{"steps": []}')
+        yield LLMEvent(kind="complete")
+
+    provider.stream = _stream
+    provider.approve_tool = AsyncMock()
+    provider.reject_tool = AsyncMock()
+    ctx = _ctx_with_hook(TOOL_ALLOW)
+
+    asyncio.run(decompose("spec", _sessions_with(provider), ctx=ctx, task_id="t1"))
+
+    if edition == "lts":
+        assert audit_rows() == [("web_fetch", "denied", "r1", "web_ask_rule", _DECOMPOSITION)]
+        provider.reject_tool.assert_awaited_once_with("r1")
+        provider.approve_tool.assert_not_awaited()
+    else:
+        provider.approve_tool.assert_awaited_once_with("r1")

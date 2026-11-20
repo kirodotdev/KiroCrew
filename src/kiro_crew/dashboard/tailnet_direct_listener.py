@@ -102,6 +102,7 @@ def _publish_owner(owner: tailnet_direct.SelfNode | None) -> None:
 
         access_set.set_owner(owner.login, owner.user_id)
         owner_label.set_tailnet_host_name(owner.host_name)
+        owner_label.set_tailnet_display_name(owner.display_name)
 
 
 def _learn_owner_from_daemon() -> None:

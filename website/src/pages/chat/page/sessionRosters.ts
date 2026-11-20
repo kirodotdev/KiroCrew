@@ -12,7 +12,7 @@ import { triggerRefresh } from '../../../store/dashboardSlice'
 interface SessionRostersOptions {
   activeSlot: string | null
   activeSlotProject: string | undefined
-  refreshTrigger: number
+  catalogRefreshTrigger: number
   dispatch: AppDispatch
   /** The active session's `models_backend`: its harness lists other models than the configured one. */
   modelsBackend?: string
@@ -23,8 +23,8 @@ interface SessionRostersOptions {
  * session: this machine's catalog. Also the agent picker's filter state and its
  * "set as default" write.
  */
-export function useSessionRosters({ activeSlot, activeSlotProject, refreshTrigger, dispatch, modelsBackend }: SessionRostersOptions) {
-  const { agents: installedAgents, displayAgents, choices: catalogChoices, displayChoices, defaultAgent } = useAgents(refreshTrigger, activeSlot ?? undefined, activeSlotProject)
+export function useSessionRosters({ activeSlot, activeSlotProject, catalogRefreshTrigger, dispatch, modelsBackend }: SessionRostersOptions) {
+  const { agents: installedAgents, displayAgents, choices: catalogChoices, displayChoices, defaultAgent } = useAgents(catalogRefreshTrigger, activeSlot ?? undefined, activeSlotProject)
   // The picker's rows, unfolded, as the sidebar last loaded them: the session
   // list marks a same-name pair's sessions from these (#19472).
   const sidebarChoices = displayChoices

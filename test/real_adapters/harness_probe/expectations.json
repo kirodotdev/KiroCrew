@@ -1,5 +1,5 @@
 {
-  "description": "What test_real_adapter_harness_probe.py measured on each pinned harness. Every check asserts the run matches its entry EXACTLY, then marks itself xfail where the entry records a known defect. A change that moves a measurement updates this file in the same PR. literal / expansion cells: Y = the server started with the real value, L = with the literal reference, 0 = without the variable, - = never started. ambient: the harness's own user/project config servers that started in the Crew session. crew_tool_bytes_ceiling: the most bytes of Crew's own tool specs one model request may carry on that harness; above crew_tool_bytes_target the ceiling is today's measurement plus headroom, held until deferral lands.",
+  "description": "What test_real_adapter_harness_probe.py measured on each pinned harness. Every check asserts the run matches its entry EXACTLY, then marks itself xfail where the entry records a known defect. A change that moves a measurement updates this file in the same PR. literal / expansion cells: Y = the server started with the real value, L = with the literal reference, 0 = without the variable, - = never started. ambient: the harness's own user/project config servers that started in the Crew session. toolless_ambient: the same, in a second run whose spec mounts nothing (a tool-less helper). crew_tool_bytes_ceiling: the most bytes of Crew's own tool specs one model request may carry on that harness; above crew_tool_bytes_target the ceiling is today's measurement plus headroom, held until deferral lands.",
   "issues": {
     "env_expansion": "https://github.com/kirodotdev/KiroCrew/pull/30616",
     "ambient_config": "https://github.com/kirodotdev/KiroCrew/issues/30601",
@@ -19,6 +19,7 @@
       "literal": "Y",
       "expansion": {"p-dollar": "Y", "p-envprefix": "Y"},
       "ambient": ["codex-project", "codex-user"],
+      "toolless_ambient": [],
       "crew_tool_bytes_ceiling": 140000
     },
     "opencode": {

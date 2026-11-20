@@ -7,7 +7,8 @@
  * such an app moves onto, so it must stay app-agnostic: it never names a
  * built-in and never requires app-owned shell code. The rows below are the
  * main-process app code that still ships; a PR that moves an app onto the seam
- * deletes its rows, and no PR adds one.
+ * deletes its rows, and no PR adds one. Until then each of those directories
+ * stands down for its app whenever the app's record is one the host serves.
  */
 
 const test = require("node:test");
@@ -91,4 +92,17 @@ test("main.js requires no app-owned shell code beyond the rows above", () => {
     .filter((req) => names.some((name) => req.includes(name)))
     .sort();
   assert.deepStrictEqual(appRequires, APP_SHELL_REQUIRES);
+});
+
+test("every app-owned shell directory stands down for a record the window host serves", () => {
+  // Built-in shell code reading its row by name alone would draw its app beside
+  // the host's windows once the record declares a `desktop` block.
+  const missing = APP_SHELL_DIRS.filter((dir) => {
+    const files = fs.readdirSync(path.join(SHELL, dir)).filter((f) => f.endsWith(".js"));
+    return !files.some((f) => {
+      const src = fs.readFileSync(path.join(SHELL, dir, f), "utf-8");
+      return /require\(\s*"\.\.\/app-window-host-rules"\s*\)/.test(src) && /hostOwnsAppWindows\(/.test(src);
+    });
+  });
+  assert.deepStrictEqual(missing, []);
 });

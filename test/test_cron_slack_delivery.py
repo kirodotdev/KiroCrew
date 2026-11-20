@@ -101,7 +101,7 @@ class TestSlackDeliveryFailureDoesNotFailJob:
         calls = gw.dashboard_state.notify.call_args_list
         # First call: success notification, second: Slack failure warning
         assert len(calls) == 2
-        assert "⚠️" in calls[1].args[2]
+        assert "Warning: " in calls[1].args[2]
         assert "channel_not_found" in calls[1].args[2]
 
     def test_job_succeeds_when_slack_is_none(self) -> None:

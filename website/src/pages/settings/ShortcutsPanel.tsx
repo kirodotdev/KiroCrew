@@ -38,7 +38,7 @@ function SearchEverywhereConfig() {
         onChange={(v) => selectMode(v as QuickSearchMode)}
       />
       {activeMode === 'custom' && (
-        <div className="flex items-center gap-2 flex-wrap pl-1 pb-1">
+        <div className="flex items-center gap-2 flex-wrap">
           <Btn
             onClick={recording ? cancelRecording : startRecording}
             aria-label={i18nT('pages.settings.shortcutsPanel.record_prompt')}
@@ -80,7 +80,7 @@ function PanelToggleConfig() {
         const caps = chord ? formatChordKeys(chord) : []
         return (
           <div key={id}>
-            <div className="flex items-center justify-between gap-2 py-1.5 px-2 rounded-md">
+            <div className="flex items-center justify-between gap-2">
               {/* A div, not a span: the label and the button caption are separate
                   catalog units, and a block label ends the inline text run so the
                   i18n render gate never sees them joined into one string. */}
@@ -117,12 +117,12 @@ function PanelToggleConfig() {
                 bindings), so the trade is disclosed here, at the moment it is
                 made, rather than left to be discovered by a broken Ctrl+C. */}
             {PANEL_TOGGLES_SKIPPING_SHELL.has(id) && (
-              <div className="text-[12px] text-muted px-2 pb-1">{i18nT(IS_MAC ? 'pages.settings.shortcutsPanel.skips_shell_hint_mac' : 'pages.settings.shortcutsPanel.skips_shell_hint')}</div>
+              <div className="text-[12px] text-muted pt-1">{i18nT(IS_MAC ? 'pages.settings.shortcutsPanel.skips_shell_hint_mac' : 'pages.settings.shortcutsPanel.skips_shell_hint')}</div>
             )}
           </div>
         )
       })}
-      <div className="text-[12px] text-muted px-2 pt-1">{i18nT('pages.settings.shortcutsPanel.custom_hint')}</div>
+      <div className="text-[12px] text-muted">{i18nT('pages.settings.shortcutsPanel.custom_hint')}</div>
     </>
   )
 }
@@ -139,7 +139,7 @@ export function ShortcutsPanel() {
   const globalHotkey = useGlobalHotkey()
 
   return (
-    <div className="max-w-2xl">
+    <div>
       <SettingsSection title={i18nT('pages.settings.shortcutsPanel.preferences')} />
       <SettingsCard>
         <SettingsToggle
@@ -157,7 +157,7 @@ export function ShortcutsPanel() {
           />
         )}
         {saveError && (
-          <ErrorNotice variant="inline" message={saveError} askAgent testId="shortcut-pref-save-error" className="px-2 pb-2" />
+          <ErrorNotice variant="inline" message={saveError} askAgent testId="shortcut-pref-save-error" className="pb-2" />
         )}
       </SettingsCard>
       {SHORTCUT_GROUPS.map((group, gi) => {
@@ -171,7 +171,7 @@ export function ShortcutsPanel() {
                 compacted ordinal would shift every later card's delay whenever a
                 group toggles. */}
             <SettingsCard index={gi + 1}>
-              <ShortcutGroupRows entries={entries} hintClass="text-[12px] text-muted px-2 pb-1" />
+              <ShortcutGroupRows entries={entries} hintClass="text-[12px] text-muted" />
             </SettingsCard>
           </div>
         )
@@ -189,7 +189,7 @@ export function ShortcutsPanel() {
           <SettingsSection title={i18nT('components.shortcutsModal.desktop_app')} />
           <SettingsCard>
             <GlobalHotkeyRow />
-            <div className="text-[12px] text-muted px-2 pb-1">{i18nT(globalHotkey.accelerator ? 'components.shortcutsModal.global_hotkey_hint' : 'components.shortcutsModal.global_hotkey_hint_off')}</div>
+            <div className="text-[12px] text-muted">{i18nT(globalHotkey.accelerator ? 'components.shortcutsModal.global_hotkey_hint' : 'components.shortcutsModal.global_hotkey_hint_off')}</div>
           </SettingsCard>
         </div>
       )}

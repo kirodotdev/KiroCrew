@@ -3,8 +3,8 @@ title: A Crew Mode chat's side panel opens on the Crew tab
 status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-30
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 26002
 implementation-prs: [25936]
 tracking-issues: [25934]

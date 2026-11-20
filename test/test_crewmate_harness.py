@@ -1520,17 +1520,28 @@ class TestCrewmateHarnesses:
         monkeypatch.setattr(backends, "selectable_backends", lambda: frozenset(selectable))
         assert crewmate_harnesses(_cfg()) == ["claude", "codex", "kas"]
 
-    @pytest.mark.parametrize("harness", ["pi", "deepseek"])
-    def test_a_harness_without_the_worker_kit_is_not_offered_nor_saved(self, monkeypatch, harness):
-        """RFC O6: pi and deepseek run a chat but not a Crew bot's workers, so no pick."""
+    def test_a_harness_without_the_worker_kit_is_not_offered_nor_saved(self, monkeypatch):
+        """RFC O6: deepseek runs a chat but not a Crew bot's workers, so no pick."""
         from kiro_crew.agent_sdk import backends
         from kiro_crew.crewmate_harness import crewmate_harnesses, harness_pin_rejected
 
         monkeypatch.setattr(
-            backends, "selectable_backends", lambda: frozenset({"", "kas", "claude", harness})
+            backends, "selectable_backends", lambda: frozenset({"", "kas", "claude", "deepseek"})
         )
         assert crewmate_harnesses(_cfg()) == ["claude", "kas"]
-        assert harness_pin_rejected(harness, _cfg()) is not None
+        assert harness_pin_rejected("deepseek", _cfg()) is not None
+
+    def test_pi_carries_the_worker_kit_so_it_is_offered_and_saved(self, monkeypatch):
+        """RFC 5.4: pi's worker capture landed, so a Crew bot's chat and its workers
+        run there and the picker offers it."""
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.crewmate_harness import crewmate_harnesses, harness_pin_rejected
+
+        monkeypatch.setattr(
+            backends, "selectable_backends", lambda: frozenset({"", "kas", "claude", "pi"})
+        )
+        assert crewmate_harnesses(_cfg()) == ["claude", "kas", "pi"]
+        assert harness_pin_rejected("pi", _cfg()) is None
 
     def test_no_offered_harness_lands_on_kas(self):
         """The picker and the pin fallback read one rule: an offered pick runs where picked."""

@@ -154,9 +154,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // the hand-written `security.config-pending` entry stays anchored to its source.
   'SecurityPanelConfigPending.tsx': 'security',
   'OAuthAppPanel.tsx': 'connections',
+  // The MCP sign-ins switch SettingsPage mounts under the Connections page.
+  'McpSignInsSection.tsx': 'connections',
   'SecretsPanel.tsx': 'secrets',
-  // Draws the tab while the Secrets vault redesign preview is off.
-  'SecretsPanelLegacy.tsx': 'secrets',
   'NotificationsPanel.tsx': 'notifications',
   'ShortcutsPanel.tsx': 'shortcuts',
   // Added upstream (auto-skill generation) without a mapping here, so its two
@@ -177,6 +177,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'SlackCodePanel.tsx': { tab: 'channels', params: { channel: 'slack' }, labelSuffix: 'Slack' },
   // The code-channel defaults card SlackCodePanel lazy-loads behind its switch.
   'SlackCodeChannelDefaults.tsx': { tab: 'channels', params: { channel: 'slack' }, labelSuffix: 'Slack' },
+  // The Share Slack access section SlackPanel mounts (slack.shared_access).
+  'SlackSharedAccess.tsx': { tab: 'channels', params: { channel: 'slack' }, labelSuffix: 'Slack' },
   'WebexPanel.tsx': { tab: 'channels', params: { channel: 'webex' }, labelSuffix: 'Webex' },
   // Standalone per-channel panels, mounted by ChannelsPanel behind their
   // channel= key exactly like WebexPanel.
@@ -222,6 +224,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ChatRuntimeSharingHarnessRows.tsx': DEVELOPER_PREVIEWS,
   // The default agent's opt-in MCP sets, mounted below the preview groups.
   'DefaultMcpGrantsSection.tsx': DEVELOPER_PREVIEWS,
+  // The Session control row DeveloperPanel mounts after Agent MCP servers,
+  // so a SettingRef to `agent.session_control` deep-links to it.
+  'SessionControlSection.tsx': DEVELOPER_PREVIEWS,
   // The Decision models card, which FeaturePreviewsSection mounts. Its own file
   // because it is a list and a detail rather than one row, and mapped here for the
   // reason the section above is: a control on a Settings pane that search cannot
@@ -260,10 +265,14 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // renders InstancesPanel.tsx's AddInstanceForm — both files map to the same
   // tab so a primitive added to either lands on the right deep link.
   'RemoteCrewPanel.tsx': 'instances',
-  // RemoteCrewPanel.tsx's component owners (the setup tab's cards, one crew row,
-  // the not-active-yet banner).
+  // RemoteCrewPanel.tsx's component owners (one crew row, the Setting up row and
+  // launch cards, the setup form's two cards, the page sections and the Add
+  // Crew modal, the not-active-yet banner).
   'RemoteCrewPanelLaunch.tsx': 'instances',
   'RemoteCrewPanelCrewRow.tsx': 'instances',
+  'RemoteCrewPanelSetupCards.tsx': 'instances',
+  'RemoteCrewPanelCustomType.tsx': 'instances',
+  'RemoteCrewPanelSections.tsx': 'instances',
   'RemoteCrewPanelRestartBanner.tsx': 'instances',
   // Mounted from outside pages/settings, so each is also a root in panelRoots:
   // ImportPanel mounts PortabilityTab, FeaturePreviewsSection the gateway-wide
@@ -273,10 +282,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // The built-in KAS engine card, which FeaturePreviewsSection mounts from
   // pages/developer: its `agent.kas_bundle` switch is a Developer-tab row.
   'KasBundleCard.tsx': DEVELOPER_PREVIEWS,
-  // The Kiro sign-in card, which AgentBackendTab mounts from pages/developer.
+  // The Kiro sign-in card, which the Kiro account tab mounts from pages/developer.
   // It has no extractable primitive; mapped so its hand-written search entry
-  // (`agent.kiro-sign-in` in settingsManual.ts) stays anchored to its source.
-  'KiroSignInCard.tsx': 'agent',
+  // (`kiro-account.kiro-sign-in` in settingsManual.ts) stays anchored to its source.
+  'KiroSignInCard.tsx': 'kiro-account',
   'OrchestratorMemoryToggle.tsx': 'agent',
   // The conductor remote-dispatch card FeaturePreviewsSection mounts: its
   // `work_ledger.remote_dispatch` switch is a Developer-tab row.

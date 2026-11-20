@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from chat_test_helpers import _make_state
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.capabilities import capabilities_for
@@ -895,9 +896,7 @@ class TestKasCommandCall:
 
     @staticmethod
     def _handle(methods):
-        from kiro_crew.acp.session_handle import AcpSessionHandle
-
-        handle = AcpSessionHandle.__new__(AcpSessionHandle)
+        handle = bare_session_handle()
         handle._session_id = "s-1"
         handle._runtime = SimpleNamespace(
             acp_backend=ACP_BACKEND_KAS,

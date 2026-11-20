@@ -767,6 +767,24 @@ async def _start_kiro_runtime_impl(
         raise SessionEnvironmentUnavailable(PRIVATE_CHAT_CLOUD_REFUSAL)
 
     async def attach_remote_workspace(target: AcpRuntime) -> None:
+        from kiro_crew.connected_computers.launch import ConnectedComputerLaunch
+
+        if (
+            remote is not None
+            and not isinstance(remote, PreparedCloudSession)
+            and isinstance(remote.launch, ConnectedComputerLaunch)
+        ):
+            try:
+                await attach_workspace(target)
+            except BaseException:
+                # Attachment precedes the runtime's close callback and end-watcher.
+                # Release partial workspace/MCP relays even when start is cancelled.
+                await remote.launch.close_relay()
+                raise
+        else:
+            await attach_workspace(target)
+
+    async def attach_workspace(target: AcpRuntime) -> None:
         if isinstance(remote, PreparedCloudSession):
             # Kiro Cloud Sessions: KAS places the session in a cloud sandbox at
             # session/new. No workspace server and no git proxy.
@@ -779,17 +797,29 @@ async def _start_kiro_runtime_impl(
         report_start_stage(session_key, "connecting")
         server = await remote.launch.workspace_server(remote.workdir)
         relay = remote.launch.relay
-        target.set_remote_workspace(
-            {
-                "server": server,
-                "workdir": remote.workdir,
-                "write_token": relay.write_token,
-                # Awaited by the runtime's kill, so a reset returns only once the
-                # guest workers (and any command they ran) have stopped; the
-                # end-watcher below still covers a runtime that dies on its own.
-                "close": functools.partial(remote.launch.close_relay, relay),
-            }
-        )
+        workspace: dict[str, Any] = {
+            "server": server,
+            "workdir": remote.workdir,
+            "write_token": relay.write_token,
+            # Awaited by the runtime's kill, so a reset returns only once the
+            # guest workers (and any command they ran) have stopped; the
+            # end-watcher below still covers a runtime that dies on its own.
+            "close": functools.partial(remote.launch.close_relay, relay),
+        }
+        from kiro_crew.connected_computers.launch import ConnectedComputerLaunch
+
+        if isinstance(remote.launch, ConnectedComputerLaunch):
+            # The user's own computer: its exposed local MCP servers, its own
+            # wording, and a close that ends the relays THIS runtime attached,
+            # never ones a later respawn attaches to the same launch.
+            from kiro_crew.connected_computers.provider import notice_for
+
+            workspace["extra_servers"] = await remote.launch.local_mcp_servers()
+            workspace["notice"] = notice_for(remote.profile_name, remote.workdir)
+            workspace["close"] = functools.partial(
+                remote.launch.close_relays, remote.launch.own_relays()
+            )
+        target.set_remote_workspace(workspace)
         # GitHub git from the workspace goes through this gateway, which holds
         # the credential (remote_session/git_gateway.py). In the background:
         # it never delays the start, and a failure only costs git access.
@@ -873,7 +903,9 @@ async def _start_kiro_runtime_impl(
                 # (it is the value passed as ``acp_backend`` above) — so the
                 # sign-in advice names the harness that actually failed to
                 # authenticate rather than assuming kiro-cli.
-                signed_out = host_auth.signed_out_message(self._client.backend)
+                signed_out = host_auth.signed_out_message(
+                    self._client.backend, route=runtime.kas_spawn_route
+                )
                 # One synchronous table read, so the kiro path compares and stops (H13).
                 if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
                     signed_out = _with_credential_mask_note(runtime, signed_out, exc)
@@ -1139,7 +1171,9 @@ async def _start_kiro_runtime_impl(
                     if kas_refusal is not None:
                         raise kas_refusal from exc
                     if runtime.saw_not_logged_in():
-                        signed_out = host_auth.signed_out_message(self._client.backend)
+                        signed_out = host_auth.signed_out_message(
+                            self._client.backend, route=runtime.kas_spawn_route
+                        )
                         if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
                             signed_out = _with_credential_mask_note(runtime, signed_out, exc)
                         raise AcpAuthRequired(signed_out, backend=self._client.backend) from exc
@@ -1188,7 +1222,9 @@ async def _start_kiro_runtime_impl(
                 if kas_refusal is not None:
                     raise kas_refusal from exc
                 if runtime.saw_not_logged_in():
-                    signed_out = host_auth.signed_out_message(self._client.backend)
+                    signed_out = host_auth.signed_out_message(
+                        self._client.backend, route=runtime.kas_spawn_route
+                    )
                     if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
                         signed_out = _with_credential_mask_note(runtime, signed_out, exc)
                     raise AcpAuthRequired(signed_out, backend=self._client.backend) from exc

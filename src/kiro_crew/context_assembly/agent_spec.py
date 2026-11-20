@@ -79,8 +79,8 @@ def steering_target_admissible(resolved: Path, base: Path | None = None) -> bool
 #: workspace inherits its defaults (``acp/skill_projection_parts/preparation.py``):
 #: the project's steering and ``AGENTS.md``, when a project is bound. The global
 #: half is ``_GLOBAL_DEFAULT_RESOURCE``. A harness this load serves reads none of
-#: them from the spec. Codex reads ``AGENTS.md`` from its working directory, so
-#: the load leaves that file out there (``harness_reads_agents_md``).
+#: them from the spec. Codex, OpenCode and Pi read ``AGENTS.md`` from their working
+#: directory, so the load leaves that file out there (``harness_reads_agents_md``).
 _PROJECT_DEFAULT_RESOURCES = ("file://.kiro/steering/**/*.md", "file://AGENTS.md")
 
 
@@ -732,7 +732,7 @@ def _crewmate_worker_prompt(agent: str, base_prompt: str, session_key: str) -> s
     out against the on-disk worker base, the literal base KAS hands the seam, so a
     crewmate file whose prompt repeats that base adds nothing here either. Only a worker whose
     backend gets its prompt from this block alone
-    (``ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT``: claude, codex)
+    (``ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT``: claude, codex, pi)
     carries both here; KAS's wire spec already does, so its block keeps the base.
     Any other agent, or no session, keeps the base too.
     """

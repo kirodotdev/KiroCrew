@@ -11,6 +11,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -791,15 +792,20 @@ class TestReplacementTranscriptIsLockedDown:
         assert lines is not None
 
         order: list[str] = []
+        test_thread = threading.get_ident()
         real_restrict = sir.platform_compat.restrict_to_owner
         real_fdopen = os.fdopen
 
+        # This thread only, for both: the SEL writer thread re-locks its non-empty
+        # log and then opens it with ``os.fdopen`` on every append.
         def traced_restrict(target):
-            order.append(f"restrict:{'tmp' if str(target).endswith('.tmp') else 'other'}")
+            if threading.get_ident() == test_thread:
+                order.append(f"restrict:{'tmp' if str(target).endswith('.tmp') else 'other'}")
             return real_restrict(target)
 
         def traced_fdopen(fd, *a, **kw):
-            order.append("fdopen")
+            if threading.get_ident() == test_thread:
+                order.append("fdopen")
             return real_fdopen(fd, *a, **kw)
 
         with monkeypatch.context() as mp:

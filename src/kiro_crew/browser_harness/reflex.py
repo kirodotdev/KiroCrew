@@ -66,6 +66,8 @@ MODES = ("step", "realtime", "virtual_time")
 #: Caps on what one call may ask for. ``max_seconds`` stays inside the route's slow
 #: op budget, so a loop always ends with its own summary, never a route timeout.
 MAX_ACTIONS = 40
+#: Values the targeted ``type`` may pick from; more are dropped.
+MAX_VALUES = 20
 MAX_STEPS = 300
 DEFAULT_STEPS = 60
 MAX_SECONDS = 45.0
@@ -280,7 +282,7 @@ def parse(args: dict[str, Any]) -> Plan | dict[str, Any]:
             return _ops.refusal("bad_ref", f"not a valid ref in `click`: {ref!r}")
     if refs and "click" not in targets:
         targets = ("click", *targets)
-    values = [v[:_VALUE_CAP] for v in _strings(args.get("values"))][:20]
+    values = [v[:_VALUE_CAP] for v in _strings(args.get("values"))][:MAX_VALUES]
     if "type" in targets and not values:
         return _ops.refusal("bad_value", "`targets` with type needs `values` to type")
     reads = _reads(args.get("read"))

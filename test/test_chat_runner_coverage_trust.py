@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from chat_runner_coverage_helpers import _slot, _state
 
+from kiro_crew import platform_compat
 from kiro_crew.dashboard import chat_runner
 
 # ── PreToolUse hook verdicts ──────────────────────────────────────────────
@@ -160,10 +161,11 @@ class TestCommandParsing:
         `echo 'foo'\\'; cmd`.
         """
         command = "echo 'foo'\\'; whoami"
-        _, segments = chat_runner._split_command_segments(command) or ("", [])
+        with patch.object(platform_compat, "IS_WINDOWS", False):
+            _, segments = chat_runner._split_command_segments(command) or ("", [])
 
-        assert len(segments) == 2, segments
-        assert chat_runner._matches_trusted_pattern(command, {"echo*"}) is None
+            assert len(segments) == 2, segments
+            assert chat_runner._matches_trusted_pattern(command, {"echo*"}) is None
 
     def test_an_escaped_double_quote_keeps_the_quote_open(self):
         """Inside double quotes `\\"` is an escaped literal, so the quote stays
@@ -172,7 +174,8 @@ class TestCommandParsing:
         at all rather than executing a second command, so there is nothing here
         for segmentation to protect against."""
         command = 'echo "foo\\"; whoami'
-        _, segments = chat_runner._split_command_segments(command) or ("", [])
+        with patch.object(platform_compat, "IS_WINDOWS", False):
+            _, segments = chat_runner._split_command_segments(command) or ("", [])
 
         assert len(segments) == 1, segments
 

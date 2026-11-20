@@ -28,10 +28,11 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import kas_secret_storage
+from kiro_crew.acp import kas_agent_config_error, kas_secret_storage
 from kiro_crew.acp._frame_record import record_frame
 from kiro_crew.acp.elicitation import is_elicitation_request
 from kiro_crew.acp.harness import NotificationAliases
+from kiro_crew.acp.kas_agent_config_error import METHOD_KAS_CUSTOM_AGENT_CONFIG_ERROR
 from kiro_crew.acp.runtime_frame_accounting import _DROP_NO_SESSION, _ROSTER_OVERFLOW_REJECT_REASON
 from kiro_crew.acp.runtime_host_requests import _UNREGISTERED_REJECT_REASON
 from kiro_crew.acp.session_handle import AcpFrameTooLarge, AcpModeNotFound, AcpRuntimeError
@@ -377,10 +378,12 @@ async def _reader_loop(self: AcpRuntime) -> None:
     Routing:
       1. Response with id in _pending_requests → resolve Future
       2. Response with id in _routed_requests → put in session queue
-      3. Notification with params.sessionId → session queue
-      4. Request (method + id) with no sessionId → answered ONCE at
+      3. An agent file kiro-cli could not load (_kiro/customAgent/config_error)
+         → logged once per process, never routed
+      4. Notification with params.sessionId → session queue
+      5. Request (method + id) with no sessionId → answered ONCE at
          connection level (-32601), never broadcast
-      5. No sessionId → broadcast to all queues
+      6. No sessionId → broadcast to all queues
     """
     assert self._process and self._process.stdout
     stdout = self._process.stdout
@@ -691,6 +694,15 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 # reads it off the session's queue later and whether or not a
                 # turn is running.
                 self._fold_mcp_frame(session_id, msg)
+            if msg.id is None and msg.method == METHOD_KAS_CUSTOM_AGENT_CONFIG_ERROR:
+                # An agent file kiro-cli skipped. It arrives before the
+                # session/new response, while the session it names is not
+                # registered, and it is about a file every session shares, so
+                # it is logged here rather than routed. Only a report past the
+                # log's cap is counted as a drop.
+                if not kas_agent_config_error.report(msg.params):
+                    self._note_dropped_frame(session_id or _DROP_NO_SESSION, msg.method)
+                continue
             if not session_id and _subagent_list_update and msg.method == _subagent_list_update:
                 # Snapshot backend-internal subagent session ids before the
                 # broadcast below delivers the frame to the UI consumers.
@@ -851,16 +863,17 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 ):
                     self._stage_init_frame(msg)
                 else:
-                    if (
+                    _replayed = (
                         session_id in self._load_replay_frames
                         and msg.method in _session_update
                         and _is_replayed_turn_frame(msg.params)
-                    ):
+                    )
+                    if _replayed:
                         self._load_replay_frames[session_id] += 1
                     # Counted, not logged per frame: this is the measured
                     # flood (transcript replay during session/load, plus any
                     # backend still streaming after teardown).
-                    self._note_dropped_frame(session_id, msg.method)
+                    self._note_dropped_frame(session_id, msg.method, replay=_replayed)
                 continue
 
             # No sessionId. An id-carrying frame that still has a method is

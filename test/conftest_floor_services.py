@@ -244,7 +244,7 @@ def _block_host_service_mutation(request, _floor_monkeypatch):
 
     Redirecting ``$XDG_CONFIG_HOME`` (the seams part) stops a test from *writing* a real
     unit file, but not from *running* ``systemctl --user daemon-reload`` or
-    ``systemctl --user restart kirocrew-gateway.service``. Those restart the
+    ``systemctl --user restart kirocrew.service``. Those restart the
     developer's live gateway even when the drop-in they read is pristine, so the
     second half of the floor has to be an execution guard.
 
@@ -420,6 +420,25 @@ def _no_real_cgroup_reclaim_write():
         yield
     finally:
         sandbox_slice._write_memory_reclaim = real_writer
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _no_engine_install_at_gateway_start():
+    """Make the gateway's start-time KAS engine install a no-op for the whole run.
+
+    ``start_dashboard`` schedules ``agent_sdk.kas_bundle.ensure_engine_at_startup``,
+    which downloads the pinned engine (about 55 MB from the public engine host) into a
+    data home that has none, and every test data home has none. The download runs on a
+    worker thread no asyncio cancellation can stop, so a test that boots the dashboard
+    would reach off the host and then fail its own stray-thread check. The facade's
+    attribute is what the boot path calls, so patching it there leaves
+    ``acp.kas_engine_startup`` itself whole for the tests that drive it.
+    """
+    from kiro_crew.agent_sdk import kas_bundle
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(kas_bundle, "ensure_engine_at_startup", lambda: None)
+        yield
 
 
 @pytest.fixture(autouse=True)

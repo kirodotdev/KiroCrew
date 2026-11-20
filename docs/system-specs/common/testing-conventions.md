@@ -23,7 +23,7 @@ outside those roots is never collected, so it stays green by omission.
 
 ## Determinism contract (read this first)
 
-Every backend test MUST keep these twelve rules. Each line names the shape to use and
+Every backend test MUST keep these thirteen rules. Each line names the shape to use and
 links the class that explains it; the rest of this document is the evidence behind
 them. The shared shapes live in `kiro_crew.testing` (`clock`, `wait`, `ids`), which
 ships in the wheel, so the in-package app suites use them too; the rootdir
@@ -144,7 +144,9 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   `exec_module` (a `@dataclass` module needs it), never under the real name.
   A `sys.modules` eviction restores the entry AND its parent package's attribute in the
   same scope (the rootdir package-attribute floor puts back a `kiro_crew` one a test
-  left changed, and names the test), and a new process-global ships its floor entry.
+  left changed, and names the test), and a new process-global ships its floor entry
+  (`test/test_process_cache_floor_ratchet.py` fails a new module-level cache in
+  `src/kiro_crew` that no floor resets).
   [Class 4](#4-order-dependence-and-shared-state).
 - **D12. Prove it.** Each new or changed test passes 20 times at `-n0`, 10 times at
   `-n 4` beside its neighbours, and in a shuffled order. A FIX to a flaky test also
@@ -152,6 +154,19 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   seam) red on the parent commit and green on the fix. A timing result from an
   overloaded host is not evidence; measure under CI-equivalent load.
   [Proving a determinism fix](#proving-a-determinism-fix).
+- **D13. No dependence on what the host has on `PATH`.** When the code under test
+  resolves a command with `shutil.which` (an MCP server's `command`, `gh`, `git`,
+  `node`), the test chooses the answer. A command name that is only fixture DATA counts
+  too: `"command": "http"` in a spec is a lookup on the runner's `PATH`, and a Windows
+  runner's `PATH` holds very different programs from a Linux one. Pin the product's own
+  resolver (`trusted_system_bin`; `_pin_rg_on_path` in `test/test_file_grep.py` pins the
+  grep endpoint's), or set the search path with `monkeypatch.setenv("PATH",
+  str(tmp_path))` and plant the tool there; a test that needs a real interpreter names
+  `sys.executable`. The suite has no autouse `PATH` floor (real `git`, `bash` and `node`
+  tests need the host's), so no shared fixture covers this. Run a host-tool test once
+  with the tool off `PATH`. #35547 fixed a rewriter spec whose verdict turned on an
+  `http` program being on `PATH`.
+  [What the host lends the suite](#what-the-host-lends-the-suite-and-must-not).
 
 ### Production deadlines are not test boundaries
 
@@ -166,6 +181,15 @@ import as a duration-named argument.
 - **A fixture-pinned seam for a production constant.** ``_floor_monkeypatch.setattr``
   in an autouse fixture keeps the constant out of every test body.
 - **An injected clock** for a module that owns a ``time`` import.
+- **Lift the deadline the assertion rides on, even when the test never names it.**
+  A best-effort write or a bounded cold wait that drops or serves a partial answer
+  when it expires decides the outcome on a slow runner, while the test is green
+  everywhere else: ``platform_log_append._APPEND_TIMEOUT_SECONDS`` under the
+  ``model.route`` strip, ``skills._COLD_CATALOG_WAIT_SECS`` under a cold
+  ``get_context``. Set it to ``FALLBACK_TIMEOUT_SECS`` in the test or a shared fixture
+  (``test_decisions_strip_rides_message.generous_decision_log_append``). K19 sees only
+  a wrong override, never a missing one, so trace the asserted value back through
+  every budget on its path.
 
 **WRONG** (non-zero literal or local constant — K19 flags both):
 
@@ -221,7 +245,7 @@ module through any binding is the semgrep rule's), a `sys.modules` eviction with
 no restore in the same function, raw environment writes, duration bounds, literal waits
 under two seconds (the too-tight lost-run bound of class 6; a negative such as
 `assert not done.wait(0.3)` is not one), literal listener ports, fixed crew-log flush
-ceilings, crew-log removals outside `eager.paused()`, Event waits a test parks on a thread-pool executor, direct writes of asyncio Tasks or TimerHandles to a ``kiro_crew`` module attribute from a test function (K16), ``pytest.mark.xfail(strict=False)`` overrides (K18), a non-zero numeric literal used as a duration-named keyword argument or as a ``setattr`` value on a duration-named attribute — the production-deadline-as-test-boundary shape (K19), an `update_metadata` or `update_metadata_if` call in a coroutine's own frame (K20, [Async tests](#async-tests)), a shared total pinned exactly in a module that walks the product tree: a count asserted `==` an integer literal of 10 or more in a function that reads the walk, or a count compared `==` / `!=` with a module-level ALL-CAPS constant whose name holds `BASELINE`, `COUNT`, `TOTAL`, `EXPECTED` or `ROWS` (K21, [Merge-safe ratchets and counts](#merge-safe-ratchets-and-counts)), and five frontend shapes. In a file
+ceilings, crew-log removals outside `eager.paused()`, Event waits a test parks on a thread-pool executor, direct writes of asyncio Tasks or TimerHandles to a ``kiro_crew`` module attribute from a test function (K16), ``pytest.mark.xfail(strict=False)`` overrides (K18), a non-zero numeric literal used as a duration-named keyword argument or as a ``setattr`` value on a duration-named attribute — the production-deadline-as-test-boundary shape (K19), an `update_metadata` or `update_metadata_if` call in a coroutine's own frame (K20, [Async tests](#async-tests)), a shared total pinned exactly in a module that walks the product tree: a count asserted `==` an integer literal of 10 or more in a function that reads the walk, or a count compared `==` / `!=` with a module-level ALL-CAPS constant whose name holds `BASELINE`, `COUNT`, `TOTAL`, `EXPECTED` or `ROWS` (K21, [Merge-safe ratchets and counts](#merge-safe-ratchets-and-counts)), a product registry's size or members pinned to literals (K22 and its frontend twin J7, [No change-detector tests](#no-change-detector-tests)), and the frontend shapes in `test/flake_pattern_js_detectors.py`. In a file
 the pinned semgrep reads no line of, it counts the `time` patches the semgrep rule would
 refuse as well: a file over 1,000,000 bytes, or one holding both a lambda with a bare `*`
 (`lambda a, *, b: ...`) and a parenthesized `with (a as b, ...):`, which semgrep 1.78
@@ -575,6 +599,18 @@ that patches a store read and then inspects the index does it inside
 `_eager_folder_held()` (drain, then `eager.paused()`), the way the two unprovable-header
 tests in `test_issue_radar_crew_store_write_refusal.py` do.
 
+**Probe a crew log's write lease only after the eager folder settles.** The folder
+writes a fold's savepoint under this process's share of the unit's lease, on its own
+thread, and a `session/closed` always triggers one (the seal). `assert_drained()`
+waits for the WRITER only, so a test that probes the kernel lock from a second
+descriptor right after it can land inside that write and read "this process still
+owns the log" although the emitter let go. A slow runner widens the window: macOS
+reported `a torn-down session with no live turn kept the log` about once a day.
+Probe through `_owned_elsewhere` / `_can_take_ownership` in
+`test/crew_log_emit_helpers.py`, which call `eager.drain()` first -- the barrier the
+history-delete funnel waits on before it claims the lease sole -- or call it yourself
+before any other lock probe.
+
 **Hold the crew-log writer for a burst the test counts.** `CrewLogWriter` claims a
 unit's whole bucket after its batching pause (`WriterLimits.batch_deadline_seconds`,
 20 ms) and the claim takes those entries OUT of the pending count, so blocking
@@ -613,6 +649,40 @@ shards run it on BSD tools. This covers a workflow step the test extracts, since
 Actions runs that step on Linux but the test does not. A shell script outside
 `.github/` uses the portable form. `test/test_gnu_only_shell_usage.py` enforces both
 and holds the reviewed exceptions.
+
+### Shell stand-ins that trap a group signal
+
+A shell stand-in that must run a TERM/INT trap when the test signals its
+process GROUP keeps its long step out of that group. macOS `/bin/sh` is bash
+3.2: when the step it `wait`s on dies of the same group SIGTERM, bash can
+return from `wait` with the step's 143 and exit without ever running the trap.
+That failed about 1 run in 150 on a loaded Mac and looked like "the rollback
+never happened". Run the step in a group of its own, the way cli.sh's
+`_run_step` does on macOS, let the trap stop it, and record its pid so teardown
+can reap that group too:
+
+```sh
+# WRONG: the group SIGTERM also kills the waited step; bash 3.2 may skip the trap
+trap restore TERM
+sleep 30 & step=$!
+wait "$step"
+
+# RIGHT: only the shell gets the group signal; the trap stops the step
+trap restore TERM
+set -m 2>/dev/null || true
+sleep 30 & step=$!
+set +m 2>/dev/null || true
+echo "$step" > "$D/steppid"   # teardown reaps this group too
+wait "$step"
+```
+
+The trap is also given the suite's safety net as its grace, never a product
+deadline such as `UPDATE_INSTALLER_TERM_GRACE_SECS` (4 s): a loaded runner can
+stall the rollback for longer ([Production deadlines are not test
+boundaries](#production-deadlines-are-not-test-boundaries)). A product helper
+whose grace default is bound at `def` time cannot be raised by a fixture; read
+the module constant at call time so its binding is the one seam.
+`test/test_update_installer_graceful_stop.py` is the example.
 
 ### Links: use the conftest helpers, do not skip on Windows
 
@@ -733,19 +803,19 @@ two files. Change them in the SAME pull request:
   for: `git grep -n "<function the fake answered>" -- src test`, then read each
   production caller and the tests that reach it.
 
-MEASURED: one pull request removed the shared `home` fixture's
-`is_default_home() -> True` fake, because `destinations()` no longer read the home.
-A second pull request, written in parallel, made `off_offer_due()` return `False`
-off the default home. Each was green on its own base; once both merged, three
-`TestOffOffer` tests were red on every run of `main` (`assert False is True`) and
-blocked every open pull request until the fake came back, scoped to that class.
+MEASURED: one pull request removed a shared `home` fixture's
+`is_default_home() -> True` fake, because the function it was written for stopped
+reading the home. A second pull request, written in parallel, made another check
+return `False` off the default home. Each was green on its own base; once both
+merged, that check's tests were red on every run of `main` (`assert False is True`)
+and blocked every open pull request until the fake came back, scoped to their class.
 Repeat runs cannot catch this shape, because it fails every time: the guard is the
 search, done by whichever change lands second, plus a rebase onto current `main`
 before the merge.
 
 Scope the fake to the tests that need it (a class-level autouse fixture), not the
 shared fixture, and keep one test that drops it and proves the "no" branch
-(`TestOffOffer`'s `home` case). A fake in a shared fixture outlives the check it
+(a `home` case in the same class). A fake in a shared fixture outlives the check it
 was written for, and nothing reports that it now hides a branch.
 
 ### Transport readiness before event assertions
@@ -813,7 +883,124 @@ Rules that decide whether one is worth having:
   its write order proves nothing about ranking.
 - **Mark the module `xdist_group`** when the subsystem holds module globals
   (`context._memory_stores` / `_lesson_stores` behind `_stores_lock`), and reset those
-  globals through `monkeypatch`, never raw assignment.
+  globals through `monkeypatch`, never raw assignment. The floor
+  (`conftest_resets._isolate_context_store_caches`) hands every test its own copy of
+  both caches and puts the original back after it, because `ContextBuilder.__init__`
+  makes its `MemoryStore` the process default: without it, a test that builds one (the
+  eval runner, over a temporary directory it deletes) aims every later test's
+  default-store writes at its workspace, and on Windows a change-card history write
+  re-created the deleted `kirocrew_eval_*` directory and failed the temp-residue floor.
+
+### Refusal tests: assert the refusal, name the rule only at its own bound
+
+A command, path or payload is often refused by more than one check: a gate-wide
+cap, then a floor, then a rule. Which one answers first is an ordering detail that
+another change may move. On 2026-11-16 #37820 added a test that sent a 128-level
+`$( )` nest and asserted the ssh floor's rule refused it, and #37875 added a
+32-level substitution cap to the gate. Each was green on its base; merged, the cap
+refused the nest first and the rule-name assertion went red on every PR (fixed in
+#37964). The command was still refused. Only the name was wrong.
+
+- **A test whose point is "this is refused" asserts the refusal and nothing more**:
+  the verdict is a refusal, and the call returned one rather than raising. It does
+  not name the rule. A new, earlier check then keeps it green, and a change that
+  lets the input through still turns it red.
+- **Name the rule only in a test of that rule's own boundary**, and put the input
+  inside every OTHER limit it passes on the way. Assert that precondition in the test
+  (`depth <= _MAX_SUBSTITUTION_DEPTH`), so a later, tighter cap fails as a broken
+  precondition with its own message instead of as a wrong rule name.
+- **Probe both sides of the bound** (refused at it, allowed one below it), so the
+  test pins the bound and not just "something refused".
+
+```python
+# WRONG: the point is "a deep nest is refused", but the test names the floor's rule.
+# A gate cap added later refuses it first, and the test goes red although nothing
+# got through.
+def test_the_gate_refuses_a_nest_past_the_bound_without_an_exception():
+    assert _denied_by(_nested_double_quoted(128, "true; echo ssh")) == "sandbox-escape-ssh-self"
+
+# RIGHT: "refused, and no exception" for the deep nest. The rule is named only at
+# the rule's own bound, with the input proved to be inside the gate's cap.
+def test_a_deep_nest_is_refused_without_an_exception():
+    assert security.is_denied(_nested_double_quoted(128, "true; echo ssh")) is not None
+
+def test_the_ssh_floor_refuses_at_its_reading_bound():
+    depth = ssh._MAX_SSH_READING_DEPTH
+    assert depth <= deny_gate._MAX_SUBSTITUTION_DEPTH, "the gate cap would answer first"
+    assert _denied_by(_nested_double_quoted(depth, "true; echo ssh")) == "sandbox-escape-ssh-self"
+    assert _denied_by(_nested_double_quoted(depth - 1, "true; echo ssh")) is None
+```
+
+`is_denied` returns a verdict or `None`, so the plain call is the "no exception"
+check: pytest fails the test on anything it raises. Do not wrap it in a
+`try`/`except` that turns an exception into a pass. Review flags this through
+`tests-are-deterministic` item 16 in `AUTOSDE.yaml`.
+
+### No change-detector tests
+
+A change detector copies by hand a list or a count that the source already holds (a
+registry, the steps of a workflow, a module's imports or exports, the rows a page
+draws) and compares the copy with the source. It finds no bug: the only thing that
+turns it red is a legal addition. Every new entry must edit the test, and two changes
+that each add one either both rewrite one number (git merges them, `main` goes red)
+or both add a line at the same spot in one list (the second change conflicts).
+Writing the copy one entry per line does not fix this; it only moves the cost from
+a red `main` to a conflict. In a 30-day scan of `main`, the lazy-import table in
+`test/test_dashboard_server_composition_contract.py` took 76 commits that changed
+nothing but its literals, and the base-ref list in
+`website/src/test/renderVerdict.test.ts` was edited by every new diff-scoped gate.
+
+Bad, a copy of the workflow:
+
+```ts
+const names = wirings.map((line) => line.trim().split(':')[0]).sort()
+expect(names).toEqual(['BRAND_BASE_REF', 'CHANGELOG_BASE_REF', /* ... one per gate */])
+```
+
+Good, the property each item must hold, over a set read from the source:
+
+```ts
+const steps = gateSteps(['ci.yml', 'fast-gate.yml'])   // every step that runs the resolver
+expect(steps.length).toBeGreaterThan(0)                // a broken parse cannot pass empty
+for (const step of steps) {
+  expect(step.env[step.baseRefName]).toContain('github.event.pull_request.base.sha')
+  expect(step.env[step.baseRefName]).toContain('github.event.before')
+}
+```
+
+- **Derive the set from where it lives.** Parse the workflow, import the registry,
+  walk the module's AST, read the rendered DOM. Never type the members.
+- **Assert what each member must satisfy.** The bug the old copy was meant to catch
+  is a member that breaks a rule (a gate with no base ref, a row with a hint but no
+  InfoTip, a lazy import moved to module level). Name that rule and check it per
+  member. A relation between two sets that both come from source
+  (`len(handlers) == len(schemas)`, `set(HANDLERS) == {d["name"] for d in schemas()}`)
+  is a property too.
+- **Assert the derived set is not empty**, per source when there are several, so a
+  derivation that silently finds nothing fails instead of passing.
+- **Prove both directions in the PR.** Make the bug in the product file and show the
+  test red; add a legal new member without touching the test and show it green.
+
+What stays, and why:
+
+| Kind | Example | Why it stays |
+|---|---|---|
+| Ratchet | `test/wait_discipline_baseline.txt`, `_ALLOWED_DROPS`, per-site bypass baselines | It may only shrink; a new bad site is what it refuses ([Merge-safe ratchets and counts](#merge-safe-ratchets-and-counts)) |
+| Review list | the [whole-tree registration pins](#a-whole-tree-registration-pin-not-selected-by-diff-relevance) for link screens and port verdicts | A new dangerous site is meant to make a person look |
+| Contract | wire protocol values, a telemetry schema, persisted settings values, a platform fact | Adding or dropping one silently is a defect. Say which contract in a one-line comment |
+| Frozen snapshot | the names a facade served when its file was split | Nobody edits it again |
+
+Enforced by the flake-pattern ratchet: K22 counts, in a Python test, an `assert` or
+`assertEqual` that pins a public ALL-CAPS name imported from `kiro_crew` (or read
+off a `kiro_crew` module) to `len(...) ==` an integer of 2 or more, or to a literal
+list, set or tuple of 3 or more strings or numbers. J7 counts, in a frontend test,
+`expect(REG).toHaveLength(n)`, `expect(REG.length).toBe(n)` or
+`expect([...REG].sort()).toEqual(['a', ...` for an ALL-CAPS `REG` imported from a
+product module, with `n` of 2 or more. Both count per file against the merge-base,
+so existing pins are not forced to burn down. A contract pin carries
+`# flake-ok: <the contract>` (`// flake-ok:` in TypeScript). Review catches what
+they cannot see, such as a list read from a workflow, an AST or the DOM (AutoSDE
+`a-ratchet-may-only-tighten`, CHANGE DETECTORS).
 
 ### Merge-safe ratchets and counts
 
@@ -830,11 +1017,17 @@ the ratchet reds on `main` in 2026-11 had this shape: the lazy-import total in
 `test_pid_reader_ratchet.py`, and security line-budget rows written as the amount
 over budget.
 
-- **Never pin an aggregate the record already decides.** When the test compares the
+- **First ask whether the test needs a record at all.** A record belongs to a ratchet
+  (sites that may only shrink), a review list or a contract. A scan compared with a
+  hand list of everything that exists today is a change detector: replace both the
+  total and the list with a property over the scanned set
+  ([No change-detector tests](#no-change-detector-tests)). Turning such a total into
+  one line per item is not a fix.
+- **Never pin an aggregate the record already decides.** When a ratchet compares the
   scan with a table, mapping or set, a hand-kept total beside it adds no check and is
   the one line both changes edit identically. Drop it. A number the message must
   print is computed from the table.
-- **Key the record by what changes.** One entry per file, per site or per change: a
+- **Key a ratchet's record by what changes.** One entry per file, per site or per change: a
   dict entry on its own line, a line in a baseline file
   (`test/wait_discipline_baseline.txt`), or one row file per change
   (`test/security_line_budget/<change>.txt`). Two changes to different files then
@@ -886,6 +1079,91 @@ over budget.
   doc's count checked against a registry); review catches those (AutoSDE
   `a-ratchet-may-only-tighten`). A deliberate pin, such as a frozen snapshot no later
   change edits, carries `# flake-ok: <reason>`.
+
+### Forwarding calls: a keyword added on one side, a re-call added on the other
+
+The same no-merge-queue gap breaks product code, not only counts. A function that
+re-calls itself or a sibling with its own parameters spelled out by hand has to be
+edited twice when the callee grows a keyword. On 2026-11-16 one change added such a
+re-call of `load_session` (#37955) and another added `kas_memory_mode` to
+`load_session` (#36872). Each was green on its base, git merged them cleanly, and the
+merged re-call dropped the new keyword (fixed in #38108). `create_session` had the
+same drop for `member_context` (#38105).
+
+```python
+# WRONG: every keyword spelled by hand; a keyword added to load_session later is
+# silently dropped on this path unless someone also edits this call.
+async def load_session(self, session_file, resume_sid, *, cwd=None, channel_id="",
+                       kas_memory_mode=None, focus_resume=False, harness_state=None):
+    with self.keep_record_on_teardown(resume_sid):
+        return await load_session(self, session_file, resume_sid, cwd=cwd,
+                                  channel_id=channel_id, focus_resume=focus_resume,
+                                  harness_state=harness_state)
+
+# RIGHT: pass every keyword both sides accept (kas_memory_mode=kas_memory_mode),
+# and pin it with a test that compares the call with the callee's signature
+# (test_the_kas_keep_record_reentry_forwards_every_keyword).
+```
+
+- **Pass every parameter the caller and the callee share.** When the call leaves one
+  out on purpose, say why in a comment at the call.
+- **Pin a re-entry against the signature.** A test that builds the keyword set from
+  `inspect.signature(callee)` and asserts the call forwards each one fails on the
+  change that adds a keyword, whichever change lands second.
+- **Enforced by `test/test_forwarding_calls_forward_every_keyword.py`.** It scans
+  every non-test Python file (`test/forwarding_call_scan.py`). A call counts as
+  forwarding when it passes at least three of the caller's parameters as `x=x` and
+  binds at least half of the callee's parameters; it fails when the callee accepts a
+  parameter the caller also accepts and the call does not pass it. A callee that only
+  takes `**kwargs` and hands them on is followed to the function it calls. A
+  deliberate drop is one row in `_ALLOWED_DROPS`, keyed `(file, caller, callee,
+  parameter)` with its reason, so two changes that each add one edit different lines.
+  A row that matches nothing fails, so the table cannot rot. A known bug whose fix is
+  open goes in `_OPEN_BUGS`, which is not stale-checked, so the fix and the table can
+  land in either order. It resolves callees by name and skips a name whose definitions
+  disagree, so a call through a differently named alias is not seen. It costs 6 to
+  8 s, because it parses single defs, not whole files (see the module docstring).
+
+### Bare session handles: one factory, so a new runtime read lands in one place
+
+A unit test of one `AcpSessionHandle` method often skips `__init__` and sets only the
+fields that method reads. Such a handle breaks as soon as the method starts reading
+something new. On 2026-11-17 #38228 made the KAS start barrier await
+`settle_kas_model_select()`, which reads `self._runtime`, and stubbed it in the bare
+handles that existed then. #38761, cut before #38228, added a new file with its own
+bare handle. Each was green on its base. Merged, both of the new file's barrier tests
+raised `AttributeError: 'AcpSessionHandle' object has no attribute '_runtime'` and
+held 15 PRs red (fixed in #38961).
+
+```python
+# WRONG: the handle has exactly the fields this file knew about on its base. A
+# handle method that reads a new runtime attribute breaks this file on merge.
+handle = AcpSessionHandle.__new__(AcpSessionHandle)
+handle._session_id = _SID
+handle._mcp_report = McpSessionReport()
+
+# RIGHT: the factory gives a real, never-spawning AcpRuntime and stubs the steps
+# tests of one method do not exercise; the change that adds a read updates it once.
+from session_handle_helpers import bare_session_handle
+
+handle = bare_session_handle(_SID)
+handle._mcp_report = McpSessionReport()
+```
+
+- **Build every constructor-less handle with `bare_session_handle()`**
+  (`test/session_handle_helpers.py`). Its default `_runtime` is a real `AcpRuntime`,
+  so every attribute a handle method reads exists with its real default. Pass
+  `runtime=<double>` to steer it, or `runtime=None` for a handle with none.
+- **A change that adds a handle step a bare test should not run stubs it in the
+  factory**, not in each test file.
+- **Enforced by `test/test_bare_session_handle_guard.py`.** It parses every file under
+  `test/` and fails on `AcpSessionHandle.__new__(...)` or
+  `object.__new__(AcpSessionHandle)` outside the factory. An exemption is one row in
+  `_EXEMPT` with its reason; a row naming a missing file fails.
+- **Measured:** on `f588907dcc` (both changes, no fix) the file failed 2 of 10. With
+  only its `_handle()` switched to the factory, 10 of 10 passed, with or without the
+  factory's `settle_kas_model_select` stub: the real runtime alone is enough. On a
+  branch where #38761's file still used `__new__`, the guard failed and named it.
 
 ### Channel wire fakes: borrow the library's read side, do not model it
 
@@ -954,6 +1232,49 @@ inside a single-user trust boundary, so it sets no expectation that test utiliti
 carry attacker-grade path containment. Spend that review effort on the governance and
 keystone paths instead.
 
+### Close the SQLite handles and skills loaders a test opens
+
+Every object that opens SQLite in its constructor holds three descriptors (`db`,
+`-wal`, `-shm`) until it is closed. On CPython 3.11+ an unclosed `sqlite3.Connection`
+is a reference cycle, so dropping the object does not free them: they stay open until
+the cyclic collector happens to run. Across one xdist worker's share of a shard they
+add up.
+
+The limit they hit depends on the host:
+
+| Host | Default soft `ulimit -n` |
+|---|---|
+| macOS (a laptop, a CodeBuild Mac) | 256 |
+| GitHub `macos-15-arm64` and `macos-26-arm64` runners | 10240 |
+| GitHub Linux runners | 65536 |
+
+So CI does not show these leaks. Measured on a 256 host: one worker ended a backend
+shard with up to 335 leaked descriptors, and from the 256th on every test on that
+worker failed with `EMFILE` or `sqlite3.OperationalError: unable to open database
+file`, in files that had nothing to do with the leak. Raising the limit hides the
+leak and is not the fix.
+
+The fix depends on the owner:
+
+| Owner | What opens SQLite | How it is closed |
+|---|---|---|
+| `SkillsLoader` (also built inside `ContextBuilder` and the dashboard's standalone loader) | `skill_search_index.sqlite3` | The rootdir conftest's autouse `_close_skills_loaders_the_test_opened`, for every test: it closes each loader built after it sets up, joins the catalog worker, and closes every search index built during the test, including one whose loader was already dropped. Nothing to request. |
+| `SubagentManager` | `tasks.db` | Request `close_subagent_managers` (a module-level `pytestmark` usefixtures entry). |
+| `VectorMemoryStore`, `KnowledgeStore`, a `SkillsLoader` from an earlier-ordered autouse fixture | their own databases | Wrap the object in `opened(...)`. |
+| A new class that opens SQLite in `__init__` | its database | Give it a `close()`. Its tests close it through `opened(...)` or an opt-in fixture shaped like `close_subagent_managers`. |
+
+A loader that a module- or session-scoped fixture shares across tests is set up before
+the floor takes its snapshot, so it stays open. A loader the test body builds and
+stores in a module global is closed at that test's teardown. A closed loader serves
+only what it had already cached, and an empty list for any scope it had not built, so
+a later test must not reuse it: such a cache already points at a deleted `tmp_path`,
+and the test that reads it sets its own loader.
+
+To find a leak, record `os.listdir("/dev/fd")` (`/proc/self/fd` on Linux) before and
+after each test from a throwaway `-p` plugin. Charge every new descriptor to the test
+that opened it, and list the ones still open when the worker ends. A run with
+`ulimit -n 256` on macOS confirms that the leak is gone.
+
 ## Which conftest you are standing on
 
 There are **two** testpaths (`setup.cfg`'s `testpaths = test
@@ -999,7 +1320,12 @@ whichever test it outlives into. They report before they may fail anyone, so the
 are read from a full CI run before a strict switch (set to `1`) is turned on. The
 worker's last test is checked after that warning is written, so its findings are not in
 it. The package-attribute floor also undoes a replacement made by a wider-scoped fixture
-that a test created lazily (`request.getfixturevalue`) at that test's teardown.
+that a test created lazily (`request.getfixturevalue`) at that test's teardown. One more
+floor acts only under a switch: with `KIROCREW_CREW_LOG_READ_BUDGET=raise` (the Linux
+`Backend Tests` job) every test counts its crew-log reads as the gateway and fails at
+teardown on an over-budget read at a product site not listed in
+`test/conftest_floor_read_budget.py`, unless its module resets the budget in its own
+fixture.
 
 Eight members are there for a different reason — a **process-global** that any testpath
 can poison for every test after it, which is the same failure shape as host mutation
@@ -1058,6 +1384,13 @@ one scope down:
   pytest's own `catching_logs` adds one per test phase and removes it at the phase
   boundary, so writing back a setup-phase snapshot during teardown would drop the handler
   the teardown phase is capturing through.
+* `_close_skills_loaders_the_test_opened` closes every `SkillsLoader` the test built,
+  through production's weak registry of live loaders, and joins each one's catalog
+  worker. It then closes every `SkillSearchIndex` built during the test (the
+  session-scoped `_record_skill_search_indexes` records them), which reaches the index
+  of a loader the test dropped before teardown. A dropped loader keeps its SQLite descriptors until the cyclic collector runs,
+  and on a macOS host with the default `ulimit -n 256` that runs a worker out of
+  descriptors (§ Close the SQLite handles and skills loaders a test opens).
 * `_restore_autonudge_singleton` puts `autonudge._INSTANCE` back to whatever the test
   inherited. It lives in `test/conftest_resets.py`, bound by `test/conftest.py`, rather
   than the rootdir floor, because only the `test/` suites drive the service; it is
@@ -1273,10 +1606,10 @@ Nothing about shutdown is re-implemented in the harness, so a step added to
 that makes the interception sufficient: `os._exit` is the last statement of
 `_shutdown_and_exit` and the only hard exit `run()` reaches. A `run()` that
 does not reach its exit within `SHUTDOWN_PATH_SECS` of the event is cancelled
-and `_shutdown()` awaited directly, and the teardown reports it. The serve/stop
-seam on `GatewayOrchestrator` (issue #13627) would let an in-process caller
-skip the interception altogether; until it lands, a change to the exit path
-that trips the pin is a change that needs the harness updated in the same PR.
+and `_shutdown()` awaited directly, and the teardown reports it.
+`GatewayOrchestrator` has no serve/stop seam an in-process caller could use
+instead, so a change to the exit path that trips the pin needs the harness
+updated in the same PR.
 Do not set `shutdown_event` from a test, do not call `run()` yourself, and do
 not `await` the helper's task.
 
@@ -1689,7 +2022,8 @@ measures, never above.
   `test/conftest.py`, which only applies to `test/` — `testpaths` also collects
   `src/kiro_crew/apps/builtins`) pins `$XDG_CONFIG_HOME` to a tmp
   dir so `dev_fleet._dropin_path()` cannot name the operator's real
-  `~/.config/systemd/user/kirocrew-gateway.service.d/`, and traps every stdlib
+  `~/.config/systemd/user/kirocrew.service.d/` (or `kirocrew-gateway.service.d/`
+  on a host whose live unit has that name), and traps every stdlib
   spawn funnel (`subprocess.Popen.__init__`,
   `BaseEventLoop.subprocess_exec`/`subprocess_shell`, `os.execve`) to
   refuse a `systemctl`/`launchctl` invocation carrying a **mutating verb**
@@ -1941,6 +2275,43 @@ measures, never above.
   with Node 18 while the repo declares `engines.node >= 22.12.0`. Gate on the floor the code
   under test actually needs, and probe it the way the tests will experience it.
 
+- **Sandbox only the cases whose subject is the sandbox.** On macOS each sandboxed
+  spawn costs about 0.3 s (`sandbox-exec` compiles the Seatbelt profile on every exec),
+  and one git call is several spawns. A test of worktree or git logic runs plain git;
+  only a case that tests the sandbox composition asks for it, the way
+  `test_crewmate_worktree.py`'s `sandboxed_git` fixture does. The wrapper itself is
+  tested in `test_worktree_create.py`.
+
+- **Scan only the cases whose subject is the hook scan.** Every git call through
+  `worktree._run_git` (so every `git_ops` read) first runs `git_config_hooks`' scan: three
+  more gits (`config`, `rev-parse --show-toplevel`, `ls-files -s`), plus one per
+  submodule. Windows process start is slow on a loaded runner, so a test that drives a
+  service refresh after refresh pays four spawns per read. MEASURED (#39484):
+  `test_slack_code_channel_bar_budget.py` tests took 58-107 s each on
+  `Backend Tests (Windows) (8)`, and the six-refresh
+  `test_the_bar_is_resent_only_when_its_items_change` took 91-95 s at four xdist workers
+  and 145-174 s at six, so it ran past `--timeout=180` on unrelated PRs and on main. A
+  test of logic ABOVE git, over repositories with no config hooks, stubs the scan at EVERY
+  name that binds it, next to its `sandboxed_spawn_argv` stubs:
+  `worktree.config_hook_disable_args_sandboxed` for `_run_git` (#39505) and
+  `git_ops.config_hook_disable_args_sandboxed` for `git_ops.run_git_capped`, the Code-tab
+  diff reader, which imports the scan itself. MEASURED (#39484): the code-channel
+  workspace, board and surface suites with both stubs, four xdist workers, AWS c6i.2xlarge
+  Windows, median of 5: `test_slack_code_channel_workspace.py` 114.6 s -> 42.1 s,
+  `test_slack_code_channel_board_diff.py` 104.6 s -> 40.4 s. The scan and both callers'
+  use of it are tested in `test_git_config_hooks.py`.
+
+- **Count the git spawns of a parametrized case, and spend each one on a new answer.**
+  A case multiplied by its parameters multiplies its process starts, and on a loaded
+  Windows runner a git spawn is the cost. Run each case only from the directories that
+  can answer differently, and do not re-ask an answer that is a pure function of one the
+  case already asserted. MEASURED (#39930): the 51 cases of
+  `test_prepare_pr_pre_push_gate.py::test_one_hostile_config_key_changes_nothing_from_a_subdirectory`
+  took a median 525 worker-seconds of `Backend Tests (Windows) (4)` over 10 main runs.
+  From two directories instead of three, without re-asking the gate selection, they
+  start 19 gits instead of 34; four xdist workers, AWS c6i.2xlarge Windows, 5 rounds
+  each: 86.2 -> 57.5 worker-seconds.
+
 - **If you stub the only thing that releases a resource, the fixture owes the release.**
   A permit, an in-flight claim, a lock: when the green-path test replaces the runner
   whose `finally` gives it back, the resource is gone for the life of the worker. The
@@ -1959,6 +2330,8 @@ measures, never above.
   on its own base, and both landing reds `main` on every platform: #36640 planted the
   example key and asserted it gone after #29423 had made the redactor keep it, and
   #37423 fixed the four test files by switching them to `github_classic()` (why: #37421).
+  `test/test_redaction_literal_ratchet.py` refuses a new `<AWS key ID literal> not in`
+  or `assertNotIn` site; its `_BASELINE` lists the older ones and only shrinks.
   Asserting an identifier SURVIVES is the case where an `AKIA…` literal belongs.
 
 - Tests SHOULD be fast (< 1s each)
@@ -2521,8 +2894,15 @@ added a fourth; each was a real defect:
   three-pass clone test waited `WAIT_S` (10 s) for `exhausted`, and the failing snapshot
   showed `pass 3/3` complete with only the final status flip outstanding: a real clone
   plus three passes of several git subprocesses each, on a host shared with five other
-  workers, is more than ten seconds on Windows. It now waits a named `WAIT_S * 3` with
-  the reason next to it — class 5 above, not a stuck watcher.
+  workers, is more than ten seconds on Windows. Multiplying the ceiling (`WAIT_S * 3`)
+  on the two tests that had failed did not fix the file: once the Windows backend shards
+  ran six xdist workers, the one-pass export and head-branch tests failed the same way
+  (`watcher never reached {'exhausted'}`, last status `nudging`, `pass 1/1`) on seven
+  pull requests in a day. The file's poll helpers now call `wait_until` with no
+  `timeout`, so every wait gets the lost-run bound (half the test's timeout). A
+  file-wide short ceiling shared by poll helpers is D1's "bets on the runner's speed"
+  for EVERY caller: raise it to the lost-run bound once, in the helper, rather than
+  per test after each one fails.
 - **Two `resolve()` calls that disagree by a prefix.** The CI Windows shard failed
   `test_work_ledger`'s four-threads-bind-one-worker test with one thread reporting
   `path traversal blocked for worker key` — for a key with no traversal in it. The
@@ -2534,7 +2914,13 @@ added a fourth; each was a real defect:
   about four runs of ten by pointing the temp root at its 8.3 short name, the shape of
   the runner's `C:\Users\RUNNER~1`. Production fix: `session_ledger.resolved_within`
   resolves the base once, builds the child from it, and strips the prefix from both
-  sides; the three ledger guards go through it. Ninety repeated runs pass.
+  sides; the three ledger guards go through it. Ninety repeated runs pass. The same
+  class came back as an EQUALITY guard: `test_dashboard_save_tool_older_rule`'s two
+  concurrent first saves got a 503 because `atomic_write._refuse_linked_parent`
+  compared a prefixed resolve of the parent with a plain one of the same directory
+  (#37114, fixed in #37211). The rule is the platform-compat row "Compare paths for
+  identity": every identity comparison of a resolved path folds both sides through
+  `strip_extended_length_prefix`.
 
 ### What the fourth five-run pass found (Linux, 106k tests per run)
 
@@ -3695,9 +4081,10 @@ went red, or the fix lands in the wrong file and the leak stays.
   `_learn` re-inits the store it is handed, so every learn test paid this). Tests route
   every inline construction through `test/conftest.py`'s `opened` register-and-close
   fixture (one definition, not one per module: a `KnowledgeStore` is closed through its
-  test-only every-thread seam, everything else through `close()`), modules that build
-  `ContextBuilder`s request the conftest's opt-in `close_skills_loaders` from a one-line
-  module autouse fixture, and managers get `manager.close()` before `sessions.close_all()`.
+  test-only every-thread seam, everything else through `close()`), every `SkillsLoader` a
+  test builds is closed by the rootdir conftest's autouse
+  `_close_skills_loaders_the_test_opened` (§ Close the SQLite handles and skills loaders a
+  test opens), and managers get `manager.close()` before `sessions.close_all()`.
   The one descriptor the probe still sees
   is pytest-asyncio 0.21.2's replacement loop: +3, one at a time, reclaimed at the next
   test's setup -- a float, not a leak, and never the thing to chase.
@@ -5522,6 +5909,43 @@ The same reach applies, more mildly, to a patch of `asyncio.create_subprocess_ex
 `os.getpid` on the stdlib module: every caller in the worker sees it. Prefer an injected
 value; otherwise patch only for the span of the call, through `monkeypatch`.
 
+**A counting spy counts only the calls the code under test makes.**
+`monkeypatch.setattr(mod.os, "scandir", counting)` reads like a patch of `mod`, but
+`mod.os` IS the stdlib `os`, so the spy counts every scan of the path from every module and
+thread in the worker. A count of "how often this code walked the folder" then also counts
+another module's scan of the same folder, even one the code under test asked a shared
+pool to run. `test_app_manager_installed_record.py::TestListingReusesTheWalk` counted the
+apps folder's walks this way. When `detect_orphaned_builtins` had no cached result,
+`list_apps` validated the built-in manifests, the path gate listed the home's credential
+masks on the shared `mc-pathres` pool (`credential_masks._installed_manifests`, its own
+`os.scandir(apps)`), and the spy saw two walks. Whether that cache was cold depended on
+the tests before it on the worker. After `test_app_backend.py::TestBootSpawnLatency` it
+failed 30 of 30 runs; with the CPU busy, `-n 8` and `-p randomly` it failed 14 of 30 (9 of
+30 on an 8-core Linux host). Counting only the calls the walking function makes, both
+passed 30 of 30. Two ways do that:
+
+- Replace the module's own binding, the way `ManualClock.install` does for `time`:
+  `monkeypatch.setattr(mod, "os", SimpleNamespace(**{**vars(os), "scandir": counting}))`.
+  Not on an owner of a mirrored facade such as `kiro_crew.apps.manager`, where `os` is a
+  shared name: `test_facade_mirror_guards.py` refuses a direct owner patch of one.
+- Keep the stdlib patch but count a call only when its caller is the function under test:
+
+```python
+# Wrong: an unfiltered spy counts every module's and thread's scan of the folder.
+monkeypatch.setattr(manager_records.os, "scandir", counting)
+
+# Right: only the listing walk's own calls are counted.
+real = os.scandir
+listing_walk = manager_records._recorded_app_names.__code__
+
+def counting(path=".", *args, **kwargs):
+    if sys._getframe(1).f_code is listing_walk:
+        walks.append(os.fspath(path))
+    return real(path, *args, **kwargs)
+
+monkeypatch.setattr(os, "scandir", counting)
+```
+
 **A reload or a `sys.modules` eviction leaves the parent package pointing somewhere
 else.** A string target (`monkeypatch.setattr("kiro_crew.agent_state.config_dir", ...)`)
 is resolved through the PARENT PACKAGE's attribute, not through `sys.modules`. Two shapes
@@ -5625,6 +6049,73 @@ On #37659 it prints `_seen`, `_loaded` and `global _loaded`. Every hit at module
 path other tests drive gets its entry in `test/conftest_resets.py` in the same PR. The line
 only knows those initializer spellings; a global bound to anything else still needs a
 reviewer's eye.
+
+The reset goes in `test/conftest_resets.py` as an autouse fixture, re-bound in
+`test/conftest.py`'s `from conftest_resets import (...)` block. When that file is at its
+1,600-line target, the reset goes in a `test/conftest_resets_<topic>.py` sibling named for
+the package it resets (`conftest_resets_acp.py`), re-bound by its own import block there.
+A reset in the new
+cache's own test file does not count: the next file on the worker is the one that
+inherits it. `test/test_process_cache_floor_ratchet.py` refuses the common shape, but
+only in a CI run whose checkout contains it, so a PR whose last green run is older than
+the ratchet can still merge the leak. The AUTOSDE rule
+`a-module-level-cache-ships-its-per-test-reset` asks for the same reset at review time,
+for every shape (an `lru_cache`, a `global` flag, a name the ratchet's pattern misses).
+
+```python
+# WRONG: src/kiro_crew/subagent_persistence.py fills a module-level memo and no floor
+# clears it, so a verdict one test left lets the next test's sweep skip a run.
+_NOT_DUE_MEMO: dict[str, tuple[tuple[int, int, int], int | float, bool]] = {}
+
+# RIGHT: the same PR adds the floor entry (test/conftest_resets.py).
+@pytest.fixture(autouse=True)
+def _reset_subagent_not_due_memo():
+    def clear():
+        module = sys.modules.get("kiro_crew.subagent_persistence")
+        if module is not None:
+            module._NOT_DUE_MEMO.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+```
+
+No reset is needed for a constant nothing writes after import, a registry filled only at
+import time, or a memo of a pure function of its arguments. A cache-named empty
+container of that kind still trips the ratchet, so its line says
+`# process-cache-ok: <reason>`.
+
+**A switch or allowlist snapshot that a handler test publishes is the same leak, and the
+grep above does not see it.** `dashboard.source_providers.hosts` holds the session-card
+chip switch as `_session_card_chips_snapshot: bool = True` and the host allowlists as
+`frozenset()` snapshots. The real `/api/dashboard/config` PUT publishes the switch, so
+`test_session_card_source_links_knob.py::TestConfigEndpoint::test_put_persists_off`, which
+sends `session_card_source_links: false` and patches nothing, left the chips off for its
+worker. Every later `to_dict` there reported `source_links_total` 0: MEASURED, that test
+followed by `test_source_link_github_case.py` fails 4 of 21 at `-n0`, every run; on CI it
+reddened backend shard 7 on main and on four unrelated PRs in one morning. A pin in the
+polluting file's fixture stops that file; the floor entry `_cold_source_link_settings`
+stops the next file too, by pinning every snapshot the publishers write to its cold value
+for every test. Leave a monotonic generation counter unpinned, because caches key on it
+and putting an older number back can match an entry built under other settings. Before
+push, also grep for scalar and frozen initializers of a global that a write path
+republishes:
+
+```bash
+git diff origin/main -- 'src/kiro_crew/*.py' \
+  | grep -nE '^\+_[A-Za-z0-9_]+ *(:[^=]+)?= *(True|False|frozenset\(|[0-9.]+$)'
+```
+
+```python
+# WRONG: the real PUT publishes False into the module global, and nothing puts it back.
+async def test_put_persists_off(self, handler_app, cfg_file):
+    await client.put("/api/dashboard/config", json={"session_card_source_links": False})
+
+# RIGHT: the floor hands every test the cold snapshot (test/conftest_resets.py).
+_floor_monkeypatch.setattr(hosts, "_session_card_chips_snapshot", True)
+```
 
 **Work QUEUED by a test is shared state too, and resetting the object it runs against is
 not enough.** MEASURED: a member row's event is fire-and-forget on the single `eventlog-io`
@@ -6136,6 +6627,42 @@ the spec would have hidden a real defect. So before you touch the spec, read the
   `--retries=0`, idle and under the same load. A user can hit the same reorder. If that ever matters, the fix is a
   version check on the read in the product, not a wait.
 
+  The fix covered test 8 only. Test 22 in the same file drags a card with
+  `DragEvent`s instead of posting the drop, and has the same race. It went red on
+  2026-11-17 with the same `element(s) not found` on the Done column, while the
+  server already listed the slot as Done
+  ([issue #37561](https://github.com/kirodotdev/KiroCrew/issues/37561),
+  [PR #38482](https://github.com/kirodotdev/KiroCrew/pull/38482)). Waiting for the
+  card in the source column is no barrier: the socket's connect snapshot renders
+  it while the read is still in flight. So when you fix this shape, fix every
+  test with it in the same change. Search the spec file and its siblings for a
+  `goto('/chat')` followed by a slot write (`/drop`, `/tags`, `/folder`, a
+  `DragEvent('drop')`, a row-menu click) and then a page assertion on that
+  slot. A test that reloads before it asserts, or asserts only over `request`,
+  does not have the race.
+
+  ```ts
+  // WRONG: the row is on screen before the read returns, so the drag can still
+  // land between the read's serialization and its reply
+  await page.goto('/chat')
+  await page.waitForSelector(`[data-testid="column-${colTodo.id}"] [data-slot-key="${slotKey}"]`)
+  await page.evaluate(dispatchDrop, [slotKey, colDone.id])
+
+  // RIGHT: the same barrier as test 8, armed before goto
+  const slotListRead = page.waitForResponse(r =>
+    r.request().method() === 'GET' && new URL(r.url()).pathname === '/api/chat/slots')
+  await page.goto('/chat')
+  await page.waitForSelector(`[data-testid="column-${colTodo.id}"] [data-slot-key="${slotKey}"]`)
+  await (await slotListRead).finished()
+  await page.evaluate(dispatchDrop, [slotKey, colDone.id])
+  ```
+
+  Measured on Linux (32 cores, all busy, `--retries=0`, the harness gateway):
+  unforced, test 22 passed 30 of 30 before the fix and 30 of 30 after, so load
+  alone does not reproduce it. With the page's first slot read held until the
+  drop's push had moved the card (`page.route`, then `route.fulfill`), it failed
+  20 of 20 before the fix, with the CI error, and passed 20 of 20 after.
+
 - **Received is a real miss.** `chat-form-switch-anchor.spec.ts` found the reader's row
   33 to 54 px lower after a 1400 -> 382 px resize. Two virtualizer defects caused it. The
   anchor was dropped on the scroll event its own write raised
@@ -6573,13 +7100,40 @@ path, not a duration or test-count balance. Other shards skip the file before
 import, while discovery patterns and platform ignores remain pytest's own.
 
 The Linux full-suite run adds `--file-shard-pins scripts/ci_file_shard_pins.txt`:
-the heaviest files (about 800) get a fixed shard, placed so the eight shards'
-summed test seconds come out even, and every other file keeps its hash owner. A
-pin only changes which shard owns a file, so a new or renamed file is still
-collected, on its hash shard. `scripts/ci_file_shard_pins.py` regenerates the pin
-file from the `linux-pytest-progress-<N>` artifacts of several green `main` runs;
-regenerate it when the Linux shards' `Run tests` times drift apart again. Windows,
-macOS, release and the reduced and leaf scopes keep pure hash ownership.
+every file with a measured weight gets a fixed shard, placed so the eight shards'
+summed test seconds come out even, and a file with no weight keeps its hash
+owner. A pin only changes which shard owns a file, so a new or renamed file is
+still collected, on its hash shard. `scripts/ci_file_shard_pins.py --every-file`
+regenerates the pin file from the `linux-pytest-progress-<N>` artifacts of
+several green `main` runs; regenerate it when the Linux shards' `Run tests` times
+drift apart again. Without `--every-file` the script pins the 800 heaviest files
+and hashes the rest, and the hashed rest is uneven: planned from 11 green runs
+and replayed on the one held out (12 runs, 2026-11-18), the heaviest Linux shard
+carried a median 1.07x the mean test seconds with 800 pins and 1.02x with every
+file planned. The Windows run adds its own pin file, `--file-shard-pins
+scripts/ci_file_shard_pins_windows.txt`, generated with `--platform windows`
+from the `windows-pytest-progress-<N>` artifacts. Windows keeps a separate file
+because a file's share of the time differs there: the Linux pins cut the slowest
+Windows shard by a median 12% of its summed test seconds over six held-out green
+runs, the Windows pins by 20%. The Windows file stays at the 800 heaviest
+(1.06x held out, against 1.02x with every file) because the Windows leaf scope
+in `ci.yml` reads that file as its list of heavy files (`WINDOWS_LEAF_MAX_PINNED`);
+listing every file there would send any leaf diff of five or more files to the
+full suite. Regenerate the Windows file when its shards drift apart: on 10 green
+`main` runs of 2026-11-19 and 2026-11-20, the file generated on 2026-11-19 left the
+heaviest Windows shard at a median 1.18x the mean test seconds, and a file planned
+from 9 of those runs and replayed on the one held out at 1.06x (#39955); no file
+outside the 800 took more than 30 s in any of them. macOS, release and the
+reduced and leaf scopes keep pure hash ownership.
+
+Before the Linux and Windows full-suite test step, `scripts/ci_rewrite_prewarm.py`
+writes pytest's assertion-rewrite pyc for the shard's test files (same hash and
+pin file) and every `conftest.py` loaded during collection, in parallel and without importing them, under
+the `sys.pycache_prefix` the rootdir conftest sets. It changes where a worker's
+collection time goes, not which files the shard collects, and never fails the
+job. `test/test_ci_rewrite_prewarm.py` owns the proof that pytest reads those
+pycs; a change to the cache root in `test/conftest_floor_configure.py` must keep
+`ci_rewrite_prewarm.pycache_prefix` equal to it.
 
 macOS assigns whole files like the other platforms, in eight shards. The shard
 count is the knob to reach for when the suite grows, not the 60-minute cap,
@@ -6608,6 +7162,139 @@ and shared conftest/package imports still cost every worker. Use collection-phas
 progress and completed shard timings; measurements from item-split runs do not
 establish the balance of file shards. Fix measured test outliers rather than
 assuming a duration file changes this partition.
+
+## Real-machine verification
+
+A pull request has passed only when a real machine shows three things: the bug is
+real, the fix fixes it, and the machine is gone afterwards. Unit tests and a green
+CI run are necessary, not sufficient: they run the code the author thought to test,
+in the environment CI happens to have. Every PR that changes what runs (product code,
+tests, test tooling, scripts) carries a `## Real-machine verification` section in its
+body. A change that runs nothing (docs, comments, the PR template) writes
+`N/A -- <what in the diff runs nothing>` there. A body without the section has not
+passed review.
+
+### The loop
+
+1. **Get a machine** (below). Note its OS, version, architecture, instance type or
+   model, CPU count and memory.
+2. **Reproduce on the base first.** Check out `origin/main` (the PR's base sha) on the
+   machine and trigger the bug with one command. Record the command and its output.
+   A flaky test is reproduced the way *Proving a determinism fix* says: the forced
+   condition red on the base, plus the repeats; give the command and the counts.
+   **A bug you cannot reproduce is not a confirmed bug.** Keep diagnosing (CI history,
+   logs, the forced condition) before you write a fix, and say in the PR what you could
+   and could not reproduce. For a feature, the base run shows the missing behaviour.
+3. **Open the PR.**
+4. **While CI runs, verify the PR head** on the same machine with the same command. A
+   flaky fix shows the forced condition green on the head and the same repeats.
+   Re-verify when a later push changes what runs.
+5. **Clean up** (below) and record the result.
+6. **Write the section**:
+
+   ```markdown
+   ## Real-machine verification
+
+   Machine: EC2 m7i.xlarge, Ubuntu 24.04 x86_64, 4 vCPU / 16 GiB (or: author's MacBook, macOS 15.1 arm64)
+   Before (main <sha12>): `<command>` -> <the failing output, excerpted>
+   After (head <sha12>): `<command>` -> <the passing output>
+   Cleanup: instance terminated, security group deleted, no key pair, no volumes left (describe output empty)
+   ```
+
+### Which machine
+
+| PR | Machine |
+|---|---|
+| A maintainer's PR | An EC2 instance in the maintainer's own AWS account, set up as below |
+| An outside contributor's PR | A maintainer asks, on the PR, for a role in the contributor's AWS account to launch the verification machine; best is Linux, macOS and Windows, at least Linux |
+| No machine available | The author reproduces on their own computer and pastes the commands and outputs, before and after, into the section |
+
+Match the machine to the change: a Linux test fix runs on Linux, a Windows path fix
+on Windows. Linux x86_64 is the floor for any change that runs on every OS. EC2 macOS
+needs a Dedicated Host with a 24-hour minimum allocation, so a macOS-only change is
+usually verified on the author's own Mac. Windows uses the
+`/aws/service/ami-windows-latest/Windows_Server-2022-English-Full-Base` image, and its
+self-terminating user data is PowerShell, not `/bin/sh`:
+`--user-data '<powershell>shutdown /s /t 14400</powershell>'`.
+
+### Setting up an EC2 verification machine
+
+The machine is private, short-lived, tagged and capped. Every one of these holds:
+
+- **No inbound access.** A security group of its own with **no ingress rules**; you
+  connect through SSM Session Manager (`aws ssm start-session --target <id>`). If SSH is
+  unavoidable, one ingress rule for port 22 from your own `/32`, never `0.0.0.0/0`,
+  and a key pair made for this machine. Nothing the tests start is published: a
+  server under test binds `127.0.0.1`, and you reach it through the SSM session or an
+  SSH local port-forward.
+- **Least privilege.** The instance profile allows SSM only
+  (`AmazonSSMManagedInstanceCore`). The machine holds no other credentials.
+- **Self-terminating.** `--instance-initiated-shutdown-behavior terminate`, and user
+  data that shuts the machine down after 4 hours (`shutdown -h +240` on Linux, the
+  PowerShell line above on Windows), so a forgotten machine dies within 4 hours.
+- **Tagged**: `Purpose=kc-pr-verify`, `Pr=<n>`, `Owner=<you>`, `ExpiresAt=<ISO time>`,
+  on the instance and its volumes, so cleanup finds everything by tag.
+- **Capped spend.** Pick the smallest type that matches CI (4 vCPU / 16 GiB for a
+  test run), use a larger one only for a full-suite run, and stop at the 4-hour cap.
+  Record the hours and the on-demand cost in the section.
+- **IMDSv2 only** (`HttpTokens=required`).
+
+```bash
+TAG=kc-pr-verify; PR=<n>; OWNER=<you>
+END=$(python3 -c "import datetime as d; print((d.datetime.now(d.timezone.utc) + d.timedelta(hours=4)).strftime('%Y-%m-%dT%H:%MZ'))")
+SG=$(aws ec2 create-security-group --group-name "$TAG-$PR" \
+  --description "Kiro Crew PR $PR verification, no ingress" --vpc-id "$VPC" \
+  --query GroupId --output text)
+ID=$(aws ec2 run-instances --instance-type m7i.xlarge \
+  --image-id resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
+  --subnet-id "$SUBNET" --security-group-ids "$SG" \
+  --iam-instance-profile Name="$SSM_ONLY_PROFILE" \
+  --metadata-options HttpTokens=required \
+  --instance-initiated-shutdown-behavior terminate \
+  --user-data $'#!/bin/sh\nshutdown -h +240' \
+  --tag-specifications \
+    "ResourceType=instance,Tags=[{Key=Purpose,Value=$TAG},{Key=Pr,Value=$PR},{Key=Owner,Value=$OWNER},{Key=ExpiresAt,Value=$END}]" \
+    "ResourceType=volume,Tags=[{Key=Purpose,Value=$TAG},{Key=Pr,Value=$PR},{Key=Owner,Value=$OWNER},{Key=ExpiresAt,Value=$END}]" \
+  --query 'Instances[0].InstanceId' --output text)
+```
+
+Prefer a private subnet with a NAT gateway or SSM endpoints. A public IP is acceptable
+only for outbound traffic, with the security group still admitting nothing.
+
+### Cleaning up
+
+```bash
+aws ec2 terminate-instances --instance-ids "$ID"
+aws ec2 wait instance-terminated --instance-ids "$ID"
+aws ec2 delete-security-group --group-id "$SG"
+# Both must print []:
+aws ec2 describe-instances --filters Name=tag:Pr,Values="$PR" Name=tag:Purpose,Values="$TAG" \
+  Name=instance-state-name,Values=pending,running,stopping,stopped \
+  --query 'Reservations[].Instances[].InstanceId'
+aws ec2 describe-volumes --filters Name=tag:Pr,Values="$PR" Name=tag:Purpose,Values="$TAG" \
+  --query 'Volumes[].VolumeId'
+```
+
+Delete any key pair you made (`aws ec2 delete-key-pair`) and its local file. Paste the
+two empty results into the section. Delete only resources you created for this PR.
+
+### An outside contributor's account
+
+- Ask for a **role**, never for access keys: an IAM role in the contributor's account
+  whose trust policy names the maintainer's account and an `ExternalId`, limited to
+  launching, tagging, describing and terminating EC2 instances, creating and deleting
+  security groups, starting SSM sessions, and `iam:PassRole` on one SSM-only instance
+  profile role the contributor creates, in one region, with a maximum session of 1 hour.
+  The role ARN can be posted on the PR; it is not a secret.
+- The account is used **only to verify this PR**, and the contributor pays for the
+  machine, so keep it to the 4-hour cap and the smallest type. Every machine and
+  security group made in it is deleted when verification ends, the PR says so, and the
+  contributor then deletes the role.
+- **Credentials never enter a file, commit, PR, comment, log or chat.** Role sessions
+  stay in the shell's environment and expire. If a contributor posts a key anywhere,
+  do not use it: tell them to deactivate and rotate it.
+- When a contributor cannot provide an account, they verify on their own machine and
+  paste the commands and outputs, before and after, into the section.
 
 ## Exploratory Testing via Manual Command Execution
 

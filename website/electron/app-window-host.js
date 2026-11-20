@@ -8,7 +8,9 @@
  * for every app at once and naming none: a reconcile tick reads `/api/apps`, opens
  * the windows an enabled app declares `openOnEnable`, registers the shortcuts it
  * declares, and closes and releases everything for an app that is disabled, gone
- * or no longer declares it.
+ * or no longer declares it. An app switched off on this computer's gateway is still
+ * served from a crew the operator chose for it while the app is on there
+ * (`servedDeclarations`), the rule built-in shell code follows for its own app.
  *
  * NO APP CODE RUNS HERE. Every window is created by this module with fixed web
  * preferences (context isolation, sandbox, no Node), loads the host's own
@@ -242,6 +244,11 @@ function createAppWindowHost(deps) {
   const respawnedAt = new Map();
   /** "<app>/<id>" of background pages that died again too soon, reopened by the next tick. */
   const respawnDue = new Set();
+  /**
+   * Apps whose windows this tick only keeps: switched off here, and their crew could
+   * not be told. None of their windows is created until a tick tells (createWindow).
+   */
+  let keepOnly = new Set();
   let declarations = new Map();
   let pageToken = "";
   let cookieAuth = false;
@@ -606,6 +613,7 @@ function createAppWindowHost(deps) {
   }
 
   function createWindow(app, decl, { bounds, focus, displayId = null, placement = null }) {
+    if (keepOnly.has(app)) return null;
     const key = displayId === null ? `${app}/${decl.id}` : `${app}/${decl.id}@${displayId}`;
     const target = targetOf(app);
     const caps = servedCapabilities(declarations.get(app)?.capabilities || [], target);
@@ -735,9 +743,10 @@ function createAppWindowHost(deps) {
     const key = `${rec.app}/${rec.id}`;
     const last = respawnedAt.get(key);
     // A page that dies again at once is left to the tick, so a crash loop runs
-    // at tick cadence rather than as fast as the page can die. The tick reopens
-    // it whether or not it is declared `openOnEnable`.
-    if (last !== undefined && now() - last < BACKGROUND_RESPAWN_MS) {
+    // at tick cadence rather than as fast as the page can die; so is one whose app
+    // is kept only, for the tick that can tell. The tick reopens it whether or not
+    // it is declared `openOnEnable`.
+    if (keepOnly.has(rec.app) || (last !== undefined && now() - last < BACKGROUND_RESPAWN_MS)) {
       respawnDue.add(key);
       return;
     }
@@ -1107,7 +1116,9 @@ function createAppWindowHost(deps) {
 
   // ── Reconcile ──────────────────────────────────────────────────────────────
 
-  function apply(next) {
+  /** Serve *next*; the windows of an app in *holding* are kept, and none is created. */
+  function apply(next, holding = new Set()) {
+    keepOnly = holding;
     /** Window keys whose declaration or served capabilities changed: closed. */
     const stale = new Set();
     /** Windows closed only because their app now loads from another gateway: reopened there. */
@@ -1139,8 +1150,9 @@ function createAppWindowHost(deps) {
       for (const win of decl.windows) if (win.openOnEnable) openWindow(app, win);
     }
     for (const key of [...respawnDue]) {
-      respawnDue.delete(key);
       const [app, id] = key.split("/");
+      if (keepOnly.has(app)) continue;
+      respawnDue.delete(key);
       const decl = declared(app, id);
       if (decl && decl.kind === "background" && windowRecords(app, id).length === 0) openWindow(app, decl);
     }
@@ -1165,8 +1177,11 @@ function createAppWindowHost(deps) {
    * withdrawn on the crew closes the windows served it within that time. A non-answer
    * changes nothing: the app keeps the target it already has, this
    * computer's gateway until a crew answers.
+   *
+   * @returns {Promise<Set<string>>} the apps whose target this tick could not tell.
    */
   async function resolveTargets(next) {
+    const untold = new Set();
     for (const app of [...targets.keys()]) if (!next.has(app)) targets.delete(app);
     await Promise.all([...next].map(async ([app, decl]) => {
       const choice = decl.capabilities.includes("gatewayChoice") ? gatewayChoices.get(app) : SELF_GATEWAY;
@@ -1180,13 +1195,55 @@ function createAppWindowHost(deps) {
       if (held && held.choice === choice && held.windowKey === windowKey && now() - held.at < TARGET_REUSE_MS) {
         if (!held.baseUrl) return;
         const check = await gateways.confirm(held);
+        if (!check.known) untold.add(app);
         if (!check.known || check.ok) return;
       }
       const resolved = await gateways.resolve(app, choice, windowIds);
-      if (resolved.keep) return;
+      if (resolved.keep) {
+        untold.add(app);
+        return;
+      }
       // A fall-back to self is reused too, so a crew with the app off is not asked every tick.
       targets.set(app, { ...resolved, choice, windowKey, at: now() });
     }));
+    return untold;
+  }
+
+  /**
+   * What the host serves of *listed* this tick: every app enabled here, and an app
+   * switched off here only while a crew the operator chose for it serves its windows.
+   *
+   * Off here, this computer's gateway serves the app nothing, so its windows exist
+   * only on a crew: one that answered this tick that the app is on there, or, when
+   * the tick could not tell (*untold*), the crew it was already on, and then only
+   * while one of its windows is still open or its background page waits to be
+   * reopened (a page that died is reopened by the tick that answers yes, and
+   * dropped by one that answers no). A non-answer keeps what is on screen
+   * and never creates a window for an app that is off here: such an app is in
+   * `holding`, whose windows apply() keeps and opens none of (no `openOnEnable`
+   * window, shortcut press, `open()` or background reopen). A definite no (the
+   * choice is this computer, the crew went, the app is off there) closes them.
+   *
+   * @returns {{served: Map<string, object>, holding: Set<string>}}
+   */
+  function servedDeclarations(listed, untold) {
+    const served = new Map();
+    const holding = new Set();
+    for (const [app, decl] of listed) {
+      const held = targets.get(app);
+      if (decl.enabledHere) {
+        served.set(app, decl);
+      } else if (held && held.baseUrl && !untold.has(app)) {
+        served.set(app, decl);
+      } else if (held && held.baseUrl && (
+        [...records.values()].some((r) => r.app === app && isLive(r))
+        || [...respawnDue].some((key) => key.startsWith(`${app}/`))
+      )) {
+        served.set(app, decl);
+        holding.add(app);
+      }
+    }
+    return { served, holding };
   }
 
   /** One tick; a call while one runs joins it rather than starting a second. */
@@ -1216,10 +1273,11 @@ function createAppWindowHost(deps) {
       // Re-checked after the awaits: a suspend that landed mid-probe wins.
       if (suspended || !started || result.state !== "ok") return;
       target(auth);
-      const next = desktopDeclarations(result.body, log, { platform });
-      await resolveTargets(next);
+      const listed = desktopDeclarations(result.body, log, { platform, disabledToo: true });
+      const untold = await resolveTargets(listed);
       if (suspended || !started) return;
-      apply(next);
+      const { served, holding } = servedDeclarations(listed, untold);
+      apply(served, holding);
       await Promise.all([...pendingLoads]);
     } catch (err) {
       log(`app-window-host: reconcile failed: ${err && err.message}`);
@@ -1490,6 +1548,7 @@ function createAppWindowHost(deps) {
     releaseAllShortcuts();
     closeAll();
     declarations = new Map();
+    keepOnly = new Set();
     respawnDue.clear();
     targets.clear();
     cachedAuth = { value: "", viaCookie: false };

@@ -1139,6 +1139,8 @@ async def test_the_background_session_start_carries_its_callers_priority(priorit
     seen: dict = {}
 
     class _Runtime:
+        sandbox_mode = KiroCrewConfig().agent.sandbox
+
         def is_alive(self) -> bool:
             return True
 

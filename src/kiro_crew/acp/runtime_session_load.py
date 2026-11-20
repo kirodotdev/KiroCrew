@@ -12,13 +12,14 @@ Instance fields written: ``_load_replay_frames``, ``_parked_copies``, ``_session
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_agent_version``, ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``,
-``_fold_mcp_frame``, ``_host_sends_mcp_init``, ``_initialized``, ``_kas_telemetry_sent``, ``_mcp_gateway_overlay``,
+``_fold_mcp_frame``, ``_host_sends_mcp_init``, ``_initialized``, ``_kas_host_auth``,
+``_kas_served_token_digest``, ``_kas_telemetry_sent``, ``_mcp_gateway_overlay``,
 ``_mcp_switched_off``, ``_model``, ``_open_mcp_report``, ``_park_in_start_agent``, ``_pid``,
 ``_pool_lookup``, ``_record_keeping_sessions``, ``_record_tree_in_background``,
 ``_refuse_over_ceiling_start``,
 ``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
 ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``, ``can_release``,
-``release_session``.
+``kas_spawn_route``, ``release_session``.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from kiro_crew import session_head
 from kiro_crew.acp import batch_guard, kas_cli_settings, kas_env_launch
 from kiro_crew.acp._dispatch import attach_kas_custom_agents, parse_session_modes
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
+from kiro_crew.acp.kas_host_auth import sign_in_refused
 from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
 from kiro_crew.acp.kas_start_agent import START_AGENT_ID, parking_load
 from kiro_crew.acp.mcp_prune import prune_session_servers, record_pruned
@@ -45,12 +47,14 @@ from kiro_crew.acp.mcp_start_wait import (
     first_prompt_brief_wait,
     left_to_first_turn,
     person_waits,
+    policy_hidden_servers,
 )
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
     _drop_withdrawn_stubs,
     _kas_worker_stub_names,
     _pooled_session_servers_and_ref_spec,
+    _with_runtime_ipc_pickups,
 )
 from kiro_crew.acp.session_handle import (
     AcpFrameTooLarge,
@@ -60,8 +64,9 @@ from kiro_crew.acp.session_handle import (
     _load_watchdog_settings,
 )
 from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
-from kiro_crew.acp.session_handle_mcp import MOUNTED_MCP_WAIT_SECS
+from kiro_crew.acp.session_handle_mcp import MOUNTED_MCP_WAIT_SECS, KasGovernanceOffError
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
+from kiro_crew.acp.transport_errors import AcpAuthRequired
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -74,6 +79,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.agent_files import kas_wire_agent_id
+from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.tool_search import with_client_meta_settings
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.providers.mirrors.registry import has_mirror
@@ -348,6 +354,11 @@ async def load_session(
             stub_token=stub_token,
             resuming=True,
         )
+    mirror_used = mirrored is not None
+    if mirror_used:
+        # Once, on the array as it will be sent: the member entries above replace
+        # same-name projected ones, so issuing before them left those unserved.
+        mcp_servers = _with_runtime_ipc_pickups(self, mcp_servers, stub_token)
     # Narrowed by the host for the same reason session/new is, and it matters
     # MORE here: session/load re-initializes the session's servers, so a
     # rejected array does not just fail to add tools -- it takes them away from
@@ -651,7 +662,7 @@ async def load_session(
     handle.spec_denied_tools = denied_tools
     handle.spec_zero_tools = zero_tools
     handle.consumed_agent_spec = consumed_spec
-    handle.mirror_used = mirrored is not None
+    handle.mirror_used = mirror_used
     if harness_state is not None:
         # Mirrors create_session: what the host's own setup decided that the
         # handle enforces.
@@ -968,24 +979,39 @@ async def _wait_managed_mcp(
         # Read off the loop: the declaration is config I/O.
         governed = bool(required) and await asyncio.to_thread(_declared_governed)
         if required:
-            await handle.wait_mcp_ready(
-                required,
-                timeout,
-                stale_report_frames=stale_report_frames,
-                tool_policy=active_custom_agent(params, wire_agent),
-                # The names THIS request injected at session level, as sent:
-                # the one declaration site a provenance-less backend is
-                # known to honour over a same-named global server.
-                injected=frozenset(roster_names(params.get("mcpServers"))) & set(required),
-                # Declared registry mode: the KAS customAgents wire has no slot for
-                # the registry marker (see ``kas_agents._project_mcp_servers``), so
-                # a governed host's catalog filter drops Crew's managed servers and
-                # never reports them. The full budget would only be spent and then
-                # fail, and the retry meets the same filter. After a short settle
-                # with nothing named, the session starts instead; a server the host
-                # did name keeps the full budget and every readiness guard.
-                governed=governed,
-            )
+            # Off the loop too: the agent's managed tool policy is read from its spec.
+            policy_hidden = await asyncio.to_thread(policy_hidden_servers, agent, required)
+            try:
+                await handle.wait_mcp_ready(
+                    required,
+                    timeout,
+                    stale_report_frames=stale_report_frames,
+                    tool_policy=active_custom_agent(params, wire_agent),
+                    # The names THIS request injected at session level, as sent:
+                    # the one declaration site a provenance-less backend is
+                    # known to honour over a same-named global server.
+                    injected=frozenset(roster_names(params.get("mcpServers"))) & set(required),
+                    # Declared registry mode: the KAS customAgents wire has no slot for
+                    # the registry marker (see ``kas_agents._project_mcp_servers``), so
+                    # a governed host's catalog filter drops Crew's managed servers and
+                    # never reports them. The full budget would only be spent and then
+                    # fail, and the retry meets the same filter. After a short settle
+                    # with nothing named, the session starts instead; a server the host
+                    # did name keeps the full budget and every readiness guard.
+                    governed=governed,
+                    policy_hidden=policy_hidden,
+                )
+            except KasGovernanceOffError as exc:
+                # A governance read Kiro refused because Crew's sign-in is dead
+                # is a sign-in problem, not a transient one: say so now rather
+                # than let the retry ladder meet the same wall. Only Crew-owned
+                # auth can be checked here; kiro-cli owns a cli-owned relay's.
+                if self._kas_host_auth and await sign_in_refused(self._kas_served_token_digest):
+                    raise AcpAuthRequired(
+                        host_auth.signed_out_message(self.acp_backend, route=self.kas_spawn_route),
+                        backend=self.acp_backend,
+                    ) from exc
+                raise
         else:
             # An external-only agent still needs the ordinary OAuth/config
             # drain, even though it has no managed readiness requirement. A
@@ -1016,6 +1042,9 @@ async def _wait_managed_mcp(
         if left:
             report = handle.mcp_session_report()
             report.left_to_turn, report.left_omitted = left, more
+        # KAS 0.66.117 and later send the ``model`` select after ``session/new``;
+        # read it and run the served-default check on it before any prompt.
+        await handle.settle_kas_model_select()
     except BaseException:
         # No handle escapes on failure. A fresh session/new has no history
         # to preserve, so evict it from the host and reap its MCP children.

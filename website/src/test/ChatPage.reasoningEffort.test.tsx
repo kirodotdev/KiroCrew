@@ -4,6 +4,7 @@
  * level; the slider that changes it lives inside the model picker.
  * Tests the ChatInput component directly to avoid ChatPage's complex dependencies.
  */
+import { useLayoutEffect } from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { Provider } from 'react-redux'
@@ -540,6 +541,32 @@ describe('ReasoningEffortDropdown', () => {
     // The debounced persist writes the slot row after the mock resolves; wait
     // for that write so it lands inside the waiting window, not after the test.
     await waitFor(() => expect(store.getState().dashboard.slots.find(s => s.key === 's1')?.reasoning_effort).toBe('max'))
+  })
+
+  it('pins the configured default when the switch flips in the render the level list changes in', async () => {
+    // The thumb follows the default through an effect, so for one render after
+    // the list changes the stored index still points into the old list. A
+    // click landing in that render (as on a loaded runner) must still pin
+    // the level the switch names: here 'high', which sits at index 0 of the
+    // new list while the stale index 2 is past its end.
+    function FlipWhenLevelsChange({ levels }: { levels: string[] }) {
+      useLayoutEffect(() => {
+        if (levels.length === 2) screen.getByRole('switch', { name: 'Use default effort (High)' }).click()
+      }, [levels])
+      return <ReasoningEffortDropdown slot="s1" currentEffort="" defaultEffort="high" onClose={vi.fn()} levelsOverride={levels} />
+    }
+    const store = configureStore({
+      reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
+      preloadedState: {
+        dashboard: { slots: [{ key: 's1', messages: 0, running: false, reasoning_effort: '' }], unreadSlots: [], refreshTrigger: 0, subagentRunning: {}, subagentDetails: {}, subagentText: {} } as unknown as RootState['dashboard'],
+      } as Partial<RootState>,
+    })
+    const tree = (levels: string[]) => <QueryClientProvider client={new QueryClient()}><Provider store={store}><FlipWhenLevelsChange levels={levels} /></Provider></QueryClientProvider>
+    const view = render(tree(['low', 'medium', 'high', 'xhigh', 'max']))
+    view.rerender(tree(['high', 'max']))
+    await waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'high'))
+    expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(store.getState().dashboard.slots.find(s => s.key === 's1')?.reasoning_effort).toBe('high'))
   })
 
   it('keeps the remembered concrete pick while persisting default inheritance', async () => {

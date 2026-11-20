@@ -50,7 +50,8 @@ describe('RunYourselfCard', () => {
     expect(dialog.textContent).toContain(INSTALL)
     // The curl-into-shell shape is flagged by the dialog's own sensitive check.
     fireEvent.click(within(dialog).getByRole('button', { name: /^Run( anyway)?$/ }))
-    expect(requests).toEqual([{ code: INSTALL, reqId: expect.any(String) }])
+    // `source` lets the host tell the chat's crewmate this hand-over ran.
+    expect(requests).toEqual([{ code: INSTALL, reqId: expect.any(String), source: 'run_yourself' }])
   })
 
   it('cancelling the dialog sends nothing', () => {

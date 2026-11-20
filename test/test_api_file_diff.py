@@ -11,6 +11,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from dashboard_owner_helpers import as_owner
+from push_guard_helpers import _fixture_git_env
 
 from kiro_crew.dashboard.handlers import files as files_mod
 from kiro_crew.dashboard.handlers.files import api_file_diff
@@ -20,6 +21,24 @@ from kiro_crew.security.redaction import redact_credentials
 from kiro_crew.testing.synthetic_credentials import aws_secret, github_classic
 
 requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
+
+
+@pytest.fixture(scope="session")
+def git_seed(tmp_path_factory):
+    """An empty repo with a committer identity, built once; ``_git_repo`` copies it.
+
+    ``git init`` plus two ``git config`` calls cost three spawns per test. Session
+    scope is safe because the seed is never handed to a test, only copied from.
+    """
+    root = tmp_path_factory.mktemp("file-diff-git-seed")
+    if shutil.which("git") is None:
+        return root
+    # Session scope runs before the per-test git floor, so the host's git config,
+    # templates and hooks are shut out here explicitly.
+    env = _fixture_git_env()
+    for args in (["init"], ["config", "user.email", "test@test.com"], ["config", "user.name", "Test"]):
+        subprocess.run(["git", *args], cwd=root, env=env, capture_output=True, check=True)
+    return root
 
 
 @pytest.fixture(autouse=True)
@@ -113,12 +132,10 @@ async def test_file_not_in_git_repo(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_clean_file_in_git_repo(tmp_path):
+async def test_clean_file_in_git_repo(tmp_path, git_seed):
     """Committed file with no changes returns clean status."""
     # Set up a real git repo
-    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+    _git_repo(tmp_path, git_seed)
     f = tmp_path / "clean.txt"
     f.write_text("original content")
     subprocess.run(["git", "add", "clean.txt"], cwd=tmp_path, capture_output=True, check=True)
@@ -136,11 +153,9 @@ async def test_clean_file_in_git_repo(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_modified_file_in_git_repo(tmp_path):
+async def test_modified_file_in_git_repo(tmp_path, git_seed):
     """Modified file returns diff and original content."""
-    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+    _git_repo(tmp_path, git_seed)
     f = tmp_path / "modified.txt"
     f.write_text("original")
     subprocess.run(["git", "add", "modified.txt"], cwd=tmp_path, capture_output=True, check=True)
@@ -161,11 +176,9 @@ async def test_modified_file_in_git_repo(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_untracked_file_in_git_repo(tmp_path):
+async def test_untracked_file_in_git_repo(tmp_path, git_seed):
     """Untracked file returns untracked status with diff."""
-    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+    _git_repo(tmp_path, git_seed)
     # Need at least one commit for HEAD to exist
     (tmp_path / "init.txt").write_text("x")
     subprocess.run(["git", "add", "init.txt"], cwd=tmp_path, capture_output=True, check=True)
@@ -185,16 +198,14 @@ async def test_untracked_file_in_git_repo(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_failed_git_diff_reports_error_not_clean(tmp_path):
+async def test_failed_git_diff_reports_error_not_clean(tmp_path, git_seed):
     """A non-zero `git diff` exit must surface as status "error", never "clean".
 
     Mapping the failure to an empty diff would fall through to the clean
     branch, reporting a git failure to the user as "no changes" — a false
     negative on a question people act on.
     """
-    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+    _git_repo(tmp_path, git_seed)
     f = tmp_path / "committed.txt"
     f.write_text("original content")
     subprocess.run(["git", "add", "committed.txt"], cwd=tmp_path, capture_output=True, check=True)
@@ -223,14 +234,14 @@ async def test_failed_git_diff_reports_error_not_clean(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_empty_repo_file_is_untracked_not_error(tmp_path):
+async def test_empty_repo_file_is_untracked_not_error(tmp_path, git_seed):
     """A freshly-initialized repo with no commits keeps the untracked verdict.
 
     `git diff HEAD` exits 128 there (`fatal: bad revision 'HEAD'`), which is the
     dominant real-world non-zero exit — the untracked probe must claim the file
     before the failure branch turns a healthy repo into a false "git failed".
     """
-    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
+    _git_repo(tmp_path, git_seed)
     f = tmp_path / "first.txt"
     f.write_text("the very first file, no commit yet")
 
@@ -245,15 +256,13 @@ async def test_empty_repo_file_is_untracked_not_error(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_timeout_after_preflight_reports_error_not_not_git(tmp_path):
+async def test_timeout_after_preflight_reports_error_not_not_git(tmp_path, git_seed):
     """A timeout past the repository preflight must not masquerade as not_git.
 
     The client renders not_git as "there is no baseline" — a statement about
     the file. A slow repo timing out on `git diff` is a computation failure.
     """
-    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+    _git_repo(tmp_path, git_seed)
     f = tmp_path / "slow.txt"
     f.write_text("content")
     subprocess.run(["git", "add", "slow.txt"], cwd=tmp_path, capture_output=True, check=True)
@@ -277,11 +286,9 @@ async def test_timeout_after_preflight_reports_error_not_not_git(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_git_output_is_decoded_as_utf8(tmp_path):
+async def test_git_output_is_decoded_as_utf8(tmp_path, git_seed):
     """Every git text subprocess opts out of the Windows locale code page."""
-    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+    _git_repo(tmp_path, git_seed)
     (tmp_path / "init.txt").write_text("x")
     subprocess.run(["git", "add", "init.txt"], cwd=tmp_path, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True, check=True)
@@ -314,11 +321,9 @@ async def test_git_output_is_decoded_as_utf8(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_textconv_hardening(tmp_path):
+async def test_textconv_hardening(tmp_path, git_seed):
     """Git commands use textconv/filter hardening flags."""
-    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+    _git_repo(tmp_path, git_seed)
     f = tmp_path / "test.txt"
     f.write_text("content")
     subprocess.run(["git", "add", "test.txt"], cwd=tmp_path, capture_output=True, check=True)
@@ -349,11 +354,9 @@ async def test_textconv_hardening(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_git_env_nosystem(tmp_path):
+async def test_git_env_nosystem(tmp_path, git_seed):
     """GIT_ATTR_NOSYSTEM=1 is set in environment for git diff commands."""
-    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+    _git_repo(tmp_path, git_seed)
     f = tmp_path / "test.txt"
     f.write_text("content")
     subprocess.run(["git", "add", "test.txt"], cwd=tmp_path, capture_output=True, check=True)
@@ -415,11 +418,9 @@ async def test_sel_audit_logging_on_success(tmp_path):
     assert call_kwargs[1]["outcome"] == "allowed"
 
 
-def _git_repo(tmp_path):
-    """Initialise a committable git repo in *tmp_path*."""
-    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+def _git_repo(tmp_path, seed):
+    """Make *tmp_path* a committable, commit-less git repo by copying the session seed."""
+    shutil.copytree(seed / ".git", tmp_path / ".git")
 
 
 def _credential_line(text: str) -> str:
@@ -429,7 +430,7 @@ def _credential_line(text: str) -> str:
 
 @pytest.mark.asyncio
 @requires_git
-async def test_head_content_is_redacted_like_the_panel_buffer(tmp_path):
+async def test_head_content_is_redacted_like_the_panel_buffer(tmp_path, git_seed):
     """An unchanged credential line must not render as a diff hunk.
 
     The file panel's diff view puts ``api_file_read``'s already-redacted buffer
@@ -437,7 +438,7 @@ async def test_head_content_is_redacted_like_the_panel_buffer(tmp_path):
     HEAD raw therefore invents a hunk on a line nobody touched, and leaks a
     secret committed in HEAD that ``/api/file-read`` masks.
     """
-    _git_repo(tmp_path)
+    _git_repo(tmp_path, git_seed)
     f = tmp_path / "config.json"
     f.write_text(BEARER_LINE + "\nkeep\n")
     subprocess.run(["git", "add", "config.json"], cwd=tmp_path, capture_output=True, check=True)
@@ -458,9 +459,9 @@ async def test_head_content_is_redacted_like_the_panel_buffer(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_untracked_diff_is_redacted(tmp_path):
+async def test_untracked_diff_is_redacted(tmp_path, git_seed):
     """The untracked branch's ``diff`` is the whole file, so it is redacted too."""
-    _git_repo(tmp_path)
+    _git_repo(tmp_path, git_seed)
     (tmp_path / "init.txt").write_text("x")
     subprocess.run(["git", "add", "init.txt"], cwd=tmp_path, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True, check=True)
@@ -478,7 +479,7 @@ async def test_untracked_diff_is_redacted(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_a_credential_straddling_the_read_cap_is_still_masked(tmp_path):
+async def test_a_credential_straddling_the_read_cap_is_still_masked(tmp_path, git_seed):
     """Neither field may be truncated before the redaction pass.
 
     Slicing first cuts the tail a credential pattern needs to match, and the
@@ -486,7 +487,7 @@ async def test_a_credential_straddling_the_read_cap_is_still_masked(tmp_path):
     whoever writes the file, so this pins the ordering rather than the cap: the
     pass sees whole text, and truncating afterwards is the only safe order.
     """
-    _git_repo(tmp_path)
+    _git_repo(tmp_path, git_seed)
     f = tmp_path / "padded.txt"
     # Places the token across the byte offset the sibling endpoint caps at.
     # A 40-char GitHub token with a valid checksum, which the redactor reads bare; an
@@ -534,8 +535,8 @@ def _assert_no_fragment(body: dict, secrets: list[str]) -> None:
         assert not leaked, f"credential fragment served: {leaked[:3]}"
 
 
-def _commit_then_write(tmp_path, name: str, old: str, new: str):
-    _git_repo(tmp_path)
+def _commit_then_write(tmp_path, seed, name: str, old: str, new: str):
+    _git_repo(tmp_path, seed)
     f = tmp_path / name
     f.write_text(old)
     subprocess.run(["git", "add", name], cwd=tmp_path, capture_output=True, check=True)
@@ -555,7 +556,7 @@ def _pem(kind: str, body: list[str]) -> str:
 @requires_git
 @pytest.mark.parametrize("kind", ["RSA", "OPENSSH", ""])
 @pytest.mark.parametrize("edited", [3, 12, 21])
-async def test_an_edit_inside_a_key_block_serves_no_key_text(tmp_path, kind, edited):
+async def test_an_edit_inside_a_key_block_serves_no_key_text(tmp_path, git_seed, kind, edited):
     """An edit inside a key block serves no part of the key.
 
     Each edited line puts the hunk somewhere else in the block: near its start,
@@ -568,7 +569,7 @@ async def test_an_edit_inside_a_key_block_serves_no_key_text(tmp_path, kind, edi
     new_body[edited] = _noise(rng, _B64, 64)
     filler = "\n".join(f"line {i}" for i in range(20)) + "\n"
     f = _commit_then_write(
-        tmp_path, "key.txt", filler + _pem(kind, body) + filler, filler + _pem(kind, new_body) + filler
+        tmp_path, git_seed, "key.txt", filler + _pem(kind, body) + filler, filler + _pem(kind, new_body) + filler
     )
 
     with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()):
@@ -581,7 +582,7 @@ async def test_an_edit_inside_a_key_block_serves_no_key_text(tmp_path, kind, edi
 @pytest.mark.asyncio
 @requires_git
 @pytest.mark.parametrize("shape", ["github", "aws"])
-async def test_a_long_line_above_a_hunk_serves_no_token_text(tmp_path, shape):
+async def test_a_long_line_above_a_hunk_serves_no_token_text(tmp_path, git_seed, shape):
     """A long line above a hunk serves no part of a token it holds."""
     if shape == "github":
         # A GitHub token with a valid checksum: the redactor reads it bare.
@@ -593,7 +594,7 @@ async def test_a_long_line_above_a_hunk_serves_no_token_text(tmp_path, shape):
     assert token not in redact_credentials(line)[0], "fixture must be a shape the redactor masks"
     rows = [line] + [f"  row {i}" for i in range(30)]
     old = "\n".join(rows) + "\n"
-    f = _commit_then_write(tmp_path, "cfg.txt", old, old.replace("  row 20\n", "  row 20 edited\n"))
+    f = _commit_then_write(tmp_path, git_seed, "cfg.txt", old, old.replace("  row 20\n", "  row 20 edited\n"))
 
     with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()):
         body = json.loads((await api_file_diff(_req(str(f)))).body)
@@ -605,11 +606,11 @@ async def test_a_long_line_above_a_hunk_serves_no_token_text(tmp_path, shape):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_an_untracked_key_is_masked_whole(tmp_path):
+async def test_an_untracked_key_is_masked_whole(tmp_path, git_seed):
     """The untracked branch diffs the masked body too, not git's raw patch."""
     import random
     rng = random.Random("untracked")
-    _git_repo(tmp_path)
+    _git_repo(tmp_path, git_seed)
     (tmp_path / "init.txt").write_text("x")
     subprocess.run(["git", "add", "init.txt"], cwd=tmp_path, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True, check=True)
@@ -628,9 +629,9 @@ async def test_an_untracked_key_is_masked_whole(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_a_failed_masked_diff_serves_no_patch(tmp_path):
+async def test_a_failed_masked_diff_serves_no_patch(tmp_path, git_seed):
     """If diffing the masked bodies fails, the raw patch is never the fallback."""
-    f = _commit_then_write(tmp_path, "a.txt", "one\n", "two\n")
+    f = _commit_then_write(tmp_path, git_seed, "a.txt", "one\n", "two\n")
     orig_run = subprocess.run
 
     def failing_no_index(cmd, **kwargs):
@@ -648,13 +649,13 @@ async def test_a_failed_masked_diff_serves_no_patch(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_a_refused_checked_open_serves_no_patch(tmp_path):
+async def test_a_refused_checked_open_serves_no_patch(tmp_path, git_seed):
     """The working file is read through the checked, no-follow open.
 
     A refusal there (a path swapped for a link after the first check) ends in
     ``error`` with no patch, never in a plain read of whatever is there now.
     """
-    f = _commit_then_write(tmp_path, "a.txt", "one\n", "two\n")
+    f = _commit_then_write(tmp_path, git_seed, "a.txt", "one\n", "two\n")
     denied = files_mod._OpenDenied("symlink_refused", str(f))
 
     with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()), \
@@ -668,9 +669,9 @@ async def test_a_refused_checked_open_serves_no_patch(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_a_crlf_file_diffs_only_the_edited_line(tmp_path):
+async def test_a_crlf_file_diffs_only_the_edited_line(tmp_path, git_seed):
     """HEAD comes through git's text-mode stdout, so the file is read the same way."""
-    _git_repo(tmp_path)
+    _git_repo(tmp_path, git_seed)
     f = tmp_path / "win.txt"
     f.write_bytes(b"a\r\nb\r\nc\r\n")
     subprocess.run(["git", "-c", "core.autocrlf=false", "add", "win.txt"], cwd=tmp_path, capture_output=True, check=True)
@@ -686,9 +687,9 @@ async def test_a_crlf_file_diffs_only_the_edited_line(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_a_form_feed_line_stays_one_patch_line(tmp_path):
+async def test_a_form_feed_line_stays_one_patch_line(tmp_path, git_seed):
     """Only "\\n" ends a patch line; a form feed inside one does not split it."""
-    f = _commit_then_write(tmp_path, "ff.txt", "a\n\x0cb\nc\n", "a\n\x0cb\nC\n")
+    f = _commit_then_write(tmp_path, git_seed, "ff.txt", "a\n\x0cb\nc\n", "a\n\x0cb\nC\n")
 
     with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()):
         body = json.loads((await api_file_diff(_req(str(f)))).body)
@@ -701,13 +702,13 @@ async def test_a_form_feed_line_stays_one_patch_line(tmp_path):
 @pytest.mark.asyncio
 @requires_git
 @pytest.mark.parametrize("tracked", [False, True])
-async def test_binary_diff_does_not_open_working_file(tmp_path, monkeypatch, tracked):
+async def test_binary_diff_does_not_open_working_file(tmp_path, git_seed, monkeypatch, tracked):
     """Binary changes keep a redacted summary without opening the working body."""
     name = "fixture-name.bin"
     if tracked:
-        f = _commit_then_write(tmp_path, name, "old\0", "new\0")
+        f = _commit_then_write(tmp_path, git_seed, name, "old\0", "new\0")
     else:
-        _git_repo(tmp_path)
+        _git_repo(tmp_path, git_seed)
         f = tmp_path / name
     f.write_bytes(b"new\0" * 16)
     monkeypatch.setattr(files_mod, "_FILE_DIFF_MAX_BYTES", 8)
@@ -729,18 +730,18 @@ async def test_binary_diff_does_not_open_working_file(tmp_path, monkeypatch, tra
 @requires_git
 @pytest.mark.parametrize("source", ["untracked", "working", "head"])
 @pytest.mark.parametrize("size", [8, 9])
-async def test_text_diff_size_bound(tmp_path, monkeypatch, source, size):
+async def test_text_diff_size_bound(tmp_path, git_seed, monkeypatch, source, size):
     """Whole bodies at the byte cap work; overflow is never redacted as a prefix."""
     cap = 8
     monkeypatch.setattr(files_mod, "_FILE_DIFF_MAX_BYTES", cap)
     text = "x" * size
     if source == "untracked":
-        _git_repo(tmp_path)
+        _git_repo(tmp_path, git_seed)
         f = tmp_path / "text.txt"
         f.write_text(text, encoding="utf-8")
     else:
         old, new = (text, "new\n") if source == "head" else ("old\n", text)
-        f = _commit_then_write(tmp_path, "text.txt", old, new)
+        f = _commit_then_write(tmp_path, git_seed, "text.txt", old, new)
 
     with patch.object(files_mod, "_sel", return_value=_mock_sel()), \
          patch.object(files_mod, "redact", wraps=files_mod.redact) as redacted:
@@ -764,11 +765,11 @@ async def test_text_diff_size_bound(tmp_path, monkeypatch, source, size):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_unchanged_file_over_the_cap_is_clean(tmp_path, monkeypatch):
+async def test_unchanged_file_over_the_cap_is_clean(tmp_path, git_seed, monkeypatch):
     """The size bound guards the masked text diff only, not the clean verdict."""
     monkeypatch.setattr(files_mod, "_FILE_DIFF_MAX_BYTES", 8)
     text = "x" * 32 + "\n"
-    f = _commit_then_write(tmp_path, "text.txt", text, text)
+    f = _commit_then_write(tmp_path, git_seed, "text.txt", text, text)
 
     with patch.object(files_mod, "_sel", return_value=_mock_sel()):
         body = json.loads((await api_file_diff(_req(str(f)))).body)
@@ -780,10 +781,10 @@ async def test_unchanged_file_over_the_cap_is_clean(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_changed_binary_with_head_over_the_cap_keeps_the_summary(tmp_path, monkeypatch):
+async def test_changed_binary_with_head_over_the_cap_keeps_the_summary(tmp_path, git_seed, monkeypatch):
     """A large committed binary still gets its summary, not an error."""
     name = "fixture-name.bin"
-    f = _commit_then_write(tmp_path, name, "old\0" * 16, "new\0")
+    f = _commit_then_write(tmp_path, git_seed, name, "old\0" * 16, "new\0")
     monkeypatch.setattr(files_mod, "_FILE_DIFF_MAX_BYTES", 8)
     monkeypatch.setattr(files_mod, "redact", lambda text: text.replace(name, "masked.bin"))
 

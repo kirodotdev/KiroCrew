@@ -682,6 +682,15 @@ TYPES: tuple[EntryType, ...] = (
             Field("event_ts", JSON_STRING, note="The store's stamp on that event."),
             Field("created_at", JSON_STRING, note="The item's committed creation stamp."),
             Field("last_report_at", JSON_STRING, note="The item's committed last-report stamp."),
+            Field(
+                "received_at",
+                JSON_STRING,
+                note=(
+                    "On a report the hub ingested from a remote peer: the hub's clock when "
+                    "it filed it (last_report_at is then the peer's stamp). A report "
+                    "without it clears the item's received_at."
+                ),
+            ),
             Field("closed_at", JSON_STRING, note="The item's committed close stamp."),
             Field("decided_at", JSON_STRING, note="The item's committed decide stamp."),
             Field(

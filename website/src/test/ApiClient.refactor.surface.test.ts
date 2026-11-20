@@ -1,228 +1,31 @@
 /**
  * Two properties of the `api` surface that a domain split can change while every
- * type and behavior test stays green: the order the members enumerate in, and
- * which members leave `X-Session-Key` off their request.
+ * type and behavior test stays green: which domain group supplies each member,
+ * and which members leave `X-Session-Key` off their request.
  *
- * Both lists were generated from the `client.ts` the split was cut from. The
- * order is the one the facade's spreads must reproduce; the header list is every
- * member whose request carried no session key there, raw `fetch` reads and writes
- * alike, so moving one onto the shared helpers (which add the key) fails here.
- * A new member joins `API_KEY_ORDER` where the facade spreads it, and joins
- * `NO_SESSION_KEY` only when it deliberately bypasses the helpers.
+ * The facade in `client.ts` spreads domain groups into one object, so a member
+ * two groups both define, or that an inline member re-declares, is silently
+ * replaced by whichever comes last. The groups are rebuilt here from the same
+ * factories and checked against the facade member by member.
+ *
+ * The header list is every member whose request carries no session key, raw
+ * `fetch` reads and writes alike, so moving one onto the shared helpers (which add
+ * the key) fails here. A member joins `NO_SESSION_KEY` only when it deliberately
+ * bypasses the helpers, so each entry is a reviewed exception.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { api, __resetAuthRecoveryStateForTests } from '../api/client'
 import { __resetErrorJournalForTests } from '../utils/errorReport'
 import { __resetArtifactWrites } from '../lib/artifactWrites'
 import { FakeXhr } from './fakeXhr'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 // `uploadFiles` downscales through a canvas helper that happy-dom lacks.
 vi.mock('../utils/resizeImage', () => ({
   MODEL_IMAGE_LIMITS: { maxEdge: 8000, maxBytes: 3_750_000 },
   resizeImageForModel: vi.fn(async (file: File) => ({ file, info: null })),
 }))
-
-const API_KEY_ORDER = [
-  'status', 'tunnelStatus', 'system', 'leakedRuntimes', 'reclaimLeakedRuntimes', 'sessionStorage',
-  'sessionStorageCleanup', 'sessionStorageRestore', 'sessionStorageEmpty', 'sessionStorageEmptyStatus',
-  'sessionInventory', 'sessionInventoryDetail', 'sessionInventoryTrash', 'reportUiControlClick', 'sessionCrewLogProjections', 'sessionWorkProjection',
-  'telemetryStartup', 'telemetryContextTrace', 'telemetryContextTurn', 'usageTurns', 'usageSeries',
-  'wakatimeStats', 'wakatimeExportUrl', 'wakatimeOauthStatus', 'wakatimeOauthAuthorize', 'wakatimeOauthDisconnect',
-  'crewBoard', 'crewBoardAction', 'wakatimeExportDownload',
-  'sessionSummary', 'dashboardCard', 'generateSessionSummary',
-  'beaconStatus', 'collectionStatus', 'kiroPrerequisite', 'repairKiroPrerequisiteSpecs',
-  'updateKiroPrerequisiteCli', 'kasLoginStatus', 'kasLoginSources', 'kasLoginBeginDevice', 'kasLoginPoll',
-  'kasLoginBeginLoopback', 'kasLoginCancel', 'kasLoginLogout', 'kasBundleStatus', 'kasBundleInstall', 'onboardingImportScan',
-  'onboardingImportApply', 'onboardingImportState', 'securityStats', 'securityPosture',
-  'mobileLoginLink', 'mobileConnectMethods', 'tailnetStatus', 'tailnetMobile',
-  'tailnetMobileConfigure', 'tailnetMobilePublish', 'tailnetMobileUnpublish', 'tailnetMobileQr',
-  'remoteControl', 'turnOffRemoteControl',
-  'deniedCommands', 'toggleBuiltinDeniedCommand', 'setDeniedCommandsDisableAll', 'addUserDeniedCommand',
-  'toggleUserDeniedCommand', 'editUserDeniedCommand', 'deleteUserDeniedCommand', 'redactionAllowedHosts', 'redactionAllowHost',
-  'redactionRevokeHost', 'listTrustedApps', 'trustApp', 'untrustApp',
-  'setTrustAllApps', 'listTrustedRegistries', 'grantTrustedRegistry', 'revokeTrustedRegistry',
-  'governancePolicy', 'suggestions', 'branding',
-  'listInstances', 'relayViewerCrews', 'addInstance', 'updateInstance', 'removeInstance',
-  'instanceStatus', 'connectInstance', 'refreshInstanceToken', 'embedInstanceToken', 'disconnectInstance',
-  'restartInstance', 'updateRemoteInstance', 'remoteUpdateStatus', 'exportSession', 'importSessionFromFile', 'sendSessionToInstance',
-  'cloudPreflight', 'cloudIamPolicy', 'cloudProvisioners', 'cloudLaunches',
-  'cloudIdentity', 'cloudLaunch', 'cloudLaunchStatus', 'cloudLaunchTask',
-  'cloudLaunchCancel', 'cloudLaunchSignin', 'cloudLaunchSigninRestart', 'cloudStop',
-  'cloudStart', 'cloudDestroy', 'memoryPreferences', 'saveMemoryPreferences',
-  'memoryProjects', 'saveMemoryProjects', 'memoryHistory', 'saveMemoryHistory',
-  'memorySettings', 'saveMemorySettings', 'memoryStores', 'memoryRetired',
-  'memoryRestoreRetired', 'memoryBackups', 'memoryBackupNow', 'memoryRestoreBackup',
-  'cancelMemberMemoryRestore', 'memoryCarve', 'memoryRecall', 'memoryRecords',
-  'memoryEditPreview', 'memoryEditPreviewPage', 'memoryRecordsRefresh', 'memoryQuerySelectionRefresh',
-  'memoryRecordHistory', 'memoryEditApply', 'memberMemoryPage', 'memorySeed',
-  'vectorSemantic', 'vectorSemanticWrite', 'vectorSemanticDelete', 'vectorEpisodic',
-  'vectorEpisodicSearch', 'vectorEpisodicDelete', 'vectorStats', 'vectorEvents',
-  'vectorEmbeddingStatus', 'vectorEnableEmbeddings', 'vectorValidateEmbedModel', 'vectorApplyEmbedModel',
-  'vectorDisableEmbeddings', 'vectorImport', 'vectorContextPreview', 'memoryGraph',
-  'consolidateMemory', 'restartSessions', 'sessionsMemory', 'sessionsUsage',
-  'sessionsUsageRefresh', 'providerUsage', 'mcpProbeCache', 'agentsInstalled',
-  'agentTemplates', 'agentTemplateCreate', 'agentTemplateDelete', 'agentDetail',
-  'agentPatch', 'agentFork', 'agentPublish', 'agentReset',
-  'defaultMcpSetAdd', 'defaultMcpSetRemove',
-  'kirocrewAgents', 'agentResolvedModel', 'agentCatalog', 'createKirocrewAgent',
-  'members', 'memberThread', 'memberGreet', 'memberFreshStart',
-  'memberExportPreview', 'memberExportLessonsDraft', 'memberExportFile', 'memberActivity', 'memberProjections',
-  'memberDashboard', 'memberDashboardPreviewApply', 'memberDashboardPreviewDiscard', 'sessionDashboard', 'memberDashboardRefetch',
-  'memberBriefing', 'memberGoals', 'teams', 'updateKirocrewAgent',
-  'deleteKirocrewAgent', 'appearances', 'uploadCrewAvatar', 'models', 'harnessModels',
-  'chatSlotSelectionCapabilities', 'chatSlotSteering', 'chatSlotSteeringSwitch', 'effortLevels', 'slashCommands', 'chatSlotAgent',
-  'chatSlotModel', 'chatSlotAutocompact', 'setChatSlotAutocompact', 'chatSlotTurnTimeout',
-  'setChatSlotTurnTimeout', 'chatSlotsModel', 'chatSlotsFollowDefaultCount', 'chatSlotsFollowDefault',
-  'chatSlotReasoningEffort', 'chatSlotUltracode', 'chatSlotFastMode', 'chatSlotEnvironment', 'chatSlotEnvironmentList',
-  'chatSlotEnvironmentRead', 'chatSlotEnvironmentHealth', 'chatSlotEnvironmentGit',
-  'sessionEnvironmentsCheck', 'sessionEnvironmentsWorkspaces', 'sessionEnvironmentsTemplates', 'chatSlotEnvironmentWrite',
-  'setChatSlotEnvironment', 'chatSlotWorkspace', 'chatSlotReload', 'chatSlotProject',
-  'createWorktree', 'recentProjects', 'favoriteProjects', 'addFavoriteProject',
-  'removeFavoriteProject', 'projectAwsProfile', 'setProjectAwsProfile', 'browseDirs', 'browseDrives',
-  'createBrowseDir', 'browseFiles', 'projectGit', 'projectGitStatus', 'projectGitLog', 'projectGitBranchDiff', 'projectGitRepos',
-  'projectTree', 'sessionFiles', 'sessionFileDiff', 'workspaces', 'createWorkspace', 'updateWorkspace',
-  'deleteWorkspace', 'crons', 'createCron', 'deleteCron',
-  'batchDeleteCron', 'updateCron', 'runCron', 'cronSecretsGrant',
-  'cancelCron', 'cronToChat', 'toggleCron', 'cronHistory',
-  'cronRunDetail', 'cronScript', 'secretsList', 'secretsUsage', 'secretsSave',
-  'secretsDelete', 'ackCron', 'cronHistoryAll', 'cronFolders',
-  'createCronFolder', 'updateCronFolder', 'deleteCronFolder', 'lessons',
-  'createLesson', 'recurringFailures', 'deleteLesson', 'hooks', 'kiroHooks', 'rescanKiroHooks',
-  'createHook', 'updateHook', 'deleteHook', 'toggleHook',
-  'testHook', 'webhooks', 'createWebhookToken', 'updateWebhookToken',
-  'deleteWebhookToken', 'deleteWebhookContext', 'testWebhook', 'setWebhooksEnabled',
-  'prompts', 'promptDetail', 'createPrompt', 'updatePrompt',
-  'deletePrompt', 'skills', 'skillTrust', 'grantSkillTrust',
-  'revokeSkillTrust', 'skill', 'skillTree', 'skillFile',
-  'createSkill', 'updateSkill', 'deleteSkill', 'agentPlugins', 'steeringFiles',
-  'steeringFile', 'createSteering', 'updateSteering', 'deleteSteering',
-  'skillsPending', 'skillPendingDetail', 'approvePendingSkill', 'dismissPendingSkill',
-  'dismissAllPendingSkills', 'pinSkill', 'setSkillInjectOnTrigger', 'skillsBudget',
-  'discoverSkills', 'previewDiscoveredSkill', 'installDiscoveredSkill', 'mcpServers',
-  'mcpGlobalScopes', 'mcpUnreadableFiles', 'mcpDiscover', 'mcpDiscoverDetail', 'mcpDiscoverInstall',
-  'mcpCustomAdd', 'mcpCustomGet', 'mcpCustomUpdate', 'mcpActive',
-  'mcpProbe', 'mcpResetProbeFailures', 'mcpSync', 'mcpApply',
-  'mcpToggle', 'mcpToggleTool', 'mcpToolGrants', 'mcpToolGrantSet', 'mcpToggleAll', 'mcpRemove',
-  'mcpOAuthRelay', 'connectionsMint', 'connectionsMintState', 'connectionsMintServer',
-  'connectionsMintServerState', 'connectionsPremint',
-  'connectionsStatus', 'connectionsTest', 'connectionsCancel', 'connectionsDisconnect',
-  'connectionsOAuthClients', 'connectionsOAuthClientSave', 'connectionsOAuthClientDelete', 'mcpGatewayStatus',
-  'mcpGatewayEnable', 'mcpGatewayFootprint', 'mcpGatewayMetrics', 'mcpGatewayServers', 'mcpGatewayLaunchPreview',
-  'mcpGatewayLaunchPreviews', 'mcpGatewaySetStub', 'mcpGatewaySetCwdUse', 'mcpResolveRefresh', 'mcpMeasureStart', 'mcpMeasureProgress',
-  'mcpGatewaySetStubMany', 'agentConfig', 'saveAgentConfig', 'defaultAgent',
-  'setDefaultAgent', 'setAgentSpecPin', 'kirocrewConfig', 'saveKirocrewConfig', 'patchConfig',
-  'acpBackends', 'acpBackendRecheck', 'kiroUsage', 'capabilityMcpList',
-  'capabilityMcpInstall', 'capabilityMcpUninstall', 'capabilitySkillsList', 'capabilitySkillsInstall',
-  'capabilitySkillsUninstall', 'capabilityAgentsList', 'capabilityAgentsInstall', 'capabilityAgentsUninstall',
-  'capabilityPluginsList', 'capabilityPluginsSync', 'capabilityMcpRegistry', 'sttConfig',
-  'saveSttConfig', 'sttStatus', 'sttVocabularies', 'sttPrepare', 'sttFfmpegDownload',
-  'sttPrewarm', 'sttPolish', 'sttTranscribe', 'pullRequestSource',
-  'pullRequestChecks', 'pullRequestStatuses', 'refreshPullRequestStatuses', 'resolvePullRequestThread', 'unresolvePullRequestThread',
-  'replyToPullRequestThread', 'commentOnPullRequest', 'enablePullRequestAutoMerge', 'markPullRequestReady',
-  'pullRequestPendingReview', 'submitPullRequestReview', 'fetchIssueSource', 'fetchIssues', 'appContributors',
-  'chatSlots', 'crewWorkers', 'crewWorkerRecap', 'crewPause', 'crewResume', 'crewTimeline', 'crewWorkerSteer', 'crewWorkerApprove', 'chatSlotsUnrestored', 'autonudgeList', 'autonudgeForSlot', 'autonudgeSetActive', 'monitorsList',
-  'monitorForSlot', 'monitorCreate', 'monitorUpdate', 'monitorStop',
-  'monitorClear', 'monitorRestart', 'monitorContract', 'chatSlotSourceLinks', 'unlinkSourceLink', 'chatSlotDetail',
-  'createChatSlot', 'chatSlotContext', 'deleteChatSlot', 'discardChatSlot', 'cleanupSessions',
-  'stopChatSlot', 'stopChatSlotForce', 'cancelQueuedMessage', 'editQueuedMessage',
-  'holdQueuedMessageEdit',
-  'reorderQueuedMessages', 'retractSteer', 'interruptSlot', 'endWait', 'approveChatSlot',
-  'resumeChatSlot', 'forkChatSlot', 'sideTools', 'sideState', 'promoteChatSlot', 'sideOpen',
-  'sideTurn', 'sideQueueCancel', 'sideQueueEdit', 'sideClose', 'sideStop',
-  'chatMode', 'generateTitle', 'resolveNavLinks', 'renameSlot', 'setTodoTask',
-  'regenerateSlot', 'continueSlot', 'armLimitContinue', 'cancelLimitContinue', 'chatSlotsResumeAll', 'resetConversation', 'repairImages', 'switchVariant', 'editResend',
-  'rewind', 'slackLink', 'unlinkSlack', 'pauseSlack',
-  'pauseMirror', 'channelTargets', 'linkMirror', 'remindMirror',
-  'unlinkMirror', 'slackChannels', 'chatFolders', 'createChatFolder',
-  'updateChatFolder', 'previewChatFolderIcon', 'reorderChatFolders', 'collapseAllChatFolders', 'deleteChatFolder', 'cleanupChatFolders', 'backfillChannelFolder',
-  'setSlotFolder', 'setSlotColor', 'setSlotColorHex', 'clearSlotColor',
-  'setSlotPin', 'setSlotMutesOpened', 'setSlotMuted', 'setPinnedOrder', 'setManualOrder', 'chatTags', 'createChatTag',
-  'adoptChatTag', 'updateChatTag', 'deleteChatTag', 'setSlotTags',
-  'dropSlotToColumn', 'tagColumns', 'createTagColumn', 'updateTagColumn',
-  'deleteTagColumn', 'reorderTagColumns', 'sendChat', 'sessionsHealth',
-  'tasksSummary', 'spawnAdaptive', 'tasksList', 'taskDetail', 'taskCancel',
-  'knowledgeSearch', 'knowledgeEmbeddingGenerate', 'notifications', 'deleteNotification', 'clearNotifications',
-  'ackNotification', 'unackNotification', 'ackAllNotifications', 'notificationChannels',
-  'updateNotificationChannelSettings', 'vapidPublicKey', 'subscribePush', 'unsubscribePush', 'sessions', 'sessionsSearch', 'sessionsNamed', 'sessionArchiveList', 'sessionArchiveRead', 'instancesSearchSessions',
-  'instancesCapabilities', 'instancesApprovalState', 'instancesVersions', 'instanceChatSlots', 'crewPeerGet', 'crewPeerPost', 'sessionDetail', 'sessionMeta', 'deleteSession',
-  'clearSessions', 'autocomplete', 'spawnList', 'spawn',
-  'spawnStatus', 'spawnDelete', 'spawnStopAll', 'spawnRetry',
-  'approvals', 'decideApproval', 'pendingQuestions', 'answerQuestion',
-  'dismissQuestionCard', 'logLevel', 'setLogLevel', 'taskRunnerStatus',
-  'startTaskRunner', 'cancelTaskRunner', 'pauseTaskRun', 'deleteTaskRun',
-  'retryTaskRun', 'renameTaskRun', 'updateTask', 'taskRunToChat',
-  'revealPath', 'collectDiagnostics', 'workflowRuns', 'workflowDefinitions',
-  'authorWorkflow', 'saveWorkflowDefinition', 'promoteWorkflowRun', 'updateWorkflowDefinition',
-  'removeWorkflowDefinition', 'runWorkflowDefinition', 'refineTaskInput', 'refineStatus', 'refineCancel',
-  'planTask', 'cancelPlan', 'updatePlan', 'executePlan',
-  'planFromChat', 'planContext', 'exportPlanYaml', 'checkUpdate',
-  'changelog', 'releases', 'applyUpdate', 'disarmUpdate', 'setAutoUpdate',
-  'autoUpdatePin', 'setUpdateChannel', 'restartGateway', 'armUpdate', 'armStatus',
-  'dismissUpdateArm', 'cancelUpdate', 'simulateUpdate', 'pickFiles',
-  'fileDiff', 'fileSearch', 'pathComplete', 'uploadFiles',
-  'uploadToDirectory', 'screenshot', 'plantUmlSvg', 'themes', 'dashboardConfig', 'featureVideoLibrary',
-  'featureVideoFeedback', 'featureVideoStatus', 'featureVideoFetchAll',
-  'milestones', 'milestoneEvent', 'milestoneMarkDone',
-  'updateDashboardConfig', 'createTheme', 'installTheme', 'installThemeZip', 'updateTheme',
-  'deleteTheme', 'themeDetail', 'themeBoot', 'updateThemeConfig',
-  'voiceConfig', 'updateVoiceConfig', 'voiceVoices', 'voiceSystemVoices',
-  'awsConsent', 'grantAwsConsent', 'revokeAwsConsent', 'credentialRedaction',
-  'setCredentialRedaction', 'safetySwitches', 'setSafetySwitch', 'setProjectHooksConsent', 'getProjectHooksConsent', 'revealRedactedValue', 'configPending', 'applyConfigPending',
-  'discardConfigPending', 'mcpBodyFields', 'allowMcpBodyField', 'removeMcpBodyField',
-  'voiceSynthesize', 'voiceCancel', 'channelsList',
-  'channelPresets', 'channelGet', 'channelCreate', 'channelClose',
-  'channelPost', 'channelAddAgent', 'channelUpdateAgent', 'channelDismissAgent',
-  'channelWakeAgent', 'channelApproveAgent', 'channelClearContext', 'listApps',
-  'getApp', 'getAppManifest', 'getAppBotGrants', 'setAppBotGrants', 'installApp', 'enableApp',
-  'disableApp', 'openApp', 'uninstallApp', 'uninstallPreview',
-  'updateApp', 'migrateCleanup', 'listRegistry', 'listRegistries',
-  'updateRegistries', 'refreshAppStore', 'refreshRegistries', 'installFromRegistry',
-  'installFromRegistryStream', 'registerApp', 'artifacts', 'artifact',
-  'artifactVersion', 'artifactVersions', 'artifactEvents', 'recordArtifactReference',
-  'createArtifact', 'settleBlankArtifact', 'updateArtifact', 'deleteArtifact',
-  'artifactFolders', 'createArtifactFolder', 'updateArtifactFolder', 'deleteArtifactFolder',
-  'setArtifactFolder', 'setArtifactPinned', 'artifactSessionDocs', 'materializeArtifact',
-  'publishArtifact', 'getArtifactPublishProviders', 'cloneRemoteArtifact', 'forkRemoteArtifact',
-  'browseRemoteArtifacts', 'remoteArtifactDetail', 'remoteArtifactComments', 'postRemoteArtifactComment',
-  'replyRemoteArtifactComment', 'markReviewRemoteComment', 'deleteRemoteComment', 'updateArtifactSharing',
-  'unpublishArtifact', 'reprobeArtifactNotice', 'sandboxDocUrl', 'artifactDownloadUrl', 'refreshArtifactSharing',
-  'pullLatest', 'upstreamStatus', 'overwriteRemote', 'artifactComments',
-  'postArtifactComment', 'replyArtifactComment', 'markCommentReview', 'resolveComment',
-  'reopenComment', 'deleteArtifactComment', 'editArtifactComment',
-  'getComputerUseConfig', 'saveComputerUseConfig',
-  'getBrowserStatus', 'installBrowserHarness', 'testBrowser', 'disconnectBrowser',
-  'getDecisionsConsent', 'getDecisionsProvider', 'getDecisionsLocalRuntime', 'saveDecisionsConsent', 'saveDecisionsScope',
-  'saveDecisionsHistoryBudget', 'sendDecisionsFeedback', 'saveDecisionsProvider', 'saveDecisionsSageMaker', 'testDecisionsSageMaker', 'removeDecisionsLocalModel', 'getSlackConfig', 'getSlackManifest', 'getSlackManifestStatus', 'getSlackCodeChannelAgents', 'saveSlackConfig', 'reconnectSlack',
-  'getDiscordConfig', 'saveDiscordConfig', 'getTelegramConfig', 'saveTelegramConfig',
-  'getWeComConfig', 'getFeishuConfig', 'saveFeishuConfig', 'saveWeComConfig',
-  'getWebexConfig', 'saveWebexConfig', 'getIMessageConfig', 'saveIMessageConfig',
-  'getGovernanceChannels', 'getTeamsConfig', 'saveTeamsConfig', 'getWeixinConfig',
-  'saveWeixinConfig', 'weixinQrStart', 'weixinQrStatus', 'getWhatsAppConfig',
-  'saveWhatsAppConfig', 'whatsAppQrStart', 'whatsAppQrStatus', 'whatsAppUnlink',
-  'getWhatsAppGroups', 'researchValidate', 'researchGrillExpand', 'appSessionStatus',
-  'researchCampaigns', 'researchCampaign', 'researchCreate', 'researchAction',
-  'researchGrillTree', 'researchNudge', 'researchAddQuestion', 'researchToKnowledge',
-  'researchKnowledgeStatus', 'researchToArtifact', 'researchReportStatus', 'researchReport',
-  'researchDelete', 'invokeFileMenuItem', 'artifactTeardown', 'publishProviders',
-  'publishArtifactToCoreProvider', 'publishToProvider', 'deploySites', 'tipsNext', 'tipsStatus',
-  'tipsFeedback', 'tipsAll', 'browserLiveVisibility', 'browserLiveAck', 'browserInputClaim', 'browserInputRelease',
-  'browserInputEvent', 'browserLiveOpenInBrowser', 'browserLiveReopen', 'browserAskAnswer', 'browserLiveClose',
-  'browserLiveRecordings', 'browserLiveRecording',
-  'sharedCrewCapabilities', 'sharedCrewSessions', 'sharedCrewPeople', 'sharedCrewMode', 'sharedCrewViewer',
-  'viewerOwnerOk',
-  'sharedCrewCapacity', 'sharedCrewWork', 'sharedCrewPresence', 'sharedCrewDecisions', 'sharedCrewSendState', 'sharedCrewTypingLease', 'sharedCrewTakeOverTypingLease',
-  'tailscaleInvites', 'tailscaleConnect', 'tailscaleDisconnect', 'tailscaleCreateInvites', 'tailscaleResendInvite',
-  'tailscaleRevokeInvite', 'tailscaleUploadAvatar', 'sharedCrewSetPersonDisplay',
-  'sharedCrewSsm', 'sharedCrewSsmCreateInvite', 'sharedCrewSsmRevokeInvite',
-  'sharedCrewAccess', 'sharedCrewAckFirstShare',
-  'sharedCrewPreview', 'sharedCrewSetPreview',
-  'sharedCrewCancelWork',
-]
-
-const NESTED_KEY_ORDER: Record<string, string[]> = {
-  teams: ['list', 'create', 'update', 'remove'],
-  appearances: ['list', 'detail', 'importBundle', 'remove'],
-}
 
 const NO_SESSION_KEY = [
   'status', 'tunnelStatus', 'system', 'sessionCrewLogProjections',
@@ -243,7 +46,7 @@ const NO_SESSION_KEY = [
   'models', 'chatSlotSelectionCapabilities', 'effortLevels', 'slashCommands',
   'chatSlotAutocompact', 'chatSlotTurnTimeout', 'chatSlotsFollowDefaultCount', 'recentProjects', 'favoriteProjects', 'browseDirs', 'browseDrives',
   'browseFiles', 'projectGit', 'projectGitStatus', 'projectGitLog', 'projectGitBranchDiff', 'projectGitRepos',
-  'projectTree', 'workspaces', 'crons', 'updateCron',
+  'projectTree', 'workspaces', 'crons', 'cron', 'updateCron',
   'cronFolders', 'updateCronFolder', 'lessons', 'hooks',
   'kiroHooks', 'webhooks', 'updateWebhookToken', 'prompts',
   'promptDetail', 'skill', 'skillTree', 'skillFile',
@@ -256,9 +59,9 @@ const NO_SESSION_KEY = [
   'sttConfig', 'sttStatus', 'sttVocabularies', 'sttTranscribe', 'chatSlots',
   'chatSlotsUnrestored', 'autonudgeList', 'autonudgeForSlot', 'monitorsList', 'monitorForSlot',
   'monitorContract',
-  'chatSlotSourceLinks', 'chatSlotDetail', 'channelTargets', 'slackChannels',
+  'chatSlotSourceLinks', 'chatSlotDetail', 'channelTargets', 'channelTopics', 'slackChannels',
   'sessionsHealth', 'tasksSummary', 'spawnAdaptive', 'tasksList', 'taskDetail',
-  'notifications', 'notificationChannels', 'sessions', 'sessionsSearch', 'sessionsNamed',
+  'notifications', 'notificationChannels', 'sessions', 'sessionsSearch', 'sessionsSearchMessages', 'sessionsNamed',
   'sessionArchiveList', 'sessionArchiveRead',
   'instancesSearchSessions', 'instancesCapabilities', 'instanceChatSlots', 'sessionDetail', 'sessionMeta',
   'autocomplete', 'spawnList', 'spawnStatus', 'approvals',
@@ -338,14 +141,74 @@ function headerNames(init: RequestInit | undefined): string[] {
   return Object.keys(h).map((k) => k.toLowerCase())
 }
 
-describe('api key enumeration order', () => {
-  it('is the order the split was cut from', () => {
-    expect(Object.keys(api)).toEqual(API_KEY_ORDER)
+type Group = Record<string, unknown>
+const FACTORY_MODULES = import.meta.glob<Record<string, unknown>>('../api/client/*.ts', { eager: true })
+
+/** `client.ts`'s facade, rebuilt as the list of groups it spreads, in order. */
+function spreadGroups(): { name: string; group: Group }[] {
+  const source = readFileSync(resolve(process.cwd(), 'src/api/client.ts'), 'utf-8')
+  const factories = new Map<string, (t: unknown) => Record<string, Group>>()
+  for (const mod of Object.values(FACTORY_MODULES)) {
+    for (const [name, value] of Object.entries(mod)) {
+      if (/^create\w+Endpoints$/.test(name) && typeof value === 'function') {
+        factories.set(name, value as (t: unknown) => Record<string, Group>)
+      }
+    }
+  }
+  // The factories close over the transport; nothing here calls an endpoint.
+  const transport = new Proxy({}, { get: () => () => { throw new Error('transport called while building groups') } })
+  const domains = new Map<string, Record<string, Group>>()
+  for (const [, local, factory] of source.matchAll(/^const (\w+) = (create\w+Endpoints)\(transport\)/gm)) {
+    const create = factories.get(factory)
+    expect(create, `${factory} is not exported from src/api/client/*.ts`).toBeTypeOf('function')
+    domains.set(local, create!(transport))
+  }
+  const facade = source.slice(source.indexOf('export const api = {'))
+  return [...facade.matchAll(/^ {2}\.\.\.(\w+)\.(\w+),$/gm)].map(([, domain, group]) => {
+    const value = domains.get(domain)?.[group]
+    expect(value, `api spreads ${domain}.${group}, which its factory does not return`).toBeTypeOf('object')
+    return { name: `${domain}.${group}`, group: value! }
+  })
+}
+
+/** Same member: same function source, or the same shape for a nested namespace. */
+function sameMember(a: unknown, b: unknown): boolean {
+  if (typeof a === 'function' && typeof b === 'function') return a.toString() === b.toString()
+  if (a && b && typeof a === 'object' && typeof b === 'object') {
+    const ak = Object.keys(a)
+    return ak.join() === Object.keys(b).join()
+      && ak.every((k) => sameMember((a as Group)[k], (b as Group)[k]))
+  }
+  return a === b
+}
+
+describe('api facade composition', () => {
+  const groups = spreadGroups()
+
+  it('reads the spread groups it checks', () => {
+    expect(groups.length, 'no `...domain.group,` spread found in client.ts').toBeGreaterThan(0)
+    for (const { name, group } of groups) expect(Object.keys(group).length, name).toBeGreaterThan(0)
   })
 
-  it('keeps the nested namespaces in their order', () => {
-    for (const [ns, order] of Object.entries(NESTED_KEY_ORDER)) {
-      expect(Object.keys(api[ns as keyof typeof api] as object), ns).toEqual(order)
+  it('takes each member from exactly one group', () => {
+    const owner = new Map<string, string>()
+    for (const { name, group } of groups) {
+      for (const key of Object.keys(group)) {
+        expect(owner.get(key), `${key} is defined by both ${owner.get(key)} and ${name}; the later spread wins`)
+          .toBeUndefined()
+        owner.set(key, name)
+      }
+    }
+  })
+
+  it('serves every group member unchanged, so no inline member shadows one', () => {
+    const facade = api as unknown as Group
+    for (const { name, group } of groups) {
+      for (const [key, member] of Object.entries(group)) {
+        expect(key in facade, `${name}.${key} is missing from api`).toBe(true)
+        expect(sameMember(facade[key], member), `api.${key} is not ${name}.${key}: a later member replaced it`)
+          .toBe(true)
+      }
     }
   })
 })

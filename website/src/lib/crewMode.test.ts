@@ -3,7 +3,7 @@ import {
   DEFAULT_CREW_MODE_AGENT, autoOpenRows, crewModeAgent, crewModeView, openingHidesSessionList, isConductorAgent, isDefaultAgentName, runsCrewMode,
   memoryModeAllowsCrewMode, runsConductor, resetCrewModeCatalog, setCrewModeCatalog, withoutConductors, agentCycleTarget,
   gatewayRunsCrewMode, CREW_APPROVAL_SURFACES, crewApprovalDecidableHere, crewModeEnabled, crewModeRoot, crewRootOf,
-  mateThreadsHidingSessions, busySlotKeys, slackRowHidden,
+  liveMateThreads, busySlotKeys, slackRowHidden, showsAsCrewMode,
 } from './crewMode'
 import { applyLockedControls } from '../utils/editionLocks'
 import { crewMemberKeys } from '../store/dashboard/unread'
@@ -179,6 +179,21 @@ describe('runsCrewMode', () => {
   })
 })
 
+describe('showsAsCrewMode -- the composer agrees with the gateway (#39260)', () => {
+  it('is a conductor root or a crew member on a conductor, never a chat opened outside any crew', () => {
+    setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
+    const on = { agent: 'kirocrew-conductor', agent_kind: 'template' }
+    // The gateway's own root stamp decides, never the client's reading of the tree.
+    expect(showsAsCrewMode({ ...on, crew_mode_root: true })).toBe(true)
+    expect(showsAsCrewMode({ ...on, crew_mode_root: false, crew_root: 'root-1' })).toBe(true)
+    expect(showsAsCrewMode({ ...on, crew_mode_root: false })).toBe(false)
+    // No stamp yet (a switch's own answer): keeps the conductor's look.
+    expect(showsAsCrewMode(on)).toBe(true)
+    expect(showsAsCrewMode({ agent: 'kirocrew-worker', agent_kind: 'template', crew_mode_root: false, crew_root: 'root-1' })).toBe(false)
+    expect(showsAsCrewMode(undefined)).toBe(false)
+  })
+})
+
 describe('agentCycleTarget and the Crew Mode stamp', () => {
   it('does not cycle a chat that stays in Crew Mode on its stamped conductor', () => {
     setCrewModeCatalog('new-one', ['new-one'])
@@ -313,7 +328,8 @@ describe("a Bot's sessions in the person's lists", () => {
     { key: 'orphan', mate_root: 'gone' },
     { key: 'plain' },
   ]
-  const shown = rows.map(r => (r.key === 'mate' ? { ...r, show_sessions_in_list: true } : r))
+  // A stamp an older gateway sent while a per-Bot switch existed changes nothing.
+  const stale = rows.map(r => (r.key === 'mate' ? { ...r, show_sessions_in_list: true } : r))
 
   it('by default leaves out every session a live mate thread dispatched, and keeps the mate thread', () => {
     expect(crewModeView(rows).map(r => r.key)).toEqual(['mate', 'orphan', 'plain'])
@@ -322,27 +338,22 @@ describe("a Bot's sessions in the person's lists", () => {
     expect(autoOpenRows(rows).map(r => r.key)).toEqual(['mate', 'plain'])
   })
 
-  it('keeps them when the Bot shows its sessions in the list', () => {
-    expect(crewModeView(shown).map(r => r.key)).toEqual(['mate', 'mw', 'deep', 'orphan', 'plain'])
-    expect(crewMemberKeys(shown).size).toBe(0)
-    expect(mateThreadsHidingSessions(shown).size).toBe(0)
+  it('leaves them out whatever an old switch stamp on the mate thread says', () => {
+    expect(crewModeView(stale).map(r => r.key)).toEqual(['mate', 'orphan', 'plain'])
+    expect([...crewMemberKeys(stale)].sort()).toEqual(['deep', 'mw'])
   })
 
   it('reads the mate threads from the full store when the list holds none', () => {
     const pageRows = rows.filter(r => r.mode !== 'member')
     expect(crewModeView(pageRows).map(r => r.key)).toEqual(['mw', 'deep', 'orphan', 'plain'])
-    expect(crewModeView(pageRows, false, mateThreadsHidingSessions(rows)).map(r => r.key)).toEqual(['orphan', 'plain'])
-    expect(crewModeView(pageRows, false, mateThreadsHidingSessions(shown)).map(r => r.key)).toEqual(['mw', 'deep', 'orphan', 'plain'])
+    expect(crewModeView(pageRows, false, liveMateThreads(rows)).map(r => r.key)).toEqual(['orphan', 'plain'])
   })
 
-  it("the person's list and unread count follow the switch on a new slot list", () => {
+  it("the person's list and unread count leave a mate's sessions out", () => {
     const select = selectUnreadByMode('')
-    const hidden = { dashboard: { slots: rows, unreadSlots: ['mw', 'plain'] }, chat: {} } as never
-    expect(selectPersonSlots(hidden).map(r => r.key)).not.toContain('mw')
-    expect(select(hidden)).toBe(1)
-    const listed = { dashboard: { slots: shown, unreadSlots: ['mw', 'plain'] }, chat: {} } as never
-    expect(selectPersonSlots(listed).map(r => r.key)).toContain('mw')
-    expect(select(listed)).toBe(2)
+    const state = { dashboard: { slots: stale, unreadSlots: ['mw', 'plain'] }, chat: {} } as never
+    expect(selectPersonSlots(state).map(r => r.key)).not.toContain('mw')
+    expect(select(state)).toBe(1)
   })
 })
 

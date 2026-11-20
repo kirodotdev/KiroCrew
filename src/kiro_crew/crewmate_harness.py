@@ -744,6 +744,29 @@ def _note_worker_spec_fallback(crew: str, inherited: str, fields: tuple[str, ...
     )
 
 
+#: ``(Bot, model)`` pairs whose unread own-file model was logged in this process.
+_file_model_logged: set[tuple[str, str]] = set()
+
+
+def note_unread_file_model(bot: str, file_id: str, model: str) -> None:
+    """Say once per process per Bot and value that its own file's ``model`` is not read.
+
+    No session reads that key on any backend (``rfc-mate-owned-agent-config`` §5),
+    so a model named there would otherwise never run without a word.
+    """
+    with _VERDICT_LOCK:
+        if (bot, model) in _file_model_logged:
+            return
+        _file_model_logged.add((bot, model))
+    logger.warning(
+        "Bot %r: its own file %r sets model %r, which is not read; its chat runs on "
+        "its Model setting and its workers on its Worker model setting. Set the model there.",
+        bot,
+        file_id,
+        model,
+    )
+
+
 def selectable_harnesses() -> list[str]:
     """Every harness a crewmate may be pinned to, in the stored spelling, sorted."""
     return sorted(_backends.backend_to_stored(b) for b in _backends.selectable_backends())
@@ -791,7 +814,7 @@ def crewmate_harnesses(config: Any) -> list[str]:
     The one list the harness picker offers and a save accepts: selectable on this
     gateway now (``selectable_backends()``, which the ``agent_backend`` governance
     scope already narrows), able to start here, AND crewmate-capable
-    (:data:`CREWMATE_CAPABLE_BACKENDS`: KAS, Claude Code, Codex today; never pi or
+    (:data:`CREWMATE_CAPABLE_BACKENDS`: KAS, Claude Code, Codex and Pi today; never
     deepseek), judged on the runtime the pin starts on.
     So a Kiro CLI pin counts as KAS where kiro-cli's v3 engine takes it, and as
     kiro-cli, which is not crewmate-capable, everywhere else.

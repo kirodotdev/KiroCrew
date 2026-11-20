@@ -370,16 +370,16 @@ the auth-specific cause. `App.mobileSingleTopbar.test.tsx` pins both states. The
 label, same command palette: the chat drawer's rail pins it at the foot (below), and
 the nav drawer carries it as a row in its bottom group, so every non-chat phone page
 still reaches it. The capsule's credits segment is also the desktop's door to the
-account modal (balance, sign-in state, `KiroAccountModal`), so the same two drawers
-carry a **Kiro Account** entry -- a row in the nav drawer's bottom group and a tile
-in the chat drawer's rail, both between Capabilities and Settings (in the rail
-only while the secondary tiles are pinned; otherwise it folds into the Apps scroller,
-see below), both opening the modal. On a Kiro harness (kiro-cli or KAS) it is
-always there (the modal's Refresh fills an empty reading); on any other harness
-only for a reading the desktop segment would show --
+account modal (balance, sign-in state, `KiroAccountModal`). The phone has no such
+door and no account row: its Settings row, captioned **Account & Settings** and
+drawn as the account's initials (`AccountAvatar`; an empty person circle with no
+reading), leads to **Settings -> Kiro account**, whose **Credits** section
+(`KiroCreditsCard`) renders the modal's body. On a Kiro harness (kiro-cli or KAS)
+that section is always there (its Refresh fills an empty reading); on any other
+harness only for a reading the desktop segment would show --
 `kiroAccountEntry = kiroCreditSurface || (reading !== null && !pillHidden)`, the
-segment's own derivation minus the warming `null`, where the desktop's spinner would
-become a nav row blinking in and out. Same test file pins both states.
+segment's own derivation minus the warming `null`. The tab itself shows while the
+build offers Kiro sign-in or that section has something to show.
 Off the chat route the phone header keeps the logo -> nav drawer
 and the bell, and renders an empty centre spacer so the header still has three
 in-flow children -- with two, the actions group would be auto-placed into the `auto`
@@ -410,8 +410,8 @@ container already claims its own swipe via `data-owns-swipe`.
 The rail carries everything the nav drawer does except Connect-your-phone, which is
 moot on the phone itself: the Main rows and Library on top, the apps, then
 Terminal (which toggles the docked panel and closes
-the drawer so the panel is not left behind it), Capabilities and Kiro Account, with
-Settings and Search pinned at the foot. `shell/nav/adaptiveMobileRail.tsx` places
+the drawer so the panel is not left behind it) and Capabilities, with
+Account & Settings and Search pinned at the foot. `shell/nav/adaptiveMobileRail.tsx` places
 that secondary group: it stays pinned above Settings while the Apps list keeps
 `APPS_FLOOR_PX` (240px, four tiles), and otherwise folds into the Apps scroller after
 the apps, behind a separator. The decision reads `stableRailHeight` — the tallest

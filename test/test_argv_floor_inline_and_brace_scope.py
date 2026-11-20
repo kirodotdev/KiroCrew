@@ -148,6 +148,11 @@ class _ProductTree:
     implicitly concatenated literal (``"token_signing" ".key"``), which the parser
     folds into one constant, and a dotted import name with whitespace around its
     dots (``from a . b import c``), which black never emits.
+
+    No AST outlives the caller that asked for it: holding every candidate's tree to
+    the end of the module kept a few hundred MiB live on each worker. What the
+    import-graph walk reads again and again -- each module's ``from X import y``
+    lines -- is kept instead, as plain tuples.
     """
 
     def __init__(self, src: Path) -> None:
@@ -163,16 +168,30 @@ class _ProductTree:
                 continue
             name = ".".join(rel.parts[:-1] if rel.name == "__init__" else rel.parts)
             self.paths[name] = path
-        self._trees: dict[str, ast.Module | None] = {}
+        self._imports: dict[str, list[tuple[str | None, str, str]] | None] = {}
 
     def tree(self, name: str) -> ast.Module | None:
-        """*name*'s AST, parsed once; None for a module that does not parse."""
-        if name not in self._trees:
-            try:
-                self._trees[name] = ast.parse(self.paths[name].read_text(encoding="utf-8"))
-            except SyntaxError:
-                self._trees[name] = None
-        return self._trees[name]
+        """*name*'s AST, parsed for this caller; None for a module that does not parse."""
+        try:
+            return ast.parse(self.paths[name].read_text(encoding="utf-8"))
+        except SyntaxError:
+            return None
+
+    def _imports_of(self, name: str) -> list[tuple[str | None, str, str]] | None:
+        """*name*'s ``from <module> import <name> [as <bound>]`` lines, read once."""
+        if name not in self._imports:
+            tree = self.tree(name)
+            self._imports[name] = (
+                None
+                if tree is None
+                else [
+                    (node.module, alias.name, alias.asname or alias.name)
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom)
+                    for alias in node.names
+                ]
+            )
+        return self._imports[name]
 
     def trees_mentioning(self, *words: str) -> Iterator[tuple[str, ast.Module]]:
         """Every parseable module whose source contains any of *words*, with its AST."""
@@ -191,12 +210,14 @@ class _ProductTree:
         ``from a.b.c import`` contains ``a.b.c`` in its text, so the candidates
         are the modules mentioning the target's dotted name.
         """
+        needle = target.encode("utf-8")
         out: list[tuple[str, str, str]] = []
-        for mod, tree in self.trees_mentioning(target):
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom) and node.module == target:
-                    for alias in node.names:
-                        out.append((mod, alias.name, alias.asname or alias.name))
+        for mod, path in self.paths.items():
+            if needle not in path.read_bytes():
+                continue
+            for module, name, bound in self._imports_of(mod) or ():
+                if module == target:
+                    out.append((mod, name, bound))
         return out
 
 
@@ -325,6 +346,11 @@ class TestInlinePayloadNamesTheMintSurface:
             "python -c 'import kiro_crew.dashboard.token_secret as s; print(s._get_secret())'",
             "python -c 'from kiro_crew.dashboard import token_auth'",
             "python -c 'from kiro_crew.instances.token_mint import build_remote_token_command'",
+            # The connector credential is signed with the same signer; its module path
+            # names ``token``, so the producer-path rule covers every import spelling.
+            "python -c 'from kiro_crew.connected_computers.connector_token import mint'",
+            "python -c 'import kiro_crew.connected_computers.connector_token as c; c.mint(r, g)'",
+            "python -c 'from kiro_crew.connected_computers import connector_token; connector_token.mint'",
             # The SECOND credential: the internal secret ``/api/token/local`` accepts, read
             # through product code past the sensitive-path floor that fences the file.
             "python -c 'from kiro_crew.config.loader import read_local_secret; "
@@ -716,6 +742,9 @@ class TestInlinePayloadNamesTheMintSurface:
             "warm_auth_singletons": "loads the key into the process cache at startup; returns nothing",
             "extract_numeric_claim": "reads one claim out of a token it VERIFIES; returns the claim",
             "revoke_access_cookie": "adds a verified token's nonce to the denylist; returns a bool",
+            "_materialize_signing_key_mask_target": (
+                "creates an absent key so the sandbox mask binds; returns its path, never the key"
+            ),
         }
         misses = []
         for mod in seeds:

@@ -102,6 +102,21 @@ async def _one_row_flush(tmp_path: Path) -> tuple[_Counts, list[dict]]:
     return counts, frames
 
 
+#: The one measured flush, shared by the tests that read it. Seeding 2,000 slots is
+#: most of each test's time, and the counts and frames are plain data no test changes.
+_MEASURED: "list[tuple[_Counts, list[dict]]]" = []
+
+
+async def _measured_flush(tmp_path: Path) -> tuple[_Counts, list[dict]]:
+    """:func:`_one_row_flush`, run by the first test that asks and reused after.
+
+    It runs inside that test, under its own isolation, never at module scope.
+    """
+    if not _MEASURED:
+        _MEASURED.append(await _one_row_flush(tmp_path))
+    return _MEASURED[0]
+
+
 @pytest.mark.asyncio
 async def test_seeding_costs_one_pass(tmp_path: Path) -> None:
     """``seed_slots`` serializes each row once, not 1 + 2 + ... + N times."""
@@ -129,7 +144,7 @@ async def test_seeding_costs_one_pass(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_one_row_flush_serializes_at_most_three_passes(tmp_path: Path) -> None:
-    counts, frames = await _one_row_flush(tmp_path)
+    counts, frames = await _measured_flush(tmp_path)
     assert frames, "the flush sent no slot-list frame, so nothing was measured"
     assert counts.serialize_slot <= 3 * N_SLOTS, (
         f"one flush at {N_SLOTS} slots ran {counts.serialize_slot} serialize_slot calls, "
@@ -139,7 +154,7 @@ async def test_one_row_flush_serializes_at_most_three_passes(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_one_row_flush_dumps_budget(tmp_path: Path) -> None:
-    counts, frames = await _one_row_flush(tmp_path)
+    counts, frames = await _measured_flush(tmp_path)
     envelope_fields = max(len(frame) - 1 for frame in frames)
     budget = 3 * 1 + envelope_fields + len(frames)
     assert counts.dumps <= budget, (
@@ -151,7 +166,7 @@ async def test_one_row_flush_dumps_budget(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 @pytest.mark.xfail(strict=True, reason="scale-F19: one dirty slot still re-serializes every row")
 async def test_one_dirty_row_serializes_at_most_ten_rows(tmp_path: Path) -> None:
-    counts, _frames = await _one_row_flush(tmp_path)
+    counts, _frames = await _measured_flush(tmp_path)
     assert (
         counts.serialize_slot <= 10
     ), f"one dirty row at {N_SLOTS} slots ran {counts.serialize_slot} serialize_slot calls"

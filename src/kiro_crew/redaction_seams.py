@@ -202,6 +202,11 @@ ALWAYS_REDACTED_SITES: Mapping[str, str] = MappingProxyType(
             "_gate_upload_file decides whether a file, by its name or its text, may leave "
             "for a channel: a safety decision"
         ),
+        "dashboard/handlers/cron_board.py": (
+            "_jobs_response: a job's last result and error read the display redaction cache "
+            "for speed, whose pass opens the chat seam; they stay redacted like every other "
+            "cron field, which no seam lists"
+        ),
         "dashboard/handlers/updates_streams.py": (
             "_stream_safe: the live log stream and its ring replay reach every dashboard-user "
             "socket, a relayed teammate's and a log-scoped app's among them"
@@ -247,6 +252,11 @@ ALWAYS_REDACTED_SITES: Mapping[str, str] = MappingProxyType(
         "slack/handler_runtime/turn.py": (
             "fire_stop_hooks builds the Slack turn's Stop hook payload: a hook is a sink no seam "
             "lists"
+        ),
+        "update_boot_apply.py": (
+            "_run_apply_child: the boot-time update output is cut to its tail after the pass "
+            "and stored for the dashboard's update notice, so a skipped pass would keep a "
+            "fragment"
         ),
     }
 )

@@ -39,11 +39,14 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
   session_folder?: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
-  /** `slack.show_in_session_list`: list conversations that start in Slack in the session list (on by default). */
+  /** `slack.show_in_session_list`: list conversations that start in Slack in the session list (off by default). */
   show_in_session_list?: boolean
   /** `slack.code_channel_dispatch`: let a code channel's conductor hand work to
-   *  worker sessions. Its own opt-in under Code channels; off by default. */
+   *  worker sessions. The sub-toggle under Code channels; off when unset. */
   code_channel_dispatch?: boolean
+  /** Turning Code channels on now also turns helper agents on: neither config
+   *  file stores a value yet (an explicit off is kept). Absent reads as false. */
+  code_channel_dispatch_on_enable?: boolean
   /** `config.local.json` sets `slack.code_channel_dispatch`, so a save here cannot
    *  change it (the server refuses one with 409). */
   code_channel_dispatch_overlay?: boolean
@@ -58,9 +61,14 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
   code_channel_effective?: SlackCodeChannelEffective
   /** Saved defaults that no longer resolve: "folder_missing", "agent_missing". */
   code_channel_warnings?: string[]
-  /** What an unset default folder means: the auto folder (top level), the agent
-   *  it is created with, and its id once it exists. */
+  /** What an unset default folder means: the auto folder (top level), its id
+   *  once it exists, and the agent an earlier release created it with. */
   code_channel_auto_folder?: SlackCodeAutoFolder
+  /** The conductor mode agent (`agent.crew_mode_agent`) "Always use conductor mode" runs. */
+  code_channel_conductor_agent?: string
+  /** Whether `config.local.json` sets `slack.code_channel_defaults.conductor_mode`:
+   *  `pinned` or `unreadable` disables the switch (the PUT refuses a change). */
+  code_channel_conductor_mode_overlay_state?: 'pinned' | 'unreadable' | 'absent'
   /** The agents the code-channel default-agent picker offers; null when they
    *  could not be listed. */
   code_channel_agents?: string[] | null
@@ -68,7 +76,9 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
 
 export interface SlackCodeAutoFolder {
   name: string
-  agent: string
+  /** The `default_agent` earlier releases created the folder with: still on the
+   *  auto folder, it reads as no folder agent (the folder was never edited). */
+  legacy_agent: string
   id: string | null
   /** Two top-level folders share the name: neither is used and none is created. */
   ambiguous?: boolean
@@ -91,13 +101,15 @@ export interface SlackCodeChannelDefaults {
   reasoning_effort: string | null
   /** "trust_reads" | "trust"; null is "ask" (Normal). */
   approval_mode?: string | null
+  /** "Always use conductor mode": true when on; null/absent is off. */
+  conductor_mode?: boolean | null
 }
 
 /** The effective start state of a new code-channel session. */
 export interface SlackCodeChannelEffective {
   folder: { id: string; path: string; project_dir: string; default_agent: string } | null
   agent: string | null
-  /** "default" | "folder" | "slack" | "" */
+  /** "conductor" | "default" | "folder" | "slack" | "" */
   agent_source: string
   model: string | null
   reasoning_effort: string | null
@@ -146,6 +158,26 @@ export interface SlackManifestStatus {
   app_manifest_url: string | null
 }
 
+/** One person on `slack.shared_access.user_ids`, as Slack answered for them. */
+export interface SlackSharedUser {
+  user_id: string
+  /** Slack display or real name; "" when Slack gave none. */
+  name: string
+  /** Slack confirmed the id: same workspace, a person, not deactivated, not the owner. */
+  confirmed: boolean
+  /** "ok" | "user_not_found" | "bot_user" | "deactivated" | "other_workspace" |
+   *  "owner" | "unverifiable" | "malformed_id" */
+  reason: string
+}
+
+/** GET /api/slack/shared-access. */
+export interface SlackSharedAccessData {
+  enabled: boolean
+  users: SlackSharedUser[]
+  /** True on a remote session: writes are accepted from this machine only. */
+  read_only: boolean
+}
+
 /** Writable Slack config fields sent to PUT /api/slack/config. Each registered
  *  Slack Code switch is sent under its own `slack.<key>` key. */
 export interface SlackConfigSave extends Partial<Record<SlackCodeSwitchKey, boolean>> {
@@ -162,7 +194,7 @@ export interface SlackConfigSave extends Partial<Record<SlackCodeSwitchKey, bool
   session_folder?: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
-  /** `slack.show_in_session_list`: list conversations that start in Slack in the session list (on by default). */
+  /** `slack.show_in_session_list`: list conversations that start in Slack in the session list (off by default). */
   show_in_session_list?: boolean
   /** Sent only when changed; turning Code channels on never sends it. */
   code_channel_dispatch?: boolean
@@ -317,6 +349,8 @@ export interface FeishuConfigData {
   sdk_install_supported?: boolean
   /** Install command naming the gateway's OWN interpreter; "" when not useful. */
   sdk_install_command?: string
+  /** True on the desktop app while the SDK is missing: the panel installs it itself. */
+  sdk_install_in_app?: boolean
 }
 
 /** Writable Feishu config fields sent to PUT /api/feishu/config. */
@@ -549,7 +583,7 @@ export interface WhatsAppConfigSave {
   session_folder?: string
 }
 
-export function createMessagingEndpoints({ get, post, put, j }: ClientTransport) {
+export function createMessagingEndpoints({ get, post, put, del, j }: ClientTransport) {
   const channelConfigs = {
     // Slack integration config
     getSlackConfig: () => get('/api/slack/config').then(j) as Promise<SlackConfigData>,
@@ -560,6 +594,10 @@ export function createMessagingEndpoints({ get, post, put, j }: ClientTransport)
     saveSlackConfig: (body: Partial<SlackConfigSave>) => put('/api/slack/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; reconnect_required?: boolean; verify_warning: string }>,
     /** Re-run the Slack handshake from the saved credentials, without a gateway restart. */
     reconnectSlack: () => post('/api/slack/reconnect', {}).then(j) as Promise<{ connected: boolean; connect_error: string }>,
+    getSlackSharedAccess: () => get('/api/slack/shared-access').then(j) as Promise<SlackSharedAccessData>,
+    setSlackSharedAccess: (enabled: boolean) => put('/api/slack/shared-access', { enabled, confirm: enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean }>,
+    addSlackSharedUser: (userId: string) => post('/api/slack/shared-access/users', { user_id: userId }).then(j) as Promise<{ ok: boolean; user: SlackSharedUser }>,
+    removeSlackSharedUser: (userId: string) => del('/api/slack/shared-access/users/' + encodeURIComponent(userId)).then(j) as Promise<{ ok: boolean }>,
     // Discord integration config
     getDiscordConfig: () => get('/api/discord/config').then(j) as Promise<DiscordConfigData>,
     saveDiscordConfig: (body: Partial<DiscordConfigSave>) => put('/api/discord/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
@@ -569,6 +607,7 @@ export function createMessagingEndpoints({ get, post, put, j }: ClientTransport)
     getWeComConfig: () => get('/api/wecom/config').then(j) as Promise<WeComConfigData>,
     getFeishuConfig: () => get('/api/feishu/config').then(j) as Promise<FeishuConfigData>,
     saveFeishuConfig: (body: Partial<FeishuConfigSave>) => put('/api/feishu/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
+    installFeishuSdk: () => post('/api/feishu/sdk/install', {}).then(j) as Promise<{ ok: boolean; restart_required: boolean }>,
     saveWeComConfig: (body: Partial<WeComConfigSave>) => put('/api/wecom/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
     // Webex integration config
     getWebexConfig: () => get('/api/webex/config').then(j) as Promise<WebexConfigData>,

@@ -35,7 +35,7 @@ import ast
 from collections import Counter
 
 import pytest
-from source_corpus import parsed_candidates, src_root
+from source_corpus import parsed_candidates, src_root, untraced
 
 #: One worker owns the whole-tree scan.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_bounded_read_ratchet")
@@ -144,6 +144,7 @@ def test_the_detector_leaves_other_reads_alone() -> None:
     assert _lines('note = "fh.read(cap + 1)"  # fh.read(cap + 1)\n') == []
 
 
+@untraced()
 def _tree_sites() -> Counter[str]:
     root = src_root()
     counts: Counter[str] = Counter()

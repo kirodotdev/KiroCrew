@@ -11,6 +11,7 @@ deadline always expires first however slow the host is.
 
 from __future__ import annotations
 
+import logging
 import threading
 from types import SimpleNamespace
 
@@ -19,8 +20,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew import mate_worker_kit
+from kiro_crew.dashboard.handlers import _bounded_read as bounded_read_module
 from kiro_crew.dashboard.handlers import agent_capabilities as capabilities_handler
-from kiro_crew.dashboard.handlers import member_worker_kit as worker_kit_handler
 from kiro_crew.dashboard.routes.agents import register
 from kiro_crew.testing.wait import finished
 
@@ -53,28 +54,38 @@ def _app(read: _BlockedRead) -> web.Application:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "route, handler_module, body",
+    "route, body, what",
     [
         (
             "/api/agents/pixel/capabilities",
-            capabilities_handler,
-            {"error": "capabilities_unavailable", "code": "capabilities_unavailable"},
+            {
+                "error": "capabilities_unavailable",
+                "code": "capabilities_unavailable",
+                "reason": "timed_out",
+            },
+            "Capabilities",
         ),
         (
             "/api/agents/pixel/worker-kit",
-            worker_kit_handler,
-            {"error": "capabilities_unavailable", "code": "capabilities_unavailable", "detail": ""},
+            {
+                "error": "capabilities_unavailable",
+                "code": "capabilities_unavailable",
+                "detail": "",
+                "reason": "timed_out",
+            },
+            "Worker-kit",
         ),
     ],
 )
 async def test_a_stalled_read_answers_503_while_it_is_still_blocked(
-    monkeypatch, route, handler_module, body
+    monkeypatch, caplog, route, body, what
 ):
     read = _BlockedRead()
     monkeypatch.setattr(mate_worker_kit, "view", read)
     monkeypatch.setattr(
-        handler_module, "_GET_TIMEOUT_SECS", 0.05
+        bounded_read_module, "GET_TIMEOUT_SECS", 0.05
     )  # flake-ok: the read blocks until released, so the deadline always expires first
+    caplog.set_level(logging.WARNING, logger=bounded_read_module.__name__)
     async with TestClient(TestServer(_app(read))) as client:
         try:
             response = await finished(client.get(route), f"GET {route} with its read blocked")
@@ -85,3 +96,29 @@ async def test_a_stalled_read_answers_503_while_it_is_still_blocked(
             # Inside the client: the server waits for its handler on close, and a
             # handler without a deadline waits for this read.
             read.release.set()
+    # The gateway log names the Bot, so the owner can find which one was slow.
+    assert f"{what} read for Bot 'pixel' did not finish in 0 s" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_read_that_finishes_past_the_deadline_logs_how_long_it_took(monkeypatch, caplog):
+    clock = iter([100.0, 135.6])
+    monkeypatch.setattr(bounded_read_module, "_monotonic", lambda: next(clock))
+    caplog.set_level(logging.WARNING, logger=bounded_read_module.__name__)
+    result = await bounded_read_module.bounded_read(
+        lambda member: {"member": member}, "pixel", what="Capabilities"
+    )
+    assert result == {"member": "pixel"}
+    assert "Capabilities read for Bot 'pixel' finished after 35.6 s, past the 20 s limit" in (
+        caplog.text
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_read_within_the_deadline_logs_nothing(caplog):
+    caplog.set_level(logging.WARNING, logger=bounded_read_module.__name__)
+    result = await bounded_read_module.bounded_read(
+        lambda member: member, "pixel", what="Capabilities"
+    )
+    assert result == "pixel"
+    assert caplog.text == ""

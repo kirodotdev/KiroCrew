@@ -14,9 +14,8 @@ import re
 
 _MAX_SEMANTIC_PER_CONSOLIDATION = 20
 _MAX_EPISODIC_PER_CONSOLIDATION = 10
-# Cap lessons per consolidation: each write_lesson can perform up to 6 blocking
-# embeds (1 rule + _MAX_BACKFILLS_PER_CALL lazy backfills), so an uncapped LLM
-# lessons array could occupy a worker thread for minutes.
+# Cap lessons per consolidation: each write_lesson makes a blocking embed of its
+# rule, so an uncapped LLM lessons array could occupy a worker thread for minutes.
 _MAX_LESSONS_PER_CONSOLIDATION = 10
 
 # Characters the ``## Current Semantic Memory`` block of ONE consolidation prompt

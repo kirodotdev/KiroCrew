@@ -62,8 +62,8 @@ async def _pinned_kiro_cli(purpose: str) -> str | None:
     ``KIROCREW_KIRO_BIN``, with the inherited ``PATH`` excluded.
 
     That set does not cover every install: a system-wide one outside
-    ``known_kiro_cli_dirs`` — a root-owned ``/usr/local/bin`` on Linux — is
-    refused here while sessions keep launching it off ``PATH``. Refusing is the
+    ``known_kiro_cli_dirs`` — say ``/opt/kiro/bin`` — is refused here while
+    sessions keep launching it off ``PATH``. Refusing is the
     right default for a spawn with no operator present, but being SILENT about
     it is not: the resulting host never auto-updates and never warns it is
     outdated, with nothing in the log to say why. Hence the warning naming the

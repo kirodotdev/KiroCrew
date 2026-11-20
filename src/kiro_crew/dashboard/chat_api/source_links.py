@@ -46,6 +46,9 @@ async def api_chat_slot_source_links(request: web.Request) -> web.Response:
         ensure_gitlab_hosts_loaded,
         is_owner_dashboard_request,
     )
+    from kiro_crew.dashboard.source_providers.chip_refresh import (
+        schedule_expanded_check_refresh,
+    )
 
     state: DashboardState = request.app["state"]
     slot = state._slots.get(request.match_info["slot"])
@@ -85,11 +88,16 @@ async def api_chat_slot_source_links(request: web.Request) -> web.Response:
             "GitLab allowlist warm-up failed; expanded chips may lag one round", exc_info=True
         )
 
-    # Cached status only, gated exactly like the list endpoint: owner sees all,
-    # a dashboard-user sees public-repo status, app tokens see none. No
-    # schedule_check_refresh here: that pushes a `slots` update, which by
-    # definition cannot carry links outside the budget, so the provider work
-    # would produce a result this response can never show.
+    # The response carries CACHED status, gated exactly like the list endpoint:
+    # owner sees all, a dashboard-user sees public-repo status, app tokens see
+    # none. The periodic and turn-boundary refreshes cover only the budgeted
+    # chips, so for the owner this also asks for a read of every pull request
+    # revealed here, due ones only and within the free pending capacity. It is
+    # fire-and-forget: a status that changed arrives as a `source_status` delta,
+    # which the client patches into the expanded list. The slots push the
+    # callback also queues cannot carry these links, so the delta is what
+    # delivers them. Owner only, because the read runs the operator's provider
+    # credentials.
     #
     # Deliberately NOT gated on `dashboard.session_card_source_links`: the only
     # caller is the sidebar's "+N" pill, which exists only while the strip
@@ -97,12 +105,17 @@ async def api_chat_slot_source_links(request: web.Request) -> web.Response:
     # An app token that owns the slot could ask directly, but it can already read
     # the slot's messages -- these URLs are extracted FROM those messages, so
     # gating here would withhold nothing it does not already have.
-    return web.json_response(
-        slot.source_links_payload(
-            include_check_status=is_owner_dashboard_request(request),
-            dashboard_user=bool(request.get("is_dashboard_user")),
-        )
+    owner = is_owner_dashboard_request(request)
+    payload = slot.source_links_payload(
+        include_check_status=owner,
+        dashboard_user=bool(request.get("is_dashboard_user")),
     )
+    if owner:
+        schedule_expanded_check_refresh(
+            [link["url"] for link in payload["links"] if link.get("kind", "change") == "change"],
+            state.push_slots_update,
+        )
+    return web.json_response(payload)
 
 
 def _audit_source_link_unlink(name: str, outcome: str, **fields: Any) -> None:

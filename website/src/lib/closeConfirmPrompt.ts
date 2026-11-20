@@ -4,6 +4,8 @@ import type { ConfirmOptions } from '../components/ConfirmDialog'
 import { joinSentences } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { closeBusyReasons, type CloseBusyReason } from './closeBusyGate'
+import { displayName } from '../api/sharedCrewMode'
+import { isUnknownPrincipal } from '../api/sharedCrewUi'
 
 // One literal `i18nT` call per reason, so the key checks can see every key.
 export function reasonLine(reason: CloseBusyReason): string {
@@ -38,20 +40,28 @@ export function reasonLine(reason: CloseBusyReason): string {
  * `checkBusy` is false for the ⌥⇧W alias, which keeps its shipped behaviour of
  * asking only when the setting is on. It decides only WHETHER to ask; when the
  * alias does ask, the text still names any live work.
+ *
+ * In a shared Crew a close removes the chat for every person in it, so a chat
+ * another person started always asks, on every path, and names them. That
+ * person is known from the chat's attribution against `viewerIds`, every id
+ * that names the verified viewer (the owner writes under several); with no
+ * viewer known, nothing is assumed about who started it.
  */
 export function closeConfirmPrompt(
   state: RootState,
   slotKey: string,
-  { settingOn, checkBusy = true }: { settingOn: boolean; checkBusy?: boolean },
+  { settingOn, checkBusy = true, viewerIds = [] }: { settingOn: boolean; checkBusy?: boolean; viewerIds?: readonly string[] },
 ): ConfirmOptions | null {
   // Always read the live work for the TEXT: the alias that skips the busy
   // check still must not tell the user "nothing is running" over a live turn.
   const reasons = closeBusyReasons(state, slotKey)
-  if (!settingOn && (!checkBusy || reasons.length === 0)) return null
+  const starter = otherStarter(state, slotKey, viewerIds)
+  if (starter === null && !settingOn && (!checkBusy || reasons.length === 0)) return null
   // The reasons share one paragraph however many there are.
-  const why = reasons.length > 0
-    ? joinSentences(reasons.map(reasonLine))
-    : i18nT('hooks.useSessionActions.close_confirm.reason_setting', {
+  const busy = reasons.length > 0 ? joinSentences(reasons.map(reasonLine)) : ''
+  const why = starter !== null
+    ? joinSentences([i18nT('hooks.useSessionActions.close_confirm.reason_other_starter', { name: starter }), ...(busy ? [busy] : [])])
+    : busy || i18nT('hooks.useSessionActions.close_confirm.reason_setting', {
       // The path to the toggle, so the user can find it and turn it off.
       setting: `${i18nT('settings.tabs.chat.label')} › ${i18nT('pages.settings.chatPanel.confirm_before_closing_session')}`,
     })
@@ -65,4 +75,13 @@ export function closeConfirmPrompt(
     ),
     confirmLabel: i18nT('hooks.useSessionActions.close_confirm.confirm'),
   }
+}
+
+/** The name of the person who started `slotKey` when that is not the viewer,
+ *  or `null`: no verified viewer, no human creator, or the viewer's own chat. */
+function otherStarter(state: RootState, slotKey: string, viewerIds: readonly string[]): string | null {
+  if (viewerIds.length === 0) return null
+  const creator = state.dashboard.slots.find(s => s.key === slotKey)?.attribution?.creator
+  if (!creator || isUnknownPrincipal(creator) || creator.kind !== 'human' || viewerIds.includes(creator.id)) return null
+  return displayName(creator) || i18nT('sharedCrew.unattributed')
 }

@@ -34,6 +34,7 @@ from __future__ import annotations
 # this file: removing one fails test_every_global_an_owner_function_reads_is_bound_on_the_facade,
 # not a call at runtime, and test_gateway_runtime_bindings.py checks that each import is read.
 import asyncio
+import concurrent.futures
 import contextlib
 import hashlib
 import importlib
@@ -194,6 +195,7 @@ from kiro_crew.dashboard.handlers.autonudge import (
     compose_nudge_body,
     render_nudge_message,
 )
+from kiro_crew.dashboard.handlers.messaging import _send_to_channel_target
 from kiro_crew.dashboard.handlers.updates import _update_info, record_auto_update_effect
 from kiro_crew.dashboard.handlers.updates import remediation_command as _remediation_command
 from kiro_crew.dashboard.handlers.usage import (
@@ -230,6 +232,7 @@ from kiro_crew.dashboard.state import (
     load_window_off_loop,
 )
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
+from kiro_crew.dashboard.token_auth_callers import derive_caller_app
 from kiro_crew.dashboard.turn_dispatch import (
     bounded_chat_turn,
     mark_turn_unstarted,
@@ -402,6 +405,7 @@ from kiro_crew.platform.update_capability import (
     CHECK_UNCHECKED,
     EXTERNALLY_MANAGED_STAMPS,
     MANAGED_BY_COMMAND,
+    MANAGED_BY_KIROCREW,
     AutoUpdateEffect,
     auto_update_effect,
 )
@@ -513,6 +517,7 @@ from kiro_crew.slack.gateway_runtime.cron_dispatch import (
 from kiro_crew.slack.gateway_runtime.cron_failure import (
     _failure_alert_due,
     _log_held_alert,
+    _scrubbed,
 )
 from kiro_crew.slack.gateway_runtime.cron_fire import (
     APP_JOB_BOT_REFUSAL,
@@ -786,6 +791,7 @@ class GatewayOrchestrator:
     _inline_parked: dict[Any, list[_ParkedCompletion]]
     _inline_tasks: set[asyncio.Task[Any]]
     _running_script_ids: set[str]
+    _auto_pause_alerts: set[concurrent.futures.Future[None]]
     task_runner: TaskRunner | None
     _runner_admission: Any
     _runner_admission_adopted: bool
@@ -827,6 +833,7 @@ class GatewayOrchestrator:
     _mcp_gateway_pending: GatewayManager | None = None
     _mcp_gateway_start_retry: asyncio.Task[None] | None = None
     _mcp_resolve_prefetch: asyncio.Task[None] | None
+    _mcp_resource_subscription_task: asyncio.Task[None] | None
     _mcp_target_env: dict[str, str]
     _mcp_overlay_refresh_lock: asyncio.Lock | None = None
     _mcp_rewrite_inputs: dict[str, Any] | None = None
@@ -937,6 +944,7 @@ class GatewayOrchestrator:
     _channel_reply_link = _delivery._channel_reply_link
     # gateway_runtime/delivery.py
     _cron_origin_key = _delivery._cron_origin_key
+    _cron_channel_pin = _delivery._cron_channel_pin
     _deliver_cron_to_channel = _delivery._deliver_cron_to_channel
 
     # ── One spelling of the cron failure-alert mechanism ───────────────────
@@ -963,6 +971,7 @@ class GatewayOrchestrator:
     _deliver_failure_alert = _cron_failure._deliver_failure_alert
     _advance_failure_dedup = _cron_failure._advance_failure_dedup
     _alert_cron_failure = _cron_failure._alert_cron_failure
+    _alert_cron_auto_paused = _cron_failure._alert_cron_auto_paused
     _alert_cron_interrupted = _cron_failure._alert_cron_interrupted
     _cron_single_failure = _cron_failure._cron_single_failure
     # gateway_runtime/delivery.py
@@ -975,6 +984,8 @@ class GatewayOrchestrator:
     _resolve_cron_agent = _cron_fire._resolve_cron_agent
     _acquire_with_model_fallback = _cron_fire._acquire_with_model_fallback
     _retained_session_agent_mismatch = _cron_fire._retained_session_agent_mismatch
+    _cron_key_work_pending = _cron_fire._cron_key_work_pending
+    _cron_batch_kind_defers = _cron_fire._cron_batch_kind_defers
     _announce_cron_quarantine = _cron_fire._announce_cron_quarantine
     _start_cron_after_memory_ready = _cron_fire._start_cron_after_memory_ready
     # gateway_runtime/cron_exec.py

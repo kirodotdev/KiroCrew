@@ -60,7 +60,7 @@ from kiro_crew.dashboard.boot_id import current_boot_id
 from kiro_crew.dashboard.handlers._shared import _caller_bounds, _is_restricted_session
 from kiro_crew.dashboard.handlers.agents import _get_config_lock
 from kiro_crew.dashboard.handlers.mobile_connect import mint_denied_reason
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 from kiro_crew.dashboard.token_auth import (
     LINK_WINDOW_SECS,
     MAX_SESSION_TTL_SECS,
@@ -276,7 +276,7 @@ async def api_tailnet_mobile_status(request: web.Request) -> web.Response:
     # closes the disclosure an owner-only FRONTEND alone leaves open. The
     # renderer needs no `is_owner` field: a refused read yields no data, and
     # the card already renders nothing without data.
-    if request.get("app") != "" or not is_owner_dashboard_request(request):
+    if request.get("app") != "" or not is_host_owner_dashboard_request(request):
         # A DENIED read is audited even though a successful one is not. The
         # docstring for `_audit` says reads are skipped because a polled question
         # would bury the decisions in noise — and that still holds for the 200
@@ -524,9 +524,11 @@ def _guard(request: web.Request) -> web.Response | None:
     privilege escalation, not merely an over-broad surface. ``core_local_token.py``'s
     identical mint is gated by loopback + a local-secret HMAC; this endpoint is
     reachable over the tailnet, so it needs the owner claim instead.
-    ``is_owner_dashboard_request`` is reused rather than re-derived: a second copy
-    of an authorization predicate is how one path comes to be guarded and its
-    sibling not.
+    ``is_host_owner_dashboard_request`` is reused rather than re-derived: a second
+    copy of an authorization predicate is how one path comes to be guarded and its
+    sibling not. It is the machine owner alone, not the owner gate a Shared Crew
+    teammate passes: publishing the Crew to a phone is managing who may reach it,
+    and the QR hands back a credential in the owner's own name.
 
     **Not a restricted session.** An incognito/temporary slot must not publish or
     mint either.
@@ -550,7 +552,7 @@ def _guard(request: web.Request) -> web.Response | None:
             },
             status=403,
         )
-    if not is_owner_dashboard_request(request):
+    if not is_host_owner_dashboard_request(request):
         return web.json_response(
             {"error": "tailnet mobile access is owner-only", "code": "owner_only"},
             status=403,

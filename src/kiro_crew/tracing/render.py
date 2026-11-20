@@ -79,6 +79,12 @@ def parse_span(raw: object) -> Span | None:
     attrs = attrs if isinstance(attrs, dict) else {}
     failed = isinstance(status, dict) and status.get("status_code") == "ERROR"
     kind = attrs.get("error.type")
+    if not failed:
+        error = ""
+    elif isinstance(kind, str) and kind:
+        error = kind
+    else:
+        error = "error"
     return Span(
         trace_id,
         span_id,
@@ -86,7 +92,7 @@ def parse_span(raw: object) -> Span | None:
         raw["name"],
         start,
         max(start, end),
-        (kind if isinstance(kind, str) and kind else "error") if failed else "",
+        error,
         frozenset(v for k in _KEY_ATTRS if isinstance(v := attrs.get(k), str)),
     )
 

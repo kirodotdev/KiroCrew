@@ -3,7 +3,8 @@
 Lets a single Kiro Crew gateway (the **hub**) manage and switch between several
 **remote** Kiro Crew instances (dev hosts, EC2, home servers) over SSH **or AWS
 SSM Session Manager** tunnels, embedding each remote dashboard as an iframe pane
-below a switcher strip. Opt-in: off by default (`instances.enabled`). The transport is
+below a switcher strip. On by default (`instances.enabled`); `false` turns it off.
+No tunnel opens until the owner adds a crew and connects it. The transport is
 per-instance (`connection_method`) — see §13.
 
 > **Naming — "Remote Crew".** The user-facing surfaces label this feature
@@ -77,8 +78,10 @@ destinations they actually use — see [Pinned crew chips](#pinned-crew-chips).
 
 **Key properties**
 
-- **Opt-in.** Nothing changes until `instances.enabled=true`, and the flag is
-  read at gateway startup, so it also needs a restart.
+- **On by default, no network until asked.** With no `instances` key the flag is
+  on, but it opens no listener and dials nothing: a tunnel opens only when the
+  owner adds a crew and connects it. `instances.enabled=false` turns it off. The
+  flag is read at gateway startup, so a change needs a restart.
 - **Owner-only.** The control plane is never reachable via Slack and requires the
   dashboard owner's identity: an unauthenticated caller gets `401`, and any other
   authenticated identity, an app token included, gets `403 owner_only`.
@@ -90,6 +93,8 @@ destinations they actually use — see [Pinned crew chips](#pinned-crew-chips).
 ---
 
 ## 2. Enabling the feature
+
+It is on by default. To turn it off (`false`), or back on after that:
 
 ```bash
 kirocrew config set instances.enabled true
@@ -155,12 +160,12 @@ Module responsibilities:
 |--------|----------------|
 | `registry.py` | Persistent list of configured instances (`~/.kiro/crew/instances.json`) + `last_active_id`. Light charset check on `ssh_host`/`remote_bin` (SSH) or `ssm_target`/`aws_profile`/`aws_region`/`ssm_run_as` (SSM) at add/update, per `connection_method`; the `fargate` arm requires an ECS task target and the `ssm` arm refuses one (§16); every mutation re-reads the file and writes atomically while holding a lock keyed by the registry's path and shared by every registry object over it, so two objects in one gateway cannot clobber each other; a mutation reads strictly (`_read_for_update`: a missing file is an empty registry, a present one is read with the Windows sharing-violation retry and parsed from its bytes, so UTF-8 with or without a byte-order mark, UTF-16 and UTF-32 all load, and any other read error, bytes none of those decode, a parse error, a non-object root or a non-list `instances` raises `RegistryUnreadableError` before anything is written), while `list`/`get` read with the same retry, so a read that lands in another process's write on Windows sees the file rather than an empty registry, and degrade a damaged file to empty with a warning; a separate CLI process is outside that lock and always reads a whole file, but a mutation it interleaves can still be lost. |
 | `port_allocator.py` | Probes for a free loopback port at or above `tunnel_base_port` (7778). A port counts as free only when it is free on **every** loopback address (`127.0.0.1` and `::1`), since the forward binds one family and a foreign listener on the other leaves `localhost:<port>` ambiguous; an address the host cannot assign at all (`EADDRNOTAVAIL`/`EAFNOSUPPORT`/`EPROTONOSUPPORT`, e.g. IPv6 disabled) reads as free rather than occupied, while a probe that could not be *run* (`EMFILE` and friends) propagates rather than being coerced to either answer. A single-address primitive (`_is_addr_free(port, host)`) answers the narrower "did *this* forward's own address come free" question that orphan reclaim asks. On POSIX the probe sets `SO_REUSEADDR` so a `TIME_WAIT` remnant from a just-closed forward is not a false "in use" (it exempts `TIME_WAIT` only, never a live `LISTEN`). On Windows that option lets a second socket bind and listen beside a live listener that set it too (OpenSSH's `-L` listener does), so the Windows probe sets `SO_EXCLUSIVEADDRUSE` instead, which fails against any socket still bound to the address; Winsock does not refuse a fresh bind over `TIME_WAIT` remnants. |
-| `token_mint.py` | Runs `kirocrew token --ttl --port --embed-parent-port` on the remote over SSH (run-marker first, then a bin-candidate ladder) and parses the JWT out of the printed URL. Token is returned in memory only, **never logged**. A mint that times out or is cancelled (an instance edit stopping its refresh, a gateway shutdown) kills and reaps its ssh child (`platform_compat.kill_and_reap`) before raising. `run_remote_kirocrew` kills its ssh on a timeout only: a cancelled `restart` or `update` is left to finish rather than cut off partway. |
+| `token_mint.py` | Runs `kirocrew token --ttl --port --embed-parent-port` (with `KIROCREW_EMBED_FORWARD_PORT` set to the forward's local port when known) on the remote over SSH (run-marker first, then a bin-candidate ladder) and parses the JWT out of the printed URL. Token is returned in memory only, **never logged**. A mint that times out or is cancelled (an instance edit stopping its refresh, a gateway shutdown) kills and reaps its ssh child (`platform_compat.kill_and_reap`) before raising. `run_remote_kirocrew` kills its ssh on a timeout only: a cancelled `restart` or `update` is left to finish rather than cut off partway. |
 | `ssm_token_mint.py` | The SSM sibling of `token_mint.py`: runs the same subcommand via `aws ssm send-command` through the launcher's `cloud.ssm` chokepoint, reusing the shared remote-command builders. Token in memory only, **never logged**. See §13. |
 | `validation.py` | The authoritative injection-safe guard on `ssh_host` / `remote_bin`, and on `ssm_target` / `aws_profile` / `aws_region` / `ssm_run_as`, applied immediately before any command line is built. See §11. |
 | `run_marker.py` | Records the running gateway's own `kirocrew` launcher (and pid) keyed by port, so a remote mint execs the same venv the live gateway runs from. Also backs zero-config client port discovery. See §12. |
 | `ssh_tunnel_manager.py` | Supervises one tunnel child per instance — `ssh -N -L` or `aws ssm start-session` — with readiness wait, health probe, 2-tier self-heal, proactive token refresh, stored-token liveness probe, remote restart. One state machine, two forwarder shapes; the `fargate` method shares the SSM forwarder, and a headless crew mints nothing whatever its method (§16). An SSM child's stdout is captured and drained alongside stderr, because the close notice that names why a forward ended is printed there. |
-| `diagnostics.py` | Dependency-ordered failure probes; reports the first broken link. `diagnose_instance` (SSH ladder), `diagnose_instance_ssm` (SSM ladder) and `diagnose_instance_fargate` (ECS task ladder, §16). A probe that times out kills its ssh child; one whose diagnosis is cancelled (an instance edit, a gateway shutdown) kills and reaps it (`platform_compat.kill_and_reap`) before the cancel propagates. |
+| `diagnostics.py` | Dependency-ordered failure probes; reports the first broken link. `diagnose_instance` (SSH ladder), `diagnose_instance_ssm` (SSM ladder) and `diagnose_instance_fargate` (ECS task ladder, §16). A probe that times out kills its ssh child; one whose diagnosis is cancelled (an instance edit, a gateway shutdown) kills and reaps it (`platform_compat.kill_and_reap`) before the cancel propagates. A probe whose ssh child cannot be spawned (no OpenSSH client on the gateway's PATH) reports `ssh_client_missing`, not a host failure. |
 | `handlers_instances.py` | Owner-only, enabled-gated, SEL-audited HTTP control plane: the registry, connection, remote-update, session-search and session-send routes. It is the import path of its two owners, `handlers_instances_gate.py` (the owner gate `_guard`, the SEL audit, registry access and the chain policy every handler shares) and `handlers_instances_peer.py` (the routes that read a connected peer — capabilities, approval state, versions, live sessions — and the proxy to it). New gate or registry primitives go to the gate owner; a new route that reads the peer goes to the peer owner. |
 
 `ssh_tunnel_manager.py` stays the import path, and `SshTunnelManager`'s behaviour lives in
@@ -486,7 +491,7 @@ cannot drift.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `instances.enabled` | `false` | Primary opt-in, read at gateway startup. Also gates the CSP `frame-src` `*.localhost` extension. |
+| `instances.enabled` | `true` | Primary switch, read at gateway startup; `false` turns the feature off. Also gates the CSP `frame-src` `*.localhost` extension. |
 | `instances.crew_reads_enabled` | `false` | Lets the **agent** read another crew's sessions through the `crew=` scope of the three session read tools (§18). A second opt-in on top of `enabled`, off by default because a peer's transcripts enter the agent's context as untrusted text. Read per call by the gateway route's gate (no restart); off, every crew read answers `403 crew_reads_disabled` before any caller is resolved or any peer is reached. The tools themselves are unchanged; only the `crew=` argument is refused. |
 | `instances.warm_set_cap` | `0` (automatic) | Max instances kept warm at once (bounds memory/sockets; each warm instance is a full dashboard SPA). `0` tracks how many crews are registered, so up to the internal ceiling no configured crew is evicted; an explicit value is honoured exactly, including one below the registered count. Negative values fall back to automatic. |
 | `instances.default_destination` | `""` | Instance id that **Send a copy to** lists first and marks as the default (§14). Served with `GET /api/instances`; resolved against the registry only when the menu renders, so an id naming no registered crew marks nothing. A folder's `default_destination_crew` overrides it. |
@@ -584,6 +589,10 @@ Two persisted hints drive lazy reconnect:
   gateway shutdown and a failed auto-revive, so the frontend keeps the entry in an
   error / click-to-reconnect state instead of dropping it. It is also what the
   frontend keys entry visibility on (`was_connected || connected || warm`).
+  A crew whose `disabled` flag is set, or one chained behind such a crew, gets no
+  entry even with `was_connected` kept: `connect()` refuses it, so it has no pane,
+  and a kept row would show that refusal as a tunnel error. It reads Off in
+  Settings -> Remote Crew, where it is turned back on.
 - `last_active_id` records the instance most recently connected to. `connect()`
   writes it and `remove()` clears it, and any value that no longer resolves to a
   live record is dropped on the next write. Nothing in the gateway reads it:
@@ -964,6 +973,20 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   `/api/auth/refresh` rotation: it rides on the refresh chain the link opens and
   on each access token a rotation mints, so a pane reloaded after a refresh keeps
   its parent.
+- **App web origins in a pane.** The same claim lets the crew serve an app's web
+  origin (`http://<app>.apps.localhost:<pane port>`) on the pane's forward port,
+  which is not one of the crew's dashboard ports: the crew's token layer records
+  the pane port and its parents from a pane token it authenticates, and its app
+  web origin router admits only recorded, unexpired ports (App Kit spec §18k).
+  An SSH mint also passes the forward's local port, so the token carries a signed
+  `embed_forward_port` and records only that port. The hub sends it as the
+  `KIROCREW_EMBED_FORWARD_PORT` environment variable of the remote `kirocrew
+  token` (which turns it into `/api/token/local?embed_forward_port=`), not as a
+  flag, because a crew whose CLI predates the claim would refuse an unknown flag
+  and fail the mint. An `embed-token` mint for this gateway's own page carries
+  it as the hop port; a mint lent to another gateway, a chained mint and an SSM
+  mint carry none, and the crew then records the port in `Host`. It rides the
+  link-to-session exchange and every rotation like `embed_parent_port`.
 - **Untrusted ssh stderr.** A proxy banner is ANSI-stripped, credential- and
   exfiltration-redacted, and truncated before it is surfaced in status, and it is
   a secondary detail only: failure *classification* keys on real ssh signals, so
@@ -1022,8 +1045,9 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
 1. **Enable** on the hub: `kirocrew config set instances.enabled true && kirocrew restart`
    (or the Settings → Remote Crew toggle, then a restart).
 2. Open the dashboard and go to **Settings → Remote Crew**. This panel is the
-   control plane only; it does not embed remote dashboards.
-3. **Add** an instance:
+   control plane only; it does not embed remote dashboards. See
+   [The Remote Crew page](#the-remote-crew-page) for its layout.
+3. **Add** an instance: **+ Add Crew → Connect a machine you have**.
    - *Name*: any label.
    - *SSH host / alias*: what you would type after `ssh` (see §9).
    - *Remote port*: the port the remote gateway listens on. Instances may share
@@ -1041,10 +1065,70 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
    dropdown click — see [Pinned crew chips](#pinned-crew-chips). While a crew's
    pane fills the page, the browser tab is titled with that crew's name instead
    of the hidden local page.
-6. **Diagnose** a flaky instance (runs the ladder), or **Disconnect** from its
-   row. **Edit settings** / **Remove** live in the row's overflow menu — a row
-   shows two primary actions plus that menu, so everything past them is one
-   menu deep.
+6. **Diagnose** a flaky instance (runs the ladder), or **Disconnect** it, from
+   its row's details. A row shows one main action for its state; **Diagnose**,
+   **Edit settings**, **Remove** and the rest sit behind the row's chevron, so
+   everything past the main action is one click deep.
+
+### The Remote Crew page
+
+`RemoteCrewPanel` (`website/src/pages/settings/`) draws three sections and one
+modal (#38790):
+
+- **My Crews** — every crew this gateway added or launched, and a launch still
+  creating its machine. The header carries the count, Refresh and **+ Add Crew**.
+- **Shared with me** — the Shared Crews this person can open over the relay
+  (`SharedCrewsCards`, the list behind the header switcher's Remote Crews
+  group, in the desktop app and a browser alike); hidden while the relay viewer
+  is off.
+- **Settings** — **Auto-connect crews** and the default destination crew.
+  The personal **Remote Control** card (Turn off) sits below it, at the foot
+  of the page: Settings > Advanced is not routed, so it cannot move there.
+
+**+ Add Crew** opens a modal with two choices. **Set up a new Crew** shows the
+built-in launcher (the AWS prerequisites checklist, the launch form and the
+progress card) or the lane an edition draws; **Connect a machine you have**
+shows the add form. Both forms' state is held by the panel and the store
+(`crewForms`), so closing the modal and opening it again loses nothing, and the
+setup form's provisioner and preflight queries run only while it is on screen. A
+successful add closes the modal: the crew is a row of My Crews. A launch keeps
+running when the modal closes, and shows as a row of My Crews. A
+`kirocrew://remote-crew/add` link opens the modal on the add form.
+
+A crew row, collapsed, shows its icon, name, status (Connected, Disconnected,
+Stopped, Connections: Off) and source badges (**EC2** and **SSM** or **SSH**),
+any blocking tag (**Needs sign-in**, **Can't connect** for a tunnel error, the
+**Behind** version badge), and ONE main action for its state, in this order:
+an armed confirm or a teardown in progress holds the slot; then **Start** for
+a stopped cloud crew (before sign-in: signing in needs it running), **Sign in**
+(opens the details on the sign-in block), nothing for a crew switched off, **Diagnose** for a tunnel error, the
+**Update** control while the crew is behind, **Open** (switches to the crew
+as its switcher entry does, `useSelectInstance`) for a connected crew with a
+dashboard, with a finished update's outcome beside it, and otherwise **Connect**. A connected fargate crew has no main
+action: it has no dashboard to open.
+
+The chevron (a disclosure button with `aria-expanded`) opens the details: the
+instance or host with its region, the port, the Connections switch, who manages
+the crew, why it needs attention (the tunnel error, the stopped note or the
+missing sign-in), a contribution's detail, the fargate turn URL, the sign-in
+block, and the other actions: Connect or Disconnect, Diagnose, Edit settings,
+then Stop / Start / Delete… for a correlated cloud crew or Remove… for any other.
+These replace the old overflow menu; a contributed provisioner's menu items keep
+a small menu of their own there (`remoteCrewRowActions`). A row that needs
+sign-in opens with its details showing, also when the box check reports it
+signed out after the row first drew. While a confirm is armed or a teardown
+runs, the other actions stand down.
+
+A launch still creating its machine is a **Setting up** row. Its status (for
+example "Setting up · 2 of 4") is a disclosure button that opens the launch
+steps, "Keeps running if you leave this page." and the Cancel that removes the
+crew. While the provision step runs, a line under the status shows the time
+since Launch (cloud.md). While the launch is `awaiting_signin` the status reads "Waiting for you
+to sign in · 3 of 4" with the key mark, the sign-in step shows the key instead
+of a spinner, and the row shows the same sign-in box as the setup card
+(`SigninPromptBlock`: code, Copy, Open sign-in page) outside the disclosure, so
+the code is visible without opening the row or the Add Crew modal. A polite
+status region announces the code once when it arrives.
 
 Every configured row carries separate source and transport badges from the
 instance record. `connection_method="ssm"` shows **SSM**; every other transport
@@ -1100,8 +1184,8 @@ minute. If the record changed meanwhile, the shared Rebase path reconciles the
 restored draft with the record that exists now.
 
 An unsaved edit is held by the PANEL, keyed by crew, not by the form component.
-The crew list unmounts for any number of reasons the form cannot see — switching
-to the **Set up a new one** tab is enough — and an edit whose only home was the
+The crew list unmounts for any number of reasons the form cannot see — the agent
+hand-off navigates out of Settings, and so does any sidebar click — and an edit whose only home was the
 form's own state came back silently reverted to the stored record. Because a
 guard can only refuse the exits it enumerates, the values are lifted instead of
 defended: the form is re-seeded from that draft when it remounts. The draft carries
@@ -1148,7 +1232,7 @@ rather than guessing from which fields changed, so a name-or-ttl-only edit (whic
 tears nothing down) keeps its working pane. Opening a DIFFERENT crew's editor while one
 holds unsaved changes is still refused outright — that is about two editors being
 open at once, not about the unmount — and the refusal renders at the row that was
-clicked, since the menu has already closed by then.
+clicked, so it reads beside the Edit settings button that was pressed.
 
 > Prerequisite: you can already `ssh <ssh_host>` non-interactively from the hub
 > (a valid key or cert in your `ssh-agent`, no password prompt), and the remote
@@ -1191,8 +1275,10 @@ reads its own URL, so a browser opening the same address fills in nothing.
 
 The add form holds one draft, so the newest link replaces whatever it held,
 typed values included. Each link bumps a counter that keys the Remote Crew
-panel, so a panel already open remounts on **Your crews** with the newest
-values, and the form scrolls into view once on that mount. The link stays on the
+panel, so a panel already open remounts with the Add Crew modal open on the add
+form with the newest values, and the form scrolls into view once on that mount.
+A later visit, with the link's values already taken by the form, does not open
+the modal on its own. The link stays on the
 draft while the user edits it, so the line naming it stays too; a successful Add
 or a form cleared back to its defaults drops both. A link opened while Remote
 Crew is turned off waits in the draft until the add form can show it.
@@ -1392,14 +1478,14 @@ persisted in the config dir — normally nothing, since nothing there could have
 created a job, though a config dir carried over from a POSIX host still reports
 its real jobs.
 
-**On a Windows gateway the Set-up tab shows one notice, not the AWS checklist.**
+**On a Windows gateway the Set up a new Crew form shows one notice, not the AWS checklist.**
 `RemoteCrewWindowsNotice` replaces the built-in lane's prerequisites card and
 launch form when the gateway platform reads `windows` (`useGatewayPlatform`), or
 when the preflight answers `400 posix_host_required` (the platform signal may not
 be cached yet). A known-Windows gateway does not send the preflight at all. The
 refusal comes before any AWS call, so the notice says the profile was not used
 and is not the problem, and never shows the credentials row or a disabled Launch. When the refusal is how
-the tab learned it, that sentence renders through `ErrorNotice` with the
+the form learned it, that sentence renders through `ErrorNotice` with the
 rejection's report and the agent hand-off; a known-Windows gateway gets it as
 plain text. It names the two ways forward: `kirocrew cloud launch` in PowerShell,
 which runs on Windows (by its full path from a desktop install, which adds nothing
@@ -1414,23 +1500,33 @@ On a host with no sandbox backend and `allow_unsandboxed_exec` unset that raises
 the preflight, the task read and stop/start/delete answer it as a `503` carrying
 `code: sandbox_unavailable`, the exception's `kind`, `detail` and `remedy`, and
 an `error` that says the credentials were not checked and points at `kirocrew
-doctor` (#32068). The Set-up tab keys on the code to show that sentence in the
+doctor` (#32068). The setup form keys on the code to show that sentence in the
 reader's language. When the preflight fails for any reason, its no-result line
 says the check did not run instead of "check your credentials".
+
+**A service row is not checked when the credentials are not.**
+`iam.reachability_check` calls EC2, CloudFormation and SSM only after
+`sts get-caller-identity` succeeds, so with `reachable: false` their three flags
+are `false` without having been checked. The setup form draws those rows as "Not
+checked yet" with a hollow mark and no Copy policy JSON, never as a missing
+permission (#32095), the same as `kirocrew cloud doctor`, which lists them only
+when AWS is reachable.
 
 | Method and path | Purpose |
 |---|---|
 | `GET /api/cloud/preflight?profile=&region=` | AWS reachability + the prerequisite checklist (the doctor checks as JSON). |
 | `GET /api/cloud/identity` | The launching machine's own Kiro sign-in (from `kiro-cli whoami`), so the launch form can preselect a sign-in target. A suggestion only: never a credential and never the launch's authority. |
+| `GET /api/cloud/instance-types?profile=&region=` | The EC2 instance types the Region offers for a Crew host, `{region, instance_types: [{instance_type, vcpu, memory_gib, arch, zones}]}` (`cloud/instance_types.py`, cached five minutes). Backs the launch form's Custom instance type; the form says offered is not in stock. |
 | `GET /api/cloud/iam-policy` | The minimum IAM policy document to paste into the user's account. |
-| `GET /api/cloud/provisioners` | The lanes the Set-up tab may offer: `{id, kind, label, posix_only, steps}` per provisioner, from the CPP `remote_provisioners` seam ([platform-context.md](platform-context.md)). The stock build lists the single `aws_ec2` lane. Answers on every platform, like the two history routes: the tab needs it to pick a form, and each row's `posix_only` carries the platform answer for that lane. Adding a lane: [adding-a-remote-provisioner.md](../../guides/adding-a-remote-provisioner.md). |
+| `GET /api/cloud/provisioners` | The lanes the Set up a new Crew form may offer: `{id, kind, label, posix_only, steps}` per provisioner, from the CPP `remote_provisioners` seam ([platform-context.md](platform-context.md)). The stock build lists the single `aws_ec2` lane. Answers on every platform, like the two history routes: the tab needs it to pick a form, and each row's `posix_only` carries the platform answer for that lane. Adding a lane: [adding-a-remote-provisioner.md](../../guides/adding-a-remote-provisioner.md). |
 | `GET /api/cloud/launch` | List launch jobs, in progress and finished. |
-| `POST /api/cloud/launch` | Start a launch job; returns the job immediately. `409` when one is already in flight. Body `{provider_id?, profile, region, size_key, subnet_id?, login_target?, confirm_recipient?}`; `provider_id` defaults to `aws_ec2`, and an id the seam does not list or cannot back answers `400 unknown_provisioner` before any job file exists. `subnet_id` pins a built-in EC2 launch to that subnet; an invalid one, or one sent with any other provisioner, answers `400 invalid_subnet`. The job carries `provider_id` and `subnet_id`, and its step labels are the provisioner's. |
+| `POST /api/cloud/launch` | Start a launch job; returns the job immediately. `409` when one is already in flight. Body `{provider_id?, profile, region, size_key, subnet_id?, instance_type?, login_target?, skip_signin?, confirm_recipient?}`; `skip_signin: true` launches without the Kiro sign-in (the step is skipped and no login starts on the box), and a non-boolean answers `400 invalid_body`; `provider_id` defaults to `aws_ec2`, and an id the seam does not list or cannot back answers `400 unknown_provisioner` before any job file exists. `instance_type` (built-in EC2 lane only) launches that type instead of the `size_key` tier and is refused with 400 `invalid_instance_type` unless the Region offers it for a Crew host. `subnet_id` pins a built-in EC2 launch to that subnet; an invalid one, one sent with any other provisioner, or one the launch's own subnet check refuses (run before any job file exists), answers `400 invalid_subnet`, and any other AWS failure of that check answers `502 aws_call_failed`. The job carries `provider_id` and `subnet_id`, and its step labels are the provisioner's. |
 | `GET /api/cloud/launch/{id}` | Poll one job: per-step state plus the device-code prompt while signing in. |
 | `GET /api/cloud/launch/{id}/task` | The current ECS state of the container task a finished Fargate launch recorded: one `describe-tasks` for that ARN, answered as `{job_id, task_arn, read_at, task}` where `task` is the sighting (cluster, task id, `last_status`, `desired_status`, `started_at`, `stopped_at`, `stopped_reason`) or `null` when ECS does not list the ARN, and `read_at` is when this read happened. Read-only and owner-only; POSIX-gated like every route here that runs the AWS CLI. Refusals name their cause: `launch_job_not_found` (404), `launch_task_not_recorded` and `unknown_provisioner` (400), `provisioner_cannot_describe` (400, a lane without this read, by capability rather than by id), `aws_call_failed` (502). |
-| `POST /api/cloud/launch/{id}/cancel` | Request cancellation; honored between steps and inside the sign-in wait. A cancel during provisioning is acted on when the deploy returns, and the stack it created is rolled back. It also stops the remote `kiro-cli login` **before** that rollback and regardless of whether the rollback confirms: teardown can end in `DELETE_FAILED`, and an instance that survives with a login still polling would sign the crew in minutes after the owner cancelled. Stopping the login is deliberately not a `logout` — the box may hold an older session the cancelled attempt never touched. |
+| `POST /api/cloud/launch/{id}/cancel` | Request cancellation; honored between steps and inside the sign-in wait. A cancel during provisioning is acted on when the deploy returns, and the stack it created is rolled back. It also stops the remote `kiro-cli login` **before** that rollback and regardless of whether the rollback confirms: teardown can end in `DELETE_FAILED`, and an instance that survives with a login still polling would sign the crew in minutes after the owner cancelled. Stopping the login is deliberately not a `logout` — the box may hold an older session the cancelled attempt never touched. The job is saved `cancelled` at once with the provision step `active` and "Removing <tag>…" until the delete confirms, then `done` with "Removed <tag> after cancellation.", or `failed` with the error on the job; the dashboard keeps polling a cancelled job while that step is active. |
 | `POST /api/cloud/launch/{id}/signin` | Acknowledge the device-code prompt (`409` when none is pending). |
 | `POST /api/cloud/launch/{id}/signin/restart` | Re-run **only** the sign-in step on a crew that already exists, for a launch that finished unsigned: a fresh device code, run with the job's stored `login_target` so a company-SSO crew is not retried through a Builder ID prompt. Owner-only; never re-provisions. `400` when the job never created a crew, `409` while a launch or sign-in is already running on the same instance, or while a launch has not created its instance yet; a job on another crew's instance does not block it. The RUNNING transition is persisted under the launch lock that admitted the request, so a second restart arriving in that window cannot pass the same check. That lock is one for every crew and covers only the check and the claim, not the remote login, so two restarts on one crew still serialize. |
+| `POST /api/cloud/launch/{id}/signin/skip` | Go on to Connect without the Kiro sign-in while a launch is signing in (`202`, the job). It sets the running worker's skip event: the worker stops the remote `kiro-cli login` the way a cancel does (so a later approval of a shown code cannot sign the crew in), marks the sign-in step skipped with `signin_skipped: true`, and registers the crew. A skipped crew is not badged **Needs sign-in**, gets no sign-in box and is not probed; the card's sign-in step reads "Skipped." and the card carries the one line that says it can sign in later in its own Settings → Kiro Account. The crew row is decided by the instance's newest launch only, so an older unsigned launch on a reused stack cannot put its code back on the row. `404` for an unknown job; `409 signin_skip_unavailable` once the worker closes skip acceptance at the end of the sign-in step (before Connect), the launch is over, or no worker in this process runs it. `kirocrew cloud launch --no-login` is the CLI's form. |
 | `POST /api/cloud/{tag}/stop` | Stop the instance behind a stack tag. On success the crew's Instances row ((every row whose `ssm_target` is the instance EC2 acted on) gets `cloud_stopped`, and its tunnel is torn down under the manager lock (`handlers_cloud_paused.py`), so the panel row (`RemoteCrewPanelCrewRow.tsx`) shows it as Stopped with Start as its button, `selectAutoConnectTargets` skips it, and no connect path dials it. When a row cannot be saved, the answer is `500` with `code: cloud_state_not_saved` and `action_completed: true`: the AWS action happened, and pressing the button again retries the save. |
 | `POST /api/cloud/{tag}/start` | Start it again, and clear every matching row's `cloud_stopped`; a save failure answers like Stop. |
 | `DELETE /api/cloud/{tag}` | Terminate the stack (`wait=False`; a denied human-action check surfaces as `403`). |
@@ -1444,12 +1540,24 @@ transition, so progress survives navigating away and a reload. The steps are
 `preflight → provision → signin → connect`, and
 `RealLaunchEngine` (`cloud/launch_engine.py`) binds them to the existing
 `iam.reachability_check`, `ec2.deploy`, `login.start_device_login` and
-`connect.register_instance` — the dashboard path adds no AWS logic of its own,
-and registration lands in this registry exactly as the CLI's does. A failed
+`connect.register_instance` — the dashboard path adds no AWS logic of its own
+beyond reading `ec2.list_stack_events` for the provision step's sub-step
+(cloud.md), and registration lands in this registry exactly as the CLI's does. A failed
 provision step is rolled back through `teardown` whether or not a stack was
 created. The engine's optional `resource_exists` (`ec2.find_stack` for the EC2
-lane) is read first, so a confirmed delete of a stack that never existed reads
+lane; for the Fargate lane its `startedBy` task lookup, the one teardown uses) is
+read first, so a confirmed delete of a stack that never existed reads
 "was never created, so it is not billing" instead of "was removed".
+
+**A skip during sign-in startup is honored when startup returns**, even if it
+returns no device-code URL. An unconfirmed login is stopped and marked skipped;
+an already-confirmed sign-in or verified identity refusal keeps its result.
+
+The launch form keeps an off **Sign in to Kiro on the new crew** choice in its
+in-memory `CrewLaunchDraft`, alongside the subnet and identity, so navigating to
+chat and back does not turn it on. An absent `signinOnLaunch` means on; an
+untouched form still has no draft. A successful launch drops only the draft it
+used, including that toggle, and preserves edits made while the request ran.
 
 **A restart does not resume a launch — it terminalizes it.** The worker is a
 daemon thread, so a gateway restart takes it with the process while the job file
@@ -1460,7 +1568,9 @@ that can never advance, and a `cancel` that returns 200 while signalling a threa
 that no longer exists. Ownership is tracked (`adopt()`) so a live process never
 reaps its own in-flight jobs. The CloudFormation stack may well have completed in
 AWS, so the message points the user at their crew list rather than implying
-nothing was created.
+nothing was created. A cancelled job whose removal step is still `active` is the
+one terminal shape the reaper touches: its step goes `failed` with an
+"Interrupted — … restarted while removing … may still be running and billing" error.
 
 One shape is parked rather than failed: a job whose connect step already ran.
 The crew exists and is registered, so `failed` would hide a working instance
@@ -1509,7 +1619,7 @@ whose current variable parts are all charset-bound literals.
 | The pane says the crew's token could not be confirmed or re-minted, while the top pill reads connected | The SSH forward is up but the remote gateway does not answer for the token, and a fresh mint failed too. Start the remote gateway (see the `Could not reach gateway on port N` row), or use **Diagnose**. |
 | Token mint fails with `Could not reach gateway on port N` | Nothing is listening on the remote: an installer put the binary there but never started a gateway. The stderr names the remedy: `kirocrew gateway` for this login, or `kirocrew service install` for one that survives logout. |
 | Connect fails with an SSH auth error | Refresh your SSH credentials (re-add the key to `ssh-agent`); `BatchMode` never prompts, so a missing credential is an immediate failure. Tunnels self-heal once auth is restored. |
-| Connect fails for another reason | Use **Diagnose**. The ladder reports the first broken link: `ssh_unreachable` (check SSH access or the host alias), `remote_down` (remote gateway not listening), `not_connected` (SSH and remote are fine, this instance has no tunnel yet: click Connect), or `tunnel_down` (reconnect). |
+| Connect fails for another reason | Use **Diagnose**. The ladder reports the first broken link: `ssh_unreachable` (check SSH access or the host alias), `ssh_client_missing` (the local OpenSSH client could not be started: install it or put `ssh` on the gateway's PATH), `remote_down` (remote gateway not listening), `not_connected` (SSH and remote are fine, this instance has no tunnel yet: click Connect), or `tunnel_down` (reconnect). |
 | "local port N was taken while connecting" | The allocator picked a port that something grabbed in the moment before `ssh` bound it. Retry. If it persists, stop whatever keeps taking ports in that range or move `instances.tunnel_base_port` to a quieter one. |
 | Instance keeps dropping | The health probe plus 2-tier self-heal retry: a rebuild that fails outright spans roughly a two-minute window (8 attempts, capped-exponential backoff), while a forward that re-binds but whose far end stays dead additionally spends one probe window per attempt (`probe_failure_threshold` x `probe_interval`, 3 x 10s), so handoff to diagnosis takes `attempts x (30s + backoff)` ~= 6 minutes at the defaults. Tune `instances.max_recovery_attempts` / `recover_backoff_max_secs` / `probe_failure_threshold`; both recovery values are clamped so they cannot loop indefinitely. If self-heal gives up, diagnosis runs automatically. Check the remote gateway and SSH stability. |
 | A pane vanished from the warm set but its switcher entry is still there | It was LRU-evicted (warm set full). The tunnel is untouched: selecting the crew re-warms it, though the re-mint plus SPA cold boot makes that look like a reconnect. Only an explicit `instances.warm_set_cap`, or a fleet past the automatic ceiling (`WARM_SET_CAP_AUTO_CEILING`), can now be below the number of registered crews — set it to `0` to let the cap track the registry. |
@@ -2032,7 +2142,10 @@ Two SSM-specific behaviours:
   `session-manager-plugin` grandchild is what actually holds the forwarded port:
   `terminate()` on the `aws` wrapper alone orphans it and wedges the port. Doing
   this with raw `os.killpg`/`os.getpgid` would silently degrade to
-  wrapper-only termination on Windows, which Kiro Crew supports.
+  wrapper-only termination on Windows, which Kiro Crew supports. Windows records
+  no process group, so a plugin that outlives an already-exited wrapper is not
+  reaped there; when either pipe is still open after the settle wait, teardown
+  logs a WARNING naming the instance and `127.0.0.1:<port>`, and signals nothing.
 - **Readiness timeout.** `session-manager-plugin` completes a WebSocket handshake
   with the SSM service before binding, so the SSM transport uses a longer default
   connect timeout than a direct ssh TCP connect. An explicit caller-supplied
@@ -2090,6 +2203,15 @@ remote and stays `remote_down`, as do every other dispatch failure and an instal
 remote with no live gateway. Nothing here is a new AWS call or permission: the probe
 already ran over `send-command`.
 
+Connect's mint names two of those causes itself. When the SSM mint fails with sudo's
+`unknown user` on stderr, or with the candidate search's own
+`NO_LAUNCHER_MARKER` line (no launcher where the mint looked; a bare exit 127, which a
+launcher that ran or a custom `remote_bin` can return too, does not count), its
+`TokenMintError` starts with the same sentence as `ssm_user_unknown` /
+`remote_not_installed`, then the raw status and redacted tails. The sentences live in
+`ssm_token_mint` and the ladder imports them, so Connect and Diagnose cannot word one
+cause two ways.
+
 `ssm_unreachable` and `ssm_target_missing` are SSM-specific diagnosis codes; the shared
 rungs reuse SSM-worded reasons so the copy never tells an SSM user to "check SSH access".
 `ssm_target_missing` exists because `ssm_target` is a fixed id: after an instance is
@@ -2103,6 +2225,11 @@ the reason names all three causes. A terminated instance SSM still lists, a read
 nothing, and a read that errors all read as `ssm_unreachable`, so if SSM answers an
 unknown id with an error rather than an empty list the result is the less specific code,
 never a wrong one. Nothing resolves a fixed `ssm_target` to its replacement.
+
+A `SandboxUnavailableError` from rung 1's `aws` spawn is not an SSM answer: the hub's
+own sandbox refused to start the CLI, so no call reached AWS. The ladder stops there
+with `unknown` and the error's own message, never `ssm_unreachable` and its SSM agent
+and IAM advice.
 
 ### Reuse of the launcher's SSM primitives
 
@@ -2273,7 +2400,7 @@ existing session, on either side. Consequences worth stating:
 | **`layer_b_kas`** (a KAS session: `session.json` + `messages.jsonl`) | **yes (v2)** | The same, for the default engine's session store (§14.1a). `messages.jsonl` is byte-exact; `session.json` drops `_meta` and `description` before it leaves, and gets a fresh `sess_` id, an empty title and this host's default workspace on arrival. |
 | sub-agent conversations | no | Their results are already inside Layer B as injected context. Only `spawn_continue` on one specific sub-agent is lost. |
 | memory (preferences, semantic KV, lessons) | no | A workspace's memory is a per-instance scope, and copying it across hosts is the risky, hard-to-undo part of a transfer. The peer keeps its own. |
-| `title` | yes | Prefixed `⇄ ` and suffixed `(from <origin>)` on arrival, so a transferred tab is never mistaken for a locally-born one. The prefix is stripped before re-bundling so a session bounced back and forth does not accumulate one prefix per hop. |
+| `title` | yes | Prefixed `⇄ ` and suffixed `(from <origin>)` on arrival, so a transferred tab is never mistaken for a locally-born one. The prefix is stripped before re-bundling so a session bounced back and forth does not accumulate one prefix per hop. The sender's `origin` is its `dashboard.instance_label` when set, else its host's first DNS label (`local_instance_label`), so two gateways on one host send distinguishable origins only once each has a label. |
 | `agent` | hint only | Applied only if the target has an agent by that name, else dropped. An agent template is a local object; carrying the name blindly would leave the slot pointing at nothing. |
 | **`project`** | **no** | The headline decision. The source's checkout path almost never exists on the target (a Mac worktree path on a Linux dev desk), and a slot pointing at a missing directory scopes file search and steering to nothing. The session arrives **unscoped** and the user re-picks a project. |
 | `model` | no | Accounts differ in entitlement, so an id the source is served can fail at runtime on the target. The target resolves its own default ([model-selection](../common/model-selection.md)). |
@@ -3274,7 +3401,9 @@ broken link:
    Not ready answers `ssm_unreachable` with the preflight's own reason. An `aws`
    CLI that cannot be started (any `OSError` other than a missing binary, which
    the preflight already reports) answers `ssm_unreachable` with that reason, not
-   an error out of the ladder.
+   an error out of the ladder. A `SandboxUnavailableError` (the hub's own sandbox
+   refused to start `aws`) answers `unknown` with the error's message, as in the
+   SSM ladder.
 2. If no local port is recorded, `not_connected`.
 3. `local_forward`: a TCP connect to `127.0.0.1:<local_port>`. Refused answers
    `tunnel_down`.

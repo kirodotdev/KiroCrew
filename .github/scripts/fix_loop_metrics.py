@@ -652,7 +652,7 @@ LOCAL_COMMAND_JOBS = frozenset(
         # avoidable as one red only in a lint job.
         "Backend Ratchets & Boundaries",
         "Frontend Ratchets & i18n",
-        # fast-gate.yml's fourteen stdlib gates run as steps of this one job,
+        # fast-gate.yml's fifteen stdlib gates run as steps of this one job,
         # so a red on any of them reaches the census under this single name.
         "Source Gates",
         "Static Ratchet Gate",

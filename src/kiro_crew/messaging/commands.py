@@ -555,13 +555,13 @@ def compact_unsupported_reply(backend: str) -> str:
     arm = compact_refusal_arm(backend)
     if arm == COMPACT_ARM_HARNESS_MANAGED:
         return (
-            f"ℹ️ The `{backend}` backend manages compaction automatically — it "
+            f"Note: The `{backend}` backend manages compaction automatically — it "
             "summarizes the conversation on its own as context fills, so manual "
             "`/compact` isn't needed (and isn't supported) here."
         )
     if arm == COMPACT_ARM_RECYCLED:
         return (
-            f"ℹ️ The `{backend}` backend has no way to compact a conversation — "
+            f"Note: The `{backend}` backend has no way to compact a conversation — "
             "there is no `/compact` to run, and it summarizes nothing on its own. "
             "BECAUSE of that, Kiro Crew starts a fresh session for you when the context "
             "fills up: there is nothing else that can keep it from overflowing. The chat "
@@ -569,7 +569,7 @@ def compact_unsupported_reply(backend: str) -> str:
             "to start fresh on your own terms before that happens."
         )
     return (
-        f"ℹ️ Manual `/compact` isn't available on the `{backend}` backend, and "
+        f"Note: Manual `/compact` isn't available on the `{backend}` backend, and "
         "Kiro Crew can't compact it for you either. Start a new chat with `/new` before "
         "the context fills up."
     )

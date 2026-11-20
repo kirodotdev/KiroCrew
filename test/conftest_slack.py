@@ -11,7 +11,6 @@ from __future__ import annotations
 import pytest
 
 from kiro_crew.slack.client import SlackClientOps
-from kiro_crew.slack.handler import _PHASE_EMOJIS, _build_phase_emojis
 
 
 @pytest.fixture(autouse=True)
@@ -51,6 +50,11 @@ def _enterprise_bypass(_floor_monkeypatch) -> None:
 @pytest.fixture(autouse=True)
 def _clean_emojis():
     """Reset _PHASE_EMOJIS to defaults before each test (suppresses local config)."""
+    # Imported here, not at module level: ``kiro_crew.slack.handler`` reaches
+    # most of the package, and a module-level import made every collection pay
+    # for it (test/test_conftest_import_budget.py holds that line).
+    from kiro_crew.slack.handler import _PHASE_EMOJIS, _build_phase_emojis
+
     original = dict(_PHASE_EMOJIS)
     _PHASE_EMOJIS.clear()
     _PHASE_EMOJIS.update(_build_phase_emojis({})[0])
@@ -132,7 +136,7 @@ class MockSlackClient(SlackClientOps):
         )
         return ts
 
-    async def update_message(self, channel, ts, text):
+    async def update_message(self, channel, ts, text="", blocks=None):
         self.actions.append(("update", {"channel": channel, "ts": ts, "text": text}))
 
     async def delete_message(self, channel, ts):

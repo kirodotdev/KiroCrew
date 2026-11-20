@@ -191,6 +191,22 @@ def test_reconnect_recomputes_enabled_and_hoists_new_credentials(seams) -> None:
     assert seams.propagate_calls == [False]
 
 
+def test_reconnect_drops_the_previous_bots_shared_user_confirmations(seams) -> None:
+    # slack.shared_access: a confirmation the old bot gave (maybe in another
+    # workspace) does not survive new credentials.
+    from kiro_crew.slack import shared_access
+
+    old = object()
+    shared_access.install(old)
+    shared_access._verdicts["U0FRIEND01"] = object()  # type: ignore[assignment]
+    try:
+        _run(_Orch())
+        assert shared_access._client is not old
+        assert "U0FRIEND01" not in shared_access._verdicts
+    finally:
+        shared_access.reset()
+
+
 def test_reconnect_closes_the_old_socket_before_the_handshake(seams) -> None:
     orch = _Orch()
     _run(orch)
@@ -503,7 +519,12 @@ def _code_channel_turn_across_a_reconnect(
     monkeypatch.setattr(slack_client_mod, "RealSlackClient", lambda token: new)
     monkeypatch.setattr(cc_status, "_gate", lambda: True)
     monkeypatch.setattr(cc_status, "_slack_provider", lambda: orch.slack)
-    binding = SimpleNamespace(channel_id="C0CODE")
+
+    async def _open(_binding: Any, **_kw: Any) -> str:
+        return ""  # the write gate is test_slack_code_channel_fences.py's; open here
+
+    monkeypatch.setattr(cc_status, "_refused", _open)
+    binding = SimpleNamespace(channel_id="C0CODE", session_key="chat-1-1")
 
     async def _turn() -> None:
         await cc_status._on_start(binding, None)  # type: ignore[arg-type]

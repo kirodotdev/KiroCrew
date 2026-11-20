@@ -230,6 +230,8 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _granted_names,
     _granted_patterns,
     _has_global_inline_flags,
+    _hook_matcher_alternatives,
+    _hook_tool_matches,
     _host_builtin_alias,
     _is_declared_builtin_mcp_server,
     _is_deepseek_read_only_builtin,
@@ -1502,6 +1504,38 @@ for _gate_entry in ("judge", "on_tool_call"):
 del _gate_entry, _gate_body
 
 
+def _tier_app_browser_sites(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """An app's OWN dashboard slot calling the ``browser`` tool on its owner-approved sites.
+
+    The conditions live in :func:`kiro_crew.apps.browser_sites.gate_grants`, imported
+    when a call reaches this row, so no module of it is on an MCP listing's path. A grant
+    vouches for the caller, so ``classifier_only`` skips it like the other grant rows.
+    """
+    if facts.classifier_only:
+        return None
+    from kiro_crew.apps import browser_sites  # noqa: PLC0415 - off the listing path
+
+    if not browser_sites.gate_grants(facts):
+        return None
+    return ToolHookResult.auto_approve(identity_grant=True)
+
+
+def _tier_app_own_tools(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A first-party app's OWN agent calling a tool that same app's manifest declares.
+
+    The conditions live in :func:`kiro_crew.apps.own_agent_tools.gate_grants`, imported
+    when a call reaches this row. A grant vouches for the caller, so ``classifier_only``
+    skips it like the other grant rows.
+    """
+    if facts.classifier_only:
+        return None
+    from kiro_crew.apps import own_agent_tools  # noqa: PLC0415 - off the listing path
+
+    if not own_agent_tools.gate_grants(facts):
+        return None
+    return ToolHookResult.auto_approve(identity_grant=True)
+
+
 # The tool gate, row by row, in the order ``HookManager.judge`` runs it. Built after
 # ``compose`` so each row holds the rebound tier function, which reads this module's
 # globals -- built before it, a row would keep the owner's original, and a patch of
@@ -1531,6 +1565,8 @@ GATE_TIERS: tuple[GateTier, ...] = (
     GateTier("spec-denies", "deny_policy", _tier_spec_denies),
     GateTier("spec-unjudged-denies", "deny_policy", _tier_spec_unjudged_denies),
     GateTier("app-own-server", "grant", _tier_app_own_server),
+    GateTier("app-own-tools", "grant", _tier_app_own_tools),
+    GateTier("app-browser-sites", "grant", _tier_app_browser_sites),
     GateTier("operator-grants", "grant", _tier_operator_grants),
     GateTier("spec-builtin-grant", "grant", _tier_spec_builtin_grant),
     GateTier("batch-guard-grant", "grant", _tier_batch_guard_grant),

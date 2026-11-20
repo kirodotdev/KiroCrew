@@ -4,8 +4,8 @@ status: partial
 revision: v7
 author: bolichen
 created: 2026-09-12
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr:
 implementation-prs: [10521, 15876, 16347, 16355, 17017, 17030]
 tracking-issues: ["#15244"]

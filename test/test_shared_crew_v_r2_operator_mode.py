@@ -22,7 +22,7 @@ from shared_crew_host_isolation import host_isolation  # noqa: F401
 
 from kiro_crew.dashboard import revocation_gen, token_auth
 from kiro_crew.dashboard.routes import register_all
-from kiro_crew.shared_crew import crew_mode, people, routes_identity
+from kiro_crew.shared_crew import crew_mode, people, preview, routes_identity
 from kiro_crew.shared_crew.attribution import creator_of_public, public_attribution
 from kiro_crew.shared_crew.contracts import (
     AttributionAvailability,
@@ -63,6 +63,8 @@ def state(tmp_path, monkeypatch):
     monkeypatch.setattr(token_auth, "_app_perms_cache", {})
     monkeypatch.setattr(token_auth, "_revoked_store_singleton", None)
     monkeypatch.setattr(revocation_gen, "_gen", 0)
+    # Creators from the catalogue count only with the Shared Crew preview on.
+    monkeypatch.setenv(preview.PREVIEW_ENV, "1")
     people.reset_for_tests()
     st = _make_state(tmp_path)
     st.broadcast_ws = MagicMock()

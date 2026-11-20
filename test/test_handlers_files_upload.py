@@ -16,6 +16,7 @@ import io
 import logging
 import mimetypes
 import os
+import threading
 import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -507,6 +508,51 @@ async def test_upload_cnab_rem_ret_is_accepted_as_text(
 
 
 @pytest.mark.asyncio
+async def test_upload_eml_is_accepted_as_text(
+    upload_dir: Path,
+    mock_sel,
+) -> None:
+    """A saved email message (``.eml``) uploads as text, stored byte-for-byte.
+
+    The payload is a small multipart MIME message with CRLF line endings and a
+    base64 attachment part, the shape mail clients save.
+    """
+    payload = (
+        b"From: Sender <sender@example.com>\r\n"
+        b"To: Recipient <recipient@example.com>\r\n"
+        b"Subject: Quarterly numbers\r\n"
+        b"Date: Mon, 02 Nov 2026 09:00:00 +0000\r\n"
+        b"MIME-Version: 1.0\r\n"
+        b'Content-Type: multipart/mixed; boundary="b1"\r\n'
+        b"\r\n"
+        b"--b1\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"\r\n"
+        b"See attached.\r\n"
+        b"--b1\r\n"
+        b'Content-Type: application/pdf; name="q3.pdf"\r\n'
+        b"Content-Transfer-Encoding: base64\r\n"
+        b"\r\n"
+        b"JVBERi0xLjQK\r\n"
+        b"--b1--\r\n"
+    )
+    form = aiohttp.FormData()
+    form.add_field(
+        "file",
+        payload,
+        filename="thread.eml",
+        content_type="message/rfc822",
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    saved = Path(body["paths"][0])
+    assert saved.name.endswith("_thread.eml")
+    assert saved.read_bytes() == payload
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("extension", "payload"),
     [
@@ -923,3 +969,50 @@ async def test_upload_with_a_decomposed_accent_is_stored_composed(upload_dir: Pa
         [stored] = (await resp.json())["paths"]
 
     assert Path(stored).name.endswith("caf\u00e9.txt"), ascii(Path(stored).name)
+
+
+@pytest.mark.asyncio
+async def test_upload_destination_check_runs_off_the_event_loop_thread(
+    upload_dir: Path, mock_sel, monkeypatch
+) -> None:
+    """Resolving the destination follows symlinks, which is a blocking
+    file-system call; it must run on a worker thread, not the event loop."""
+    from kiro_crew.dashboard.handlers import files as files_mod
+
+    main_thread_ident = threading.get_ident()
+    seen_idents: list[int] = []
+    real_check = files_mod._inside_upload_dir
+
+    def _recording_check(dest: Path, root: Path) -> bool:
+        seen_idents.append(threading.get_ident())
+        return real_check(dest, root)
+
+    monkeypatch.setattr(files_mod, "_inside_upload_dir", _recording_check)
+    form = aiohttp.FormData()
+    form.add_field("file", b"body\n", filename="a.txt", content_type="text/plain")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+
+    assert len(seen_idents) == 1
+    assert seen_idents[0] != main_thread_ident
+
+
+@pytest.mark.asyncio
+async def test_upload_destination_outside_the_folder_is_refused(
+    upload_dir: Path, mock_sel, monkeypatch
+) -> None:
+    from kiro_crew.dashboard.handlers import files as files_mod
+
+    monkeypatch.setattr(files_mod, "_inside_upload_dir", lambda _dest, _root: False)
+    form = aiohttp.FormData()
+    form.add_field("file", b"body\n", filename="a.txt", content_type="text/plain")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 400
+        assert (await resp.json()) == {"error": "Invalid filename"}
+
+    kwargs = mock_sel.log_api_access.call_args.kwargs
+    assert kwargs["outcome"] == "rejected"
+    assert kwargs["resources"].endswith("reason:path_traversal")
+    assert not any(upload_dir.iterdir())

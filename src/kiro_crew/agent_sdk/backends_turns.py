@@ -152,7 +152,11 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # denial drops nothing, and the steer is reported consumed when the turn ends
 # with ``end_turn``; a cancelled or failed turn queues it. claude runs one adapter per
 # session, so ``AcpClient`` speaks the request for it, and only when the handshake
-# advertised it.
+# advertised it. A LIVE capture against claude-agent-acp 0.94.0, driven through
+# ``AcpClient``: ``test/fixtures/acp_frames/claude/steering-live.jsonl``. A steer sent
+# while a Bash call ran was held until the call completed, then sent and answered
+# ``injected``; the model's next request carried the tool result and then the steered
+# text, and the turn ended ``end_turn``.
 #
 # pi is a member on a LIVE capture against pi-acp 0.0.34 over pi 1.4.0, driven through
 # Crew's own ``AcpClient``: ``test/fixtures/acp_frames/pi/steering-live.jsonl``. pi-acp
@@ -976,18 +980,24 @@ ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # kas is not a member: a provider failure ends its prompt with a JSON-RPC error.
 # claude is not a member: claude-agent-acp ends a failed turn with a JSON-RPC
 # error rather than with text.
-# opencode, goose, pi and deepseek are not members: none of them was read writing a
+# opencode, goose and deepseek are not members: none of them was read writing a
 # provider failure as message text.
+# pi is not a member: pi-acp writes nothing of a failed model call and ends it
+# ``end_turn``; Crew's gate extension reports the failure as a nonce-bound notify
+# envelope instead, which ``AcpClient``'s read loop fails the turn on
+# (``acp.pi_steer_turn.model_error``).
 ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR = frozenset({ACP_BACKEND_CODEX})
 
 # Each lands its turns' billing or token counts in TurnUsage (agent-host-contract.md §6), so a
-# turn reporting none billed none. §6 establishes no count for codex or pi; deepseek reports occupancy.
+# turn reporting none billed none. §6 establishes no count for pi; deepseek reports occupancy.
 # Live captures, one per member: kiro-cli 2.32.0 bills each turn as a ``_kiro.dev/metadata``
 # meteringUsage unit=credit entry (acp_frames/kiro/compaction-live.jsonl); KAS 0.66.70 as a
 # turn_completion promptTurnSummaries unit=credit entry (acp_frames/kas/turn-usage-live.jsonl);
-# claude, opencode and goose as token counts on the ``session/prompt`` result's ``usage``
+# claude, opencode, goose and codex as token counts on the ``session/prompt`` result's ``usage``
 # (acp_frames/claude/session.jsonl, acp_frames/opencode/session-live.jsonl,
-# acp_frames/goose/turn-live.jsonl).
+# acp_frames/goose/turn-live.jsonl, acp_frames/codex/session-live.jsonl). codex-acp 2.3.0
+# answers ``usage: null`` on a turn the provider refused (acp_frames/codex/turn-usage-null-live.jsonl,
+# an HTTP 503), which ``parse_prompt_token_usage`` reads as no counts.
 ACP_BACKENDS_REPORT_USAGE = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -995,6 +1005,7 @@ ACP_BACKENDS_REPORT_USAGE = frozenset(
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_GOOSE,
+        ACP_BACKEND_CODEX,
     }
 )
 

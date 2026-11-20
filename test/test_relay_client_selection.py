@@ -75,7 +75,8 @@ class _EditionTunnel(DefaultTunnelProvider):
 class TestSelection:
     def test_off_by_default(self) -> None:
         cfg = KiroCrewConfig()
-        assert cfg.tunnel.relay_enabled is False
+        # Unset, and with no team key or workload identity that is off.
+        assert cfg.tunnel.relay_enabled is None
         assert type(build_default_context(cfg).tunnel) is DefaultTunnelProvider
 
     def test_relay_enabled_puts_the_relay_client_in_the_slot(self) -> None:
@@ -133,7 +134,12 @@ class TestSettings:
     @pytest.mark.parametrize(
         ("names", "missing"),
         [
-            ({"host_url": "", "crew_domain": ""}, "relay host URL"),
+            # Neither name: the built-in lease service. A team Crew there still needs
+            # its crew API key; a personal Crew with none set uses the sign-in.
+            (
+                {"host_url": "", "crew_domain": "", "lease_token_type": "API_KEY"},
+                "tunnel.relay_lease_credential is not set",
+            ),
             ({"crew_domain": ""}, "relay Crew domain"),
             ({"host_url": ""}, "relay host URL"),
         ],
@@ -475,10 +481,13 @@ class TestThroughTheTunnelWrapper:
     @pytest.mark.parametrize(
         ("tunnel", "names"),
         [
-            ({}, "relay host URL"),
-            ({"relay_lease_url": "https://lease.example"}, "tunnel.relay_lease_credential"),
+            ({"relay_lease_token_type": "API_KEY"}, "tunnel.relay_lease_credential is not set"),
+            (
+                {"relay_lease_url": "https://lease.example", "relay_lease_token_type": "API_KEY"},
+                "tunnel.relay_lease_credential",
+            ),
         ],
-        ids=["no-lease", "lease-without-credential"],
+        ids=["built-in-lease-without-api-key", "lease-without-api-key"],
     )
     async def test_the_relay_enable_help_matches_a_start_without_a_lease(
         self, tunnel: dict, names: str
@@ -576,8 +585,11 @@ class TestTheRelaySwitch:
     def test_only_the_json_boolean_true_turns_it_on(self) -> None:
         from kiro_crew.config.section_builders import _build_tunnel_config
 
-        assert _build_tunnel_config({}).relay_enabled is False
-        for hand_edit in ("true", 1, "yes", None):
+        # Absent and null are unset (the credential decides); any other non-boolean
+        # left by a hand edit is off.
+        assert _build_tunnel_config({}).relay_enabled is None
+        assert _build_tunnel_config({"relay_enabled": None}).relay_enabled is None
+        for hand_edit in ("true", 1, "yes"):
             assert _build_tunnel_config({"relay_enabled": hand_edit}).relay_enabled is False
         assert _build_tunnel_config({"relay_enabled": True}).relay_enabled is True
 

@@ -173,3 +173,50 @@ describe('closeConfirmPrompt', () => {
     }
   })
 })
+
+describe('closeConfirmPrompt in a shared Crew', () => {
+  const person = (id: string, name: string) => ({ id, kind: 'human' as const, display: { name, login: '' } })
+  const startedBy = (id: string, name: string) => ({
+    attribution: { creator: person(id, name), availability: 'recorded' as const, created_at: 1 },
+  }) as unknown as Partial<ChatSlot>
+
+  it('always asks for a chat another person started, on every path, and names them', () => {
+    const state = stateWith(startedBy('relay:sam', 'Sam'))
+    for (const opts of [{ settingOn: false }, { settingOn: false, checkBusy: false }, { settingOn: true }]) {
+      const prompt = promptText(state, KEY, { ...opts, viewerIds: ['relay:ana'] })
+      expect(prompt).toContain(i18nT('hooks.useSessionActions.close_confirm.reason_other_starter', { name: 'Sam' }))
+      expect(prompt).not.toContain('Nothing is running in it.')
+      expect(prompt).toContain(t('actions'))
+    }
+  })
+
+  it('names live work after the person who started it', () => {
+    const prompt = promptText(stateWith({ ...startedBy('relay:sam', 'Sam'), running: true }), KEY, { settingOn: false, viewerIds: ['relay:ana'] })!
+    expect(prompt.indexOf(i18nT('hooks.useSessionActions.close_confirm.reason_other_starter', { name: 'Sam' }))).toBeLessThan(prompt.indexOf(t('reason_turn')))
+  })
+
+  it("keeps today's rule for the viewer's own chat, and when no viewer is known", () => {
+    const state = stateWith(startedBy('relay:ana', 'Ana'))
+    expect(promptText(state, KEY, { settingOn: false, viewerIds: ['relay:ana'] })).toBeNull()
+    expect(promptText(stateWith(startedBy('relay:sam', 'Sam')), KEY, { settingOn: false })).toBeNull()
+    expect(promptText(stateWith(startedBy('relay:sam', 'Sam')), KEY, { settingOn: false, viewerIds: [] })).toBeNull()
+  })
+
+  it("does not ask the owner about a chat they started under another of their ids", () => {
+    // The desktop app writes as local-app; the startup link reads as local-startup.
+    const state = stateWith(startedBy('local:local-app', 'this-mac'))
+    expect(promptText(state, KEY, { settingOn: false, viewerIds: ['local:local-app', 'local:local-startup'] })).toBeNull()
+    expect(promptText(state, KEY, { settingOn: false, viewerIds: ['local:local-startup'] })).toContain(
+      i18nT('hooks.useSessionActions.close_confirm.reason_other_starter', { name: 'this-mac' }))
+  })
+
+  it('does not ask for a chat no person started', () => {
+    const scheduled = { attribution: { creator: { id: 'system', kind: 'system', display: { name: '', login: '' } }, availability: 'recorded', created_at: 1, trigger: { kind: 'scheduled', name: 'nightly' } } } as unknown as Partial<ChatSlot>
+    expect(promptText(stateWith(scheduled), KEY, { settingOn: false, viewerIds: ['relay:ana'] })).toBeNull()
+  })
+
+  it('the reason resolves to authored English with the name filled in', () => {
+    expect(i18nT('hooks.useSessionActions.close_confirm.reason_other_starter', { name: 'Sam' }))
+      .toBe('Sam started this chat. Closing it closes it for everyone in this Crew.')
+  })
+})

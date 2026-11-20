@@ -68,7 +68,7 @@ def _theme_contrast_hint(flagged: object) -> str:
     if not flagged:
         return ""
     return (
-        "\n\n⚠️  Hardcoded colors, no theme variables: this content renders "
+        "\n\nWarning: Hardcoded colors, no theme variables: this content renders "
         "inside the dashboard's themed iframe, and literal colors (#hex / "
         "rgb() / hsl()) clash when the user switches between light, dark and "
         "custom themes -- worst when only one half of a foreground/background "
@@ -159,14 +159,14 @@ def artifact_save(name: str, args: dict[str, Any]) -> str:
                 existing_slug = conflicts[0]["slug"]
                 if len(conflicts) > 1:
                     dedup_hint = (
-                        "\n\n⚠️  Possible duplicate: a widget artifact named "
+                        "\n\nWarning: Possible duplicate: a widget artifact named "
                         f'"{target_name}" already exists at '
                         f"slug={existing_slug!r} (and {len(conflicts) - 1} "
                         "other same-named match(es))."
                     )
                 else:
                     dedup_hint = (
-                        "\n\n⚠️  Possible duplicate: a widget artifact named "
+                        "\n\nWarning: Possible duplicate: a widget artifact named "
                         f'"{target_name}" already exists at '
                         f"slug={existing_slug!r}."
                     )
@@ -203,7 +203,7 @@ def artifact_save(name: str, args: dict[str, Any]) -> str:
         cost = wm.get("cost") or {}
         if not (isinstance(cost, dict) and cost.get("estimates")):
             cost_hint = (
-                "\n\n⚠️  webapp_metadata.cost.estimates is empty — the "
+                "\n\nWarning: webapp_metadata.cost.estimates is empty — the "
                 "artifact card's cost area will render blank. Call "
                 "`artifact_update` with projected what-if estimates "
                 "(e.g. views buckets with usd amounts) per the "
@@ -221,7 +221,7 @@ def artifact_save(name: str, args: dict[str, Any]) -> str:
     taken = d.get("slug_collided_with")
     if taken and not dedup_hint:
         collision_hint = (
-            f"\n\n⚠️  slug {taken!r} is already taken, so this is a NEW artifact "
+            f"\n\nWarning: slug {taken!r} is already taken, so this is a NEW artifact "
             f"at slug={slug!r} — not a new version of {taken!r}. If you meant to "
             f"revise that artifact, delete this one and call `artifact_update` on "
             f"{taken!r}. If both are genuinely needed, rename one to disambiguate."

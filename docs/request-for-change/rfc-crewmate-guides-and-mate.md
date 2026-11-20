@@ -3,8 +3,8 @@ title: Crewmate guides, change cards and Mate, a first crewmate
 status: implemented
 author: buluoray
 created: 2026-10-08
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: 18326
 implementation-prs: [18301, 18317]
 tracking-issues: [18300, 18315]

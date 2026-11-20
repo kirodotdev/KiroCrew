@@ -150,7 +150,7 @@ def installed_service_has_managed_marker() -> "bool | None":
 
 def _unsupported_message() -> None:
     print(
-        "❌ kirocrew service management is only supported on Linux (systemd)\n"
+        "Error: kirocrew service management is only supported on Linux (systemd)\n"
         "   and macOS (launchd). On other platforms run `kirocrew gateway`\n"
         "   directly or wrap it in tmux/screen yourself.",
         file=sys.stderr,
@@ -162,8 +162,9 @@ def install_service() -> int:
 
     Returns 0 on success, non-zero otherwise. On Linux the install
     prompts for sudo on first use to write
-    ``/etc/systemd/system/kirocrew.service`` and to run
-    ``systemctl daemon-reload / enable / restart``. The gateway itself
+    ``/etc/systemd/system/kirocrew.service``, to run
+    ``systemctl daemon-reload / enable / restart``, and to run
+    ``loginctl enable-linger`` for the unit's account. The gateway itself
     runs as ``User=$USER`` once started — kirocrew code is never
     invoked under sudo. On macOS no sudo is required. The CLI is
     expected to surface the sudo prompt to a real terminal.
@@ -173,23 +174,20 @@ def install_service() -> int:
         try:
             profile = linux.install()
         except linux.ServiceInstallError as exc:
-            print(f"❌ {exc}", file=sys.stderr)
+            print(f"Error: {exc}", file=sys.stderr)
             return 1
-        print("✅ kirocrew service installed and started.")
+        print("kirocrew service installed and started.")
         print(f"   unit: {linux.UNIT_PATH}")
         # Reported here, but performed inside linux.install() before the unit is
         # started — the directive only applies at service start. Deliberately
         # non-fatal: a failure warns and leaves the service running.
         if profile.message:
-            print(f"   {'' if profile.ok else '⚠️ '}{profile.message}")
-        # A system unit's runtimes live under the service account's user manager,
-        # which logind stops at logout unless linger is on. Warn here, after the
-        # service is up: without it the gateway survives disconnects but every
-        # agent runtime dies with the account's last login session. Non-fatal —
-        # the install succeeded, and the account may enable linger at any time.
-        linger_warning = linux.linger_warning_for_service_account()
-        if linger_warning:
-            print(f"   ⚠️ {linger_warning}")
+            print(f"   {'' if profile.ok else 'Warning: '}{profile.message}")
+        # Agent runtimes stop at the account's last logout unless linger is on.
+        # Non-fatal: a failure only warns; the install has already succeeded.
+        linger = linux.enable_service_account_linger()
+        if linger is not None:
+            print(f"   {'' if linger[0] else 'Warning: '}{linger[1]}")
         _print_headless_auth_warning()
         _print_dropped_host_env_warning(plat)
         print()
@@ -202,9 +200,9 @@ def install_service() -> int:
         try:
             macos.install()
         except macos.ServiceInstallError as exc:
-            print(f"❌ {exc}", file=sys.stderr)
+            print(f"Error: {exc}", file=sys.stderr)
             return 1
-        print("✅ kirocrew service installed and started.")
+        print("kirocrew service installed and started.")
         print(f"   plist: {macos.PLIST_PATH}")
         _print_headless_auth_warning()
         _print_dropped_host_env_warning(plat)
@@ -232,7 +230,7 @@ def uninstall_service() -> int:
             # as it was found rather than carrying an orphaned userns permission.
             profile = linux.remove_apparmor_profile()
         except linux.ServiceInstallError as exc:
-            print(f"❌ {exc}", file=sys.stderr)
+            print(f"Error: {exc}", file=sys.stderr)
             return 1
         # Both scopes are always named: a unit can live in the system scope, in
         # the account's user scope (the SELinux remedy), or in neither, and the
@@ -241,26 +239,26 @@ def uninstall_service() -> int:
         # the warning sits on the scope that needs a hand, and only the exit code
         # says so.
         if report.removed_any:
-            print("✅ kirocrew service stopped and removed.")
+            print("kirocrew service stopped and removed.")
         else:
-            print("ℹ️  No kirocrew service was removed.")
+            print("Note: No kirocrew service was removed.")
         for scope, line in (("system", report.system), ("user", report.user)):
-            mark = "⚠️ " if scope in report.unfinished else ""
+            mark = "Warning: " if scope in report.unfinished else ""
             print(f"   {mark}{scope} scope: {line}")
         if profile.message:
-            print(f"   {'' if profile.ok else '⚠️ '}{profile.message}")
+            print(f"   {'' if profile.ok else 'Warning: '}{profile.message}")
         return 1 if report.incomplete else 0
     if plat == Platform.LAUNCHD:
         held_by = macos.uninstall()
         if held_by:
             print(
-                f"❌ launchd did not unload {LAUNCHD_LABEL}: it is still loaded in {held_by}.\n"
+                f"Error: launchd did not unload {LAUNCHD_LABEL}: it is still loaded in {held_by}.\n"
                 f"   Its plist and launcher were removed. Unload it by hand:\n"
                 f"   launchctl bootout {held_by}/{LAUNCHD_LABEL}",
                 file=sys.stderr,
             )
             return 1
-        print("✅ kirocrew service stopped and removed.")
+        print("kirocrew service stopped and removed.")
         return 0
     _unsupported_message()
     return 2
@@ -300,26 +298,26 @@ def install_launcher_profile(exec_path: str | None = None) -> int:
     """
     if current_platform() != Platform.SYSTEMD:
         print(
-            "ℹ️  The AppArmor sandbox profile is Linux-only — this host does not "
+            "Note: The AppArmor sandbox profile is Linux-only — this host does not "
             "restrict unprivileged user namespaces, so nothing is needed."
         )
         return 0
     outcome = linux.install_launcher_profile(exec_path)
     if outcome.message:
-        print(f"{'✅ ' if outcome.ok else '⚠️  '}{outcome.message}")
+        print(f"{'' if outcome.ok else 'Warning: '}{outcome.message}")
     return 0 if outcome.ok else 1
 
 
 def remove_launcher_profile() -> int:
     """Unload and delete the launcher profile. Idempotent."""
     if current_platform() != Platform.SYSTEMD:
-        print("ℹ️  Nothing to remove — the AppArmor sandbox profile is Linux-only.")
+        print("Note: Nothing to remove — the AppArmor sandbox profile is Linux-only.")
         return 0
     outcome = linux.remove_launcher_profile()
     if outcome.message:
-        print(f"{'✅ ' if outcome.ok else '⚠️  '}{outcome.message}")
+        print(f"{'' if outcome.ok else 'Warning: '}{outcome.message}")
     else:
-        print("✅ No AppArmor sandbox profile was installed.")
+        print("No AppArmor sandbox profile was installed.")
     return 0 if outcome.ok else 1
 
 
@@ -330,12 +328,12 @@ def sandbox_profile_status(exec_path: str | None = None) -> int:
     be built (covered, or a host that never needed the profile), 1 when it cannot.
     """
     if current_platform() != Platform.SYSTEMD:
-        print("✅ This platform does not restrict unprivileged user namespaces.")
+        print("This platform does not restrict unprivileged user namespaces.")
         return 0
     from kiro_crew.service import apparmor
 
     ok, detail = apparmor.launcher_status(exec_path)
-    print(f"{'✅ ' if ok else '❌ '}{detail}")
+    print(f"{'' if ok else 'Error: '}{detail}")
     return 0 if ok else 1
 
 

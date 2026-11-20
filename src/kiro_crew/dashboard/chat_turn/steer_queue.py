@@ -30,6 +30,7 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.chat_utils_injected_rows import (
     AUTOMATION_STEER_META,
     REQUEUED_STEER_ROW_MID_META,
+    RESOURCE_WAKE_KIND,
 )
 from kiro_crew.dashboard.session_deliver import WAKE_GENERATION
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, RESTORED_SEND_CHOSEN_KEY
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
         DashboardState,
         _ChatSlot,
         crew_log_emit,
+        effective_session_key,
         logger,
         possibly_consumed_steers,
         settle_consumed_steers,
@@ -527,6 +529,9 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             # card only: the entry and the row it drains into never carry it.
             _push_meta["requeuedSteer"] = True
             _push["meta"] = _push_meta
+            from kiro_crew.dashboard import responsive_chat as _rc
+
+            _rc.mark_written_on_push(slot, qid, _push)
             state.broadcast_ws("queue_push", _push)
         except Exception:
             # Broadcast is best-effort — the message is already safely in the
@@ -580,6 +585,7 @@ _QUEUE_KIND_ACTORS: dict[str, str] = {
     CRON_NOTIFICATION_KIND: "cron",
     SUBAGENT_COMPLETION_KIND: "subagent",
     MCP_APP_MESSAGE_KIND: "app",
+    RESOURCE_WAKE_KIND: "resource",
     # A re-routed automation refusal is the monitor subsystem talking, so the
     # turn it rides is attributed to the autonudge actor, never the person.
     AUTOMATION_NOTICE_KIND: "autonudge",
@@ -787,6 +793,49 @@ def _drop_stale_admissions(
                 else ""
             ),
         )
+
+
+def _drop_stale_resource_wakes(state: DashboardState, slot: _ChatSlot) -> None:
+    """Drop queued resource wakes that lack an active subscription.
+
+    This runs beside the containment sweep at the drain's synchronous admission
+    seam. A surviving wake therefore still belongs to this slot's effective
+    session and is not paused when it becomes a turn.
+    """
+    if not slot._queue:
+        return
+    import sys
+
+    module = sys.modules.get("kiro_crew.mcp_gateway.resource_subscriptions")
+    try:
+        service = module.active_service() if module is not None else None
+    except Exception:
+        service = None
+    session_key = effective_session_key(slot)
+    doomed: list[dict] = []
+    for entry in slot._queue:
+        if entry.get("kind") != RESOURCE_WAKE_KIND:
+            continue
+        meta = entry.get("meta")
+        subscription_id = meta.get("resourceSubscription") if isinstance(meta, dict) else None
+        current = None
+        if service is not None and isinstance(subscription_id, str) and subscription_id:
+            try:
+                current = service.find_subscription(session_key, subscription_id)
+                if current is not None:
+                    record, uri = current
+                    if service.paused(session_key, record.server, uri):
+                        current = None
+            except Exception:
+                current = None
+        if current is None:
+            doomed.append(entry)
+    for entry in doomed:
+        slot.queue_remove_by_id(entry["id"])
+        _remove_queued_by_id(slot.messages, entry["id"])
+        state.broadcast_ws("queue_pop", {"slot": slot.key, "content": "", "queue_id": entry["id"]})
+    if doomed:
+        logger.info("Dropped %d stale queued resource wake(s) for slot %s", len(doomed), slot.key)
 
 
 async def _on_steer_dropped(turn: _ChatTurn, event) -> None:

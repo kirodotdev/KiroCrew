@@ -283,17 +283,19 @@ def send_message(name: str, args: dict[str, Any]) -> str:
     # which defaults to Slack) so the caller can detect the miss and retry
     # instead of reading a success string for a notification-only send.
     if session == "slack":
-        return "⚠️ Slack unavailable — delivered as dashboard notification only (NOT in Slack)."
+        return (
+            "Warning: Slack unavailable — delivered as dashboard notification only (NOT in Slack)."
+        )
     if session in _CHANNEL_SESSIONS:
         return (
-            f"⚠️ {session} unavailable (not connected, or no configured DM target) — "
+            f"Warning: {session} unavailable (not connected, or no configured DM target) — "
             f"delivered as dashboard notification only (NOT in {session})."
         )
     if session:
         return "Session injection unavailable — delivered as notification."
     if is_cron:
         return (
-            "⚠️ Cron send reached the dashboard notification only — NOT posted to Slack "
+            "Warning: Cron send reached the dashboard notification only — NOT posted to Slack "
             "(owner DM unavailable: no Slack client or owner_id). Verify Slack delivery."
         )
     return "Notification delivered."

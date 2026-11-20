@@ -28,6 +28,7 @@ import { isDiffText } from '../../utils/diffUtils'
 import { countDiffStats } from '../../utils/diffLineCounts'
 import { extractFilePath } from '../../components/DiffBlock'
 import type { ChatMessage, ToolPayloadCut } from '../../types'
+import { isToolCallRow } from '../../lib/toolRowContract'
 
 /**
  * Upper bound (in newline count) for a full inline card. A whole-file create
@@ -101,7 +102,7 @@ export function presentToolDiff(
  * the collapsed-details rendering.
  */
 export function isDiffToolMessage(m: ChatMessage): boolean {
-  if (m.role !== 'tool' || !m.content?.startsWith('🔧')) return false
+  if (m.role !== 'tool' || !isToolCallRow(m.content)) return false
   const meta = m.meta as Record<string, unknown> | undefined
   return presentToolDiff(
     typeof meta?.kind === 'string' ? meta.kind : undefined,

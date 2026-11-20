@@ -36,7 +36,20 @@ const ARM_TIMEOUT_MS = 5000
  * countdown covers them; a run of them means the approval landing can no
  * longer be observed, which the user must hear rather than wait on forever.
  */
-export const ARM_POLL_FAILURE_THRESHOLD = 3
+const ARM_POLL_FAILURE_THRESHOLD = 3
+
+/**
+ * True once ARM_POLL_FAILURE_THRESHOLD `armStatus` polls in a row have failed, each
+ * counted once after its retries. Not `failureCount`: React Query restarts it at every
+ * fetch, and the dashboard's retry policy gives a 5xx a single retry, so it stops at 2.
+ */
+export function useArmPollFailing({ dataUpdatedAt, errorUpdateCount }: { dataUpdatedAt: number; errorUpdateCount: number }): boolean {
+  // Any answer ends the run, so the count restarts from the errors seen at the last one.
+  const [runStart, setRunStart] = useState({ dataUpdatedAt, errorUpdateCount })
+  if (runStart.dataUpdatedAt !== dataUpdatedAt) setRunStart({ dataUpdatedAt, errorUpdateCount })
+  const failedPolls = runStart.dataUpdatedAt === dataUpdatedAt ? errorUpdateCount - runStart.errorUpdateCount : 0
+  return failedPolls >= ARM_POLL_FAILURE_THRESHOLD
+}
 /**
  * How long `applying` waits for the apply's first progress push. An approval
  * starts the apply at once and it pushes within seconds, so an arm that went
@@ -96,12 +109,18 @@ export function RestartGatewayButton({
   restarting,
   onConfirm,
   testId,
+  disabled,
+  describedBy,
 }: {
   primary?: boolean
   pending: boolean
   restarting: boolean
   onConfirm: () => void
   testId: string
+  /** Hold the restart back for a reason the caller shows beside it. */
+  disabled?: boolean
+  /** Id of the element that says why the button is disabled. */
+  describedBy?: string
 }) {
   const [armed, setArmed] = useState(false)
   useEffect(() => {
@@ -111,26 +130,32 @@ export function RestartGatewayButton({
   }, [armed])
 
   const busy = pending || restarting
+  // A hold that lands mid-confirm drops the armed step, so the button never
+  // comes back already one click from restarting (state adjusted in render,
+  // React's pattern for a prop change; it settles in one pass).
+  if (disabled && armed) setArmed(false)
+  const live = armed && !disabled
   return (
     <Btn
-      primary={primary && !armed}
-      className={armed ? '!bg-[var(--warn)] !text-[var(--warn-fg)] hover:!opacity-80' : undefined}
-      disabled={busy}
+      primary={primary && !live}
+      className={live ? '!bg-[var(--warn)] !text-[var(--warn-fg)] hover:!opacity-80' : undefined}
+      disabled={busy || disabled}
+      aria-describedby={describedBy}
       data-testid={testId}
       // No static aria-label: the visible text IS the accessible name, and it is
       // what changes to announce the armed step. Pinning the label to "Restart
       // gateway" made a screen reader say the same thing on both clicks, hiding
       // the confirm from exactly the users who cannot see the colour change.
       onClick={() => {
-        if (busy) return
-        if (!armed) { setArmed(true); return }
+        if (busy || disabled) return
+        if (!live) { setArmed(true); return }
         setArmed(false)
         onConfirm()
       }}
     >
       <RefreshCw size={13} className={`lucide-inline ${busy ? 'animate-spin' : ''}`} /> {restarting
         ? i18nT('pages.settings.aboutPanel.restarting')
-        : armed
+        : live
           ? i18nT('pages.settings.aboutPanel.restart_confirm')
           : i18nT('pages.settings.aboutPanel.restart_gateway')}
     </Btn>
@@ -433,6 +458,7 @@ export function InAppUpdateFlow({
     enabled: isArmed,
     refetchInterval: 5000,
   })
+  const armPollFailing = useArmPollFailing(armStatusQuery)
   const polled = armStatusQuery.data
   const polledAt = armStatusQuery.dataUpdatedAt
   const refetchArmStatus = armStatusQuery.refetch
@@ -676,7 +702,7 @@ export function InAppUpdateFlow({
               testId="arm-copy-error"
             />
           )}
-          {armStatusQuery.failureCount >= ARM_POLL_FAILURE_THRESHOLD && (
+          {armPollFailing && (
             <ErrorNotice
               variant="inline"
               message={i18nT('pages.settings.aboutPanel.arm_status_poll_failing')}

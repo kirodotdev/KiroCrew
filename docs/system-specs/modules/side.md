@@ -796,9 +796,10 @@ it (measured on goose 1.50.1: with `shell` listed, a `touch` ran unasked).
   a `Permission.yaml` on case-insensitive storage stays out too. A side session
   with no scratch window, a home that cannot be built, or a `config.yaml` that
   does not parse as a mapping, is refused rather than started on the user's home.
-  POSIX only (`side_home_supported`): on Windows goose keeps its secrets under
-  `%APPDATA%`, outside the credential leaf the sensitive-path deny names, so a
-  goose side turn there keeps running `REJECT_ALL`, and the footer says so.
+  POSIX only (`side_home_supported`): on Windows goose keeps its config under
+  `%APPDATA%`, which `goose_config_dir` does not resolve, and linking needs a
+  symlink privilege, so a goose side turn there keeps running `REJECT_ALL`, and
+  the footer says so.
 - places no MCP server on the session array (`_goose_session_mcp_servers`), as
   on claude. A server named `developer` would also replace goose's builtin
   read tools.
@@ -1028,6 +1029,33 @@ memo on the second pass and eats the user's punctuation).
 `website/src/test/SideChat.imeEnter.test.tsx` drives this file's real textarea,
 because the IME defect was in the WIRING and a hook test cannot see it. A
 source-level guard fails if this file re-grows a local copy of any of them.
+
+A side question can carry attachments the way a main-composer message can: the
+attach control, Sketch, paste and drop all upload.
+`pages/chat/useSideChatUploads.ts` runs the main composer's upload flow
+(`useChatPaneUploads`, imported through the `components/ChatPane` facade; it uploads
+through `api.uploadFiles`) under a side key of its own (`sideUploadKey(slot)`), so
+the `composerSendHolds` hold, the cancel registry and the arrivals inbox of a side
+upload never touch the main composer's Send for the same slot, and the other way
+round. Finished paths are staged in the slot's `sideChatDrafts` entry (`files`),
+beside the text, so a chip survives an unmount. An upload that finishes while the
+panel is gone waits in the arrivals inbox (mirrored to `sessionStorage`, so a chip
+waiting there outlives a reload) until the panel is back. An upload failure while
+the panel shows another slot, or none, is held for the side key
+(`slotUploadFailures`) and enters the side composer's banner when the panel shows
+that slot again. Send waits while an upload runs. On submit, `buildOutgoingTurn`
+turns the staged images into leading `![image](path)` lines of the question (other
+files become `[attached_file N]` markers) and the paths clear with the text. A
+refused or unconfirmed send hands them back as chips beside the typed text
+(`restoreSideChatDraft`), never as the wire lines. The backend needs nothing extra:
+`build_side_message` returns a plain string, a single user segment, so
+`build_prompt_blocks` sends the picture as an ACP image block within the same
+`_MAX_QUESTION_BYTES` limit. A follow-up chip carries its own text and no
+attachments. `website/src/test/SideChat.attachImage.test.tsx` pins the attach
+control, the upload, the side-only Send hold, the image line on the wire and the
+hand-back. A steer into a running turn sends text only, so a steered question's
+image reaches the model as its path, not as a block, and a cancelled queued question
+comes back as its wire text, image line included.
 
 The transcript is the shared `app-sdk/ChatMessageList`, and `SideChat` takes two
 of the host's openers as props — `onFileOpen` and `onArtifactOpen`, the ones

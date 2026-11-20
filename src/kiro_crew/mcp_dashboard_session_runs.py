@@ -169,6 +169,7 @@ def _render_session_summary(resp: dict[str, Any]) -> str:
     it and says where the route left something out.
     """
     state_line = "still working" if resp.get("running") else "idle"
+    state_line += _activity_suffix(resp)
     head = f"\U0001f9ed `{resp.get('target', '')}` — {resp.get('title', '')} ({state_line})"
     if not resp.get("enabled"):
         return (
@@ -1182,14 +1183,36 @@ def _run_session_release(args: dict[str, Any], ctx: ToolContext) -> str:
     )
 
 
-def _status_activity_suffix(row: dict[str, Any]) -> str:
-    """``, last activity 40s ago — <link>`` from a live status row's own fields.
+def _activity_suffix(row: dict[str, Any]) -> str:
+    """The closed activity kinds a live session row reports."""
+    labels = {
+        "turn": "turn",
+        "admission": "turn admission",
+        "subagents": "sub-agents",
+        "subagents_queued": "sub-agents queued",
+        "workflow": "workflow",
+        "synthesis": "synthesis",
+        "preparing": "preparation",
+        "compaction": "compaction",
+        "automation": "automation",
+        "unknown": "unknown work",
+    }
+    raw = row.get("activity")
+    if not isinstance(raw, list):
+        return ""
+    shown = [labels[kind] for kind in raw if kind in labels]
+    return f", active: {', '.join(shown)}" if shown else ""
 
-    Both are state, never transcript text: the server stamps the newest row's
-    age, and attaches a credential-free dashboard link only for a code channel's
-    conductor. Absent fields add nothing, so ordinary rows read as before.
+
+def _status_activity_suffix(row: dict[str, Any]) -> str:
+    """``, active: workflow, last activity 40s ago — <link>`` from a live row.
+
+    Activity is a closed server-authored list. The other fields are state, never
+    transcript text: the server stamps the newest row's age, and attaches a
+    credential-free dashboard link only for a code channel's conductor. Absent
+    fields add nothing, so ordinary rows read as before.
     """
-    parts = ""
+    parts = _activity_suffix(row)
     since = row.get("since_activity_s")
     if isinstance(since, int) and not isinstance(since, bool) and since >= 0:
         if since < 120:
@@ -1227,6 +1250,7 @@ def _run_session_read_message(args: dict[str, Any], ctx: ToolContext) -> str:
     state_line = "still working" if resp.get("running") else "idle"
     if resp.get("pending_approval"):
         state_line = _pending_approval_phrase(resp)
+    state_line += _activity_suffix(resp)
     queued = resp.get("queue_depth", 0)
     if queued:
         state_line += f", {queued} message(s) queued"
@@ -1495,3 +1519,41 @@ def _run_session_queue(args: dict[str, Any], ctx: ToolContext) -> str:
     except DashboardError as refused:
         return f"Error: could not {action} that session's queue: {refused.error}"
     return _render_session_queue(resp)
+
+
+def _run_session_run_queued(args: dict[str, Any], ctx: ToolContext) -> str:
+    try:
+        resp = ctx.client.post(
+            "/api/session-control/run-queued",
+            {"target": args["target"], "queue_id": args["queue_id"]},
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        return f"Error: could not run that queued message: {refused.error}"
+    target = " ".join(str(resp.get("target") or args["target"]).split())
+    queue_id = " ".join(str(resp.get("queue_id") or args["queue_id"]).split())
+    outcome = resp.get("outcome")
+    if outcome == "started":
+        return f"\u25b6\ufe0f `{target}` started your queued message `{queue_id}` now. Nothing was stopped."
+    if outcome == "stopping":
+        return (
+            f"\U0001f6d1 Stopped the running turn on `{target}`; its work is discarded. "
+            f"Your queued message `{queue_id}` runs next, ahead of the rest of the queue, "
+            "which is kept. Its transcript shows the stop card."
+        )
+    if outcome == "idle":
+        return (
+            f"\u2139\ufe0f `{target}` had no active turn to stop. Your queued message "
+            f"`{queue_id}` is at the front and runs when the target's turn ends."
+        )
+    if outcome == "compacting":
+        # ``stop`` rides along only when the entry was promoted before the decline.
+        place = "is at the front of" if resp.get("stop") else "keeps its place in"
+        return (
+            f"\u2139\ufe0f `{target}` is compacting its context, so nothing was stopped. "
+            f"`{queue_id}` {place} the queue; try again once the compaction finishes."
+        )
+    return (
+        f"\u2139\ufe0f `{target}`: {resp.get('info') or 'stop already in progress'} — "
+        f"nothing changed, and `{queue_id}` keeps its place in the queue."
+    )

@@ -1,6 +1,6 @@
 {
   "name": "ops-mission-control",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "displayName": "Ops Mission Control",
   "description": "An autonomous ops first responder. Watches your alarms, pages, and monitors; claims what fires; investigates it with real context; and proposes a fix \u2014 keeping everything it learns in a local ledger so the second occurrence is faster than the first.",
   "author": "kirocrew",

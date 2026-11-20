@@ -257,7 +257,7 @@ sessions are genuinely separate — in the 1:1 shim topology. On a POOLED backen
 process serves many sessions, so the pid separates only what the injected caller
 block does not already name: co-tenants gatewayd CAN name get real per-session keys,
 and the ones it cannot are separated by the **per-connection nonce** gatewayd injects
-alongside the caller block (`_meta."kirocrew.tenant".nonce`, #5322). The nonce is
+alongside the caller block (`_meta."kirocrew.tenant".nonce`). The nonce is
 gateway-minted and stripped on every inbound frame like the caller block, so a stub
 cannot choose to share a peer's namespace; it carries no session key, so
 `CallerContext.from_meta` still finds no identity and nothing is laundered into
@@ -288,9 +288,9 @@ claim: on the AF_UNIX leg `token_auth._verify_unix_peer` resolves the peer pid's
 `session_pid_<pid>` ancestry and denies `403 peer_session_mismatch` when the recovered
 key differs from the declared one, which is the same-uid impersonation case that check
 exists to close. A placeholder names no session, so it can never equal a recovered key,
-and declaring it made every Computer Use call from a dashboard-launched kiro-cli fail
-with a bare `Error: Forbidden` on macOS, where the ancestry file always resolves
-(#9841; `kirocrew computer apps` worked because the CLI never takes that leg). The
+and declaring it would make every Computer Use call from a dashboard-launched kiro-cli
+fail with a bare `Error: Forbidden` on macOS, where the ancestry file always resolves
+(`kirocrew computer apps` is not affected because the CLI never takes that leg). The
 shim therefore decides by the key's own prefix (`mcp_computer._declares_identity`):
 a strictly-resolved key is declared in the header and kernel-verified as before; an
 `unresolved:` key is carried in the body only, and the request has no `X-Session-Key`,
@@ -433,13 +433,10 @@ ring trim orders by name. If descriptor adoption or the write fails, each writer
 removes its invocation-owned partial frame before degrading; it never sweeps a
 neighbouring capture owned by another call or process.
 
-**`computer_list_apps` only omits an app it cannot name.** It used to carry a
-per-app governance filter (`gate.app_is_disclosable` against the `computer_use.apps`
-/ `.app_names` axes) because it is the one verb that names every application and
-resolves no target, so `require_computer_use` could not see them. With those axes
-gone the function survives as a shape check: an app with neither a bundle id nor a
-display name is dropped because there is nothing to show. Terminals and password
-managers now appear in the list like everything else.
+**`computer_list_apps` only omits an app it cannot name.** There is no per-app
+governance axis, so `gate.app_is_disclosable` is a shape check: an app with neither a
+bundle id nor a display name is dropped because there is nothing to show. Terminals
+and password managers appear in the list like everything else.
 
 ### Result shape: text only, by construction
 
@@ -637,12 +634,8 @@ notification push; the two machine routes are covered instead by their
 `request["internal_auth"]` assertion, which an app token can never satisfy.
 
 **There is no `409` and no `read_only` field**, because there is no ceiling: no
-`computer_use*` row exists in `SCOPE_CATALOG`. An earlier revision of this spec (and
-of the handler's own docstring and a 16-line comment) described a `409` for a widening
-request under a forbidding ceiling and a `forbidden`-only `read_only` the panel would
-key `disabled` on. Both belonged to the governance model that was removed by product
-decision, and the prose outlived the code — there is no `status=409` in the module at
-all. Do not re-document either without re-implementing it.
+`computer_use*` row exists in `SCOPE_CATALOG`, and there is no `status=409` in the
+module at all. Do not document either without implementing it.
 
 On `PUT`, a corrupt keystone or `config.json` is `500` and is left byte-identical
 rather than clobbered (`StateCorruptError`, the `ConfigCorruptError` precedent). Every mutation
@@ -1574,38 +1567,35 @@ redaction that missed would be worse than none.
 
 **Every walk cutoff sets a flag, and the capture gate treats "unknown" as
 "present".** `MAX_CHILDREN_PER_NODE = 512` bounds one pathological container (a
-table with 100k rows) before the global node budget notices — but it used to drop
-the tail *silently*, so `saw_secure` reflected only the first 512 children while
-`truncated` stayed False. The walk then reported itself complete and non-secure and
-`capture_snapshot_image` had nothing to refuse on, leaving a password field as child
-513 with the whole window's pixels capturable (reviewer finding). A capped read now
-sets `truncated`, which already means "there is more of this tree than you were
+table with 100k rows) before the global node budget notices. Dropping the tail
+silently would leave `saw_secure` reflecting only the first 512 children with
+`truncated` False, so `capture_snapshot_image` would have nothing to refuse on and a
+password field at child 513 would leave the whole window's pixels capturable. A
+capped read therefore sets `truncated`, which already means "there is more of this tree than you were
 shown". Detected as `len(children) >= limit` rather than by re-reading the array for
 a real count (that would reintroduce the cost the cap exists to avoid), so a node
 with exactly the cap many children is treated as truncated too — a false positive
 costs one suppressed screenshot, a false negative is the disclosure.
 
 **And that suppression ANNOUNCES itself** (`TRUNCATED_WINDOW_NOTE`, emitted by
-`render._render_image_note`). It did not: the renderer special-cased only
-`has_secure` and returned `""` for every other empty `image_path`, so a truncated
-walk produced no image and no reason. Truncation is the NORMAL state for a
-Chromium/Electron window at the shipped 1200-node default (Chrome measured 1475
-nodes), so `screenshot: true` on Chrome, Slack or VS Code silently returned nothing
-— the retry loop `SECURE_WINDOW_NOTE` and `OBS_SUPPRESSED_NOTE` exist to prevent.
+`render._render_image_note`). Truncation is the NORMAL state for a Chromium/Electron
+window at the shipped 1200-node default (Chrome measured 1475 nodes), so without the
+note `screenshot: true` on Chrome, Slack or VS Code would silently return nothing —
+the retry loop `SECURE_WINDOW_NOTE` and `OBS_SUPPRESSED_NOTE` exist to prevent.
 The note names the remedy (raise `max_tree_nodes` / `max_tree_depth`), because
 unlike the secure case this one is fixable by the caller, and it is checked AFTER
 `has_secure` so a window that is both keeps the more specific reason. The shipped
-`FakeComputerUseBackend` mirrors the refusal too — it previously attached pixels to
-a truncated walk, so deleting the production branch left the suite green.
+`FakeComputerUseBackend` mirrors the refusal too, so deleting the production branch
+turns the suite red.
 
 **It fires only when an image was actually REQUESTED** (`walk_budget.want_image`;
 `None` — an unstamped, backend-built snapshot — still announces, since there the
 request is unknown and a spurious note is cheaper than a silent omission). Without
-that condition the fix inverts into the same defect: every mutating action's refresh
+that condition the note inverts into the same defect: every mutating action's refresh
 walk forces `want_image=False` by design, so a successful click on a browser window
-came back announcing the suppression of an image nobody asked for and telling the
+would come back announcing the suppression of an image nobody asked for and telling the
 model to "re-run with a higher `max_tree_nodes`" — an argument mutating tools do not
-accept (reviewer finding on the first version of this fix). Both directions are
+accept. Both directions are
 pinned by `test_computer_use_snapshot.py::TestASuppressedScreenshotAlwaysSaysSoWhy`,
 including one case through the real `dispatch_tool` path, because neither is visible
 to a `render_tree` unit test on its own.
@@ -2456,8 +2446,12 @@ local files only) and `vscode://vscode-remote/ssh-remote+<host>/<path>`
 native dialog with the full URL and hands it to the OS only if the user picks
 Open, one dialog at a time. Its "Don't ask again" box skips the dialog for
 later links to the same editor and machine (one SSH host, or local files) until
-the app quits; the choice is held in memory only. `isEditorLink` checks the raw string, requires the
-host to pass `HOSTNAME_RE`, and refuses a `..` segment after decoding. Every
+the app quits; the choice is held in memory only. A local link whose decoded
+path starts with two slashes and has no drive letter
+(`vscode://file//<host>/<share>/<path>`) names a share on another machine, so it
+is remembered for that one path and no other choice covers it. `isEditorLink`
+checks the raw string, requires the host to pass `HOSTNAME_RE`, and refuses a
+`..` segment after decoding. Every
 other editor URL, such as an extension URI handler
 (`vscode://<extension-id>/…`), stays `block`.
 
@@ -2655,21 +2649,20 @@ ONLY one, and the consequences should be stated rather than discovered:
 
   Accepted false positive, stated rather than discovered: any window whose title
   merely contains "kiro crew" is refused — an editor with this repo open, a browser
-  reading this PR. The failure directions are not symmetric. Refusing an unrelated
+  reading its source. The failure directions are not symmetric. Refusing an unrelated
   window is visible and recoverable (the refusal names the target); failing to refuse
   our own dashboard silently hands the agent its own security settings. A title is
   also the only signal available: the driver reads no page URL, and `AXURL` is not
   bound anywhere in the package;
 * an agent that can write `~/.kiro/agents/*.json` can stop kiro-cli sending
   permission requests, so the interactive prompt is not a guarantee either. That is
-  a pre-existing gap affecting every capability, hardening deferred to its own PR;
+  a gap affecting every capability, not hardened here;
 * **typing into a terminal window reaches a shell without passing the command deny
   floor.** The `BUILTIN_DENIED_RULES` table's rules are matched against a `bash` tool call's
   command string; a `computer_type_text` into Terminal.app is not one, so
-  `security.py` sees none of it. The terminal denylist entry that used to cover this
-  was removed with the rest of the per-app model (it was incomplete by construction —
-  an IDE's embedded terminal never matched it — and it blocked legitimate use on the
-  operator's own machine). The sensitive-text scan still inspects what is typed, but
+  `security.py` sees none of it. There is no per-app terminal denylist entry: one
+  is incomplete by construction (an IDE's embedded terminal never matches it) and
+  blocks legitimate use on the operator's own machine. The sensitive-text scan still inspects what is typed, but
   it is a credential/secret filter, not the command floor. Stated here because it is
   the sharpest edge of the one-opt-in posture.
 
@@ -2690,7 +2683,7 @@ computer use.
   leaked real paths, window titles and bundle ids in live probes, and a document
   path inside an `AXTitle` is not a credential so redaction will not catch it.
   `window_titles`, `file_paths` and `element_values` are **not** separately
-  governable — the `observations` scope was removed, `apply_observation_ceiling` is
+  governable — there is no `observations` scope, `apply_observation_ceiling` is
   a pass-through and `permitted_observation_channels` returns every channel — so
   there is no `computer_use.apps` (or any other) row left to narrow. A deployment
   that needs a real bound on what the tree may disclose should not enable the

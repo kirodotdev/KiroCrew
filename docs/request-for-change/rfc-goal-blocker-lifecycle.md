@@ -3,8 +3,8 @@ title: Goal blocker lifecycle — remediate without retiring autonomous work
 status: draft
 author: rubencu
 created: 2026-09-23
-last-audited: 2026-10-20
-audited-at: ea45e802e9
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 13013
 implementation-prs: []
 tracking-issues: []

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from kiro_crew import platform_compat
 from kiro_crew.apps import official_catalog
 from kiro_crew.apps.registry_pipeline import _FACADE
 from kiro_crew.apps.registry_pipeline.caches import (
+    _MANIFEST_NEGATIVE_CACHE_TTL,
     _read_installed_manifest_cache,
     _read_manifest_cache,
     _read_manifest_negative_cache,
@@ -29,7 +31,6 @@ from kiro_crew.apps.registry_pipeline.caches import (
 from kiro_crew.apps.registry_pipeline.checkout import (
     _CLONE_TIMEOUT,
     _HOOKS_NEUTRALIZER_ARGV,
-    _clone_branch_matches,
     _clone_origin_matches,
     _communicate_with_timeout,
     _git_fetch_branch,
@@ -37,12 +38,22 @@ from kiro_crew.apps.registry_pipeline.checkout import (
     _mkdtemp_settled,
     _rmtree_force_settled,
 )
+from kiro_crew.apps.registry_pipeline.clone_metadata import _clone_branch_matches
+from kiro_crew.apps.registry_pipeline.gh_credential import (
+    _gh_access,
+    _github_https_repo,
+    _private_github_shaped,
+)
 from kiro_crew.apps.registry_pipeline.git_targets import (
+    _SSH_REFUSAL_PREFIX,
     _entry_git_url,
     _git_target_is_unsupported,
     _git_transport_env,
+    _git_url_host,
+    _is_ssh_git_url,
     _loggable_git_transport_output,
     _looks_like_git_url,
+    _ssh_method_list_closes,
     _strip_git_target_userinfo,
 )
 from kiro_crew.apps.registry_pipeline.recovery import app_source_dir
@@ -54,6 +65,7 @@ from kiro_crew.apps.registry_pipeline.sources import (
 )
 from kiro_crew.apps.registry_pipeline.store_art import _contained_join, _store_asset_path
 from kiro_crew.apps.registry_pipeline.subprocess_env import (
+    _GIT_CLONE_LOCALE,
     _git_network_env,
     _proxy_env_has_credentials,
     anonymous_git_env,
@@ -82,6 +94,7 @@ async def _fetch_app_manifest(
     commit: str = "",
     allow_remote: bool = True,
     provenance: dict[str, str] | None = None,
+    gh_path: str = "",
 ) -> dict[str, Any] | None:
     """Fetch app.json for an app from its source repo (lightweight).
 
@@ -104,6 +117,12 @@ async def _fetch_app_manifest(
     effective clone URL is byte-identical to the owner-configured registry repo
     URL.
 
+    *gh_path*: a private ``https://github.com/<owner>/<repo>`` source. An
+    *owner_designated* fetch that fails the way a private repository fails asks
+    :func:`_gh_access` and, when the host's ``gh`` can read the repository, runs
+    once more with *gh_path* through the split fetch, whose network step alone
+    signs in. A fetch that is not owner-designated never reaches ``gh``.
+
     *commit*: a pinned commit. When set, the manifest is read from THAT tree
     rather than a branch tip, and the local fast path compares commits instead of
     branch names. This matters on the install path specifically: this manifest is
@@ -120,7 +139,10 @@ async def _fetch_app_manifest(
     *provenance*: when given, ``provenance["source"]`` is set to ``"installed"``
     if the answer came from step 1. That copy is the INSTALLED tree, not what the
     branch publishes now, so a caller that caches the answer as the source's
-    manifest needs to know (``_resolve_manifest``).
+    manifest needs to know (``_resolve_manifest``). ``provenance["ssh_sign_in"]``
+    is set to ``"refused"`` when the clone failed on ssh's own sign-in refusal
+    (``_is_ssh_sign_in_refusal``), which holds for every repository at that ssh
+    destination (``_resolve_manifest``).
     """
 
     def _read_manifest_text(path: Path) -> str | None:
@@ -138,9 +160,41 @@ async def _fetch_app_manifest(
         return None
     git_url = _strip_git_target_userinfo(credential_target)
     credentialed_transport = credential_target != git_url
+    if gh_path and (credentialed_transport or not owner_designated):
+        raise ValueError("a gh sign-in is only for an owner-designated, credential-free URL")
     # A proxy URL holding a password is a credential too: it takes the split path,
     # so no checkout-time filter inherits it (see `_proxy_env_has_credentials`).
-    isolate_transport = credentialed_transport or _proxy_env_has_credentials(git_url)
+    # A gh sign-in takes it as well: only the network step may run the helper.
+    isolate_transport = (
+        credentialed_transport or bool(gh_path) or _proxy_env_has_credentials(git_url)
+    )
+    # Where a private-looking failure may go on to the host's gh sign-in.
+    gh_repo = (
+        _github_https_repo(git_url)
+        if owner_designated and not gh_path and not credentialed_transport
+        else ""
+    )
+
+    async def _retry_with_gh(output: str) -> dict[str, Any] | None:
+        """The manifest fetched through gh, or ``None`` when gh does not apply or fails."""
+        if not gh_repo or not _private_github_shaped(output):
+            return None
+        found, cause = await _gh_access(gh_repo)
+        if cause:
+            logger.debug("manifest fetch through gh refused (%s)", cause)
+            return None
+        return await _fetch_app_manifest(
+            repo,
+            branch,
+            subdirectory,
+            app_name,
+            credential_target,
+            owner_designated=owner_designated,
+            commit=commit,
+            allow_remote=allow_remote,
+            provenance=provenance,
+            gh_path=found,
+        )
 
     # Try persistent clone first (already installed).
     #
@@ -255,6 +309,7 @@ async def _fetch_app_manifest(
                 clone_env=clone_env,
                 sandbox_mode=sandbox_mode,
                 forward_ssh_auth_sock=owner_designated,
+                gh_path=gh_path,
             )
             if err is not None:
                 logger.debug(
@@ -262,7 +317,7 @@ async def _fetch_app_manifest(
                     _strip_git_target_userinfo(git_url),
                     str(err),
                 )
-                return None
+                return await _retry_with_gh("\n".join(fetch_log))
         elif isolate_transport:
             # A credentialed `git clone` performs both the network fetch and the
             # checkout in one process. The checkout may launch an inherited filter
@@ -280,6 +335,7 @@ async def _fetch_app_manifest(
                 credential_target=credential_target,
                 clone_env=clone_env,
                 sandbox_mode=sandbox_mode,
+                gh_path=gh_path,
             )
             if err is not None:
                 logger.debug(
@@ -287,7 +343,7 @@ async def _fetch_app_manifest(
                     _strip_git_target_userinfo(git_url),
                     str(err),
                 )
-                return None
+                return await _retry_with_gh("\n".join(fetch_log))
         else:
             clone_cmd = [
                 "git",
@@ -311,6 +367,7 @@ async def _fetch_app_manifest(
             transport_env = _git_network_env(
                 _git_transport_env(credential_target, git_url, clone_env), git_url
             )
+            transport_env["LC_ALL"] = _GIT_CLONE_LOCALE
             proc = await create_subprocess_limited(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -321,15 +378,18 @@ async def _fetch_app_manifest(
             )
             _, stderr = await _communicate_with_timeout(proc, timeout=_CLONE_TIMEOUT)
             if proc.returncode != 0:
+                clone_output = stderr.decode(errors="replace").strip()
+                if provenance is not None and _is_ssh_sign_in_refusal(clone_output):
+                    provenance["ssh_sign_in"] = "refused"
                 logger.debug(
                     "manifest clone failed for %s: %s",
                     _strip_git_target_userinfo(git_url),
                     _loggable_git_transport_output(
-                        stderr.decode(errors="replace").strip(),
+                        clone_output,
                         credentialed=credentialed_transport,
                     ),
                 )
-                return None
+                return await _retry_with_gh(clone_output)
             checkout_root = Path(tmp_root)
         # Containment is measured from the root the tree actually landed in, which
         # differs by branch: the pinned fetch uses a child of `tmp_root` so it gets a
@@ -355,6 +415,59 @@ async def _fetch_app_manifest(
     finally:
         if tmp_root:
             await _rmtree_force_settled(tmp_root)
+
+
+#: When an anonymous ssh sign-in was last refused, keyed by the destination
+#: (``_anonymous_ssh_destination``). Process memory, never the agent-writable data
+#: home, so nothing written to disk can hold fetches back. ``refresh_registries``
+#: forgets it, and an index naming more destinations than the cap clears it.
+_SSH_SIGN_IN_REFUSED: dict[str, float] = {}
+_SSH_SIGN_IN_REFUSED_MAX = 1024
+_SSH_DESTINATION_MAX_CHARS = 320
+
+
+def _is_ssh_sign_in_refusal(stderr_text: str) -> bool:
+    """Whether *stderr_text* holds ssh's own sign-in refusal as a whole line.
+
+    OpenSSH writes ``<user>@<host>: Permission denied (<methods>).`` on a line of
+    its own (an old client leaves out ``<user>@<host>: ``). The phrase anywhere
+    else does not count: git echoes the repository path, which an index chooses,
+    in its own errors. A line ends at a newline only, as git and ssh end theirs,
+    never at another separator ``str.splitlines`` honours.
+    """
+    for line in stderr_text.lower().split("\n"):
+        line = line.strip()
+        who, sep, rest = line.partition(": ")
+        if sep and "@" in who and not any(ch.isspace() or ch in "'\"()" for ch in who):
+            line = rest
+        if not line.startswith(_SSH_REFUSAL_PREFIX):
+            continue
+        methods = line[len(_SSH_REFUSAL_PREFIX) :]
+        close = methods.find(")")
+        if methods[close + 1 :] in ("", ".") and _ssh_method_list_closes(methods, 0):
+            return True
+    return False
+
+
+def _anonymous_ssh_destination(git_url: str) -> str:
+    """The ``user@host[:port]`` an ssh fetch of *git_url* signs in to, or ``""``.
+
+    ssh refuses a sign-in before it names a repository, so one refusal holds for
+    every app at the destination; an https fetch is refused per repository and
+    answers ``""``. So does a URL holding a ``%`` escape, which git decodes into
+    the path it echoes and could make read as ssh's own line, and a destination
+    too long to keep. A URL holding whitespace, a newline included, is no ssh URL
+    (``_git_url_host``).
+    """
+    target = _strip_git_target_userinfo(git_url).strip()
+    if "%" in target or not _is_ssh_git_url(target):
+        return ""
+    _scheme, sep, rest = target.partition("://")
+    if sep:
+        destination = rest.split("/", 1)[0]
+    else:
+        destination = f"{target.rpartition('@')[0]}@{_git_url_host(target)}"
+    return destination if len(destination) <= _SSH_DESTINATION_MAX_CHARS else ""
 
 
 async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
@@ -407,6 +520,17 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
     # fetch (the confused-deputy defense does not apply to the owner's own URL).
     owner_target = await asyncio.to_thread(_owner_designated_repo_target, entry)
     fetch_kwargs: dict[str, Any] = {"allow_remote": False} if negative_cached else {}
+    # An anonymous ssh fetch whose destination refused the sign-in within the
+    # marker's window cannot succeed: the posture offers no key, and ssh refuses
+    # before it names a repository. Skip the remote, still read the installed copy,
+    # and write the marker a refused clone writes. Owner-designated fetches carry
+    # credentials and never take part, nor does a branch spanning lines: git echoes
+    # it in its own errors, where it could spell ssh's line.
+    spans_lines = isinstance(branch, str) and "\n" in branch
+    destination = "" if owner_target or spans_lines else _anonymous_ssh_destination(git_url)
+    refused_at = _SSH_SIGN_IN_REFUSED.get(destination)
+    if refused_at is not None and time.monotonic() - refused_at <= _MANIFEST_NEGATIVE_CACHE_TTL:
+        fetch_kwargs["allow_remote"] = False
     provenance: dict[str, str] = {}
     manifest = await _fetch_app_manifest(
         repo,
@@ -418,6 +542,15 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
         provenance=provenance,
         **fetch_kwargs,
     )
+    if destination and provenance.get("ssh_sign_in") == "refused":
+        if len(_SSH_SIGN_IN_REFUSED) >= _SSH_SIGN_IN_REFUSED_MAX:
+            logger.info(
+                "store listing forgot %d refused ssh destinations at its cap; "
+                "their apps are fetched again",
+                len(_SSH_SIGN_IN_REFUSED),
+            )
+            _SSH_SIGN_IN_REFUSED.clear()
+        _SSH_SIGN_IN_REFUSED[destination] = time.monotonic()
     if manifest:
         # The installed checkout's app.json is cached APART from this source's
         # manifest. It names the INSTALLED version, while the source cache is what

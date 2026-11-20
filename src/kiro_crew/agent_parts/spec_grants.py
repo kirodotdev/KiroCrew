@@ -148,6 +148,9 @@ _MATE_AUTO_GRANTS = (
 #:   waiting in another session's queue, which is a write to
 #:   what that session runs next, and no conductor step calls it yet. The same
 #:   step-adopts-it rule as ``session_summary`` applies.
+#: * ``session_run_queued`` — WITHHELD. On a running target it stops the turn the
+#:   way ``session_stop`` does, discarding its work, and then chooses what the
+#:   target runs next. No conductor step calls it yet; the same rule applies.
 #: * ``chat_folder_move_session`` — WITHHELD. It writes another session's
 #:   ``folder_id``: the PATCH goes to ``/api/chat/slots/<target>/folder`` where the
 #:   target is the session named in the ARGUMENTS, and the strictly-resolved
@@ -446,25 +449,27 @@ _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
 #: is not an error but a silent approval prompt on every patrol cycle, which is
 #: why they are spelled out rather than left to the whole-server ref.
 #:
-#: The first two are the BASE every conductor spec ships
+#: The first three are the BASE every conductor spec ships
 #: (``_CONDUCTOR_BASE_WORK_GRANTS``): every conductor records its items in the
 #: ledger, because the dashboard's ``workstreams`` fold mints a board only from
-#: ``work/recorded`` entries. This tuple is the goal conductor's superset, shipped
+#: ``work/recorded`` entries, and every conductor relays a worker's question to
+#: the person with ``work_ask_record``, because "needs you" on every surface
+#: counts an item only once it carries that record. This tuple is the goal conductor's superset, shipped
 #: by ``_conductor_spec``, which both ``kirocrew-conductor`` and its deprecated
 #: ``kirocrew-ledger-conductor`` alias call; the name stays because that alias is
 #: still an installed spec.
 #:
 #: ``work_ledger_rebuild`` is the goal conductor's recovery step and no other
-#: conductor's procedure names it. ``work_ask_record`` writes only the ask record
-#: on the conductor's own item, the goal-conductor skill's step when it relays a
-#: question to the person. ``work_brief`` is a worker-half verb
+#: conductor's procedure names it. ``work_ask_record`` (in the base) writes only the
+#: ask record on the conductor's own item. ``work_brief`` is a worker-half verb
 #: granted: it only READS the caller's own bound item (or answers ``not_bound``),
-#: which is the same rule the two conductor verbs rest on. It is also a
+#: which is the same rule the base conductor verbs rest on. It is also a
 #: second-level conductor's mandated FIRST call, in a child session nobody opened —
 #: gated, that call is an approval stall before any planning happens.
 _CONDUCTOR_BASE_WORK_GRANTS: tuple[str, ...] = (
     "@kirocrew-work/work_ledger_read",
     "@kirocrew-work/work_ledger_record",
+    "@kirocrew-work/work_ask_record",
 )
 
 
@@ -482,7 +487,6 @@ _CONDUCTOR_BASE_WORK_GRANTS: tuple[str, ...] = (
 #: ``not_bound``. The pipeline and security conductors keep it gated.
 _LEDGER_CONDUCTOR_WORK_GRANTS: tuple[str, ...] = _CONDUCTOR_BASE_WORK_GRANTS + (
     "@kirocrew-work/work_ledger_rebuild",
-    "@kirocrew-work/work_ask_record",
     "@kirocrew-work/work_brief",
     "@kirocrew-work/work_report",
     "@kirocrew-work/accept_eval",

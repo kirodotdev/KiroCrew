@@ -39,7 +39,7 @@ from kiro_crew.testing.wait import await_until
 # gateway identity helpers
 def test_gateway_unit_name_defaults_to_live_unit(monkeypatch, tmp_path):
     monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path / "home")
-    assert live._gateway_unit_name() == live._LIVE_GATEWAY_UNIT
+    assert live._gateway_unit_name() == live._live_gateway_unit()
 
 
 def test_gateway_unit_name_uses_pod_instance(monkeypatch, tmp_path):
@@ -53,7 +53,7 @@ def test_gateway_unit_name_falls_back_when_home_unresolvable(monkeypatch):
         raise RuntimeError("no home")
 
     monkeypatch.setattr("kiro_crew.config.loader.config_dir", _boom)
-    assert live._gateway_unit_name() == live._LIVE_GATEWAY_UNIT
+    assert live._gateway_unit_name() == live._live_gateway_unit()
 
 
 def test_gateway_label_defaults_to_live_agent(monkeypatch, tmp_path):

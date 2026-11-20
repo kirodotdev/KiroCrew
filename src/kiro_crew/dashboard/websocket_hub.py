@@ -14,7 +14,6 @@ from aiohttp import web
 from kiro_crew.dashboard import redaction_audience
 from kiro_crew.dashboard import ws_chunk_scope as chunk_scope
 from kiro_crew.dashboard import ws_snapshot_hold as snapshot_hold
-from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG
 from kiro_crew.dashboard.turn_heartbeat import TurnHeartbeat
 from kiro_crew.write_buffer_level import level_is_progress_signal
 
@@ -328,7 +327,9 @@ class WebSocketHub:
         # while it was off stays on that socket's stream redactor after it is turned on,
         # so its context holds. The owner's setting governs only what the owner reads.
         owners = getattr(self._owner, "_owner_ws_clients", None) or ()
-        shown = redaction_audience.for_socket(ws, msg, owner=ws in owners)
+        shown = redaction_audience.for_socket(
+            ws, msg, owner=redaction_audience.socket_reads_as_owner(ws, owners)
+        )
         if shown is None:
             return
         msg = shown
@@ -443,17 +444,21 @@ class WebSocketHub:
                 if isinstance(slug, str) and slug:
                     pending.add(slug)
                 return False
-        if ws.get(RELAY_TEAMMATE_WS_FLAG, False):
-            # A relayed teammate is a dashboard user with no app surface: the
-            # remote limits refuse every app route, so the app frames the
-            # dashboard-user grant below would hand it are withheld first.
+        if msg_type == "notification":
+            # A note on an owner-only channel names the machine owner's own
+            # accounts (the Team Crews their sign-in can open): only a socket that
+            # reads as the machine owner gets it. A teammate's socket is an owner
+            # socket too, so membership alone is not enough.
+            from kiro_crew.dashboard.redaction_audience import socket_reads_as_owner
             from kiro_crew.dashboard.ws_event_scope import (
-                app_origin_frame,
-                audit_teammate_withheld,
+                audit_owner_only_withheld,
+                owner_only_note,
             )
 
-            if app_origin_frame(msg_type, data):
-                audit_teammate_withheld(msg_type)
+            if owner_only_note(data) and not socket_reads_as_owner(
+                ws, getattr(self._owner, "_owner_ws_clients", None) or set()
+            ):
+                audit_owner_only_withheld(msg_type)
                 return False
         if ws.get("_is_dashboard_user", False):
             # The per-member event log is the owner's view of the crew, the
@@ -722,8 +727,8 @@ class WebSocketHub:
 
         Returns how many sockets it was handed to. Only dashboard-user sockets
         are ever flagged (see ``api_ws``), so no scope gate applies here: the
-        frame carries fields of the dashboard-user slot projection, which those
-        sockets already receive in full.
+        frame carries slot fields that read the same in every audience's
+        projection, which those sockets already receive in full.
         """
         dead: list[web.WebSocketResponse] = []
         sent = 0
@@ -816,6 +821,14 @@ class WebSocketHub:
         loop = asyncio.get_running_loop()
         started = loop.time()
         send: asyncio.Future[None]
+        owners = getattr(self._owner, "_owner_ws_clients", None) or ()
+        if isinstance(msg, str) and not redaction_audience.socket_reads_as_owner(ws, owners):
+            # A Shared Crew teammate's owner socket: every owner frame, read redacted
+            # while the owner's switch is off, as the hub's other sends read it.
+            shown = redaction_audience.for_socket(ws, msg, owner=False)
+            if shown is None:
+                return
+            msg = shown
         release = snapshot_hold.held_send(ws, msg, self._hold_ceiling)
         if release is not None:
             try:

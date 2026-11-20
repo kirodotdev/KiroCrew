@@ -26,6 +26,13 @@
  *
  * Usage:
  *   node local-feed-server.js --port 8799 --zip /path/KiroCrew.zip --version 1.0.1
+ *
+ * Block (differential) downloads: pass --blockmap <new.blockmap> and, for the
+ * installed version, --old-version <v> --old-blockmap <old.blockmap>. The zip is
+ * then served at /desktop/<version>/KiroCrew.zip, the production key shape, so
+ * the client derives the old blockmap's URL by swapping the version string the
+ * way it does against the CDN. The zip answers single and multi-range requests
+ * (206, multipart/byteranges), and GET /stats reports how many zip bytes went out.
  *   KIROCREW_UPDATE_FEED=http://127.0.0.1:8799/feed <app binary>
  *
  * The client permits plain http for loopback hosts only (buildFeedBase), so
@@ -42,6 +49,9 @@ function arg(name, def) {
 const PORT = parseInt(arg("port", "8799"), 10);
 const ZIP = arg("zip");
 const LATEST = arg("version", "1.0.1");
+const BLOCKMAP = arg("blockmap");
+const OLD_VERSION = arg("old-version");
+const OLD_BLOCKMAP = arg("old-blockmap");
 
 if (!ZIP || !fs.existsSync(ZIP)) {
   console.error("ERROR: --zip <path> is required and must exist");
@@ -56,7 +66,70 @@ if (!ZIP || !fs.existsSync(ZIP)) {
 // 2 GiB outright.
 const ZIP_SIZE = fs.statSync(ZIP).size;
 let ZIP_SHA512 = "";
-const DOWNLOAD_URL = `http://127.0.0.1:${PORT}/download`;
+const ZIP_PATH = BLOCKMAP ? `/desktop/${LATEST}/KiroCrew.zip` : "/download";
+const DOWNLOAD_URL = `http://127.0.0.1:${PORT}${ZIP_PATH}`;
+// The blockmaps by path, served only when given; anything else is a 404, which
+// the client answers with a full download.
+const BLOCKMAPS = new Map();
+if (BLOCKMAP) BLOCKMAPS.set(`${ZIP_PATH}.blockmap`, BLOCKMAP);
+if (OLD_VERSION && OLD_BLOCKMAP) BLOCKMAPS.set(`/desktop/${OLD_VERSION}/KiroCrew.zip.blockmap`, OLD_BLOCKMAP);
+let zipBytesServed = 0;
+
+/** `bytes=a-b, c-d` -> [[a, b], ...] (inclusive), or null when it is not one. */
+function parseRanges(header) {
+  const m = /^bytes=(.+)$/.exec(header || "");
+  if (!m) return null;
+  const ranges = [];
+  for (const part of m[1].split(",")) {
+    const r = /^\s*(\d+)-(\d+)\s*$/.exec(part);
+    if (!r) return null;
+    const start = Number(r[1]);
+    const end = Math.min(Number(r[2]), ZIP_SIZE - 1);
+    if (start > end) return null;
+    ranges.push([start, end]);
+  }
+  return ranges.length ? ranges : null;
+}
+
+/** Stream [start, end] of the zip into res without ending it. */
+function pipeRange(res, start, end) {
+  return new Promise((resolve, reject) => {
+    const body = fs.createReadStream(ZIP, { start, end });
+    body.on("data", (chunk) => { zipBytesServed += chunk.length; });
+    body.on("error", reject);
+    body.on("end", resolve);
+    body.pipe(res, { end: false });
+  });
+}
+
+async function serveRanges(res, ranges) {
+  if (ranges.length === 1) {
+    const [start, end] = ranges[0];
+    res.writeHead(206, {
+      "Content-Type": "application/zip",
+      "Content-Range": `bytes ${start}-${end}/${ZIP_SIZE}`,
+      "Content-Length": end - start + 1,
+      "Accept-Ranges": "bytes",
+    });
+    await pipeRange(res, start, end);
+    res.end();
+    return;
+  }
+  const boundary = crypto.randomBytes(12).toString("hex");
+  res.writeHead(206, {
+    "Content-Type": `multipart/byteranges; boundary=${boundary}`,
+    "Accept-Ranges": "bytes",
+  });
+  for (let i = 0; i < ranges.length; i++) {
+    const [start, end] = ranges[i];
+    res.write(
+      `${i ? "\r\n" : ""}--${boundary}\r\nContent-Type: application/zip\r\n` +
+        `Content-Range: bytes ${start}-${end}/${ZIP_SIZE}\r\n\r\n`,
+    );
+    await pipeRange(res, start, end);
+  }
+  res.end(`\r\n--${boundary}--\r\n`);
+}
 
 function hashZip() {
   return new Promise((resolve, reject) => {
@@ -95,9 +168,38 @@ function legacyJson() {
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, `http://127.0.0.1:${PORT}`);
 
-  if (u.pathname === "/download") {
-    res.writeHead(200, { "Content-Type": "application/zip", "Content-Length": ZIP_SIZE });
+  if (u.pathname === "/stats") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ zip_size: ZIP_SIZE, zip_bytes_served: zipBytesServed }));
+    return;
+  }
+
+  if (BLOCKMAPS.has(u.pathname)) {
+    const file = BLOCKMAPS.get(u.pathname);
+    res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": fs.statSync(file).size });
+    fs.createReadStream(file).pipe(res);
+    console.log(`[feed] ${u.pathname} -> 200 blockmap`);
+    return;
+  }
+
+  if (u.pathname === ZIP_PATH && req.headers.range) {
+    const ranges = parseRanges(req.headers.range);
+    if (!ranges) {
+      res.writeHead(416, { "Content-Range": `bytes */${ZIP_SIZE}` });
+      res.end();
+      return;
+    }
+    serveRanges(res, ranges).then(
+      () => console.log(`[feed] served ${ranges.length} range(s); zip bytes so far ${zipBytesServed}`),
+      (err) => { console.error(`[feed] range read failed: ${err.message}`); res.destroy(err); },
+    );
+    return;
+  }
+
+  if (u.pathname === ZIP_PATH) {
+    res.writeHead(200, { "Content-Type": "application/zip", "Content-Length": ZIP_SIZE, "Accept-Ranges": "bytes" });
     const body = fs.createReadStream(ZIP);
+    body.on("data", (chunk) => { zipBytesServed += chunk.length; });
     body.on("error", (err) => {
       console.error(`[feed] update zip read failed: ${err.message}`);
       res.destroy(err);

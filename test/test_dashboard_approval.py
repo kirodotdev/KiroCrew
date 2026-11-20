@@ -167,6 +167,20 @@ def _assert_block_reason_recovered(slot, client, reason: str) -> None:
     assert any(reason.lower() in recovery.lower() for recovery in recoveries)
 
 
+def _recovery_prompts(client) -> list[str]:
+    """The prompts the turns after the blocked one sent to the model.
+
+    The recovery continuation is the model's copy of the reason when the harness
+    has no mid-turn steer, so these are what the model reads.
+    """
+    return [str(call.args[0]) for call in client.stream.call_args_list[1:] if call.args]
+
+
+#: ``HOOK_DENY_REASON_MAX_CHARS``, written out so these tests still collect, and
+#: fail on their assertions, when the limit is missing.
+_DENY_REASON_LIMIT = 2000
+
+
 class TestRefusalRecovery:
     """A recoverable refusal (host-gate policy deny / read-only bash gate) ends
     the turn via kiro-cli's tool-interrupted marker. KiroCrew should hand the
@@ -689,6 +703,40 @@ class TestPreToolUseHookBlockRecovery:
 
         _assert_block_reason_recovered(slot, client, reason)
 
+    @pytest.mark.asyncio
+    async def test_a_multi_sentence_recovery_instruction_reaches_the_model_whole(self, tmp_path):
+        """A deny hook's instruction is often longer than a sentence; none of it is lost."""
+        reason = "Write the plan file before editing. " + "x" * 450 + " END"
+        state, client = _make_state(
+            tmp_path,
+            context_builder=_context_builder(),
+            hook_store=_blocking_hook_store(reason),
+        )
+        slot = _make_slot()
+
+        await _drive_hook_blocked_turn(state, client, slot)
+
+        _assert_block_reason_recovered(slot, client, reason)
+        assert any(reason in prompt for prompt in _recovery_prompts(client))
+
+    @pytest.mark.asyncio
+    async def test_a_deny_reason_past_the_limit_reaches_the_model_cut_at_its_head(self, tmp_path):
+        """The bound holds: the head up to the limit arrives, nothing after it."""
+        head = "a" * _DENY_REASON_LIMIT
+        state, client = _make_state(
+            tmp_path,
+            context_builder=_context_builder(),
+            hook_store=_blocking_hook_store(head + "TAIL-PAST-THE-LIMIT"),
+        )
+        slot = _make_slot()
+
+        await _drive_hook_blocked_turn(state, client, slot)
+
+        _assert_block_reason_recovered(slot, client, head)
+        prompts = _recovery_prompts(client)
+        assert any(head in prompt for prompt in prompts)
+        assert not any("TAIL-PAST-THE-LIMIT" in prompt for prompt in prompts)
+
     def test_every_hook_deny_path_routes_through_the_shared_helper(self) -> None:
         """A fifth permission path must not be able to deny without recording the reason.
 
@@ -1043,7 +1091,10 @@ class TestDenyRowTitleRedaction:
             ]
             if turn_file.name != "__init__.py"
         )
-        assert source.count("🚫 {event.title}") == 0, (
+        assert (
+            source.count("🚫 {event.title}") == 0
+            and source.count('"refused", f"{event.title}') == 0
+        ), (
             "a transcript row interpolates the raw model-authored title -- "
             "route the deny through _reject_invalid_tool/_reject_hook_error"
         )
@@ -1052,8 +1103,8 @@ class TestDenyRowTitleRedaction:
             "(reuse an in-scope redacted variable or _redact_display_text)"
         )
         # Each deny shape is rendered in exactly one place — its helper.
-        assert source.count('f"🚫 {title} (invalid: {error})"') == 1
-        assert source.count('f"🚫 {title} (hook error)"') == 1
+        assert source.count('tool_row("refused", f"{title} (invalid: {error})")') == 1
+        assert source.count('tool_row("refused", f"{title} (hook error)")') == 1
 
 
 # ── Long read titles carrying a canonical identity ──

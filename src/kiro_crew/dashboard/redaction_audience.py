@@ -18,6 +18,10 @@ and a reader who is not the owner gets it redacted in full, whatever the setting
   chat turn a teammate sends among them, inherits the scope and runs redacted in full
   for every reader.
 
+Every one of those edges also hands a non-owner the plain copy of a host sandbox
+refusal row (``host_sandbox_refusal``), whatever the setting reads: that row's text
+is the machine owner's runbook for the host.
+
 A full pass here runs in a fresh :class:`contextvars.Context` under ``always_scan``,
 as the live log stream's does (``handlers.updates_streams._stream_safe``), so no seam
 or owner view the caller is inside stands it down.
@@ -25,15 +29,18 @@ or owner view the caller is inside stands it down.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import logging
+import zlib
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
 from aiohttp import web
 
 from kiro_crew import redaction_seams
+from kiro_crew.dashboard import conditional_get, host_sandbox_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -105,9 +112,13 @@ def request_audience(request: web.Request) -> str:
     try:
         if request.get("internal_auth") is True and not request.get("app"):
             return redaction_seams.MODEL
-        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+        from kiro_crew.dashboard.handlers.source_providers import (
+            is_host_owner_dashboard_request,
+        )
 
-        if is_owner_dashboard_request(request):
+        # The machine owner alone: a Shared Crew teammate passes the owner gate, but
+        # the owner's OFF covers only what the owner sees.
+        if is_host_owner_dashboard_request(request):
             return redaction_seams.OWNER_DASHBOARD
     except Exception:
         logger.debug("redaction audience: owner check failed; read as non-owner", exc_info=True)
@@ -130,7 +141,47 @@ async def redaction_audience_middleware(
     from kiro_crew.security.redaction_switch import always_scan
 
     with always_scan():
-        return await handler(request)
+        response = await handler(request)
+    if isinstance(response, web.Response) and "Content-Encoding" in response.headers:
+        # zlib releases the GIL, as conditional_json_response's own gzip does.
+        return await asyncio.to_thread(_without_host_detail, response)
+    return _without_host_detail(response)
+
+
+def _without_host_detail(response: web.StreamResponse) -> web.StreamResponse:
+    """*response* with every host sandbox refusal row in its body read as a non-owner
+    reads it (``host_sandbox_refusal``), whatever the redaction setting reads.
+
+    Any buffered body is checked, whatever its content type: one JSON document or
+    JSON lines (an archived transcript). A body the handler already gzipped
+    (``conditional_json_response``) is read decompressed and goes out gzipped again,
+    with an ``ETag`` of what the non-owner reads. A streamed answer is not buffered
+    here: the session export, the one such route a teammate reads, carries no error
+    row (``session_export``).
+    """
+    if not isinstance(response, web.Response):
+        return response
+    body = response.body
+    if not isinstance(body, (bytes, bytearray)):
+        return response
+    gzipped = response.headers.get("Content-Encoding", "").strip().lower() == "gzip"
+    plain = bytes(body)
+    try:
+        if gzipped:
+            plain = zlib.decompress(plain, 31)
+        shown = host_sandbox_refusal.body_for_non_owner(plain)
+    except zlib.error:
+        # Not a body this process wrote: none of it can be read, so none of it goes out.
+        return web.json_response(
+            {"error": "this answer could not be shown", "code": "host_detail_unreadable"},
+            status=500,
+        )
+    if shown is None:
+        return response
+    if "ETag" in response.headers:
+        response.headers["ETag"] = conditional_get.weak_content_etag(shown)
+    response.body = conditional_get.gzip_bytes(shown) if gzipped else shown
+    return response
 
 
 # ── websocket frames ──
@@ -264,6 +315,20 @@ def _on_streamed(ws: Any, text: str) -> Any:
     return _NOT_STREAMED
 
 
+def socket_reads_as_owner(ws: Any, owner_sockets: Any) -> bool:
+    """Whether *ws* reads as the owner for redaction: an owner socket no teammate opened.
+
+    A Shared Crew teammate's socket is an owner socket, so every owner frame reaches it,
+    but it carries ``teammate_access.TEAMMATE_WS_FLAG`` and reads as any non-owner.
+    """
+    from kiro_crew.shared_crew.teammate_access import TEAMMATE_WS_FLAG
+
+    if ws not in owner_sockets:
+        return False
+    getter = getattr(ws, "get", None)
+    return not (callable(getter) and getter(TEAMMATE_WS_FLAG, False) is True)
+
+
 def for_socket(ws: Any, text: str, *, owner: bool) -> str | None:
     """The frame *text* as socket *ws* may receive it, or None to send it nothing.
 
@@ -282,6 +347,7 @@ def for_socket(ws: Any, text: str, *, owner: bool) -> str | None:
     if owner:
         return text
     try:
+        text = host_sandbox_refusal.text_for_non_owner(text)
         return _non_owner_text(ws, text, redaction_seams.published_off())
     except Exception:
         logger.warning("a frame for a non-owner socket could not be redacted; not sent")
@@ -303,6 +369,7 @@ def for_reader(text: str, *, owner: bool) -> str | None:
     if owner:
         return text
     try:
+        text = host_sandbox_refusal.text_for_non_owner(text)
         try:
             value = json.loads(text)
         except ValueError:
@@ -340,6 +407,7 @@ class SseEvents:
         """The events to write for the built event *event*, in order."""
         if self._owner:
             return [event]
+        event = host_sandbox_refusal.text_for_non_owner(event)
         off = redaction_seams.published_off()
         if not off and (self._stream is None or '"chunk"' not in event):
             return [*self.close(), event]

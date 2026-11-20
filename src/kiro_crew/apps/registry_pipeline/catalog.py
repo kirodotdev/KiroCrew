@@ -33,8 +33,10 @@ from kiro_crew.apps.registry_pipeline.caches import (
     _read_external_registry_cache,
 )
 from kiro_crew.apps.registry_pipeline.checkout import _communicate_with_timeout
+from kiro_crew.apps.registry_pipeline.gh_credential import _github_https_repo
 from kiro_crew.apps.registry_pipeline.git_targets import (
     _FETCH_CAUSE_OTHER,
+    _GH_FETCH_CAUSES,
     _entry_git_url,
     _git_target_is_unsupported,
     _git_url_host,
@@ -49,7 +51,7 @@ from kiro_crew.apps.registry_pipeline.indexes import (
     _load_external_registries,
     _registry_fetch_failure,
 )
-from kiro_crew.apps.registry_pipeline.manifests import _resolve_manifest
+from kiro_crew.apps.registry_pipeline.manifests import _SSH_SIGN_IN_REFUSED, _resolve_manifest
 from kiro_crew.apps.registry_pipeline.sources import (
     _edition_registry_rows,
     _effective_registries,
@@ -60,6 +62,7 @@ from kiro_crew.apps.registry_pipeline.store_art import _prewarm_owner_tier_store
 from kiro_crew.apps.registry_pipeline.subprocess_env import _detect_probe_env
 from kiro_crew.apps.version import parse_version as _parse_version
 from kiro_crew.sandbox import (
+    app_backend_secret_mask_targets,
     create_subprocess_limited,
     sandboxed_spawn_argv,
     sandboxed_spawn_argv_async,
@@ -153,6 +156,8 @@ def _enrich_with_install_status(
     *detected* is a set of app names that were found via ``detectInstalled``
     shell commands (installed outside Kiro Crew's app manager).
     """
+    from kiro_crew.apps.market_source import is_market_source  # facade star import stays
+
     detected = detected or set()
     for entry in entries:
         name = entry.get("name", "")
@@ -174,7 +179,12 @@ def _enrich_with_install_status(
                 entry["origin"] = existing.get("origin", "registry")
             entry["resources"] = existing.get("resources", "gateway")
             entry["lifecycle"] = existing.get("lifecycle", "gateway")
-            entry["updateAvailable"] = _version_newer(
+            # A Kiro Space install is matched to this row by NAME only, so the row
+            # must not offer an update that would reinstall it from git.
+            from_market = is_market_source(existing.get("source"))
+            if from_market:
+                entry["installedFrom"] = "market"
+            entry["updateAvailable"] = not from_market and _version_newer(
                 entry.get("version", ""),
                 existing.get("version", ""),
             )
@@ -490,7 +500,12 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
     UI can name the fix and where it applies. When *repo* is supplied but
     matches no configured registry, returns ``ok: False`` with
     ``not_found: True`` so the route can map it to HTTP 404.
+
+    It also forgets every remembered ssh sign-in refusal, so the listing it ends
+    with asks a destination again wherever this refresh expired a row's
+    failed-fetch marker; a registry it did not refetch keeps its markers.
     """
+    _SSH_SIGN_IN_REFUSED.clear()
     registries = await asyncio.to_thread(_effective_registries)
     if repo:
         registries = [r for r in registries if _same_git_target(r.repo, repo)]
@@ -540,6 +555,9 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
                 host = _git_url_host(reg.repo)
                 if host:
                     row["host"] = host
+                github_repo = _github_https_repo(reg.repo)
+                if cause in _GH_FETCH_CAUSES and github_repo:
+                    row["repo"] = github_repo
             results.append(row)
             continue
         # Expire per-app manifest caches so fresh display info is refetched
@@ -682,6 +700,9 @@ async def _detect_installed_probe(
                 base_cmd,
                 mode="strict",
                 env=_detect_probe_env(),
+                # ``strict`` leaves run/ and .local_secret readable, and this shell string
+                # comes from a registry manifest.
+                extra_hidden_dirs=await asyncio.to_thread(app_backend_secret_mask_targets),
                 _prepare=sandboxed_spawn_argv,
             )
             proc = await create_subprocess_limited(

@@ -55,12 +55,15 @@ from kiro_crew.dashboard.handlers.work_ledger import (
     _slot_loop_held,
     _slot_looping,
     _slot_open,
+    _slot_pending,
     _slot_running,
+    _slot_turn_running,
     _tail_events,
 )
+from kiro_crew.dashboard.session_activity import session_activity, session_execution_active
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.platform.context import redact_via_context
-from kiro_crew.work_vocab import waits_on_person
+from kiro_crew.work_vocab import ask_is_current, waits_on_person
 
 logger = logging.getLogger(__name__)
 
@@ -371,14 +374,14 @@ def answered_since_report(item: work_ledger.WorkItem, events: list[dict[str, Any
     return False
 
 
-def awaits_person(
+def names_person(
     item: work_ledger.WorkItem, events: list[dict[str, Any]], *, running: bool = False
 ) -> bool:
-    """Whether *item* waits on the PERSON: its last report is ``blocked`` / ``question``
-    naming one (:data:`~kiro_crew.work_vocab.WORK_BLOCKED_REASONS`), nobody has
-    answered it since (:func:`answered_since_report`), and its worker's turn is not
-    *running*. The one test behind the sidebar's crew count and the conductor mode Board's
-    Needs your input, so they agree.
+    """Whether *item*'s worker says it waits on a person: its last report is
+    ``blocked`` / ``question`` naming one (:data:`~kiro_crew.work_vocab.WORK_BLOCKED_REASONS`),
+    nobody has answered it since (:func:`answered_since_report`), and its worker's
+    turn is not *running*. The worker's claim, before the conductor vets it: see
+    :func:`awaits_person` for whether the person owns it.
 
     A running turn means the worker moved on: the conductor messaged it or a loop
     woke it, and neither writes a ledger answer. A tool approval it waits on mid-turn
@@ -388,38 +391,44 @@ def awaits_person(
     )
 
 
-def item_awaits_person(slot_key: str, item: Mapping[str, Any], *, running: bool = False) -> bool:
-    """:func:`awaits_person` for one work-item payload on *slot_key*'s ledger, over
-    its own event tail: the warm welcome's reader, so it and this board agree. A
-    tail that cannot be read leaves the item's stamps to decide; a closed item
-    waits on nobody, as on the board. *running* is :func:`item_running`, read on
-    the loop beforehand; a remote item reads its stored record here. FILE I/O."""
+def awaits_person(
+    item: work_ledger.WorkItem, events: list[dict[str, Any]], *, running: bool = False
+) -> bool:
+    """Whether *item* waits on the PERSON: its worker names one (:func:`names_person`)
+    AND the conductor relayed the question with a current ``ask`` record (the item
+    carries ``ask`` and no report follows the newest ``ask`` event in *events*,
+    :func:`~kiro_crew.work_vocab.ask_is_current`). Until the conductor records it,
+    the question is still the conductor's to vet. The one test behind every "needs
+    you" reader -- the Board's Needs your input, the sidebar's crew count, the
+    goal-board facts, the headless run and the warm welcome -- so they agree
+    (rfc-delayed-task-brief, section 3.11)."""
+    return bool(item.ask) and ask_is_current(events) and names_person(item, events, running=running)
+
+
+def item_person_state(slot_key: str, item: Mapping[str, Any], *, running: bool = False) -> str:
+    """One work-item payload on *slot_key*'s ledger, over its own event tail, as the
+    warm welcome reads it: ``"waits"`` when it :func:`awaits_person` (so the welcome
+    and this board agree), ``"checking"`` when its worker names a person but the
+    conductor has not relayed it with a current ``ask`` yet, else ``""``. A tail that
+    cannot be read leaves the item's stamps to decide its answer and counts its
+    record as not current (``"checking"``), so an old one never reads as waiting; a
+    closed item is neither, as on the board. *running* is :func:`item_running`,
+    read on the loop beforehand; a remote item reads its stored record here. FILE I/O."""
     if work_item_is_terminal(item.get("state")):
-        return False
+        return ""
+    readable = True
     try:
         tail = _tail_events(slot_key, str(item.get("item_id")), _MAX_EVENT_TAIL)
     except Exception:
         logger.debug("no event tail for a warm welcome item", exc_info=True)
-        tail = []
+        tail, readable = [], False
     stored = work_ledger.WorkItem.from_dict(dict(item))
     remote = work_ledger.remote_liveness(slot_key, stored)
     running = remote[0] if remote is not None else running
-    return awaits_person(stored, [event.to_dict() for event in tail], running=running)
-
-
-def ask_is_current(events: list[dict[str, Any]]) -> bool:
-    """Whether the item's ``ask`` record explains the question waiting now, by the
-    ledger's own event order (*events*, oldest first): no ``report`` was appended
-    after the newest ``ask`` event. Stamps have whole-second resolution and would
-    tie, so the order decides. A tail cut short of the ``ask`` event counts as
-    current only when it holds no report either."""
-    for event in reversed(events):
-        kind = event.get("kind")
-        if kind == "ask":
-            return True
-        if kind == "report":
-            return False
-    return True
+    events = [event.to_dict() for event in tail]
+    if not names_person(stored, events, running=running):
+        return ""
+    return "waits" if readable and awaits_person(stored, events, running=running) else "checking"
 
 
 def item_ask_is_current(slot_key: str, item: Mapping[str, Any]) -> bool:
@@ -435,8 +444,8 @@ def item_ask_is_current(slot_key: str, item: Mapping[str, Any]) -> bool:
 
 
 def item_running(state: DashboardState, item: Mapping[str, Any]) -> bool:
-    """Whether *item*'s local worker has a turn in flight, as the board reads it.
-    A remote item answers False here: :func:`item_awaits_person` reads its record
+    """Whether *item*'s local worker has a model turn in flight.
+    A remote item answers False here: :func:`item_person_state` reads its record
     off the loop. Memory reads."""
     stored = work_ledger.WorkItem.from_dict(dict(item))
     if stored.worker_instance_id:
@@ -444,7 +453,7 @@ def item_running(state: DashboardState, item: Mapping[str, Any]) -> bool:
     running, _closed, _looping, _held = work_ledger.item_liveness(
         "",
         stored,
-        running=lambda k: _slot_running(state, k),
+        running=lambda k: _slot_turn_running(state, k),
         closed=lambda k: _slot_closed(state, k),
         looping=_slot_looping,
         held=_slot_loop_held,
@@ -668,9 +677,11 @@ def with_worker_facts(value: Any, state: Any, conductor: str = "") -> Any:
             looping=_slot_looping,
             held=_slot_loop_held,
         )
+        worker_key = item.worker_session_key or ""
+        pending = _slot_pending(state, worker_key)
         facts["stale"] = work_ledger.is_stale(
             item,
-            worker_running=running,
+            worker_running=running or pending,
             worker_closed=closed,
             worker_looping=looping,
             worker_loop_held=held,
@@ -678,12 +689,12 @@ def with_worker_facts(value: Any, state: Any, conductor: str = "") -> Any:
         # Idle, and its worker's own loop will wake it (waiting on CI): the page reads
         # it as working, not waiting. A running turn keeps its own live reading.
         facts["looping"] = looping and not running
-        facts["worker"] = _alive_of(state, item.worker_session_key or "")
+        facts["worker"] = _alive_of(state, worker_key)
         events = raw.get("events")
         facts["awaits_person"] = not item.is_terminal and awaits_person(
             item,
             [e for e in events if isinstance(e, dict)] if isinstance(events, list) else [],
-            running=running,
+            running=_slot_turn_running(state, worker_key),
         )
         out.append({**raw, **facts})
     return out
@@ -777,11 +788,13 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
             if dirty is not None:
                 return _answer_of(dirty)
             items = await asyncio.to_thread(work_ledger.list_work_items, key)
-            event_tails: dict[str, list[work_ledger.WorkEvent]] = {}
-            for item in items:
-                event_tails[item.item_id] = await asyncio.to_thread(
-                    _tail_events, key, item.item_id, _MAX_EVENT_TAIL
-                )
+            # Every item's tail in one executor hop: each hop queues behind the
+            # shared pool, so the hop count must not grow with the board.
+            event_tails = await asyncio.to_thread(
+                lambda: {
+                    item.item_id: _tail_events(key, item.item_id, _MAX_EVENT_TAIL) for item in items
+                }
+            )
     except work_ledger.WorkLedgerError as exc:
         if exc.code != work_ledger.CODE_INVALID_VALUE:
             raise
@@ -794,6 +807,10 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
     assert record is not None
 
     conductor_alive = _slot_open(state, key)
+    conductor_slot = _find_slot(state, key)
+    conductor_activity = (
+        session_activity(state, conductor_slot) if conductor_slot is not None else ()
+    )
     # The worker's transport, not the ledger: a report the harness never delivered.
     # Read outside the board hold because it is not part of the ledger snapshot.
     undelivered = await asyncio.to_thread(
@@ -814,9 +831,12 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
             held=_slot_loop_held,
             remote=remote_live.get(item.item_id) or (False, False),
         )
+        worker_key = item.worker_session_key or ""
+        pending = False if item.worker_instance_id else _slot_pending(state, worker_key)
+        turn_running = running if item.worker_instance_id else _slot_turn_running(state, worker_key)
         row["stale"] = work_ledger.is_stale(
             item,
-            worker_running=running,
+            worker_running=running or pending,
             worker_closed=closed,
             worker_looping=looping,
             worker_loop_held=held,
@@ -827,8 +847,15 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
         row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
         row["report_undelivered"] = undelivered.get(item.item_id)
         events = [event.to_dict() for event in event_tails[item.item_id]]
+        # The conductor's ask record only while it explains the question waiting now:
+        # a newer report is a new question it has not vetted, so the card must not
+        # show the old what/why/options beside it.
+        if row.get("ask") and not ask_is_current(events):
+            row.pop("ask")
         # Waits on the PERSON: the one test the sidebar's crew_work count uses too.
-        row["awaits_person"] = not item.is_terminal and awaits_person(item, events, running=running)
+        row["awaits_person"] = not item.is_terminal and awaits_person(
+            item, events, running=turn_running
+        )
         row["events"] = _mask_events(events)
         rows.append(
             _project_item(
@@ -836,7 +863,7 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
                 alive=(
                     _remote_alive(running, closed)
                     if item.worker_instance_id
-                    else _alive_of(state, item.worker_session_key or "")
+                    else _alive_of(state, worker_key)
                 ),
                 outstanding=_is_outstanding(item, row["events"]),
                 terminal=item.is_terminal,
@@ -874,6 +901,7 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
     payload = {
         "conductor": record.to_dict(),
         "conductor_alive": "idle" if conductor_alive else "closed",
+        "conductor_working": session_execution_active(conductor_activity),
         "items": rows,
         "asks": asks,
         "pr_facts": facts_by_item,

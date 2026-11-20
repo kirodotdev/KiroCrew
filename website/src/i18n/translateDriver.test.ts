@@ -62,12 +62,19 @@ describe('locale list derivation', () => {
     expect(parseLanguages(LANGUAGES_SRC).map((l: { code: string }) => l.code)).not.toContain('en-XA')
   })
 
-  it('leaves 11 translation targets once English is removed', () => {
-    // A literal, NOT SUPPORTED_LANGUAGES.length - 1: the test above already
-    // asserts the parse equals that export, so deriving the count from it here
-    // would compare the parse against itself and pass for any fan-out size.
+  it('targets every shipped translation catalog once English is removed', () => {
+    // Compared with the catalogs on disk, NOT SUPPORTED_LANGUAGES: the test above
+    // already asserts the parse equals that export, so deriving the targets from it
+    // here would compare the parse against itself and pass for any fan-out size.
     const parsed = parseLanguages(LANGUAGES_SRC)
-    expect(parsed.filter((l: { code: string }) => l.code !== DEFAULT_LANGUAGE)).toHaveLength(11)
+    const targets = parsed.map((l: { code: string }) => l.code).filter((c: string) => c !== DEFAULT_LANGUAGE).sort()
+    const catalogs = fs.readdirSync(path.join(SRC, 'locales'))
+      .filter(f => /^[A-Za-z-]+\.json$/.test(f))
+      .map(f => f.replace(/\.json$/, ''))
+      .filter(c => c !== DEFAULT_LANGUAGE && c !== 'en-XA')
+      .sort()
+    expect(catalogs.length).toBeGreaterThan(0)
+    expect(targets).toEqual(catalogs)
   })
 
   it('throws rather than guessing when the export cannot be found', () => {

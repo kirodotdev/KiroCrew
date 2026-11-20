@@ -576,9 +576,10 @@ class AgentConfig:
             "agent subprocess -- opt-in, and inside the agent it breaks the aws "
             "CLI, boto3, git-over-SSH, gh, kubectl, npm/pip registry auth, "
             ".netrc HTTPS auth, the git credential store and remote-MCP OAuth "
-            "for the same reason. Like every value of this key, a change applies "
-            "to sessions started after it; a session already running keeps the "
-            "tier it was spawned with until it ends. 'strict' changes "
+            "for the same reason. A stricter value also reaches sessions already "
+            "running: each one restarts under it at its next turn, as after any "
+            "restart; a looser value applies to sessions started after the "
+            "change. 'strict' changes "
             "nothing where Kiro Crew applies no sandbox of its own: Windows has "
             "no OS backend, and a macOS spawn delegated to kiro-cli's internal "
             "sandbox is confined by that profile instead. Set to 'off' to skip "
@@ -975,7 +976,11 @@ class AgentConfig:
             "Resource Critical Threshold (GB)",
             "Available memory (GB) at or below which the [RESOURCES] context line "
             "escalates to 'critically low' and advises against starting heavy work "
-            "at all. Should be <= resource_pressure_gb. 0 disables the critical tier.",
+            "at all. Should be <= resource_pressure_gb. It also arms the host memory guard, "
+            "which on Linux stops the largest Crew tool or test tree at critical memory, or "
+            "at tight memory with PSI full avg10 >= 10. 0 disables the critical tier and "
+            "turns the memory guard off. When the container's memory limit is at or under "
+            "it, the gateway logs one start-up warning naming the settings to lower.",
         ),
     )
     admission_gate: bool = field(
@@ -988,7 +993,9 @@ class AgentConfig:
             "summaries, history consolidation) are skipped while it lasts. Subagent "
             "spawns are not gated on this posture; they wait on spawn_min_memory_gb instead. "
             "Manually triggered cron runs and direct chat turns are never gated; an unreadable "
-            "probe admits (fail-open). Set false to make the critical posture advisory-only.",
+            "probe admits (fail-open). Set false to make the critical posture advisory-only "
+            "for these deferrals; it does not stop the host memory guard (see "
+            "resource_critical_gb).",
         ),
     )
     task_queue_enabled: bool = field(
@@ -1461,7 +1468,7 @@ class AgentConfig:
     orchestrator_memory: bool = field(
         default=False,
         metadata=_meta(
-            "Orchestrator memory",
+            "Kiro Memory",
             "Let a new chat in your own dashboard read the memories the Kiro agent "
             "engine already stored for you, so it recalls your preferences without "
             "being told again. Read-only: the chat never adds, changes or deletes "

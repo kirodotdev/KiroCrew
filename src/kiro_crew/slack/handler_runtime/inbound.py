@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import re
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -37,12 +38,15 @@ if TYPE_CHECKING:
         config_path,
         is_allowed_user,
         is_sensitive_path,
+        is_shared_listed,
+        is_shared_user,
         load_window_off_loop,
         logger,
         privacy_mode,
         redact_credentials,
         redact_exfiltration_urls,
         sel,
+        store_linked_thread_images,
         update_config_locked,
     )
 
@@ -161,6 +165,11 @@ async def maybe_apply_privacy_modifiers(
     Ordering (temporary, then incognito) and the early return as soon as nothing
     remains match the shipped behaviour.
     """
+    if is_shared_listed(user_id):
+        # The modifiers are the owner's (slack.shared_access): a shared user's typed
+        # one is refused upstream, and one inside an attachment or a transcript is
+        # prompt content, never a mode change.
+        return text, cmd_text, False
     for mode, pattern in (
         (privacy_mode.MODE_TEMPORARY, _TEMPORARY_TOKEN_RE),
         (privacy_mode.MODE_INCOGNITO, _INCOGNITO_TOKEN_RE),
@@ -641,7 +650,7 @@ async def closed_dashboard_owner_refused(
     if channel_pinned_agent(channel) is None:
         return False
     # Normal handling answers an unauthorized sender; nothing is said here.
-    if not is_allowed_user(user_id):
+    if not (is_allowed_user(user_id) or is_shared_user(user_id)):
         return False
     if owner is None:
         _first_word = text.strip().split(maxsplit=1)[0] if text.strip() else ""
@@ -692,6 +701,28 @@ async def closed_dashboard_owner_refused(
     return True
 
 
+async def shared_user_refused_for_session(
+    user_id: str, session: str, thread_ts: str, channel: str
+) -> bool:
+    """Refuse (and audit) a shared user whose message would reach a code channel's
+    session *session*, or a bound or revoked channel's anchor thread *thread_ts*."""
+    if not is_shared_listed(user_id):
+        return False
+    from kiro_crew.slack.code_channels.routing import shared_user_refused_for_slot
+
+    if not await asyncio.to_thread(shared_user_refused_for_slot, session, thread_ts):
+        return False
+    sel().log_api_access(
+        caller=user_id,
+        operation="slack.message",
+        outcome="denied",
+        source="slack",
+        resources=f"channel={channel}",
+        error="code channel is owner-only",
+    )
+    return True
+
+
 class LinkedRoute(enum.Enum):
     """What :func:`route_linked_thread` did with a message.
 
@@ -703,6 +734,7 @@ class LinkedRoute(enum.Enum):
     UNROUTED = "unrouted"  # no linked slot took it: normal routing continues
     ROUTED = "routed"  # run or queued on the linked slot
     REFUSED = "refused"  # answered with a refusal; nothing was appended
+    HELD = "held"  # the caller's gate refused it last: nothing appended or said
 
 
 async def route_linked_thread(
@@ -717,6 +749,7 @@ async def route_linked_thread(
     user_meta: dict[str, Any] | None = None,
     turn_context: str | None = None,
     interpret_commands: bool = True,
+    admit: Callable[[], Awaitable[bool]] | None = None,
 ) -> LinkedRoute:
     """Route a Slack message to a linked dashboard slot, if one is linked.
 
@@ -748,7 +781,31 @@ async def route_linked_thread(
     a pending entry would be taken by whichever turn starts first.
     *interpret_commands* off (an OPTIONS answer) hands *text* over with commands
     off, so the slot reads it as content, never as a ``/`` command.
+    *admit* (the caller's live gate: a code channel's fences) is asked last,
+    after every await here and right before the row is appended or the turn
+    starts; False holds the message (:attr:`LinkedRoute.HELD`).
     """
+    # Code channels are the owner's (slack.shared_access): a shared user's message
+    # in one never reaches its session, whatever the feature or the slot says.
+    # First, before the no-slot fall-through hands the thread to plain routing.
+    if is_shared_listed(user_id):
+        from kiro_crew.slack.code_channels.routing import (
+            shared_user_refused_in,
+            shared_user_refused_unbound,
+        )
+
+        if await asyncio.to_thread(
+            shared_user_refused_in, channel
+        ) or await shared_user_refused_unbound(slack, channel):
+            sel().log_api_access(
+                caller=user_id,
+                operation="slack.message",
+                outcome="denied",
+                source="slack",
+                resources=f"channel={channel}",
+                error="code channel is owner-only",
+            )
+            return LinkedRoute.REFUSED
     if not (_dashboard_state and hasattr(_dashboard_state, "get_linked_slot")):
         return LinkedRoute.UNROUTED
     if route_pinned:
@@ -759,6 +816,17 @@ async def route_linked_thread(
         # canonical ``slack:<ts>`` session keys still hit linked slots. session_key
         # is kept for the SEL logging below.
         _linked_slot = _dashboard_state.get_linked_slot(reply_ts)
+    # A thread linked to a code channel's session (or a bound or revoked channel's
+    # anchor) leads into that owner-only session wherever the thread lives, live
+    # slot or closed tab alike, so a shared user (slack.shared_access) is refused
+    # before either route.
+    if is_shared_listed(user_id):
+        _dest = str(getattr(_linked_slot, "key", "") or "")
+        if not _dest and not route_pinned:
+            _sessions = getattr(_dashboard_state, "sessions", None)
+            _dest = str((_sessions.get_session_for_thread(reply_ts) if _sessions else "") or "")
+        if await shared_user_refused_for_session(user_id, _dest, reply_ts, channel):
+            return LinkedRoute.REFUSED
     if not _linked_slot:
         # No live slot: a dashboard session whose tab is closed can still own
         # the thread, and the plain route would run the reply on its recorded
@@ -779,7 +847,7 @@ async def route_linked_thread(
         return LinkedRoute.UNROUTED
 
     # Auth check FIRST — deny all messages from unauthorized users.
-    if not is_allowed_user(user_id):
+    if not (is_allowed_user(user_id) or is_shared_user(user_id)):
         logger.warning("Unauthorized user %s in linked thread %s", user_id, session_key)
         sel().log_tool_invocation(
             session_key=session_key,
@@ -847,6 +915,7 @@ async def route_linked_thread(
                 user_meta=user_meta,
                 turn_context=turn_context,
                 interpret_commands=interpret_commands,
+                admit=admit,
             )
 
     # A channel pinned to an agent is served only by that agent. A slot on any
@@ -893,10 +962,76 @@ async def route_linked_thread(
         return LinkedRoute.REFUSED
 
     _linked_slot_key = _linked_slot.key
+    # Before the redaction and the handoff: the turn below runs after this
+    # message's handler task has deleted its downloaded files. The copy awaits,
+    # so the slot is checked again once it is back: still registered, and for an
+    # unpinned route still the thread's owner.
+    _stored = await store_linked_thread_images(
+        _dashboard_state,
+        _linked_slot,
+        text,
+        still_current=lambda: (
+            _dashboard_state._slots.get(_linked_slot_key) is _linked_slot  # type: ignore[attr-defined]
+            and (route_pinned or _dashboard_state.get_linked_slot(reply_ts) is _linked_slot)
+        ),
+    )
+    if _stored is None:
+        # The slot was closed, deleted or relinked during the copy. A pinned
+        # route reads as a pinned route with no live slot. An unpinned one is
+        # resolved again and pinned to what it resolves to, as after the window
+        # load above, which bounds this to one more pass.
+        if route_pinned:
+            return LinkedRoute.UNROUTED
+        _relinked = _dashboard_state.get_linked_slot(reply_ts)
+        if _relinked is None:
+            if await closed_dashboard_owner_refused(
+                text,
+                session_key,
+                user_id,
+                channel,
+                slack,
+                reply_ts,
+                interpret_commands=interpret_commands,
+            ):
+                return LinkedRoute.REFUSED
+            return LinkedRoute.UNROUTED
+        return await route_linked_thread(
+            text,
+            session_key,
+            user_id,
+            channel,
+            slack,
+            reply_ts,
+            target_slot=_relinked,
+            route_pinned=True,
+            user_meta=user_meta,
+            turn_context=turn_context,
+            interpret_commands=interpret_commands,
+            admit=admit,
+        )
+    text = _stored
+    if admit is not None:
+        # The caller's own live gate, asked after every await above (the agent
+        # read, the window load, the image copy) and right before anything is
+        # appended or started; the slot is checked again after its await. Fails
+        # closed: a gate that raises holds the message. Nothing below awaits
+        # until the row is appended and the turn started or queued; keep it so.
+        # HELD is silent here: the caller says why.
+        try:
+            admitted = await admit()
+        except Exception:
+            logger.debug("linked route gate failed for %s", channel, exc_info=True)
+            admitted = False
+        if not admitted or not (
+            _dashboard_state._slots.get(_linked_slot_key) is _linked_slot  # type: ignore[attr-defined]
+            and (route_pinned or _dashboard_state.get_linked_slot(reply_ts) is _linked_slot)
+        ):
+            return LinkedRoute.HELD
     # Who wrote the text this slot is about to carry, for the code-channel
     # dispatch exemption: it admits a channel-origin turn only while every author
     # on record is the Slack owner (``is_owner``; this one passed
-    # ``is_allowed_user`` above, which only lets the text in).
+    # ``is_allowed_user`` above, which only lets the text in). Recorded once the
+    # text is sure to be appended: a held message carried nothing.
     from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
         note_channel_sender,
     )

@@ -111,8 +111,48 @@
     if (style.display === "none" || style.visibility === "hidden") return false;
     var rect = el.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) return false;
+    // `display: none` up the tree. checkVisibility() reads the flat tree; the
+    // offsetParent test does not cross a shadow root, so content slotted into a
+    // web component's fixed dialog (Alaska's fs-auro-dialog) read as hidden.
+    if (typeof el.checkVisibility === "function") return el.checkVisibility();
     if (el.offsetParent === null && style.position !== "fixed") return false;
     return true;
+  }
+
+  // Tags whose text is never part of a name: not drawn, or a form field whose
+  // text is the field's content (a hidden prefilled <textarea> slotted into a
+  // button must not name it). aria-hidden text is left out of a name too.
+  var NAMELESS_TAGS = {
+    script: 1, style: 1, template: 1, input: 1, textarea: 1, select: 1, option: 1
+  };
+
+  // Text as drawn, through <slot>s: a web component's inner <button> holds a
+  // <slot>, and its label is the host's light-DOM text (Alaska's auro-button),
+  // which the button's own textContent never contains. Every element is checked
+  // here, slots and slotted ones too, so hidden, field and secret-field text adds
+  // nothing. A display:contents wrapper (a slot by default) draws no box of its
+  // own, so only its style decides, not checkVisibility(). Pieces join with no
+  // separator, as textContent joins them: "$1<span>.99</span>" reads "$1.99".
+  function drawnText(node, depth) {
+    if (node.nodeType === 3) return node.nodeValue;
+    if (node.nodeType !== 1 || depth > 16) return "";
+    var tag = node.tagName.toLowerCase();
+    if (NAMELESS_TAGS[tag] || secretish(node)) return "";
+    if (node.getAttribute("aria-hidden") === "true") return "";
+    var style = window.getComputedStyle(node);
+    if (!style || style.display === "none" || style.visibility === "hidden") return "";
+    if (tag === "slot" && typeof node.assignedNodes === "function") {
+      return joinText(node.assignedNodes({ flatten: true }), depth);
+    }
+    if (style.display !== "contents" && typeof node.checkVisibility === "function" &&
+        !node.checkVisibility()) return "";
+    return joinText(node.childNodes || [], depth);
+  }
+
+  function joinText(nodes, depth) {
+    var s = "";
+    for (var i = 0; i < nodes.length; i++) s += drawnText(nodes[i], depth + 1);
+    return s;
   }
 
   // Why a quick ask would refuse this password input now ("disabled", "hidden",
@@ -353,7 +393,9 @@
       if (v && v.trim()) return v.trim();
     }
     if (secret) return "";
-    return (el.textContent || "").replace(/\s+/g, " ").trim();
+    var own = (el.textContent || "").replace(/\s+/g, " ").trim();
+    if (own || !el.querySelector || !el.querySelector("slot")) return own;
+    return joinText(el.childNodes || [], 0).replace(/\s+/g, " ").trim();
   }
 
   function accName(el) {
@@ -625,13 +667,18 @@
     return null;
   }
 
-  // The frames (`iframe`, `frame`, `object`, `embed`) one walk of the top
-  // document reaches through open shadow roots and readable frames: how many,
-  // and how many of them have a document this world cannot read. Past depth 8
-  // the walk stops and counts one unreadable, so a guard refuses.
-  function scanFrames() {
+  // The frames (`iframe`, `frame`, `object`, `embed`) one walk from `start`
+  // (the top document by default; an element counts itself) reaches through open
+  // shadow roots and readable frames: how many, and how many of them have a
+  // document this world cannot read. Past depth 8 the walk stops and counts one
+  // unreadable, so a guard refuses; `deep` counts those stops on their own, so
+  // `read` can say text was left out for depth. `onRoot`, when given, is called
+  // with each open shadow root and each readable iframe or frame document the
+  // walk enters.
+  function scanFrames(start, onRoot) {
     var n = 0;
     var seen = 0;
+    var deep = 0;
     function embeds(el) {
       var tag = (el.tagName || "").toLowerCase();
       return tag === "iframe" || tag === "frame" || tag === "object" || tag === "embed";
@@ -640,7 +687,8 @@
       try { return el.contentDocument || null; } catch (e) { return null; }
     }
     function walkRoot(root, d) {
-      var all = root.querySelectorAll("*");
+      var all = Array.prototype.slice.call(root.querySelectorAll("*"));
+      if (root.nodeType === 1) all.unshift(root);
       for (var j = 0; j < all.length; j++) {
         var el = all[j];
         var inner = embeds(el) ? innerDoc(el) : null;
@@ -650,13 +698,219 @@
         if (embeds(el) && (!inner || !isFrame(el))) n++;
         if (!el.shadowRoot && !inner) continue;
         // Too deep to look: count it, so the guard refuses rather than passes.
-        if (d >= 8) { n++; return; }
-        if (el.shadowRoot) walkRoot(el.shadowRoot, d + 1);
-        if (inner) walkRoot(inner, d + 1);
+        if (d >= 8) { n++; deep++; return; }
+        if (el.shadowRoot) {
+          if (onRoot) onRoot(el.shadowRoot);
+          walkRoot(el.shadowRoot, d + 1);
+        }
+        if (inner) {
+          if (onRoot && isFrame(el)) onRoot(inner);
+          walkRoot(inner, d + 1);
+        }
       }
     }
-    walkRoot(document, 0);
-    return { unreadable: n, seen: seen };
+    walkRoot(start || document, 0);
+    return { unreadable: n, seen: seen, deep: deep };
+  }
+
+  // -- the `read` op: the page's content as text --------------------------------
+
+  // The gateway pages the result; past this the page side stops, so a huge page
+  // cannot make the worker's reply line unbounded.
+  var READ_PAGE_CAP = 2000000;
+  // The worker refuses a reply whose JSON passes 4 MiB (helper_worker
+  // REPLY_CAP_BYTES), and JSON escapes each non-ASCII UTF-16 unit as 6 bytes, so
+  // the content is cut by its escaped size, with headroom for the envelope.
+  var READ_JSON_BUDGET = 3670016;
+  // Form controls are left out like `innerText` leaves them out of the light DOM.
+  var READ_SKIP = { script: 1, style: 1, template: 1, noscript: 1, textarea: 1, input: 1, select: 1 };
+
+  // The longest prefix of `s` whose JSON-escaped size fits `budget` bytes.
+  function capJsonSize(s, budget) {
+    var used = 0;
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      used += (c > 0x7e || c < 0x20) ? 6 : (c === 0x22 || c === 0x5c) ? 2 : 1;
+      if (used > budget) {
+        if (i > 0 && c >= 0xdc00 && c <= 0xdfff) i--;
+        return s.slice(0, i);
+      }
+    }
+    return s;
+  }
+
+  // Custom fields hold their value in child text, not an input's value property.
+  function secretEditable(el) {
+    if (!el || el.nodeType !== 1) return false;
+    var ce = String(el.getAttribute("contenteditable")).toLowerCase();
+    return (el.isContentEditable || ce === "" || ce === "true" || ce === "plaintext-only" ||
+      !!EDITABLE_ROLES[explicitRole(el)]) && secretish(el);
+  }
+
+  // A scoped ref, shadow root or frame can start inside a protected field.
+  function insideSecretEditable(node) {
+    for (var n = node; n; ) {
+      if (secretEditable(n)) return true;
+      n = n.assignedSlot || n.parentNode || n.host ||
+        (n.nodeType === 9 && n.defaultView && n.defaultView.frameElement) || null;
+    }
+    return false;
+  }
+
+  // A range can have rects even when its text is hidden. Match innerText's
+  // exclusions across slots and shadow hosts, without requiring an element box.
+  function textNodeShown(node) {
+    var doc = node.ownerDocument || document;
+    var range = doc.createRange ? doc.createRange() : null;
+    if (!range || !range.getClientRects) return false;
+    // Breaks and frames have no text contents; measure the element itself.
+    if (node.localName === "br" || isFrame(node)) range.selectNode(node);
+    else range.selectNodeContents(node);
+    if (!range.getClientRects().length) return false;
+    var view = doc.defaultView || window;
+    var parentStyle = true, child = node;
+    for (var n = node; n; ) {
+      if (n.nodeType === 1) {
+        var style = view.getComputedStyle(n);
+        // Visibility inherits, but a descendant can explicitly restore it.
+        if (parentStyle && style.visibility !== "visible") return false;
+        parentStyle = false;
+        if (style.display === "none" || style.contentVisibility === "hidden") return false;
+        if (n.localName === "details" && !n.hasAttribute("open")) {
+          var summary = n.firstElementChild;
+          while (summary && summary.localName !== "summary") summary = summary.nextElementSibling;
+          // Only this details' first summary stays rendered when it is closed.
+          if (!summary || child !== summary) return false;
+        }
+      } else if (n.nodeType === 9) {
+        try { n = n.defaultView && n.defaultView.frameElement; } catch (e) { return false; }
+        if (!n) break;
+        if (!n.getClientRects().length) return false;
+        view = n.ownerDocument.defaultView || window;
+        // Visibility does not inherit into a frame document.
+        parentStyle = true;
+        continue;
+      }
+      child = n;
+      n = n.assignedSlot || n.parentNode || n.host || null;
+    }
+    return true;
+  }
+
+  // What select-all + copy gives for one node, the whole page and not only the
+  // viewport. An element with a box gives its `innerText`, which leaves out
+  // input values and what is not rendered. Any other element, and a shadow root,
+  // has no `innerText` to trust (it falls back to `textContent`, script bodies
+  // included), so its child nodes are read one by one. Each text node must have
+  // a range box and pass the composed-tree checks that innerText would apply.
+  function readBlock(el, style) {
+    var display = style.display;
+    if (display === "contents" || display === "none") return false;
+    var parent = el.assignedSlot || el.parentElement || (el.parentNode && el.parentNode.host);
+    var view = (el.ownerDocument || document).defaultView || window;
+    var container = parent ? view.getComputedStyle(parent).display : "";
+    // Flex/grid items form separate rendered runs even if their own display is inline.
+    return container === "flex" || container === "inline-flex" ||
+      container === "grid" || container === "inline-grid" ||
+      ["block", "list-item", "table", "table-row", "table-caption", "flow-root", "flex", "grid"].indexOf(display) !== -1;
+  }
+
+  function renderedText(node) {
+    var parts = [], space = false, breaks = 0;
+    function append(text, preserve) {
+      // Native innerText and preformatted text already carry meaningful spacing.
+      if (preserve && text) {
+        if (parts.length && breaks) parts.push("\n".repeat(breaks));
+        else if (parts.length && space && !parts[parts.length - 1].endsWith("\n")) parts.push(" ");
+        parts.push(text);
+        space = false;
+        breaks = 0;
+        return;
+      }
+      for (var i = 0; i < text.length; i++) {
+        var c = text[i];
+        if (c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f") {
+          space = true;
+          continue;
+        }
+        if (parts.length && breaks) parts.push("\n".repeat(breaks));
+        else if (parts.length && space && parts[parts.length - 1] !== "\n") parts.push(" ");
+        space = false;
+        breaks = 0;
+        parts.push(c);
+      }
+    }
+    function walk(node) {
+      if (!node || insideSecretEditable(node)) return;
+      var view = (node.ownerDocument || document).defaultView || window;
+      var el = node.nodeType === 1 ? node :
+        node.assignedSlot || node.parentElement || (node.parentNode && node.parentNode.host);
+      var style = el ? view.getComputedStyle(el) : null;
+      var preserve = style && ["pre", "pre-wrap", "pre-line", "break-spaces"].indexOf(style.whiteSpace) !== -1;
+      if (node.nodeType === 3) {
+        if (textNodeShown(node)) append(node.textContent || "", preserve);
+        return;
+      }
+      var block = false;
+      if (node.nodeType === 1) {
+        if (READ_SKIP[(node.tagName || "").toLowerCase()]) return;
+        if (node.localName === "br") {
+          if (textNodeShown(node)) { breaks = Math.min(2, breaks + 1); space = false; }
+          return;
+        }
+        block = readBlock(node, style);
+        if (block) { breaks = Math.max(1, breaks); space = false; }
+        // An ancestor's innerText includes custom field values. Split only those
+        // ancestors, keeping the rendered text of every unaffected subtree.
+        var descendants = Array.prototype.slice.call(node.querySelectorAll("*"));
+        descendants.unshift(node);
+        var hasSecret = descendants.some(function (el) {
+          // Slotted light-DOM text can sit inside a protected shadow field.
+          return secretEditable(el) || (el.shadowRoot &&
+            Array.prototype.some.call(el.childNodes, insideSecretEditable));
+        });
+        if (!hasSecret && node.getClientRects && node.getClientRects().length > 0 &&
+            typeof node.innerText === "string") {
+          append(node.innerText, true);
+          if (block) { breaks = Math.max(1, breaks); space = false; }
+          else if (style.display === "table-cell") space = true;
+          return;
+        }
+      } else if (node.nodeType !== 11) {
+        return;
+      }
+      // Inline runs share whitespace state: splitting a word across spans must
+      // not split a credential or a highlighted command into separate lines.
+      for (var i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i]);
+      if (block) { breaks = Math.max(1, breaks); space = false; }
+      else if (style && style.display === "table-cell") space = true;
+    }
+    walk(node);
+    return parts.join("");
+  }
+
+  // The root's text, then the text of every open shadow root and same-origin
+  // frame under it, which `innerText` does not enter. A frame this world cannot
+  // read (cross-origin, or an `object` / `embed`) is counted, never read; so is
+  // a root nested past the walk's depth, apart, in `deepRoots`.
+  function readText(root) {
+    var parts = [], size = 0;
+    function add(node) {
+      // Past the cap, not at it: one more root makes the content longer than the
+      // cap, so `read` cuts it and says `truncated` instead of dropping it silently.
+      if (size > READ_PAGE_CAP) return;
+      if (node.nodeType === 9) {
+        var frame;
+        try { frame = node.defaultView && node.defaultView.frameElement; } catch (e) { return; }
+        if (frame && (!frame.getClientRects().length || !textNodeShown(frame))) return;
+      }
+      var text = renderedText(node.nodeType === 9 ? node.body : node);
+      // Do not trim indentation from a leading preformatted block.
+      if (text.trim()) { parts.push(text); size += text.length; }
+    }
+    add(root);
+    var scan = scanFrames(root, add);
+    return { content: parts.join("\n\n"), skippedFrames: scan.unreadable - scan.deep, deepRoots: scan.deep };
   }
 
   var api = {
@@ -750,6 +1004,25 @@
       return result;
     },
 
+    // The page's text for the `read` op, scoped to `ref` when one is given.
+    // `skippedFrames` counts the frames left out, `deepRoots` the roots nested
+    // too deep to read.
+    read: function (ref) {
+      var root = null;
+      if (ref) {
+        root = lookup(ref);
+        if (!root) return { ok: false, code: "ref_stale" };
+      }
+      if (!root) root = document.body || document.documentElement;
+      var read = readText(root);
+      var out = { ok: true, url: String(location.href), title: String(document.title), skippedFrames: read.skippedFrames, deepRoots: read.deepRoots };
+      var capped = read.content.length > READ_PAGE_CAP ? read.content.slice(0, READ_PAGE_CAP) : read.content;
+      capped = capJsonSize(capped, READ_JSON_BUDGET);
+      out.content = capped;
+      if (capped.length < read.content.length) out.truncated = true;
+      return out;
+    },
+
     // Scroll a ref into view (unless `scroll` is false) and return its centre in CSS pixels.
     resolve: function (ref, scroll) {
       var el = lookup(ref);
@@ -810,6 +1083,24 @@
         tag: (active.tagName || "").toLowerCase(),
         hasFocus: hasFocus
       };
+    },
+
+    // Paste into `ref`, or into what holds focus: `html` and `text` ride on a paste
+    // event, which the page's editor reads as it would a clipboard paste, and the
+    // clipboard itself is never written. A script's paste event inserts nothing on
+    // its own, so `handled` (the page cancelled it, as an editor that takes the paste
+    // does, and as a field that blocks pasting does too) tells the gateway whether
+    // the plain text still has to be typed.
+    paste: function (ref, html, text) {
+      var el = ref ? lookup(ref) : deepActive();
+      if (!el) return { ok: false, code: "ref_stale" };
+      // A cross-origin frame's field is reached through its frame ref, never its <iframe>.
+      if (isFrame(el)) return { ok: false, code: "focus_in_frame" };
+      var data = new DataTransfer();
+      if (html) data.setData("text/html", html);
+      data.setData("text/plain", text);
+      var event = new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true, composed: true });
+      return { ok: true, handled: !el.dispatchEvent(event) };
     },
 
     selectOption: function (ref, values) {
@@ -1320,6 +1611,53 @@
         out.invalid.push(clip(nameOf(field, true), GLANCE_NAME_CAP) || "field");
       }
       return out;
+    },
+
+    // The owner's media buttons on an app's page (`browser_harness/media.py`): play,
+    // pause, seek or set the volume of the tab's main <video>/<audio>, and report its
+    // state. Top document only. The element is the one playing, else the largest
+    // shown one. Runs in the isolated world, so a page script cannot swap the
+    // methods it calls. Reads no page text: only the element's own playback state.
+    media: function (action, value) {
+      var els = document.querySelectorAll("video,audio");
+      var pick = null;
+      var best = -1;
+      for (var i = 0; i < els.length; i++) {
+        var box = els[i].getBoundingClientRect();
+        var score = (els[i].paused ? 0 : 1e12) + box.width * box.height;
+        if (score > best) { best = score; pick = els[i]; }
+      }
+      if (!pick) return { ok: false, code: "no_media" };
+      var num = typeof value === "number" && isFinite(value) ? value : null;
+      if (action === "play") {
+        try {
+          var started = pick.play();
+          if (started && typeof started.catch === "function") started.catch(function () {});
+        } catch (e) { /* refused autoplay: the state below says paused */ }
+      } else if (action === "pause") {
+        pick.pause();
+      } else if (action === "seek") {
+        if (num === null || num < 0) return { ok: false, code: "bad_value" };
+        pick.currentTime = num;
+      } else if (action === "volume") {
+        if (num === null || num < 0 || num > 1) return { ok: false, code: "bad_value" };
+        pick.volume = num;
+        if (num > 0) pick.muted = false;
+      } else if (action !== "state") {
+        return { ok: false, code: "bad_action" };
+      }
+      var r = pick.getBoundingClientRect();
+      return {
+        ok: true,
+        kind: pick.tagName.toLowerCase(),
+        paused: !!pick.paused,
+        ended: !!pick.ended,
+        currentTime: isFinite(pick.currentTime) ? pick.currentTime : 0,
+        duration: isFinite(pick.duration) ? pick.duration : null,
+        volume: pick.volume,
+        muted: !!pick.muted,
+        center: r.width > 0 && r.height > 0 ? [r.left + r.width / 2, r.top + r.height / 2] : null
+      };
     }
   };
   return api;

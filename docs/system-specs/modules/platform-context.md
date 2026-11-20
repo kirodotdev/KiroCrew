@@ -78,7 +78,7 @@ omit the policy.
 | `package_manager` | adapter | **RESERVED** — `DefaultPackageManager`; install hints are inline in `doctor_checks/features.py` (use `CapabilityManager`) | — (slot inert) |
 | `knowledge` | adapter | `DefaultKnowledgeProvider` (no extra connectors) | enterprise doc connector (`extra_connectors`) |
 | `memory_files` | adapter | `DefaultMemoryFilesProvider` (memory's markdown source text on local disk) | a non-local `MemoryFiles` for memory's markdown source. `memory_files_for` does not catch a provider error: `PlatformCompositionError` propagates and nothing falls back to local disk. Memory's derived state (the FTS index, the SQLite stores, the FAISS vectors) stays local and does not travel through this seam |
-| `tunnel` | adapter | `DefaultTunnelProvider` (no-op); the Kiro relay client (`relay_client.provider.RelayTunnelProvider`) instead when `tunnel.relay_enabled` is on (off by default) | internal tunnel supervisor, which the relay client never replaces |
+| `tunnel` | adapter | `DefaultTunnelProvider` (no-op); the Kiro relay client (`relay_client.provider.RelayTunnelProvider`) instead when `tunnel.relay_enabled` asks for it (`remote_control/hosting.py::relay_requested`: `true`, or unset on a Crew with a team key or a workload identity) | internal tunnel supervisor, which the relay client never replaces |
 | `telemetry` | adapter | `DefaultTelemetryProvider` (no-op, RUM off; OTLP destinations from `telemetry.otlp_endpoint` and `telemetry.otlp_endpoints`) | RUM/Cognito config + its own OTLP collector |
 | `dashboard` | adapter | `DefaultDashboardContributor` (no routes/services, no login handler, no internal-reachable paths, no company sign-in default) | secretary/taskkeeper routes + enterprise SSO PTY login |
 | `jail` | adapter | `DefaultJailProvider` (no-op, never jails) | enterprise process isolation |
@@ -642,7 +642,7 @@ The LTS edition RFC ([rfc-crew-lts-edition](../../request-for-change/rfc-crew-lt
 | Webhooks by source | Follows the `webhooks` scope, off by default (baseline): a source runs only when the policy names it, whatever the stored switch says | `webhook_sources.py::source_refusal`, asked by `webhooks.py::WebhookTokenStore.is_switch_on` (`/api/hooks/agent`, source `agent`) and `webhook_sources.py::app_source_refusal` for an app declaring `permissions.webhookSource` (source: the app's name; Ops Mission Control's `/webhook` ingress is `ops-mission-control`) |
 | Signed extensions only, Extension versions | Follow install: `capabilities.extension_install`, off in the baseline, so both are off until a policy turns install on (see `docs/system-specs/modules/governance.md`, "Extensions, app versions and developer mode") | `platform/capability_bound.py::BoundedCapabilityManager` install ops and `sync_plugins` |
 | Workload identity, Identity settings | `capabilities.agentcore` off: no posture, Gateway URL or workload name | `platform/governance_parts/carriers.py::agentcore_posture` |
-| Content sent to external decisions | Follows `capabilities.decisions`, off by default: nothing is sent until the policy enables it; the local row holds that deny, as for any hosted deny, and the denial is audited | `decisions/capability.py::_row_denied` |
+| Content sent to external decisions | Never sent to hosted Jev, to a host under its domain, or to an endpoint written by hand, whatever any tier says (RFC D13). The baseline turns `capabilities.decisions` on with a `providers` allow list of the local presets, `sagemaker` and `clef` (Clef's exact documented address and model only), so those follow the row and a policy deny turns them off; the owner's consent is still needed. The wake judge falls to its LLM lane when the configured endpoint is refused. Each refusal is audited | `decisions/capability.py::edition_refuses`, `::targets_denied`; `platform/governance_parts/baseline.py` |
 | Managed update commands | Off; the built-in updater path applies | `platform/update_provider.py::resolve_provider` |
 | Minimum sandbox level (Green since RFC D7; this local lock stays) | a requested `off` tier is clamped to the shipped default before the governance floor, and a declared `sandbox_allow_unsandboxed_exec: true` reads as the platform default; tighter values still apply | `edition_locks.py::sandbox_mode_floor`, read by `sandbox_tiers.py::_clamp_sandbox_mode_to_floor` (the clamp every spawn path shares); `edition_locks.py::unsandboxed_exec_floor`, read by `sandbox_unavailable.py::_allow_unsandboxed_exec` (the one unsandboxed-exec gate) |
 
@@ -935,10 +935,15 @@ Wired sites:
   `CredentialPolicy` Protocol; no `CONTRACT_VERSION` bump; `DefaultCredentialPolicy`
   returns `frozenset()` so standalone redaction is byte-identical.
 - `agent_parts/spec_build.py` and `agent.py` — `current_context().mcp_tooling.extra_mcp_servers()` merged
-  additively into the agent config build; the dynamic refresh also re-pins an
-  existing entry's `command`/`args`, puts back any `env` key the edition ships
-  that the entry lacks (a key the user set keeps the user's value), and keeps its
-  other keys. A server first
+  additively into the agent config build, each entry carrying the `env` the user
+  set on that server in `~/.kiro/crew/mcp.json` over the shipped keys
+  (`agent_materialization/mcp_sources.py`, `seed_edition_servers`), so a spec
+  derived from the build (a Bot's worker, research, the team lead) runs it with
+  that env (minus a key holding a `secret://` reference, which only the gateway
+  resolves); the dynamic refresh also re-pins an existing entry's
+  `command`/`args`, puts back any `env` key the edition ships that the entry
+  lacks (a key the user set keeps the user's value), and keeps its other keys. A
+  server first
   supplied on an existing spec gains its `@name` ref in `tools` once
   (`agent_materialization/guide_platform.py`, `grant_edition_refs_once`).
 - `slack/events.py` / `slack/handler_runtime/dispatch.py` / `dashboard/handlers_system.py` —
@@ -1094,7 +1099,8 @@ Wired sites:
   **The relay client in the slot.** `build_default_context` fills the slot through
   `platform/bootstrap.py::_public_tunnel_provider`: the no-op
   `DefaultTunnelProvider` unless `edition_locks.py::relay_selected` says
-  `tunnel.relay_enabled` is on and `local_enable_locked("tunnel")` is false, and
+  `tunnel.relay_enabled` asks for the relay and `local_enable_locked("tunnel")` is
+  false, and
   then `relay_client/provider.py::public_tunnel_provider`'s `RelayTunnelProvider`,
   the Kiro relay's host leg (protocol v1). `relay_selected` imports nothing from
   `relay_client/`, so a composition with the relay off never loads it. Only the
@@ -1109,8 +1115,32 @@ Wired sites:
   stamped by the dashboard app's `dashboard/kiro_relay/ingress.py::RelayIngress`,
   which owns the relay-path header rule (the caller in `x-kiro-relay-user` and the
   per-process handover credential). The gateway publishes that app's ingress to the
-  relay client in `_start_aea_tunnel` only when `tunnel.relay_enabled is True`,
-  before the tunnel starts. With the switch off, it imports no relay client modules;
+  relay client in `_start_aea_tunnel` only when `relay_selected` says yes,
+  before the tunnel starts.
+
+  **Which Crews host.** `remote_control/hosting.py::relay_requested` is the one
+  answer, and `relay_selected`, `RelaySettings.from_config`, the Remote Control
+  guard and `remote_control/setting.py::requested` all ask it. `tunnel.relay_enabled`
+  stores three values: `true` (`kirocrew remote-control on`) hosts, `false`
+  (`off`, a pod seed, or a full save by an older build, whose default was `false`)
+  never hosts, and unset
+  (`null` or absent, the field default) hosts only when
+  `tunnel.relay_lease_credential` names a credential other than `kiro-sign-in`
+  and it is a team key (`relay_lease_token_type` `API_KEY`) or the deployment sets
+  `KIROCREW_WORKLOAD_IDENTITY`. A personal sign-in never hosts by default, and a
+  stored value always wins, so no install is migrated: an older install that stores
+  nothing and has a team key hosts after the upgrade, since the key was its choice. The rule reads only the
+  config object and the environment, so `relay_selected` stays free of I/O.
+  `tunnel.relay_enabled` is a fail-closed path (`validation._FAIL_CLOSED_PATHS`):
+  a quoted `"false"` is kept and reads as off instead of falling back to unset.
+  `gateway --test-mode` and `--seed` imply `--no-tunnel`, so a test or seeded
+  gateway never registers whatever its config. The first time a Crew connects
+  only because of the unset default, `remote_control/default_notice.py` logs one
+  line and rings one `system.agent` bell note naming who can now reach it and the
+  off command, and records it in `<data home>/remote-control-notice.json` so it is
+  said once. A Builder ID or social sign-in, which can never host, is refused
+  before any request as `lease.LeaseSignInCannotHost`; the lease client holds on a
+  fixed `SIGN_IN_CANNOT_HOST_RECHECK_SECONDS` step and logs it once. With the switch off, it imports no relay client modules;
   the headless API server builds none, so the relay client does not start there.
   The client binds the host connection in that ingress once `ready` arrives, with
   the Crew kind and owner the host token names, and unbinds it when the connection
@@ -1120,12 +1150,25 @@ Wired sites:
   `relay_client/lease.py::LeaseHostTokenSource`: it calls `RenewCrewLease` on the
   answer's schedule with the credential `tunnel.relay_lease_credential` points at
   (`secret://NAME` or a file, never the value), and hands each new host token to
-  the client. With `kiro-sign-in` instead, a personal Crew leases with the Crew's
+  the client. When it is empty and no edition names the relay, the lease client
+  calls the built-in control plane URL (`lease.py::built_in_lease_url`) for the
+  sign-in profile's region, us-east-1 otherwise. With `kiro-sign-in`, or with the
+  credential and `tunnel.relay_lease_token_type` both empty while neither
+  `KIROCREW_WORKLOAD_IDENTITY` (`kiro_crew/workload_identity.py`) nor the
+  `agent_identity` seam names a workload identity (`provider.py::RelaySettings.validate`), a
+  personal Crew leases with the Crew's
   own Kiro sign-in (`relay_client/lease_signin.py::read_lease_sign_in`), refreshed
   as needed, and sends that sign-in's `profileArn`. Each call's `connectedCount` is `RelayClient.connected_people()`:
   the distinct relayed callers with a WebSocket open on a serving connection, so
   one person on two tabs counts once. It is display-only, so a count that cannot
-  be read is sent as 0 and never fails the renewal. When the relay stops, it
+  be read is sent as 0 and never fails the renewal. A refusal's status text and
+  log line end with the service's own `message` (`lease.py::refusal_message`):
+  whitespace collapsed, credentials redacted, at most 200 characters, and dropped
+  whole when it holds an ARN (`arn:`, spaces allowed before the colon), twelve
+  digits with at most one space, `.` or `-` between any two, an AWS access key
+  id, or a character outside ASCII letters, digits, spaces and `.,;:'()?!-`,
+  since teammates can read the tunnel status. A workload lease's refusals are in
+  [kas-auth](kas-auth.md#workload-identity-in-place-of-a-sign-in). When the relay stops, it
   makes one best-effort `ReleaseCrewInstanceLease` call, bounded by `RELEASE_TIMEOUT_SECONDS`, so the
   Crew shows as disconnected, and a team Crew can move to another instance, as
   soon as it stops instead of when the lease lapses. With no lease service, the

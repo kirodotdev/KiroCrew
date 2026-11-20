@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
+#: The most of one stored tool output ``get_chat_session(tool_call_id=...)`` returns.
+TOOL_CALL_OUTPUT_MAX_CHARS = 8_000
+
 
 def schemas() -> list[dict[str, Any]]:
     """Descriptors for the sessions tools."""
@@ -75,7 +78,8 @@ def schemas() -> list[dict[str, Any]]:
                 "identified by a session_key returned from search_chat_history. "
                 "Returns the messages as role/content pairs, tail-capped at "
                 "max_messages. Use after search_chat_history when a snippet hit "
-                "looks like the thread you need. Refuses incognito/temporary "
+                "looks like the thread you need. With tool_call_id, returns that one "
+                "tool call's stored output instead. Refuses incognito/temporary "
                 "sessions. This is a READ — it never modifies memory or history."
             ),
             "inputSchema": {
@@ -104,6 +108,15 @@ def schemas() -> list[dict[str, Any]]:
                             "with the same crew. The crew must be connected."
                         ),
                     },
+                    "tool_call_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional: return only the stored output (up to "
+                            f"{TOOL_CALL_OUTPUT_MAX_CHARS:,} "
+                            "chars) of the tool call with this id in that session, as "
+                            "listed after a context trim. Local transcripts only."
+                        ),
+                    },
                 },
                 "required": ["session_key"],
             },
@@ -113,7 +126,7 @@ def schemas() -> list[dict[str, Any]]:
             "description": (
                 "List your recent conversation sessions in this workspace so you "
                 "can see the work in flight and what you've been doing — titles, "
-                "owning agent, approximate message volume, and created time, "
+                "owning agent, approximate message volume, last-active and created times, "
                 "ordered by newest activity first. Use this when the user asks 'what are you working on?', "
                 "'what sessions are open?', 'what have we been doing?', or when you "
                 "need a bird's-eye view of your own workspace before acting. This "

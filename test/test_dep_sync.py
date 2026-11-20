@@ -535,6 +535,14 @@ def test_a_sibling_directory_sharing_the_prefix_does_not_count_as_inside(tmp_pat
     assert dep_sync.venv_not_mapped_to(str(sibling), tmp_path / "main") is not None
 
 
+def test_a_checkout_at_a_filesystem_root_serves_its_own_venv(tmp_path):
+    """A root (``/``, ``C:\\``) keeps its separator; the prefix must not double it."""
+    root = Path(tmp_path.anchor)
+    origin = tmp_path / "src" / "kiro_crew" / "__init__.py"
+
+    assert dep_sync.venv_not_mapped_to(str(origin), root) is None
+
+
 def test_main_hands_every_spec_to_pip_and_stops_on_failure(repo):
     """pip decides satisfaction; a failed install must not report success."""
     _origin_inside.repo = repo

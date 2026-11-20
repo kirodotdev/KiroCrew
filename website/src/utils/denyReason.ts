@@ -19,7 +19,7 @@ export const DENY_REASON_MARKER = /Blocked by security policy:/g
  * When a security-policy rule or a PreToolUse hook blocks a tool call, the
  * gateway appends a second tool message sharing the pill's `tool_call_id`:
  *
- *     🚫 <title> — Blocked by security policy: <pattern>
+ *     Refused: <title> — Blocked by security policy: <pattern>
  *     <why the pattern fired, when the match was structural>
  *
  * The Output panel used to discard that content and show a fixed
@@ -69,7 +69,7 @@ export function extractDenyDetail(rowContent: string): string {
 }
 
 /**
- * The gateway writes a blocked row as `🚫 <title> — <reason>`. This matches the
+ * The gateway writes a blocked row as `Refused: <title> — <reason>`. This matches the
  * gate-crash refusal (`hooks.py`: `GATE_CRASH_REASON`) as the WHOLE tail of the
  * row, word for word, with only the exception class name free. A WIRE VALUE
  * like `DENY_REASON_MARKER`: translating it would stop the reason from being

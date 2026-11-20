@@ -651,6 +651,13 @@ In the Chat composer, tap `+` to open the device's native Files picker and
 attach an image or a regular file. This direct touch path does not open the
 desktop-style command menu first.
 
+On a phone, Return starts a new line in the chat composers (the Chat page, a
+mate's chat, the side panel), in a mate thread reply and in Edit & Resend.
+Tap Send to send. A phone's on-screen keyboard has no Shift+Return, so a
+Return that sent would leave no way to write a second line. On a tablet or a
+desktop, **Settings → Chat → Composer → Send shortcut** decides what Return
+does.
+
 ### Session duration
 
 Three clocks. The first two are signed into the access token payload
@@ -749,6 +756,16 @@ on the gateway host itself.
 **On iOS Safari**, open the dashboard, tap Share → *Add to Home Screen*, then
 launch from the new icon. The manifest's `"display": "standalone"` is what drops
 Safari's address bar.
+
+**The installed app can reopen the last page it showed.** iOS opens the
+manifest's `/`, not the page you added, so the app opens at Sessions. To change
+that on one device, turn on **Settings > Display > Reopen where I left off**.
+The switch is off by default and shows only in the installed app. With it on, a
+launch at `/` replaces it with the last dashboard page the app was on on that
+device, such as one crewmate's chat. A link or notification that names a page
+still opens that page. Only same-origin dashboard pages are reopened, and
+parameters that look like credentials are never stored. A normal browser tab
+always opens the URL you typed.
 
 **The service worker provides a limited offline shell.**
 [`website/public/sw.js`](../../website/public/sw.js) caches exactly `/` and
@@ -1221,8 +1238,10 @@ kirocrew service uninstall   # remove the unit / plist
 ```
 
 **Sudo scope on Linux:** the install shells out to `sudo install` (to place the
-unit as root-owned `0644`) and `sudo systemctl` (daemon-reload, enable,
-restart). No kirocrew, MCP, or LLM code path runs under sudo. Once started the
+unit as root-owned `0644`), `sudo systemctl` (daemon-reload, enable,
+restart) and, unless linger is already on or the host has no per-user
+manager, `sudo loginctl enable-linger` for your account. No kirocrew, MCP, or
+LLM code path runs under sudo. Once started the
 gateway runs as `User=$USER Group=$(id -gn)`, not root. The unit also caps
 crash-looping with `StartLimitBurst=3` / `StartLimitIntervalSec=300` and pins
 `LimitNOFILE=65536`, because a stock 1024 FD limit fails the frontend

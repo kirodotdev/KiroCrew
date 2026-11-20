@@ -702,7 +702,8 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
     (`rfc-crewmate-dynamic-dashboard.md`, "a page goes live on apply").
 
     The body carries the three declarations -- ``model``, ``view`` and ``theme`` --
-    and the gateway supplies the other two keys of the package: ``kind``, which is
+    and an optional ``widgets`` list (sent, it replaces the stored one; left out, the
+    stored one is kept), and the gateway supplies the other two keys of the package: ``kind``, which is
     fixed, and ``bound_to``, which is the authorization decision. A caller that sends
     either is refused by the argument schema. Because ``bound_to`` is derived from the
     vetted caller, this route only ever writes the caller's OWN package.
@@ -748,6 +749,11 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
         "view": args.get("view"),
         "theme": args.get("theme"),
     }
+    # Sent widgets REPLACE the stored ones (an empty list removes them); a save
+    # that leaves the key out keeps what is stored, as before widgets existed.
+    widgets_sent = "widgets" in args
+    if widgets_sent:
+        package["widgets"] = args["widgets"]
     where = _credential_shaped_names(package)
     if where:
         # REFUSED HERE, before anything is written, and by the page's own rule. The
@@ -782,14 +788,38 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
         # two first saves would otherwise both find no package and create two with
         # the same binding, which every later save and apply refuses as ambiguous.
         with instance_store.package_save_lock(slug):
-            art = _write_bound_package(store, content)
+            art, content = _write_bound_package(store, content)
         parsed = _dashboard.parse_package(content)
         counts = {"fields": len((parsed.get("model") or {}).get("types") or {})}
         # The parsed canonical bytes go back too, for the page check below.
         return art, counts, parsed
 
-    def _write_bound_package(store: Any, content: str) -> Any:
-        """Update the package bound to the caller, or create it. Under the save lock."""
+    def _keep_stored_widgets(content: str, stored: dict[str, Any]) -> str:
+        """*content* with the stored package's ``widgets`` carried forward.
+
+        A save that leaves ``widgets`` out sends only ``model`` / ``view`` / ``theme``,
+        so rebuilding the package from them alone would silently erase widgets written another way. They are
+        re-validated against the NEW model: a save that drops a field a widget binds
+        is refused, saying so, rather than storing widgets that point at nothing.
+        """
+        widgets = stored.get("widgets")
+        if not widgets:
+            return content
+        merged = {**package, "widgets": widgets}
+        try:
+            return _dashboard.canonical_package_content(json.dumps(merged, ensure_ascii=False))
+        except ArtifactValidationError as exc:
+            raise ArtifactValidationError(
+                f"this save would break the widgets your stored package holds ({exc}). "
+                "Keep the fields they bind in model.types, or change the widgets with "
+                "artifact_update first; nothing was written"
+            ) from None
+
+    def _write_bound_package(store: Any, content: str) -> tuple[Any, str]:
+        """Update the package bound to the caller, or create it. Under the save lock.
+
+        Returns the record and the canonical content actually written.
+        """
         existing = _dashboard.resolve_bound_slug(binding, store=store)
         if existing:
             # The store fences every dashboard write on the snapshot it read, so the
@@ -800,27 +830,31 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
             # fence checks only the token. So this snapshot must itself still carry
             # the caller's binding, and the update is fenced on its token.
             try:
-                held = _dashboard.parse_package(current.content or "").get("bound_to")
+                stored = _dashboard.parse_package(current.content or "")
             except ArtifactValidationError:
-                held = None
-            if held != binding:
+                stored = {}
+            if stored.get("bound_to") != binding:
                 raise ArtifactValidationError(
                     f"the dashboard package {existing!r} is not bound to you any more; "
                     "nothing was written -- save again"
                 )
-            return store.update(
+            if not widgets_sent:
+                content = _keep_stored_widgets(content, stored)
+            art = store.update(
                 existing,
                 content=content,
                 actor="agent",
                 snapshot=True,
                 snapshot_token=current.content_token,
             )
-        return store.create(
+            return art, content
+        art = store.create(
             name=f"{crew_name} dashboard",
             content=content,
             kind=_dashboard.DASHBOARD_KIND,
             description="This Bot's own Dashboard page.",
         )
+        return art, content
 
     try:
         art, counts, saved_package = await asyncio.to_thread(_save)

@@ -3,7 +3,8 @@
 Writes the unit and the operator-editable overrides file as root, refuses a host
 that systemd did not boot and one where SELinux proves the system unit cannot
 start (:func:`selinux_refusal`, whose remedy embeds a rendered user unit), enables
-and starts the service (:func:`install`), and installs or removes the userns
+and starts the service (:func:`install`), turns linger on for the unit's account
+(:func:`enable_service_account_linger`), and installs or removes the userns
 AppArmor profiles for the service and for a directly launched app. Imports
 :mod:`kiro_crew.service.linux_unit` and :mod:`kiro_crew.service.linux_systemctl`.
 
@@ -23,6 +24,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from kiro_crew.platform_compat import trusted_system_bin
 from kiro_crew.service import apparmor, selinux
 from kiro_crew.service.common import SERVICE_NAME, kirocrew_bin
 from kiro_crew.service.linux_systemctl import (
@@ -42,6 +44,7 @@ from kiro_crew.service.linux_unit import (
     _current_uid,
     _current_user,
     _home_for_user,
+    _linger_enabled,
     render_unit,
 )
 
@@ -428,6 +431,44 @@ def install() -> apparmor.ProfileOutcome:
         )
 
     return profile_outcome
+
+
+def enable_service_account_linger() -> tuple[bool, str] | None:
+    """Turn linger on for the system unit's account; ``(ok, line to print)`` or ``None``.
+
+    Agent runtime scopes live under that account's ``user@<uid>.service`` (the unit
+    bakes its ``/run/user/<uid>`` bus), which logind stops at its last logout unless
+    linger is on. ``None`` when there is nothing to do: linger reported on, no trusted
+    ``loginctl``, an unresolved uid (the unit then bakes no user bus), or no per-user
+    manager unit for linger to keep (the test ``kirocrew doctor`` reports by). An
+    account logind does not track (no session, no linger) reads as unknown and is
+    acted on. The call names the numeric uid, which resolves where root's name lookup
+    may not. Runs on every install, a re-install too; a failure only warns and never
+    changes the install outcome. ``loginctl`` comes from fixed system directories,
+    never ``PATH``, like the probe's.
+    """
+    user = _current_user()
+    uid = _current_uid(user)
+    loginctl = trusted_system_bin("loginctl")
+    if uid is None or loginctl is None or _linger_enabled(str(uid)) is True:
+        return None
+    # circular import: pod.runtime imports kiro_crew.service, whose __init__ loads this module.
+    from kiro_crew.pod.runtime import user_manager_unit
+
+    if user_manager_unit(uid) is None:
+        return None
+    res = _sudo_run(loginctl, "enable-linger", str(uid))
+    if res.returncode == 0:
+        return True, (
+            f"linger turned on for {user}, so agent runtimes keep running after its last "
+            f"logout. To turn it off: sudo loginctl disable-linger {uid}"
+        )
+    detail = (res.stderr or res.stdout).strip() or f"exit {res.returncode}"
+    return False, (
+        f"could not turn linger on for {user} ({detail}): until it is on, agent runtimes "
+        f"stop at its last logout and later ones start without their memory and "
+        f"fork-count ceilings. Run: sudo loginctl enable-linger {uid}"
+    )
 
 
 def install_apparmor_profile(expected_uid: int | None) -> apparmor.ProfileOutcome:

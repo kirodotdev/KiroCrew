@@ -24,10 +24,11 @@ from aiohttp import web
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import load_config_with_content_stamp
 from kiro_crew.dashboard import members_roster_goals
+from kiro_crew.dashboard.conditional_get import conditional_json_response
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.crew_board_flight import BoardAnswer, shared_board
 from kiro_crew.dashboard.handlers.members_access import (
     _audit_owner_read,
-    _audit_teammate_read,
     _member_name_is_addressable,
 )
 from kiro_crew.dashboard.handlers.members_app import app_bot_list
@@ -346,14 +347,6 @@ async def api_members(request: web.Request) -> web.Response:
         # trimmed list of the Bots the owner ticked for it, and otherwise the 404
         # every member route sends an app (members_app / members_access).
         return await app_bot_list(request)
-    # A team Crew teammate the Kiro relay verified reads the roster too, with every
-    # owner-private field left out (`_teammate_roster`). Checked before the owner
-    # gate so the owner's read below stays exactly what it was.
-    from kiro_crew.shared_crew.routes_identity import _relay_teammate
-
-    if _relay_teammate(request):
-        _audit_teammate_read(request, "members.list.read")
-        return await _teammate_roster()
     # Owner gate, the briefing and rules endpoints' boundary: every row carries the
     # owner's view of a crewmate (its last DM line, its slot, its projections), and
     # a non-owner dashboard session holds the same empty app claim the app-caller
@@ -363,6 +356,23 @@ async def api_members(request: web.Request) -> web.Response:
         return owner_denied
     _audit_owner_read(request, "members.list.read")
     state: DashboardState | None = request.app.get("state")
+    # Single flight (see crew_board_flight): reads that arrive together share one build
+    # that started after each of them arrived; nothing is kept afterwards, so a read
+    # still sees every change made before it, `running` included. Every caller that
+    # reaches here is an owner and gets the same rows. The owner gate and the audit
+    # line above run once per request, shared build or not.
+    answer = await shared_board("members.roster", repr(id(state)), lambda: _build_roster(state))
+    if answer.status != 200:
+        return web.Response(body=answer.body, status=answer.status, content_type="application/json")
+    return await conditional_json_response(request, answer.body)
+
+
+async def _build_roster(state: DashboardState | None) -> BoardAnswer:
+    """One build of the roster answer.
+
+    Takes the gateway state, never the request: the build is shared and outlives the
+    caller that started it.
+    """
     # Loaded WITH the digest of the bytes it was parsed from. Every config-derived row
     # field below comes from this one load, and the per-row reconcile that writes them
     # into the member log runs several awaited reads later, so a save landing in
@@ -470,9 +480,6 @@ async def api_members(request: web.Request) -> web.Response:
                 # Whether a Dashboard-tab button may send its reply in one click
                 # (card_send); the Profile tab's switch reads and writes it.
                 "dashboard_card_send": bool(agent_cfg.dashboard_card_send),
-                # Whether the sessions its thread opens stay in the person's own
-                # session list (crew_mode.list_view); the Profile tab's switch.
-                "show_sessions_in_list": bool(agent_cfg.show_sessions_in_list),
                 # Whether the PERSON created this crewmate: the crew manager's
                 # own origin (`source == "kirocrew"`) AND a member id, which is
                 # assigned when its member memory is allocated. Both create
@@ -525,8 +532,6 @@ async def api_members(request: web.Request) -> web.Response:
         row["running"] = bool(slot.running) if slot is not None else False
         # Who has written in the DM thread (``shared_crew.participants``), read
         # from the live slot only so the roster never opens a transcript for it.
-        # The teammate roster (``_teammate_roster``) does not carry it: the DM
-        # thread is the owner's, which that roster masks.
         row["participants"] = ordered_participants(slot) if slot is not None else []
         row["participants_dropped"] = participants_dropped(slot) if slot is not None else 0
         # Read BEFORE the roster observation and the transcript read below: a
@@ -891,51 +896,9 @@ async def api_members(request: web.Request) -> web.Response:
     # scheduled run), as a messages app orders its conversations. Being listed
     # is `has_dm_message`: the thread holds a message.
 
-    return web.json_response({"members": rows})
-
-
-async def _teammate_roster() -> web.Response:
-    """The roster a relay teammate reads: who each Bot is, and nothing of the owner's.
-
-    Built from the config alone. The owner's row also carries the owner's view of
-    each Bot -- its DM binding and slot (``slot_key``, ``running``), the last DM
-    line and whether one exists, the member-log projections and recency, goals,
-    the owner's star and dock order, Mate's welcome state, and the local workspace,
-    memory store, agent spec, model and settings -- and none of that is read or
-    sent here. A read that touches no binding, transcript or member log also writes
-    nothing, so the owner read's reconcile never runs for a teammate.
-
-    Only Bots a person created here (``dashboard_created``) are listed: the rest of
-    the config (package-synced specs, the reserved ``default`` member) reaches the
-    owner's list only once the owner has talked to it, which is the owner's DM
-    history and not this caller's to read. Every value but the identity is masked
-    as the owner's row masks it.
-    """
-    from kiro_crew.dashboard.handlers.agents import _roster_avatar, _roster_mask
-
-    cfg, _stamp = await asyncio.to_thread(load_config_with_content_stamp)
-    rows: list[dict] = []
-    for name, agent_cfg in cfg.agents.items():
-        if not _member_name_is_addressable(name):
-            continue
-        if not members_mod.is_person_created_crewmate(name, agent_cfg):
-            continue
-        try:
-            slug = members_mod.member_slug(name, cfg)
-        except MemberSlugError:
-            continue
-        rows.append(
-            {
-                "name": name,
-                "slug": slug,
-                "display_name": _roster_mask(agent_cfg.display_name),
-                "description": _roster_mask(agent_cfg.description),
-                "avatar": _roster_avatar(getattr(agent_cfg, "avatar", {})),
-                "source": normalize_member_source(agent_cfg.source),
-                "dashboard_created": True,
-            }
-        )
-    return web.json_response({"members": rows})
+    return BoardAnswer(
+        200, bytes(web.json_response({"members": rows}).body or b"")  # type: ignore[arg-type]
+    )
 
 
 def _stamp_welcome_claimed(rows: list[dict]) -> None:

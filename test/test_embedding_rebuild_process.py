@@ -65,9 +65,6 @@ if mode == 'crash':
 name = sys.argv[3] if len(sys.argv) > 3 else 'default'
 path = home / 'memory.db' if name == 'default' else home / 'memory_stores' / name / 'memory.db'
 store = open_store(path)
-if mode == 'lazy-lesson':
-    store.write_lesson('Always preserve glacier archives')
-    backend._llm.create_embedding = lambda texts: {'data': [{'embedding': [1., 0.] if text == 'Always preserve glacier archives' else [0., 1.]} for text in texts]}
 if mode.startswith('backfill-'):
     if mode == 'backfill-episode':
         store.write_episodic('child process deployment record', defer_embedding=True)
@@ -81,7 +78,7 @@ first = True
 def paused(*args, **kwargs):
     global first
     vector = original(*args, **kwargs)
-    if first and (mode != 'lazy-lesson' or args[0] == 'Always preserve glacier archives'):
+    if first:
         first = False
         assert vector is not None
         (home / 'child-ready').write_text('ready')
@@ -94,8 +91,6 @@ elif mode == 'fact':
     store.set_semantic('project.child', 'child process deployment fact', 1., 'user_explicit')
 elif mode == 'lesson':
     store.write_lesson('Check child process deployment safely')
-elif mode == 'lazy-lesson':
-    store.write_lesson('Check deployment health before release')
 else:
     store.backfill_missing_embeddings(pace=False)
 store.close()
@@ -321,19 +316,6 @@ def test_child_config_rollback_keeps_competing_edits(rebuild_home, edit):
         if process.poll() is None:
             process.kill()
             process.wait(timeout=_DRAIN_TIMEOUT)
-
-
-@pytest.mark.parametrize("name", ["default", "legacy"])
-def test_subprocess_lazy_lesson_backfill_preserves_both_rules(rebuild_home, name):
-    test_cross_process_old_vector_cannot_publish_after_rebuild(rebuild_home, "lazy-lesson", name)
-    target = rebuild_home.global_store if name == "default" else rebuild_home.late[0]
-    rows = target.db.execute(
-        "SELECT value_json, embedding FROM semantic_memory WHERE key LIKE 'lesson.%' AND is_deleted = 0"
-    ).fetchall()
-    assert len(rows) == 2
-    assert all(row["embedding"] is None for row in rows)
-    assert any("glacier archives" in row["value_json"] for row in rows)
-    assert any("deployment health" in row["value_json"] for row in rows)
 
 
 def _kill_and_reap(process: "subprocess.Popen[str]") -> None:

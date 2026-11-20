@@ -16,6 +16,7 @@ from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_S
 from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth
 from kiro_crew.agent_sdk.spec_hooks import (
     _MAX_SPEC_HOOKS,
+    CRON_SESSION_KEY_PREFIX,
     OverlongHookCommand,
     crew_fired_spec_hooks,
     kas_hook_checkout,
@@ -37,6 +38,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
     unmet_post_tool_matchers_sentence,
     withheld_project_spec_hooks,
 )
+from kiro_crew.constants import HOOK_DENY_REASON_MAX_CHARS
 from kiro_crew.dashboard.agent_welcome import AGENT_WELCOME_KIND
 from kiro_crew.dashboard.chat_utils import (
     SPEC_HOOKS_NOTICE_KIND,
@@ -438,14 +440,15 @@ async def _surface_kas_project_hooks(
     Only for a KAS session whose agent is project-only and sets ``hooks``
     (:func:`kas_project_hooks_state`). When they run because kiro-cli trusts the
     folder, the row shows once per folder (``project_hooks_consent``). The other
-    paths (sub-agent, task runner, channel) never show it: they only read the
-    stored choice. Best-effort: a failed check renders nothing.
+    paths (sub-agent, task runner, channel, a cron result tab) never show it: they
+    only read the stored choice. Best-effort: a failed check renders nothing.
     """
     from kiro_crew.project_hooks_consent import mark_kiro_cli_notice_shown
 
     checkout = kas_hook_checkout(client)
     agent = session_agent(client, agent)
-    if not checkout or not agent:
+    cron_tab = provider_session_key(client).startswith(CRON_SESSION_KEY_PREFIX)
+    if not checkout or not agent or cron_tab:
         return
     try:
         found = await asyncio.to_thread(kas_project_hooks_state, agent, checkout)
@@ -830,7 +833,7 @@ async def _notice_unread_steering(
     """One notice row naming the custom agent's ``file://`` steering *client* never loads.
 
     Only a custom agent: Crew's steering load serves the default agent alone. On
-    Claude Code and Codex it sends the default agent's entries and steering trees
+    Claude Code, Codex, OpenCode and Pi it sends the default agent's entries and steering trees
     itself, and elsewhere folder steering or member essentials can carry them, so
     a row there could claim a loss that did not happen. Best-effort: a spec that
     cannot be read renders no row rather than failing the turn.
@@ -857,8 +860,8 @@ async def _notice_unread_steering(
 
 def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: Any) -> None:
     """One notice row on a new session whose adapter is too old to take a mid-turn
-    message, one whose KAS drops its agent's prompt, and one whose goose, codex, claude or
-    pi adapter is outside its tested range: the chat runs, and each row names the installed version, the
+    message, one whose KAS drops its agent's prompt, and one whose goose, codex, claude,
+    pi or deepseek adapter is outside its tested range: the chat runs, and each row names the installed version, the
     tested one and the command that installs it. One more on a session whose MCP
     servers start without part of their env or headers, naming each server and the
     key names it lost, never a value. One more on a KAS session told to turn telemetry
@@ -1123,12 +1126,12 @@ async def _fire(
                 )
             elif r.exit_code == 2:
                 injected.append(
-                    f"BLOCKED:{r.hook_name}:{r.stderr[:200] if r.stderr else 'hook denied'}"
+                    f"BLOCKED:{r.hook_name}:{r.stderr[:HOOK_DENY_REASON_MAX_CHARS] if r.stderr else 'hook denied'}"
                 )
                 logger.warning(
                     "Hook %s blocked tool: %s",
                     r.hook_name,
-                    r.stderr[:200] if r.stderr else "exit 2",
+                    r.stderr[:HOOK_DENY_REASON_MAX_CHARS] if r.stderr else "exit 2",
                 )
                 state.broadcast_ws(
                     "activity_event",
@@ -1478,7 +1481,9 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
                 for _failed in await _slack_upload(
                     state.slack_client, _mirror_chan, _mirror_post_ts or "", _mirror_files
                 ):
-                    _mirror_notes.append(f"⚠ Couldn't upload: {_local_file_name(_failed.dest)}")
+                    _mirror_notes.append(
+                        f"Warning: Couldn't upload: {_local_file_name(_failed.dest)}"
+                    )
             if _mirror_notes:
                 await _post_rendered("\n".join(_mirror_notes))
             if _mirror_options:

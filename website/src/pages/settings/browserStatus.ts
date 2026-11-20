@@ -130,6 +130,21 @@ export function choiceFromHeadless(on: boolean): string {
   return on ? 'headless' : 'kiro_chromium'
 }
 
+/* ── `browser.isolation` ──
+ *
+ * The values the gateway's `BROWSER_ISOLATIONS` accepts, in picker order. A new
+ * mode is one entry here plus its label key in `BrowserLiveSection.tsx`; the
+ * `Record` type there refuses to compile until the label exists.
+ */
+export const ISOLATIONS = ['shared', 'per_session'] as const
+export type Isolation = (typeof ISOLATIONS)[number]
+
+/** What the picker shows for a stored `browser.isolation`. Unknown values read as
+ *  `shared`, which is what the gateway resolves them to. */
+export function isolationValueOf(value: string): Isolation {
+  return (ISOLATIONS as readonly string[]).includes(value) ? (value as Isolation) : 'shared'
+}
+
 /* ── sign-in for Kiro's Chromium (`browser.credentials`) ── */
 
 /** The gateway's `CREDENTIAL_DOMAIN_PATTERN`: two or more lowercase DNS labels. */

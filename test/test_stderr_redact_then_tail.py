@@ -377,7 +377,8 @@ def test_chat_runner_hook_excerpts_anchor_by_exit_semantics() -> None:
     """
     block = _hook_fire_block()
     assert block.count("r.stdout[:200]") == 1
-    assert block.count("r.stderr[:200] if r.stderr else") == 2  # BLOCKED payload + warning log
+    # BLOCKED payload + warning log
+    assert block.count("r.stderr[:HOOK_DENY_REASON_MAX_CHARS] if r.stderr else") == 2
     assert block.count("r.stderr[:100] if r.stderr else") == 1  # BLOCKED activity event
     assert "r.stderr[-200:] if r.stderr else" in block  # fail-closed crash detail
     assert block.rstrip().endswith("r.stderr[-200:])")  # non-gating crash warning

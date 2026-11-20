@@ -10,6 +10,9 @@ import { isCardLineCount, type CardLineCount } from './cardLineCount'
 
 export type ContentWidth = 'compact' | 'comfortable' | 'full'
 
+export type CodeWrap = 'auto' | 'wrap' | 'nowrap'
+const VALID_CODE_WRAPS: ReadonlySet<string> = new Set(['auto', 'wrap', 'nowrap'])
+
 /* The font-size bounds live in ./contentWidth (with the width scaling that
  * needs them) and are re-exported here so importers of the config module keep
  * one source for everything chat-config shaped. */
@@ -38,6 +41,11 @@ export interface ChatConfig {
    *  across tables and reloads. Default false: a table keeps the reading
    *  column's width until the reader asks. */
   widenTables: boolean
+  /** Line wrap for code blocks. Set by any code block's own Wrap button and
+   *  followed by every code block, so the choice holds across blocks, sessions
+   *  and reloads. `auto` (the default, until the first press) keeps each block's
+   *  own default: prose fences wrap, code scrolls sideways. */
+  codeWrap: CodeWrap
   historyExpanded: boolean
   showTimestamps: boolean
   showTurnStats: boolean
@@ -89,6 +97,10 @@ export interface ChatConfig {
    *  collapsed folder says how much sits under it. Default false: off, the
    *  count is what sits directly in the folder. */
   countSubfolderContents: boolean
+  /** Opt in to dropping a folder whose subtree holds no open session from the
+   *  sidebar's List view. Default false, so an empty folder stays a labelled drop
+   *  target. It comes back once a session lands in it, and while one is dragged. */
+  hideEmptyFolders: boolean
   /** While the session list scrolls, titles the rows clip are shown in full
    *  in a floating layer over them; rows keep their width (desktop only).
    *  Off by default. */
@@ -173,7 +185,7 @@ const LS_KEY = 'mc-chat-config'
  *  it. The sidebar's view toggle persists this flag BEFORE creating its first
  *  column, so a deliberate board user always has an explicit `true` stored and
  *  is unaffected by the default. */
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', widenTables: false, tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, countSubfolderContents: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showOptimizePrompt: true, showFullPastes: false, toolCallsStartExpanded: false, reasoningStartsExpanded: false, doubleClickToEdit: false, doubleEscapeToStop: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, needsMeHoverCard: true, sessionTitleLines: 1, sessionPreviewLines: 1 }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', widenTables: false, codeWrap: 'auto', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, countSubfolderContents: false, hideEmptyFolders: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showOptimizePrompt: true, showFullPastes: false, toolCallsStartExpanded: false, reasoningStartsExpanded: false, doubleClickToEdit: false, doubleEscapeToStop: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, needsMeHoverCard: true, sessionTitleLines: 1, sessionPreviewLines: 1 }
 
 const clampMessageFontSize = (n: number): number =>
   Math.max(MIN_MESSAGE_FONT_SIZE, Math.min(MAX_MESSAGE_FONT_SIZE, Math.round(n)))
@@ -196,6 +208,7 @@ export function loadChatConfig(): ChatConfig {
     const cfg = { ...DEFAULTS, ...stored, sendOnEnter: migrateSendMode(stored.sendOnEnter) }
     if (!(cfg.contentWidth in CONTENT_WIDTH)) cfg.contentWidth = 'compact'
     if (typeof cfg.widenTables !== 'boolean') cfg.widenTables = false
+    if (!VALID_CODE_WRAPS.has(cfg.codeWrap)) cfg.codeWrap = 'auto'
     // Map legacy fileChipStyle values onto the current set:
     //   'tooltip'                                 → 'minimal'
     //   'pebble' / 'full' / 'compact'             → 'expanded'
@@ -209,6 +222,12 @@ export function loadChatConfig(): ChatConfig {
     if (!VALID_STREAM_MODES.has(cfg.streamMode)) cfg.streamMode = 'smooth'
     if (typeof cfg.showContextPct !== 'boolean') cfg.showContextPct = false
     if (typeof cfg.showContextTokens !== 'boolean') cfg.showContextTokens = false
+    // Coerced, not trusted: these are read live through `useChatSetting`,
+    // whose snapshot must be a primitive, so a stored object or array here
+    // would re-render every message row without end.
+    if (typeof cfg.showTimestamps !== 'boolean') cfg.showTimestamps = true
+    if (typeof cfg.collapseAllSteps !== 'boolean') cfg.collapseAllSteps = true
+    if (typeof cfg.simplifiedToolNames !== 'boolean') cfg.simplifiedToolNames = true
     if (typeof cfg.showTurnStats !== 'boolean') cfg.showTurnStats = true
     if (typeof cfg.pinLastPrompt !== 'boolean') cfg.pinLastPrompt = true
     // Coerced, not trusted: a stored non-boolean must not decide whether the
@@ -222,6 +241,7 @@ export function loadChatConfig(): ChatConfig {
     // folder shape depend on a truthy string.
     if (typeof cfg.hideEmptyFolderBody !== 'boolean') cfg.hideEmptyFolderBody = false
     if (typeof cfg.countSubfolderContents !== 'boolean') cfg.countSubfolderContents = false
+    if (typeof cfg.hideEmptyFolders !== 'boolean') cfg.hideEmptyFolders = false
     if (typeof cfg.fullTitlesOnScroll !== 'boolean') cfg.fullTitlesOnScroll = false
     if (typeof cfg.needsMeHoverCard !== 'boolean') cfg.needsMeHoverCard = true
     // Coerced, not trusted: anything but 1, 2 or 3 would pick no clamp class
@@ -421,12 +441,17 @@ export interface DashboardConfig {
   auto_open_git_panel: boolean
   side_panel_always_open?: boolean
   side_panel_pin_summary?: boolean
+  /** A conductor mode chat's first entry opens the side panel on its Board
+   *  (`dashboard.auto_open_conductor_board`). An absent value reads as on. */
+  auto_open_conductor_board?: boolean
   session_card_source_links: boolean
   /** Directory each new chat gets its own fresh folder under; '' = off. */
   session_folder_root?: string
   /** Sidebar folder ID new chats are filed into when started without one; '' = unfiled. */
   default_session_folder?: string
   folder_suggestions_enabled: boolean
+  /** File the suggested folder without asking; read only while suggestions are on. */
+  folder_suggestions_auto_apply?: boolean
   project_tags_enabled?: boolean
   topic_tags_enabled?: boolean
   model_picker_hidden_models: string[]

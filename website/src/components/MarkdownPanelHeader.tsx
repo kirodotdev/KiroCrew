@@ -13,6 +13,7 @@ import { useBranding } from '../hooks/useBranding'
 import { isEmbeddedPane } from '../lib/embedded'
 import { isElectron } from '../lib/electron'
 import { REMOTE_EDITORS, remoteEditorUrl } from '../utils/remoteEditorUrl'
+import Clickable from './Clickable'
 import FilePathMenu, { revealOrOpen, useRevealLabel, useCanOpenFile, useCanReveal } from './FilePathMenu'
 import { useFileArtifactState, useFileKnowledgeState, type ReportError } from './useMarkdownPanelFileState'
 
@@ -84,9 +85,11 @@ export function breadcrumbSegments(filePath: string): BreadcrumbSegment[] {
  *
  * `tabIndex={0}` is what puts the element in the tab order in the first place.
  * The label and the readout both ARE the path (runtime data), so no localized
- * string is added. Right-click still opens the FilePathMenu, which offers "Show
- * folder in side panel" when the host passes `onFolderOpen`. The file is
- * already on screen here, so the menu gets no "Open in side panel" handler.
+ * string is added. When the host passes `onFolderOpen`, each folder segment is
+ * a button that opens that segment's absolute path, and right-click opens the
+ * FilePathMenu with "Show folder in side panel". The file is already on screen
+ * here, so its segment stays text and the menu gets no "Open in side panel"
+ * handler.
  *
  * Exported so the accessibility contract is unit-testable without mounting the
  * whole panel (which drags in the Pierre editor tree).
@@ -119,7 +122,15 @@ export function FileHeaderBreadcrumb({ filePath, onFolderOpen }: { filePath: str
           {crumbs.map((c, i) => (
             <span key={i} className="flex items-center min-w-0 text-[12px]">
               {i > 0 && <ChevronRight size={14} className="text-muted opacity-60 shrink-0 mx-0.5" />}
-              <span className={`truncate ${c.isFile ? 'text-text-strong font-medium' : 'text-muted'}`}>{c.seg}</span>
+              {!c.isFile && onFolderOpen ? (
+                <Clickable
+                  onClick={() => onFolderOpen(c.path)}
+                  title={c.path}
+                  className="truncate text-muted hover:text-text hover:underline cursor-pointer rounded-sm focus-ring-accent"
+                >{c.seg}</Clickable>
+              ) : (
+                <span className={`truncate ${c.isFile ? 'text-text-strong font-medium' : 'text-muted'}`}>{c.seg}</span>
+              )}
             </span>
           ))}
         </div>

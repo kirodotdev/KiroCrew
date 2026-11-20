@@ -36,27 +36,21 @@
       "description": "Version, update channel, check for updates, and license"
     },
     {
-      "id": "advanced.all-settings",
-      "label": "All settings",
-      "tab": "advanced",
-      "route": "/settings/advanced?highlight=advanced.all-settings",
-      "description": "Each change is checked before it saves. Change a setting here, or follow its link to the page where it lives. A read-only row says why."
-    },
-    {
-      "id": "agent.orchestrator-memory",
-      "label": "Orchestrator memory",
+      "id": "agent.kiro-memory",
+      "label": "Kiro Memory",
       "tab": "agent",
       "route": "/settings/agent?highlight=key%3Aagent.orchestrator_memory",
       "description": "Use existing Kiro memories in personal chats. Changes apply when an agent session starts; start a new chat to use the updated setting.",
-      "hint": "Uses memories saved in other Kiro clients alongside Kiro Crew's existing memory. Kiro memories are read-only here. Kiro Crew's learning behavior and each Bot's separate memory are unchanged. Kiro memories are available in Incognito chats, but excluded from Temporary chats.",
+      "hint": "Uses Kiro Memory alongside Kiro Crew’s existing memory to access memories saved by other Kiro clients. These memories are read-only here. Kiro Crew’s learning behavior and each Bot’s separate memory are unchanged.",
       "configKey": "agent.orchestrator_memory"
     },
     {
-      "id": "agent.kiro-sign-in",
-      "label": "Sign out or switch Kiro account",
-      "tab": "agent",
-      "route": "/settings/agent?highlight=agent.kiro-sign-in",
-      "description": "Log out of the Kiro sign-in your agents use, or sign in with another account."
+      "id": "browser.browser-isolation",
+      "label": "Browser isolation",
+      "tab": "browser",
+      "route": "/settings/browser?highlight=key%3Abrowser.isolation",
+      "hint": "Isolated gives each chat its own browser container: separate cookies, site storage and cache, that no other chat can see, discarded when the chat ends. On a desktop its tabs open in their own window. Shared lets every chat use the one browser as it is.",
+      "configKey": "browser.isolation"
     },
     {
       "id": "browser.max-frame-rate",
@@ -184,6 +178,14 @@
       "hint": "Azure AD UPNs/emails OR object ids permitted to DM the bot. Teams activities reliably carry the object id (email is often absent), so object ids work out of the box. Empty = nobody (fail closed)."
     },
     {
+      "id": "channels.always-use-conductor-mode-slack",
+      "label": "Always use conductor mode (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.code_channel_defaults.conductor_mode",
+      "hint": "Channels already running keep their agent. A conductor hands work to helper agents, so turn on “Let code channels start helper agents” too.",
+      "configKey": "slack.code_channel_defaults.conductor_mode"
+    },
+    {
       "id": "channels.answer-in-group-spaces-webex",
       "label": "Answer in group spaces (Webex)",
       "tab": "channels",
@@ -277,6 +279,13 @@
       "description": "The App Secret shown next to the App ID on the same Credentials page."
     },
     {
+      "id": "channels.file-sessions-in-a-different-folder-slack",
+      "label": "File sessions in a different folder (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=channels.file-sessions-in-a-different-folder-slack",
+      "hint": "While Slack conversations are listed, new ones go into a “Slack” folder. Turn this on to file them in a folder you name instead."
+    },
+    {
       "id": "channels.file-sessions-in-a-folder-discord",
       "label": "File sessions in a folder (Discord)",
       "tab": "channels",
@@ -293,12 +302,6 @@
       "label": "File sessions in a folder (iMessage)",
       "tab": "channels",
       "route": "/settings/channels/imessage?highlight=channels.file-sessions-in-a-folder-imessage"
-    },
-    {
-      "id": "channels.file-sessions-in-a-folder-slack",
-      "label": "File sessions in a folder (Slack)",
-      "tab": "channels",
-      "route": "/settings/channels/slack?highlight=channels.file-sessions-in-a-folder-slack"
     },
     {
       "id": "channels.file-sessions-in-a-folder-teams",
@@ -432,7 +435,7 @@
       "label": "Let code channels start helper agents (Slack)",
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=key%3Aslack.code_channel_dispatch",
-      "description": "Helpers work in the code channel's folder and ask you before changing files, unless that channel is set to approve automatically (Trust).",
+      "description": "On by default when you first turn on Code channels. Helpers work in the code channel's folder and ask you before changing files, unless that channel is set to approve automatically (Trust).",
       "configKey": "slack.code_channel_dispatch"
     },
     {
@@ -477,12 +480,20 @@
       "hint": "Which service outbound replies use. Inbound is unaffected — messages are accepted whichever service they arrive over."
     },
     {
+      "id": "channels.share-slack-access-slack",
+      "label": "Share Slack access (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.shared_access.enabled",
+      "description": "Let the people listed below use this Crew from Slack.",
+      "configKey": "slack.shared_access.enabled"
+    },
+    {
       "id": "channels.show-slack-conversations-in-the-session-list-slack",
       "label": "Show Slack conversations in the session list (Slack)",
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=key%3Aslack.show_in_session_list",
       "description": "Lists conversations that start in Slack with your other sessions.",
-      "hint": "Turn this off to leave conversations that start in Slack out of the session list. They keep working in Slack, stay in History and search, and come back when you turn this on again. The conversation you have open, and one waiting on your approval or answer, stay listed. Sessions you start in the dashboard and connect to Slack, and Slack code channel sessions with their helper agents, are always listed.",
+      "hint": "Off by default, so conversations that start in Slack stay out of the session list; they keep working in Slack and stay in History and search. Turn this on to list them: new ones go into a “Slack” folder unless you pick a different folder below. Slack code channels and sessions you start in the dashboard are always listed.",
       "configKey": "slack.show_in_session_list"
     },
     {
@@ -606,12 +617,28 @@
       "route": "/settings/channels/whatsapp?highlight=channels.who-can-message-the-agent-whatsapp"
     },
     {
+      "id": "chat.apply-folder-suggestions-automatically",
+      "label": "Apply folder suggestions automatically",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.folder_suggestions_auto_apply",
+      "description": "File a new session into the matching folder without asking. A card says where it went, with an undo.",
+      "configKey": "dashboard.folder_suggestions_auto_apply"
+    },
+    {
       "id": "chat.auto-compact-threshold",
       "label": "Auto-Compact Threshold",
       "tab": "chat",
       "route": "/settings/chat/advanced?highlight=key%3Asession.autocompact_pct",
       "hint": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions. Does not apply to KAS sessions, which compact on their own.",
       "configKey": "session.autocompact_pct"
+    },
+    {
+      "id": "chat.auto-open-board-in-side-panel",
+      "label": "Auto-Open Board in Side Panel",
+      "tab": "chat",
+      "route": "/settings/chat/sidepanel?highlight=key%3Adashboard.auto_open_conductor_board",
+      "hint": "Opens the side panel on the Board the first time you open a conductor mode chat. When this is off, the chat opens like any other chat, with its panel closed unless Keep Side Panel Open is on. Turning on conductor mode in a chat still opens the Board. This setting does not apply on a phone.",
+      "configKey": "dashboard.auto_open_conductor_board"
     },
     {
       "id": "chat.auto-open-git-in-side-panel",
@@ -794,6 +821,13 @@
       "tab": "chat",
       "route": "/settings/chat/composer?highlight=chat.follow-up-bar-layout",
       "hint": "Multiline wraps suggestions onto multiple rows. Single line keeps them on one horizontally-scrollable row."
+    },
+    {
+      "id": "chat.hide-empty-folders",
+      "label": "Hide Empty Folders",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.hide-empty-folders",
+      "hint": "In List view, folders with no open sessions stay hidden until a session is created or moved into them, and show while you drag a session"
     },
     {
       "id": "chat.history-expanded",
@@ -1292,6 +1326,14 @@
       "description": "One Google OAuth client for Gmail, Drive, Calendar, Sheets, Docs and Slides"
     },
     {
+      "id": "connections.remember-mcp-sign-ins-across-sessions",
+      "label": "Remember MCP sign-ins across sessions",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=key%3Aagent.kas_persist_mcp_sign_in",
+      "hint": "When on, new chats on the Kiro Agent backend reuse the MCP server sign-ins you already made. When off, each new chat asks you to sign in again; sign-ins already saved are not erased, only left unused, and new chats can use them again if you turn this back on. A saved sign-in works in every chat on this Kiro Crew, including those of people you share it with. Takes effect after Kiro Crew restarts; your chats and their history are kept.",
+      "configKey": "agent.kas_persist_mcp_sign_in"
+    },
+    {
       "id": "developer.acp-runtime-sharing",
       "label": "ACP runtime sharing",
       "tab": "developer",
@@ -1337,6 +1379,14 @@
       "description": "In a session that approves its own tool calls, this also sends the name and arguments of each call to the decision model, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
     },
     {
+      "id": "developer.app-browser-access",
+      "label": "App browser access",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.app-browser-access",
+      "description": "Apps can show, read and use the browser tabs of their own chats once you approve it.",
+      "hint": "An app that asks for browser access can show the live browser of its own chats on its page, read those pages, and click and type there. Each part waits for your approval on the app's page. While this is off, no app gets any of it, even one you approved."
+    },
+    {
       "id": "developer.artifact-deploy",
       "label": "Artifact Deploy",
       "tab": "developer",
@@ -1359,6 +1409,14 @@
       "route": "/settings/developer/feature-previews?highlight=developer.chat-on-a-crew",
       "description": "Starts chats on a connected remote crew.",
       "hint": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew — and shows each connected crew’s sessions in their own group in the Sessions list. Unfinished."
+    },
+    {
+      "id": "developer.connected-computers",
+      "label": "Connected computers",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.connected-computers",
+      "description": "Chats on this server can work in a folder on your own computer. Nothing is shared until you approve it on that computer.",
+      "hint": "Your computer connects to this server and shares only the folder you approve. Turning this off stops sharing and never deletes files. Remote Crew is the reverse: it lets you use this server from another device."
     },
     {
       "id": "developer.decisions",
@@ -1397,6 +1455,15 @@
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.jev-api-key",
       "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
+    },
+    {
+      "id": "developer.let-agents-control-your-other-sessions",
+      "label": "Let agents control your other sessions",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=key%3Aagent.session_control",
+      "description": "When off, agents can no longer open, message, stop or close your other sessions. A change applies at once, even to sessions already running.",
+      "hint": "When on, an agent with the dashboard tools can open sessions, and read, message, stop or close your other sessions in this workspace. Turning it off stops none of your sessions, and your bots and Conductor can still drive the sessions they started.",
+      "configKey": "agent.session_control"
     },
     {
       "id": "developer.mark-out-of-date-dashboard-fields",
@@ -1458,14 +1525,7 @@
       "label": "Run KAS on Kiro Crew's own engine",
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.run-kas-on-kiro-crew-s-own-engine",
-      "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Agent Harness. Takes effect when Kiro Crew restarts."
-    },
-    {
-      "id": "developer.secrets-vault-redesign",
-      "label": "Secrets vault redesign",
-      "tab": "developer",
-      "route": "/settings/developer/feature-previews?highlight=developer.secrets-vault-redesign",
-      "description": "Shows Secrets as a list beside the open item, and lets you save logins and notes."
+      "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Kiro account. Takes effect when Kiro Crew restarts."
     },
     {
       "id": "developer.send-pending-approvals-to-chat-apps",
@@ -1473,7 +1533,7 @@
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.send-pending-approvals-to-chat-apps",
       "description": "Tells a connected chat app when a tool needs approval.",
-      "hint": "When a tool approval opens, Kiro Crew sends a note about it to the chat apps the notification bridge delivers to. The dashboard bell does not ring for it, and the note has no buttons yet, so answer the approval in the dashboard."
+      "hint": "When a tool approval opens or an agent asks you a question, Kiro Crew sends a note about it to the chat apps the notification bridge delivers to. The dashboard bell does not ring for it. On Slack, answer with the note's buttons. On Telegram, Discord or Webex, reply to the note: approve or deny an approval, or send the number of an answer the note lists. Answer anything else in the dashboard."
     },
     {
       "id": "developer.session-environments",
@@ -1489,6 +1549,14 @@
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.shared-crew",
       "description": "People tab, invites and shared sessions"
+    },
+    {
+      "id": "developer.visual-refresh",
+      "label": "Visual refresh",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.visual-refresh",
+      "description": "A new look for the dashboard. Nothing changes yet.",
+      "hint": "Turns on the in-progress restyle of the dashboard. Nothing is restyled yet: pieces appear as they land, and may look unfinished or change between updates. Turn it off to go back to the current look."
     },
     {
       "id": "developer.wake-bots-to-update-out-of-date-fields",
@@ -1527,6 +1595,13 @@
       "hint": "Copy text to the clipboard as soon as you select it in the terminal with the mouse. The selection toolbar still opens."
     },
     {
+      "id": "display.ctrl-c-and-ctrl-v-copy-and-paste",
+      "label": "Ctrl+C and Ctrl+V copy and paste",
+      "tab": "display",
+      "route": "/settings/display/terminal?highlight=display.ctrl-c-and-ctrl-v-copy-and-paste",
+      "hint": "Ctrl+C copies the selected text; with nothing selected, it still stops the running command. Ctrl+V pastes instead of reaching the shell."
+    },
+    {
       "id": "display.cursor-style",
       "label": "Cursor style",
       "tab": "display",
@@ -1539,6 +1614,14 @@
       "tab": "display",
       "route": "/settings/display/zoom?highlight=display.custom-font",
       "hint": "The font the whole dashboard uses, including chat, the composer, and sidebar session and folder names. Pick one installed on the machine you view the dashboard from, or type any font name — a Nerd Font renders its glyphs and a programming font shows its ligatures."
+    },
+    {
+      "id": "display.dark-from",
+      "label": "Dark from",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=key%3Adashboard.theme_schedule_dark",
+      "hint": "Scheduled mode switches to dark at this time, in this device's time zone.",
+      "configKey": "dashboard.theme_schedule_dark"
     },
     {
       "id": "display.default-for-new-sessions",
@@ -1568,7 +1651,7 @@
       "label": "Editor",
       "tab": "display",
       "route": "/settings/display/remote-editor?highlight=key%3Adashboard.remote_editor.editor",
-      "description": "Adds “Open in VS Code” to the ⋯ menu of a file open in the side panel. Needs VS Code with Remote-SSH on the computer you’re using. The file opens there, connected to the SSH host below.",
+      "description": "Adds a row to the ⋯ menu of a file open in the side panel that opens the file in this editor. Needs this editor with Remote-SSH on the computer you’re using. The file opens there, connected to the SSH host below.",
       "configKey": "dashboard.remote_editor.editor"
     },
     {
@@ -1650,6 +1733,21 @@
       "hint": "Language for the dashboard interface."
     },
     {
+      "id": "display.light-from",
+      "label": "Light from",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=key%3Adashboard.theme_schedule_light",
+      "hint": "Scheduled mode switches to light at this time, in this device's time zone.",
+      "configKey": "dashboard.theme_schedule_light"
+    },
+    {
+      "id": "display.minimize-to-tray",
+      "label": "Minimize to tray",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.minimize-to-tray",
+      "hint": "Minimizing the window hides it in the system tray instead of the taskbar. Click the tray icon to open it again."
+    },
+    {
       "id": "display.mode",
       "label": "Mode",
       "tab": "display",
@@ -1676,6 +1774,13 @@
       "route": "/settings/display/theme?highlight=display.persona"
     },
     {
+      "id": "display.reopen-where-i-left-off",
+      "label": "Reopen where I left off",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.reopen-where-i-left-off",
+      "hint": "Opening the installed app from its icon returns to the last page you had open on this device, such as one crewmate's chat, instead of Sessions. A link or notification that names a page still opens that page."
+    },
+    {
       "id": "display.reuse-the-current-terminal",
       "label": "Reuse the current terminal",
       "tab": "display",
@@ -1683,6 +1788,13 @@
       "description": "Copies the command for you to paste. It is never run for you.",
       "hint": "Copies the command instead of running it: Run in terminal focuses the terminal tab you have selected and copies the command, so you can paste it into that shell while keeping its working directory, environment, and any active login session. With no terminal open, it still copies the command for you to paste — it is never run for you.",
       "configKey": "dashboard.terminal.reuse_current"
+    },
+    {
+      "id": "display.reverse-trackpad-swipe",
+      "label": "Reverse trackpad swipe",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.reverse-trackpad-swipe",
+      "hint": "Turn this on if a two-finger swipe moves the side panel the opposite way to your fingers. This happens in Chrome and Firefox when macOS Natural scrolling is off, because those browsers do not tell the page how it is set. Safari and the desktop app detect it on their own, so there this switch changes nothing."
     },
     {
       "id": "display.show-channels",
@@ -1776,6 +1888,13 @@
       "tab": "instances",
       "route": "/settings/instances?highlight=key%3Ainstances.enabled",
       "configKey": "instances.enabled"
+    },
+    {
+      "id": "kiro-account.kiro-sign-in",
+      "label": "Sign out or switch Kiro account",
+      "tab": "kiro-account",
+      "route": "/settings/kiro-account?highlight=kiro-account.kiro-sign-in",
+      "description": "Log out of the Kiro sign-in your agents use, or sign in with another account."
     },
     {
       "id": "notifications.sound-category-approval",
@@ -1927,7 +2046,7 @@
       "label": "Send anonymous usage heartbeat",
       "tab": "privacy",
       "route": "/settings/privacy?highlight=key%3Atelemetry.beacon_enabled",
-      "description": "Saved for future launches.",
+      "description": "One anonymous ping a day, plus a receipt when you install an official app. Off stops both.",
       "configKey": "telemetry.beacon_enabled"
     },
     {

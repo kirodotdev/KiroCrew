@@ -148,7 +148,9 @@ KAS_SPELLINGS: dict[str, str] = {"invoke_sub_agent": "use_subagent"}
 #: every such call raises a permission request; Crew then answers the ones the spec
 #: granted itself, after its own checks (:func:`crew_answered_builtins`, the gate's
 #: ``spec-builtin-grant`` row), which is how the spec's grant still means "no
-#: prompt" here without taking the call past the deny floor.
+#: prompt" here without taking the call past the deny floor. ``code`` is the
+#: exception: Crew never answers it as a whole, so each ``code`` call reaches the
+#: same tiers as on kiro-cli.
 WITHHELD_FROM_AUTO_APPROVE: frozenset[str] = frozenset(
     {
         # Filesystem reads.
@@ -215,6 +217,11 @@ CREW_SPEC_DENIES_KEY = "_crewSpecDenies"
 #: gate can judge (:func:`kiro_crew.acp.kas_spec_denies.with_unjudged_denies`).
 CREW_UNJUDGED_DENIES_KEY = "_crewShellUnjudgedDenies"
 
+#: Set on the session agent's entry of a batch that kept the folder PreToolUse hooks of its
+#: agent or left out a folder sub-agent target for them (maybe one a scheduled batch leaves
+#: out for another reason too): ``kas_project_hooks.scheduled_turn_reprojects`` reads it.
+CREW_FOLDER_PRE_TOOL_KEY = "_crewFolderPreToolHooks"
+
 #: Keys of a projected ``customAgents`` entry that never reach the engine.
 CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
     {
@@ -224,6 +231,7 @@ CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
         CREW_ANSWERED_WRITES_KEY,
         CREW_SPEC_DENIES_KEY,
         CREW_UNJUDGED_DENIES_KEY,
+        CREW_FOLDER_PRE_TOOL_KEY,
         CREW_SHELL_ALLOWLIST_KEY,
         CREW_WRITE_ALLOWLIST_KEY,
         CREW_ANSWERED_PATHS_KEY,
@@ -596,6 +604,7 @@ def crew_answered_builtins(allowed_tools: Any, authored_permissions: Any = None)
     """The :data:`WITHHELD_FROM_AUTO_APPROVE` built-ins *allowed_tools* grants, and
     each one whose capabilities an unscoped ``allow`` in *authored_permissions*
     covers (no ``match``, or an empty one: every resource, as KAS reads it).
+    Never ``code``.
 
     Withholding a built-in from the KAS policy keeps its calls at ``ask``, so
     each one raises ``session/request_permission`` and reaches Crew's gate. The
@@ -625,6 +634,9 @@ def crew_answered_builtins(allowed_tools: Any, authored_permissions: Any = None)
         for name, capabilities in _ANSWERED_CAPABILITIES.items()
         if capabilities <= granted
     )
+    # ``code`` starts language servers and edits files, so on KAS it is never
+    # answered as a whole: each call reaches the same tiers as on kiro-cli.
+    out.discard("code")
     return frozenset(out)
 
 

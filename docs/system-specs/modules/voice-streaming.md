@@ -7,8 +7,7 @@ and Amazon Polly. `voice_reply.DEFAULT_PROVIDER` selects the
 built-in engine unless configuration selects a valid provider, because it is the
 only one that needs nothing installed on macOS and Windows.
 `chat_voice.api_voice_synthesize()` sends built-in-engine output as one WAV
-chunk and streams Polly sentences as MP3. The local `piper` provider was removed
-([#23154](https://github.com/kirodotdev/KiroCrew/issues/23154)).
+chunk and streams Polly sentences as MP3. There is no local `piper` provider (`speech_providers.REMOVED_PROVIDERS`).
 Every synthesis has a request identity so the browser can reject audio from a
 stopped request.
 
@@ -203,6 +202,15 @@ any chunk count (Windows refuses one over 32,767 characters). When the stitch
 fails (no ffmpeg, a non-zero exit, a timeout), every chunk has still been sent, so
 `voice_complete` is broadcast without `audio` or `audioMime`, a WARNING is
 logged, and the HTTP response is unchanged.
+When a voice child (the stitch's ffmpeg, a built-in engine, the system voice
+probe) is cancelled or passes its timeout (30 s for the stitch), it goes to
+`platform_compat.kill_and_reap()`: the child is killed and waited for, up to
+`REAP_TIMEOUT_SECS` (10 s), in a shielded task, so a repeat cancel cannot cut
+the wait short. Only then are its temp files removed: Windows refuses to remove
+a file the child still holds, which would leave the stitch's list file, its
+output and the chunks in the temp folder. The cancel is raised afterwards; a
+cancel that lands on the reap after a timeout is raised too, instead of the
+timeout's result.
 The built-in engine broadcasts its completed WAV. Only the explicit Polly
 provider reaches the Polly branch; a future provider cannot silently reach a
 paid AWS service. Both event types echo the synthesis `request_id`, and carry
@@ -467,7 +475,7 @@ not be re-checked, or the consent changed during the check) returns no audio for
 that sentence, and the next sentence is checked again.
 
 
-On the same `raise_refusal=True` path, the one Polly failure #17511 reports —
+On the same `raise_refusal=True` path, the one Polly failure a user can fix —
 the chosen voice or engine is not offered in the request's region, which AWS
 rejects identically for every sentence — is matched from the CLI stderr
 (`_classify_polly_failure`) and raises

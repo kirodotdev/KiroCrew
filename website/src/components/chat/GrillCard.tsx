@@ -13,16 +13,26 @@
  * sent; not sent (it opens again to retry); or not confirmed (it may have gone
  * out, so it stays locked rather than invite a second start).
  *
+ * Each field is a multi-line box. A further line of a field goes out starting
+ * with two spaces (`grillFieldText`), so the conductor still reads one
+ * labelled line per field. Pictures the reader adds upload through the chat
+ * box's own upload route and go out with Start, never what the chat box has
+ * staged; a picture shows as added only once the server has its path, and
+ * Start waits while one is uploading.
+ *
  * Both texts end with a `key: <mid>:<version>` line naming this card. A reload
  * locks the card again once a later stored user message carries that exact
  * line; the conductor reads the same line to ignore a repeated start. A row the
  * server has not named yet sends no key line, and that card reopens on reload.
  */
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState, type ChangeEvent } from 'react'
 import { useTranslation } from 'react-i18next'
-import { GRILL_LIMITS, grillKeyLine, type GrillProposal } from '../../app-sdk/protocol/grillMarker'
+import { GRILL_LIMITS, grillFieldText, grillKeyLine, type GrillProposal } from '../../app-sdk/protocol/grillMarker'
+import { api } from '../../api/client'
 import { btnCls, btnPrimaryCls } from '../redactionPrimitives'
 import ErrorNotice from '../ErrorNotice'
+import StatusNotice from '../StatusNotice'
+import { X } from 'lucide-react'
 import { withReason } from '../../i18n/format'
 
 /** The event the card dispatches. The host serving `slot` sets `result`
@@ -37,6 +47,9 @@ export type ComposeSendOutcome = 'sent' | 'refused' | 'indeterminate'
 export interface ComposeSendDetail {
   text: string
   slot: string
+  /** Paths of files the card uploaded itself, sent with `text` (or, where
+   *  nothing can go out, put in the chat box beside it). */
+  files?: string[]
   result: ComposeSendResult | null
   /** `reason`: why a `refused` send was refused, already framed for the
    *  reader, when the host knows (the main chat's isolated send shows it
@@ -60,21 +73,27 @@ type CardResult = 'pending' | 'staged' | 'sent' | 'unconfirmed' | 'failed'
  *  scrolled out of view; nothing is stored, so a reload starts fresh. A send's
  *  outcome is written here too, and handed to whichever copy of the card is on
  *  screen when it lands (`shown`), so a row scrolled away and back shows it. */
-interface CardState { q: string; must: string; skip: string; result: CardResult | null; reason?: string }
+interface CardState { q: string; must: string; skip: string; files: string[]; result: CardResult | null; reason?: string }
 const cardStates = new Map<string, CardState>()
 const shown = new Map<string, (r: CardResult, reason?: string) => void>()
 
 /** Hand `text` to the page serving `slot`; null when none took it (nothing happened). */
-function composeSend(text: string, slot: string | undefined, onOutcome: ComposeSendDetail['onOutcome']): ComposeSendResult | null {
+function composeSend(text: string, files: string[], slot: string | undefined, onOutcome: ComposeSendDetail['onOutcome']): ComposeSendResult | null {
   if (!slot) return null
-  const detail: ComposeSendDetail = { text, slot, result: null, onOutcome }
+  const detail: ComposeSendDetail = { text, slot, result: null, onOutcome, ...(files.length ? { files } : {}) }
   window.dispatchEvent(new CustomEvent(COMPOSE_SEND_EVENT, { detail }))
   return detail.result
 }
 
 const OUTCOME: Record<ComposeSendOutcome, CardResult> = { sent: 'sent', refused: 'failed', indeterminate: 'unconfirmed' }
 
-const FIELD = 'w-full min-w-0 rounded-md border border-border bg-bg px-2 py-1 text-[13px] leading-5 text-text focus-ring-accent disabled:opacity-70'
+// Grows with what is written (`field-sizing`), up to a cap, then scrolls.
+const FIELD = 'w-full min-w-0 [field-sizing:content] max-h-60 resize-y rounded-md border border-border bg-bg px-2 py-1 text-[13px] leading-5 text-text focus-ring-accent disabled:opacity-70'
+/** Pictures that go out as image references (`IMG_EXT`); HEIC/HEIF upload as JPEG. */
+const PICTURE_TYPES = '.png,.jpg,.jpeg,.gif,.webp,.bmp,.heic,.heif'
+/** The composer's own per-send cap on files. */
+const MAX_FILES = 20
+const baseName = (p: string) => p.split(/[\\/]/).pop() || p
 const LABEL = 'text-[11px] leading-4 font-semibold text-muted'
 
 /** `slotKey`: the chat this reply belongs to. `stateKey`: this reply version's
@@ -88,13 +107,24 @@ export default function GrillCard({ grill, slotKey, stateKey, wireKey, answered 
   const [q, setQ] = useState(kept?.q ?? grill.q)
   const [must, setMust] = useState(kept?.must ?? grill.must)
   const [skip, setSkip] = useState(kept?.skip ?? grill.skip)
+  const [files, setFiles] = useState<string[]>(kept?.files ?? [])
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+  // A pre-check refusal: nothing was sent, so it is a hint, not a failure.
+  const [uploadHint, setUploadHint] = useState('')
+  const fileInput = useRef<HTMLInputElement>(null)
+  // shortcut: an upload still running when the row scrolls away is cancelled,
+  // so its pictures never show as added; pick them again on return. Upgrade by
+  // writing the result into `cardStates` if readers hit this.
+  const uploadCtl = useRef<AbortController | null>(null)
+  useEffect(() => () => uploadCtl.current?.abort(), [])
   const [result, setResult] = useState<CardResult | null>(kept?.result ?? null)
   const [reason, setReason] = useState<string | undefined>(kept?.reason)
   // Read on press, ahead of the render a state change waits for: a second
   // click in the same tick finds the card already sending.
   const resultRef = useRef(result)
   resultRef.current = result
-  useEffect(() => { if (stateKey) cardStates.set(stateKey, { q, must, skip, result, reason }) }, [stateKey, q, must, skip, result, reason])
+  useEffect(() => { if (stateKey) cardStates.set(stateKey, { q, must, skip, files, result, reason }) }, [stateKey, q, must, skip, files, result, reason])
   useEffect(() => {
     if (!stateKey) return
     const show = (r: CardResult, why?: string) => { setResult(r); setReason(why) }
@@ -108,17 +138,43 @@ export default function GrillCard({ grill, slotKey, stateKey, wireKey, answered 
   const locked = pressed || answered
   const shownResult = answered ? 'sent' : result
 
+  const pick = async (e: ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(e.target.files ?? [])
+    e.target.value = ''
+    if (!picked.length || uploadCtl.current) return
+    setUploadError('')
+    setUploadHint('')
+    if (files.length + picked.length > MAX_FILES) { setUploadHint(t('pages.chatPage.too_many_files_max_20')); return }
+    const controller = new AbortController()
+    uploadCtl.current = controller
+    setUploading(true)
+    try {
+      const res = await api.uploadFiles(picked, controller.signal)
+      if (controller.signal.aborted) return
+      if (res.error) setUploadError(t('pages.chatPage.upload_failed_error', { error: res.error }))
+      else setFiles(cur => [...cur, ...res.paths.filter(p => p && !cur.includes(p))])
+    } catch (err) {
+      if (controller.signal.aborted || (err as Error | undefined)?.name === 'AbortError') return
+      const message = (err as Error | undefined)?.message
+      setUploadError(t('pages.chatPage.upload_failed_error', { error: !message || err instanceof TypeError ? t('pages.chatPage.connection_error') : message }))
+    } finally {
+      if (uploadCtl.current === controller) { uploadCtl.current = null; setUploading(false) }
+    }
+  }
+
   const act = (kind: 'start' | 'decline') => {
     if (answered || (resultRef.current !== null && resultRef.current !== 'failed')) return
+    // A picture still on its way would be left behind.
+    if (kind === 'start' && uploadCtl.current) return
     // In the reader's language: a first line, then one labelled line per field.
     // The conductor reads any language. The key line is a wire value.
     const keyLine = wireKey ? [grillKeyLine(wireKey)] : []
     const text = (kind === 'start'
       ? [
           t('components.grillCard.send_start'),
-          t('components.grillCard.send_question', { text: q.trim() }),
-          t('components.grillCard.send_must', { text: must.trim() }),
-          t('components.grillCard.send_skip', { text: skip.trim() }),
+          t('components.grillCard.send_question', { text: grillFieldText(q) }),
+          t('components.grillCard.send_must', { text: grillFieldText(must) }),
+          t('components.grillCard.send_skip', { text: grillFieldText(skip) }),
           ...keyLine,
         ]
       : [t('components.grillCard.send_decline'), ...keyLine]).join('\n')
@@ -128,7 +184,7 @@ export default function GrillCard({ grill, slotKey, stateKey, wireKey, answered 
       resultRef.current = r
       if (!stateKey) { setResult(r); setReason(why); return }
       const cur = cardStates.get(stateKey)
-      cardStates.set(stateKey, { q: cur?.q ?? q, must: cur?.must ?? must, skip: cur?.skip ?? skip, result: r, reason: why })
+      cardStates.set(stateKey, { q: cur?.q ?? q, must: cur?.must ?? must, skip: cur?.skip ?? skip, files: cur?.files ?? files, result: r, reason: why })
       shown.get(stateKey)?.(r, why)
     }
     let pending = false
@@ -145,7 +201,7 @@ export default function GrillCard({ grill, slotKey, stateKey, wireKey, answered 
     // text; any other host (an SDK embed) leaves the card open and saying so.
     // Wire that host's composer to the event when one needs the card.
     resultRef.current = 'pending'
-    const got = composeSend(text, slotKey, onOutcome)
+    const got = composeSend(text, kind === 'start' ? files : [], slotKey, onOutcome)
     if (!got) { resultRef.current = result; setUnhandled(true); return }
     setUnhandled(false)
     pending = got === 'pending'
@@ -171,19 +227,40 @@ export default function GrillCard({ grill, slotKey, stateKey, wireKey, answered 
       {fields.map(f => (
         <div key={f.key} className="flex flex-col gap-0.5">
           <label htmlFor={`${id}-${f.key}`} className={LABEL}>{f.label}</label>
-          <input
+          <textarea
             id={`${id}-${f.key}`}
             aria-label={f.label}
-            type="text"
+            rows={1}
             className={FIELD}
             value={f.value}
-            maxLength={GRILL_LIMITS.text}
+            maxLength={GRILL_LIMITS.edit}
             disabled={locked}
             data-testid={`grill-card-${f.key}`}
             onChange={e => f.set(e.target.value)}
           />
         </div>
       ))}
+      {(files.length > 0 || !locked) && <div className="flex flex-wrap items-center gap-1.5" data-testid="grill-card-files">
+        {files.map(p => (
+          <span key={p} className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-bg px-1.5 py-0.5 text-[12px] leading-4 text-text">
+            <span className="truncate" title={p}>{baseName(p)}</span>
+            {!locked && (
+              <button type="button" className="text-muted hover:text-text focus-ring-accent rounded" aria-label={t('components.grillCard.remove_picture', { name: baseName(p) })} onClick={() => setFiles(cur => cur.filter(x => x !== p))}><X className="lucide-inline" aria-hidden /></button>
+            )}
+          </span>
+        ))}
+        {!locked && (
+          <>
+            <input ref={fileInput} type="file" accept={PICTURE_TYPES} multiple hidden aria-label={t('components.grillCard.add_picture')} data-testid="grill-card-file-input" onChange={e => { void pick(e) }} />
+            <button type="button" className={btnCls} data-testid="grill-card-attach" disabled={uploading} onClick={() => fileInput.current?.click()}>
+              {uploading ? t('components.grillCard.uploading') : t('components.grillCard.add_picture')}
+            </button>
+          </>
+        )}
+      </div>}
+      {/* No hand-off: asking the agent would navigate away from the card's unsent edited lines and picked pictures. */}
+      {uploadError && !locked && <ErrorNotice message={uploadError} variant="inline" askAgent={false} onDismiss={() => setUploadError('')} testId="grill-card-upload-failed" />}
+      {!locked && <StatusNotice message={uploadHint} onDismiss={() => setUploadHint('')} testId="grill-card-upload-hint" />}
       <div className="flex flex-col gap-0.5">
         <div className={LABEL}>{t('components.grillCard.who')}</div>
         <ul className="m-0 pl-4 list-disc text-[13px] leading-5 break-words" data-testid="grill-card-who">
@@ -206,7 +283,7 @@ export default function GrillCard({ grill, slotKey, stateKey, wireKey, answered 
           </span>
         ) : (
           <>
-            <button type="button" className={btnPrimaryCls} data-testid="grill-card-start" disabled={!q.trim()} onClick={() => act('start')}>
+            <button type="button" className={btnPrimaryCls} data-testid="grill-card-start" disabled={!q.trim() || uploading} onClick={() => act('start')}>
               {t('components.grillCard.start')}
             </button>
             <button type="button" className={btnCls} data-testid="grill-card-decline" onClick={() => act('decline')}>

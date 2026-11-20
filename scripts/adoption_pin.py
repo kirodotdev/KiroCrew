@@ -134,10 +134,12 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
     ``permissions.chatSlots``, ``permissions.desktopCapabilities`` and
     ``permissions.webhookSource`` at level 7, a directory entry in
     ``credentialMasks``, a shortcut's ``platformAccelerators`` and
-    ``contributes.memoryProviders`` at level 8), the context seams any non-test
-    ``.py`` file reaches, and the backend SDK package (level 7) any of them names. A
-    miss lets a pin adopt on a host without the seam, so the scan errs wide: a false hit
-    only asks for a higher ``--min-sdk-level``.
+    ``contributes.memoryProviders`` at level 8, and at level 10
+    ``permissions.chatLaunch`` and any ``credentialMasks`` again, where the agent tool
+    gate fences an installed app's masks as it fences the built-ins'), the context
+    seams any non-test ``.py`` file reaches, and the backend SDK package (level 7) any
+    of them names. A miss lets a pin adopt on a host without the seam, so the scan errs
+    wide: a false hit only asks for a higher ``--min-sdk-level``.
     """
     raw = json.loads((tree / "app.json").read_text(encoding="utf-8"))
     permissions = raw.get("permissions")
@@ -176,6 +178,12 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
     contributes = raw.get("contributes")
     if isinstance(contributes, dict) and contributes.get("memoryProviders"):
         uses["app.json contributes.memoryProviders"] = 8
+    if masks:
+        # A former built-in's masks were on the tool gate's static rows; below level 10
+        # the adopted copy's would be fenced by the OS sandbox only.
+        uses["app.json credentialMasks tool gate"] = 10
+    if "chatLaunch" in permissions:
+        uses["app.json permissions.chatLaunch"] = 10
     for dirpath, dirnames, filenames in os.walk(tree):
         dirnames[:] = sorted(d for d in dirnames if d not in _UNSCANNED_DIRS)
         for filename in sorted(filenames):

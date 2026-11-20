@@ -22,6 +22,11 @@ _ACTIONS = (
 
 #: An LTS build ignores ``tunnel.relay_enabled`` (``edition_locks``), so no restart connects.
 LOCKED_NOTICE = "Remote Control is managed by this build and cannot be turned on here."
+#: Status for a Crew that hosts only because its team key or workload identity is set.
+BY_DEFAULT_NOTICE = (
+    "On by default, because this Crew has a team key or a workload identity. "
+    "To turn it off: kirocrew remote-control off"
+)
 
 
 def register_parser(sub: Any) -> None:
@@ -52,14 +57,17 @@ def _status(as_json: bool) -> int:
 
     requested = setting.requested()
     locked = setting.locked()
+    by_default = requested and setting.by_default()
     if as_json:
-        print(json.dumps({"requested": requested, "locked": locked}))
+        print(json.dumps({"requested": requested, "locked": locked, "by_default": by_default}))
         return 0
     if locked:
         print("Remote Control: off")
         print(LOCKED_NOTICE)
         return 0
     print(f"Remote Control: {'on' if requested else 'off'}")
+    if by_default:
+        print(f"   {BY_DEFAULT_NOTICE}")
     return 0
 
 
@@ -72,16 +80,16 @@ def run(args: argparse.Namespace) -> None:
     if action == "off":
         setting.turn_off()
         _audit("allowed", "enabled=false")
-        print("✅ Remote Control is off. It stays off until you turn it back on.")
+        print("Remote Control is off. It stays off until you turn it back on.")
         print("   A running gateway stops the relay within a few seconds.")
         return
     if setting.locked():
         # As the config PATCH's 409 locked_by_policy: saving it would do nothing.
         _audit("denied", "enabled=true reason=locked_by_policy")
-        print(f"❌ {LOCKED_NOTICE}", file=sys.stderr)
+        print(f"Error: {LOCKED_NOTICE}", file=sys.stderr)
         print("   Nothing was changed.", file=sys.stderr)
         sys.exit(1)
     setting.turn_on()
     _audit("allowed", "enabled=true")
-    print("✅ Remote Control is on.")
+    print("Remote Control is on.")
     print("   It connects after Kiro Crew restarts.")

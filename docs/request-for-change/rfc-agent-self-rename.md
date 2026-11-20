@@ -1,10 +1,10 @@
 ---
 title: Agent self-rename — a core chat_rename directive for the calling session
-status: in-progress
+status: implemented
 author: mohamed-youssef-bou
 created: 2026-11-04
-last-audited: 2026-11-10
-audited-at: 77fabdd1f
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 33633
 implementation-prs: [33736]
 tracking-issues: [33624]
@@ -13,6 +13,8 @@ superseded-by: []
 ---
 
 # RFC: Agent self-rename — a core `chat_rename` directive for the calling session
+
+Status: implemented. The one phase landed in [#33736](https://github.com/kirodotdev/KiroCrew/pull/33736) (merged 2026-11-16): `chat_rename` in `src/kiro_crew/mcp_tools/control_parts/directive.py`, applied by `_apply_chat_rename` in `src/kiro_crew/dashboard/session_directive_apply_slot.py`, listed in `USER_SURFACE_DIRECTIVES` (`src/kiro_crew/directive_origin.py`). Conductor sessions are still refused as `conductor_session` while Sign-off item 2 stays the owner's open decision (checked at `fc89562d69`).
 
 An agent on the default spec cannot rename the session it is running in. The
 only agent-facing rename, `session_rename`, lives in the opt-in

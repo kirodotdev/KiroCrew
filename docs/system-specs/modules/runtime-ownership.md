@@ -48,6 +48,7 @@ reads the name. New work goes to the owner of its responsibility:
 | `src/kiro_crew/session_pid_orphan_kill.py` | the unreachable-gatewayd, browser-daemon and MCP-subtree orphan kills, and their security event log records |
 | `src/kiro_crew/session_pid_mappings.py` | pruning stale `session_pid_<pid>` and `session_token_*` identity mappings |
 | `src/kiro_crew/session_pid_rss.py` | a session tree's resident memory, and the leftovers of a runtime's session: processes in it that its live tree does not reach (`find_session_leftovers`), ended only through `platform_compat.terminate_pids_pinned` (`end_session_leftovers`). They are not runtimes, so no lease or tenancy covers them and the runtime gate is not asked; `session_cleanup_leftovers` decides when (after a recycle once the root is gone, or mid-turn behind `session.watchdog_end_leftovers_mid_turn`) |
+| `src/kiro_crew/session_memory_guard.py` | the host memory guard's pass at critical memory (`rfc-host-memory-guard.md` §4): which tool tree under a session runtime it may stop (`scan`, `pick`: the largest topmost test-runner tree, else the largest shell-rooted tree, never a runtime, pool spare, companion, in-flight launch, managed harness, MCP root or the gateway), and the stop itself (`stop`), only through `platform_compat.terminate_pids_pinned`, so Linux only. It never ends a runtime, so no lease or tenancy is asked |
 
 ### What the model is made of
 
@@ -125,7 +126,10 @@ finds one held and returns. Four inputs a running process cannot shed (the agent
 spec generation, the account era, the governed sandbox tier and the
 SSH_AUTH_SOCK-forwarding consent) are keyed before the acquisition and re-read
 after it; a mismatch releases and retries on the fresh key, and a joiner also
-passes the fork-governance admission the founder passed inside `spawn()`. A field
+passes the fork-governance admission the founder passed inside `spawn()`. The key
+carries the raw `agent.sandbox` value the spawn starts with beside the governed
+tier, so a chat recycled for a stricter value founds its own process rather than
+rejoining one spawned at a looser raw value with the same governed tier. A field
 the key cannot OBSERVE never compares equal to the same absence elsewhere: an
 empty era read becomes a token unique to that start, so it founds its own process.
 Such a provider carries `shared_runtime=True`, which selects a third teardown arm

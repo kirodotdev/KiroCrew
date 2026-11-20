@@ -19,6 +19,7 @@ import { BrowserLiveAllowView, BrowserLiveDoneRow, BrowserLiveLiveView, BrowserL
 import BrowserLiveSheet from './BrowserLiveSheet'
 import { VaultUnsavedNotice } from './quickAsk/QuickAskVault'
 import { mcpIdentityFromTitle } from '../../utils/toolCallTitle'
+import { isToolCallRow, stripToolCallLead } from '../../lib/toolRowContract'
 
 /** How long the takeover's grow animation takes to settle before the card re-checks its place. */
 const GROW_SETTLE_MS = 400
@@ -54,12 +55,12 @@ const GROW_SETTLE_MS = 400
 
 /** The `browser` tool row: the trusted name when the gateway stamped one, else the pill text.
  *
- * The tool is a managed-MCP tool, so a real row reads `🔧 @kirocrew-core/browser`
+ * The tool is a managed-MCP tool, so a real row reads `Tool: @kirocrew-core/browser`
  * (the `@server/tool` form every MCP call arrives in) and a stamped name may carry
  * the server too. Both spellings are the one tool; a bare `browser` is kept for the
  * built-in shape and the fixtures. Any other MCP spelling a backend uses (an ACP
  * backend writes `mcp__server__tool`) is read by the shared `mcpIdentityFromTitle`. */
-const BROWSER_ROW_RE = /^🔧\s*(?:@(?:[\w.-]+\/)?)?browser(?:\s|$)/
+const BROWSER_ROW_RE = /^(?:@(?:[\w.-]+\/)?)?browser(?:\s|$)/
 const NAMESPACED_BROWSER_RE = /(?:^|\/|::|___)browser$/
 function namesBrowser(name: string): boolean {
   const mcp = mcpIdentityFromTitle(name)
@@ -69,8 +70,10 @@ export function isBrowserToolMessage(msg: ChatMessage): boolean {
   if (msg.role !== 'tool') return false
   const trusted = msg.meta?.tool_name
   if (typeof trusted === 'string' && trusted) return namesBrowser(trusted)
-  if (BROWSER_ROW_RE.test(msg.content)) return true
-  const pill = msg.content.match(/^🔧\s*(\S+)(?:\s|$)/)
+  if (!isToolCallRow(msg.content)) return false
+  const label = stripToolCallLead(msg.content)
+  if (BROWSER_ROW_RE.test(label)) return true
+  const pill = label.match(/^(\S+)(?:\s|$)/)
   return !!pill && mcpIdentityFromTitle(pill[1])?.tool === 'browser'
 }
 

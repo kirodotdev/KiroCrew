@@ -294,6 +294,18 @@ def test_filing_puts_a_mate_chat_in_its_home(_display):
     assert _run(mf.mate_home_filing(state, execution, "a", conductor=True)) == ("a", "a")
 
 
+def test_a_conductor_naming_a_deleted_subfolder_files_in_its_home(_display):
+    state = _FolderState([{"id": "p", "name": "Finance", "parent_id": ""}])
+    execution = _execution("member-radar-0123", "radar")
+    home, _ = _run(mf.mate_home_filing(state, execution, "", conductor=True))
+    state._folders.append(
+        {"id": "a", "name": "PR review", "parent_id": home, "owner_app": PRINCIPAL}
+    )
+    # The person deletes the empty sub-folder; the Bot still names it.
+    state._folders[:] = [f for f in state._folders if f["id"] != "a"]
+    assert _run(mf.mate_home_filing(state, execution, "a", conductor=True)) == (home, home)
+
+
 def test_a_legacy_conductor_without_a_member_id_gets_no_home(_display):
     state = _FolderState([{"id": "p", "name": "Finance", "parent_id": ""}])
     legacy = _execution("member-radar-0123")
@@ -432,16 +444,15 @@ def test_subtree_ids_are_what_home_owner_of_locks():
     }
 
 
-def test_folder_cleanup_never_removes_a_mate_home_or_its_subtree():
+def test_folder_cleanup_never_removes_a_mate_home_but_offers_its_empty_subfolders():
     from kiro_crew.dashboard.chat_folder_cleanup import removable_folder_ids
 
     state, home = _state_with_home()
     state._folders.append({"id": "q", "name": "Empty", "parent_id": "p"})
     removable = removable_folder_ids(state._folders, (), include_top_level=True)
     assert home not in removable
-    assert "a" not in removable
-    # The person's empty folders still go.
-    assert set(removable) == {"p", "q"}
+    # An empty folder inside the home goes, as the person's empty folders do.
+    assert set(removable) == {"p", "q", "a"}
     # Once the mate is deleted its home is an ordinary folder again.
     _run(mf.release_mate_home(state, PRINCIPAL))
     removable = removable_folder_ids(state._folders, (), include_top_level=True)

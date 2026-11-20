@@ -3,8 +3,8 @@ title: Channel card catalog — one validated, redacted card spec rendered to Sl
 status: partial
 author: kseam
 created: 2026-11-10
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
 implementation-prs: [35974]
 tracking-issues: []

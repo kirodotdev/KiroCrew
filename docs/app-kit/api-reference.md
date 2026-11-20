@@ -130,6 +130,35 @@ carried comes back to the user in the "send cancelled" notice. An older host may
 session before its list has it and stay on the previous chat; an app that must also
 run there can keep a short wait of its own before opening a just-created session.
 
+`useChatLauncher().createChat(options)` creates, or reopens, a chat for the person
+and resolves to its slot key, without your page declaring `/api/chat/slots` (App Kit
+seam level 10; test that `createChat` exists rather than reading the level). It opens
+only the chat your manifest's `permissions.chatLaunch` declares
+([manifest-reference](manifest-reference.md)), and the gateway refuses anything else
+with a `403` whose body carries `app_chat_launch_refused`:
+
+- `slotKey`: your `keyPrefix` followed by 1 to 128 of `[A-Za-z0-9._-]`. The same key
+  reopens the same chat. A key holding a slot another app owns, or a chat another app's
+  page opened, is refused. A prefix is one installed app's: while another installed
+  app, enabled or not, declares a prefix that overlaps yours (one starts with the
+  other), every `createChat` of both apps is refused, so neither reaches the other's
+  chats. Start yours with your app's name to keep it your own.
+- `agent`: one of your declared `agents`.
+- `title`: the sidebar title. Sent again on a reopen, it renames the chat, so send it
+  only when you create one.
+- `folderId`: the id of a folder named your declared `folder`, to file the chat in.
+- `memoryMode`: one of your declared `memoryModes`; `'persistent'` when omitted.
+
+The chat is the person's: it records no owning app and runs under their own approval
+rules, exactly like one they opened. `createChat` does not navigate; pass the key to
+`openChat({ slotKey })`:
+
+```ts
+const { createChat, openChat } = useChatLauncher()
+const slotKey = await createChat({ slotKey: 'notes-followup-42', agent: 'notes-reviewer', title: 'Follow-up #42' })
+openChat({ slotKey })
+```
+
 Level-1 additions to the SDK, each also re-exported by the vendor stub an app's bundle
 resolves through:
 
@@ -137,7 +166,8 @@ resolves through:
 |---|---|---|
 | `fmtCurrency(value, currency = 'USD', options?)` | `@kirocrew/app-sdk` | Money in the host's locale. |
 | `APP_SDK_LEVEL` | `@kirocrew/app-sdk` | The seam level, equal to the gateway's `ctx.sdk_level`. |
-| `appWebOrigin(name)` | `@kirocrew/app-sdk` | The app's own origin on the dashboard's port, `http://<name>.apps.localhost:<port>`, for a backend with `backend.webOrigin: true`; available when the dashboard uses http on `localhost`, `127.0.0.1` or `kirocrew.localhost`, and `null` on IPv6 or any other dashboard host. The answer reads the dashboard's host name only, not whether this browser reaches the name, so probe the origin first (a `no-cors` fetch, which the dashboard CSP admits) and keep the app's own loopback frame when the probe fails. Level 8. |
+| `appWebOrigin(name)` | `@kirocrew/app-sdk` | The app's own origin on the dashboard's port, `http://<name>.apps.localhost:<port>`, for a backend with `backend.webOrigin: true`; available when the dashboard uses http on `localhost`, `127.0.0.1` or `kirocrew.localhost`, which includes a Remote Crew pane, and `null` on IPv6 or any other dashboard host. The answer reads the dashboard's host name only, not whether this browser reaches the name, so probe the origin first (a `no-cors` fetch, which the dashboard CSP admits) and keep the app's own loopback frame when the probe fails. Level 8. |
+| `appWebOriginStatus(name)` | `@kirocrew/app-sdk` | `{ origin, reason }`: `origin` is what `appWebOrigin(name)` answers, and `reason` is `'loopback'` when there is one, else `'remote-front-door'` (https, a tunnel, the relay, a published host or a phone link: open the app's upstream page in a new tab instead of framing a loopback port, which on this viewer's device is the viewer's own machine), `'ipv6'` or `'invalid-name'`. Level 11. |
 | `Select` | `@kirocrew/app-sdk/ui` | A themed inline dropdown: `options`, `optionLabels?`, `value`, `onChange`, `clearLabel?`, `disabled?`, `aria-label?`, `title?`, `className?`. Native list on touch devices. |
 | `guideCaution` | `@kirocrew/app-sdk/ui` | Spread onto a control that removes something (`<Btn {...guideCaution}>`), so a dashboard guide shows its caution line before a press there. |
 
@@ -183,7 +213,11 @@ the same as one that does not exist.
 
 Example, from a backend the gateway spawned (see
 [Backend Environment Variables](#backend-environment-variables)): trade the app secret
-for an app token, then call the routes with it as the gateway's session cookie. Hooks that
+for an app token, then call the routes with it as the gateway's session cookie. The exchange
+answers `{"token": ..., "expires_in": ...}`: `expires_in` is the seconds the token is
+accepted as a `?token=` query parameter, the shorter of its two windows (as the session
+cookie it lasts an hour). A long-running backend exchanges again before `expires_in` runs
+out, or after a 401 or 403. Hooks that
 run in the gateway process have no secret: they get the same app token from
 [`ctx.app_token()`](#app-token-ctxapp_token).
 
@@ -336,7 +370,7 @@ API-path check for each of these calls:
 - `GET /api/chat/slots/{slot}?limit=N` — the transcript read (polled, and
   re-issued on each push signal; see below).
 - `POST /api/chat` — sending, unless `onSend` is supplied.
-- `POST /api/chat/slots/{slot}/approve` — Approve, Reject and Trust on a tool approval.
+- `POST /api/chat/slots/{slot}/approve` — Approve, Reject and Trust on a tool approval, naming the card row's target (`origin: "native"`, `request_id`, `request_mid`); a row with no `mid` sends nothing and shows as no longer pending.
 - `GET /api/chat/slots/{slot}/question` — the slot's pending `ask_question` cards,
   polled every 1.5 s while a turn runs and every 10 s when idle.
 - `POST /api/chat/slots/{slot}/question/answer` — answer or decline a blocking card
@@ -955,6 +989,116 @@ session's messages, the cron list or the subagent list through `useAppApi()`
 A built-in page gets every member as the dashboard has it; outside an app every member
 refuses.
 
+## Browser Media
+
+`useBrowserMedia(sessionKey, { pollMs })` gives your page play, pause, seek and volume
+buttons for the browser tab your app's own agent works in, answered at once and without an
+agent turn. It needs `APP_SDK_LEVEL >= 10`, an approved
+[`permissions.browserSites`](manifest-reference.md), and `/api/browser/media`
+(`BROWSER_MEDIA_PATH`) in `permissions.api`. `sessionKey` is a session your app owns,
+the one whose agent opened the page with the `browser` tool.
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+const { media, error, busy, play, pause, seek, setVolume } = sdk.useBrowserMedia(sessionKey, { pollMs: 1000 })
+
+<button disabled={busy} onClick={() => (media?.paused ? play() : pause())}>…</button>
+```
+
+| Member | Does |
+|---|---|
+| `media` | the playing element's state: `kind`, `paused`, `ended`, `currentTime`, `duration` (null when unknown), `volume` (0 to 1), `muted`; null before the first answer |
+| `error` | the last refusal's code: `no_tab` (no tab open for that session yet), `no_media` (no `<video>` or `<audio>` on the page), `redirect_refused` (the page left your approved sites; it was moved to `about:blank`), `not_app_browser`, `not_declared`, `policy_denied` |
+| `play()`, `pause()`, `seek(seconds)`, `setVolume(0..1)`, `refresh()` | one request each: a `POST` per button; `refresh`, the first read and each poll are a `GET` that changes nothing |
+| `onEnded(media)` (option) | called once each time an answer first shows `ended: true`; again only after the element plays and ends anew. A song that has already ended when the page mounts counts once |
+
+For continuous play, poll and let the ending pick the next song:
+
+```tsx
+sdk.useBrowserMedia(sessionKey, {
+  pollMs: 2000,
+  onEnded: () => chat.send('That song ended. Find and play the next one.'),
+})
+```
+
+`pollMs` is the read interval in milliseconds: anything below 500 is raised to 500,
+because every read takes the browser lock your agent's ops wait on. A value that is not
+a finite number above 0 (`0`, `-1`, `NaN`, `Infinity`) reads once.
+
+The signal is derived from the state your page reads, so it only exists while your page is
+mounted and polling. Your backend learns of it when your page posts to one of your own
+routes; with the page closed nothing reads the tab, so nothing fires.
+
+The route acts on the element that is playing, else the largest one shown, in the page's
+top document. It reads no page text. A play may be refused by the
+browser's autoplay rule; the route then clicks the element once, which counts as the tab's
+gesture. The hook draws nothing, so the buttons are yours. Only the dashboard owner's own
+page can call it: the agent's tools and app tokens are refused.
+
+## Browser View
+
+`BrowserView` shows the live browser of one of your app's own chat slots, and lets the
+person take it over and hand it back. `useBrowserView(slot)` gives the same state and the
+same two acts without the picture, and `useBrowserCoords(slot)` converts between the view's
+coordinates and the page's. They need `APP_SDK_LEVEL >= 11` and the `App browser access`
+feature preview (Settings > Developer > Feature previews, `app_browser_sdk`), and the
+owner's approval of your `permissions.browser` `view` verb (install approves none; the
+owner approves it on your app's page). With the preview off the view says so and sends
+nothing; without `view` approved it says the owner has not approved it yet. The approved
+verbs reach your page as `useAppInfo().permissions.browser`.
+While your app is turned off, no one sees or drives the browser of its slots: the
+gateway refuses every live-view route for them (`app_disabled`) and ends a takeover
+and the stream still running, and a mounted view shows that the app is off as soon
+as the gateway says so (its `app_state` frame, sent to every open dashboard when the
+app is turned on or off), even while `useAppInfo().enabled` still holds the page's
+first read.
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+<sdk.BrowserView
+  slot="myapp-123"
+  aria-label="The page the Bot is on"
+  onHandBack={(note) => console.log('handed back', note)}
+  marks={[{ x: 120, y: 80, width: 200, height: 40, label: 'Price' }]}
+/>
+```
+
+| Prop | Meaning |
+|---|---|
+| `slot` | required; one of your slot keys (`<app>-<id>`), a slot your app made with `ctx.chat_slots` |
+| `aria-label` | required; the name of the view for a screen reader |
+| `interactive` | may the person take over; default `true` |
+| `onTakeover()` | the person took over in this view, once the gateway accepted it |
+| `onHandBack(note?)` | the person handed back, with their note or chosen reply if they gave one |
+| `onNavigate({ url, title })` | the page changed address or title |
+| `marks` | `{ x, y, width?, height?, label? }` in view coordinates (CSS pixels from the view's top left); a box when both sizes are given, else a dot. Drawn over the picture, never inside the page; `label` is plain text |
+
+| `useBrowserView(slot)` member | Does |
+|---|---|
+| `access` | `off` (preview off), `app_off` (your app is turned off), `not_granted` (`view` not approved), `denied` (not your slot), `ok` |
+| `state` | `idle` before the slot has browsed, else `live`, `in_control`, `waiting_allow`, `login_needed`, `done` or `error` |
+| `url`, `title` | the page's address and title |
+| `claim()`, `release(note?)` | take over, hand back; `false` when refused or not allowed |
+
+`useBrowserCoords(slot)` answers `toPage(x, y)` (view point to frame pixels, `null` outside
+the picture) and `toView(x, y)` (frame pixels to view point), for the `BrowserView` of that
+slot on screen; both are `null` until a frame is drawn.
+
+The view is the dashboard's own live view. It reads the state your dashboard already
+receives and uses the owner routes the chat card uses, so the person's takeover, Esc to hand
+back and the password-field mask work exactly as in chat. It adds no channel and no route.
+A hand-back note the Bot was not waiting for becomes the person's next message in that slot,
+as it does in chat, sent once even when the chat page is open too.
+
+A slot counts as yours when the gateway stamped it with your app's name, which it does only
+for a slot your app opened through `ctx.chat_slots`; the key's prefix proves nothing, so `foo`
+does not get `foo-bar-1`. Any other slot shows "denied". The check
+helps an honest app; it is not a security boundary, because your page runs in the owner's
+dashboard. Reading, clicking and typing from your backend are `ctx.browser`, with their own
+checks in the gateway.
+
 ## Chat Marker Protocol
 
 An agent encodes UI affordances inline in the prose it streams. A surface that renders a transcript
@@ -1128,9 +1272,11 @@ Three rules the registry relies on:
   or any other row change, except one change: a streaming row's text growing, which redraws that row
   alone. Every built-in rule that looks ahead (the reply footer, the steer chip, a retry notice's
   tense) reads a streaming row by its role.
-- **Shape beats role.** Resolution is first-match, and your entries sit between the two built-ins
-  recognised by message *shape* — a stop event and a sub-agent completion, which claim `'*'` and gate
-  on a `match` predicate — and the role-keyed ones. This matters because a stop event reaches the
+- **Shape beats role.** Resolution is first-match, and your entries sit between the built-ins
+  recognised by message *shape* — a stop event, a sub-agent completion, and a gateway-authored
+  `inject` row (`recovery_inject`, `automation_notice_inject`), which claim `'*'` and gate on a
+  `match` predicate — and the role-keyed ones. So an entry of yours that claims `inject` draws only
+  the rows those two leave, such as a cron delivery. This matters because a stop event reaches the
   transcript as role `system`, which is also a role you are invited to claim: were a role claim
   allowed to outrank a `kind` check, claiming `system` would swallow the stop card and pressing Stop
   would draw your row instead. A role claim cannot know about `kind`, so it does not outrank one.
@@ -1291,7 +1437,7 @@ client when it fires.
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `addCron(name, options)` | `CronJob` | Create a scheduled job |
-| `listCrons()` | `CronJob[]` | List all cron jobs |
+| `listCrons()` | `CronJob[]` | List all cron jobs, each `last_result` and `last_error` cut to a preview (`GET /api/crons/{job_id}` reads one whole) |
 | `updateCron(id, options)` | `CronJob` | Update a cron job |
 | `removeCron(id)` | `—` (no body) | Delete a cron job |
 | `pauseCron(id)` | `—` (no body) | Pause without deleting |
@@ -1728,6 +1874,32 @@ async def add_item(request, ctx):
 | `model_id` | The vector space's model id, or `""` with no backend. Store it with each vector; a different value later means old vectors are not comparable. |
 | `embed_sync(text)` | A `list[float]`, or `None` when no model can serve or the embed failed. **Blocking**: call it only inside `run()` or another worker. Called on the event loop it returns `None`. |
 | `await run(func, *args, **kwargs)` | `func(*args, **kwargs)`, run on the host's bounded embed pool. |
+| `await embed_batch(texts, *, instruction=None)` | An `EmbedBatchResult` for up to 64 texts, embedded on the host's background memory pool, one app batch at a time. Seam level 10. |
+| `embed_batch_sync(texts, *, instruction=None)` | The same, **blocking**, for a worker thread of your own; not inside `run()`, whose pool the host's chat turns wait on. Seam level 10. |
+
+The batch members answer with an `EmbedBatchResult`:
+`ready`, `vectors` (one per text, in input order), `model_id`, `dim`,
+`space_signature` and `reason`. Store `space_signature` with your vectors: a model
+change or a custom model gives a different signature, and vectors from different
+signatures are not comparable, so re-embed. When `ready` is `False`, `vectors` is
+empty and `reason` says why:
+
+| `reason` | Meaning |
+|---|---|
+| `invalid_input` | `texts` is not a non-empty list of non-blank strings, or `instruction` is blank. |
+| `too_many_texts` | More than 64 texts. Split the work across calls. |
+| `on_event_loop` | `embed_batch_sync` was called on the event loop. Use `await embed_batch(...)`. |
+| `not_ready` | No embedding is available right now: the model is downloading, loading, being swapped or absent, or the host's bulk queue is full. Fall back (keyword search) and retry later. |
+| `failed` | The embed raised or returned malformed vectors. Logged once per process. |
+
+Batch work needs no manifest permission. It runs at the shared model's bulk
+priority, behind the host's memory recall and explicit memory writes and level
+with its own bulk work such as consolidation (the Ollama provider
+does not order by priority), and it is paced like the host's own bulk work, so a
+full batch can take minutes. Each text is cut at the host's per-text limit.
+`instruction` is prefixed to every text as `Instruct: <instruction>\nQuery:`, the
+form the bundled instruction-tuned model expects: embed stored documents without it
+and queries with it. With a custom model or an `ollama:` model, leave it out.
 
 It never raises into your code: a missing embedding extra, a model that cannot load
 and a failing embed all read as `None`, and the first failure is logged once per
@@ -1794,7 +1966,11 @@ approval: every tool `run` asks for is decided by the host's tool gate with your
 app's name, so the operator's profile for your app applies, and a call the gate
 neither denies nor grants goes to the owner's approval prompt, as a cron job's
 does (Slack DM and dashboard, denied after the short unattended window when
-nobody answers). `run_oneshot`
+nobody answers). When the owner runs the gateway in the `auto` approval mode
+(Settings, `agent.approval_mode`), that call runs without a prompt, as a channel
+chat's does, but only when the turn runs one of your app's own agents (the ones
+your manifest declares); a turn on the host's default agent or another app's
+agent still asks, and so does a host policy that denies `trust`. `run_oneshot`
 rejects every tool. The operator's `capabilities.spawn` row for your app bounds
 which agents you may run, as it does for `ctx.spawn`: when spawning is off for your
 app, or the agent (for `agent=""`, the default agent; for `run_oneshot`,
@@ -1838,7 +2014,7 @@ slots.send(state, slot, "Start with the README.")
 |------|---------|--------------|
 | `get(state, key)` | slot or `None` | The live slot under *key* when it is yours |
 | `restore(state, key, *, adopt_closed)` | slot or `None` | Bring *key*'s saved transcript back into a cold slot (async). Pass `adopt_closed=True` for a slot whose lifecycle you own, never for a key you are creating anew. The slot is returned only when it is yours; a saved transcript another app or a person owns is never brought back |
-| `open(state, key)` | `(slot, created)` | Your slot under *key*, created when absent, with a restored sidebar row's rows read in off the event loop (async). A slot under *key* that is not yours, or a saved transcript under it that records another owner, raises `ChatSlotRefused` and is left untouched. Read the key back from `slot.key`: the Gateway folds it to its session-file charset |
+| `open(state, key, *, hidden=False)` | `(slot, created)` | Your slot under *key*, created when absent, with a restored sidebar row's rows read in off the event loop (async). A slot under *key* that is not yours, or a saved transcript under it that records another owner, raises `ChatSlotRefused` and is left untouched. Read the key back from `slot.key`: the Gateway folds it to its session-file charset. `hidden=True` creates the slot under your app's own mode, out of the session lists, as [`permissions.hiddenSessions`](manifest-reference.md) describes; it still carries your app's name. Without that declaration, or while your app is disabled or untrusted, it raises `ChatSlotRefused` and creates nothing. An existing slot keeps the mode it has. An older host's `open` takes no `hidden` and raises `TypeError` |
 | `set_title(state, slot, title, *, only_untitled=False)` | bool | Title the slot, redacted, push it to the sidebar and mark it for the next save. Withheld (`False`) when redaction fails |
 | `send(state, slot, message, *, meta=None, append_user=True, user_origin=False, typed=True, on_consumed=None, on_irreversibly_consumed=None, reservation=None)` | task or `None` | Start a turn under the operator's unattended-turn cap, or queue *message* behind the running one (`None`, and the consumption callbacks are not attached). `user_origin` says a person sent the text, `typed` that they typed it; both default to the cautious answer, and a queued message keeps `user_origin` only when `typed` is true. Pass the task `reserve` returned as `reservation` to start the turn in its place. A slot that did not come through `open` or `restore` and still has its rows unread raises `RuntimeError` |
 | `reserve(state, slot)` | task or `None` | Mark an idle slot busy for the calling task while it validates, so other starters queue. Released when the task ends, and anything queued meanwhile is started |
@@ -1951,6 +2127,30 @@ app named like a core source (`agent`) is always refused. The seam grants nothin
 the route, its gateway-token authentication, your signature check and your audit rows
 stay yours. The owner sees the declaration, with the source id, at the trust prompt.
 
+### Browser (`ctx.browser`)
+
+The browser tabs of your app's own chat slots (RFC #38322, step 1a). Present only
+when the manifest declares `permissions.browser` and the owner turned on **App
+browser access** (`dashboard.feature_previews.app_browser_sdk`) in Settings >
+Developer > Feature previews; `None` otherwise, so feature-detect it:
+
+```python
+browser = getattr(ctx, "browser", None)
+if browser is None or "read" not in browser.verbs():
+    ...  # the owner has not turned the preview on, or not approved "read" yet
+```
+
+| Member | Returns | Description |
+|--------|---------|-------------|
+| `verbs()` | `tuple[str, ...]` | The verbs your app holds now: declared, approved by the owner on your app's page, the app turned on, and the preview on. Blocking: call it from a worker thread. Empty when any of these is missing; turning the app off keeps the approvals, and they apply again when it is turned on. |
+
+Installing approves no verb: the owner approves them on your app's page, and an
+update that adds a verb holds that verb back while the ones already approved keep
+working. `ctx.browser` itself and the answer of `verbs()` are re-read at each use, so
+an approval, a removed verb or the preview turned on or off applies at once, with no
+restart. This step adds only the grant and the gate; the
+page operations (`page(slot)`, `slots()`) follow in step 1b of the RFC.
+
 ### App token (`ctx.app_token()`)
 
 `await ctx.app_token()` returns an app token for your app, the same token
@@ -2018,10 +2218,20 @@ level 7 adds the manifest's `agentReadOnlyDirs` (see
 [`ctx.webhook_source`](#webhook-source-ctxwebhook_source), level 8 adds
 directory entries in `credentialMasks` (`"state/"`), the dashboard's
 [host sessions](#host-sessions) (`useHostSessions`), and the manifest's
-`backend.webOrigin` with the dashboard's `appWebOrigin(name)`, and level 9 adds
+`backend.webOrigin` with the dashboard's `appWebOrigin(name)`, level 9 adds
 `permissions.bots`, which an app's backend uses with its app token
-([Bots](#bots-permissionsbots-from-your-backend)); each level
-includes every level below it. Several seams share level 7, and three share level 8, so an app that needs one
+([Bots](#bots-permissionsbots-from-your-backend)), and level 10 refuses an
+installed app's `credentialMasks` to the agent's file tools too and adds the manifest's
+`permissions.chatLaunch` (see
+[manifest-reference.md](manifest-reference.md#permissions)) with
+[`useChatLauncher().createChat`](#app-sdk-hooks-dashboard-ui),
+`permissions.browserSites` with the page's [`useBrowserMedia`](#browser-media), and the
+shared embedder's batch members (`ctx.embed.embed_batch`, see
+[Shared embedder](#shared-embedder-ctxembed)), and level 11
+adds the page's [`BrowserView`, `useBrowserView` and `useBrowserCoords`](#browser-view) and the
+dashboard's `appWebOriginStatus(name)`; each level
+includes every level below it. Several seams share level 7, three share level 8, and
+level 10 is shared by the seams of the batch it opens, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
@@ -2512,7 +2722,7 @@ does so before each reconnect.
 | `ackNotifications()` | `ack_notification(ts)` / `ack_all_notifications()` |
 | `approveAction(slot, task, pattern?)` | `resolve_approval(request_id, "approved", slot_id=slot, pattern=pattern)`; command/base trust passes the pending card pattern |
 | `rejectAction(slot, task)` | `resolve_approval(request_id, "rejected", slot_id=slot)` |
-| `resolveApproval(id, action, slot?, pattern?)` | `resolve_approval(id, action="approve", slot_id="", *, pattern="")`; `approve`/`approved` and `reject`/`rejected` are aliases; without a slot, accepted actions are `approve`, `reject`, `reject_once`; with a slot, accepted actions are `approved`, `rejected`, `trust`, `trust_reads`, `trust_command`, `trust_base`, `yolo`; command/base trust requires `pattern` |
+| `resolveApproval(id, action, slot?, pattern?)` | `resolve_approval(id, action="approve", slot_id="", *, pattern="", request_mid="", instance="")`; `request_mid` (a slot row's `meta.mid`, needs `slot_id`) sends the slot route's `origin: "native"` target, `instance` (with the record's `slot` as `slot_id`, from `list_approvals()`) sends `?origin=coordinator&slot=&instance=` on `/api/approvals/{id}/{action}`; one of them, never both; without either the bare id is sent, the form a later Gateway refuses; `approve`/`approved` and `reject`/`rejected` are aliases; without a slot, accepted actions are `approve`, `reject`, `reject_once`; with a slot, accepted actions are `approved`, `rejected`, `trust`, `trust_reads`, `trust_command`, `trust_base`, `yolo`; command/base trust requires `pattern` |
 | `listApprovals()` | `list_approvals()`; pending background approvals only (cron, autonudge, subagent, task runner), never a slot's own tool prompts; empty for an app token |
 | `getApprovalMode()` | `get_gateway_config("kirocrew")`, then read `agent.approval_mode` |
 | `setApprovalMode(mode)` | `set_approval_mode(mode, slot_id="")`; accepted modes are `normal`, `trust_reads`, `trust`, `yolo`; `normal`, `trust_reads`, and `trust` may target one slot, while `yolo` is process-global and rejects `slot_id` |
@@ -2614,8 +2824,8 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 | POST | `/api/chat` | Send a chat turn |
 | GET/POST | `/api/spawn` | List or start subagents |
 | GET | `/api/spawn/{agent_id}` | Read subagent status |
-| GET/POST | `/api/crons` | List or create cron jobs |
-| PATCH/DELETE | `/api/crons/{job_id}` | Update or delete a cron job |
+| GET/POST | `/api/crons` | List or create cron jobs (the list cuts each job's `last_result` and `last_error` to a preview) |
+| GET/PATCH/DELETE | `/api/crons/{job_id}` | Read, update or delete a cron job (the read carries `last_result` and `last_error` whole) |
 | POST | `/api/crons/{job_id}/enable` | Pause or resume a cron job |
 | POST | `/api/crons/{job_id}/run` | Run a cron job now |
 | POST | `/api/crons/{job_id}/cancel` | Cancel a running cron job |
@@ -3015,6 +3225,17 @@ open), so a per-file symlink like `ln -s ~/src/app/dist/index.mjs ui/index.mjs`
 answers `404` — indistinguishable from "not built yet". The directory link
 works because the route resolves the ui root *through* the link before
 validating files against it.
+
+On Windows, make the link a **directory junction** instead: from `cmd`, keep
+the installed `ui\` as a backup
+(`ren "%USERPROFILE%\.kiro\crew\apps\<name>\ui" ui.bak`), run
+`mklink /J "%USERPROFILE%\.kiro\crew\apps\<name>\ui" "<source>\ui"`, then re-run
+`kirocrew app dev <name> --confirm-out-of-install-root` so the dev grant binds
+to the link target. A junction needs no privilege; a directory symlink there needs Developer Mode or
+an elevated shell (Windows PowerShell 5.1's `New-Item -ItemType SymbolicLink`
+needs elevation even with Developer Mode on). The junction target must be a
+local absolute path. The UI route and the dev watcher follow a junction the
+same way they follow a symlink.
 
 **Contract surface:**
 

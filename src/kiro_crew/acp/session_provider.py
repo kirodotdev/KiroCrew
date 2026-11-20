@@ -22,6 +22,7 @@ from contextlib import aclosing
 from pathlib import Path
 from typing import Any, cast
 
+from kiro_crew.acp import session_handle_lifecycle as _handle_lifecycle
 from kiro_crew.acp import session_provider_agent_turns as _sp_agent_turns
 from kiro_crew.acp import session_provider_claim as _sp_claim
 from kiro_crew.acp import session_provider_context as _sp_context
@@ -68,6 +69,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_MEMBER_TOOL_LIMITS,
+    STOP_REASON_CANCEL_UNACKED,
     STOP_REASON_END_TURN,
 )
 from kiro_crew.agent_sdk import host_auth
@@ -501,6 +503,11 @@ class AcpSessionProvider(LLMProvider):
     stream_unsolicited = _sp_agent_turns.stream_unsolicited
 
     @property
+    def sandbox_mode(self) -> str | None:
+        """Spawn tier of this session's runtime (H14); a task step's tenant reports its run's."""
+        return self._runtime.sandbox_mode
+
+    @property
     def child_fidelity_aware(self) -> bool:
         """See AcpSessionHandle.child_fidelity_aware."""
         return getattr(self._handle, "child_fidelity_aware", False)
@@ -681,19 +688,17 @@ class AcpSessionProvider(LLMProvider):
             # needed. cleanup_session() below remains for the LLMProvider API.
 
     async def cleanup_session(self, session_id: str = "") -> None:
-        """Delete this session's kiro-cli transcript files (.json + .jsonl).
+        """Delete this session's native record from the host it ran on.
 
-        Overrides the no-op LLMProvider.cleanup_session so shared-subagent
-        sessions don't leak transcripts on the shared runtime. Deletes through
-        the same helper ``destroy()`` uses, so the traversal guard is shared.
+        Overrides the no-op LLMProvider.cleanup_session. kiro-cli's record is its
+        ``.json`` + ``.jsonl`` pair, KAS's is in the engine's store and codex's is
+        the rollout under its ``CODEX_HOME``; ``delete_native_record`` routes by
+        the runtime's backend and does blocking disk work in a worker thread.
         """
         sid = session_id or getattr(self._handle, "session_id", "") or ""
         if not sid:
             return
-        # The handle's helper resolves, guards and unlinks: blocking disk work
-        # that would stall every session on a slow home mount, so it runs in a
-        # worker thread.
-        await asyncio.to_thread(AcpSessionHandle.cleanup_transcript_files, sid)
+        await _handle_lifecycle.delete_native_record(self._runtime, sid)
 
     @property
     def context_incarnation(self) -> object:
@@ -834,7 +839,8 @@ class AcpSessionProvider(LLMProvider):
         except AcpError as exc:
             if not emitted and await self._connection_failure_is_signed_out(exc):
                 raise AcpAuthRequired(
-                    host_auth.signed_out_message(self.backend), backend=self.backend
+                    host_auth.signed_out_message(self.backend, route=self._runtime.kas_spawn_route),
+                    backend=self.backend,
                 ) from exc
             # A masked codex can open its session and only fail the AWS
             # credential load at the turn; name the mask the way the start
@@ -1053,7 +1059,9 @@ class AcpSessionProvider(LLMProvider):
             # every runtime-touching call, so a literal here would misinform an
             # operator on any harness that does not sign in through kiro-cli.
             return AcpAuthRequired(
-                host_auth.signed_out_message(self._runtime.acp_backend),
+                host_auth.signed_out_message(
+                    self._runtime.acp_backend, route=self._runtime.kas_spawn_route
+                ),
                 backend=self._runtime.acp_backend,
             )
         # A stdin-stall death is the host's own verdict, never a throttle: the
@@ -1142,7 +1150,10 @@ class AcpSessionProvider(LLMProvider):
             await self._handle.cancel(grace_secs=wait_ack_timeout)
             if wait_ack_timeout > 0:
                 done = await self._handle.wait_turn_done(timeout=wait_ack_timeout)
-                return "acked" if done else "timeout"
+                # A turn the handle ended itself because the agent never
+                # answered the cancel is no ack: the agent may still run it.
+                acked = done and not self._handle.cancel_went_unacked
+                return "acked" if acked else "timeout"
             return "acked"
         except AcpRuntimeDead:
             return "error"
@@ -1483,12 +1494,16 @@ class AcpSessionProvider(LLMProvider):
         done = await self._handle.wait_turn_done(timeout=timeout)
         if not done:
             raise asyncio.TimeoutError()
-        # Synthetic-terminal paths (tool-interrupted / unresponsive-cancel /
-        # stale) set _turn_done WITHOUT a stopReason, leaving _last_stop_reason
-        # "". Returning "" makes AcpProvider.cancel()'s `reason in (CANCELLED,
-        # END_TURN)` check False → it reports a timeout → spurious HARD KILL of
-        # the SHARED runtime (killing co-tenant sessions). Treat a done-but-empty
-        # turn as a benign END_TURN so cancel() completes cleanly.
+        # The unresponsive-cancel terminal is reported as itself, which
+        # AcpProvider.cancel() reads as a timeout: the agent never answered the
+        # cancel and may still be running the turn, so the Stop must escalate.
+        if self._handle.cancel_went_unacked:
+            return STOP_REASON_CANCEL_UNACKED
+        # The other synthetic terminals (tool-interrupted / stale) set _turn_done
+        # WITHOUT a stopReason, leaving _last_stop_reason "". Returning "" makes
+        # AcpProvider.cancel()'s `reason in (CANCELLED, END_TURN)` check False → it
+        # reports a timeout → spurious HARD KILL of the SHARED runtime (killing
+        # co-tenant sessions). Treat a done-but-empty turn as a benign END_TURN.
         return self._handle._last_stop_reason or STOP_REASON_END_TURN
 
     def is_responsive(self, stale_threshold: float = 600.0) -> bool:

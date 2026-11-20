@@ -616,6 +616,7 @@ class TestContributedCommands:
 
         app = tmp_path / "selfapp"
         app.mkdir()
+        (app / "installed.json").write_text("{}")  # the listing walks entries with a record
         (app / "app.json").write_text(
             json.dumps(self._with_agents(self._command(agent="kirocrew"), []) | {"name": "selfapp"})
         )
@@ -645,6 +646,7 @@ class TestContributedCommands:
         app = root / "selfapp"
         (app / "agents").mkdir(parents=True)
         (app / "agents" / "spec.json").write_text('{"name": "ticket-analyst"}')
+        (app / "installed.json").write_text("{}")  # the listing walks entries with a record
         (app / "app.json").write_text(
             json.dumps(
                 self._with_agents(self._command(agent="ticket-analyst"), ["agents/spec.json"])

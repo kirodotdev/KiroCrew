@@ -46,6 +46,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.sections import (
     BROWSER_CHOICES,
+    BROWSER_ISOLATIONS,
     BROWSER_LOCAL_ORIGIN_PATTERN,
     BROWSER_LOCAL_ORIGINS_MAX,
     COMPACT_WAIT_SECS_MAX,
@@ -154,6 +155,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # schema; the card says so after a save. No install is implied by turning it on:
     # a true value with nothing installed refuses the next KAS spawn by name.
     "agent.kas_bundle": {"type": "bool"},
+    # Remember remote MCP sign-ins across KAS sessions (Settings → Connections).
+    # Read when a KAS process starts, so the schema marks it boot-only.
+    "agent.kas_persist_mcp_sign_in": {"type": "bool"},
     # The remote-dispatch preview switch (Settings → Developer → Feature previews,
     # rfc-conductor-remote-dispatch.md). Read on every call, so no restart.
     "work_ledger.remote_dispatch": {"type": "bool"},
@@ -239,6 +243,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Opt-in KAS memory recall for the owner's own new dashboard chats. Read at
     # session creation, so no restart; see ``acp/kas_memory.py``.
     "agent.orchestrator_memory": {"type": "bool"},
+    # Settings > Developer > Feature Previews > Session control. Read on every
+    # session-control call, so no restart.
+    "agent.session_control": {"type": "bool"},
     "agent.completion_keep": {"type": "enum", "values": ["head", "tail", "both"]},
     "agent.completion_keep_chars": {
         "type": "int",
@@ -626,6 +633,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Values come from the config section itself, so this gate and the loader's
     # own normalization cannot drift.
     "browser.choice": {"type": "enum", "values": list(BROWSER_CHOICES)},
+    "browser.isolation": {"type": "enum", "values": list(BROWSER_ISOLATIONS)},
     "browser.live.enabled": {"type": "bool"},
     "browser.live.quality": {"type": "enum", "values": list(LIVE_QUALITIES)},
     "browser.live.max_fps": {"type": "enum", "values": list(LIVE_MAX_FPS_CHOICES)},

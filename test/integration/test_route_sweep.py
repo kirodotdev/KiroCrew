@@ -66,6 +66,16 @@ UNGUARDED_GET: dict[str, tuple[int, str]] = {
         200,
         "pre-login theme and onboarding flags the SPA needs to render the login",
     ),
+    "/.well-known/oauth-authorization-server": (
+        200,
+        "local authorization's metadata (RFC 8414): endpoint addresses and scope names, "
+        "served only to a direct loopback request",
+    ),
+    "/oauth/authorize": (
+        400,
+        "local authorization: an app with no credential yet asks for a grant; it records "
+        "a request the owner must answer and grants nothing, and no parameters is a 400",
+    ),
     "/api/connections/oauth/callback": (
         400,
         "a vendor's OAuth redirect back to a pod's DCR sign-in; admitted only by a pending "
@@ -109,6 +119,9 @@ UNAVAILABLE_ON_A_FRESH_HOME: dict[str, str] = {
     "/api/capability/mcp/registry": "capability manager not available",
     "/api/capability/plugins": "capability manager not available",
     "/api/capability/skills": "capability manager not available",
+    # A fresh home has added no Kiro Space store, so the listings read for one
+    # answers 503 market_registry_unavailable, as every store route does then.
+    "/api/apps/market/listings": "this Kiro Space store is not added",
 }
 
 #: Substituted for every ``{token}`` in a parameterized path. Chosen so it
@@ -129,6 +142,16 @@ CONSTRAINED_STAND_IN: dict[str, str] = {
 #: Mutating or parameterized routes that answer something other than 401/403
 #: WITHOUT credentials: ``(METHOD, canonical path) -> (status, reason)``.
 UNGUARDED_OTHER: dict[tuple[str, str], tuple[int, str]] = {
+    ("POST", "/oauth/token"): (
+        400,
+        "local authorization: redeems a one-time code with the asking app's PKCE verifier, "
+        "or a refresh token; neither is a 400",
+    ),
+    ("POST", "/oauth/revoke"): (
+        400,
+        "local authorization (RFC 7009): an app gives up the grant of a token it holds; "
+        "no token is a 400",
+    ),
     ("GET", "/{name}"): (
         200,
         "PWA asset route (manifest, service worker, icons), fetched by the browser before "

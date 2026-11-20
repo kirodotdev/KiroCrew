@@ -314,8 +314,12 @@ def _install_mate_worker_agent() -> None:
     The agent a crewmate's worker sessions run on: the session its chat opens
     with ``session_create`` to hand work off. Derived from the default template
     like the mate conductor above, so its base prompt, tools and ``mcpServers``
-    are the ones a crewmate's hand-off session ran on before it had a worker of
-    its own. This file is the worker's whole SOURCE BASE; a crewmate's own
+    are the template's. The ``~/.kiro/crew/mcp.json`` store is not merged in, so
+    a server added on the MCP Servers page does not reach a Bot's worker base; a
+    Bot's worker gets it only when it is added to that Bot
+    (``docs/architecture/agent-mcp-and-skill-reach.md``, "Mate worker", and
+    ``docs/decisions/*-conductors-stay-simple-and-new-abilities-go-to-workers.md``).
+    This file is the worker's whole SOURCE BASE; a crewmate's own
     additions (``~/.kiro/mates/agents/<id>.json``) are layered on at projection
     time by :mod:`kiro_crew.mate_worker`, never written here, so one file serves
     every crewmate.
@@ -448,9 +452,9 @@ def _note_injection_ignored(name: str, path: Path) -> None:
         return
     _ignored_injections_logged.add(name)
     agent_mod.logger.info(
-        "Knowledge agent spec %s carries an entry another tool injects into every agent "
+        "Agent spec %s carries an entry another tool injects into every agent "
         "spec (registered filter %r); leaving the file as it is and launching the "
-        "knowledge worker without it",
+        "agent without it",
         path,
         name,
     )
@@ -612,6 +616,37 @@ def knowledge_view_without_registered_injection(
     return expected
 
 
+def lite_view_without_registered_injection(spec: dict[str, Any]) -> dict[str, Any]:
+    """The ``kirocrew-lite`` spec a KAS session is sent, given the one read from disk.
+
+    The same rule as :func:`knowledge_view_without_registered_injection`: when the only
+    change to the file is an injection a registered filter removes exactly
+    (:func:`kiro_crew.agent_spec_injections.only_registered_injection`), the governed
+    template, never the filter's output, so the spec sent mounts nothing. Every other
+    spec is returned unchanged, and the file is never rewritten here. Used only where
+    Kiro Crew sends the spec itself (KAS); kiro-cli loads the file on disk, so there
+    nothing is tolerated. Blocking.
+    """
+    if not agent_spec_injections.registered_spec_injection_filters():
+        return spec
+    try:
+        expected = _lite_agent_config()
+        auto_approve.govern_spec(
+            expected,
+            agent_filename=_LITE_AGENT_FILENAME,
+            source="lite_view_without_registered_injection",
+            kas_policy="none",
+        )
+    except Exception:
+        agent_mod.logger.debug("lite template unavailable for the view", exc_info=True)
+        return spec
+    injection = agent_spec_injections.only_registered_injection(spec, expected)
+    if injection is None:
+        return spec
+    _note_injection_ignored(injection, agent_mod.kiro_agents_dir_path() / _LITE_AGENT_FILENAME)
+    return expected
+
+
 def _without_guide_server(config: dict) -> dict:
     """*config* with the guide and member platform servers, refs and grants removed.
 
@@ -763,7 +798,7 @@ def _mount_work_ledger(config: dict, grants: tuple[str, ...]) -> None:
     (owner decision in docs/decisions, case N2): a switch-off of ``kirocrew-work``
     on the default template (its entry's ``disabled`` or ``disabledTools``, an
     ``excludedTools`` entry naming it) is not carried over, as
-    :func:`_mount_team_lead_dispatch` and the Ultra Mode worker do not carry it.
+    :func:`_mount_team_lead_dispatch` and the conductor-mode worker do not carry it.
     """
     servers = config.get("mcpServers")
     if not isinstance(servers, dict):

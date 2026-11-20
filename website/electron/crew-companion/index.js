@@ -15,6 +15,7 @@
 
 const { ipcMain } = require("electron");
 const http = require("http");
+const { hostOwnsAppWindows } = require("../app-window-host-rules");
 const { sessionCookieHeader } = require("../mochi-session-token");
 const {
   hostsDashboard: sharedHostsDashboard,
@@ -234,6 +235,10 @@ function probeEnabled(auth) {
           if (typeof row.origin === "string" && row.origin !== "builtin") {
             return resolve("released");
           }
+          // A record the desktop window host serves (its manifest declares a
+          // `desktop` block) is drawn by the host, on or off: these windows
+          // stand down so the two never show at once.
+          if (hostOwnsAppWindows(rows, APP_NAME) === true) return resolve("released");
           resolve(row.enabled ? "enabled" : "disabled");
         } catch {
           resolve("unknown");

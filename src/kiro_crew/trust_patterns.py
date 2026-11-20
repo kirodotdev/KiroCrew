@@ -152,7 +152,22 @@ def path_trust_unresolved(path: str) -> bool:
     granted path makes the call ask again rather than write where the link points.
     """
     try:
-        return os.path.realpath(path) != path
+        real = os.path.realpath(path)
+        if real == path:
+            return False
+        # normcase folds letter case on Windows only (identity elsewhere), and
+        # realpath answers the case stored on disk, so a different spelling of
+        # a regular file is not a link. Case folding alone would also pass a
+        # link to a sibling whose name differs only in case (a case-sensitive
+        # NTFS directory), so the path and its ancestors are checked for a link.
+        if os.path.normcase(real) != os.path.normcase(path):
+            return True
+        from kiro_crew import platform_compat
+
+        return (
+            platform_compat.is_link_or_junction(path)
+            or platform_compat.first_linked_ancestor(path) is not None
+        )
     except (OSError, ValueError):
         return True
 
@@ -237,12 +252,15 @@ def _tool_matches(pattern: str, tool_name: str) -> bool:
     return fnmatch.fnmatch(tool_name.lower(), pattern.lower())
 
 
-def _mask_quoted_separators(text: str, *, mask_escaped: bool = False) -> tuple[str, dict[str, str]]:
+def _mask_quoted_separators(
+    text: str, *, mask_escaped: bool = False, backslash_escapes: bool = True
+) -> tuple[str, dict[str, str]]:
     """Mask separators inside quotes before command segmentation.
 
     An escaped ``>`` is masked too: it is text for the splitter as well, so the
     redirect mask never reads it as the start of ``>&``, and the ``&`` after it
-    separates commands.
+    separates commands. ``backslash_escapes=False`` reads a backslash as
+    PowerShell does: as plain text.
     """
     out: list[str] = []
     restore: dict[str, str] = {}
@@ -260,7 +278,7 @@ def _mask_quoted_separators(text: str, *, mask_escaped: bool = False) -> tuple[s
             else:
                 out.append(ch)
             continue
-        if ch == "\\" and quote != "'":
+        if backslash_escapes and ch == "\\" and quote != "'":
             escaped = True
             out.append(ch)
             continue
@@ -293,6 +311,15 @@ def split_command_segments(
     if _COMMAND_SUBSTITUTION_RE.search(normalized) or "\x00" in normalized:
         return None
     quote_masked, separator_restore = _mask_quoted_separators(normalized, mask_escaped=mask_escaped)
+    from kiro_crew import platform_compat
+
+    # On Windows the harness picks the shell: PowerShell (kiro-cli), where a
+    # backslash is plain text, or bash (Claude Code's Bash tool). Segment only a
+    # command both read the same way.
+    if platform_compat.IS_WINDOWS and quote_masked != (
+        _mask_quoted_separators(normalized, backslash_escapes=False)[0]
+    ):
+        return None
     redirects: list[str] = []
 
     def _mask_redirect(match: re.Match[str]) -> str:
@@ -382,8 +409,8 @@ def _literal_gt_offsets(command: str) -> frozenset[int]:
     single quotes, is part of a word, not a redirect operator; the splitter
     reads an escaped ``>`` the same way (:func:`_mask_quoted_separators`). The
     set is empty, so every ``>`` counts, when a quote is left open, when a
-    construct of :data:`_UNMODELLED_QUOTING` appears, and on Windows, where the
-    shell is PowerShell and a backslash escapes nothing.
+    construct of :data:`_UNMODELLED_QUOTING` appears, and on Windows, where
+    PowerShell (kiro-cli's shell) reads a backslash as plain text.
     """
     from kiro_crew import platform_compat
 

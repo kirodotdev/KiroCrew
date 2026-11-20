@@ -234,6 +234,7 @@ _FLOOR_PARTS = (
     "conftest_floor_determinism",
     "conftest_floor_reporting",
     "conftest_floor_git",
+    "conftest_floor_read_budget",
 )
 
 
@@ -362,6 +363,7 @@ from conftest_floor_restores import (  # noqa: E402,F401 -- bound for pytest and
     _EXECUTOR_JOIN_SECS,
     _TELEMETRY_CONSENT_THREAD,
     _cancel_session_tree_checkpoints,
+    _close_skills_loaders_the_test_opened,
     _drain_windows_proactor_finalizers,
     _join_install_receipt_workers,
     _join_node_compile_prewarm,
@@ -370,6 +372,7 @@ from conftest_floor_restores import (  # noqa: E402,F401 -- bound for pytest and
     _live_telemetry_consent_workers,
     _no_leaked_embed_evictor,
     _no_leaked_telemetry_exporter,
+    _record_skill_search_indexes,
     _restore_boot_wired_globals,
     _restore_hooks_integration_globals,
     _restore_log_queue_listener,
@@ -407,6 +410,7 @@ from conftest_floor_services import (  # noqa: E402,F401 -- bound for pytest and
     _SERVICE_MANAGERS,
     _block_host_service_mutation,
     _fail_on_refused_real_reclaim_write,
+    _no_engine_install_at_gateway_start,
     _no_real_cgroup_reclaim_write,
     _no_systemd_user_session,
     _refusal_reason,
@@ -432,6 +436,17 @@ from conftest_floor_tmp import (  # noqa: E402,F401 -- bound for pytest and for 
 # Defined by conftest_floor_tmp only in per-test mode.
 if _TMP_PER_TEST:
     from conftest_floor_tmp import _isolate_tempfile_base_per_test  # noqa: E402,F401
+
+# The crew-log read-budget check, and its fixture only when the switch is on.
+from conftest_floor_read_budget import (  # noqa: E402,F401 -- bound for pytest and for tests
+    _READ_BUDGET_ENV,
+    _READ_BUDGET_RAISE,
+    KNOWN_OVER_BUDGET_SITES,
+    check_read_budget,
+)
+
+if _READ_BUDGET_RAISE:
+    from conftest_floor_read_budget import _crew_log_read_budget_check  # noqa: E402,F401
 
 
 @pytest.fixture(autouse=True)

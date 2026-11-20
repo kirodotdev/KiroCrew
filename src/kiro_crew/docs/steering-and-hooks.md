@@ -29,7 +29,7 @@ retype every conversation.
 Two different mechanisms put them there. kiro-cli loads both roots itself: the
 global one for every session it starts, and the workspace one because the
 session subprocess runs with the chat slot's project directory as its working
-directory. On the Claude Code and Codex backends, which do not read an agent
+directory. On the Claude Code, Codex, OpenCode and Pi backends, which do not read an agent
 spec's `resources` array, the gateway loads them explicitly —
 `steering_target_admissible` and `_load_steering_resources` in
 `src/kiro_crew/context_assembly/agent_spec.py` anchor each `file://` entry the
@@ -60,8 +60,12 @@ resolvable project the Steering files tab offers only the global root, and
 creating a workspace document is refused with `steering_workspace_unavailable`.
 
 The listing is bounded: at most 500 files, 256 KiB per document. Within the
-context Kiro Crew assembles, `_STEERING_CAP` gives steering resources 10% of
-the budget base.
+context Kiro Crew assembles, `_STEERING_CAP` bounds the folder steering section
+with a fixed, window-independent allowance rather than a share of the budget
+base: every document in it is an every-session rule, and on a harness that does
+not load `.kiro/steering` itself that section is the only path the global and
+project trees have to the model. Past the allowance the section still names
+what it cut or left out.
 
 ### What a document declares
 
@@ -89,7 +93,7 @@ Endpoints are plural nouns. Errors carry a stable `code` field.
 
 **On kiro-cli, Kiro Crew reports and edits the declaration; it does not decide
 delivery from it.** The two loads Kiro Crew runs itself, folder steering and the
-Claude Code and Codex global-root load, apply one rule
+Claude Code, Codex, OpenCode and Pi global-root load, apply one rule
 (`every_session_body` in `src/kiro_crew/folder_steering.py`): a document
 declaring `manual`, `auto` or `fileMatch` is withheld, and the front matter is
 stripped from every document they deliver. What a mode causes on kiro-cli is the
@@ -161,7 +165,7 @@ tool call before it runs, or block it outright.
 | `PreToolUse` | before a tool runs | allows the tool |
 | `PostToolUse` | after a tool ran | nothing |
 | `Stop` | the turn ends | usually nothing — but see the continuation contract below |
-| `SessionLaneChanged` | a dashboard user moves a session between board lanes — an agent's move fires nothing | nothing |
+| `SessionLaneChanged` | a dashboard user moves a session between board lanes, or starts one in a folder whose tags include a lane — an agent's move fires nothing | nothing |
 
 A spawned sub-agent fires `AgentSpawn` (on a new session) and `UserPromptSubmit`
 (with the task its parent wrote) before its prompt is sent, and their exit-0
@@ -387,7 +391,10 @@ A hook's fields:
 **A tool matcher and a message matcher are matched differently.** On
 `PreToolUse` and `PostToolUse` the matcher is compared against the tool name with
 a fixed glob-style vocabulary — an exact name, `prefix*`, `*suffix`,
-`*contains*`, or `*` for everything — and `matcher_mode` is not consulted at all.
+`*contains*`, or `*` for everything, with `|` between plain tool names
+(`fs_write|execute_bash` meets either tool, and the whole text is still one
+pattern too, so the shell command `ls|wc` meets `ls|wc`; a matcher holding a glob
+character or a space is not split) — and `matcher_mode` is not consulted at all.
 The form knows this and hides the mode control for those two events. On
 `UserPromptSubmit`, `AgentSpawn` and `Stop` the matcher runs against the message
 or the final assistant text, and on `SessionLaneChanged` against the lane tokens
@@ -400,6 +407,11 @@ compares the whole string: write `*added:<id>;*` to catch a session entering tha
 lane, `*removed:<id>;*` to catch it leaving, and `*:<id>;*` for either. Keep both
 the leading `:` and the trailing `;` — without them a selector also matches a lane
 whose id merely contains yours, and runs your hook on somebody else's session.
+
+The form helps with both halves. With `SessionLaneChanged` in `glob` mode it states
+the grammar under the matcher, and its **Insert a lane** menu lists the status tags
+(the lanes) by tag name and fills in `*added:<id>;*` with that tag's id, which no other
+screen shows.
 
 ### Creating, testing, enabling and deleting one
 
@@ -570,7 +582,7 @@ with the results.
 | | Chat lifecycle hook | `register_hook` |
 |---|---|---|
 | Created by | you, on the Hooks tab | an agent, mid-turn |
-| Fires on | one of five session events | an inbound HTTP POST |
+| Fires on | one of six session events | an inbound HTTP POST |
 | Runs | a shell command you wrote | a fresh agent turn |
 | Lives in | the `hooks` list in `hooks.json` | a top-level entry in the same file |
 

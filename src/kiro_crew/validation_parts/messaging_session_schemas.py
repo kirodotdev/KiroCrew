@@ -11,6 +11,7 @@ module never imports that facade.
 from __future__ import annotations
 
 import re
+import string
 from typing import Any
 
 from kiro_crew.config.sections import AUTOCOMPACT_PCT_MAX, AUTOCOMPACT_PCT_MIN
@@ -340,6 +341,18 @@ SEARCH_CHAT_HISTORY_SCHEMA = ToolSchema(
     ],
 )
 
+#: The characters a transcript tool row's ``meta.tool_call_id`` (``toolu_...``) uses.
+_TOOL_CALL_ID_CHARS = frozenset(string.ascii_letters + string.digits + "_.:-")
+
+
+def _validate_get_chat_session(args: dict[str, Any]) -> None:
+    tool_call_id = args.get("tool_call_id")
+    if tool_call_id is None:
+        return
+    if not tool_call_id or any(ch not in _TOOL_CALL_ID_CHARS for ch in tool_call_id):
+        raise ValidationError("tool_call_id", "must be letters, digits, '_', '.', ':' or '-'")
+
+
 GET_CHAT_SESSION_SCHEMA = ToolSchema(
     tool_name="get_chat_session",
     fields=[
@@ -347,7 +360,9 @@ GET_CHAT_SESSION_SCHEMA = ToolSchema(
         FieldSpec("max_messages", int, required=False, min_val=1, max_val=200, default=50),
         FieldSpec("all_workspaces", bool, required=False, default=False),
         FieldSpec("crew", str, required=False, max_len=MAX_SHORT_STRING, pattern=_CREW_RE),
+        FieldSpec("tool_call_id", str, required=False, max_len=MAX_SHORT_STRING),
     ],
+    custom_validator=_validate_get_chat_session,
 )
 
 LIST_SESSIONS_SCHEMA = ToolSchema(
@@ -680,7 +695,7 @@ SESSION_STATUS_SCHEMA = ToolSchema(
 
 CREW_LIST_SCHEMA = ToolSchema(
     tool_name="crew_list",
-    fields=[],
+    fields=[FieldSpec("logins", bool)],
 )
 
 SESSION_ADOPT_SCHEMA = ToolSchema(
@@ -750,5 +765,13 @@ SESSION_QUEUE_SCHEMA = ToolSchema(
             max_len=QUEUE_ENTRY_ID_MAX_CHARS,
         ),
         FieldSpec("position", int, required=False, min_val=0, max_val=10_000),
+    ],
+)
+
+SESSION_RUN_QUEUED_SCHEMA = ToolSchema(
+    tool_name="session_run_queued",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("queue_id", str, required=True, max_len=QUEUE_ENTRY_ID_MAX_CHARS),
     ],
 )

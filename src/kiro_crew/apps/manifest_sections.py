@@ -17,12 +17,15 @@ import logging
 import re
 import sys
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from kiro_crew.apps.app_hosts import frame_origin_refusal
 from kiro_crew.apps.desktop_capabilities import declared_capabilities
 from kiro_crew.apps.manifest_names import KEBAB_RE
 from kiro_crew.apps.user_session_reach import declared_verbs
+
+if TYPE_CHECKING:
+    from kiro_crew.apps.chat_launch import ChatLaunch
 
 logger = logging.getLogger(__name__)
 
@@ -668,6 +671,11 @@ class Permissions:
     #: session lists (``apps/hidden_sessions.py``). Shown on the app's detail page.
     #: Hides a list row only: approvals and questions still reach the owner.
     hiddenSessions: bool = False  # noqa: N815
+    #: The one shape of the person's chat its page may create or reopen through
+    #: ``POST /api/chat/slots`` without declaring that path: a key prefix, the
+    #: agents, an optional folder and the memory modes (``apps/chat_launch.py``).
+    #: Shown at the trust prompt. ``None`` when absent or malformed.
+    chatLaunch: ChatLaunch | None = None  # noqa: N815
     #: May hold a bounded, audited auto-approve grant on the app's OWN worker
     #: slots through ``ctx.auto_approve`` (``apps/worker_auto_approve.py``).
     #: Shown at the trust prompt and held back on a widening update like a new
@@ -683,6 +691,18 @@ class Permissions:
     #: ``apps/desktop_capabilities.py``). Empty = none, which is the default. Shown at
     #: the trust prompt and held back on a widening update like a new API path.
     desktopCapabilities: list[str] = field(default_factory=list)  # noqa: N815
+    #: Pages the app's OWN agent sessions may drive the ``browser`` tool on without a
+    #: per-step approval: ``https://<host>`` plus a path pattern each
+    #: (``apps/browser_sites.py``). Never approved by an install: the owner approves
+    #: them on the app's page. Validated by ``AppManifest.validate``.
+    browserSites: list[str] = field(default_factory=list)  # noqa: N815
+    #: ``browserSites`` present but not a list of strings. Not serialized.
+    bad_browser_sites: bool = False
+    #: The verbs (``"view"``, ``"read"``, ``"act"``) the app may use on the browser
+    #: tabs of its own slots through ``ctx.browser`` (``apps/browser_sdk.py``). Empty =
+    #: none, which is the default. Never approved by an install: the owner approves
+    #: each verb on the app's page. Behind the ``app_browser_sdk`` feature preview.
+    browser: list[str] = field(default_factory=list)
     #: Takes inbound webhook deliveries on its own routes, governed as the
     #: ``webhooks`` source named by the app's name (``webhook_sources``) and asked
     #: through ``ctx.webhook_source``. Reaches nothing new: it lets the policy
@@ -730,12 +750,18 @@ class Permissions:
             d["chatSlots"] = True
         if self.hiddenSessions:
             d["hiddenSessions"] = True
+        if self.chatLaunch is not None:
+            d["chatLaunch"] = self.chatLaunch.to_dict()
         if self.workerAutoApprove:
             d["workerAutoApprove"] = True
         if self.reachableByUserSessions:
             d["reachableByUserSessions"] = self.reachableByUserSessions
         if self.desktopCapabilities:
             d["desktopCapabilities"] = self.desktopCapabilities
+        if self.browserSites:
+            d["browserSites"] = list(self.browserSites)
+        if self.browser:
+            d["browser"] = list(self.browser)
         if self.webhookSource:
             d["webhookSource"] = True
         if self.bots:
@@ -757,6 +783,16 @@ class Permissions:
         # `admission.require_signature`): there, an unexpected value must keep the
         # restriction ON. Same defect class, mirrored fix — the safe default
         # follows what the field grants or withholds, not the field's type.
+        #
+        # The chat launch parser is imported here, not at the top: every MCP server
+        # imports this module before it lists its tools but parses no manifest there,
+        # and `test_mcp_listing_import_budget.py` caps the modules that listing loads.
+        # The browser verb reader is deferred for the same reason.
+        from kiro_crew.apps.browser_sdk import declared_verbs as browser_verbs
+        from kiro_crew.apps.chat_launch import parse_chat_launch
+
+        raw_sites = data.get("browserSites", [])
+        sites_ok = isinstance(raw_sites, list) and all(isinstance(e, str) for e in raw_sites)
         return cls(
             api=_granted_list(data.get("api")),
             events=_granted_list(data.get("events")),
@@ -773,9 +809,13 @@ class Permissions:
             agentTurns=data.get("agentTurns") is True,  # noqa: N815
             chatSlots=data.get("chatSlots") is True,  # noqa: N815
             hiddenSessions=data.get("hiddenSessions") is True,  # noqa: N815
+            chatLaunch=parse_chat_launch(data.get("chatLaunch")),  # noqa: N815
             workerAutoApprove=data.get("workerAutoApprove") is True,  # noqa: N815
             reachableByUserSessions=declared_verbs(data.get("reachableByUserSessions")),
             desktopCapabilities=declared_capabilities(data.get("desktopCapabilities")),
+            browserSites=list(raw_sites) if sites_ok else [],  # noqa: N815
+            bad_browser_sites=not sites_ok,
+            browser=browser_verbs(data.get("browser")),
             webhookSource=data.get("webhookSource") is True,  # noqa: N815
             bots=_bot_scopes(data.get("bots")),
             exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815

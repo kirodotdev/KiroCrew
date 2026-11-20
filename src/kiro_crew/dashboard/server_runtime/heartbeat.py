@@ -236,7 +236,7 @@ async def _report_prior_crash_dump(state: DashboardState) -> None:
             except OSError:
                 _fired = "unknown"
             logger.warning(
-                "⚠️  Prior loop-stall crash dump found: %s (fired %s, %.1f hours ago%s). "
+                "Warning: Prior loop-stall crash dump found: %s (fired %s, %.1f hours ago%s). "
                 "Run `kirocrew doctor` for details.",
                 _prior_dump,
                 _fired,
@@ -273,9 +273,9 @@ async def _report_prior_crash_dump(state: DashboardState) -> None:
                 state.notify(
                     "heartbeat",
                     (
-                        "⚠️ Gateway restarted after a host-wide pause"
+                        "Warning: Gateway restarted after a host-wide pause"
                         if _host_pause is not None
-                        else "⚠️ Gateway restarted after an event-loop stall"
+                        else "Warning: Gateway restarted after an event-loop stall"
                     ),
                     (
                         f"{_what} "

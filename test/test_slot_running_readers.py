@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import source_corpus
+
 # Busy-check helpers, and the slot state each one reads on its caller's behalf.
 #
 # A handler that delegates its refusal to a helper still consumes that state, so the
@@ -24,9 +26,13 @@ _BUSY_HELPERS: dict[str, frozenset[str]] = {
     # slot's task, minus the caller's own turn, since the turn-path consume runs
     # inside that task.
     "_a_foreign_turn_owns_the_slot": frozenset({"running"}),
+    # Session-owned activity reads both turn execution and admission reservation.
+    "session_activity": frozenset({"running", "turn_running"}),
+    "session_activity_for_key": frozenset({"running", "turn_running"}),
 }
 
 
+@source_corpus.untraced()
 def test_running_guarded_task_loads_null_check_task() -> None:
     """Every ``x.task`` read under an ``x.running`` guard also checks it is set."""
     dashboard = Path(__file__).parents[1] / "src" / "kiro_crew" / "dashboard"
@@ -63,6 +69,7 @@ def test_running_guarded_task_loads_null_check_task() -> None:
     assert {path for path, _line in guarded_task_loads} == {"slot_lifecycle.py"}
 
 
+@source_corpus.untraced()
 def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
     """Every slot reader declares whether it needs reservation or execution state."""
     dashboard = Path(__file__).parents[1] / "src" / "kiro_crew" / "dashboard"
@@ -158,6 +165,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The agent route's transaction; the in-turn /agent command shares it.
                 ("chat_api/agent_switch.py", "switch_slot_agent"),
                 ("chat_api/turn_stop.py", "api_chat_slot_interrupt"),
+                # The idle Run now dispatch split out of the route above, shared
+                # with session_run_queued, re-reading the same state under the lock.
+                ("chat_api/turn_stop.py", "_dispatch_run_now_idle"),
                 # "Run this next" starts the chosen restored card itself only on
                 # an unreserved slot; a reserved one drains it at the turn's end.
                 ("chat_api/turn_stop.py", "_start_chosen_restored_card"),
@@ -243,24 +253,18 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("handlers/slot_question.py", "api_chat_slot_question_steer"),
                 ("handlers/members_thread_turns.py", "api_member_fresh_start"),
                 ("handlers/members_thread.py", "api_member_thread"),
-                ("handlers/members_roster.py", "api_members"),
+                ("handlers/members_roster.py", "_build_roster"),
                 # The session-side delivery entry point: idle queues and drains,
                 # a reserved slot gets the queue or a steer.
                 ("session_deliver.py", "deliver"),
                 # A peer's steer needs a running turn to cut into.
                 ("session_deliver.py", "_deliver_peer"),
                 ("session_control_parts/session_create.py", "create_session"),
-                # The roster verb. Reservation state, like `read_messages` beside
-                # it and for the same reason: it reports whether a session is
-                # working so a patrol knows whether to wait.
-                ("session_control_parts/session_status.py", "created_session_status"),
-                ("session_control_parts/session_status.py", "read_messages"),
-                # The summary verb reports liveness beside the digest for the
-                # same reason `read_messages` does.
-                ("session_control_parts/session_status.py", "read_summary"),
                 # The queue verb reports liveness beside the listing, for the
                 # same reason.
                 ("session_control_queue.py", "queue_target"),
+                # Picks the card's running or idle Run now path, as the route does.
+                ("session_control_run_queued.py", "run_queued_target"),
                 ("session_control_parts/session_messaging.py", "send_to_target"),
                 # Pre-pick idle check via _switch_target_busy (idle-only tool contract).
                 ("session_control_parts/model_switch.py", "set_model_target"),
@@ -328,6 +332,21 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         **{
             site: both
             for site in {
+                # Status readers share the activity snapshot: admission and
+                # execution both keep a session working, and its `turn` kind
+                # reports the model-turn fact in their response.
+                ("session_control_parts/session_status.py", "created_session_status"),
+                ("session_control_parts/session_status.py", "read_messages"),
+                ("session_control_parts/session_status.py", "read_summary"),
+                # The same snapshot supplies the worker list, board and keyed
+                # work-ledger probes. Even a turn-only answer reads both facts
+                # while constructing that shared snapshot.
+                ("handlers/crew_workers.py", "api_crew_workers"),
+                ("handlers/work_ledger_board.py", "_build_board"),
+                ("handlers/work_ledger_read.py", "_slot_running"),
+                ("handlers/work_ledger_read.py", "_slot_pending"),
+                ("handlers/work_ledger_read.py", "_slot_turn_running"),
+                ("session_activity.py", "session_activity_for_key"),
                 # The side panel's steer into a Crew Mode worker: a RUNNING turn takes
                 # it as a steer, and only an unreserved slot has its queued text
                 # started now, the composer's own two questions.

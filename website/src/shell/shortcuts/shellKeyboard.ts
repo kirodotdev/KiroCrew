@@ -108,8 +108,8 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       requestAnimationFrame(() => queryComposerOrExpand(focusComposerElement))
     },
   })
-  const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
-  const { agents: installedAgents, defaultAgent } = useAgents(refreshTrigger)
+  const catalogRefreshTrigger = useAppSelector(s => s.dashboard.catalogRefreshTrigger)
+  const { agents: installedAgents, defaultAgent } = useAgents(catalogRefreshTrigger)
   const provider = useProvider()
   // The model a slot runs before it reports: its own pick, else what the composer resolved its crew
   // to -- the composer's own key (composerChips), app included, so the cache entry it wrote is read.

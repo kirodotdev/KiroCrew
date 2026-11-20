@@ -11,7 +11,7 @@ The server is defined in `src/kiro_crew/mcp_dashboard.py` and its `mcp_dashboard
 owner modules. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
-  `session_read_message`, `session_summary`, `session_queue`, `session_stop`, `session_end_wait`, `session_retry`,
+  `session_read_message`, `session_summary`, `session_queue`, `session_run_queued`, `session_stop`, `session_end_wait`, `session_retry`,
   `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`,
   `session_set_color`, `session_set_note`, `session_close`, `session_revive`, `session_history_list`,
   `session_broadcast`,
@@ -506,7 +506,45 @@ and mirrored sessions are refused.
 
 ### `crew_list`
 
-Takes no arguments. Advertised only while `work_ledger.remote_dispatch` is on, and open only to the owner's own conductor-mode chat, the same caller rules as `crew=` on the session tools. It lists every remote crew registered on this hub: its id and name, its connection state, its version and whether it matches this hub's major.minor, and, for a connected crew whose version matches, the crew's headroom snapshot (free memory and disk, load per CPU, posture), its own count of open hub workers (`open_workers`), the open bindings this hub holds on it (`bound_here`), and its agent and model names. It lists at most 32 crews and counts the rest. A crew that is not connected is listed but not read. A read that failed is named in `unread`; a slow model catalog costs only the agent and model names, never the version gate or the headroom. It reads what placement and the crew window's header already read; it writes nothing.
+Takes one optional argument, `logins` (boolean). Advertised only while `work_ledger.remote_dispatch` is on, and open only to the owner's own conductor-mode chat, the same caller rules as `crew=` on the session tools. It lists every remote crew registered on this hub: its id and name, its connection state, its version and whether it matches this hub's major.minor, and, for a connected crew whose version matches, the crew's headroom snapshot (free memory and disk, load per CPU, posture), its own count of open hub workers (`open_workers`), the open bindings this hub holds on it (`bound_here`), its tags (the operator's `work_ledger.remote_dispatch_tags`, the names `requires.tags` matches; a tag that is not 1-32 of `a-z0-9_-` with a letter is dropped), and its agent and model names. With `logins: true` it also shows each crew's login states, the ones `requires.logins` matches: `gh`, `glab` or `az`, each `valid`, `expired` or `unknown` (still checking); any other name or word is dropped, so no account or token is shown. Logins are opt-in because each crew runs its login checks first, waiting up to a few seconds; a plain call never waits on them. A crew too old to report logins shows `logins` in `unread`. It lists at most 32 crews and counts the rest. A crew that is not connected is listed but not read. A read that failed is named in `unread`; a slow model catalog costs only the agent and model names, never the version gate or the headroom. It reads what placement and the crew window's header already read; it writes nothing.
+
+### `session_run_queued`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key, or its exact title, of a session you manage |
+| `queue_id` | yes | Id of an entry you queued, from `session_queue`'s listing |
+
+`session_queue` reorders your waiting messages; `session_run_queued` runs one of
+them now. It is the queue card's "run now" button.
+
+- **Running target:** the current turn is stopped, as `session_stop` stops it,
+  and its work is discarded. Your entry goes to the front and runs when that turn
+  ends, even while the target's sub-agents are still out, and the rest of the
+  queue stays in its order behind it. A stop card appears in the target's
+  transcript. The reply says `stopping`, or `idle` when the target had no active
+  turn to cancel (your entry is at the front and runs when the turn ends).
+- **Idle target** (one held by attached sub-agents): your entry starts now and
+  nothing is stopped (`started`). While a person has a queued message open in its
+  editor, or a conversation reset is pending on the target, the call is refused
+  (`queue_held`) and your entry stays queued: try again shortly.
+- **Compacting target:** declined as the Stop button is. Nothing is stopped, the
+  reply says `compacting`, and you can call again once the compaction finishes.
+  If the compaction began after the call was accepted, your entry is already at
+  the front and stays there.
+
+The stop is the cooperative one and the call is safe to re-send: a repeat while
+the stop is still pending changes nothing and never escalates to a hard kill.
+
+Only your own entries qualify, by the same rule as `session_queue`'s `move`: a
+person's queued message, another session's, or a steer of yours that was put
+back in the queue is refused (`not_your_entry`), and so is any entry queued
+before a gateway restart. Unlike a `move`, which never passes a person's entry
+(`move_blocked`), this call puts your entry ahead of a person's waiting message:
+running it first is the point. On a running target, the entry also waits while a
+person has a queued message open in its editor or a conversation reset is
+pending, and runs once that ends. The target must be a session you manage (`not_creator`
+otherwise), and an old relay chat is refused (`relay_archive_read_only`).
 
 ### `session_adopt` and `session_release`
 
@@ -559,8 +597,8 @@ own.
 ### `session_handoff`
 
 Takes `target` and `to`. It makes `to` the session that MANAGES `target`: from then
-on `to` can send to, read, summarize, see and reorder the queue of, stop, close,
-adopt, release and hand on the
+on `to` can send to, read, summarize, see and reorder the queue of, run a queued
+message on, stop, close, adopt, release and hand on the
 target. With `agent.session_manager_chain` off (the default), a fenced session
 (see the `not_creator` row below) can no longer do those on a session it handed
 away; with it on, it keeps that reach while it still manages `to`. An agent in a person's own tab is not fenced for
@@ -1270,7 +1308,7 @@ retry.
 
 | Knob | Default | Effect |
 |---|---|---|
-| `agent.session_control` | `true` | The whole surface. Turn it off to withdraw the capability from every agent at once without editing a spec, except Bot DM sessions and the owner's own-tab Conductor, which keep driving workers they created unless `agent.member_dispatch` is also off |
+| `agent.session_control` | `true` | The whole surface. Turn it off to withdraw the capability from every agent at once without editing a spec, except Bot DM sessions and the owner's own-tab Conductor, which keep driving workers they created unless `agent.member_dispatch` is also off. Switch it in Settings > Developer > Feature Previews > Session control; a change applies on the next call, running sessions included |
 | `agent.session_manager_chain` | `false` | Let a session reach the whole line of sessions under it through `session_handoff`, and hand a closed manager's sessions up |
 | `agent.member_dispatch` | `true` | A Bot's DM session, and the Conductor in the owner's own dashboard tab, drive workers they created even when session control is off. Turn it off to put both back under the switch |
 | `agent.crew_panel` | `true` | A Bot publishes its own webview, shown in that member's drawer on the Crew page. Its own mount and its own switch, so withdrawing session control leaves the drawer alone and withdrawing the drawer leaves session control alone |

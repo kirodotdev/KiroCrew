@@ -1,5 +1,8 @@
 """The Slack App Home tab: ``_publish_home_tab`` builds and publishes its Block Kit view.
 
+``_home_tab_builtin_enabled`` reads ``slack.home_tab_builtin``: off, an open publishes
+nothing, so a Home view the owner published with the same bot stays.
+
 The view carries a status header, the MCP servers and skills (listed through
 ``_get_skills_loader``, a listing-only loader created on first use), the cron jobs, the
 recent sessions (collected off the event loop, one collection at a time through
@@ -28,7 +31,12 @@ from kiro_crew.sel import sel
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.slack.blocks import command_hint_block
 from kiro_crew.slack.events_slash import SLASH_REGISTRY
-from kiro_crew.slack.handler import is_allowed_user, is_owner, is_yolo_mode, slack_cfg
+from kiro_crew.slack.handler import (
+    is_allowed_user,
+    is_owner,
+    is_yolo_mode,
+    slack_cfg,
+)
 from kiro_crew.slack.sessions_view import (
     _HOME_TAB_SESSIONS_PER_KIND,
     _SESSION_KIND_DASHBOARD,
@@ -80,6 +88,11 @@ def _home_tab_collect_gate() -> asyncio.Semaphore:
     if _home_tab_collect_sem is None:
         _home_tab_collect_sem = asyncio.Semaphore(_HOME_TAB_COLLECT_CONCURRENCY)
     return _home_tab_collect_sem
+
+
+def _home_tab_builtin_enabled(orch: GatewayOrchestrator) -> bool:
+    """Whether an open publishes the built-in page, read from the live config each time."""
+    return slack_cfg(orch).slack.home_tab_builtin
 
 
 # ---------------------------------------------------------------------------

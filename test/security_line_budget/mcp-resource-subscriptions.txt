@@ -1,0 +1,4 @@
++2
+The `mcp-resource-subscriptions` leaf in `paths_lists` (`_CREW_SECRET_LEAVES`) and its
+one-line reason: the resource-subscription holder's records carry server-defined URIs
+and choose the session and server pairs restored at startup. No rule changed.

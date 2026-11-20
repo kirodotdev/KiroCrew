@@ -23,10 +23,10 @@ from kiro_crew.dashboard import websocket_hub as _ws_hub
 from kiro_crew.dashboard import ws_chunk_scope as _ws_chunk_scope
 from kiro_crew.dashboard import ws_slot_diff as _ws_slot_diff
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
-from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG, is_relay_teammate
 from kiro_crew.dashboard.origin import check_origin
 from kiro_crew.dashboard.skill_read_ahead import read_ahead as read_skills_ahead
 from kiro_crew.dashboard.slot_list_pass import shared_slot_pass
+from kiro_crew.dashboard.slot_read_state import read_state_of, valid_read_ts
 from kiro_crew.dashboard.slot_retention import note_foreground
 from kiro_crew.dashboard.state import (
     PERSISTED_SUBAGENT_REPLAY_KEEP,
@@ -58,6 +58,7 @@ from kiro_crew.dashboard.ws_event_scope import (
     persisted_precap_readings,
     persisted_replay_denial_reason,
     slots_envelope_extras,
+    strip_owner_only_status,
     visible_subagent_slot_keys,
 )
 from kiro_crew.dashboard.ws_heartbeat import LagTolerantWebSocketResponse
@@ -101,7 +102,7 @@ _WS_STATUS_INTERVAL = 5  # seconds between dashboard status pushes
 _ORPHANED_UNKNOWN = "Orphaned (unknown cause)"
 
 
-async def _send_browser_live_snapshot(ws: web.WebSocketResponse) -> None:
+async def _send_browser_live_snapshot(ws: web.WebSocketResponse, *, owner_reader: bool) -> None:
     """Send each chat's current ``browser_live`` state to a NEW owner socket.
 
     The hub publishes on change only, so without this a reloaded tab shows no
@@ -112,7 +113,11 @@ async def _send_browser_live_snapshot(ws: web.WebSocketResponse) -> None:
     from kiro_crew.browser_harness.live_hub import LIVE_EVENT, get_live_hub
 
     for data in get_live_hub().snapshot_events():
-        await ws.send_str(json.dumps({"type": LIVE_EVENT, "data": data}))
+        shown = _redaction_audience.for_socket(
+            ws, json.dumps({"type": LIVE_EVENT, "data": data}), owner=owner_reader
+        )
+        if shown is not None:
+            await ws.send_str(shown)
 
 
 async def _send_slot_projection_subscribed(ws: web.WebSocketResponse) -> None:
@@ -635,21 +640,20 @@ def _grant_auditee(ws: web.WebSocketResponse, ws_app: str) -> str:
 def _handle_slot_read(
     state: DashboardState, slot_key: object, read_ts: object = None, *, owner: bool
 ) -> bool:
-    """Relay a client's ``slot_read`` frame to every owner window.
+    """Store a client's ``slot_read`` and relay it to every owner window.
 
     A window sends this when the user reads a slot there (opens it, toggles
-    mark-as-read, or watches a message land in its visible active slot). The
-    gateway rebroadcasts it so every other window retires that slot's unread
-    bubble too. Pure relay — the server keeps no read-state: unread is a
-    frontend concept (Redux + localStorage per window) and stays one; this
-    only carries the gesture between windows sharing the gateway.
-
+    mark-as-read, or watches a message land in its visible active slot).
     ``read_ts`` is the read WATERMARK the sending window computed: the newest
     message timestamp it knew for the slot at the read. It is relayed opaquely
     (bounded string, no parsing); receivers keep any badge their window
     recorded for a newer message, so an in-flight relay cannot erase a
     message the reader had not seen. Absent or invalid, the frame relays
     without one and receivers apply their conservative default.
+
+    ``slot_read_state`` keeps the newest parseable time per slot (rows carry it as
+    ``last_read_ts``). Once it is on disk a ``slot_read`` with ``stored: true`` follows,
+    and only that echo lets the sender forget its kept read.
 
     Owner-only, mirroring ``_handle_slot_focused``: an app-scoped socket must
     not clear the user's badges, and ``broadcast_ws_owners`` keeps the echo
@@ -671,6 +675,14 @@ def _handle_slot_read(
     if isinstance(read_ts, str) and read_ts and len(read_ts) <= 64:
         payload["read_ts"] = read_ts
     state.broadcast_ws_owners("slot_read", payload)
+    reads = read_state_of(state)
+    if reads.advance(slot_key, read_ts) is not None and valid_read_ts(read_ts):
+        reads.after_persisted(
+            slot_key,
+            lambda ts: state.broadcast_ws_owners(
+                "slot_read", {"slot": slot_key, "read_ts": ts, "stored": True}
+            ),
+        )
     return True
 
 
@@ -787,6 +799,7 @@ async def _serve_ws(
         CHECK_STATUS_TTL_SECS,
         ensure_gitlab_hosts_loaded,
         gitlab_hosts_generation,
+        is_host_owner_dashboard_request,
         is_owner_dashboard_request,
         schedule_visibility_refresh,
     )
@@ -797,8 +810,14 @@ async def _serve_ws(
     )
 
     owner_request = is_owner_dashboard_request(request)
+    # A Shared Crew teammate's socket gets every owner frame, but reads redacted while
+    # the owner's switch is off: the owner's OFF covers what the owner alone sees.
+    owner_reader = is_host_owner_dashboard_request(request)
     ws = LagTolerantWebSocketResponse(heartbeat=30)
     await ws.prepare(request)
+    from kiro_crew.shared_crew.teammate_access import TEAMMATE_WS_FLAG
+
+    ws[TEAMMATE_WS_FLAG] = owner_request and not owner_reader
 
     # Warm the self-managed GitLab allowlist BEFORE the first serialization.
     # Slot source-link extraction is synchronous and cannot load it, so without
@@ -867,7 +886,6 @@ async def _serve_ws(
     # False and ``_send_ws_all`` keeps its deny-by-default behaviour.
     ws["_app"] = ws_app
     ws["_is_dashboard_user"] = request.get("is_dashboard_user", False)
-    ws[RELAY_TEAMMATE_WS_FLAG] = is_relay_teammate(request)
     # Shared Crew: the socket's trusted actor is the upgrade request's, as the
     # auth middleware published it. Frames never name a principal.
     from kiro_crew.shared_crew.identity import actor_of
@@ -1021,7 +1039,7 @@ async def _serve_ws(
             raise
         # A direct send, so not the hub's chokepoint: a socket that is not the owner's
         # reads the list redacted in full while the owner's redaction is off.
-        shown = _redaction_audience.for_socket(ws, snapshot_payload, owner=owner_request)
+        shown = _redaction_audience.for_socket(ws, snapshot_payload, owner=owner_reader)
         if shown is None:
             raise RuntimeError("the connect snapshot could not be redacted for this socket")
         snapshot_payload = shown
@@ -1058,7 +1076,7 @@ async def _serve_ws(
             except Exception:
                 logger.debug("members_subscribed baseline not sent", exc_info=True)
             try:
-                await _send_browser_live_snapshot(ws)
+                await _send_browser_live_snapshot(ws, owner_reader=owner_reader)
             except Exception:
                 logger.debug("browser_live snapshot not sent", exc_info=True)
         if is_dashboard_user:
@@ -1137,10 +1155,10 @@ async def _serve_ws(
                     # path names the operator's home directory. Strip them here
                     # rather than moving the whole frame behind a declaration,
                     # which would silently cut every existing app off from the
-                    # version signal. ``/api/status`` and the SSE stream run on
-                    # dashboard-user tokens and keep the full snapshot.
-                    for _owner_only in ("branch", "commit", "update_policy_file"):
-                        data.pop(_owner_only, None)
+                    # version signal. ``/api/status`` runs on dashboard-user
+                    # tokens and keeps the full snapshot; the SSE stream strips
+                    # the same fields for its app readers with this helper.
+                    strip_owner_only_status(data)
                 # Tier 0 admits every socket unconditionally, but the decision
                 # is still a grant per ``AUTOSDE.yaml`` -- this frame is sent
                 # directly rather than through the broadcast chokepoint, so

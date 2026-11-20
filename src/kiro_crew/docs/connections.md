@@ -40,7 +40,10 @@ is the same fact as the hidden row above.
 A hidden entry is not a missing feature. If a vendor you want is in the catalogue but
 has no card, you can still add its MCP endpoint by hand as an ordinary remote server
 — you give up the curated scopes, the revoke link and the **Sign in** control, and
-you keep the tools.
+you keep the tools. A vendor that admits clients by allowlist or waitlist (the last
+row above) is the exception on the Kiro Agent harness: until it admits Kiro, a row at
+its url reads **Sign-in unavailable**, unless its `oauth` block names a public client
+of your own.
 
 ## Adding your own MCP server
 
@@ -88,7 +91,10 @@ which reads exactly like a broken connection.
 Curated catalogue rows get a second route: a per-row **Sign in** control, and the
 provider's own card. Minting is deliberately fenced to catalogue providers, so a
 hand-added row — even one pointing at a vendor that *is* in the catalogue — is sent
-to chat instead. That is accurate routing, not a missing button.
+to chat instead. That is accurate routing, not a missing button. On the Kiro Agent
+harness, a row at the url of a vendor that admits clients by allowlist or waitlist
+reads **Sign-in unavailable** instead, unless its `oauth` block names a public client
+of your own (see [The vendor catalogue](#the-vendor-catalogue)).
 
 Two other ways to authorize a remote server:
 
@@ -496,7 +502,7 @@ env names only, never their values. A row's state is one of:
 |---|---|
 | **shared** | All new chats use one copy |
 | **direct** | Each chat starts its own copy. A row with Share on also reads **direct** while the switch at the top is off, when its env names a vault secret, or when it needs a setting each chat keeps |
-| **Can't share** | It has no stdio pipe, it hands out credentials, or its command cannot be approved here |
+| **Can't share** | It has no stdio pipe, it hands out credentials, or its command cannot be approved here, such as when too many agents start it with different settings (the row names the limit and the way back) |
 | **Paused · command changed** | Its command or settings changed since you approved it, so it runs inside each chat until you press **Approve update** |
 | **Paused · not approved yet** | It was added in a config file and never approved here; **Approve** shares it |
 

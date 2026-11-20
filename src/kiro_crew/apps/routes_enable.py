@@ -17,6 +17,8 @@ import importlib
 import json
 import logging
 import os
+import threading
+import time
 from typing import Any
 
 from aiohttp import web
@@ -53,6 +55,7 @@ from kiro_crew.apps.teardown import teardown_app_runtime
 from kiro_crew.config.loader import ConfigReadError, config_path, update_config_locked
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sandbox import (
+    app_backend_secret_mask_targets,
     cgroup_scope_argv,
     create_subprocess_limited,
     scrub_env,
@@ -494,6 +497,8 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         sel().log_api_access(
             caller="dashboard", operation="app_enable", outcome="completed", resources=name
         )
+        # Under the lock, so a disable that waits on it announces after this, never before.
+        _announce_app_state(request, name, enabled=True)
 
     # After the lock: a gateway-managed app's MCP servers are in the agent spec, or will be
     # once its backend's health watch writes an HTTP one, so end as an MCP page write does
@@ -636,6 +641,9 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         resp = result.to_dict()
         if warnings:
             resp["warnings"] = warnings
+        # Under the lock, so an enable that waits on it announces after this, never
+        # before: a late "off" would otherwise overwrite that "on" in every tab.
+        await _end_turned_off_app_views(request, name)
 
     # After the lock: the teardown removed an enabled, gateway-managed app's MCP servers
     # from the agent spec, so end as an MCP page write does and a chat already open
@@ -649,6 +657,61 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         except Exception:  # noqa: BLE001 - the disable has committed
             logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
     return web.json_response(resp)
+
+
+async def _end_turned_off_app_views(request: web.Request, name: str) -> None:
+    """Stop the live browser views of *name*'s slots and tell every open dashboard.
+
+    The ``app_state`` frame lets a tab that shows the app (or its view) re-read the
+    app list at once instead of on its next focus. Best effort: the disable has
+    committed, and every live-view route refuses an off app's slot anyway. The caller
+    holds ``app_lifecycle_lock(name)`` (see ``_announce_app_state``).
+    """
+    state = request.app.get("state")
+    try:
+        from kiro_crew.dashboard.handlers.browser_live import end_app_browser_views  # noqa: PLC0415
+
+        await end_app_browser_views(state, name)
+    except Exception:  # noqa: BLE001 - the disable has committed
+        logger.warning("Live browser views of %s did not end", name, exc_info=True)
+    _announce_app_state(request, name, enabled=False)
+
+
+#: This gateway process, for ``app_state`` frames (see ``_announce_app_state``).
+_APP_STATE_BOOT = os.urandom(16).hex()
+_APP_STATE_SEQ_LOCK = threading.Lock()
+_app_state_last_seq = 0
+
+
+def _next_app_state_seq() -> int:
+    """A strictly increasing ``seq``. ``monotonic_ns`` never goes back but can repeat:
+    on Windows (about 15 ms a tick) two frames can read the same value."""
+    global _app_state_last_seq
+    with _APP_STATE_SEQ_LOCK:
+        _app_state_last_seq = max(time.monotonic_ns(), _app_state_last_seq + 1)
+        return _app_state_last_seq
+
+
+def _announce_app_state(request: web.Request, name: str, *, enabled: bool) -> None:
+    """Tell every open dashboard that *name* was turned on or off (``app_state``).
+
+    An app page reads its app once, so without this a tab keeps showing an app that
+    another tab turned off. Callers hold ``app_lifecycle_lock(name)``, so frames of one
+    app go out in the order the changes committed. ``seq`` says that order to a tab
+    that gets them out of order anyway (a reconnect): it is strictly increasing
+    within one process (``_next_app_state_seq``). ``boot`` is drawn once per process,
+    so a tab takes any ``seq`` from a gateway that restarted (a pid can repeat, and
+    the clock can restart lower). Best effort: the change has committed.
+    """
+    state = request.app.get("state")
+    broadcast = getattr(state, "broadcast_ws", None) if state is not None else None
+    if broadcast is None:
+        return
+    frame = {"app": name, "enabled": enabled, "seq": _next_app_state_seq(), "boot": _APP_STATE_BOOT}
+    try:
+        broadcast("app_state", frame)
+    except Exception:  # noqa: BLE001 - best effort
+        logger.debug("app_state broadcast for %s failed", name, exc_info=True)
 
 
 async def handle_open_app(request: web.Request) -> web.Response:
@@ -746,7 +809,10 @@ async def handle_open_app(request: web.Request) -> web.Response:
     try:
         base_cmd = ["/bin/sh", "-c", open_cmd]
         sandboxed_cmd, _cleanup = await wrap_argv_async(
-            base_cmd, mode="standard", _prepare=wrap_argv
+            base_cmd,
+            mode="standard",
+            _prepare=wrap_argv,
+            extra_hidden_dirs=await asyncio.to_thread(app_backend_secret_mask_targets),
         )
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         # The manifest's own shell string runs here, and an installed app is

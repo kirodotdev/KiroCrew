@@ -29,7 +29,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
 
   // Agent Harness. fuzzyMatch is literal, so the spaced, hyphenated and joined
   // spellings of "log out" are separate entries.
-  'agent.kiro-sign-in': ['log out', 'logout', 'log-out', 'signout', 'sign-out', 'account', 'change account', 'another account', 'login', 'log in'],
+  'kiro-account.kiro-sign-in': ['log out', 'logout', 'log-out', 'signout', 'sign-out', 'account', 'change account', 'another account', 'login', 'log in', 'credits', 'balance', 'usage', 'plan'],
 
   // Voice
   'voice.enabled': ['tts', 'speak', 'read aloud', 'narrate', 'text-to-speech'],

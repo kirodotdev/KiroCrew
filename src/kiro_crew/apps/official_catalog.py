@@ -48,6 +48,10 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.apps.browser_sdk import GRANT_FAMILY as BROWSER_KEY
+from kiro_crew.apps.browser_sdk import declared_verbs as declared_browser_verbs
+from kiro_crew.apps.chat_launch import MANIFEST_KEY as CHAT_LAUNCH_KEY
+from kiro_crew.apps.chat_launch import parse_chat_launch
 from kiro_crew.apps.desktop_capabilities import GRANT_FAMILY as DESKTOP_CAPABILITIES_KEY
 from kiro_crew.apps.desktop_capabilities import declared_capabilities
 from kiro_crew.apps.manifest import KEBAB_RE, app_name_error
@@ -559,7 +563,9 @@ def _disclosed_permissions_manifest(entry: dict[str, Any]) -> dict[str, Any] | N
 
     ``memberThreads`` rides along only with ``sessionApproval``, the grant it scopes.
     ``reachableByUserSessions`` is a list of verbs and ``desktopCapabilities`` a list
-    of capabilities, each kept to the known ones. ``api`` is kept to its non-empty
+    of capabilities, each kept to the known ones; ``browser`` (``apps/browser_sdk.py``)
+    is a list of verbs too. ``chatLaunch`` is kept only as it
+    parses (``apps/chat_launch.py``), normalized. ``api`` is kept to its non-empty
     string entries, the ones the scope check can match.
     """
     permissions = entry.get("permissions")
@@ -572,6 +578,10 @@ def _disclosed_permissions_manifest(entry: dict[str, Any]) -> dict[str, Any] | N
         disclosed[USER_SESSION_REACH_KEY] = reach
     if desktop := declared_capabilities(permissions.get(DESKTOP_CAPABILITIES_KEY)):
         disclosed[DESKTOP_CAPABILITIES_KEY] = desktop
+    if browser := declared_browser_verbs(permissions.get(BROWSER_KEY)):
+        disclosed[BROWSER_KEY] = browser
+    if launch := parse_chat_launch(permissions.get(CHAT_LAUNCH_KEY)):
+        disclosed[CHAT_LAUNCH_KEY] = launch.to_dict()
     api = permissions.get("api")
     if isinstance(api, list) and (paths := [p for p in api if isinstance(p, str) and p.strip()]):
         disclosed["api"] = paths

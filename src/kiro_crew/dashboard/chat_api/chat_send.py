@@ -1183,6 +1183,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _crew_owns_hold = False
             if _crew_held:
                 _crew_owns_hold = hold_crew_steer(slot.key, message, _crew_held[0], _crew_held[1])
+            from kiro_crew.shared_crew.attribution import author_meta as _steer_author_meta
+            from kiro_crew.shared_crew.identity import actor_of as _steer_actor_of
+
             outcome = await steer_into_running_turn(
                 state,
                 slot,
@@ -1206,6 +1209,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                 decision_strip=_auto_strip,
                 attachments=user_meta,
                 banner=banner,
+                author=_steer_author_meta(_steer_actor_of(request)) if _person_send else None,
                 **_responsive_steer_kwargs,
             )
             if _crew_owns_hold and outcome not in (STEER_STEERED, STEER_REQUEUED):
@@ -1459,6 +1463,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _hold_push.setdefault("meta", {})["durable"] = False
         if _hold_knowledge:
             _hold_push.setdefault("meta", {}).update(_hold_knowledge)
+        from kiro_crew.dashboard import responsive_chat as _rc
+
+        _rc.mark_written_on_push(slot, qid, _hold_push)
         state.broadcast_ws("queue_push", _hold_push)
         if _teardown_hold:
             # Deduped, so this only matters when no decline armed one: the retry

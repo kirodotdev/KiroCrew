@@ -551,6 +551,10 @@ class TestSpawnFailureCannotLeaveAnUntrackedProcess:
         mock_proc.stderr = None
 
         with (
+            # subprocess_executor() is shared by every test on this xdist worker: one
+            # still holding all of its workers would keep this spawn past its bound.
+            ThreadPoolExecutor(max_workers=1) as pool,
+            patch.object(client_mod, "subprocess_executor", lambda: pool),
             patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
             patch.object(client_mod, "ensure_agent_materialized"),
             patch(
@@ -1403,6 +1407,8 @@ class TestRuntimeShieldSurvivesAFailedAppend:
             kill_process_tree_pinned=lambda pid, start, sig: (
                 (kill_tree(pid, sig) is None or True) if start == f"start-{pid}" else False
             ),
+            # A kill whose root exited inside the grace waits for the root's group.
+            pgroup_exists=lambda pgid: pgid in groups.values(),
             file_lock=platform_compat.file_lock,
             open_lock_file=platform_compat.open_lock_file,
         )

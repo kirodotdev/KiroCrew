@@ -3,8 +3,8 @@ title: Conductor folder scope — an agent opens sessions and folders only insid
 status: draft
 author: zezhexu
 created: 2026-10-22
-last-audited: 2026-10-22
-audited-at: 0be5bcd9ea
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: null
 implementation-prs: []
 tracking-issues: [22953]

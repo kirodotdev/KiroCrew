@@ -379,7 +379,9 @@ def available_templates() -> list[str]:
     in ``resolve_template``, so a linked directory is a coded refusal the operator
     sees on the templates route and on publish, never a silent fall-through to the
     shipped templates that would hide their override being ignored. Pinned by
-    ``test_a_linked_template_dir_is_a_coded_refusal_not_a_500``.
+    ``test_a_linked_template_dir_is_a_coded_refusal_not_a_500``. An entry linked
+    to a file outside its directory is not offered, because ``resolve_template``
+    would not serve it.
     """
     found: set[str] = set()
     for root in (shipped_templates_dir(), override_templates_dir()):
@@ -388,7 +390,14 @@ def available_templates() -> list[str]:
         except OSError:
             continue
         for entry in entries:
+            # ``is_file()`` first: it is False for a symlink loop, where
+            # ``resolve()`` raises ``RuntimeError`` on Python 3.12.
             if entry.suffix != ".html" or not entry.is_file():
+                continue
+            try:
+                if _contained(root, entry) is None:
+                    continue
+            except OSError:
                 continue
             if TEMPLATE_ID_RE.match(entry.stem):
                 found.add(entry.stem)
@@ -432,6 +441,16 @@ def template_for_crew(name: str) -> str:
     return DEFAULT_TEMPLATE_ID
 
 
+def _contained(root: Path, candidate: Path) -> Path | None:
+    """*candidate* resolved, or ``None`` when a link takes it outside *root*.
+
+    ``resolve_template`` and ``available_templates`` both apply it, so the two
+    agree on which links are followed.
+    """
+    resolved = candidate.resolve()
+    return resolved if resolved.is_relative_to(root.resolve()) else None
+
+
 def resolve_template(template_id: str) -> str:
     """Return the HTML for *template_id*.
 
@@ -451,8 +470,8 @@ def resolve_template(template_id: str) -> str:
             # The id is already pinned to a traversal-free pattern; this second
             # check catches a symlink inside the override directory pointing
             # somewhere else entirely.
-            resolved = candidate.resolve()
-            if not resolved.is_relative_to(root.resolve()):
+            resolved = _contained(root, candidate)
+            if resolved is None:
                 continue
             return resolved.read_text(encoding="utf-8")
         except (OSError, ValueError):

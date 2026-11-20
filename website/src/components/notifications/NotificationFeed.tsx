@@ -19,7 +19,7 @@ import { disintegrate } from '../../lib/disintegrate'
 import type { Notification } from '../../types'
 import {
   parseTs, dateGroup, KIND_META, DEFAULT_META, fmtTime, stripMd, notePriority, noteText, safeInternalUrl,
-  MAC_ACTION_BTN_CLASS, decisionFailedCopy, decidedClearFailedCopy,
+  MAC_ACTION_BTN_CLASS, decisionFailedCopy, decidedClearFailedCopy, noteActionLabel,
 } from './notifMeta'
 import NotificationPermissionHint from './NotificationPermissionHint'
 import NotificationCard, { CARD_RADIUS, type NotificationCardAction } from './NotificationCard'
@@ -663,7 +663,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 // (a non-string label would crash React).
                 const urlActions = (Array.isArray(n.actions) ? n.actions : [])
                   .filter(a => typeof a?.id === 'string' && typeof a?.label === 'string' && typeof a?.url === 'string')
-                  .map(a => ({ ...a, safeUrl: safeInternalUrl(a.url) }))
+                  .map(a => ({ ...a, label: noteActionLabel(n, a), safeUrl: safeInternalUrl(a.url) }))
                   .filter(a => a.safeUrl)
                 const approveLabel = i18nT('components.notifications.notificationFeed.approve')
                 const rejectLabel = i18nT('components.notifications.notificationFeed.reject')

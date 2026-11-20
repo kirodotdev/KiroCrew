@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -262,7 +263,7 @@ def test_the_projection_records_the_grants_and_relays_no_allow_rule() -> None:
         tools=["*"], allowedTools=["fs_read", "shell", "grep", "glob", "code", "web_fetch"]
     )
     out = kas_agents.to_client_custom_agent("a", spec, "p")
-    assert out[CREW_ANSWERED_BUILTINS_KEY] == ["code", "execute_bash", "fs_read", "glob", "grep"]
+    assert out[CREW_ANSWERED_BUILTINS_KEY] == ["execute_bash", "fs_read", "glob", "grep"]
     rules = out.get("permissions", {}).get("rules", [])
     assert not [r for r in rules if r["capability"] in ("shell", "fs_read", "fs_write")]
 
@@ -610,8 +611,42 @@ def test_crew_answered_builtins_reads_only_withheld_names() -> None:
     assert crew_answered_builtins(None) == frozenset()
     # kiro-cli's short spellings fold to the name a rule is written in.
     assert crew_answered_builtins(sorted(WITHHELD_FROM_AUTO_APPROVE)) == (
-        WITHHELD_FROM_AUTO_APPROVE - {"read", "write"}
+        WITHHELD_FROM_AUTO_APPROVE - {"read", "write", "code"}
     )
+
+
+def test_the_default_spec_leaves_every_kas_code_call_to_the_gate_tiers(tmp_path: Path) -> None:
+    """The default spec grants ``code``, but Crew never answers a KAS ``code`` call
+    as a whole: an LSP-backed operation starts the language server the workspace's
+    ``.kiro/settings/lsp.json`` names. It reaches the tiers it reaches on kiro-cli,
+    so a goto-definition asks and a tree-sitter lookup passes as a proven read."""
+    from kiro_crew.config.paths import config_package_dir
+
+    spec = json.loads((config_package_dir() / "defaults.json").read_text(encoding="utf-8"))
+    assert "code" in spec["allowedTools"]
+    assert "code" not in crew_answered_builtins(spec["allowedTools"])
+    out = kas_agents.to_client_custom_agent("a", {**spec, "prompt": "p"}, "p")
+    grants = frozenset(out.get(CREW_ANSWERED_BUILTINS_KEY, ()))
+    assert "code" not in grants and "fs_read" in grants
+    lsp = _kas_builtin_flow(
+        "code",
+        title="Code Intelligence",
+        raw_input={
+            "operation": "goto_definition",
+            "file_path": str(tmp_path / "a.py"),
+            "row": 1,
+            "column": 1,
+        },
+    )
+    assert _judge(lsp, {"code"}).tier == "spec-builtin-grant", "the fixture is a granted call"
+    verdict = _judge(lsp, grants)
+    assert (verdict.action, verdict.tier) == (TOOL_ALLOW, "")
+    lookup = _kas_builtin_flow(
+        "code",
+        title="Code Intelligence",
+        raw_input={"operation": "search_symbols", "symbol_name": "x", "path": str(tmp_path)},
+    )
+    assert _judge(lookup, grants).tier == "read-only"
 
 
 def test_the_session_record_follows_the_active_agent_and_a_mode_switch() -> None:

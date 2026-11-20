@@ -67,7 +67,7 @@ async def test_a_stop_by_the_parent_names_its_origin(done: _Done) -> None:
     await done.done(info)
 
     ((args, _kw),) = done.notices()
-    assert args[1] == "Subagent `a1` ⏹"
+    assert args[1] == "Subagent `a1` stopped"
     assert "Stopped (parent ended) before completing." in args[2]
     assert "Partial output:\nhalf done" in args[2]
     assert "Stopped by the user" not in args[2]
@@ -83,7 +83,7 @@ async def test_a_failure_carries_its_error_and_its_flagged_partial_output(
     await done.done(info)
 
     ((args, _kw),) = done.notices()
-    assert args[1] == "Subagent `a1` ❌"
+    assert args[1] == "Subagent `a1` failed"
     assert args[2].endswith(
         "Error: boom\n\nPartial output (the run did NOT finish — do not treat this as a "
         "completed result):\nstreamed so far"
@@ -130,7 +130,7 @@ async def test_detail_task_and_title_are_redacted_before_the_task_is_cut(
     await done.done(info)
 
     ((args, _kw),) = done.notices()
-    assert args[1] == "Subagent `id[R]` ✅"
+    assert args[1] == "Subagent `id[R]` completed"
     task_text = "x" * 97 + "[R]"
     assert args[2] == f"{task_text}\n\nUsage: {gw_mod.format_subagent_usage(0.25, 12.0)}\n\n[U] r"
 
@@ -147,7 +147,7 @@ async def test_a_queued_completion_carries_its_card_facts(done: _Done) -> None:
 
     ((text, kind, meta),) = slot.queued
     assert kind == gw_mod.SUBAGENT_COMPLETION_KIND
-    assert text.startswith(f"{gw_mod.SUBAGENT_COMPLETION_PREFIX}\nAgent `a7` (helper) completed ✅")
+    assert text.startswith(f"{gw_mod.SUBAGENT_COMPLETION_PREFIX}\nAgent `a7` (helper) completed")
     assert meta == {
         gw_mod.SUBAGENT_COMPLETION_META_KEY: gw_mod.single_completion_meta(
             agent_id="a7",
@@ -170,7 +170,7 @@ async def test_a_lone_run_without_tool_calls_carries_the_claim_note(done: _Done)
 
     ((text, _kind, _meta),) = slot.queued
     assert text.endswith(
-        f"\n\n⚠ Agent `a1` {gw_mod.NO_TOOL_CALLS_NOTE}\n\n{SUBAGENT_FINAL_COMPLETION_NOTE}"
+        f"\n\nWarning: Agent `a1` {gw_mod.NO_TOOL_CALLS_NOTE}\n\n{SUBAGENT_FINAL_COMPLETION_NOTE}"
     )
 
 
@@ -222,8 +222,11 @@ async def test_a_wave_line_names_the_served_model_after_display_redaction(
     assert shown == ["mSECRET"]
     ((text, _kind, meta),) = slot.queued
     assert text.startswith(gw_mod.SUBAGENT_BATCH_COMPLETION_PREFIX)
-    assert "— `w0` ✅ do the thing · model m[D] · " in text
-    assert "— `w1` ✅ do the thing · " in text and "`w1` ✅ do the thing · model" not in text
+    assert "— `w0` completed · do the thing · model m[D] · " in text
+    assert (
+        "— `w1` completed · do the thing · " in text
+        and "`w1` completed · do the thing · model" not in text
+    )
     assert meta[gw_mod.SUBAGENT_COMPLETION_META_KEY] == gw_mod.wave_final_meta(
         chunk=1, chunks=1, ok=2, failed=0, stopped=0, total=2
     )
@@ -238,7 +241,7 @@ async def test_a_failure_line_cuts_its_detail_at_four_hundred(done: _Done) -> No
 
     ((text, _kind, _meta),) = slot.queued
     detail = "Error: " + "e" * 500
-    assert f"  {detail[:400]}…\n— `w1` ✅" in text
+    assert f"  {detail[:400]}…\n— `w1` completed" in text
 
 
 @pytest.mark.asyncio
@@ -304,7 +307,7 @@ async def test_a_member_whose_count_closes_the_wave_skips_the_membership_lookup(
     assert lookups == ["w5", "w5"]
     ((text, _kind, _meta),) = slot.queued
     assert text.startswith(f"{gw_mod.SUBAGENT_BATCH_COMPLETION_PREFIX}\nBatch results 1/1")
-    assert "wave finished: 3 ✅ · 0 ❌ · 0 ⏹ of 3 agents." in text
+    assert "wave finished: 3 completed · 0 failed · 0 stopped of 3 agents." in text
 
 
 @pytest.mark.asyncio

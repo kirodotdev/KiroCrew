@@ -1,7 +1,9 @@
 # Model fallback
 
 `agent.fallback_model` controls an optional retry after an active model exhausts
-its transient-error budget before activity begins. The implementation is
+its transient-error budget before activity begins, or, on the dashboard and
+sub-agent paths, after a capacity or throttle error outlasts the one continue a
+turn gets once activity began. The implementation is
 Kiro Crew-side: `llm_helpers.advance_fallback_candidate` changes the model through
 the substitute `set_model` seam, and `test/test_llm_helpers_fallback_chain.py` pins that a
 successful swap is observable before it is recorded.
@@ -53,8 +55,22 @@ spent on a transient error with no qualifying prior activity. Each surface
 tracks that condition in its own stream loop: `llm_helpers.stream_and_collect`
 requires no result text or tool activity, `dashboard/chat_runner.py` requires
 no emitted or thought activity, and `subagent_manager/run_turn.py::_run_inner_impl`'s nested `_stream_with_transient_retry`
-requires no activity. Post-activity recovery does not enter the model-fallback
-walk.
+requires no activity.
+
+After activity, the dashboard and the sub-agent first spend their one continue
+on the same model. When the error after that continue is a capacity or throttle
+error (`llm_helpers.acp_error_is_capacity_or_throttle`: the structured
+`acp_error_is_throttle` verdict or `AcpError.model_unavailable`, never Kiro's
+per-user rate limit `AcpError.user_rate_limit`, which every model shares), they advance
+the chain one candidate and continue the turn on the same live session there,
+giving the candidate its own continue; they never replay the original prompt
+after activity. A plain 5xx or a dropped connection after activity keeps the one
+continue and then fails. On the dashboard each continue is its own turn, so a
+continue that fails before its first token takes the zero-activity ladder above;
+the swap after activity covers a continue that streamed and then failed. The
+sub-agent counts activity across the whole run, so its continue always takes the
+post-activity branch. `stream_and_collect` does not swap after activity: its
+retry replays the original prompt, which could repeat a tool's side effect.
 
 `llm_helpers.advance_fallback_candidate` owns candidate selection for all three
 paths. It preserves the original primary from an existing provider marker when
@@ -106,15 +122,30 @@ and each error surface must receive the same safe text.
   (`dashboard/chat_turn/model_fallback.py`, which owns the dashboard's four swap and restore
   helpers named below) after its pre-activity transient branch; `_on_acp_transient_exhausted`
   (`chat_turn/acp_recovery.py`) persists a notice and requeues the same message as a synthetic
-  recovery item. The swap's condition excludes nested prompts and Kiro's per-user rate limit
-  (`AcpError.user_rate_limit`), which every model shares, so that turn ends on its own error
-  row. The notice is `model_server_error_fallback` when the selected model's ladder ended on a
-  provider 5xx (`slot._fallback_walk_server_error`, written at the walk's first swap) and
-  `model_throttled_fallback` otherwise. On exhaustion `_on_acp_error_card`
-  (`chat_turn/turn_failures.py`) renders the slot-local walk in the terminal error.
+  recovery item. After output streamed and the one continue is spent
+  (`slot._posttoken_retry_used`), a capacity or throttle error with a configured chain
+  routes to `_on_acp_posttoken_fallback` (`chat_turn/acp_recovery.py`). It persists the
+  partial FIRST, while the session is still on the model that wrote it, so the partial's
+  usage row and footer name that model; then it swaps through `_fallback_swap_for_turn`.
+  `_on_acp_posttoken_transient` writes the same notice (`_announce_fallback_swap`, shared by
+  both arms) below the partial, re-arms `_posttoken_retry_used` and queues the continue on
+  the live session; when that continue is dropped during its backoff (Stop, a follow-up, a
+  steer), the walk state is reset as on the other no-requeue exits. A swap that finds no
+  candidate ends on `_on_acp_error_card`, whose own persist finds the partial already
+  saved. Both swaps' conditions exclude nested prompts, a Stop-suppressed cycle and Kiro's
+  per-user rate limit (`AcpError.user_rate_limit`), which every model shares, so that turn
+  ends on its own error row. The notice is `model_server_error_fallback` when the selected
+  model's ladder ended on a provider 5xx (`slot._fallback_walk_server_error`, written at the
+  walk's first swap) and `model_throttled_fallback` otherwise. On exhaustion
+  `_on_acp_error_card` (`chat_turn/turn_failures.py`) renders the slot-local walk in the
+  terminal error.
 - `subagent_manager/run_turn.py::_run_inner_impl`'s nested `_stream_with_transient_retry` follows the zero-activity branch,
   uses the shared candidate helper, and applies `annotate_model_fallback` to
-  the completed result.
+  the completed result. After activity, with its one continue spent, it moves through
+  `llm_helpers.advance_fallback_after_activity` and the candidate's own continue
+  (`_TRANSIENT_CONTINUE_MSG`) takes the in-turn retry with its `subagent_retrying` event
+  and SEL record, never the dependency coordinator: the error's scope is the primary's,
+  which the session has just left. On a spent chain that helper attaches the exhaustion story and the error raises.
 
 `annotate_model_fallback` redacts model values before rendering and leaves the
 marker in place. That persistence is load-bearing: subsequent successful turns
@@ -497,7 +528,13 @@ rather than naming the model that refused:
   notice arrives (`EVENT_MODEL_FALLBACK`), while it is live and holds its
   conversation, so every ending has it and no write lands after `done`, where
   it could roll back a continue's `keep`. The session's `served_model` cannot
-  be used for this: a turn-scoped hop leaves a pinned `_model` alone.
+  be used for this: a turn-scoped hop leaves a pinned `_model` alone. A swap
+  Crew's own sub-agent ladder makes, before or after activity, goes through
+  `set_model`, so the run reads the new `served_model` and records and persists
+  it the same way as soon as the swap lands; a swap onto `auto`, which names no
+  model, records `""` (unknown) rather than keep the model that refused. A
+  dashboard tab that was already open keeps the chip it last drew then: its
+  store never clears a known model id to `""`.
 - The Telegram, Discord and Webex `/model` pickers show their own per-conversation
   `_model_pref`, which is also what a cold start re-applies. After each turn,
   `follow_engine_promotion` moves a pinned pick onto a model the engine promoted,
@@ -538,8 +575,9 @@ as `agent.fallback_model`.
 
 ## Non-goals
 
-- Swapping models after activity has begun on the transient/throttle path;
-  the existing continuation recovery handles that path. (The refusal fallback
+- Swapping models after activity has begun in `stream_and_collect` (it replays the
+  prompt; a swap there needs a continue-in-session design first), on a plain 5xx or
+  connection error, or in a nested dashboard prompt. (The refusal fallback
   above is a distinct trigger: it replays the whole message when no tool ran
   and continues from the completed work when one did.)
 - Per-crew, per-cron, or per-role fallback chains.

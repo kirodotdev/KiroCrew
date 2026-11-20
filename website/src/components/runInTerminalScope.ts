@@ -7,3 +7,7 @@ import { createContext } from 'react'
  * answers. Null outside every host.
  */
 export const RunInTerminalScope = createContext<string | null>(null)
+
+/** The slot whose own transcript handed over the command. Terminal execution
+ *  scope also covers side panels; only the main transcript opts into reporting. */
+export const RunInTerminalOriginSlot = createContext<string | null>(null)

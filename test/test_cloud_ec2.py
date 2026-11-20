@@ -43,19 +43,19 @@ class TestSubTemplateSyntax:
         # The frontend build (vite 8 + rolldown) needs Node >=22.12.0; AL2023's default
         # AppStream nodejs is 18, which fails with a node:util/styleText SyntaxError.
         # The template must (a) declare the full-version floor, (b) upgrade via a PINNED
-        # official nodejs.org tarball when the installed node is too old (dnf/NodeSource
-        # is a dead end on AL2023 — its modular filtering keeps reinstalling node 18),
-        # verifying the tarball's SHA-256 before extracting as root, and (c) fail the
-        # bootstrap if it still cannot reach the floor.
+        # official nodejs.org tarball when the installed node is too old, verifying the
+        # tarball's SHA-256 before extracting as root, and (c) fail the bootstrap if it
+        # still cannot reach the floor.
         text = ec2.load_template()
         assert "NODE_MIN=22.12.0" in text
         assert "sort -V -C" in text
         assert "nodejs.org/dist/" in text
         assert 'fail "Node.js too old' in text
-        # The tarball MUST be integrity-checked before it is extracted as root.
         assert "sha256sum -c" in text
-        assert "9e7905fdee722f9650a03ae644b51c4c6effd3b98ac93c588700072ab35c9ddb" in text
-        assert "e05a4d65232ae2b27b3d77da2e368522fb46b923335b8e0d5f77624c32484044" in text
+        # A patched 22.x release: scanners flag v22.12.0 as an outdated Node.js.
+        assert "NODE_V=v22.23.5" in text
+        assert "8bd3dc69eee8f3f226315a80d7d1d4faccf217a4c8fae500168ac2e38f3bdba3" in text
+        assert "c54118104acc524633b5abe106bbf44a53126ec8b4e5fa105cb92b5d7de8a1a1" in text
 
     @pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash + GNU sort")
     @pytest.mark.parametrize(

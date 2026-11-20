@@ -17,6 +17,22 @@ session auth gates the proxy entrance as with all builtin apps.
 The app id is `md-notebook`; the display name is "Notes". `defaultEnabled` is false, so it
 appears in the Apps library ready to be switched on rather than enabling itself.
 
+**Adopted onto its own repository.** The wheel pins the app (`apps/adoption-pins.json`,
+[app-kit-platform.md § 33](app-kit-platform.md#33-former-built-in-adoption)) at
+`KiroCrewCaptain/kirocrew-app-md-notebook` with `minAppSdkLevel` 10, the level at which the
+agent's file tools fence an installed app's `credentialMasks` (its directory entry `state/`
+alone is a level-8 use), so a host whose record is builtin-owned swaps
+it in place onto that tree at a restart, keeping `data/` (`data/state/` with the vault
+registry, the settings and the GitHub token included), `.app_secret`, the approved grants
+and `enabled`; the rail keeps `/md-notebook` and the `NotebookPen` glyph, and the wheel copy's
+`version` is the pinned one (D12). A host still on the previous layout is swapped only once
+the state move into `data/state/` has sealed, whether or not Notes is enabled (State Layout
+below). The repository's `app.json` declares the same `permissions` and the same
+`credentialMasks` as the wheel copy, so E9 holds nothing back, and the tool gate keeps
+fencing `data/state/` after adoption because it reads the shipped wheel copy's declaration.
+A fix to the app lands in that repository first; a change to the wheel copy needs its
+`App repo:` line.
+
 **Where the backend's code lives.** `server.py` is the backend's entry point (`app.json`
 `entryPoint`; the gateway runs it as `__main__`, and `syncer.py` imports it) and a mirror
 facade (`kiro_crew._facade_mirror`): every name stays reachable as `server.<name>`, and a
@@ -91,8 +107,8 @@ does not mask the moved token** below.
 started by the previous build masks `md-notebook-staging/` but not `data/state/`, so it would
 read the token the moment it landed there. The move therefore runs only in the gateway,
 through Notes' row in `apps/legacy_state_moves` (`sealed_default_legacy_state`): at the
-start of the shipped backend or of a record adopted from the wheel's pin, and, once Notes
-is pinned, before adoption swaps the record (whether or not Notes is enabled) and at every
+start of the shipped backend or of a record adopted from the wheel's pin, before adoption
+swaps the record (whether or not Notes is enabled) and at every
 boot for a record adopted under pin trust; and only while
 `older_sandboxes.sandboxes_masking_only` names no live process that masks the old directory
 and not the new one (or cannot read the process table). On Linux that is the kernel's own

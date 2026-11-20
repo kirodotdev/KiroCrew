@@ -478,24 +478,31 @@ def _clamp_security_bounds(data: dict) -> None:
             )
 
 
-def _session_start_concurrency(raw: object, ceiling: int = 64) -> int | str:
-    """A start width: ``"auto"`` or an int clamped to ``1..ceiling``.
+def _session_start_concurrency(
+    raw: object, default: int | str, lo: int | None = None, hi: int | None = None
+) -> int | str:
+    """A start width: ``"auto"`` or an int clamped to ``lo..hi``.
 
-    ``agent.session_start_concurrency`` uses the default ceiling of 64;
-    ``agent.cold_start_concurrency`` and ``agent.runtime_spawn_concurrency`` pass
-    32. Anything that is neither (missing, a bool, a non-integral float, a
-    non-numeric string) falls back to the ``"auto"`` default, as a junk value of
-    any other int knob falls back to its default.
+    A ``SectionReader.read`` coercer, so its bounds are the read's and a stored value
+    they change is logged: ``agent.session_start_concurrency`` reads with ``1, 64``,
+    ``agent.cold_start_concurrency`` and ``agent.runtime_spawn_concurrency`` with
+    ``1, 32``. Anything that is neither (a bool, a non-integral float, a non-numeric
+    string) falls back to *default*, the field's ``"auto"``, as a junk value of any
+    other int knob falls back to its default.
     """
-    if _session_start_is_auto(raw) or isinstance(raw, bool):
+    if _session_start_is_auto(raw):
         return _SESSION_START_AUTO
-    if isinstance(raw, float) and not raw.is_integer():
-        return _SESSION_START_AUTO
+    if isinstance(raw, bool) or (isinstance(raw, float) and not raw.is_integer()):
+        return default
     try:
         value = int(raw)  # type: ignore[call-overload]
     except (TypeError, ValueError, OverflowError):
-        return _SESSION_START_AUTO
-    return max(1, min(ceiling, value))
+        return default
+    if lo is not None:
+        value = max(lo, value)
+    if hi is not None:
+        value = min(hi, value)
+    return value
 
 
 def _read_backend_choice(
@@ -991,8 +998,8 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         # Session-start gate (acp/runtime_start.py SessionStartGate).
         # "auto" (default) is sized from the host once per process by
         # session_start_sizing; an explicit integer keeps the 1..64 clamp.
-        session_start_concurrency=_session_start_concurrency(
-            agent_data.get("session_start_concurrency", "auto")
+        session_start_concurrency=section.read(
+            "session_start_concurrency", _session_start_concurrency, 1, 64
         ),
         # Env defaults for spawned kiro-cli children (acp/child_env_defaults.py).
         # Through the module alias: the loader's import list is a frozen snapshot.
@@ -1001,11 +1008,11 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         env=_sections.coerce_agent_env(section.get("env")),
         # Cold-start queues (session_allocation _start_sem, acp/runtime_start
         # spawn admission); resolved by cold_start_sizing.
-        cold_start_concurrency=_session_start_concurrency(
-            agent_data.get("cold_start_concurrency"), ceiling=32
+        cold_start_concurrency=section.read(
+            "cold_start_concurrency", _session_start_concurrency, 1, 32
         ),
-        runtime_spawn_concurrency=_session_start_concurrency(
-            agent_data.get("runtime_spawn_concurrency"), ceiling=32
+        runtime_spawn_concurrency=section.read(
+            "runtime_spawn_concurrency", _session_start_concurrency, 1, 32
         ),
         # Adaptive controller (adaptive/policy.py params_from_config).
         adaptive_concurrency=section.read("adaptive_concurrency", _safe_bool),
@@ -1171,6 +1178,7 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             lo=_sections.IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN,
             hi=_sections.IDLE_COMPACTION_MIN_CONTEXT_PCT_MAX,
         ),
+        worker_context_cap=bool(section.get("worker_context_cap")),
         # Clamped on the read, like the sibling floats: 0 is the sentinel for
         # "use the built-in budget" and any positive value is the wait, so a
         # hand-edited negative collapses to 0 (fallback) and an oversized value
@@ -1210,6 +1218,7 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             _sections.SEARCH_SCAN_WINDOW_MIN,
             _sections.SEARCH_SCAN_WINDOW_MAX,
         ),
+        semantic_search=section.read("semantic_search", _safe_bool),
         watchdog_rss_max_mb=section.read("watchdog_rss_max_mb", _safe_int),
         watchdog_end_leftovers_mid_turn=section.read("watchdog_end_leftovers_mid_turn", _safe_bool),
         harness_background_hold_secs=_load_background_hold_secs(section),
@@ -1395,6 +1404,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         feature_previews=section.read("feature_previews", _feature_previews),
         dynamic_dashboard_cards=section.read("dynamic_dashboard_cards", _safe_bool),
         audit_secret_reads=section.read("audit_secret_reads", _safe_bool),
+        turn_cache_estimate=section.read("turn_cache_estimate", _safe_bool),
         qr_session_until_restart=section.read("qr_session_until_restart", _safe_bool),
         qr_session_persist_across_restart=section.read(
             "qr_session_persist_across_restart", _safe_bool
@@ -1464,6 +1474,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         auto_open_git_panel=section.read("auto_open_git_panel", _safe_bool),
         side_panel_always_open=section.read("side_panel_always_open", _safe_bool),
         side_panel_pin_summary=section.read("side_panel_pin_summary", _safe_bool),
+        auto_open_conductor_board=section.read("auto_open_conductor_board", _safe_bool),
         session_card_source_links=section.read("session_card_source_links", _safe_bool),
         default_memory_mode=_default_memory_mode_from(section.get("default_memory_mode")),
         new_chat_crew_mode=section.read("new_chat_crew_mode", _safe_bool),
@@ -1482,8 +1493,11 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             section.get("default_session_folder")
         ),
         theme_mode=section.get("theme_mode"),
+        theme_schedule_light=section.get("theme_schedule_light"),
+        theme_schedule_dark=section.get("theme_schedule_dark"),
         sso_login_flags=str(section.get("sso_login_flags")),
         theme_color=section.get("theme_color"),
+        instance_label=_sanitize_bot_name(section.get("instance_label")),
         language=str(section.get("language")),
         recent_tint_count=section.read(
             "recent_tint_count", _safe_int, RECENT_TINT_COUNT_MIN, RECENT_TINT_COUNT_MAX
@@ -1540,6 +1554,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         ),
         milestones_enabled=section.read("milestones_enabled", _safe_bool),
         folder_suggestions_enabled=bool(section.get("folder_suggestions_enabled")),
+        folder_suggestions_auto_apply=section.read("folder_suggestions_auto_apply", _safe_bool),
         project_tags_enabled=section.read("project_tags_enabled", _safe_bool),
         topic_tags_enabled=section.read("topic_tags_enabled", _safe_bool),
         tips_cadence_hours=section.read("tips_cadence_hours", _safe_float, lo=0.0),
@@ -1605,3 +1620,10 @@ def _registry_entry(raw: dict) -> ExternalRegistryConfig:
         # field existed keeps the credential-free posture it had.
         trust=str(entry.get("trust")),
     )
+
+
+def _market_registry_ids(raw: object) -> list[str]:
+    """``market_registries``: the string ids, de-duplicated in file order; else ``[]``."""
+    if not isinstance(raw, list):
+        return []
+    return list(dict.fromkeys(i.strip() for i in raw if isinstance(i, str) and i.strip()))

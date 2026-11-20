@@ -4,10 +4,11 @@ Two call sites alert on a failed cron run -- the script/command helper
 (``_alert_cron_failure``) and the message path's own ``except`` block. They
 legitimately differ in control flow, in who owns ``record_failure()``, and in
 wording. The mechanism underneath must not differ: the dedup window, the
-Slack-sink hardening, and when the dedup anchor advances. A third caller, the
-notice for a run the cron service's stop cut short (``_alert_cron_interrupted``),
-is not a failure and never touches the dedup, but it reaches Slack through the
-same one-surface delivery helper.
+Slack-sink hardening, and when the dedup anchor advances. Two more callers — the
+notice for a run the cron service's stop cut short (``_alert_cron_interrupted``)
+and the notice for a job that paused itself (``_alert_cron_auto_paused``) — are
+not failures and never touch the dedup, but they reach Slack through the same
+one-surface delivery helper.
 
 A docstring promising the two "cannot drift" is prose, not a mechanism, and they
 drifted once already, with the message path's DM
@@ -185,8 +186,8 @@ def test_the_failure_dm_is_opened_in_one_place() -> None:
     ``_deliver_failure_alert`` is the only failure-path caller.
     """
     src = _source()
-    # The two failure call sites and the interrupted-run notice reach Slack
-    # only through the shared helper.
-    assert src.count("await self._deliver_failure_alert(") == 3
+    # The two failure call sites, the interrupted-run notice and the
+    # auto-pause notice reach Slack only through the shared helper.
+    assert src.count("await self._deliver_failure_alert(") == 4
     # And the helper is the only thing that posts a failure alert.
-    assert src.count("_deliver_failure_alert") == 4  # def + three calls
+    assert src.count("_deliver_failure_alert") == 5  # def + four calls

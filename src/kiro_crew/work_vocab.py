@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Mapping, Sequence
 from typing import Any, NotRequired, TypedDict
 
 #: The projection that folds ``work/recorded`` into a board, as its readers name it.
@@ -84,6 +85,21 @@ def waits_on_person(
     )
 
 
+def ask_is_current(events: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether the item's ``ask`` record explains the question waiting now, by the
+    ledger's own event order (*events*, oldest first): no ``report`` was appended
+    after the newest ``ask`` event. Stamps have whole-second resolution and would
+    tie, so the order decides. A tail cut short of the ``ask`` event counts as
+    current only when it holds no report either."""
+    for event in reversed(events):
+        kind = event.get("kind")
+        if kind == "ask":
+            return True
+        if kind == "report":
+            return False
+    return True
+
+
 #: ``steer`` is a person's own text typed into a worker (actor ``person``). A person's
 #: steer outranks the conductor's decision: the conductor reads new steer events
 #: before it decides and never overrules them. ``retire`` is the hub moving a remote
@@ -146,7 +162,11 @@ def coerce_dispatch_tags(raw: object) -> tuple[str, ...]:
     for tag in raw:
         if isinstance(tag, str) and DISPATCH_TAG_RE.fullmatch(tag) and tag not in out:
             out.append(tag)
-    return tuple(out[:MAX_DISPATCH_TAGS])
+            # A peer's headroom feeds this list too: stop at the cap so a long
+            # one costs one pass, not a quadratic scan of the tail.
+            if len(out) == MAX_DISPATCH_TAGS:
+                break
+    return tuple(out)
 
 
 #: Fields a conductor action may set on an item. What the write route logs from
@@ -194,6 +214,10 @@ WORK_MAX_ARTIFACT_VALUE_CHARS: int = 512
 #: A retire reason and a stamp, as stored on a retired binding.
 WORK_MAX_RETIRE_REASON_CHARS: int = 64
 WORK_MAX_STAMP_CHARS: int = 64
+#: The retire reasons a conductor may give on ``work_ledger_record action=retire``
+#: (rfc-conductor-remote-dispatch §5b): the worker is stuck on a login, or the crew
+#: lacks what the item needs. ``crew_unreachable`` is the hub's own, never a caller's.
+WORK_CONDUCTOR_RETIRE_REASONS: tuple[str, ...] = ("login_blocked", "wrong_crew")
 
 #: Each retired binding's text fields and their caps.
 _RETIRED_BINDING_TEXT: dict[str, int] = {

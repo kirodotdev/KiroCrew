@@ -66,7 +66,8 @@ import { DropdownMenuItem } from '../components/ui/dropdown-menu'
 
 /** Open a crew row's overflow menu. */
 async function openRowMenu(u: ReturnType<typeof userEvent.setup>, name: RegExp) {
-  await u.click(await screen.findByRole('button', { name }))
+  const toggle = await screen.findByRole('button', { name })
+  if (toggle.getAttribute('aria-expanded') !== 'true') await u.click(toggle)
 }
 
 const MANUAL_INSTANCE = {
@@ -129,14 +130,15 @@ describe('row actions a contributed provisioner draws on its crews', () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
 
+    await openRowMenu(u, /details for research/i)
     const detail = await screen.findByText('DevSpace for research is stopped')
     expect(detail.closest('[data-crew-id]')?.getAttribute('data-crew-id')).toBe('ds1')
-    await openRowMenu(u, /More actions for research/i)
+    // A contribution draws menu items, so its items keep a menu in the row's details.
+    await u.click(screen.getByRole('button', { name: 'More actions for research' }))
     await u.click(screen.getByRole('menuitem', { name: 'Start DevSpace' }))
     expect(startSpy).toHaveBeenCalledWith('ds1')
     // The core's own Remove still sits beside it.
-    await openRowMenu(u, /More actions for research/i)
-    expect(screen.getByRole('menuitem', { name: /Remove research/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Remove research/i })).toBeInTheDocument()
   })
 
   it('draws nothing for a chained row that carries the same stamp', async () => {
@@ -146,8 +148,8 @@ describe('row actions a contributed provisioner draws on its crews', () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await openRowMenu(u, /More actions for riding/i)
-    expect(screen.queryByRole('menuitem', { name: 'Start DevSpace' })).not.toBeInTheDocument()
+    await openRowMenu(u, /details for riding/i)
+    expect(screen.queryByRole('button', { name: 'More actions for riding' })).not.toBeInTheDocument()
     expect(screen.queryByText(/DevSpace for riding/)).not.toBeInTheDocument()
   })
 
@@ -160,12 +162,15 @@ describe('row actions a contributed provisioner draws on its crews', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     const failed = /The extra controls for broken-crew failed to load: edition bug/
+    await openRowMenu(u, /details for broken-crew/i)
     const rowNotice = await screen.findByText(failed)
     expect(rowNotice.closest('[data-crew-id]')?.getAttribute('data-crew-id')).toBe('ds3')
-    await openRowMenu(u, /More actions for broken-crew/i)
+    await u.click(screen.getByRole('button', { name: 'More actions for broken-crew' }))
     const menu = screen.getByRole('menu')
     expect(within(menu).getByText(failed)).toBeInTheDocument()
-    expect(within(menu).getByRole('menuitem', { name: /Remove broken-crew/i })).toBeInTheDocument()
+    await u.keyboard('{Escape}')
+    // The row's own actions still work beside the broken contribution.
+    expect(screen.getByRole('button', { name: /Remove broken-crew/i })).toBeInTheDocument()
     errors.mockRestore()
   })
 
@@ -177,6 +182,7 @@ describe('row actions a contributed provisioner draws on its crews', () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
 
+    await openRowMenu(u, /details for crash-crew/i)
     const notice = (await screen.findByText(/The extra controls for crash-crew failed to load/)).closest('[role="alert"]') as HTMLElement
     await u.click(within(notice).getByRole('button', { name: /Ask the agent/i }))
     const prompt = consumeChatHandoff() || ''

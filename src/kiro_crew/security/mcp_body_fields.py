@@ -90,19 +90,35 @@ _EXECUTABLE_WORDS = frozenset(
     {
         "args",
         "argv",
+        "bash",
         "cmd",
+        "cmdline",
+        "cmds",
         "code",
         "command",
+        "commandline",
+        "commands",
         "eval",
         "exec",
         "expression",
+        "expressions",
+        "powershell",
+        "pwsh",
+        "queries",
         "query",
         "script",
+        "scripts",
+        "sh",
         "shell",
         "sql",
         "statement",
+        "statements",
+        "zsh",
     }
 )
+
+#: Stored fields already warned about, so a dropped row is logged once per process.
+_warned_dropped: set[tuple[object, object, object]] = set()
 
 
 def _is_server_name(server: str) -> bool:
@@ -193,6 +209,23 @@ def store_path() -> Path:
 _STORE_LOCK = threading.RLock()
 
 
+def _warn_dropped_executable(row: dict[str, Any]) -> None:
+    """Log, once per process, a stored row dropped because its field names something run."""
+    server, tool, field = seen = (row.get("server"), row.get("tool"), row.get("field"))
+    if (
+        isinstance(field, str)
+        and _is_field_name(field)
+        and is_executable_field(field)
+        and is_valid_row(server, tool, "body")
+        and seen not in _warned_dropped
+        and len(_warned_dropped) < _MAX_OWNER_ROWS
+    ):
+        _warned_dropped.add(seen)
+        logger.warning(
+            "mcp_body_fields.json: dropped %r on %r/%r: a server runs it", field, server, tool
+        )
+
+
 def owner_rows(*, strict: bool = False) -> list[dict[str, str]]:
     """The owner-added rows, read fresh. Fails soft to none.
 
@@ -215,6 +248,7 @@ def owner_rows(*, strict: bool = False) -> list[dict[str, str]]:
         if not isinstance(row, dict):
             continue
         if not is_valid_row(row.get("server"), row.get("tool"), row.get("field")):
+            _warn_dropped_executable(row)
             continue
         out.append(
             {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { ChevronDown, ChevronRight, Cloud, FileText, Folder, RefreshCw, Save, TerminalSquare } from 'lucide-react'
+import { ChevronDown, ChevronRight, Circle, Cloud, FileText, Folder, RefreshCw, Save, TerminalSquare } from 'lucide-react'
 import { api, type RemoteFileContent } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -262,7 +262,8 @@ function RemoteFilesPanelBrowser({ slot, name, workdir, onOpenTerminal }: {
         ) : data ? (
           <>
             <div className="flex items-center gap-2 px-3 h-8 border-b border-border shrink-0">
-              <TruncatedText full={dirty ? `${data.path} •` : data.path} className="text-[11.5px] text-muted font-mono min-w-0 flex-1" />
+              <TruncatedText full={data.path} className={`text-[11.5px] text-muted font-mono min-w-0 ${dirty ? '' : 'flex-1'}`} />
+              {dirty && <Circle className="lucide-inline scale-50 shrink-0 text-muted mr-auto" fill="currentColor" strokeWidth={0} role="img" aria-label={t('components.markdownPanel.unsaved_changes')} />}
               {/* Hidden while a conflict is up: its own "Load workspace version (drops
                   my edits)" is the same act, and two buttons read as two choices. */}
               {/* A read that can no longer be edited (now binary or truncated) hides the
@@ -413,7 +414,7 @@ function RemoteDir({ slot, workdir, path, depth, selected, dirtyPaths, onSelect 
               {entry.dir
                 ? <Folder className="lucide-inline shrink-0 text-muted" aria-hidden />
                 : <FileText className="lucide-inline shrink-0 text-muted" aria-hidden />}
-              <span className="truncate">{entry.name}{dirtyPaths[child] && dirtyPaths[child].content !== dirtyPaths[child].expected ? ' •' : ''}</span>
+              <span className="truncate">{entry.name}{dirtyPaths[child] && dirtyPaths[child].content !== dirtyPaths[child].expected ? <> <Circle className="lucide-inline scale-50" fill="currentColor" strokeWidth={0} role="img" aria-label={t('components.markdownPanel.unsaved_changes')} /></> : ''}</span>
             </Btn>
             {entry.dir && expanded && (
               <RemoteDir slot={slot} workdir={workdir} path={child} depth={depth + 1} selected={selected} dirtyPaths={dirtyPaths} onSelect={onSelect} />

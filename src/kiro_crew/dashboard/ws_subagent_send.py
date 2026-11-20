@@ -83,7 +83,8 @@ async def _send_frame(ws: Any, state: Any, frame: dict) -> None:
     whatever the setting reads: with it off such a socket gets the frame redacted in
     full.
     """
-    if ws in (getattr(state, "_owner_ws_clients", None) or ()):
+    owners = getattr(state, "_owner_ws_clients", None) or ()
+    if redaction_audience.socket_reads_as_owner(ws, owners):
         await ws.send_json(frame)
         return
     shown = redaction_audience.for_socket(ws, json.dumps(frame), owner=False)
