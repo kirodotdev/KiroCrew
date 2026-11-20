@@ -92,6 +92,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 # directly; this driver runs the same selection for both surfaces in one go so
 # an iteration pass has one command to type and one verdict to read.
 sys.path.insert(0, str(_REPO_ROOT / "scripts"))
+import run_scoped_tests  # noqa: E402  (path set immediately above)
 from run_scoped_tests import (  # noqa: E402  (path set immediately above)
     LauncherMissing,
     SelectionUntrustworthy,
@@ -159,40 +160,17 @@ def changed_files(base: str) -> list[str] | None:
     documents, and the same one dorny/paths-filter applies in CI), so renaming
     a real file INTO an ignored evidence path cannot hide the old path's
     bucket from classification.
+
+    The reading is ``run_scoped_tests.changed_files``, the NUL-delimited one:
+    git C-quotes a path with a non-ASCII byte in line output, and a quoted
+    ``"website/...`` misses the frontend prefix.
     """
     try:
-        merge_base = subprocess.run(
-            ["git", "merge-base", "HEAD", base],
-            cwd=_REPO_ROOT, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=30,
-        )
-        if merge_base.returncode != 0:
-            return None
-        committed = subprocess.run(
-            ["git", "diff", "--name-only", "--no-renames",
-             merge_base.stdout.strip(), "HEAD"],
-            cwd=_REPO_ROOT, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=30,
-        )
-        working = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=all", "--no-renames"],
-            cwd=_REPO_ROOT, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=30,
-        )
-        if committed.returncode != 0 or working.returncode != 0:
-            return None
-    except (OSError, subprocess.SubprocessError):
+        # An empty or option-shaped base would reach `git diff` as `...HEAD` or
+        # as a flag; only a ref that resolves to a commit gets that far.
+        return run_scoped_tests.changed_files(run_scoped_tests.resolve_base(base))
+    except (ValueError, SelectionUntrustworthy, OSError, subprocess.SubprocessError):
         return None
-    paths = [line for line in committed.stdout.splitlines() if line.strip()]
-    for line in working.stdout.splitlines():
-        # porcelain: "XY path". Renames cannot appear (--no-renames above), but
-        # parse the "old -> new" arrow defensively and keep BOTH sides -- the
-        # old path's bucket must not vanish just because the file moved.
-        for part in line[3:].split(" -> "):
-            entry = part.strip().strip('"')
-            if entry:
-                paths.append(entry)
-    return paths
 
 
 class Plan:
