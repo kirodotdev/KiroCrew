@@ -36,6 +36,7 @@ from kiro_crew.sel import SecurityEvent, SecurityEventLog
 
 from .redaction_switch import always_scan
 from .shell_commands import sharing_views
+from .shell_normalizer import _strip_win_program_suffix
 from .text_redaction import redact_and_truncate
 
 if TYPE_CHECKING:
@@ -100,59 +101,6 @@ def _emit_push_allow_event(command: str) -> None:
             "SEL audit failed for push_allowed (allow stands)",
             exc_info=True,
         )
-
-
-def _strip_win_program_suffix(word: str) -> str:
-    return next((word[:-4] for s in (".exe", ".cmd", ".bat") if word.endswith(s)), word)
-
-
-def _cmd_line_args(args: "list[str]") -> "list[str] | None":
-    """The words after ``/c`` or ``/k`` in a ``cmd`` argv, past other ``/x`` switches.
-
-    cmd.exe also takes the switch glued to another switch or to the line (``/s/c``,
-    ``/c"dir"``); the rest of that word is then the first word of the line.
-    """
-    for i, arg in enumerate(args):
-        if not arg.startswith("/"):
-            return None
-        low = arg.lower()
-        for switch in ("/c", "/k"):
-            at = low.find(switch)
-            if at != -1:
-                tail = arg[at + 2 :]
-                return ([tail] if tail else []) + args[i + 1 :]
-    return None
-
-
-def _win_program_index(tokens: "list[str]") -> "int | None":
-    """Index of the program word, past ``sudo``/``env``-style wrappers and ``cmd /c``."""
-    start = 0
-    while (found := _submodule("argv_rules")._program_args(tokens[start:])) is not None:
-        program, args = found
-        rest = _cmd_line_args(args) if _strip_win_program_suffix(program) == "cmd" else None
-        if not rest:
-            return len(tokens) - len(args) - 1
-        start = len(tokens) - len(rest)
-    return None
-
-
-def _cmd_c_payload(tokens: "list[str]") -> "list[str]":
-    """The quoted line of ``cmd /c "<line>"`` (or ``/k``), read as a nested command."""
-    found = _submodule("argv_rules")._program_args(tokens)
-    if found is None or _strip_win_program_suffix(found[0]) != "cmd":
-        return []
-    rest = _cmd_line_args(found[1])
-    return rest if rest is not None and len(rest) == 1 and " " in rest[0].strip() else []
-
-
-# An escape INSIDE a word (cmd ``a^w^s``, PowerShell ``a`w`s``) that the shell drops.
-# Only between two ASCII alphanumerics, so a PowerShell line continuation, ``git^``,
-# ``$(...)`` and POSIX command substitution (`` `date` ``) are left alone.
-def _fold_win_in_word_escapes(text: str) -> str:
-    sides = zip(text, " " + text[:-1], text[1:] + " ")  # (char, before, after)
-    return "".join(
-        c for c, b, a in sides if c not in "^`" or not (b + a).isascii() or not (b + a).isalnum()
-    )
 
 
 def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]:
@@ -333,7 +281,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                 candidates.append(stripped)
             # Windows resolves ``aws.exe`` / ``aws.cmd`` / ``aws.bat`` to the same
             # program as ``aws``; the program word only, appended, never substituted.
-            at = _win_program_index(tokens)
+            at = _submodule("deny_gate_windows")._win_program_index(tokens)
             if at is not None and _strip_win_program_suffix(tokens[at]) != tokens[at]:
                 words = [*tokens[:at], _strip_win_program_suffix(tokens[at]), *tokens[at + 1 :]]
                 candidates.append(" ".join(words))
@@ -347,7 +295,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
             )
             # A redirect before the ``-c`` operand hides the script from the payloads.
             payloads = [*payloads, *_submodule("shell_commands").redirect_hidden_payloads(source)]
-            payloads += _cmd_c_payload(tokens)
+            payloads += _submodule("deny_gate_windows")._cmd_c_payload(tokens)
             programs = _shell_normalizer._argv_programs(tokens) if payloads else []
             # Both values below read ONLY ``tokens``, which is fixed for this
             # whole walk, so they are charged ONCE here instead of once per
@@ -1167,28 +1115,35 @@ def _deny_pattern_passes(
     # a destructive needle at any offset within a single un-separated segment is
     # caught here.  In ``is_denied``, ``_is_git_publish`` / the always-on floors
     # also run on the full string before this call.
-    for pattern, is_regex in all_patterns:
-        if _rules._deny_pattern_matches(pattern, lower, is_regex):
-            whole_string_exception_match = _rules._exception_applies(
-                lower, _rules._DENY_EXCEPTIONS.get(pattern, [])
-            )
-            if not whole_string_exception_match and (
-                _s3_download_narrows(pattern, lower, narrow_cache, tool_name, shipped)
-                or _nc_redirect_narrows(pattern, text, shipped)
-            ):
-                # Same shape as the glob exception above: a whole-string carve-out
-                # only DEFERS to Pass 2, which re-judges each segment on its own,
-                # so an embedded real invocation is still denied there.  The audit
-                # is emitted here and GATES the carve-out.
-                if _emit_deny_exception_event(
-                    tool_name, pattern, _deny_exception_mechanism_for(pattern)
+    #
+    # Windows runs ``curl.exe`` as ``curl``, and a row that spans a separator
+    # (``curl .* \| sh``) is in no segment's view, so the full input is also matched
+    # with its program words unsuffixed, nested shell payloads included, after the raw
+    # string.  The s3 and nc narrowings still read the command as written, as Pass 2
+    # does.
+    for whole in (lower, *_submodule("deny_gate_windows")._unsuffixed_whole_views(lower)):
+        for pattern, is_regex in all_patterns:
+            if _rules._deny_pattern_matches(pattern, whole, is_regex):
+                whole_string_exception_match = _rules._exception_applies(
+                    whole, _rules._DENY_EXCEPTIONS.get(pattern, [])
+                )
+                if not whole_string_exception_match and (
+                    _s3_download_narrows(pattern, lower, narrow_cache, tool_name, shipped)
+                    or _nc_redirect_narrows(pattern, text, shipped)
                 ):
-                    whole_string_exception_match = True
-            if not whole_string_exception_match:
-                if waive is not None and waive(pattern):
-                    continue
-                _emit_deny_event(tool_name, pattern, lower)
-                return reason(pattern)
+                    # Same shape as the glob exception above: a whole-string carve-out
+                    # only DEFERS to Pass 2, which re-judges each segment on its own,
+                    # so an embedded real invocation is still denied there.  The audit
+                    # is emitted here and GATES the carve-out.
+                    if _emit_deny_exception_event(
+                        tool_name, pattern, _deny_exception_mechanism_for(pattern)
+                    ):
+                        whole_string_exception_match = True
+                if not whole_string_exception_match:
+                    if waive is not None and waive(pattern):
+                        continue
+                    _emit_deny_event(tool_name, pattern, whole)
+                    return reason(pattern)
 
     # ── Pass 2: per-segment (re-)evaluation ──
     # Split into segments and check each.  This runs UNCONDITIONALLY: besides
@@ -1239,7 +1194,7 @@ def _deny_pattern_passes(
         work.append(("", _deny_segment_views(text, False)))
     # cmd/PowerShell in-word escapes, folded BEFORE the split (which cuts on
     # backticks).  Extra segments only: the unfolded ones above still run first.
-    win_folded = _fold_win_in_word_escapes(folded)
+    win_folded = _submodule("deny_gate_windows")._fold_win_in_word_escapes(folded)
     if win_folded != folded:
         extra = [s.strip() for s in _split_segments(win_folded)]
         segments += [s for s in extra if s and s not in segments]

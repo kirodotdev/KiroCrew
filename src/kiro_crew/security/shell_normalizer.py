@@ -181,6 +181,15 @@ def _program_basename(token: str) -> str:
     return os.path.basename(token.rstrip("/"))
 
 
+#: Each is four characters long: ``_strip_win_program_suffix`` cuts ``word[:-4]``.
+_WIN_PROGRAM_SUFFIXES = (".exe", ".cmd", ".bat")
+
+
+def _strip_win_program_suffix(word: str) -> str:
+    """*word* without a Windows ``.exe`` / ``.cmd`` / ``.bat`` suffix (``bash.exe`` is ``bash``)."""
+    return next((word[:-4] for s in _WIN_PROGRAM_SUFFIXES if word.endswith(s)), word)
+
+
 def _glob_could_expand_to(base: str, names: "tuple[str, ...] | frozenset[str]") -> bool:
     """True if *base* carries a shell glob that could expand to one of *names*.
 
@@ -392,10 +401,13 @@ def _pipes_into_evaluator(tokens: "list[str]") -> bool:
     for token in tokens:
         if "|" in token:
             seen_pipe = True
-        if seen_pipe and (
-            _program_basename(token) in _NESTED_SHELL_PROGRAMS
-            or _program_basename(token) in _NESTED_SHELL_VERBS
-            or _program_basename(token) == "xargs"
+        if not seen_pipe:
+            continue
+        base = _strip_win_program_suffix(_program_basename(token))
+        if (
+            base in _NESTED_SHELL_PROGRAMS
+            or base in _NESTED_SHELL_VERBS
+            or base == "xargs"
             or _is_shell_variable_reference(token)
         ):
             return True
@@ -1407,7 +1419,8 @@ def _nested_shell_payloads(
         # A shell reached through a VARIABLE (``$SHELL -c '<payload>'``) runs the
         # payload exactly as a named shell does.  The recognizer already used for the
         # ``| $SHELL`` evaluator sink applies here too.
-        if base in _NESTED_SHELL_PROGRAMS or _is_shell_variable_reference(token):
+        is_shell = _strip_win_program_suffix(base) in _NESTED_SHELL_PROGRAMS
+        if is_shell or _is_shell_variable_reference(token):
             if first_shell is None:
                 # Recorded here, where the shell test has already been paid,
                 # so the every-carrier sweep below needs no second scan that
@@ -1497,7 +1510,7 @@ def _nested_shell_payloads(
         if "<<<" not in token:
             continue
         head, _, tail = token.partition("<<<")
-        if tail and _program_basename(head) in _NESTED_SHELL_PROGRAMS:
+        if tail and _strip_win_program_suffix(_program_basename(head)) in _NESTED_SHELL_PROGRAMS:
             payloads.append(tail)
     # EVERY ``-c`` carrier past the first shell token is swept, not only the
     # first-stop one.  The stop tables above read one token per spelling class,
