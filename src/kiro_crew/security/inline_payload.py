@@ -78,6 +78,8 @@ _CALLABLE_MODULES = {
     "importlib": frozenset({"import_module"}),
     "builtins": _INLINE_CODE_LOADER_NAMES | frozenset({"__import__"}),
 }
+#: Modules a code-loader name is the real builtin OFF OF (``re.compile`` is not).
+_LOADER_OWNER_MODULES = frozenset(_CALLABLE_MODULES)
 _GETATTR_CALL_RE = re.compile(r"(?<![a-z0-9_])getattr\s*\(")
 _ATTRIBUTE_NAME_LITERAL_RE = re.compile(r"""(["'])([A-Za-z_]\w*)\1""")
 #: ``m.__dict__["exec"]`` names a callable through a subscript, which is not a
@@ -341,6 +343,362 @@ def _preceded_by_attribute_access(view: str, position: int) -> bool:
     return cursor >= 0 and view[cursor] == "."
 
 
+def _attribute_receiver(view: str, position: int) -> str | None:
+    """The bare identifier the name at *position* is an attribute of, or ``None``.
+
+    Reads back over the ``.`` to the receiver word: ``re.compile`` has receiver
+    ``re``, ``b.compile`` has ``b``. A computed receiver (``foo().compile``,
+    ``a.b.compile``) returns ``None`` here -- it is not a plain module name, so it
+    cannot be one of the loader-owning modules.
+    """
+    cursor = position - 1
+    while cursor >= 0 and view[cursor].isspace():
+        cursor -= 1
+    if cursor < 0 or view[cursor] != ".":
+        return None
+    cursor -= 1
+    while cursor >= 0 and view[cursor].isspace():
+        cursor -= 1
+    end = cursor + 1
+    while cursor >= 0 and (view[cursor].isalnum() or view[cursor] == "_"):
+        cursor -= 1
+    start = cursor + 1
+    if start >= end:
+        return None
+    probe = start - 1
+    while probe >= 0 and view[probe].isspace():
+        probe -= 1
+    if probe >= 0 and view[probe] in ").].":
+        return None  # a dotted / computed receiver (``ns.re``, ``foo().re``, ``x[0].re``)
+    return view[start:end]
+
+
+def _name_bindings(view: str) -> "dict[str, list[str]]":
+    """Every name the payload binds, to the list of ways it is bound.
+
+    When the view parses, the AST is walked for EVERY binding form, treated as one
+    class: an assignment / tuple / annotated / augmented target (``Name`` store),
+    an attribute or subscript store on a name (``re.exec = ...`` rebinds what the
+    call runs), a ``def``/``lambda`` parameter, a ``def``/``class`` name, an
+    ``except ... as`` target, a ``match`` capture, a ``global``/``nonlocal``
+    declaration, and an import alias. A name is an exempting module only when its
+    sole tag is a single ``import`` of a non-owner module, so any other tag -- or a
+    second import -- disqualifies it. A view that does not PARSE (a heredoc body
+    the shell split into words) binds nothing here, so no name is exempt and the
+    call resolves -- which is why a heredoc loader naming the product is denied.
+    """
+    try:
+        tree = ast.parse(view)
+    except (SyntaxError, ValueError, RecursionError, MemoryError, SystemError):
+        return {}
+    bindings: dict[str, list[str]] = {}
+
+    def add(name: str, tag: str) -> None:
+        bindings.setdefault(name, []).append(tag)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                head = alias.name.split(".")[0]
+                add(
+                    alias.asname or head,
+                    "owner-import" if head in _LOADER_OWNER_MODULES else "import",
+                )
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                add(alias.asname or alias.name, "from")
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            add(node.id, "assign")
+        elif (
+            isinstance(node, (ast.Attribute, ast.Subscript))
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+            and isinstance(node.value, ast.Name)
+        ):
+            add(node.value.id, "attr-store")
+        elif isinstance(node, ast.arg):
+            add(node.arg, "param")
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            add(node.name, "def")
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            add(node.name, "except")
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            for declared in node.names:
+                add(declared, "global")
+        elif isinstance(node, ast.MatchAs) and node.name:
+            add(node.name, "match")
+        elif isinstance(node, ast.MatchStar) and node.name:
+            add(node.name, "match")
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            add(node.rest, "match")
+    return bindings
+
+
+def _foreign_module_names(view: str) -> frozenset[str]:
+    """Names bound SOLELY by one plain ``import`` of a non-owner module.
+
+    These are the only receivers a ``compile`` method may be exempt off (``import
+    re`` -> ``re``). An owner import, a ``from`` import, any assignment, loop,
+    ``with``/``except``/``match`` target, a ``def``/``class`` name, a
+    ``global``/``nonlocal`` declaration, an attribute store on the name, or a
+    second import all disqualify it. This only decides whether a benign literal is
+    allowed: the ARGUMENT rule in the resolver denies a computed argument, an
+    executable extra argument, and a literal that names the product with a mint
+    verb, whatever the receiver is -- so a receiver rebound by a spelling the
+    binding walk cannot see (``sys.modules['re'].compile = ...``,
+    ``setattr(re, 'compile', os.system)``) can at most let through a literal that
+    names neither, which cannot reach the mint.
+    """
+    return frozenset(name for name, tags in _name_bindings(view).items() if tags == ["import"])
+
+
+def _loader_method_is_exempt(receiver: str | None, foreign: frozenset[str]) -> bool:
+    """True if a loader called as ``<receiver>.loader(...)`` is NOT the builtin.
+
+    Exempt ONLY a receiver positively bound to a non-owner module. A grouped,
+    computed or dotted receiver (``None``), a bare word (``""``), an owner module
+    and every name not bound by an import all fail closed to the builtin -- a
+    receiver that could be the real module is never exempt.
+    """
+    return receiver is not None and receiver in foreign
+
+
+def _dotted_receiver(head_text: str) -> str | None:
+    """The receiver of a dotted head: a lone bare name, ``""`` for a bare word, or
+    ``None`` for a multi-component (computed) receiver that fails closed."""
+    parts = [part.strip() for part in head_text.split(".")]
+    if len(parts) == 1:
+        return ""
+    if len(parts) == 2:
+        return parts[0]
+    return None
+
+
+@once_per_call()
+def _payload_parses(view: str) -> bool:
+    """True if *view* is valid Python. A ``-c`` payload parses; a word-split
+    heredoc body (newlines inserted between every token) does not."""
+    try:
+        ast.parse(view)
+    except (SyntaxError, ValueError, RecursionError, MemoryError, SystemError):
+        return False
+    return True
+
+
+def _is_dunder(name: str) -> bool:
+    """A ``__x__`` name, which exposes or mutates an object's internals."""
+    return len(name) > 4 and name.startswith("__") and name.endswith("__")
+
+
+#: The ONLY AST node types a pure regex-compile payload needs. A positive allowlist
+#: fails closed: a node absent here (def, comprehension, with) withholds the exemption.
+_SHAPE_ALLOWED_NODES = (
+    ast.Module,
+    ast.Import,
+    ast.alias,
+    ast.Expr,
+    ast.Assign,
+    ast.AnnAssign,
+    ast.AugAssign,
+    ast.Name,
+    ast.Attribute,
+    ast.Call,
+    ast.keyword,
+    ast.Constant,
+    ast.Subscript,
+    ast.Slice,
+    ast.Tuple,
+    ast.List,
+    ast.Set,
+    ast.Dict,
+    ast.BinOp,
+    ast.BoolOp,
+    ast.UnaryOp,
+    ast.Compare,
+    ast.JoinedStr,
+    ast.FormattedValue,
+    ast.Starred,
+    ast.IfExp,
+    ast.expr_context,
+    ast.operator,
+    ast.boolop,
+    ast.unaryop,
+    ast.cmpop,
+)
+
+
+@once_per_call()
+def _payload_outside_compile_shape(view: str) -> bool:
+    """True unless the WHOLE payload is a pure regex-compile shape (deny by default).
+
+    A ``compile`` method is exempt only when the receiver module is PROVABLY itself.
+    Denylisting each rebind spelling (a store, ``setattr``, ``vars(re).update``,
+    ``sys.modules['re']``, ``globals()``, ``re._compile.__globals__``) is a losing
+    chase, so the exemption is withheld unless the payload is POSITIVELY a pure regex
+    compile: every statement an import, a plain-``Name`` assignment, or an
+    expression, built only from literals, names, NON-dunder attribute reads, and
+    calls of the single form ``<name>.compile(...)`` (or a proven ``compile``
+    alias). Anything else -- any other call, a dunder, an attribute/subscript STORE,
+    a ``from`` import, a ``def``/``class``/``lambda``, control flow -- means the
+    payload could reach a module namespace or run code, so the exemption is withheld.
+    An unparsable view is outside the shape. Conservative by design: a payload that
+    does more than compile a regex loses the exemption and is judged normally.
+    """
+    try:
+        tree = ast.parse(view)
+    except (SyntaxError, ValueError, RecursionError, MemoryError, SystemError):
+        return True
+    aliases = _compile_method_aliases(view, _foreign_module_names(view))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(
+            node.ctx, (ast.Store, ast.Del)
+        ):
+            return True  # an attribute / subscript store can rebind a loader
+        if isinstance(node, ast.Attribute) and _is_dunder(node.attr):
+            return True  # a dunder reaches internals (__dict__, __globals__, ...)
+        if isinstance(node, ast.Call):
+            func = node.func
+            is_compile_method = isinstance(func, ast.Attribute) and func.attr == "compile"
+            is_compile_alias = isinstance(func, ast.Name) and func.id in aliases
+            if not (is_compile_method or is_compile_alias):
+                return True  # the only call a pure compile payload makes
+        elif not isinstance(node, _SHAPE_ALLOWED_NODES):
+            return True
+    return False
+
+
+def _compile_literal_arg_is_inert(arg_text: str) -> bool:
+    """True if a ``compile`` call cannot reach the mint from here.
+
+    The console-script name inside a regex (``re.compile('foo|kirocrew')``) is the
+    reported false positive. A regex literal is inert ONLY when the call could be
+    ``re.compile(pattern[, flags])``: AT MOST TWO arguments and a plain-string first
+    argument that does not name the package. A THIRD argument means the real
+    builtin ``compile(source, filename, mode)``, which turns the literal into an
+    EXECUTABLE code object -- so a receiver swapped to ``builtins`` at run time
+    (``sys.modules['re'] = builtins``) could run it; never inert. A computed first
+    argument (``open(shutil.which('kirocrew')).read()``) is never inert either, and
+    a literal that names the mint surface or imports the package is caught here too.
+
+    The ARGUMENT decides whatever the receiver is, so two more shapes are refused
+    even off a proven import whose ``.compile`` a swap the binding walk cannot see
+    may have replaced (``setattr(re, 'compile', os.system)``,
+    ``sys.modules['re'].compile = os.system``, ``re.__dict__.update(compile=...)``):
+    a literal that names the product AND a mint verb together -- the console-script
+    ``kirocrew ... token`` spelling that ``_MINT_SURFACE_RE`` does not cover --
+    because a swapped receiver would run it; and an executable EXTRA argument (a
+    call or ``*``/``**`` unpacking, as in ``re.compile('x', os.system('kirocrew
+    token'))``), because ``re.compile`` takes only an inert pattern and flags. A
+    plain regex naming the product alone (``re.compile(r'Foo|kirocrew|Bar')``)
+    stays inert and allowed.
+    """
+    return (
+        _first_argument_is_plain_string(arg_text)
+        and _top_level_arg_count(arg_text) <= 2
+        and not _MINT_SURFACE_RE.search(arg_text)
+        and not _LOADED_IMPORT_RE.search(arg_text)
+        and not (_CONSOLE_SCRIPT_LITERAL_RE.search(arg_text) and _MINT_VERB_RE.search(arg_text))
+        and not _argument_has_executable_extra(arg_text)
+    )
+
+
+def _argument_has_executable_extra(arg_text: str) -> bool:
+    """True if a ``compile`` argument text holds anything that RUNS.
+
+    ``re.compile`` takes an inert pattern and optional flags; neither is a call or
+    an unpacking. So a call applied to a name, string, group or subscript
+    (``os.system('kirocrew token')``), or a ``*``/``**`` unpacking that smuggles a
+    third builtin-``compile`` argument past the top-level count, means an argument
+    other than the inert first literal can reach the mint. A text the lexer cannot
+    read counts as executable (fails closed).
+    """
+    previous: "tokenize.TokenInfo | None" = None
+    try:
+        for item, _, _ in _lex(arg_text):
+            if item.type in (
+                tokenize.NL,
+                tokenize.NEWLINE,
+                tokenize.COMMENT,
+                tokenize.ENCODING,
+                tokenize.INDENT,
+                tokenize.DEDENT,
+                tokenize.ENDMARKER,
+            ):
+                continue
+            if item.type == token.OP and item.string in ("*", "**"):
+                return True
+            if (
+                item.type == token.OP
+                and item.string == "("
+                and previous is not None
+                and (
+                    previous.type in (token.NAME, token.STRING)
+                    or (previous.type == token.OP and previous.string in (")", "]"))
+                )
+            ):
+                return True
+            previous = item
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return True
+    return False
+
+
+def _top_level_arg_count(arg_text: str) -> int:
+    """How many top-level comma-separated arguments a call's argument text holds.
+
+    ``re.compile`` takes at most two (pattern, flags); three or more is the builtin
+    ``compile`` with a mode, not a regex compile. A text the lexer cannot read
+    counts as 3 (many), so it is never treated as a <=2-argument regex compile.
+    """
+    depth = 0
+    commas = 0
+    try:
+        for item, _, _ in _lex(arg_text):
+            if item.type != token.OP:
+                continue
+            if item.string in ("(", "[", "{"):
+                depth += 1
+            elif item.string in (")", "]", "}"):
+                depth = max(0, depth - 1)
+            elif item.string == "," and depth == 0:
+                commas += 1
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return 3
+    return commas + 1 if arg_text.strip() else 0
+
+
+def _first_argument_is_plain_string(arg_text: str) -> bool:
+    """True if the first top-level argument of a call is one plain string literal.
+
+    ``re.compile('foo|kirocrew')`` and ``re.compile('p', 'f', 'exec')`` qualify;
+    a computed first argument (``open(shutil.which('kirocrew')).read()``) does
+    not. Reads the FOLDED view, where adjacent literals are already one token, so
+    a single ``STRING`` followed by a top-level ``,`` or the end is the whole test.
+    A text the lexer cannot read fails closed to ``False`` (not a plain literal).
+    """
+    first: "str | None" = None
+    try:
+        for item, _, _ in _lex(arg_text):
+            if item.type in (
+                tokenize.NL,
+                tokenize.NEWLINE,
+                tokenize.COMMENT,
+                tokenize.ENCODING,
+                tokenize.INDENT,
+                tokenize.DEDENT,
+                tokenize.ENDMARKER,
+            ):
+                continue
+            if first is None:
+                if item.type == token.STRING and _PLAIN_LITERAL_RE.fullmatch(item.string):
+                    first = item.string
+                    continue
+                return False
+            return item.type == token.OP and item.string == ","
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return False
+    return first is not None
+
+
 def _expression_start(view: str, position: int) -> int:
     """Where the dotted expression ending at *position* begins.
 
@@ -365,6 +723,24 @@ def _unwrapped_head(text: str) -> str:
     while head.startswith("(") and head.endswith(")"):
         head = head[1:-1].strip()
     return head
+
+
+def _grouped_call_argument(
+    view: str, brackets: dict[int, list[tuple[int, int]]], closing: int
+) -> str:
+    """The argument text of the call FOLLOWING a grouping whose ``)`` is at *closing*.
+
+    ``(re.compile)(ARG)`` -- the call's own ``(`` is the next non-space after the
+    grouping, and its span comes from *brackets*. ``""`` when the grouping is bound
+    to a name rather than called here, which is not an inert literal.
+    """
+    k = closing + 1
+    while k < len(view) and view[k].isspace():
+        k += 1
+    if k >= len(view) or view[k] != "(":
+        return ""
+    args = brackets.get(k + 1, [])
+    return view[k + 1 : args[-1][1]] if args else ""
 
 
 def _indirect_heads(
@@ -402,6 +778,7 @@ def _indirect_heads(
     for match in _ATTRIBUTE_SUBSCRIPT_RE.finditer(view):
         if match.group(2) in _RESOLVABLE_NAMES:
             heads.append((_expression_start(view, match.start()), match.end(), match.group(2)))
+    foreign: "frozenset[str] | None" = None  # computed once, only if a grouped loader appears
     for opening, arguments in brackets.items():
         if not arguments:
             continue
@@ -416,22 +793,71 @@ def _indirect_heads(
         closing = arguments[-1][1]
         if closing >= len(view) or view[closing] != ")":
             continue
-        dotted = _DOTTED_HEAD_RE.match(_unwrapped_head(view[opening:closing]))
+        head_text = _unwrapped_head(view[opening:closing])
+        dotted = _DOTTED_HEAD_RE.match(head_text)
         if dotted is None:
             continue
         word = dotted.group(1)
+        # A grouped compile is exempt only parsing, off a proven non-owner dotted
+        # receiver, with an inert literal arg; a heredoc never parses -> denied.
+        if word == "compile":
+            if foreign is None:
+                foreign = _foreign_module_names(view)
+            if (
+                _payload_parses(view)
+                and not _payload_outside_compile_shape(view)
+                and _loader_method_is_exempt(_dotted_receiver(head_text), foreign)
+                and _compile_literal_arg_is_inert(_grouped_call_argument(view, brackets, closing))
+            ):
+                continue
         canonical = word if word in _RESOLVABLE_NAMES else (aliases or {}).get(word)
         if canonical is not None:
             heads.append((opening - 1, closing + 1, canonical))
     return heads
 
 
+def _compile_method_aliases(view: str, foreign: "frozenset[str]") -> "frozenset[str]":
+    """Names bound by a SINGLE plain ``alias = <foreign>.compile`` assignment.
+
+    Only such an alias is a method alias whose call the argument rule may skip.
+    Decided from the AST, so an ``IfExp``, ``BoolOp``, walrus, parameter, or ANY
+    second binding of the name (``c = re.compile if x else compile``) does not
+    qualify. An unparsable view yields none, so a heredoc alias is never exempt.
+    """
+    try:
+        tree = ast.parse(view)
+    except (SyntaxError, ValueError, RecursionError, MemoryError, SystemError):
+        return frozenset()
+    counts = {name: len(tags) for name, tags in _name_bindings(view).items()}
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "compile"
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id in foreign
+            and counts.get(node.targets[0].id) == 1
+        ):
+            out.add(node.targets[0].id)
+    return frozenset(out)
+
+
 def _callable_aliases(
     view: str,
     spans: list[tuple[int, int, int]],
     brackets: dict[int, list[tuple[int, int]]],
-) -> dict[str, str]:
+) -> "tuple[dict[str, str], frozenset[str]]":
     """Names this payload binds to a callable the gates read: alias -> callable.
+
+    The second return value is the subset of those names bound to ``compile`` off
+    a PROVEN non-owner module (``c = re.compile``). Such a call carries no receiver
+    at the call site, so -- like a direct ``re.compile`` -- its argument decides:
+    an inert literal is skipped, a computed argument stays resolved (and denied).
+    A ``compile`` aliased off the real builtin (``c = builtins.compile``, ``c =
+    compile``) is NOT in the set, so it is denied on the console-script name.
 
     Read from the payload's own STATIC bindings, in token order so quoted text
     binds nothing: ``from runpy import run_module as r``, ``r = runpy.run_module``,
@@ -448,6 +874,7 @@ def _callable_aliases(
         for item, start, _ in _lex(view)
         if item.type not in (tokenize.COMMENT, tokenize.NL, tokenize.ENCODING)
     ]
+    foreign = _foreign_module_names(view)
     aliases: dict[str, str] = {}
     index = 0
     while index < len(items):
@@ -479,7 +906,7 @@ def _callable_aliases(
         # its result, so a trailing ``(`` disqualifies the binding.
         if item.type == token.NAME and index + 2 < len(items) and items[index + 1][0].string == "=":
             cursor = index + 2
-            last = None
+            last: str | None = None
             while cursor < len(items) and items[cursor][0].type == token.NAME:
                 last = items[cursor][0].string
                 cursor += 1
@@ -496,7 +923,7 @@ def _callable_aliases(
         binding = _ALIAS_BINDING_RE.search(view[:head])
         if binding is not None:
             aliases[binding.group(1)] = canonical
-    return aliases
+    return aliases, _compile_method_aliases(view, foreign)
 
 
 def _resolved_calls(
@@ -519,7 +946,10 @@ def _resolved_calls(
         spans = _call_spans(view)
     if brackets is None:
         brackets = _argument_spans(view)
-    aliases = _callable_aliases(view, spans, brackets)
+    aliases, compile_method_aliases = _callable_aliases(view, spans, brackets)
+    foreign = _foreign_module_names(view)
+    parses = _payload_parses(view)
+    outside = _payload_outside_compile_shape(view)
     resolved: list[tuple[str, int, int, int]] = []
     for name, start, end in spans:
         written = _CALL_NAME_RE.match(view, name)
@@ -527,10 +957,30 @@ def _resolved_calls(
             continue
         word = written.group(1)
         if word in _RESOLVABLE_NAMES:
+            # A parsing compile method off a non-owner module with an inert literal
+            # argument is skipped; a heredoc never parses, so it is never skipped.
+            if (
+                word == "compile"
+                and parses
+                and not outside
+                and _preceded_by_attribute_access(view, name)
+                and _loader_method_is_exempt(_attribute_receiver(view, name), foreign)
+                and _compile_literal_arg_is_inert(view[start:end])
+            ):
+                continue
             resolved.append((word, name, start, end))
             continue
         canonical = aliases.get(word)
         if canonical is not None and not _preceded_by_attribute_access(view, name):
+            # An aliased non-owner compile is judged by its argument too; a builtin
+            # alias is not in the set, so it is never skipped here.
+            if (
+                word in compile_method_aliases
+                and parses
+                and not outside
+                and _compile_literal_arg_is_inert(view[start:end])
+            ):
+                continue
             resolved.append((canonical, name, start, end))
     for head, after, canonical in _indirect_heads(view, spans, brackets, aliases):
         cursor = after

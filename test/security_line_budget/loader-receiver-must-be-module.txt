@@ -1,0 +1,30 @@
++450
+A code-loader name written as a method (`re.compile`) was resolved as the builtin
+by its bare word alone, so a regex pattern naming the product tripped the mint
+check. The fix narrows `compile` by its ARGUMENT, on a payload that PARSES. A
+`compile` method (or its alias or grouped form) off a proven non-owner module
+whose first argument is a plain string literal that does not itself name the
+package is inert regex data, so the console-script name match is skipped while the
+mint-surface and product-import checks still run. The argument decides whatever
+the receiver is, so the exemption is withheld from any call whose literal names
+the product with a mint verb together, whose extra argument is executable (a call
+or `*`/`**` unpacking), or whose first argument is COMPUTED
+(`open(shutil.which('kirocrew')).read()`). A swapped os.system/exec receiver also
+re-reads the literal as a shell or code string, so a mint verb assembled by
+`$(...)` or a chr join defeats any content check. Denylisting each rebinding
+spelling (store, setattr, vars(re).update, sys.modules, globals(), from re import
+__dict__, re._compile.__globals__) is a losing chase, so the exemption is withheld
+unless the WHOLE payload is POSITIVELY a pure regex compile
+(`_payload_outside_compile_shape`): every statement an import, a plain-name
+assignment, or an expression, built only from literals, names, non-dunder attribute
+reads, and calls of the single form `<name>.compile(...)` or a proven compile alias.
+Any other call, a dunder, an attribute/subscript store, a from-import, a
+def/class/lambda or control flow puts it outside the shape and is denied by default;
+an unparsable heredoc is outside it too. Conservative: a payload that does more than
+compile a regex loses the exemption and is judged normally. The whole-payload
+predicates are cached per gate call (`once_per_call`), so a payload of many grouped
+calls stays linear. The real builtin reached by a
+grouping, getattr or a rebound alias is never skipped. A
+heredoc body is word-split with its quotes stripped, so no argument can be read
+and no receiver is proven: a heredoc loader naming the product is denied, as on
+base.
