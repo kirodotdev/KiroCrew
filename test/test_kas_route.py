@@ -507,7 +507,7 @@ class TestHarnessRoute:
         ):
             plan = await KasHarness().resolve_spawn(_ctx(tmp_path))
         assert plan.argv == build_kas_bundle_argv(
-            str(installed.node_bin), str(installed.acp_server)
+            str(installed.node_bin), str(installed.acp_server), environ={}
         )
         assert plan.host_auth is True
         assert plan.engine_is_child is False

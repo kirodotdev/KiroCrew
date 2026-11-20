@@ -58,6 +58,7 @@ from kiro_crew.acp.harness.base import (
 )
 from kiro_crew.acp.kas_agents import KasAgentTranslationError
 from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
+from kiro_crew.acp.kas_endpoints import CLOUD_CONFIG_ENDPOINT_ENV
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
 from kiro_crew.acp.kas_prompt import prompt_unread_notice, spec_prompt
@@ -1067,7 +1068,9 @@ class KasHarness(MembershipHarness):
             from kiro_crew.acp.chat_runtime_sharing import engine_shares_chats
 
             self.spawn_engine_shares_chats = engine_shares_chats(bundle.version)
-        argv = build_kas_bundle_argv(str(bundle.node_bin), str(bundle.acp_server))
+        argv = build_kas_bundle_argv(
+            str(bundle.node_bin), str(bundle.acp_server), environ=ctx.environ
+        )
         await asyncio.to_thread(ensure_engine_bundle_cache, argv)
         return SpawnPlan(
             argv=argv,
@@ -1129,6 +1132,8 @@ class KasHarness(MembershipHarness):
             strip_kiro_cli_api_key(env)
         engine_bundle = _runs_crew_engine_bundle(spawned_binary)
         if engine_bundle:
+            # The validated argv owns this endpoint, including after agent.env is merged.
+            env.pop(CLOUD_CONFIG_ENDPOINT_ENV, None)
             defer_mandatory_mcps_env(env)
             env.setdefault("NODE_USE_SYSTEM_CA", "1")
         else:
