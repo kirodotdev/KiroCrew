@@ -3,9 +3,9 @@ title: The sandbox seals the gateway checkout's git control files
 status: accepted
 author: iamwhatever
 created: 2026-10-29
-last-audited: 2026-10-29
-audited-at: 7df9837c60
-doc-pr:
+last-audited: 2026-11-19
+audited-at: fc89562d69
+doc-pr: 25692
 implementation-prs: [24812]
 tracking-issues: []
 supersedes: []

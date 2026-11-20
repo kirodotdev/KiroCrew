@@ -1,11 +1,11 @@
 ---
 title: "The rm root row stops refusing a plain rm of named /tmp entries"
-status: draft
+status: implemented
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-13
-last-audited: 2026-11-13
-audited-at: 51349e12e7
-doc-pr: null
+last-audited: 2026-11-19
+audited-at: fc89562d69
+doc-pr: 36542
 implementation-prs: [36536]
 tracking-issues: [19473, 35629]
 supersedes: []
@@ -13,6 +13,8 @@ superseded-by: []
 ---
 
 # RFC: The rm root row stops refusing a plain rm of named /tmp entries
+
+Status: implemented in [#36536](https://github.com/kirodotdev/KiroCrew/pull/36536) (`security/rm_floor.py`, `security/deny_gate.py`).
 
 ## 1. Decision
 
