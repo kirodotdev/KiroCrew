@@ -92,6 +92,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         session_is_bound_worker,
     )
     from kiro_crew.dashboard.handlers.work_ledger_conductor import (  # noqa: F401
+        CODE_WORKER_RELEASE_UNRECORDED,
         DISPATCH_FIELD,
         RECORD_ACTIONS,
         _bootstrap,
@@ -108,6 +109,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _refuse_dispatch_without_ledger,
         _refuse_dispatched_worker,
         _refuse_granted_bind_too_deep,
+        _refuse_release,
         _refuse_unowned_worker,
         _set_pair_field,
         _widest_retired_bindings,
@@ -118,6 +120,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         holds_ledger,
         nests_too_deep,
         release_on_handoff,
+        release_deleted_worker,
     )
     from kiro_crew.dashboard.handlers.work_ledger_handback import (  # noqa: F401
         _HANDBACK_OPERATION,

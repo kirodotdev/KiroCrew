@@ -70,10 +70,14 @@ class TestActionableEvents:
             "retire",
             "destroy",
             "ask",
+            "release",
         }
         assert not lw.is_actionable_event("steer", "done")
         # ``retire`` is written during the conductor's own read, which shows it.
         assert not lw.is_actionable_event("retire", "done")
+        # ``release`` (a deleted worker's item left unbound) arms no new wake: the
+        # conductor reads the unbound item on its next patrol.
+        assert not lw.is_actionable_event("release", "done")
 
     def test_the_waking_set_is_a_subset_of_the_stores_worker_statuses(self):
         """A status the store refuses could never reach the gate."""

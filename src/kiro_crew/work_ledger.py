@@ -28,7 +28,14 @@ than one update function with a field allowlist:
 The two field sets are disjoint. Phase 2 mounts one tool on each, so a worker cannot
 reach a conductor field because the function it can call takes no parameter that
 names one — an absent parameter outlives an allowlist that must be kept correct as
-fields are added. Phase 1 performs NO identity resolution; that is Phase 2's job at
+fields are added.
+
+The GATEWAY writes conductor fields in two places no tool reaches, each recorded as
+its own conductor-board event: the hub's ``retire`` / ``destroy`` of a REMOTE binding
+(:func:`apply_remote_retire`), and the history delete's ``release`` of a LOCAL open
+item whose worker chat is being permanently deleted (:func:`apply_local_release`),
+which clears ``worker_session_key`` and nothing else, before the transcript is
+unlinked. Phase 1 performs NO identity resolution; that is Phase 2's job at
 the tool layer, and the split shape here is what lets it be done by construction.
 
 LOCK ORDER, for the two paths that hold more than one lock. ``create`` enforces the
@@ -1222,6 +1229,7 @@ from kiro_crew.work_ledger_undelivered import (  # noqa: E402, F401
     undelivered_seen,
 )
 from kiro_crew.work_ledger_writes import (  # noqa: E402, F401
+    RELEASE_WORKER_DELETED,
     _admit_create_locked,
     _create_item,
     _header_under_lock,
@@ -1238,6 +1246,7 @@ from kiro_crew.work_ledger_writes import (  # noqa: E402, F401
     apply_ask_record,
     apply_conductor_action,
     apply_guard_report,
+    apply_local_release,
     apply_person_steer,
     apply_worker_report,
     create_bound_item,

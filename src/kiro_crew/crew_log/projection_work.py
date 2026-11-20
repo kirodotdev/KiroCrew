@@ -627,9 +627,10 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
             # bar starts with neither.
             item["pending_since"] = None
             item["verdict"] = None
-        elif action == "retire":
-            # A retire that left the item unbound logs the pair as "", which the
-            # cache holds as unset.
+        elif action in ("retire", "release"):
+            # A retire that left the item unbound, and every release (a deleted
+            # worker's local item), logs the pair as "", which the cache holds as
+            # unset. So a rebuild's ``_reconcile_bindings`` binds no one to it.
             for name in ("worker_session_key", "worker_instance_id"):
                 item[name] = item.get(name) or None
         if action in ("bind", "retire"):

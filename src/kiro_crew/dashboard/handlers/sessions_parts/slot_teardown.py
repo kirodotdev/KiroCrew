@@ -150,6 +150,14 @@ async def _remove_slot_for_history_key(
     # transcript can be created or restored by another process after any owner
     # scan, so deleting those sidecars cannot be made atomic here. Preserve them:
     # stale state is reversible, while deleting a successor's state is not.
+    #
+    # One carve-out, and it is NOT made here: a worker chat's binding to an OPEN
+    # local work-board item is released by the delete route BEFORE the unlink,
+    # inside the delete-in-flight window that proves the key is still this
+    # conversation's, as a recorded ``release`` entry
+    # (``work_ledger_conductor.release_deleted_worker``). A release that cannot be
+    # recorded refuses the delete. Nothing after the unlink touches a binding, for
+    # the reason above.
 
     # The append-only CREW LOG is not one of those sidecars, and the difference is
     # mechanical rather than a re-reading of the rule above. A work ledger's identity

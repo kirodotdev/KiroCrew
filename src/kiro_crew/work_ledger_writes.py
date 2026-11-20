@@ -740,6 +740,55 @@ def _write_item_action(
         return {"conductor": record, "item": item, "event": event}
 
 
+#: The event text a ``release`` writes: the only reason the gateway releases a worker.
+RELEASE_WORKER_DELETED = "released: the worker's chat was permanently deleted"
+
+
+def apply_local_release(slot_key: str, item_id: str, *, worker_session_key: Any) -> dict[str, Any]:
+    """Unbind a LOCAL open item from its worker, whose transcript is being deleted.
+
+    Event kind ``release``. Reached only from the history delete
+    (``work_ledger_conductor.release_deleted_worker``), before the transcript is
+    unlinked, never from a conductor or worker tool. The item stays OPEN with no
+    worker, so the conductor sees it unbound and may bind it again. The worker's
+    binding file is removed with it when it still names this item.
+
+    Refuses an unknown item (``unknown_item``), a terminal one (``item_closed``), and
+    one bound to a peer crew or to any other worker (``invalid_value``), so a
+    terminal item, a remote item or an item rebound since the caller read it is never
+    touched. Lock order: item, then binding.
+    """
+    checked_id = _require_item_id(item_id)
+    worker = _require_text(worker_session_key, 512, "worker_session_key")
+    with item_lock(slot_key, checked_id, create=False):
+        item = read_work_item(slot_key, checked_id)
+        if item is None:
+            raise WorkLedgerError(
+                f"unknown item {checked_id!r}", code=CODE_UNKNOWN_ITEM, field="item_id"
+            )
+        if item.is_terminal:
+            raise WorkLedgerError(f"item {checked_id!r} is {item.state}", code=CODE_ITEM_CLOSED)
+        if item.worker_instance_id or item.worker_session_key != worker:
+            raise WorkLedgerError(
+                f"item {checked_id!r} is not bound to that worker",
+                code=CODE_INVALID_VALUE,
+                field="worker_session_key",
+            )
+        with binding_lock(worker):
+            prior_binding = _read_binding_text(worker)
+            # The binding FIRST, then the item; a failed item write puts it back,
+            # so a refusal leaves both as they were.
+            if read_binding(worker, strict=True) == (slot_key, checked_id):
+                binding_path(worker).unlink(missing_ok=True)
+            try:
+                item.worker_session_key = None
+                event = _commit_item_locked(slot_key, item, "release", RELEASE_WORKER_DELETED)
+            except BaseException:
+                _restore_binding_text(worker, prior_binding)
+                raise
+    return {"conductor": None, "item": item, "event": event}
+
+
 # Worker writes
 
 

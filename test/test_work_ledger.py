@@ -54,9 +54,10 @@ def test_worker_statuses_are_exactly_four_and_separate_blocked_from_question():
     assert set(worker_statuses(False)) == {"progress", "done", "blocked", "question"}
 
 
-def test_event_kinds_are_exactly_ten():
+def test_event_kinds_are_exactly_eleven():
     # ``retire`` and ``destroy`` are the hub's own remote-dispatch writes (wave 8);
-    # ``ask`` is the conductor's record of what an item needs from the person.
+    # ``ask`` is the conductor's record of what an item needs from the person;
+    # ``release`` is the history delete unbinding a deleted worker's local item.
     assert wl.EVENT_KINDS == {
         "ask",
         "create",
@@ -68,6 +69,7 @@ def test_event_kinds_are_exactly_ten():
         "steer",
         "retire",
         "destroy",
+        "release",
     }
 
 
