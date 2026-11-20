@@ -2427,12 +2427,12 @@ second name. A steering document on those same paths whose bytes are not UTF-8 t
 (for example UTF-16, or an ANSI code page with non-ASCII text, as Windows PowerShell
 5.1 writes by default) is left out and named in that same note, and the same two
 readers skip it. A steering document on those same paths that is over the per-file
-read cap (`_MAX_SOURCE_BYTES`, 256,000 bytes) is left out the same way, whatever its
+read cap (`_MAX_SOURCE_BYTES`, 260,000 bytes) is left out the same way, whatever its
 `inclusion` mode, because the read comes before the frontmatter is parsed: nothing
 past the cap is read, the snapshot names the file with its size and the cap in one
 core `essential-context#oversized-skipped:<template>` note, and the KAS document
 reader and `kiro_launch_documents` skip it with a warning. It is never truncated:
-a file that size could not fit the 64,000-character envelope whole, and a prefix
+a file that size could not fit the 65,000-character envelope whole, and a prefix
 would present partial rules as complete. Steering past the 64-document cap (`_MAX_DOCUMENTS`) is left out unread instead of refusing the turn: steering is admitted in sorted order once its `inclusion` is known, so a conditional file that is not loaded takes no slot and the first steering documents that load fill the cap, a member's own source (persona, `SOUL.md`, declared resource, context settings) takes the last kept non-core steering file's slot, and one core `essential-context#over-cap-skipped:<template>` note counts and names what was left out; the KAS document reader and `kiro_launch_documents` count only the always-included steering they keep. A steering document whose `inclusion` value
 is not `always`, `fileMatch`, `manual` or `auto` reads as `always` in the snapshot,
 the KAS document reader and `kiro_launch_documents` alike (`_steering_inclusion`),
@@ -2461,7 +2461,7 @@ on a schedule or turn count, and does not assert that every native trim path
 emits a notification; which paths do is recorded per backend in
 [providers](providers.md#native-harness-notifications-relied-on).
 
-They have a separate 64,000-character envelope, including wrappers and identity.
+They have a separate 65,000-character envelope, including wrappers and identity.
 The envelope is split into a core -- identity, the template persona prompt,
 `SOUL.md`, the template context settings, a guide-not-loaded note,
 `preferences.md`, `projects.md` and the on-demand memory note -- and guides:
