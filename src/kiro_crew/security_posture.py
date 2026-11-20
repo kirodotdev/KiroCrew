@@ -92,10 +92,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The no-tools notice row's agent name, redacted before the row is handed to
         # `append_and_surface`; the transcript broadcast is the registered sink.
         "dashboard/agent_no_tools_notice.py",
-        # Pure derivation: `shape_snapshot` takes the redactor as an argument
-        # (`redact`) and applies it to each bound field value before a widget block
-        # reads it; the module emits nothing. The widget routes that serve the
-        # snapshot are the egress.
+        # Pure derivation: `shape_snapshot` runs the page's `page_safe_for` on each
+        # bound field value before a widget block reads it, `redact_via_context` on
+        # each string before the sanitizer seam, and `page_safe_for` again on the
+        # finished body; it returns that body and emits nothing. The widget routes
+        # that serve the snapshot are the egress.
         "dashboard/widget_snapshot.py",
         # Pure helper: `redact_note` returns a redacted copy and emits nothing. Its
         # only caller is `notifications/bridge.py`, the registered sink that hands
