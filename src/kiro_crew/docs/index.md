@@ -58,7 +58,7 @@ over and what changes.
 | [Work Ledger](work-ledger.md) | Split a goal across one session per item: a conductor dispatches workers, reads their status as data, and settles every completion claim against an acceptance condition |
 | [Browser Control](browser-control.md) | Drive a real web page from the dashboard's Browser panel: navigate, snapshot, click, type, screenshot |
 | [Computer Use](computer-use.md) | Read and drive native desktop applications through the accessibility layer; opt-in and off by default |
-| [Jev Decisions](decisions.md) | Let a small fast model choose the automatic skill for a sampled conversation, choose whether a message sent mid-turn steers or queues, flag a risky tool call on its own card without changing any permission, fall back to what shipped whenever it cannot, and keep a basic log of the calls |
+| [Jev Decisions](decisions.md) | Let a small fast model choose the automatic skill, the model for a chat turn, whether a message sent mid-turn steers or queues, which recalled memories reach the prompt and whether a watching loop wakes its session; flag a risky tool call on its own card without changing any permission; fall back to what shipped whenever it cannot, and keep a basic log of the calls |
 
 ## Additional Features
 
