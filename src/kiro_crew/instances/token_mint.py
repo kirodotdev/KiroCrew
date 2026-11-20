@@ -64,6 +64,10 @@ REMOTE_BIN_HINT = (
     "remote_bin setting to its path, e.g. ~/.local/bin/kirocrew"
 )
 
+# The first stderr line of the candidate search's no-launcher path. A mint error
+# matches on it rather than on exit 127, which a launcher that ran can return too.
+NO_LAUNCHER_MARKER = "kirocrew binary not found in any of:"
+
 # ttl accepted by `kirocrew token --ttl`: a positive integer with an h/m suffix
 # (e.g. "20h", "30m"). Validated to keep it out of the remote command unchecked.
 _TTL_RE = re.compile(TTL_PATTERN)
@@ -267,7 +271,7 @@ def build_candidate_command(
             f'    exec "$b" {subcommand};',
             "  fi;",
             "done;",
-            f'echo "kirocrew binary not found in any of: {", ".join(candidates)}" >&2;',
+            f'echo "{NO_LAUNCHER_MARKER} {", ".join(candidates)}" >&2;',
             'echo "candidate diagnosis:" >&2;',
             f"for b in {expanded}; do",
             '  if [ -L "$b" ]; then',

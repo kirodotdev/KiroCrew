@@ -2191,6 +2191,15 @@ remote and stays `remote_down`, as do every other dispatch failure and an instal
 remote with no live gateway. Nothing here is a new AWS call or permission: the probe
 already ran over `send-command`.
 
+Connect's mint names two of those causes itself. When the SSM mint fails with sudo's
+`unknown user` on stderr, or with the candidate search's own
+`NO_LAUNCHER_MARKER` line (no launcher where the mint looked; a bare exit 127, which a
+launcher that ran or a custom `remote_bin` can return too, does not count), its
+`TokenMintError` starts with the same sentence as `ssm_user_unknown` /
+`remote_not_installed`, then the raw status and redacted tails. The sentences live in
+`ssm_token_mint` and the ladder imports them, so Connect and Diagnose cannot word one
+cause two ways.
+
 `ssm_unreachable` and `ssm_target_missing` are SSM-specific diagnosis codes; the shared
 rungs reuse SSM-worded reasons so the copy never tells an SSM user to "check SSH access".
 `ssm_target_missing` exists because `ssm_target` is a fixed id: after an instance is
