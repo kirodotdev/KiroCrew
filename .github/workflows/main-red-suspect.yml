@@ -139,7 +139,6 @@ jobs:
           sparse-checkout: |
             .github/scripts
             .github/actions/gh-rate-limit
-            src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts
 
       - uses: ./.github/actions/gh-rate-limit
         with:

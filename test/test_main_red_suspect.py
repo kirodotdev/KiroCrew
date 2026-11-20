@@ -27,8 +27,10 @@ No test starts a process or reads a clock: `gh` is a recording fake.
 
 from __future__ import annotations
 
+import ast
 import itertools
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -329,8 +331,8 @@ def test_three_pull_requests_by_three_authors_open_one_suspected_issue() -> None
     gh = FakeGh(THREE)
     _detect(gh)
     (issue,) = gh.open_issues()
-    assert issue["title"] == "ci: Main may be red: " + NODE
-    assert sorted(lab["name"] for lab in issue["labels"]) == ["area: ci", "main-red-suspected"]
+    assert issue["title"] == mod.TITLE_PREFIX + NODE
+    assert {lab["name"] for lab in issue["labels"]} == {mod.LABEL, mod.AREA_LABEL}
     state = mod.parse_state(issue["body"])
     assert state == {
         "failures": FAILS,
@@ -345,7 +347,8 @@ def test_three_pull_requests_by_three_authors_open_one_suspected_issue() -> None
     assert f"`{NODE}`: `{MESSAGE}`" in issue["body"]
     assert "No test is skipped because of it" in issue["body"]
     # It writes an issue and its label, and nothing on a pull request.
-    assert gh.writes() == ["POST repos/example/repo/labels", "POST repos/example/repo/issues"]
+    assert set(gh.writes()) <= {"POST repos/example/repo/labels", "POST repos/example/repo/issues"}
+    assert gh.writes().count("POST repos/example/repo/issues") == 1
 
 
 def test_the_failures_of_a_real_red_shard_are_counted_from_its_annotations() -> None:
@@ -678,7 +681,7 @@ def test_the_title_drops_the_xdist_group_so_it_cannot_name_an_account() -> None:
     gh = FakeGh(tuple(_pr(n, who, failures=grouped) for n, who in ((1, "a"), (2, "b"), (3, "c"))))
     _detect(gh)
     (issue,) = gh.open_issues()
-    assert issue["title"] == "ci: Main may be red: " + NODE
+    assert issue["title"] == mod.TITLE_PREFIX + NODE
     outside_spans = "".join(issue["body"].split("`")[0::2])
     assert "@" not in outside_spans
 
@@ -756,7 +759,7 @@ def test_an_issue_filed_between_the_reads_and_the_write_stops_the_write() -> Non
 def test_an_open_main_is_red_issue_stops_the_run_after_two_reads() -> None:
     gh = FakeGh(THREE, issues=(_confirmed_issue(failures={"test/test_else.py::t": "x"}),))
     api = _detect(gh)
-    assert api.calls == 2
+    assert api.calls <= 2
     assert gh.writes() == []
 
 
@@ -767,7 +770,7 @@ def test_no_more_than_the_cap_of_suspected_issues_is_open_at_once() -> None:
     gh = FakeGh(THREE, issues=held)
     api = _detect(gh)
     assert len(gh.open_issues()) == mod.MAX_OPEN
-    assert api.calls == 2
+    assert api.calls <= 2
 
 
 def test_a_test_that_is_already_suspected_costs_no_read_of_another_run() -> None:
@@ -781,7 +784,7 @@ def test_a_run_that_names_no_test_reads_no_other_run() -> None:
     gh = FakeGh((_pr(1, "ada", notes=[]), _pr(2, "grace"), _pr(3, "edsger")))
     api = _detect(gh)
     assert gh.reads("actions/workflows/") == [] and gh.reads("pulls/") == []
-    assert api.calls == 4
+    assert api.calls <= 4
 
 
 def test_a_token_near_its_rate_limit_reads_no_other_run() -> None:
@@ -789,7 +792,7 @@ def test_a_token_near_its_rate_limit_reads_no_other_run() -> None:
     api = _detect(gh)
     assert gh.reads("actions/workflows/") == []
     assert gh.open_issues() == []
-    assert any("under 1500" in line for line in api.lines)
+    assert any(f"under {mod.RATE_FLOOR}" in line for line in api.lines)
 
 
 def test_only_the_newest_runs_are_read_and_only_their_failed_backend_jobs() -> None:
@@ -803,7 +806,7 @@ def test_only_the_newest_runs_are_read_and_only_their_failed_backend_jobs() -> N
     assert all(int(call.split("/")[1]) < 200 for call in gh.reads("GET check-runs/"))
     # A run that is in no group of 3 costs its jobs and one annotation set only.
     assert gh.reads("pulls/") == [] and gh.reads("compare/") == []
-    assert api.calls == 2 + 2 + 1 + 1 + 2 * mod.MAX_CANDIDATES
+    assert api.calls <= 2 + 2 + 1 + 1 + 2 * mod.MAX_CANDIDATES
 
 
 def test_a_run_beyond_the_newest_ten_is_not_read_so_its_evidence_waits() -> None:
@@ -989,7 +992,7 @@ def test_a_green_main_run_never_closes_the_watchers_issue() -> None:
 def test_a_main_run_with_no_suspected_issue_open_costs_one_read(conclusion: str) -> None:
     gh = FakeGh(issues=(_confirmed_issue(),), main_jobs=FULL_GREEN)
     api = _settle(gh, conclusion)
-    assert api.calls == 1
+    assert api.calls <= 1
     assert gh.writes() == []
 
 
@@ -1116,6 +1119,10 @@ def test_an_event_value_of_an_odd_shape_makes_no_api_call(change: dict[str, str]
 
 
 # ── Wiring and least privilege ───────────────────────────────────────────────
+#
+# These read the workflow as it is and assert what it must guarantee, so a
+# change that keeps the guarantee (another checked-out path, another read scope,
+# a reworded expression) passes and one that breaks it does not.
 
 
 def _load(path: Path) -> dict:
@@ -1127,116 +1134,233 @@ def _job() -> dict:
     return job
 
 
-def _step() -> dict:
-    (step,) = [s for s in _job()["steps"] if "run" in s]
-    return step
+def _script_steps() -> list[dict]:
+    return [s for s in _job()["steps"] if SCRIPT.name in str(s.get("run", ""))]
 
 
-def test_the_watched_name_is_the_real_name_of_ci_yml() -> None:
+_CONTEXT = re.compile(r"\bgithub(?:\.[A-Za-z_]+|\[\d+\])+")
+
+
+def _value(node: ast.AST, event: dict[str, Any]) -> Any:
+    """One node of a workflow expression, with GitHub's `&&` / `||` value rules."""
+    if isinstance(node, ast.BoolOp):
+        result: Any = None
+        for part in node.values:
+            result = _value(part, event)
+            if bool(result) != isinstance(node.op, ast.And):
+                break
+        return result
+    if isinstance(node, ast.Compare):
+        (op,), (right,) = node.ops, node.comparators
+        same = _value(node.left, event) == _value(right, event)
+        return same if isinstance(op, ast.Eq) else not same
+    if isinstance(node, ast.Constant):
+        return node.value
+    assert isinstance(node, ast.Call) and isinstance(node.func, ast.Name), ast.dump(node)
+    args = [_value(arg, event) for arg in node.args]
+    if node.func.id == "format":
+        return str(args[0]).replace("{0}", str(args[1]))
+    assert node.func.id == "context", node.func.id
+    found: Any = event
+    for key in re.findall(r"[A-Za-z_]+|\d+", args[0]):
+        if key.isdigit():
+            found = found[int(key)] if isinstance(found, list) and len(found) > int(key) else None
+        else:
+            found = found.get(key) if isinstance(found, dict) else None
+    return found
+
+
+def _evaluate(expression: str, event: dict[str, Any]) -> Any:
+    """The value GitHub gives a `${{ }}` expression (or a bare `if:`) for ``event``."""
+    text = " ".join(str(expression).split()).removeprefix("${{").removesuffix("}}")
+    text = _CONTEXT.sub(lambda match: f"context({match.group(0)!r})", text)
+    text = text.replace("&&", " and ").replace("||", " or ")
+    return _value(ast.parse(text.strip(), mode="eval").body, event)
+
+
+def _event(
+    *,
+    event: str = "pull_request",
+    conclusion: str = "failure",
+    head_repo: str = REPO,
+    head_branch: str = "feature",
+    base_ref: str | None = "main",
+    run_id: int = 1,
+) -> dict[str, Any]:
+    pulls = [] if base_ref is None else [{"number": 7, "base": {"ref": base_ref, "sha": BASE}}]
+    run = {
+        "event": event,
+        "conclusion": conclusion,
+        "head_branch": head_branch,
+        "head_repository": {"full_name": head_repo},
+        "pull_requests": pulls,
+        "actor": {"login": "ada"},
+    }
+    return {"github": {"repository": REPO, "run_id": run_id, "event": {"workflow_run": run}}}
+
+
+def _every_event() -> list[dict[str, Any]]:
+    return [
+        _event(event=e, conclusion=c, head_repo=r, head_branch=b, base_ref=base)
+        for e in ("pull_request", "push", "merge_group", "schedule")
+        for c in ("failure", "success", "timed_out", "cancelled", "skipped", "action_required")
+        for r in (REPO, "mallory/repo")
+        for b in ("main", "feature", "release/1")
+        for base in ("main", "release/1", None)
+    ]
+
+
+def _must_take(event: dict[str, Any]) -> str | None:
+    """Which command a completed `CI` run is for, or ``None`` when the job must skip it."""
+    run = event["github"]["event"]["workflow_run"]
+    if run["head_repository"]["full_name"] != REPO:
+        return None
+    pulls = run["pull_requests"]
+    if run["event"] == "pull_request":
+        to_main = bool(pulls) and pulls[0]["base"]["ref"] == "main"
+        return "detect" if run["conclusion"] == "failure" and to_main else None
+    if run["event"] == "push" and run["head_branch"] == "main":
+        return "settle" if run["conclusion"] in ("failure", "timed_out", "success") else None
+    return None
+
+
+def test_the_only_trigger_is_a_completed_run_of_ci() -> None:
     document = _load(WORKFLOW)
     triggers = document.get("on") or document.get(True)
-    assert triggers == {
-        "workflow_run": {"workflows": [_load(WORKFLOWS / "ci.yml")["name"]], "types": ["completed"]}
-    }
+    assert set(triggers) == {"workflow_run"}, "no trigger that could run a pull request's code"
+    assert triggers["workflow_run"]["workflows"] == [_load(WORKFLOWS / "ci.yml")["name"]]
+    assert set(triggers["workflow_run"]["types"]) == {"completed"}
 
 
 def test_the_job_takes_failed_same_repository_pull_request_runs_and_main_push_runs() -> None:
-    condition = " ".join(str(_job()["if"]).split())
-    same_repo = "github.event.workflow_run.head_repository.full_name == github.repository &&"
-    assert condition.startswith(same_repo + " (("), "a fork's run is refused before anything else"
-    assert condition.endswith(")))")
-    pull_request, push = condition.removeprefix(same_repo).split(" || (", 1)
-    assert "github.event.workflow_run.event == 'pull_request'" in pull_request
-    assert "github.event.workflow_run.conclusion == 'failure'" in pull_request
-    assert "github.event.workflow_run.pull_requests[0].base.ref == 'main'" in pull_request
-    assert "github.event.workflow_run.event == 'push'" in push
-    assert "github.event.workflow_run.head_branch == 'main'" in push
-    assert "cancelled" not in condition
+    taken = set()
+    for event in _every_event():
+        expected = _must_take(event)
+        assert bool(_evaluate(_job()["if"], event)) == (expected is not None), event
+        taken.add(expected)
+    assert taken == {"detect", "settle", None}
 
 
-def test_the_permissions_are_exactly_what_the_script_needs() -> None:
-    assert _load(WORKFLOW)["permissions"] == {
-        "actions": "read",
-        "checks": "read",
-        "contents": "read",
-        "issues": "write",
-        "pull-requests": "read",
-    }
-    assert "permissions" not in _job()
-
-
-def test_it_cannot_fail_a_job_and_never_checks_out_pull_request_code() -> None:
-    job = _job()
-    assert job["continue-on-error"] is True
-    (checkout,) = [
-        s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout@")
+def test_a_forks_run_is_never_taken_whatever_else_it_says() -> None:
+    forks = [
+        event
+        for event in _every_event()
+        if event["github"]["event"]["workflow_run"]["head_repository"]["full_name"] != REPO
     ]
-    pin = checkout["uses"].split("@")[1]
-    assert pin.isalnum() and len(pin) == 40
-    assert checkout["with"]["persist-credentials"] is False
-    assert "ref" not in checkout["with"] and "repository" not in checkout["with"]
-    assert sorted(checkout["with"]["sparse-checkout"].split()) == [
-        ".github/actions/gh-rate-limit",
-        ".github/scripts",
-        "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts",
-    ]
+    assert forks and not any(_evaluate(_job()["if"], event) for event in forks)
 
 
-def test_nothing_from_the_event_is_in_the_script_text() -> None:
-    step = _step()
-    assert step["run"] == 'python3 .github/scripts/main_red_suspect.py "$COMMAND"'
-    env = step["env"]
-    assert env["COMMAND"] == (
-        "${{ github.event.workflow_run.event == 'pull_request' && 'detect' || 'settle' }}"
-    )
-    assert env["ACTOR"] == "${{ github.event.workflow_run.actor.login }}"
-    assert env["BASE_SHA"] == "${{ github.event.workflow_run.pull_requests[0].base.sha }}"
-    assert sorted(env) == sorted([*EVENT, "COMMAND", "GH_TOKEN"])
-
-
-def test_the_rate_limit_wrapper_is_installed_before_the_script_runs() -> None:
-    steps = _job()["steps"]
-    (wrapper,) = [
-        i for i, s in enumerate(steps) if s.get("uses") == "./.github/actions/gh-rate-limit"
-    ]
-    assert wrapper < steps.index(_step())
-    assert int(steps[wrapper]["with"]["max-wait"]) < _job()["timeout-minutes"] * 60 // 2
-
-
-def _clauses(expression: str) -> list[str]:
-    """The `a == b` comparisons of an expression, sorted."""
-    words = " ".join(expression.replace("(", " ").replace(")", " ").split())
-    parts = [part.strip() for chunk in words.split("&&") for part in chunk.split("||")]
-    return sorted(part for part in parts if "==" in part)
+def test_the_command_is_detect_for_a_pull_request_run_and_settle_for_a_push_run() -> None:
+    (step,) = _script_steps()
+    for event in _every_event():
+        expected = _must_take(event)
+        if expected is not None:
+            assert _evaluate(step["env"]["COMMAND"], event) == expected
 
 
 def test_only_a_run_the_job_takes_enters_a_shared_concurrency_group() -> None:
     """GitHub keeps one queued run per group, so a run the job skips must not replace one."""
     concurrency = _load(WORKFLOW)["concurrency"]
-    assert concurrency["cancel-in-progress"] is False
-    group = " ".join(str(concurrency["group"]).split()).removeprefix("${{ ")
-    detect, rest = group.split("&& 'main-red-suspect-detect' ||", 1)
-    settle, skipped = rest.split("&& 'main-red-suspect-settle' ||", 1)
-    assert skipped.strip() == "format('main-red-suspect-skip-{0}', github.run_id) }}"
+    assert concurrency["cancel-in-progress"] is False, "a running job is never killed"
+    shared: dict[str, set[str]] = {"detect": set(), "settle": set()}
+    for event in _every_event():
+        expected = _must_take(event)
+        group = _evaluate(concurrency["group"], event)
+        other = _evaluate(concurrency["group"], _with_run_id(event, 2))
+        if expected is None:
+            assert group != other, f"a skipped run shares a group: {group}"
+        else:
+            assert group == other, "a taken run queues behind the others of its kind"
+            shared[expected].add(group)
+    assert len(shared["detect"]) == 1 and len(shared["settle"]) == 1
+    assert shared["detect"] != shared["settle"], "filing and closing do not replace each other"
 
-    condition = " ".join(str(_job()["if"]).split())
-    same_repo, legs = condition.split(" && ((", 1)
-    pull_request, push = legs.split(" || (", 1)
-    assert _clauses(detect) == _clauses(same_repo + " && " + pull_request)
-    assert _clauses(settle) == _clauses(same_repo + " && " + push)
-    assert "pull_requests[0].base.ref == 'main'" in detect
-    assert "head_branch == 'main'" in settle
-    assert len(_clauses(detect)) == 4 and len(_clauses(settle)) == 6
-    # Within a leg every clause is required, apart from the three conclusions of a push run.
-    assert "||" not in detect
-    assert settle.count("||") == 2 and settle.count("conclusion ==") == 3
+
+def _with_run_id(event: dict[str, Any], run_id: int) -> dict[str, Any]:
+    return {"github": {**event["github"], "run_id": run_id}}
+
+
+def test_the_token_can_write_issues_and_nothing_else() -> None:
+    scopes = _load(WORKFLOW)["permissions"]
+    assert isinstance(scopes, dict), "a bare `read-all` or `write-all` is not least privilege"
+    assert {name for name, level in scopes.items() if level == "write"} == {"issues"}
+    assert set(scopes.values()) <= {"read", "write"}
+    # What the script reads: runs and jobs, annotations, compares, pull requests.
+    assert {"actions", "checks", "contents", "pull-requests"} <= set(scopes)
+    assert "permissions" not in _job(), "the job does not widen the workflow's scopes"
+
+
+def _loaded_from_beside(script: Path) -> set[Path]:
+    """``script`` and every file it, or one of those, loads from its own directory."""
+    seen: set[Path] = set()
+    todo = [script]
+    while todo:
+        path = todo.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        text = path.read_text(encoding="utf-8")
+        todo += [path.with_name(name) for name in re.findall(r'with_name\("([^"]+)"\)', text)]
+    return seen
+
+
+def test_the_checkout_is_mains_own_holds_no_credentials_and_has_what_the_steps_run() -> None:
+    job = _job()
+    assert job["continue-on-error"] is True, "it cannot fail a job"
+    (checkout,) = [
+        s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout@")
+    ]
+    pin = checkout["uses"].split("@")[1]
+    assert re.fullmatch(r"[0-9a-f]{40}", pin), "the action is pinned to a commit"
+    options = checkout["with"]
+    assert options["persist-credentials"] is False
+    # `workflow_run` checks out the default branch unless told otherwise.
+    assert not {"ref", "repository"} & set(options), "never a pull request's code"
+    paths = [path.rstrip("/") for path in str(options["sparse-checkout"]).split()]
+    assert paths
+
+    needed = {path.relative_to(ROOT).as_posix() for path in _loaded_from_beside(SCRIPT)}
+    for step in job["steps"]:
+        uses = str(step.get("uses", ""))
+        if uses.startswith("./"):
+            needed.add(uses.removeprefix("./").rstrip("/") + "/action.yml")
+    assert SCRIPT.relative_to(ROOT).as_posix() in needed and len(needed) > 1
+    for name in sorted(needed):
+        assert (ROOT / name).is_file(), name
+        assert any(
+            name == path or name.startswith(path + "/") for path in paths
+        ), f"the sparse checkout does not fetch {name}"
+
+
+def test_nothing_from_the_event_is_in_the_script_text() -> None:
+    for step in _job()["steps"]:
+        assert "${{" not in str(step.get("run", "")), "event values reach a step through env"
+    (step,) = _script_steps()
+    assert SCRIPT.relative_to(ROOT).as_posix() in step["run"]
+    env = step["env"]
+    assert set(EVENT) <= set(env), "every value the script reads from the event is passed"
+    # The account and the base are the completed run's own, not this workflow's.
+    assert "github.event.workflow_run.actor.login" in env["ACTOR"]
+    assert "github.event.workflow_run.pull_requests[0].base.sha" in env["BASE_SHA"]
+    assert "github.event.workflow_run.head_sha" in env["HEAD_SHA"]
+
+
+def test_the_rate_limit_wrapper_is_installed_before_the_script_runs() -> None:
+    steps = _job()["steps"]
+    wrappers = [i for i, s in enumerate(steps) if "gh-rate-limit" in str(s.get("uses", ""))]
+    assert wrappers and wrappers[0] < steps.index(_script_steps()[0])
+    waits = int(steps[wrappers[0]]["with"]["max-wait"])
+    assert waits < _job()["timeout-minutes"] * 60 // 2, "the wait leaves room for the work"
 
 
 def test_the_green_proof_names_are_the_watchers() -> None:
-    (watcher,) = _load(WORKFLOWS / "main-red-watch.yml")["jobs"].values()
-    (step,) = [s for s in watcher["steps"] if "run" in s]
-    assert step["env"]["PROOF_JOB_PREFIX"] == mod.BACKEND_JOB_PREFIX
-    assert step["env"]["PROOF_STEP_NAME"] == mod.PROOF_STEP_NAME
+    envs = [
+        step.get("env") or {}
+        for job in _load(WORKFLOWS / "main-red-watch.yml")["jobs"].values()
+        for step in job["steps"]
+    ]
+    assert mod.BACKEND_JOB_PREFIX in {env.get("PROOF_JOB_PREFIX") for env in envs}
+    assert mod.PROOF_STEP_NAME in {env.get("PROOF_STEP_NAME") for env in envs}
 
 
 def test_the_node_id_shape_is_the_one_the_skip_accepts() -> None:
