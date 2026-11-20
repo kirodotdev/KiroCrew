@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -128,12 +129,16 @@ def _read_as_the_backend(home: Path, hidden: tuple[str, ...]) -> dict:
 def test_a_backend_started_before_the_gateway_writes_cannot_read_the_credential(home):
     # What apps/backend.py computes for a boot spawn: nothing is on disk yet.
     assert not (home / "run").exists()
-    hidden = sandbox.app_backend_secret_mask_targets()
+    hidden = getattr(sandbox, "app_backend_secret_mask_targets", lambda: ())()
 
     report = _read_as_the_backend(home, hidden)
 
-    for path in _credential_paths(home):
-        assert report[path] == {"read": ""}, f"{path} showed the credential to the backend"
+    readable = [bool(report[path].get("read")) for path in _credential_paths(home)]
+    warnings.warn(
+        f"REALMACHINE-38182 boot spawn: credential_readable={any(readable)} "
+        f"files_readable={sum(readable)}/{len(readable)}"
+    )
+    assert not any(readable), "credential_readable=True"
 
 
 def test_a_backend_spawned_with_no_names_does_read_it(home):
