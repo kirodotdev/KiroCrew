@@ -55,9 +55,11 @@ A busy day here is some ninety thousand runs, a thousand pages, so ``--workers``
 reads that many workflows, and that many batches of check suites, at a time (4
 by default); the rows and the counts do not depend on it.
 
-``--logs`` chooses which logs are read: ``undecided`` (the default) reads the
-log of a job whose annotations name nothing, ``all`` reads every red job's
-log, ``never`` reads none. The Actions token cannot read a job log in
+``--logs undecided`` (the default) reads the log of a job whose annotations
+name nothing; ``--logs never`` reads none, which saves a refused REST call per
+such job where the token cannot read logs. In a log only an error the job
+reported counts: a `##[error]` line, `gh`'s error output, a pytest `FAILED` or
+`ERROR` summary line. The Actions token cannot read a job log in
 this repository, so a job whose annotations name nothing and whose log was not
 read is classified from what is left (its conclusion, its failed step, a later
 pass) and counted in ``log_unread``.
@@ -101,7 +103,8 @@ ATTEMPTS = 3
 BACKOFF_SECONDS = (2, 10)
 GH_TIMEOUT_SECONDS = 300
 CAUSES = ("rate_limit", "broken_main", "infrastructure", "flaky", "diff")
-LOG_MODES = ("undecided", "all", "never")
+LOG_MODES = ("undecided", "never")
+CI_WORKFLOW = "CI"
 MAIN_RED_LABEL = "main-red"
 CSV_COLUMNS = (
     "run_id",
@@ -147,9 +150,13 @@ SETUP_STEP = re.compile(
     r"(?:set up job|(?:run )?actions/(?:checkout|setup-[a-z0-9-]+)|checkout\b|set ?up\b)",
     re.IGNORECASE,
 )
-# A wait the job survived is logged as a warning that names the rate limit; it
-# is not why the job ended red.
-_SURVIVED = ("##[warning]", "##[notice]", "##[debug]", "::warning::", "::notice::")
+# In a log a signature counts only where the job reports an error: the runner's
+# `##[error]` lines (its own, and every `::error::` a step wrote), `gh`'s error
+# output, and pytest's `FAILED` / `ERROR` summary lines. A step's echoed script,
+# a status line and a warning about a wait the job survived all name a rate
+# limit or a runner without being why the job ended red.
+_ERROR_MARK = "##[error]"
+_GH_ERROR = "gh: "
 # The Linux shards are `Backend Tests (<python>, <shard>)`, the Windows ones
 # `Backend Tests (Windows) (<shard>)`.
 BACKEND_SHARD = re.compile(r"Backend Tests (?:\([0-9.]+, \d+\)|\(Windows\) \(\d+\))")
@@ -270,6 +277,15 @@ def first_match(pattern: re.Pattern[str], texts: Iterable[str]) -> str | None:
     return None
 
 
+def error_text(line: str) -> str | None:
+    """What one log line reports as an error, or ``None`` for any other line."""
+    if line.startswith(_ERROR_MARK):
+        return line[len(_ERROR_MARK) :]
+    if line.startswith(_GH_ERROR) or WATCH.summary_entry(line) is not None:
+        return line
+    return None
+
+
 def scan_log(text: str) -> LogFacts:
     """What one job log says: a rate limit, an infrastructure signature, its failing tests."""
     rate_limit = infrastructure = None
@@ -279,12 +295,13 @@ def scan_log(text: str) -> LogFacts:
         entry = WATCH.summary_entry(line)
         if entry is not None:
             failures.setdefault(entry[0], entry[1])
-        if line.startswith(_SURVIVED):
+        reported = error_text(line)
+        if reported is None:
             continue
-        if rate_limit is None and RATE_LIMIT.search(line):
-            rate_limit = line
-        if infrastructure is None and INFRASTRUCTURE.search(line):
-            infrastructure = line
+        if rate_limit is None and RATE_LIMIT.search(reported):
+            rate_limit = reported
+        if infrastructure is None and INFRASTRUCTURE.search(reported):
+            infrastructure = reported
     return LogFacts(rate_limit, infrastructure, failures)
 
 
@@ -817,7 +834,7 @@ def take_census(api: Api, repo: str, start: str, end: str, logs: str, workers: i
             continue
         unnamed = annotations_name_nothing(job)
         log = None
-        if logs == "all" or (logs == "undecided" and unnamed):
+        if logs == "undecided" and unnamed:
             log = read_log(api, repo, job)
             census.logs_read += log is not None
         if unnamed and log is None:
@@ -847,14 +864,14 @@ def _share(part: int, whole: int) -> float | None:
     return round(part / whole, 4) if whole else None
 
 
-def summarize(census: Census, days: int, ci_workflow: str) -> dict[str, Any]:
+def summarize(census: Census, days: int) -> dict[str, Any]:
     """The three goal numbers, each with its n, and the counts behind them."""
     rows = census.rows
     by_cause = {cause: sum(row["cause"] == cause for row in rows) for cause in CAUSES}
 
     pushes: dict[str, set[str]] = {}
     for row in rows:
-        if row["workflow"] == ci_workflow and row["event"] == "pull_request":
+        if row["workflow"] == CI_WORKFLOW and row["event"] == "pull_request":
             pushes.setdefault(row["head_sha"], set()).add(row["cause"])
     broken = sum("broken_main" in causes for causes in pushes.values())
     broken_only = sum(causes == {"broken_main"} for causes in pushes.values())
@@ -862,14 +879,14 @@ def summarize(census: Census, days: int, ci_workflow: str) -> dict[str, Any]:
     shards = [
         row
         for row in rows
-        if row["workflow"] == ci_workflow and BACKEND_SHARD.fullmatch(row["job"])
+        if row["workflow"] == CI_WORKFLOW and BACKEND_SHARD.fullmatch(row["job"])
     ]
     flaky = sum(row["cause"] == "flaky" for row in shards)
     infra = sum(row["cause"] == "infrastructure" for row in shards)
     ci_pushes = {
         (run.event, run.head_sha)
         for run in census.runs
-        if run.workflow == ci_workflow and run.event in ("pull_request", "push")
+        if run.workflow == CI_WORKFLOW and run.event in ("pull_request", "push")
     }
     return {
         "days": days,
@@ -962,7 +979,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo", required=True, help="owner/name")
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--logs", choices=LOG_MODES, default="undecided")
-    parser.add_argument("--ci-workflow", default="CI", help="the workflow the PR numbers read")
     parser.add_argument(
         "--workers",
         type=int,
@@ -990,7 +1006,7 @@ def main(
         print(f"ci_red_cause_census: {exc}", file=sys.stderr)
         status = 1
     else:
-        summary = summarize(census, days, args.ci_workflow)
+        summary = summarize(census, days)
         since, until = args.since.isoformat(), args.until.isoformat()
         markdown = render_markdown(summary, args.repo, since, until)
         write_outputs(args.out_dir, census, summary, markdown)

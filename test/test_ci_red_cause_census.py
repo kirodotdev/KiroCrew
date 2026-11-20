@@ -260,19 +260,57 @@ def test_a_warning_annotation_decides_nothing() -> None:
 LOG = "\n".join(
     [
         "2026-11-20T10:00:01.0000000Z ##[group]Run tests",
-        "2026-11-20T10:00:02.0000000Z ##[warning]The installation API rate limit is spent; waiting",
+        "2026-11-20T10:00:01.1000000Z grep -iE 'out of memory|API rate limit exceeded' kernel.log",
+        "2026-11-20T10:00:01.2000000Z ##[endgroup]",
+        "2026-11-20T10:00:02.0000000Z GitHub API rate limit: 4500 REST requests remain; not waiting.",
+        "2026-11-20T10:00:03.0000000Z ##[warning]The installation API rate limit is spent; waiting",
         "2026-11-20T10:05:00.0000000Z [gw1] node down: Not properly terminated",
         "2026-11-20T10:06:00.0000000Z FAILED test/test_alpha.py::test_one - AssertionError: boom",
-        "2026-11-20T10:06:01.0000000Z ##[error]Process completed with exit code 1.",
+        "2026-11-20T10:06:01.0000000Z ##[error]The runner has received a shutdown signal.",
+        "2026-11-20T10:06:02.0000000Z ##[error]Process completed with exit code 1.",
     ]
 )
 
 
-def test_the_log_gives_the_failing_tests_and_ignores_a_wait_the_job_survived() -> None:
+def test_in_a_log_only_an_error_the_job_reported_names_a_cause() -> None:
     facts = CENSUS.scan_log(LOG)
+    # The echoed script, the quota status line, the survived wait and the plain
+    # xdist line all name a signature; none of them is an error the job reported.
     assert facts.rate_limit is None
-    assert facts.infrastructure == "[gw1] node down: Not properly terminated"
+    assert facts.infrastructure == "The runner has received a shutdown signal."
     assert facts.failures == {TEST_ID: "AssertionError: boom"}
+
+
+@pytest.mark.parametrize(
+    ("line", "rate_limit", "infrastructure"),
+    [
+        ("##[error]gh: You have exceeded a secondary rate limit.", True, False),
+        ("gh: API rate limit exceeded for installation ID 1 (HTTP 403)", True, False),
+        ("##[error]The GitHub API rate limit is spent and resets in 900s", True, False),
+        ("FAILED test/test_a.py::test_x - RuntimeError: API rate limit exceeded", True, False),
+        ("FAILED test/test_a.py::test_x - worker 'gw3' crashed while running", False, True),
+        ("##[error]Process completed with exit code 137.", False, True),
+        (
+            "GitHub API rate limit: 4500 REST requests remain (floor 100); not waiting.",
+            False,
+            False,
+        ),
+        ("  if grep -qi 'API rate limit exceeded' err.txt; then", False, False),
+        ("grep -iE 'out of memory|oom-kill' /var/log/kern.log", False, False),
+        ("##[warning]The installation API rate limit is spent; waiting 30s", False, False),
+        ("::warning::The GitHub API rate limit could not be read; not waiting.", False, False),
+        ("test_runner_out_of_memory_is_reported PASSED", False, False),
+        ("echo gh: API rate limit exceeded", False, False),
+    ],
+)
+def test_a_signature_counts_in_a_log_only_on_an_error_line(
+    line: str, rate_limit: bool, infrastructure: bool
+) -> None:
+    facts = CENSUS.scan_log(f"2026-11-20T10:00:00.0000000Z {line}")
+    assert (facts.rate_limit is not None, facts.infrastructure is not None) == (
+        rate_limit,
+        infrastructure,
+    )
 
 
 def test_a_log_decides_a_job_whose_annotations_name_nothing() -> None:
@@ -282,6 +320,8 @@ def test_a_log_decides_a_job_whose_annotations_name_nothing() -> None:
     assert CENSUS.classify(job, CENSUS.scan_log(LOG), [], {})[0] == "infrastructure"
     spent = CENSUS.scan_log("##[error]gh: You have exceeded a secondary rate limit.")
     assert CENSUS.classify(job, spent, [main_red()], {})[0] == "rate_limit"
+    quiet = CENSUS.scan_log("GitHub API rate limit: 4500 REST requests remain; not waiting.")
+    assert CENSUS.classify(job, quiet, [], {}) == ("diff", "step: Run tests (shard 1/8)")
 
 
 # -- one parser, the watcher's ------------------------------------------------
@@ -854,17 +894,14 @@ def test_a_readable_log_decides_the_job_and_leaves_log_unread_at_zero(tmp_path: 
     row = next(row for row in read_csv(tmp_path) if row["job_id"] == "111")
     assert (row["cause"], row["evidence"]) == (
         "infrastructure",
-        "[gw1] node down: Not properly terminated",
+        "The runner has received a shutdown signal.",
     )
 
 
-@pytest.mark.parametrize(("mode", "reads", "unread"), [("never", 0, 3), ("all", 9, 0)])
-def test_the_logs_flag_chooses_which_logs_are_read(
-    tmp_path: Path, mode: str, reads: int, unread: int
-) -> None:
-    gh, _api, summary = full_census(tmp_path, lambda fields: LOG, "--logs", mode)
-    assert gh.kinds().count("log") == reads
-    assert summary["log_unread"] == unread
+def test_logs_never_reads_no_log_and_counts_every_job_it_left_undecided(tmp_path: Path) -> None:
+    gh, _api, summary = full_census(tmp_path, lambda fields: LOG, "--logs", "never")
+    assert gh.kinds().count("log") == 0
+    assert (summary["log_unread"], summary["logs_read"]) == (3, 0)
 
 
 def test_the_rows_and_the_call_counts_do_not_depend_on_the_worker_count(tmp_path: Path) -> None:
@@ -911,7 +948,7 @@ def test_a_cell_a_spreadsheet_would_run_is_written_as_text() -> None:
 
 
 def test_an_empty_window_gives_no_share_rather_than_a_division() -> None:
-    summary = CENSUS.summarize(CENSUS.Census(), 1, "CI")
+    summary = CENSUS.summarize(CENSUS.Census(), 1)
     assert summary["broken_main_share_of_red_pr_pushes"]["share"] is None
     assert summary["rate_limit_share_of_red_jobs"] == {"share": None, "rate_limit": 0, "n": 0}
     assert summary["backend_shard_flaky_or_infrastructure_reds"]["per_day"] == 0.0
