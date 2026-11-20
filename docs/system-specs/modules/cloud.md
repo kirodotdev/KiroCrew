@@ -384,8 +384,8 @@ reddens instead of silently falsifying this paragraph.
 This closes only the **configuration** half of the lazily-enforced bound. `reap` is
 still called only from `provision`, so a cluster whose last launch has already happened
 is never swept by the launcher; the in-task `SMC_TASK_TTL_SECONDS` deadline above is
-what bounds such a task (in an image that carries it), and a periodic sweep caller
-remains open (issue #12283).
+what bounds such a task (in an image that carries it), and no periodic sweep caller
+exists.
 
 **Incomplete means absent.** A block missing any required field, naming a movable
 image tag, carrying a secret entry that is not a two-string pair, or carrying an
@@ -655,7 +655,7 @@ all matter more to the operator than a pointer -- and those flags reach the stac
   lives where a launch consumes the file instead
   (`require_unaliased_cloud_config`, called from the provisioner seam), so the alias
   costs one lane's launch rather than the box. The sealed directory leaves keep
-  main's own strict DIRECTORY rule, which this change does not touch.
+  the strict DIRECTORY rule.
 - **An aliased `cloud.json` is refused where a launch CONSUMES it**, in
   `DefaultRemoteProvisionerProvider.engine_for`, and only warned about on the
   universal spawn path (`sandbox._warn_aliased_strict_leaves`). Refusing on the spawn
