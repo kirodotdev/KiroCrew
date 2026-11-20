@@ -110,11 +110,14 @@ export function KiroSignInStrip({
   reauth = false,
   requestId,
   testId,
+  action,
 }: {
   title: string
   reauth?: boolean
   requestId?: string
   testId?: string
+  /** Its own row under the line: a failed turn's Resume once the sign-in works. */
+  action?: ReactNode
 }) {
   const [open, setOpen] = useState(false)
   // copyCode resolves false when both clipboard paths fail; then the id is shown
@@ -143,6 +146,7 @@ export function KiroSignInStrip({
           {i18nT('components.kiroSignInPrompt.sign_in')}
         </Btn>
       </div>
+      {action ? <div className="mt-2 flex flex-wrap items-center gap-2">{action}</div> : null}
       {requestId && copyFailed ? (
         <ErrorNotice
           className="mt-2"
