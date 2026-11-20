@@ -5,8 +5,9 @@
 `AgentConfig.provider` admits only the ACP provider, and
 `KiroCrewConfig.create_provider_factory()` constructs `AcpProvider`. Harness
 choice is a separate field, `agent.acp_backend`. The public baseline currently
-selects kiro-cli (`ACP_BACKEND_KIRO`, the empty string), Claude, KAS, Codex,
-OpenCode, Pi, goose and DeepSeek -- every id in `ACP_BACKENDS_KNOWN`. DeepSeek is
+selects kiro-cli (`ACP_BACKEND_KIRO`, the empty string), Claude, KAS, Strands,
+Codex, OpenCode, Pi, goose, DeepSeek, Copilot, MiMo Code and Antigravity -- every id
+in `ACP_BACKENDS_KNOWN` (`BASELINE_SELECTABLE_BACKENDS`). DeepSeek is
 selectable because Crew's gate plugin routes its tool calls through the host
 permission gate (`Routing.VERIFIED_GATE_EXTENSION`, `agent_sdk/backends_routing.py`).
 `test_baseline_ships_every_known_backend` pins the baseline as
