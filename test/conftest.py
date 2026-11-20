@@ -642,6 +642,13 @@ def _fresh_host_unservable_backends(_floor_monkeypatch):
     _floor_monkeypatch.setattr(backends, "_host_unservable", dict(backends._host_unservable))
     _floor_monkeypatch.setattr(backends, "_kiro_cli_offers_kas", False)
     _floor_monkeypatch.setattr(backends, "_kiro_cli_kas_probed", False)
+    # The gateway floor asks again about an unknown Kiro CLI pick after minutes; a
+    # test that drives the floor opts into those asks with delays of its own.
+    from kiro_crew.agent_sdk import kas_floor_wait
+
+    _floor_monkeypatch.setattr(
+        kas_floor_wait, "KIRO_PICK_VERDICT_RETRY_SECS", ()  # flake-ok: no ask, no wait
+    )
 
 
 @pytest.fixture(autouse=True)
