@@ -383,7 +383,7 @@ class SelectionUntrustworthy(Exception):
 
 
 class LauncherMissing(SelectionUntrustworthy):
-    """A surface's test runner is not installed here (``npm``/``npx`` off PATH).
+    """A surface's test runner is not installed here (``node``/``npm`` off PATH).
 
     A subclass so a caller driving BOTH surfaces can tell "this box cannot run
     vitest at all" from "this selection is not to be trusted": the first is an
@@ -613,7 +613,7 @@ def backend_argv(targets: list[str] | None) -> list[str]:
 
 
 def _node_launcher(name: str) -> str:
-    """Absolute path to ``npm``/``npx``, resolved the way this repo already does.
+    """Absolute path to ``node``/``npm``, resolved the way this repo already does.
 
     ``subprocess.run([...], shell=False)`` cannot execute a bare ``npm`` on native
     Windows, because what exists on PATH is ``npm.cmd`` -- the gate would die with
@@ -628,6 +628,10 @@ def _node_launcher(name: str) -> str:
     return found
 
 
+#: vitest's bin as `npm ci` installs it, relative to website/.
+VITEST_ENTRY = "./node_modules/vitest/vitest.mjs"
+
+
 def frontend_argv(targets: list[str] | None) -> list[str]:
     if not targets:
         return [_node_launcher("npm"), "--prefix", "website", "test"]
@@ -638,12 +642,13 @@ def frontend_argv(targets: list[str] | None) -> list[str]:
     # `validated_targets` is the real protection and is strictly stronger anyway:
     # it rejects a leading `-` outright rather than asking the runner to stop
     # parsing.
-    # `--no-install`: without the lockfile's install, npx would download whatever
-    # vitest the registry serves today and run THAT against the specs.
+    # Node runs vitest's own entry point out of website/node_modules (the
+    # runner's cwd), so only the lockfile's vitest can run. A bare `npx vitest`
+    # downloads whatever the registry serves without the install, and
+    # `npx --no-install vitest` still prefers a globally installed vitest.
     return [
-        _node_launcher("npx"),
-        "--no-install",
-        "vitest",
+        _node_launcher("node"),
+        VITEST_ENTRY,
         "run",
         *validated_targets(targets, REPO_ROOT / "website"),
     ]
@@ -659,9 +664,9 @@ def frontend_argv(targets: list[str] | None) -> list[str]:
 ARGV_CHAR_LIMIT = 24_000
 
 # 32,767 is the CreateProcess ceiling, and the backend runner (`sys.executable
-# -m pytest`) is launched that way -- but the frontend runner is `npx`, and what
-# `shutil.which("npx")` returns on a Windows checkout is `npx.cmd`, a batch-file
-# shim. A `.cmd`/`.bat` shim is run THROUGH cmd.exe, whose command line is
+# -m pytest`) is launched that way -- but a Node launcher can resolve to a
+# batch-file shim on a Windows checkout (`npm.cmd`, or a version manager's
+# `node.cmd`). A `.cmd`/`.bat` shim is run THROUGH cmd.exe, whose command line is
 # capped at ~8,191 chars, far below CreateProcess's. A batch sized by
 # ARGV_CHAR_LIMIT (24,000) sails under CreateProcess but blows through cmd.exe,
 # so the whole selected set lands in one argv and the gate dies with "The
@@ -1091,8 +1096,8 @@ def _self_test() -> int:
         pass
     fe = frontend_argv(["src/test/i18nGateTable.test.ts"])
     check(
-        "frontend reduced argv is a no-install vitest run",
-        [Path(fe[0]).stem, *fe[1:4]] == ["npx", "--no-install", "vitest", "run"],
+        "frontend reduced argv runs the locked vitest entry point with node",
+        [Path(fe[0]).stem, *fe[1:3]] == ["node", VITEST_ENTRY, "run"],
     )
     # Regression trap: `vitest run -- <paths>` silently stops filtering and runs
     # the WHOLE suite (measured: 1,474 files / 22,939 tests) while the gate still
@@ -1234,7 +1239,7 @@ def _self_test() -> int:
     check("a small set is one batch", len(argv_batches(backend_argv, [real])) == 1)
     check("no targets, no batches", argv_batches(backend_argv, []) == [])
     fe_batches = argv_batches(frontend_argv, ["src/test/i18nGateTable.test.ts"])
-    check("frontend batching goes through frontend_argv", len(fe_batches) == 1 and "vitest" in fe_batches[0])
+    check("frontend batching goes through frontend_argv", len(fe_batches) == 1 and VITEST_ENTRY in fe_batches[0])
 
     # #22727: the frontend launcher on Windows is `npx.cmd`, a batch-file shim run
     # through cmd.exe, whose command line is capped at ~8,191 -- far below
@@ -1324,8 +1329,8 @@ def _self_test() -> int:
         "the cmd clamp never trims or falls back to the full suite",
         "--prefix" not in [tok for b in cmd_batches for tok in b],
     )
-    # Patch the launcher RESOLVER so the real `frontend_argv` resolves `npx` to a
-    # `.cmd` shim, as it would on a native Windows checkout, and confirm the clamp
+    # Patch the launcher RESOLVER so the real `frontend_argv` resolves `node` to a
+    # `.cmd` shim, as a Windows version manager's shim would, and confirm the clamp
     # fires through the production path rather than only through the fake-launcher
     # builder above.
     _real_which = shutil.which

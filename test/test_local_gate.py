@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.util
+import os
 import re
 import subprocess
 import sys
@@ -590,7 +591,7 @@ def test_installed_website_packages_keep_the_cross_surface_set_without_fetching(
     gate, monkeypatch
 ) -> None:
     """With ``npm ci`` done, a backend diff still runs CI's cross-surface specs,
-    and npx is told never to download a vitest the lockfile did not install."""
+    through node and the vitest entry point the lockfile installed, from website/."""
     monkeypatch.setattr(gate, "changed_files", lambda base: ["src/kiro_crew/gateway.py"])
     _related(monkeypatch, gate, {
         "backend": ["test/test_gatewayd_diag.py"],
@@ -598,8 +599,34 @@ def test_installed_website_packages_keep_the_cross_surface_set_without_fetching(
     })
     plan = gate.build_plan(_args())
     assert _plan_labels(plan) == ["backend (related)", "frontend (related)"]
-    _label, fe_cmd, _cwd = plan.commands[1]
-    assert fe_cmd[1:4] == ["--no-install", "vitest", "run"]
+    _label, fe_cmd, cwd = plan.commands[1]
+    assert fe_cmd[:3] == ["/usr/bin/node", "./node_modules/vitest/vitest.mjs", "run"]
+    assert cwd == gate._REPO_ROOT / "website"
+
+
+def test_only_websites_own_vitest_counts_as_installed(gate, tmp_path, monkeypatch) -> None:
+    """A ``node_modules`` without vitest is not an install, whatever else is on PATH.
+
+    ``npx --no-install vitest`` runs a globally installed vitest when the local
+    tree lacks one, so a guard that only saw the directory would let a partial
+    install run a vitest the lockfile never pinned. The guard reads the one file
+    the runner starts.
+    """
+    real_gate = _load_gate()
+    website = tmp_path / "website"
+    (website / "node_modules").mkdir(parents=True)
+    global_bin = tmp_path / "global" / "bin"
+    global_bin.mkdir(parents=True)
+    (global_bin / "vitest").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (global_bin / "vitest").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{global_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setattr(real_gate, "_REPO_ROOT", tmp_path)
+    assert real_gate.frontend_dependencies_installed() is False
+
+    entry = website / real_gate.VITEST_ENTRY
+    entry.parent.mkdir(parents=True)
+    entry.write_text("", encoding="utf-8")
+    assert real_gate.frontend_dependencies_installed() is True
 
 
 def test_missing_website_packages_skip_the_cross_surface_set_on_a_backend_diff(
