@@ -44,7 +44,7 @@ from .checks import (
     reads_as_words,
     session_name,
 )
-from .model import PLAN_TAGS, Hit
+from .model import PLAN_TAGS, TAIL_LINE, Hit
 from .table import HeaderRow
 
 # A name is read where it is not the tail of a longer one: ``x-api-key`` is not ``api-key``,
@@ -79,6 +79,13 @@ _NETRC_PAIRS = frozenset({"login", "account"})
 _NETRC_TOKENS = 6
 # A Basic value longer than this is not decoded to look for a placeholder.
 _BASIC_DECODE_MAX = 512
+# A ``Cookie:`` or ``Set-Cookie:`` header still running at the end of a stream window is
+# held from its name, so a later pair is read with the name, at most this far
+# from the name. Past it, a stream hides the rest of a running Cookie line that holds a
+# pair (one tag, to the line break) and shows the text after it; one with no ``=`` yet is
+# released (prose that names a cookie). Not above the production stream's own longest hold
+# (``text_redaction._STREAM_HOLDBACK_JWT_MAX``), so that cap never drops the name first.
+_COOKIE_LINE_HOLD = 4096
 
 
 class _Open(Exception):
@@ -150,6 +157,9 @@ def _header(
                 k = _skip(text, k, "\r\n")
                 k = _skip(text, k, _BLANKS)
             if k == j:
+                # The window may end right after the scheme word: its value is still to come.
+                if k == len(text) and not final:
+                    raise _Open
                 return None
             i = k
         elif i + len(row.scheme) >= len(text) and not final:
@@ -169,7 +179,9 @@ def _header(
         return None
     if row.allow_values and text[i:end].rsplit(".", 1)[0] in row.allow_values:
         return None
-    return Hit(i, end, row.id, row.tier, "header", "known_key")
+    # Decided from the name and scheme, which can sit a line and many blanks back: a
+    # stream keeps them with the value until it commits the value.
+    return Hit(i, end, row.id, row.tier, "header", "known_key", anchor=at)
 
 
 class _Next:
@@ -443,14 +455,48 @@ def _walk_keep(text: str, start: int, end: int, row: HeaderRow, walk: _Walk) -> 
     return not cookie_value_is_placeholder(text, start, end, has_mask, has_trigger, walk.classify)
 
 
+def _line_hide(at: int, name: str, n: int, row: HeaderRow) -> Hit:
+    """A running Cookie line hidden from right after its name to the line break."""
+    return Hit(
+        at + len(name), n, row.id, row.tier, "cookie", "known_key", tail=TAIL_LINE, anchor=at
+    )
+
+
 def _cookies(text: str, at: int, name: str, row: HeaderRow, final: bool, walk: _Walk) -> list[Hit]:
+    n = len(text)
+    first_only = name == "set-cookie"
+    # In a non-final window every pair is decided from the name, so the name is held
+    # while it may still matter, at most ``_COOKIE_LINE_HOLD`` past it.
+    within = n - at <= _COOKIE_LINE_HOLD
     i = walk.after_name(at + len(name))
     if i is None:
+        # The window may end in the blanks before a separator that has not arrived yet.
+        # Past the bound, a name followed by nothing but blanks on its running line is
+        # hidden to the line break (fail closed): prose does not look like that, and a
+        # pair after the blanks would otherwise be read with no name.
+        j = at + len(name)
+        if j < n and text[j] in _QUOTES:
+            j += 1
+        if not final and walk.nonblank(j) == n:
+            if within:
+                raise _Open
+            return [_line_hide(at, name, n, row)]
         return []
-    n = len(text)
     line_end = walk.breaks(i)
+    running = not final and line_end == n
+    if running and walk.eqs(i) >= n:
+        # No pair on the running line yet. Past the bound the rest of the line is hidden
+        # (fail closed): a pair may still come after a name the stream cannot keep.
+        if within:
+            raise _Open
+        return [_line_hide(at, name, n, row)]
+    # A Cookie line that holds a pair is held until it ends; past the bound the stream
+    # hides the rest of that line, not of the text. Set-Cookie reads only its first pair,
+    # which the value's own hold below covers.
+    hold = running and not first_only
+    if hold and not within:
+        return [Hit(i, n, row.id, row.tier, "cookie", "known_key", tail=TAIL_LINE, anchor=at)]
     hits: list[Hit] = []
-    first_only = name == "set-cookie"
     seen: list[int] = []
     try:
         while i < line_end:
@@ -468,13 +514,16 @@ def _cookies(text: str, at: int, name: str, row: HeaderRow, final: bool, walk: _
             if ve == n and not (final or line_end < n):
                 raise _Open
             if walk.session(i, eq) and _walk_keep(text, vs, ve, row, walk):
-                hits.append(Hit(vs, ve, row.id, row.tier, "cookie", "known_key"))
+                # Decided from the header name at ``at``, which a stream keeps with it.
+                hits.append(Hit(vs, ve, row.id, row.tier, "cookie", "known_key", anchor=at))
             if first_only:
                 break
             semi = walk.semis(ve)
             if semi >= line_end:
                 break
             i = walk.nonblank(semi + 1)
+        if hold:
+            raise _Open
     except _Open:
         walk.walked.update(dict.fromkeys(seen, True))
         raise

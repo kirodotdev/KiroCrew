@@ -219,7 +219,9 @@ def test_a_block_past_the_look_behind_keeps_the_scan_where_whole_text_resumes_it
     out += "".join(s.feed(text[i : i + size]) for i in range(first, len(text), size)) + s.flush()
     assert "M32702Z" not in out
     if entry == "structured":
-        assert out == whole
+        # The long first line is a running Cookie line past its hold bound: the stream
+        # hides it to its line break; the rest equals whole text.
+        assert out == "Cookie: " + TAG + "\n" + whole.partition("\n")[2]
 
 
 def test_a_completed_block_split_by_the_floor_keeps_its_retained_body_masked() -> None:
