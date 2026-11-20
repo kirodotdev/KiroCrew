@@ -3160,10 +3160,9 @@ tier from the Captain's scan soon after it is filed. One that sits with no tier,
 or a `tier:T3` / `tier:T4` one that sits in `pending-triage`, is a defect in the
 Captain or its hand-off, to be reported as such; it is never a reason to pick the
 issue up unsized, and the gate deliberately has no "silence means yes"
-fallback. Nothing in this repository alarms on that overdue state yet -- the
-crew runs outside `.github/`, and an in-repo overdue sweep is a separate
-change, filed as [#16308](https://github.com/kirodotdev/KiroCrew/issues/16308).
-Until it lands, a stalled crew is visible as PRs red on "no tier label" or
+fallback. Nothing in this repository alarms on that overdue state: the
+crew runs outside `.github/`, and no in-repo overdue sweep is planned. A
+stalled crew is visible as PRs red on "no tier label" or
 "still waiting for a person"; the maintainer's per-PR fallback is the
 `issue-gate: waived` label, and a run of those waivers is the signal to go fix
 the crew, not to loosen the gate. The cost this puts on a drive-by contributor
@@ -3953,11 +3952,9 @@ define the guard as a `guarded_comment_upsert` bash function that
 `test_ai_review_workflows_comment_writes.py` pins byte-identical across every lane, so the
 invariant cannot drift lane by lane.
 
-`codex-review.yml` joined them in #8462. It used to carry #8342's own inline
-preserve-and-prepend shape — the one site left with a read-modify-write window
-on the slot, and a position-blind notice strip under which a bare quoted
-begin marker inside preserved review prose deleted up to three lines of a
-verdict. Its posting step now defines the same function and calls it with
+`codex-review.yml` is one of them: its posting step defines the same function
+(an inline preserve-and-prepend there would leave a read-modify-write window on
+the slot) and calls it with
 `[GPT-REVIEWED]`, or `[GPT-OVERRIDE]` for an accepted human override. What
 stays lane-specific is the exit: the GPT lane is fail-closed and its gate reads
 the captured review text rather than the PR, so after the function returns the
@@ -3965,7 +3962,7 @@ step reads its `publication` output back and exits non-zero when a body stamped
 for this head reached neither `published` nor `superseded`. A body with no stamp
 for this head — an incomplete or refused run — leaves an existing comment
 untouched, as in every other guarded lane, and the gate fails it closed on its
-own evidence; it no longer prepends a staleness notice to the standing verdict.
+own evidence; it prepends no staleness notice to the standing verdict.
 
 One lane stays outside that function, and the exclusion is deliberate:
 
@@ -4825,7 +4822,7 @@ status plus one `readiness:` label**.
   tokens) and folds each violation of the one-lane / one-rationale-per-finding
   rule into its blocking list. That is the only enforcement point that binds a
   writer who never runs the kirocrew-prepare-pr loop, which is what a blanket
-  single-rationale record used to escape through (#6658). The rule keeps ONE
+  single-rationale record would otherwise escape through. The rule keeps ONE
   implementation: the readiness step calls the same script the local gate does
   rather than re-reading the marker grammar in shell. A record set it cannot read
   is `pending`, never red — a transient comments-API failure must not fail the
