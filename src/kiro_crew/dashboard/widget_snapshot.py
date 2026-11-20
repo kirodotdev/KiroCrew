@@ -168,31 +168,15 @@ async def package_in_force(slug: str, member: str) -> tuple[dict[str, Any] | Non
 
 
 def _applied_bytes(package_slug: str) -> tuple[int, str] | None:
-    """The applied version of an older record's bound package, with the page route's checks.
+    """An older record's bound package page, through the tab's own checks, or ``None``.
 
-    Kind ``dashboard``, not a live file pointer, a version a person cut, and that
-    version read from the same record. Anything else is ``None``. Blocking IO.
+    :func:`member_dashboard.applied_package_page`, shared with the agent panel's
+    snapshot; any refusal or store error is ``None``. Blocking IO.
     """
-    from kiro_crew.artifact_store.dashboard_package import DASHBOARD_KIND
-    from kiro_crew.artifacts import get_default_store
     from kiro_crew.dashboard.handlers import member_dashboard as md
 
     try:
-        store = get_default_store()
-        loaded = store.get(package_slug)
-        if str(getattr(loaded, "kind", "")) != DASHBOARD_KIND:
-            return None
-        if str(getattr(loaded, "source_path", "") or "") and not bool(
-            getattr(loaded, "source_copy_only", False)
-        ):
-            return None
-        version = md.applied_package_version(loaded)
-        if version <= 0:
-            return None
-        applied = store.get(package_slug, version=version)
-        if md._record_identity(applied) != md._record_identity(loaded):
-            return None
-        return version, applied.content or ""
+        return md.applied_package_page(package_slug)
     except Exception:
         logger.debug("widgets: package %r could not be read", package_slug, exc_info=True)
         return None

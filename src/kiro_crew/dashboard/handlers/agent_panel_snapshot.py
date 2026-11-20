@@ -120,28 +120,26 @@ def _older_page(slug: str) -> tuple[str, int, str]:
     comes from ``dashboard_agentic.bound_package``, the one lookup the tab and the turn
     block share."""
     from kiro_crew import dashboard_agentic
-    from kiro_crew.artifacts import get_default_store
     from kiro_crew.dashboard.handlers import member_dashboard
 
     package_slug = dashboard_agentic.bound_package(slug)
     if not package_slug or not dashboard_agentic.has_person_cut_version(package_slug):
         raise _NoPage(NOT_COMPOSED)
-    store = get_default_store()
-    loaded = store.get(package_slug)
-    # The tab's own refusals (`_serve_package`): another kind, or a linked file whose
-    # bytes skip the write gate, is not a page to draw.
-    if str(getattr(loaded, "kind", "")) != _dashboard.DASHBOARD_KIND or (
-        str(getattr(loaded, "source_path", "") or "")
-        and not bool(getattr(loaded, "source_copy_only", False))
-    ):
-        raise _NoPage("the page in force is not a dashboard package that can be drawn")
-    version = member_dashboard.applied_package_version(loaded)
-    if version <= 0:
-        raise _NoPage(NOT_COMPOSED)
-    applied = store.get(package_slug, version=version)
-    if member_dashboard._record_identity(applied) != member_dashboard._record_identity(loaded):
-        raise _NoPage("the page in force was replaced while it was read; ask again")
-    return package_slug, version, applied.content or ""
+    # The tab's own checks, shared: another kind or a linked file whose bytes skip the
+    # write gate, no version a person cut, or a record replaced mid-read.
+    try:
+        version, content = member_dashboard.applied_package_page(package_slug)
+    except member_dashboard.PackagePageRefused as refused:
+        raise _NoPage(_REFUSED_PAGE[refused.reason]) from None
+    return package_slug, version, content
+
+
+#: What the caller is told for each :class:`~member_dashboard.PackagePageRefused` reason.
+_REFUSED_PAGE: dict[str, str] = {
+    "not_a_package": "the page in force is not a dashboard package that can be drawn",
+    "not_applied": NOT_COMPOSED,
+    "replaced": "the page in force was replaced while it was read; ask again",
+}
 
 
 def _shot_root() -> Path:
