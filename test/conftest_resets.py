@@ -1099,6 +1099,27 @@ def _reset_live_execution_records():
 
 
 @per_test_guard
+def _reset_subagent_memory_price_holders():
+    """Sizing must not inherit the settled rows of another test's managers.
+
+    Clear both the standalone owner and the facade without importing either:
+    the owner can be loaded before the facade composes its globals.
+    """
+
+    def clear():
+        for name in ("kiro_crew.subagent_parts.host_memory", "kiro_crew.subagent"):
+            module = sys.modules.get(name)
+            if module is not None:
+                module._MEMORY_PRICE_HOLDERS.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_subagent_not_due_memo():
     """Start each test with no remembered not-yet-due runs from the tombstone sweep.
 

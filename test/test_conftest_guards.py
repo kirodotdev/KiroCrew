@@ -99,6 +99,32 @@ def _finish(cycle):
         next(cycle)
 
 
+def test_memory_price_holders_are_cleared_before_and_after_a_test(monkeypatch):
+    import weakref
+
+    import kiro_crew.subagent as subagent
+    from kiro_crew.subagent_parts import host_memory
+
+    class Holder:
+        pass
+
+    # Exercise both bindings even if a test replaced the facade's registry.
+    owner_holders = weakref.WeakSet()
+    facade_holders = weakref.WeakSet()
+    monkeypatch.setattr(host_memory, "_MEMORY_PRICE_HOLDERS", owner_holders)
+    monkeypatch.setattr(subagent, "_MEMORY_PRICE_HOLDERS", facade_holders)
+    holder = Holder()
+    for holders in (owner_holders, facade_holders):
+        holders.add(holder)
+
+    cycle = _drive([conftest._reset_subagent_memory_price_holders])
+    for holders in (owner_holders, facade_holders):
+        assert not holders
+        holders.add(holder)
+    _finish(cycle)
+    assert not owner_holders and not facade_holders
+
+
 def test_guards_set_up_in_order_and_tear_down_in_reverse(guard):
     events: list[str] = []
 
