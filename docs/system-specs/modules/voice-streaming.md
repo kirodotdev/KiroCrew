@@ -7,8 +7,7 @@ and Amazon Polly. `voice_reply.DEFAULT_PROVIDER` selects the
 built-in engine unless configuration selects a valid provider, because it is the
 only one that needs nothing installed on macOS and Windows.
 `chat_voice.api_voice_synthesize()` sends built-in-engine output as one WAV
-chunk and streams Polly sentences as MP3. The local `piper` provider was removed
-([#23154](https://github.com/kirodotdev/KiroCrew/issues/23154)).
+chunk and streams Polly sentences as MP3. There is no local `piper` provider (`speech_providers.REMOVED_PROVIDERS`).
 Every synthesis has a request identity so the browser can reject audio from a
 stopped request.
 
@@ -476,7 +475,7 @@ not be re-checked, or the consent changed during the check) returns no audio for
 that sentence, and the next sentence is checked again.
 
 
-On the same `raise_refusal=True` path, the one Polly failure #17511 reports —
+On the same `raise_refusal=True` path, the one Polly failure a user can fix —
 the chosen voice or engine is not offered in the request's region, which AWS
 rejects identically for every sentence — is matched from the CLI stderr
 (`_classify_polly_failure`) and raises
