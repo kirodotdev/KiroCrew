@@ -328,21 +328,23 @@ def test_the_mate_worker_takes_the_member_rule() -> None:
         source = inspect.getsource(provider.mate_worker_kit_supported.fget)
         assert "in ACP_BACKENDS_MATE_WORKER_KIT" in source
     assert ACP_BACKENDS_MATE_WORKER_KIT == frozenset(
-        {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
+        {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_PI}
     )
     assert ACP_BACKENDS_MATE_WORKER_KIT <= ACP_BACKENDS_MEMBER_CAPABILITIES
     assert ACP_BACKEND_KIRO not in ACP_BACKENDS_MATE_WORKER_KIT
-    # The worker's prompt rides the context block exactly where the host's mirror
-    # projects no spec prompt; KAS's wire spec carries it.
+    # The worker's prompt rides the context block exactly where the host reads no
+    # spec prompt of Crew's: a mirror that withholds it, or a BROKER_ONLY host (pi),
+    # which has no mirror at all. KAS's wire spec carries it.
     from kiro_crew.providers.mirrors.base import Concern, Disposition
-    from kiro_crew.providers.mirrors.registry import mirror_for
+    from kiro_crew.providers.mirrors.registry import ProjectionKind, mirror_for, projection_for
 
     assert ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT <= ACP_BACKENDS_MATE_WORKER_KIT
     for backend in ACP_BACKENDS_MATE_WORKER_KIT:
         mirror = mirror_for(backend)
         withheld = (
-            mirror is not None
-            and mirror.rulings()[Concern.PROMPT].disposition is Disposition.WITHHELD
+            mirror.rulings()[Concern.PROMPT].disposition is Disposition.WITHHELD
+            if mirror is not None
+            else projection_for(backend).kind is ProjectionKind.BROKER_ONLY
         )
         assert withheld is (backend in ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT), backend
     allocation = inspect.getsource(get_or_create)

@@ -90,7 +90,8 @@ def _doctor_unresolved_mcp_refs() -> None:
             print(f"  mcp tool refs: {label} needs a live session to check: {refs}")
             render._print_wrapped(
                 "Kiro Crew mounts MCP servers directly from the agent spec only in "
-                "crewmate DMs on Pi. Other Pi sessions can receive pooled broker stubs "
+                "crewmate DMs and crewmate worker sessions on Pi. Other Pi sessions "
+                "can receive pooled broker stubs "
                 "and Crew-owned Connections. A switched-off tool can withhold its entire "
                 "server from Crew's handoff. Pi may load the same name from its own "
                 "mcp.json. This default-spec check cannot tell which servers a live "

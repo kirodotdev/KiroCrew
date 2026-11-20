@@ -1,0 +1,187 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": false,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "delete": {},
+        "list": {}
+      }
+    },
+    "agent_version": "0.0.34",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "scripted/scripted",
+        "description": "Select the model for this session",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": null,
+            "name": "scripted/Scripted",
+            "value": "scripted/scripted"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "off",
+        "description": "Set the reasoning effort for this session",
+        "id": "thought_level",
+        "name": "Thinking",
+        "options": [
+          {
+            "description": null,
+            "name": "Thinking: off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "off",
+      "ids": [
+        "off"
+      ]
+    },
+    "session_id": "pi-session-1"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      0,
+      128000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "mcp__pixel_probe__probe_codeword",
+        "tool_call_id": "call_probe_2",
+        "tool_kind": "other",
+        "wire_title": "mcp__pixel_probe__probe_codeword"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "yes",
+            "label": "Yes"
+          },
+          {
+            "id": "no",
+            "label": "No"
+          }
+        ],
+        "shell_classified": true,
+        "title": "mcp__pixel_probe__probe_codeword",
+        "tool_call_id": "call_probe_2",
+        "tool_kind": "other"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "yes",
+      "once": "yes",
+      "reject": "no"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_probe_2",
+        "tool_final": true,
+        "tool_output": "kumquat-17",
+        "tool_output_bytes": 10,
+        "tool_output_digest": "1606102df59f63663f53635ba2a5f725b8ea7988fc72bc418fbc525feef756f4",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "kumquat-17"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "kumquat-17",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      2349,
+      128000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]

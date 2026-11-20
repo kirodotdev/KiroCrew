@@ -156,7 +156,7 @@ A crewmate that inherits codex, deepseek or pi chats on that harness, and a work
 
 The refusal text changes. It stops naming `agent.member_acp_backend` and names the two fixes a person can reach: pin this crewmate to KAS or Claude Code in its profile, or change Settings → Agent Harness. The matching text in `dashboard/chat_turn/turn_failures.py` is reworded the same way.
 
-The follow-up to add codex: record a live worker-kit capture on codex-acp (a worker base plus a crewmate file that excludes a tool and adds a prompt, as `test/fixtures/acp_frames/kas/worker-kit-live.jsonl` does for KAS), commit it under `test/fixtures/acp_frames/codex/`, and add `ACP_BACKEND_CODEX` to `ACP_BACKENDS_MATE_WORKER_KIT` with that capture cited in the comment. It is its own PR, gated only on the capture. deepseek and pi follow the same path later.
+The follow-up to add codex: record a live worker-kit capture on codex-acp (a worker base plus a crewmate file that excludes a tool and adds a prompt, as `test/fixtures/acp_frames/kas/worker-kit-live.jsonl` does for KAS), commit it under `test/fixtures/acp_frames/codex/`, and add `ACP_BACKEND_CODEX` to `ACP_BACKENDS_MATE_WORKER_KIT` with that capture cited in the comment. It is its own PR, gated only on the capture. deepseek and pi follow the same path later. pi's grant has landed this way (`test/fixtures/acp_frames/pi/worker-kit-live.jsonl`, #35796), so a crewmate pinned to pi or inheriting it runs its chat and its workers on pi; deepseek still waits for its capture.
 
 Not chosen: requiring tier-3 values to be in `ACP_BACKENDS_MATE_WORKER_KIT` too. That would keep codex users' crewmates on KAS, which is the problem this RFC exists to fix.
 
@@ -185,7 +185,7 @@ Not chosen: requiring tier-3 values to be in `ACP_BACKENDS_MATE_WORKER_KIT` too.
 
 **One picker, built on #25485 (O5).** The harness row in `CrewProfileSettings.tsx` graduates out of Feature Preview: `PREVIEW_CREWMATE_HARNESS` and its `usePreviewFlag` check are removed. Its option list, labels and refusal hints move into one shared field (`CrewHarnessField`, with the logic now inline in `CrewProfileSettings.tsx`), which the profile row and `CrewEditorNextDialog` both render. There is no second picker and no second option list. Both write `agents.<name>.acp_backend` through the existing update route (`dashboard/agent_admin/crew_update.py`).
 
-**Only harnesses crewmates can run on (O3, O6).** The record's `harnesses` (in `crew_records.py`, today `selectable_harnesses()`: every selectable harness) narrows to the selectable members of `ACP_BACKENDS_CREWMATE_INHERITABLE` plus KAS, minus every member of `ACP_BACKENDS_CREWMATE_PIN_TO_KAS` (5.8), because a pin there would run on KAS anyway. That leaves KAS, Claude Code and Codex. goose, opencode, strands, pi, deepseek, copilot and Kiro CLI are not offered. Kiro CLI is not offered because on the crewmate route it means KAS (5.1), so KAS is the one entry. A crewmate whose saved pin is outside that list still shows its current value (the existing `withCurrent`), marked as not runnable, so the person can move off it.
+**Only harnesses crewmates can run on (O3, O6).** The record's `harnesses` (in `crew_records.py`, today `selectable_harnesses()`: every selectable harness) narrows to the selectable members of `ACP_BACKENDS_CREWMATE_INHERITABLE` plus KAS, minus every member of `ACP_BACKENDS_CREWMATE_PIN_TO_KAS` (5.8), because a pin there would run on KAS anyway. That leaves KAS, Claude Code and Codex, and Pi since its 5.4 grant. goose, opencode, strands, deepseek, copilot and Kiro CLI are not offered. Kiro CLI is not offered because on the crewmate route it means KAS (5.1), so KAS is the one entry. A crewmate whose saved pin is outside that list still shows its current value (the existing `withCurrent`), marked as not runnable, so the person can move off it.
 
 The save route enforces the same list, because the API is the trust boundary and the UI is not: `harness_pin_rejected` (`crewmate_harness.py`) rejects a value outside it with a message naming the allowed values. Hiding it in the picker alone is not enough.
 
@@ -194,7 +194,7 @@ The save route enforces the same list, because the API is the trust boundary and
 **Known refusals shown before a pick**, from fields the record already serves:
 
 - Inherited: names the resolved harness (`inherited_harness`), and the fallback reason (`inherited_reason`, new) when 5.3 applied.
-- A harness not in `worker_harnesses`: "chats work; workers it opens are refused" (the existing `profile_harness_no_workers` string). This covers codex until 5.4; saved pi and deepseek pins get the 5.8 error below.
+- A harness not in `worker_harnesses`: "chats work; workers it opens are refused" (the existing `profile_harness_no_workers` string). This covers codex until 5.4; saved deepseek pins (and pi pins until its 5.4 grant) get the 5.8 error below.
 - A saved pin that cannot start here: the existing `profile_harness_cannot_start` text, from `harness_error`.
 - A saved pin in `ACP_BACKENDS_CREWMATE_PIN_TO_KAS`: an error saying it runs on KAS instead (5.8), from `harness_error`.
 - A saved spec with single-tool limits on a harness outside `ACP_BACKENDS_MEMBER_TOOL_LIMITS`: the existing `member_backend_warning` result, shown under the field.
@@ -208,11 +208,11 @@ Two kinds of pin are told apart:
 | Pin | Example | At start |
 |---|---|---|
 | this gateway cannot start it | unknown, denied by policy, dropped from `selectable_backends()` | refuses, `crewmate_harness_unavailable` (H17, unchanged) |
-| it starts, but cannot run a full crewmate | goose, opencode, strands, pi, deepseek, copilot | runs on KAS, with an error |
+| it starts, but cannot run a full crewmate | goose, opencode, strands, deepseek, copilot (pi until its 5.4 grant) | runs on KAS, with an error |
 
-"Cannot run a full crewmate" means no crewmate chat (outside `ACP_BACKENDS_MEMBER_CAPABILITIES` or `ACP_BACKENDS_MEMBER_DISPATCH`) or no worker kit (outside `ACP_BACKENDS_MATE_WORKER_KIT`). The harnesses are a new named set, `ACP_BACKENDS_CREWMATE_PIN_TO_KAS`, written as an explicit literal (H6): goose, opencode, strands, pi, deepseek, copilot. Every other selectable harness is a decision here too (H6): Kiro CLI maps to KAS on the crewmate route (5.1); KAS and Claude Code are in all three sets; Codex is in all three on main since its worker-kit grant (`ACP_BACKENDS_MATE_WORKER_KIT` in `agent_sdk/backends_members.py`), so a Codex pin runs on Codex. copilot is selectable on every build (`BASELINE_SELECTABLE_BACKENDS` in `agent_sdk/backends.py`) and is in none of the three sets, so it meets the definition and is in the set, though the owner's list did not name it. pi and deepseek are in the set by the owner's 2026-11-05 list: they have no worker kit, so a pin there moves to KAS until a 5.4-style capture grants one, and that grant removes them from this set. An inherited pi or deepseek (tier 3) is not changed by this amendment and keeps 5.3's rule; aligning it is left to the owner. A test checks both directions: every member lacks a crewmate chat or the worker kit, and every selectable harness that lacks either, except Kiro CLI, is a member. So a new harness or a later grant is an explicit decision here too.
+"Cannot run a full crewmate" means no crewmate chat (outside `ACP_BACKENDS_MEMBER_CAPABILITIES` or `ACP_BACKENDS_MEMBER_DISPATCH`) or no worker kit (outside `ACP_BACKENDS_MATE_WORKER_KIT`). The harnesses are a new named set, `ACP_BACKENDS_CREWMATE_PIN_TO_KAS`, written as an explicit literal (H6): goose, opencode, strands, pi, deepseek, copilot. Every other selectable harness is a decision here too (H6): Kiro CLI maps to KAS on the crewmate route (5.1); KAS and Claude Code are in all three sets; Codex is in all three on main since its worker-kit grant (`ACP_BACKENDS_MATE_WORKER_KIT` in `agent_sdk/backends_members.py`), so a Codex pin runs on Codex. copilot is selectable on every build (`BASELINE_SELECTABLE_BACKENDS` in `agent_sdk/backends.py`) and is in none of the three sets, so it meets the definition and is in the set, though the owner's list did not name it. pi and deepseek are in the set by the owner's 2026-11-05 list: they have no worker kit, so a pin there moves to KAS until a 5.4-style capture grants one, and that grant removes them from this set. pi's grant has landed (5.4), so pi has left the set and a pi pin runs on pi. An inherited pi or deepseek (tier 3) is not changed by this amendment and keeps 5.3's rule; aligning it is left to the owner. A test checks both directions: every member lacks a crewmate chat or the worker kit, and every selectable harness that lacks either, except Kiro CLI, is a member. So a new harness or a later grant is an explicit decision here too.
 
-Today goose and opencode start on the pinned harness, and a saved spec there is then refused with `capability_harness_unsupported`; pi and deepseek start and their workers are refused.
+Today goose and opencode start on the pinned harness, and a saved spec there is then refused with `capability_harness_unsupported`; pi and deepseek start and their workers are refused (pi until its 5.4 grant).
 
 Such a pin no longer runs on the pinned harness. At the pre-gate check (`crewmate_backend_pin`, `CrewBackendPin.resolve`), after the startable check passes, a pin in `ACP_BACKENDS_CREWMATE_PIN_TO_KAS` resolves to KAS. That KAS then crosses the one gate like a tier-3 fallback (5.1): an LTS build lands on the D6 floor, a policy that denies `kas` takes the floor, and the per-session KAS refusal of 5.5 still applies. The crewmate's DM and the workers it opens both run there. In an oss build whose policy denies `kas`, that floor is Kiro CLI, the same result tier 3 gives in that case (5.1): the crewmate runs there, the operating-mode block is withheld by `_member_backend_can_dispatch`, and the error names Kiro CLI instead of KAS.
 
@@ -246,7 +246,7 @@ This covers every way a crewmate lands on another harness: it inherits one (tier
 | Kiro CLI | no | KAS | KAS | KAS |
 | Claude Code | no | KAS | Claude Code | Claude Code |
 | Codex | no | KAS | Codex | refused until 5.4 follow-up |
-| deepseek or pi | no | KAS | that harness | refused |
+| deepseek or pi | no | KAS | that harness | refused (pi until its 5.4 grant) |
 | goose, opencode, strands | no | KAS | KAS (logged) | KAS |
 | any | yes | that value | that value | unchanged |
 | any | pin crewmates can run on | pin | pin | unchanged |
@@ -257,7 +257,7 @@ The model a crewmate runs with moves too when its harness moves: its own model i
 
 The only people whose crewmate harness moves by inherit are those who picked Claude Code, Codex, deepseek or pi in Settings and never stored `member_acp_backend`. Their crewmate DMs move from KAS to that harness. A crewmate's KAS conversation does not resume on another harness, so its next turn starts a new native session; Crew's own transcript and memory carry over as they do for any harness change.
 
-Notice: besides the Settings line (5.2), a once-per-install dashboard notice, shown the first time the moved person opens a crewmate chat after upgrade: "Crewmates now follow Settings → Agent Harness (Claude Code). To keep one on KAS, pin it in its profile." It is dismissible and stored like the existing once-only KAS notice. The release notes name the change. For codex, deepseek and pi the notice also says that workers are refused until supported and how to pin KAS.
+Notice: besides the Settings line (5.2), a once-per-install dashboard notice, shown the first time the moved person opens a crewmate chat after upgrade: "Crewmates now follow Settings → Agent Harness (Claude Code). To keep one on KAS, pin it in its profile." It is dismissible and stored like the existing once-only KAS notice. The release notes name the change. For codex, deepseek and pi the notice also says that workers are refused until supported and how to pin KAS (codex and pi until their 5.4 grants).
 
 ## 7. Migration plan
 
