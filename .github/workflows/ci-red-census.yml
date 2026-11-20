@@ -1,0 +1,190 @@
+name: CI Red-Cause Census
+
+# A red check should mean the pull request's own change broke something. Once a
+# week this reads why every red CI job of the last seven days went red
+# (`scripts/ci_red_cause_census.py`: rate limit, broken main, infrastructure,
+# flaky or the diff) and keeps the three goal numbers where they can be read
+# again: the job summary, and a 90-day artifact with the summary and one CSV row
+# per red job.
+#
+# READ ONLY: every permission is `read`. It opens no issue, posts no comment and
+# changes no check. Reverting this file, and its line in
+# `scheduled-failure-watch.yml`, removes it.
+#
+# WHAT IT SPENDS, AND FROM WHICH BUCKET. The census reads by GraphQL, through
+# `gh api graphql` with the job's `GITHUB_TOKEN`. GitHub gives that token a
+# GraphQL primary limit of its own, apart from the REST one the rest of CI
+# spends: 15,000 points an hour per repository for a repository of a GitHub
+# Enterprise Cloud account, 1,000 otherwise
+# (https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#primary-rate-limit).
+# It is still one bucket for every workflow of the repository, and `gh pr view`
+# and `gh pr list` in other jobs read by GraphQL too. One weekday here is about
+# 91,000 runs and 3,000 points; a week is about 21,000. So the census is paced:
+#
+#   --points-per-hour 5000   after 5,000 points it sleeps until the bucket's
+#                            reset: no hour of the bucket gives up more than a
+#                            third of it, plus at most one call a worker (4)
+#                            that was already in flight
+#   --reserve-points 7500    it never starts a call with under half the bucket
+#                            left; if other jobs spent it, it sleeps to the reset
+#   --max-wait-seconds 9000  all sleeps together; a reset past what is left
+#                            ends the census with what it read, marked Partial
+#   --max-points 30000       the most one run may spend, whatever the window
+#
+# The first step reads the bucket's size (`/rate_limit` is free) and fails
+# before any point is spent when the bucket is smaller than the reserve and one
+# hour's points together: a 1,000-point bucket cannot hold a census at all.
+# REST is one call, the workflow list.
+#
+# ONE PACED READ, NOT A READ PER DAY. GitHub lists a workflow's runs newest
+# first with no date filter. A week read as seven one-day calls would page
+# through every newer run once per day, about 32,000 points in place of 21,000,
+# and the oldest day alone would cost more than one hour's 5,000.
+#
+# EXIT CODES. 0: the whole window was read. 3: the budget ended it early; the
+# summary says Partial with the reason, the span of runs read and the check
+# suites left out, the job warns and stays green, and the next week reads its
+# own window. Anything else is a failed read and fails the job;
+# `scheduled-failure-watch.yml` files that.
+#
+# TIME. About 150 minutes of reading for a seven-weekday window at four workers,
+# 150 of sleeping at most, and 10 the `gh` wrapper may wait on a spent limit,
+# under the hosted limit of 360.
+#
+# WHEN. Sunday 09:00 UTC, the least used hours of the week here; it ends by
+# Sunday afternoon. Never on a weekday and never more often than weekly.
+#
+# LOGS. The Actions token cannot read a job log in this repository, so the
+# census reads none (`--logs never`, its default) and its `log_unread` count
+# says how many red jobs were classified from their annotations alone.
+#
+# UNTRUSTED TEXT. A job name and an annotation are whatever a pull request
+# wrote. They reach the CSV only, as quoted cells. The job summary gets
+# `summary.md`, which holds numbers, the repository name and the validated
+# window, and the script's own count lines; nothing a run or a job is named.
+# The dispatch inputs are read from the environment, matched as dates and never
+# echoed.
+#
+# `test/test_ci_red_census_workflow.py` pins the triggers, the permissions, the
+# budget flags and their sum against the job timeout, and runs the census step
+# with `python3` stubbed.
+
+on:
+  schedule:
+    - cron: "0 9 * * 0" # Sundays 09:00 UTC
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "First UTC day to read, YYYY-MM-DD. Empty with `until`: the 7 days before today."
+        required: false
+        default: ""
+      until:
+        description: "Last UTC day to read (included whole), YYYY-MM-DD."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: ci-red-census
+  cancel-in-progress: false
+
+jobs:
+  census:
+    name: Red-cause census
+    # A schedule tick has no live collaborator actor for the CodeBuild fleet's
+    # allowlist, so this stays hosted; the `||` leg keeps a fork off an org
+    # runner it cannot reach.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+    timeout-minutes: 345
+    steps:
+      # The census, the two modules it loads and the gh wrapper; no other code
+      # is checked out, and always from the default branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/gh-rate-limit
+            .github/scripts
+            scripts
+
+      - name: Install rate-limit-aware gh
+        uses: ./.github/actions/gh-rate-limit
+        with:
+          max-wait: "600"
+
+      - name: Read the GraphQL bucket
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDED_POINTS: "12500" # the reserve and one hour's points
+        run: |
+          set -euo pipefail
+          state="$(gh api rate_limit --jq '.resources.graphql | "\(.limit) \(.remaining)"' || true)"
+          limit="${state%% *}"
+          remaining="${state##* }"
+          if ! [[ "$limit" =~ ^[0-9]+$ && "$remaining" =~ ^[0-9]+$ ]]; then
+            echo "::warning::The GraphQL rate limit could not be read; the census reads it with its first query."
+            exit 0
+          fi
+          echo "GraphQL bucket of this token: ${limit} points an hour, ${remaining} left." | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$limit" -lt "$NEEDED_POINTS" ]; then
+            echo "::error::This token's GraphQL bucket is ${limit} points an hour; the census leaves 7,500 and spends up to 5,000 an hour, so it needs ${NEEDED_POINTS}. Nothing was read."
+            exit 1
+          fi
+
+      - name: Take the census
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SINCE: ${{ inputs.since }}
+          UNTIL: ${{ inputs.until }}
+        run: |
+          set -uo pipefail
+          day='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          if [ -z "$SINCE" ] && [ -z "$UNTIL" ]; then
+            set -- --last-days 7
+          elif [[ "$SINCE" =~ $day && "$UNTIL" =~ $day ]]; then
+            set -- --since "$SINCE" --until "$UNTIL"
+          else
+            echo "::error::since and until must both be YYYY-MM-DD dates, or both be empty."
+            exit 1
+          fi
+          mkdir -p census
+          status=0
+          python3 scripts/ci_red_cause_census.py "$@" --repo "$REPO" --out-dir census \
+            --logs never --workers 4 --reserve-points 7500 --points-per-hour 5000 \
+            --max-wait-seconds 9000 --max-points 30000 > census/run.txt || status=$?
+          cat census/run.txt
+          {
+            if [ -f census/summary.md ]; then
+              cat census/summary.md
+            else
+              echo "### Red-cause census: no summary was written (exit ${status})"
+            fi
+            echo
+            echo '```'
+            grep -E '^(GraphQL calls|GraphQL points left|Waited|REST calls|Run time): ' census/run.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$status" in
+            0) ;;
+            3) echo "::warning::The census stopped at its API budget; the summary is marked Partial and says what was read." ;;
+            *)
+              echo "::error::The census could not be taken (exit ${status}); the reason is in this step's log."
+              exit 1
+              ;;
+          esac
+
+      - name: Upload the census
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-red-census
+          path: census/
+          if-no-files-found: warn
+          retention-days: 90

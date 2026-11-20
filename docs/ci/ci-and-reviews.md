@@ -571,6 +571,53 @@ action is not waited for. Neither job can pass, skip or report success without
 the action having run.
 `test/test_gh_rate_limit_wait.py` runs the command and both jobs' steps.
 
+### Scheduled workflows: the weekly red-cause census
+
+A red check should mean the pull request's own change broke something.
+`ci-red-census.yml` re-reads the three numbers for that goal every Sunday at
+09:00 UTC (and on a manual dispatch with optional `since` and `until` days):
+the share of red PR pushes with a job red from a broken main, the share of red
+jobs caused by the API rate limit, and backend shard reds from flaky tests or
+infrastructure per day. It runs `scripts/ci_red_cause_census.py --last-days 7`,
+writes the summary and the script's call counts to the job summary, and uploads
+`red-jobs.csv`, `summary.md`, `summary.json` and the printed output as the
+`ci-red-census` artifact, kept 90 days. Every permission is `read`; it opens no
+issue and posts no comment.
+
+The census reads by GraphQL with the job's `GITHUB_TOKEN`. That token has a
+GraphQL primary limit of its own, apart from the REST limit the section above
+is about: 15,000 points an hour per repository for a repository of a GitHub
+Enterprise Cloud account, 1,000 otherwise
+([GitHub's GraphQL rate limits](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#primary-rate-limit)).
+Every workflow of the repository shares it, and a week of this repository costs
+about 21,000 points, so the run is paced by the script's own guard:
+
+| Flag | Value | What it bounds |
+|---|---|---|
+| `--points-per-hour` | 5,000 | After spending this many points the census sleeps until the bucket's reset, so no hour of the bucket gives up more than a third of it, plus at most one call for each of the 4 workers already in flight |
+| `--reserve-points` | 7,500 | It never starts a call with less than half the bucket left; when other jobs have spent it, it sleeps until the reset |
+| `--max-wait-seconds` | 9,000 | All sleeps together. A reset further away than what is left ends the census with what it read |
+| `--max-points` | 30,000 | The most one run spends, whatever window a dispatch asks for |
+
+A step before the census reads the bucket's size from `/rate_limit`, which
+costs nothing, and fails the job when it is under 12,500 points (the reserve
+and one hour's points): nothing is read from a bucket that cannot hold a
+census. The week is one paced read, not one read a day, because GitHub lists a
+workflow's runs newest first with no date filter: seven one-day reads would
+page through every newer run once per day and cost about half as much again.
+
+The census exits 0 for a whole read and 3 when the budget ended it early. On 3
+the job stays green with a warning, and the summary starts with `Partial`, the
+reason, the span of runs read and the number of check suites left out; its
+counts cover only what was read. Any other exit fails the job, and
+`scheduled-failure-watch.yml` files it. The Actions token cannot read a job log
+here, so the weekly numbers are from annotations alone and the summary's
+`log_unread` says how many red jobs that affects. A job's name is whatever a
+pull request's workflow called it: names reach the CSV only, with control
+characters replaced, never the job summary. `test/test_ci_red_census_workflow.py`
+pins the triggers, the permissions, the budget flags against the job timeout
+and the step's handling of each exit code.
+
 ### A red that is not your diff: external, or self-inflicted?
 
 Before re-running, read the failing step's `##[error]` line and match it here.
@@ -1916,7 +1963,7 @@ inside its `matrix.os` test), so a fork's own copy stays on `ubuntu-latest`. By
 what starts them:
 
 - a schedule or a manual dispatch: `add-contributor.yml`'s `add`,
-  `connections-l0.yml`'s `probe`, `deferred-findings-audit.yml`'s `audit`,
+  `connections-l0.yml`'s `probe`, `ci-red-census.yml`'s `census`, `deferred-findings-audit.yml`'s `audit`,
   `fix-loop-analysis.yml`'s `metrics` and `analyze`, `memory-benchmark.yml`'s
   `accept`, `pr-readiness-sweep.yml`'s `sweep`, `ship-report.yml`'s `report`,
   `test-durations.yml`'s `refresh`, `gui-user-test.yml`'s one job,

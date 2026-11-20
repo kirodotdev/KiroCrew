@@ -9,11 +9,13 @@ read-only report says how often it means something else:
 
 It reads every workflow's runs created in the window and writes three files to
 ``--out-dir``. A bound is a UTC day (``2026-11-20``; as ``--until`` the whole day
-is included) or a UTC minute (``2026-11-20T09:00Z``).
+is included) or a UTC minute (``2026-11-20T09:00Z``). ``--last-days 7`` is the
+seven whole UTC days before today, in place of both bounds.
 
     red-jobs.csv   one row per red job: run id, job id, workflow, job name,
                    event, head SHA, PR number, cause, and the evidence that
-                   decided the cause (80 printable ASCII characters at most)
+                   decided the cause (80 printable ASCII characters at most); no cell
+                   holds a control character
     summary.md     the three goal numbers with their n, and the cause counts
     summary.json   the same numbers as data
 
@@ -78,7 +80,18 @@ workflows) cost 1,828 calls and 2,786 points. So:
 - it stops after spending ``--max-points`` (1,500 by default, about half a
   day of runs here and under a third of one hour's bucket).
 
-A census stopped either way spends nothing more. A check suite is counted whole
+A census stopped either way spends nothing more. A week of this repository is
+some 20,000 points, more than any one hour should give up, so a census can
+wait instead of stopping: with ``--max-wait-seconds`` it sleeps until the
+bucket's reset when the reserve is reached, and with ``--points-per-hour`` also
+after spending that many points since it last waited, so no hour of the bucket
+gives up more than that (plus one call a worker already in flight). The waits
+share the ``--max-wait-seconds`` budget; a reset past what is left of it stops
+the census as above. Runs are listed newest first and GitHub has no date filter
+for them, so a window read as separate days would page through every newer run
+once a day; one paced census lists them once.
+
+A check suite is counted whole
 or not at all: one the stop left part read, and any other run of the same
 workflow and head SHA, is left out and counted in ``suites_unread``, so no job
 is reported with a cause a complete read could have changed. It still writes its files,
@@ -86,11 +99,14 @@ says ``Partial`` at the top of the summary with the reason and the span of the
 runs it did read, sets ``partial`` in the JSON and exits 3 (1 is a failed
 read): its counts cover only what was read. A whole day or more belongs in a
 workflow, under the workflow's own token and after
-``.github/actions/gh-rate-limit``, read one day an hour with ``--max-points``
-raised to fit; do not spend a person's bucket on it.
+``.github/actions/gh-rate-limit``, paced with ``--points-per-hour`` and with
+``--max-points`` raised to fit (`ci-red-census.yml`); do not spend a person's
+bucket on it.
 
-Annotation and log text is untrusted. It is never placed in a shell command,
-and what reaches a file is cut to printable ASCII.
+Annotation and log text is untrusted, and so is a job's name. None of it is
+placed in a shell command. Annotation and log text is cut to printable ASCII
+before it reaches a file; a name reaches the CSV only, with its control
+characters replaced, and never the summary or what is printed.
 """
 
 from __future__ import annotations
@@ -125,6 +141,11 @@ DEFAULT_WORKERS = 4
 DEFAULT_RESERVE_POINTS = 2000
 DEFAULT_MAX_POINTS = 1500
 PARTIAL_EXIT = 3
+# A paced census sleeps this long past the bucket's reset, and this long when
+# GitHub's reset time cannot be read.
+RESET_MARGIN_SECONDS = 5
+UNKNOWN_RESET_WAIT_SECONDS = 60
+_RESET_STAMP = "%Y-%m-%dT%H:%M:%SZ"
 MAX_WORKERS = 8
 EVIDENCE_CHARS = 80
 ATTEMPTS = 3
@@ -189,6 +210,7 @@ _GH_ERROR = "gh: "
 # The Linux shards are `Backend Tests (<python>, <shard>)`, the Windows ones
 # `Backend Tests (Windows) (<shard>)`.
 BACKEND_SHARD = re.compile(r"Backend Tests (?:\([0-9.]+, \d+\)|\(Windows\) \(\d+\))")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _GENERIC = re.compile(r"Process completed with exit code \d+\.?|The operation was canceled\.?")
 
 
@@ -445,6 +467,11 @@ class Api:
     every further GraphQL read raises ``BudgetStop`` and ``stopped`` says why.
     Reads already in flight on other threads finish, so the overshoot is at
     most one call a worker.
+
+    With ``wait_left`` seconds to wait, reaching the reserve sleeps until the
+    bucket's reset instead of stopping, and so does spending ``hourly_points``
+    since the last such sleep. ``max_points`` still ends the census. One thread
+    sleeps; the others queue behind it and then read the budget again.
     """
 
     def __init__(
@@ -453,12 +480,20 @@ class Api:
         sleep: Callable[[float], None] = time.sleep,
         reserve: int = DEFAULT_RESERVE_POINTS,
         max_points: int = DEFAULT_MAX_POINTS,
+        now: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.timezone.utc),
     ) -> None:
         self._run = run
         self._sleep = sleep
+        self.now = now
         self._lock = threading.Lock()
+        self._pace = threading.Lock()
+        self._paced_from = 0
         self.reserve = reserve
         self.max_points = max_points
+        self.hourly_points: int | None = None
+        self.wait_left = 0.0
+        self.waited_seconds = 0.0
+        self.waits = 0
         self.remaining: int | None = None
         self.reset_at = ""
         self.stopped: str | None = None
@@ -466,24 +501,64 @@ class Api:
         self.graphql_points = 0
         self.rest_calls = 0
 
+    def _pause_reason(self) -> str | None:
+        """Why the census may not spend now, or ``None``. The lock is held."""
+        spent = self.graphql_points - self._paced_from
+        if self.hourly_points is not None and spent >= self.hourly_points:
+            return (
+                f"{spent} GraphQL points spent since the last wait, "
+                f"the --points-per-hour of {self.hourly_points}"
+            )
+        if self.remaining is not None and self.remaining < self.reserve:
+            return (
+                f"{self.remaining} GraphQL points left, under the --reserve-points "
+                f"of {self.reserve} (the bucket resets at {self.reset_at or 'an unknown time'})"
+            )
+        return None
+
+    def _reset_delay(self) -> float:
+        """Seconds from now until just past the bucket's reset."""
+        try:
+            reset = dt.datetime.strptime(self.reset_at, _RESET_STAMP)
+        except ValueError:
+            return UNKNOWN_RESET_WAIT_SECONDS
+        left = (reset.replace(tzinfo=dt.timezone.utc) - self.now()).total_seconds()
+        return max(left, 0.0) + RESET_MARGIN_SECONDS
+
     def _guard(self) -> None:
-        with self._lock:
-            if self.stopped is None and self.graphql_points >= self.max_points:
-                self.stopped = (
-                    f"{self.graphql_points} GraphQL points spent, "
-                    f"the --max-points of {self.max_points}"
-                )
-            if (
-                self.stopped is None
-                and self.remaining is not None
-                and self.remaining < self.reserve
-            ):
-                self.stopped = (
-                    f"{self.remaining} GraphQL points left, under the --reserve-points "
-                    f"of {self.reserve} (the bucket resets at {self.reset_at or 'an unknown time'})"
-                )
-            if self.stopped is not None:
-                raise BudgetStop(self.stopped)
+        with self._pace:
+            while True:
+                with self._lock:
+                    if self.stopped is None and self.graphql_points >= self.max_points:
+                        self.stopped = (
+                            f"{self.graphql_points} GraphQL points spent, "
+                            f"the --max-points of {self.max_points}"
+                        )
+                    reason = None if self.stopped else self._pause_reason()
+                    delay = 0.0
+                    if reason is not None and self.wait_left <= 0:
+                        self.stopped = reason
+                    elif reason is not None:
+                        delay = self._reset_delay()
+                        if delay > self.wait_left:
+                            self.stopped = (
+                                f"{reason}; the reset is {delay:.0f}s away, past the "
+                                f"{self.wait_left:.0f}s left of --max-wait-seconds"
+                            )
+                    if self.stopped is not None:
+                        raise BudgetStop(self.stopped)
+                    if reason is None:
+                        return
+                    self.wait_left -= delay
+                    self.waited_seconds += delay
+                    self.waits += 1
+                _progress(f"{reason}; waiting {delay:.0f}s for the bucket's reset")
+                self._sleep(delay)
+                # A read that was in flight may have reported the spent bucket
+                # during the sleep; the next read reports the new one.
+                with self._lock:
+                    self.remaining = None
+                    self._paced_from = self.graphql_points
 
     def _read_budget(self, rate: Any) -> None:
         if not isinstance(rate, dict):
@@ -1125,9 +1200,12 @@ def render_markdown(summary: dict[str, Any], repo: str, since: str, until: str) 
 
 
 def _cell(value: Any) -> str:
-    """One CSV cell that a spreadsheet cannot read as a formula."""
-    text = str(value)
-    return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+    """One CSV cell: no control character, and nothing a spreadsheet reads as a formula.
+
+    A job name is whatever a pull request's workflow file calls the job.
+    """
+    text = _CONTROL.sub(" ", str(value))
+    return "'" + text if text.lstrip()[:1] in ("=", "+", "-", "@") else text
 
 
 def write_outputs(out_dir: Path, census: Census, summary: dict[str, Any], markdown: str) -> None:
@@ -1142,6 +1220,23 @@ def write_outputs(out_dir: Path, census: Census, summary: dict[str, Any], markdo
     (out_dir / "summary.json").write_text(text, encoding="utf-8", newline="\n")
 
 
+def _not_negative(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number of 0 or more")
+    return value
+
+
+def _positive(text: str) -> int:
+    value = _not_negative(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number of 1 or more")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(__doc__ or "").splitlines()[0],
@@ -1150,21 +1245,26 @@ def build_parser() -> argparse.ArgumentParser:
             "2,786 points. The bucket is shared (5,000 points an hour for every session of a "
             "person's account), so the defaults stop early: read a few hours by hand, and run "
             "a day or more from a workflow, under its own token and after "
-            ".github/actions/gh-rate-limit. A census the budget stopped exits "
+            ".github/actions/gh-rate-limit, paced with --points-per-hour and "
+            "--max-wait-seconds. A census the budget stopped exits "
             f"{PARTIAL_EXIT} and marks its files partial."
         ),
     )
     parser.add_argument(
         "--since",
-        required=True,
         type=parse_bound,
         help="UTC start: 2026-11-20 or 2026-11-20T09:00Z",
     )
     parser.add_argument(
         "--until",
-        required=True,
         type=parse_bound,
         help="UTC end: a day (included whole) or a time such as 2026-11-20T12:00Z",
+    )
+    parser.add_argument(
+        "--last-days",
+        type=_positive,
+        default=None,
+        help="in place of --since and --until: this many whole UTC days, ending yesterday",
     )
     parser.add_argument("--repo", required=True, help="owner/name")
     parser.add_argument("--out-dir", required=True, type=Path)
@@ -1196,6 +1296,20 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"stop after spending this many GraphQL points (default {DEFAULT_MAX_POINTS}, "
         "about half a day of runs; a full day is about 2,800)",
     )
+    parser.add_argument(
+        "--points-per-hour",
+        type=_positive,
+        default=None,
+        help="with --max-wait-seconds: after spending this many GraphQL points, wait for "
+        "the bucket's reset before spending more (default: no hourly limit)",
+    )
+    parser.add_argument(
+        "--max-wait-seconds",
+        type=_not_negative,
+        default=0,
+        help="wait for the bucket's reset, this many seconds in total, instead of stopping "
+        "at the reserve or the hourly limit (default 0: stop)",
+    )
     return parser
 
 
@@ -1204,9 +1318,17 @@ def main(
     api: Api | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     api = api or Api()
+    if args.last_days is not None and args.since is None and args.until is None:
+        today = api.now().date()
+        args.since = parse_bound((today - dt.timedelta(days=args.last_days)).isoformat())
+        args.until = parse_bound((today - dt.timedelta(days=1)).isoformat())
+    elif args.last_days is not None or args.since is None or args.until is None:
+        parser.error("give --since and --until, or --last-days alone")
     api.reserve, api.max_points = args.reserve_points, args.max_points
+    api.hourly_points, api.wait_left = args.points_per_hour, float(args.max_wait_seconds)
     began = clock()
     try:
         if _REPO.fullmatch(args.repo) is None:
@@ -1225,6 +1347,8 @@ def main(
     print(f"GraphQL calls: {api.graphql_calls} ({api.graphql_points} points)")
     if api.remaining is not None:
         print(f"GraphQL points left: {api.remaining} (the bucket resets at {api.reset_at})")
+    if api.waits:
+        print(f"Waited: {api.waited_seconds:.0f}s in {api.waits} wait(s) for the bucket's reset")
     print(f"REST calls: {api.rest_calls}")
     print(f"Run time: {clock() - began:.1f}s")
     return status
