@@ -3152,7 +3152,9 @@ Shared attributes (`metrics/usage_attrs.py`):
 | `kirocrew.lesson.injected` | counter | `hit` | each admitted turn composed with a lesson tier |
 | `kirocrew.skill.lazy_load.count` | counter | adds `skill`: a shipped skill id (nested ones by their path), `custom` or `other` | each on-demand skill body load; the duration histogram keeps `hit` alone |
 | `kirocrew.app.task.completed` | counter, **deprecated** | `app`, `outcome` (kept in the manifest only) | nowhere: retired, no longer recorded. It counted Papyrus compiles; its manifest row stays `deprecated` so the name is never reused |
-| `kirocrew.app.installed` | counter | `app`: `app_public_id`, a shipped built-in's `app.json` name, the name of an app whose install record says it came from the public store (`apps/store_origin.py`, read at install, so a later delist keeps it), else `private`; `via`: `store` / `default` / `other` | the first successful `install_from_registry` of an app, after its provenance is written; `via=default` from the default-apps pass. An update is not counted |
+| `kirocrew.app.installed` | counter | `app`: `app_public_id`, a shipped built-in's `app.json` name, the name of an app whose install record says it came from the public store (`apps/store_origin.py`, read at install, so a later delist keeps it), else `private`; `entity_version`: `app_public_version`, the app's version when it is `N.N.N` (at most four digits each), `other` for any other version, `private` when `app` is; `via`: `store` / `default` / `other` | the first successful `install_from_registry` of an app, after its provenance is written; `via=default` from the default-apps pass. An update is not counted |
+| `kirocrew.app.updated` | counter | `app`, `entity_version` (the new version) and `via`, as on `kirocrew.app.installed` | a successful `install_from_registry` over an installed app, after its provenance is written (`store_origin.count_install`) |
+| `kirocrew.app.uninstalled` | counter | `app` and `entity_version` (the removed version), read before the install record is removed; `keep_data`: `true` / `false` | `uninstall_app` once it commits; a `retired_builtin` cleanup is Crew's own removal and is not counted |
 | `kirocrew.channel.message.received` | counter | `channel`, `admitted`, `automation` | `run_channel_turn`, once admission decides |
 | `kirocrew.ui.control.clicked` | counter | `control` (8 values) | `POST /api/telemetry/ui-control`, owner only, from the dashboard's option chips, question card and follow-up card |
 | `kirocrew.tips.feedback` | counter | `action`: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`; `source`: `curated` / `catalog` / `generated` / `other`; `feature`: a curated tip's id when the tip ships in `data/tips_curated.json` or is listed in the edition pool's `TipsPool.metric_tip_ids`, else the tip's doc when it is in `TIP_DOC_ALLOWLIST`, else `other` | `POST /api/tips/feedback`, after the tips state is saved (`tips_metrics.record_tip_feedback_metric`) |
@@ -3162,8 +3164,8 @@ Shared attributes (`metrics/usage_attrs.py`):
 Recording is an in-memory add after the measured action commits, and a recording
 failure never changes that action's result.
 
-The attributes above are what the emit sites pass. `kirocrew.app.installed` and the
-last three rows are the behavioral metrics (`BEHAVIORAL_METRICS` in `metrics/behavioral_metrics.py`, a
+The attributes above are what the emit sites pass. The three `kirocrew.app.*` lifecycle
+rows and the last three rows are the behavioral metrics (`BEHAVIORAL_METRICS` in `metrics/behavioral_metrics.py`, a
 subset of `PRODUCT_METRICS`). On the live provider `MetricsRecorder` creates them on
 a second meter with scope `kiro.crew` (every other metric uses `kiro_crew`) and
 reshapes their attributes on the way in, so every sink sees: `Feature` (`tips`,

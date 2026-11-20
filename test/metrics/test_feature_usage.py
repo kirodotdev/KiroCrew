@@ -121,15 +121,20 @@ def test_labelling_reads_no_directory():
 
 
 def test_public_app_id_reads_no_file(monkeypatch):
-    """``app_public_id`` reads the set the gateway filled; labelling touches no file."""
-    monkeypatch.setattr(fu, "_public_app_ids", frozenset({"auto-improvement", "weather-app"}))
+    """``app_public_id`` and ``app_public_version`` read the map the gateway filled; no file."""
+    monkeypatch.setattr(
+        fu, "_public_app_ids", {"auto-improvement": "1.0.0", "weather-app": "2.1.0"}
+    )
     with (
         patch("pathlib.Path.iterdir") as iterdir,
         patch("pathlib.Path.is_file") as is_file,
         patch("pathlib.Path.read_text") as read_text,
     ):
-        labels = [fu.app_public_id(a) for a in ("auto-improvement", "weather-app", "mine", 7)]
+        apps = ("auto-improvement", "weather-app", "mine", 7)
+        labels = [fu.app_public_id(a) for a in apps]
+        versions = [fu.app_public_version(a) for a in apps]
     assert labels == ["auto-improvement", "weather-app", "private", "other"]
+    assert versions == ["1.0.0", "2.1.0", "private", "other"]
     iterdir.assert_not_called()
     is_file.assert_not_called()
     read_text.assert_not_called()

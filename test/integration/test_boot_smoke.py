@@ -467,6 +467,10 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     # The SSM listener's last answer: every boot replaces it with a new value from its
     # own config (off, or the port it bound), so no earlier boot's answer carries over.
     ("kiro_crew.shared_crew.ssm", "_listener"): "rebuilt by each boot",
+    # Which apps have a public id, mapped to their version: each boot's
+    # refresh_public_app_ids swaps in a new dict read from that boot's install
+    # records, so no earlier boot's map carries over.
+    ("kiro_crew.metrics.feature_usage", "_public_app_ids"): "rebuilt by each boot",
     # When telemetry consent was last re-read, and whether a re-read is in
     # flight: a boot that outlasts the recheck window starts one. The consent
     # itself (``_built_consent``) does not change here.

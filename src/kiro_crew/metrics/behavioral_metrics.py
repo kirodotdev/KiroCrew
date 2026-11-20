@@ -52,6 +52,8 @@ _SHAPES: "Dict[str, Tuple[str, Optional[str], Optional[str]]]" = {
     "kirocrew.milestone.notice_shown": ("milestone", None, None),
     "kirocrew.milestone.features_completed": ("milestone", None, None),
     "kirocrew.app.installed": ("app", None, "app"),
+    "kirocrew.app.updated": ("app", None, "app"),
+    "kirocrew.app.uninstalled": ("app", None, "app"),
 }
 
 #: The reviewed behavioral metrics: a subset of ``PRODUCT_METRICS``.

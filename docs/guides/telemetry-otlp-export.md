@@ -491,7 +491,7 @@ every attribute value on it comes from a closed set. Histograms,
 | Sessions and turns | `session.started`, `session.idle_expired`, `subagent.spawned`, `subagent.completed`, `context.compactions`, `turn.completed`, `turn.timeout.cause` |
 | Crew sessions | `crew.session.started`, `crew.turn.started`, `crew.session.tree.depth`, `crew.session.tree.child`, `crew.session_control.calls` |
 | Work ledger and conductor mode | `work.created`, `work.item_closed`, `work.dispatches`, `work.reports`, `crew_mode.turned_on`, `crew_mode.new_chats`, `crew_mode.runs_finished`, `crew_mode.steers_per_run`, `crew_mode.worker_waits` |
-| Features | `cron.fires`, `artifact.created`, `workflow.runs`, `approval.decisions`, `autonudge.loops.started`, `autonudge.loops.stopped`, `autonudge.ticks`, `monitor.decisions`, `webhook.requests`, `memory.recalled`, `lesson.injected`, `skill.lazy_load.count`, `app.installed`, `channel.message.received`, `ui.control.clicked` |
+| Features | `cron.fires`, `artifact.created`, `workflow.runs`, `approval.decisions`, `autonudge.loops.started`, `autonudge.loops.stopped`, `autonudge.ticks`, `monitor.decisions`, `webhook.requests`, `memory.recalled`, `lesson.injected`, `skill.lazy_load.count`, `app.installed`, `app.updated`, `app.uninstalled`, `channel.message.received`, `ui.control.clicked` |
 | Inventory (gauges) | `inventory.crons.active`, `inventory.monitor_loops.active`, `inventory.skills.installed`, `inventory.memory.migrated`, `inventory.knowledge.documents`, `inventory.lessons`, `inventory.mcp.servers`, `inventory.config.toggle`, `inventory.probe.failures`, `inventory.members`, `inventory.voice.provider` |
 | Voice | `voice.stt.started`, `voice.stt.ended`, `voice.stt.errors`, `voice.unavailable`, `voice.tts.replies` |
 | Recommendations | `tips.feedback`, `feature_video.status`, `milestone.panel_opened`, `milestone.starter_clicked`, `milestone.reached`, `milestone.skipped`, `milestone.mark_all_done`, `milestone.notice_shown`, `milestone.features_completed` |
@@ -512,10 +512,14 @@ in-product recommendations (feature tips, the Explore panel, feature videos):
 | `kirocrew.milestone.panel_opened`, `.mark_all_done`, `.notice_shown`, `.features_completed` | `Feature` = `milestone`, `Activity` = the last name segment, plus `group` on `notice_shown` and `via` on `features_completed` |
 
 These nine are the behavioral metrics (`BEHAVIORAL_METRICS` in
-`src/kiro_crew/metrics/behavioral_metrics.py`), with one more from the features
-group, `kirocrew.app.installed`: `Feature` = `app`, `Activity` = `installed`,
-`Entity` (a shipped built-in's or a store app's name, else `private`), `via`
-(`store` / `default` / `other`). Each records one thing a person did. They are exported under the instrumentation scope `kiro.crew`, so a
+`src/kiro_crew/metrics/behavioral_metrics.py`), with three more from the features
+group, `kirocrew.app.installed`, `kirocrew.app.updated` and
+`kirocrew.app.uninstalled`: `Feature` = `app`, `Activity` = the last name segment,
+`Entity` (a shipped built-in's or a store app's name, else `private`),
+`entity_version` (that app's version when it is `N.N.N`, `other` for a pre-release
+or build suffix, `private` for a private app), and `via` (`store` / `default` /
+`other`) on `installed` and `updated`, `keep_data` (`true` / `false`) on
+`uninstalled`. Each records one thing a person did. They are exported under the instrumentation scope `kiro.crew`, so a
 collector can admit user behavior by scope without taking the inventory gauges.
 Every other metric uses the scope `kiro_crew`. `Feature` and `Activity` are
 constants or values the emit site already closed; `Entity` carries the closed
