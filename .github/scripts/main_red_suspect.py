@@ -48,9 +48,9 @@ THE COMMENT IS A HINT. A pull request gets one when its failed run, on its
 current head, fails a test of an open suspected issue with the same message
 start, it does not change that test's file, and its base contains the issue's
 recorded base: the 3 pull requests an issue names when it is filed, and any
-other on its next failed run. It says the same test fails on other pull
-requests, links the issue, and says the pull request's own change may still be
-the cause. It is written once per pull request and suspected issue, found by a
+other once its failed run is among the newest runs a later run reads. It says
+the same test fails on other pull requests, links the issue, and says the pull
+request's own change may still be the cause. It is written once per pull request and suspected issue, found by a
 marker among the Actions token's own comments, and never edited: when the issue
 closes, the link shows how it ended. It changes no check and skips no test. A
 fork's pull request never gets one, because a fork's run is never a witness.
@@ -165,6 +165,18 @@ def _login(value: Any) -> str | None:
     return value.lower() if isinstance(value, str) and _LOGIN.fullmatch(value) else None
 
 
+def message_start(text: str) -> str:
+    """The form in which a failure message is compared, stored and shown.
+
+    Cleaning a message again must not change it, because a message read back
+    from an issue's record is compared with one read fresh from a run. The
+    watcher's `clean` alone is not such a form: it cuts after collapsing spaces,
+    so a cut that lands on a space leaves one at the end, which the next
+    cleaning removes.
+    """
+    return str(watch.clean(text, watch.MESSAGE_CHARS)).rstrip()
+
+
 def json_values(text: str) -> list[Any]:
     """Every JSON value in ``text``: `gh api --paginate` prints one per page."""
     decoder = json.JSONDecoder()
@@ -190,7 +202,11 @@ def strict_failures(pages: list[Any]) -> set[tuple[str, str]]:
     """
     rows = [row for page in pages if isinstance(page, list) for row in page]
     entries = [watch.annotation_entry(row) for row in rows]
-    return {entry for entry in entries if entry is not None and valid_nodeid(entry[0])}
+    return {
+        (entry[0], message_start(entry[1]))
+        for entry in entries
+        if entry is not None and valid_nodeid(entry[0])
+    }
 
 
 def backend_failed_jobs(pages: list[Any]) -> list[int]:
@@ -421,7 +437,7 @@ def parse_state(body: str) -> dict[str, Any] | None:
             return None
         if not all(_id(number) for number in numbers):
             return None
-    cleaned = {key: watch.clean(value, watch.MESSAGE_CHARS) for key, value in failures.items()}
+    cleaned = {key: message_start(value) for key, value in failures.items()}
     return {"failures": cleaned, "base": base, "prs": list(prs), "runs": list(runs)}
 
 
@@ -534,6 +550,28 @@ def cooling_in(pages: list[Any], since: str) -> set[str]:
         if closed >= since:
             cooling |= {without_group(nodeid) for nodeid in record["failures"]}
     return cooling
+
+
+def told_in(pages: list[Any]) -> set[int]:
+    """Pull requests where the Actions token already referred to an issue.
+
+    ``pages`` is the issue's timeline. A comment that names the issue leaves a
+    cross-reference there, so one read says which pull requests need no look at
+    their comments. It only saves reads: a pull request missing from it is still
+    checked for the marker before anything is written.
+    """
+    told: set[int] = set()
+    for event in (row for page in pages if isinstance(page, list) for row in page):
+        if not isinstance(event, dict) or event.get("event") != "cross-referenced":
+            continue
+        if not watch.is_watcher_author(event.get("actor")):
+            continue
+        source = event.get("source")
+        issue = source.get("issue") if isinstance(source, dict) else None
+        number = _id(issue.get("number")) if isinstance(issue, dict) else None
+        if number and "pull_request" in issue:
+            told.add(number)
+    return told
 
 
 def confirmed_in(pages: list[Any]) -> tuple[int, set[str]] | None:
@@ -730,25 +768,34 @@ class Api:
             self.write(f"the close of #{number}", "PATCH", f"issues/{number}", fields)
             self.say(f"Closed suspected issue #{number}.")
 
-    def notify(self, issue: int, shown: dict[str, str], run: Run) -> None:
-        """Comment once on ``run``'s pull request that it fails tests of ``issue``.
+    def notify(self, run: Run, hints: list[tuple[int, dict[str, str]]]) -> None:
+        """Comment on ``run``'s pull request, once per issue, that it fails that issue's tests.
 
-        The comments are read first. If they cannot be read nothing is written,
-        since a second comment could not be told from the first.
+        ``hints`` is ``[(issue, the tests it fails)]``. The comments are read
+        first, once. If they cannot be read nothing is written, since a second
+        comment could not be told from the first.
         """
         what = f"the comments of pull request {run.pr}"
         pages = self.get(what, f"issues/{run.pr}/comments?per_page=100", True)
         if pages is None:
             return
-        marker = notice_marker(issue)
-        for row in (row for page in pages if isinstance(page, list) for row in page):
-            if not isinstance(row, dict) or not watch.is_watcher_author(row.get("user")):
+        rows = [row for page in pages if isinstance(page, list) for row in page]
+        ours = "\n".join(
+            str(row.get("body") or "")
+            for row in rows
+            if isinstance(row, dict) and watch.is_watcher_author(row.get("user"))
+        )
+        for issue, shown in hints:
+            if notice_marker(issue) in ours:
                 continue
-            if marker in str(row.get("body") or ""):
-                return
-        body = render_notice(issue, shown, run, self.repo)
-        if self.write(what, "POST", f"issues/{run.pr}/comments", {"body": body}):
-            self.say(f"Told pull request {run.pr} that #{issue} suspects its failing test(s).")
+            body = render_notice(issue, shown, run, self.repo)
+            if self.write(what, "POST", f"issues/{run.pr}/comments", {"body": body}):
+                self.say(f"Told pull request {run.pr} that #{issue} suspects its failing test(s).")
+
+    def told(self, issue: int) -> set[int]:
+        """Pull requests the timeline of ``issue`` shows as told; none when it cannot be read."""
+        pages = self.get(f"the timeline of #{issue}", f"issues/{issue}/timeline?per_page=100", True)
+        return told_in(pages or [])
 
 
 # -- the two commands ----------------------------------------------------------
@@ -774,25 +821,32 @@ def close_confirmed(
     return left
 
 
-def notify_suspected(
-    api: Api, trigger: Run, failures: Failures, suspects: list[tuple[int, dict[str, Any]]]
-) -> None:
-    """Tell the pull request of ``trigger`` about each open suspected issue it fails.
-
-    Its pull request is read only when a failing pair is in some issue's record.
-    """
-    matching = [
+def owed(
+    run: Run,
+    failures: Failures,
+    suspects: list[tuple[int, dict[str, Any]]],
+    told: dict[int, set[int]],
+) -> list[tuple[int, dict[str, Any]]]:
+    """The open suspected issues whose test ``run`` fails and that its pull request is not told of."""
+    return [
         (number, state)
         for number, state in suspects
-        if any(pair in failures for pair in state["failures"].items())
+        if run.pr not in told.get(number, set())
+        and any(pair in failures for pair in state["failures"].items())
     ]
-    witness = api.witness(trigger, failures) if matching else None
+
+
+def notify_run(api: Api, witness: Witness | None, issues: list[tuple[int, dict[str, Any]]]) -> None:
+    """Tell one pull request about each suspected issue in ``issues`` that it shows."""
     if witness is None:
         return
-    for number, state in matching:
+    hints = []
+    for number, state in issues:
         shown = suspected_here(witness, state)
-        if shown and api.relation(state["base"], trigger.base) in ("ahead", "identical"):
-            api.notify(number, shown, trigger)
+        if shown and api.relation(state["base"], witness.run.base) in ("ahead", "identical"):
+            hints.append((number, shown))
+    if hints:
+        api.notify(witness.run, hints)
 
 
 def _open_state(
@@ -805,16 +859,40 @@ def _open_state(
     return confirmed_in(main_red), suspects_in(suspected)
 
 
-def detect(api: Api, trigger: Run, workflow_id: int, since: str, cool_since: str) -> int:
-    """Open one suspected issue when 3 pull requests with a recent failed run agree.
+def _fileable(
+    api: Api, named_here: Failures, suspects: list[tuple[int, dict[str, Any]]], cool_since: str
+) -> tuple[Failures, set[str]] | None:
+    """``(the trigger's tests that may be suspected, the tests that may not)``, or ``None``."""
+    known = covered(suspects)
+    failures = frozenset(pair for pair in named_here if without_group(pair[0]) not in known)
+    if len(suspects) >= MAX_OPEN:
+        api.say(f"{len(suspects)} suspected issues are open, the most kept at once.")
+        return frozenset(), known
+    if not failures:
+        api.say("Every test that fails here is already suspected.")
+        return failures, known
+    closed = api.issues(LABEL, cool_since)
+    if closed is None:
+        return None
+    known |= cooling_in(closed, cool_since)
+    failures = frozenset(pair for pair in failures if without_group(pair[0]) not in known)
+    if not failures:
+        api.say(
+            f"Main ran every test that fails here green in the last {COOLDOWN_HOURS} hours, "
+            "after it was suspected; not suspecting it again yet."
+        )
+    return failures, known
 
-    Before that, tell the pull request of ``trigger`` about any open suspected
-    issue whose test it fails; after filing one, tell the 3 it names.
+
+def detect(api: Api, trigger: Run, workflow_id: int, since: str, cool_since: str) -> int:
+    """Tell pull requests about open suspected issues, then open one when 3 agree.
 
     The run that started this must name a failing test, which keeps the reads
-    off a lint-only failure. It need not be one of the 3: every run re-reads the
-    newest failed runs, so a run that was queued and replaced before it started
-    is still counted by the one that replaced it.
+    off a lint-only failure. Past that it works for every run it reads, not for
+    itself: it re-reads the newest failed runs, tells each pull request that
+    fails a suspected test and is not yet told, and counts all of them as
+    witnesses. So what a queued run that was replaced before it started would
+    have done is done by the run that replaced it.
     """
     opened = _open_state(api)
     if opened is None:
@@ -828,25 +906,11 @@ def detect(api: Api, trigger: Run, workflow_id: int, since: str, cool_since: str
     if not named_here:
         api.say("This run names no failing test.")
         return 0
-    notify_suspected(api, trigger, named_here, suspects)
-    if len(suspects) >= MAX_OPEN:
-        api.say(f"{len(suspects)} suspected issues are open, the most kept at once.")
+    fileable = _fileable(api, named_here, suspects, cool_since)
+    if fileable is None:
         return 0
-    known = covered(suspects)
-    failures = frozenset(pair for pair in named_here if without_group(pair[0]) not in known)
-    if not failures:
-        api.say("Every test that fails here is already suspected.")
-        return 0
-    closed = api.issues(LABEL, cool_since)
-    if closed is None:
-        return 0
-    known |= cooling_in(closed, cool_since)
-    failures = frozenset(pair for pair in failures if without_group(pair[0]) not in known)
-    if not failures:
-        api.say(
-            f"Main ran every test that fails here green in the last {COOLDOWN_HOURS} hours, "
-            "after it was suspected; not suspecting it again yet."
-        )
+    failures, known = fileable
+    if not failures and not suspects:
         return 0
     left = api.remaining()
     if left is not None and left < RATE_FLOOR:
@@ -862,16 +926,34 @@ def detect(api: Api, trigger: Run, workflow_id: int, since: str, cool_since: str
     )
     if listing is None:
         return 0
-    runs = [trigger, *candidate_runs(listing, api.repo, trigger)]
-    named = {trigger.run_id: failures}
+    told = {number: api.told(number) for number, _ in suspects}
+    everywhere = set.intersection(*told.values()) if told else set()
+    runs = [trigger]
+    for run in candidate_runs(listing, api.repo, trigger):
+        # With nothing to file, a pull request told of every open issue is not read again.
+        if failures or run.pr not in everywhere:
+            runs.append(run)
+    raw = {trigger.run_id: named_here}
     for run in runs[1:]:
-        named[run.run_id] = api.failures(run.run_id, known)
-    grouped = in_a_group(named)
-    witnesses = []
+        raw[run.run_id] = api.failures(run.run_id, set())
+    named = {
+        run_id: frozenset(pair for pair in pairs if without_group(pair[0]) not in known)
+        for run_id, pairs in raw.items()
+    }
+    grouped = in_a_group(named) if failures else set()
+    seen: dict[int, Witness | None] = {}
     for run in runs:
-        witness = api.witness(run, named[run.run_id]) if run.run_id in grouped else None
-        if witness is not None:
-            witnesses.append(witness)
+        issues = owed(run, raw[run.run_id], suspects, told)
+        if issues or run.run_id in grouped:
+            seen[run.run_id] = api.witness(run, raw[run.run_id])
+            notify_run(api, seen[run.run_id], issues)
+    if not failures:
+        return 0
+    witnesses = [
+        witness._replace(failures=named[run_id])
+        for run_id, witness in seen.items()
+        if witness is not None and run_id in grouped
+    ]
     sets = agreements(witnesses)
     if not sets:
         api.say(
@@ -916,7 +998,7 @@ def detect(api: Api, trigger: Run, workflow_id: int, since: str, cool_since: str
         return 0
     api.say(f"Filed suspected issue #{number} for {len(agreed)} test(s).")
     for witness in chosen:
-        api.notify(number, suspected_here(witness, state), witness.run)
+        notify_run(api, witness, [(number, state)])
     return 0
 
 

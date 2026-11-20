@@ -30,6 +30,7 @@ from __future__ import annotations
 import ast
 import itertools
 import json
+import random
 import re
 from pathlib import Path
 from typing import Any
@@ -157,6 +158,7 @@ class FakeGh:
         relations: dict[str, str] | None = None,
         main_jobs: list[dict[str, Any]] | None = None,
         drop_labels: bool = False,
+        cross_references: bool = True,
     ) -> None:
         self.prs = {pr["number"]: pr for pr in prs}
         self.issues = [dict(issue) for issue in issues]
@@ -165,6 +167,7 @@ class FakeGh:
         self.relations = relations or {}
         self.main_jobs = main_jobs or []
         self.drop_labels = drop_labels
+        self.cross_references = cross_references
         self.calls: list[str] = []
         self.comments: dict[int, str] = {}
         self.threads: dict[int, list[dict[str, Any]]] = {}
@@ -222,9 +225,25 @@ class FakeGh:
                 issue["closed_at"] = CLOSED_AT
         return 0, json.dumps({"number": number}), ""
 
+    def _timeline(self, issue: int) -> list[dict[str, Any]]:
+        """The cross-references GitHub adds when a comment on a pull request names the issue."""
+        if not self.cross_references:
+            return []
+        events: list[dict[str, Any]] = [{"event": "labeled", "actor": BOT}]
+        for number, rows in sorted(self.threads.items()):
+            for row in rows:
+                if f"#{issue}," in row["body"] or f"#{issue} " in row["body"]:
+                    source = {"type": "issue", "issue": {"number": number, "pull_request": {}}}
+                    events.append(
+                        {"event": "cross-referenced", "actor": row["user"], "source": source}
+                    )
+        return events
+
     def _read(self, path: str) -> tuple[int, str, str]:
         if path.startswith("issues/"):
             number = int(path.split("/")[1])
+            if path.split("/")[2].startswith("timeline?"):
+                return 0, json.dumps(self._timeline(number)), ""
             assert path.split("/")[2].startswith("comments?")
             return 0, json.dumps(self.threads.get(number, [])), ""
         if path.startswith("issues?"):
@@ -780,14 +799,14 @@ def test_no_more_than_the_cap_of_suspected_issues_is_open_at_once() -> None:
     gh = FakeGh(THREE, issues=held)
     _detect(gh)
     assert len(gh.open_issues()) == mod.MAX_OPEN
-    assert gh.reads("actions/workflows/") == [] and gh.writes() == []
+    assert gh.writes() == []
 
 
-def test_a_test_that_is_already_suspected_costs_no_read_of_another_run() -> None:
+def test_a_test_that_is_already_suspected_files_nothing() -> None:
     gh = FakeGh(THREE, issues=(_suspect_issue(),))
     _detect(gh)
-    assert gh.reads("actions/workflows/") == []
-    assert len(gh.open_issues()) == 1
+    assert [issue["number"] for issue in gh.open_issues()] == [40]
+    assert not any(call.endswith("repos/example/repo/issues") for call in gh.writes())
 
 
 def test_a_run_that_names_no_test_reads_no_other_run() -> None:
@@ -1049,7 +1068,6 @@ def test_a_later_pull_request_that_fails_the_suspected_test_is_told_and_no_issue
     (issue,) = gh.open_issues()
     (body,) = _notes_on(gh, 4)
     assert body.startswith(mod.notice_marker(issue["number"]))
-    assert gh.reads("actions/workflows/")[1:] == [], "no other run is read for a suspected test"
     assert any("Told pull request 4" in line for line in api.lines)
 
 
@@ -1177,8 +1195,152 @@ def test_one_run_writes_a_bounded_number_of_comments_at_a_bounded_cost() -> None
     api = _detect(gh, trigger=4)
     posted = [call for call in gh.writes() if call.endswith("/comments")]
     assert len(posted) <= mod.MAX_OPEN
-    # Two issue reads, its jobs and annotations, its pull request and files, its comments.
-    assert api.calls <= 2 + 2 + 2 + 2
+    # Two issue reads, its jobs and annotations, the run list and the issue's timeline,
+    # its pull request and files, its comments and the write.
+    assert api.calls <= 2 + 2 + 2 + 2 + 2
+
+
+def test_once_every_pull_request_is_told_a_failed_run_reads_no_other_run() -> None:
+    """The steady state of a break: the timeline says who is told, and nothing else is read."""
+    others = tuple(_pr(n, f"author-{n}") for n in range(4, 12))
+    gh = FakeGh((*THREE, *others))
+    _detect(gh)
+    for trigger in (4, 11):
+        _detect(gh, trigger=trigger)
+    assert all(len(_notes_on(gh, number)) == 1 for number in range(1, 12))
+    before = len(gh.calls)
+    api = _detect(gh, trigger=5)
+    read = gh.calls[before:]
+    assert [call for call in read if "actions/runs/" in call] == [
+        "GET actions/runs/9005/jobs?per_page=100"
+    ]
+    assert not any("pulls/" in call or "/comments" in call for call in read)
+    assert api.calls <= 2 + 2 + 1 + 1
+
+
+def test_the_first_run_after_an_issue_is_filed_is_the_dearest_and_is_bounded() -> None:
+    """Ten other pull requests fail the suspected test and none is told yet."""
+    prs = tuple(_pr(n, f"author-{n}") for n in range(1, 12))
+    gh = FakeGh(prs, issues=(_suspect_issue(),))
+    api = _detect(gh, trigger=11)
+    assert all(len(_notes_on(gh, number)) == 1 for number in range(1, 12))
+    told = mod.MAX_CANDIDATES + 1
+    reads = 2 + 2 + 1 + 1 + 2 * mod.MAX_CANDIDATES + 3 * told
+    assert api.calls <= reads + told
+
+
+# ── What a replaced queued run would have done is done by the next one ───────
+
+
+@pytest.mark.parametrize(
+    "newer",
+    [
+        _pr(5, "hopper"),
+        _pr(5, "hopper", failures={"test/test_else.py::test_mine": "x"}),
+        _pr(5, "hopper", failures={**FAILS, "test/test_else.py::test_mine": "x"}),
+    ],
+    ids=["fails-the-suspected-test", "fails-another-test", "fails-both"],
+)
+def test_a_pull_request_whose_queued_run_was_replaced_is_told_by_the_run_that_replaced_it(
+    newer: dict,
+) -> None:
+    """Run B (pull request 4) never started: GitHub keeps one queued run per group."""
+    gh = FakeGh((_pr(4, "barbara"), newer), issues=(_suspect_issue(),))
+    _detect(gh, trigger=5)
+    assert len(_notes_on(gh, 4)) == 1
+    assert len(_notes_on(gh, 5)) == (1 if NODE in str(newer["notes"]) else 0)
+    assert [issue["number"] for issue in gh.open_issues()] == [40]
+
+
+def test_a_replaced_run_is_told_even_when_the_cap_of_open_issues_is_reached() -> None:
+    held = tuple(
+        _suspect_issue(41 + i, {f"test/test_held.py::test_{i}": "x"})
+        for i in range(mod.MAX_OPEN - 1)
+    )
+    gh = FakeGh((_pr(4, "barbara"), _pr(5, "hopper")), issues=(_suspect_issue(), *held))
+    _detect(gh, trigger=5)
+    assert len(_notes_on(gh, 4)) == 1 and len(_notes_on(gh, 5)) == 1
+
+
+@pytest.mark.parametrize("cross_references", [True, False])
+def test_however_runs_are_replaced_each_pull_request_ends_with_one_comment(
+    cross_references: bool,
+) -> None:
+    """Also when the timeline shows no cross-reference: the marker is still what decides."""
+    prs = tuple(_pr(n, f"author-{n}") for n in range(1, 9))
+    for order in ((8,), (3, 8, 8), (1, 2, 3, 4, 5, 6, 7, 8), (8, 1, 8, 1)):
+        gh = FakeGh(prs, issues=(_suspect_issue(),), cross_references=cross_references)
+        for trigger in order:
+            _detect(gh, trigger=trigger)
+        assert [len(_notes_on(gh, number)) for number in range(1, 9)] == [1] * 8, order
+
+
+def test_only_the_actions_tokens_reference_from_a_pull_request_counts_as_told() -> None:
+    def event(number: int, **over: Any) -> dict[str, Any]:
+        source = {"type": "issue", "issue": {"number": number, "pull_request": {}}}
+        return {"event": "cross-referenced", "actor": BOT, "source": source, **over}
+
+    pages = [
+        [
+            event(4),
+            event(5, actor={"login": "mallory"}),
+            event(6, event="mentioned"),
+            event(7, source={"type": "issue", "issue": {"number": 7}}),
+            event(8, source=None),
+            "odd",
+        ]
+    ]
+    assert mod.told_in(pages) == {4}
+
+
+# ── What is stored in the record equals what is read fresh ───────────────────
+
+MESSAGES = [
+    "a" * 79 + " tail that is cut after a space",
+    "a" * 78 + "  \t tail",
+    "trailing spaces   ",
+    "\ttabs\tand\r\nline ends\n",
+    "unicode \u00e9\u4e2d\u6587 \U0001f600 and control \x07\x1b[31m",
+    "markdown `code` **bold** [link](http://x) <!-- c --> <b> @octocat #12",
+    "",
+    " ",
+    "x" * 300,
+]
+
+
+def _generated_messages() -> list[str]:
+    rng = random.Random(39701)
+    alphabet = "ab \t\n`<>-@#\u00e9\x07*_[]" + "c" * 6
+    return ["".join(rng.choice(alphabet) for _ in range(rng.randrange(0, 200))) for _ in range(300)]
+
+
+def test_cleaning_a_message_twice_changes_nothing() -> None:
+    for message in MESSAGES + _generated_messages():
+        once = mod.message_start(message)
+        assert mod.message_start(once) == once, repr(message)
+        assert len(once) <= watch.MESSAGE_CHARS
+
+
+def test_a_record_read_back_holds_exactly_what_a_run_gives_fresh() -> None:
+    for message in MESSAGES + _generated_messages():
+        fresh = mod.strict_failures([_notes({NODE + "@some_group": message})])
+        state = {"failures": dict(fresh), "base": BASE, "prs": [1, 2, 3], "runs": [11, 12, 13]}
+        assert mod.parse_state(mod.render_body(state, REPO)) == state, repr(message)
+        assert set(mod.parse_state(mod.render_body(state, REPO))["failures"].items()) == fresh
+
+
+@pytest.mark.parametrize("message", MESSAGES[:6], ids=range(6))
+def test_a_later_pull_request_with_the_same_long_or_odd_message_is_told(message: str) -> None:
+    """The message goes into the issue and comes back; the fourth pull request must still match."""
+    fails = {NODE: message}
+    prs = tuple(_pr(n, who, failures=fails) for n, who in ((1, "a"), (2, "b"), (3, "c"), (4, "d")))
+    gh = FakeGh(prs)
+    _detect(gh)
+    (issue,) = gh.open_issues()
+    assert len(_notes_on(gh, 4)) == 0
+    _detect(gh, trigger=4)
+    assert len(_notes_on(gh, 4)) == 1
+    assert len(gh.open_issues()) == 1 and gh.open_issues()[0]["number"] == issue["number"]
 
 
 def test_no_account_name_is_in_a_comment() -> None:

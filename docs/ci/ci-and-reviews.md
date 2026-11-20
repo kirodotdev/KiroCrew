@@ -323,7 +323,8 @@ Three structural facts explain most of the rest:
   no other run when fewer than 1,500 API requests are left for the token, and
   cannot fail a job. A pull request that fails a suspected test is told so in
   one comment per suspected issue: the 3 the issue names when it is filed, and
-  any other on its next failed run, when that run is on its current head, fails
+  any other once its failed run is among the newest 10 a later run reads (so a
+  queued run that a newer one replaced is still told), when that run is on its current head, fails
   the test with the same message start, the pull request does not change the
   test's file and its base contains the issue's recorded base. The comment is a
   hint that the same test fails on other pull requests, with the issue link, and

@@ -24,8 +24,10 @@ name: Main Red Suspect
 #
 # THE COMMENT: a suspected issue in the issue list reaches few authors, so a
 # pull request that fails a suspected test is told on the pull request, once per
-# suspected issue: the 3 the issue names when it is filed, and any other on its
-# next failed run. It gets the comment only when its run is on its current head,
+# suspected issue: the 3 the issue names when it is filed, and any other once
+# its failed run is among the newest runs a later run reads (its own next run,
+# or another pull request's). It gets the comment only when its run is on its
+# current head,
 # fails the test with the same message start, it does not change the test's
 # file, and its base contains the issue's recorded base. The comment is a hint:
 # the same test fails on other pull requests, here is the issue, and this pull
@@ -66,10 +68,17 @@ name: Main Red Suspect
 # suspected issue, at most 3 (green). A failed pull request run costs 2 issue
 # reads and stops there while a `Main is red:` issue is open. Otherwise it reads
 # its own jobs and up to 3 annotation sets, and stops when they name no test.
-# When one of them is in an open suspected issue it reads its pull request, its
-# changed files and its comments (3 reads, 1 compare for a different base) and
-# writes at most one comment per suspected issue, so at most 3. Filing an issue
-# adds one comment read and one write for each of the 3 pull requests it names.
+# While a suspected issue is open, a run that names a test also reads the run
+# list and each open issue's timeline (which says who is told, at most 3
+# reads), then the jobs and annotations of the newest 10 other pull requests
+# that are not yet told. For each run that fails a suspected test and is not
+# told: its pull request, its changed files and its comments (3 reads, 1
+# compare for a different base) and one comment per suspected issue. Once
+# every pull request in that window is told, such a run costs about 6 reads.
+# The first run after an issue is filed costs the most: with 10 other pull
+# requests all failing the suspected test, up to 81 reads and 11 writes.
+# Filing an issue adds one comment read and one write for each of the 3 pull
+# requests it names.
 # One read of the suspected issues closed in the last 24 hours follows, and it
 # stops when a green main run closed one for every test that fails here.
 # Then: the list of failed pull request runs of the last 3 hours (read to the
@@ -110,9 +119,10 @@ permissions:
 # clause for clause: only a run the job takes can replace a queued one, and
 # every other completion of `CI` gets a group of its own. What a replaced run
 # loses: a filing run, nothing while its failed run is among the newest 10 the
-# next one reads (the agreement need not include the run that started the
-# job); a green main run replaced by a newer red one leaves its suspected issue
-# open until the next green run.
+# next one reads (neither the agreement nor the comment needs the run that
+# started the job; the next run that names a failing test does both for every
+# run it reads); a green main run replaced by a newer red one leaves its
+# suspected issue open until the next green run that contains the base.
 concurrency:
   group: >-
     ${{ github.event.workflow_run.head_repository.full_name == github.repository
