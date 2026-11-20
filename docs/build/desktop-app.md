@@ -873,7 +873,12 @@ manager brings the gateway straight back, the shell re-checks the new holder
 instead of starting a second one. A failed stop surfaces the start-failure
 dialog, naming the pid still holding the port, instead of spawning into it. SSH
 forwards, other data folders, unknown owners and Windows keep the existing spawn
-path, and a gateway that answers inside the window is reused as before.
+path, and a gateway that answers inside the window is reused as before. When
+that spawn exits and the owner probe had found a program this app did not
+start on the port, the gateway-failure dialog shows the `foreign-holder`
+refusal naming that program, not the bare exit code. A spawn killed by a
+signal keeps its own message: the port refusal exits with code 1, never by a
+signal.
 
 With no gateway to reuse, the shell locates the backend binary via
 [`find-bin.js`](../../website/electron/find-bin.js), spawns it as `kirocrew
@@ -1296,7 +1301,8 @@ carries internal identifiers and boot diagnostics, so the first view is the
 title, the message and the actions. Unfolding it grows the window to fit the
 log pane, and never shrinks a window the user made taller.
 
-The dialog also explains the refusals that start nothing:
+The dialog also explains the refusals that leave this launch without a local
+gateway:
 
 - **`crew-configured`**: the local gateway is on, but a recorded crew owns this
   port, so the shell does not bind it. Start Local Gateway re-execs on a free
@@ -1314,7 +1320,8 @@ The dialog also explains the refusals that start nothing:
   identified as someone else's; it is still refused, because adopting a holder
   no one identified would post this machine's local secret to it. This is the
   one refusal that shows the launch log and Reveal Log, because this launch
-  wrote the holder's pid and command there.
+  wrote the holder's pid and command there. A holder that does not answer
+  reaches this refusal too, once the gateway this launch spawned past it exits.
 
 After a Start Local Gateway click, the record names the outcome so the next
 dialog describes it: the restarted copy never served a gateway (offered again),
