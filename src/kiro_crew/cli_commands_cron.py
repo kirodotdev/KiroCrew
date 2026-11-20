@@ -45,7 +45,11 @@ from kiro_crew.cron import (
 )
 from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.history import ConversationLog
-from kiro_crew.mcp_cron import _vet_cron_capability_governance, _vet_script_file, _vet_shell_command
+from kiro_crew.mcp_cron import (
+    _vet_cron_capability_governance,
+    _vet_script_file,
+    _vet_shell_command,
+)
 from kiro_crew.platform import redact_log_via_context
 from kiro_crew.port_resolution import resolve_client_port_ex
 from kiro_crew.security import redact
@@ -88,6 +92,49 @@ def _format_schedule(schedule: object, *, tz_name: str = "") -> str:
     return format_schedule(schedule)
 
 
+def _cron_list_cell(value: str) -> str:
+    """*value* as ONE cell of a ``kirocrew cron list`` row.
+
+    Every field this command prints is written by a surface other than the
+    reader: ``name`` and ``message`` come from ``cron add``, the dashboard
+    editor and an agent's ``cron_add``; the ownership fields come from a
+    session key, an import label or an app manifest. Printed verbatim, a
+    newline in any of them ends the row early and the remainder starts an
+    unprefixed line -- which reads as another job, or as a second job's
+    ownership line. A live escape sequence reaches the terminal as a control
+    code rather than as the text that was stored.
+
+    ``safe_terminal_line`` is the policy every other list surface applies
+    (``agent list``, ``workspace list``, ``artifact list``): controls are
+    stripped or rendered, and a newline becomes the visible ``\\x0a``. The
+    one addition here is the tab, which that function deliberately keeps as
+    content but which is a column break inside a row, so it is rendered as
+    the visible ``\\x09`` for the same reason a newline is.
+    """
+    return safe_terminal_line(value).replace("\t", "\\x09")
+
+
+def _cron_list_clip(text: str, limit: int) -> str:
+    """``text`` cut to *limit* characters, never through an escaped control.
+
+    A cap applied to the CLEANED text is what keeps it a cap on what is
+    actually printed, but the cleaner spends four characters on each
+    ``\\xNN`` escape it renders. Cutting blindly can therefore land between
+    the ``x`` and the code, printing a bare ``\\x0`` that names no byte at
+    all. Backing up to the escape's own backslash costs at most three
+    characters and keeps every printed escape whole.
+    """
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    # A cut can land on, between, or one character into the four-character
+    # escape; every truncated tail below is a prefix of ``\\x0a``/``\\x09``.
+    marker = cut.rfind("\\")
+    if marker != -1 and cut[marker:] in ("\\", "\\x", "\\x0"):
+        cut = cut[:marker]
+    return cut
+
+
 def _cron_add_bounds(field_name: str) -> tuple[int, int]:
     """Numeric bounds of a ``cron add`` field, read from ``CRON_ADD_SCHEMA``.
 
@@ -109,7 +156,9 @@ def _cron_model(model: str) -> str:
     if not model:
         return ""
     if len(model) > MAX_SHORT_STRING:
-        raise ValueError(f"invalid model format (expected at most {MAX_SHORT_STRING} characters)")
+        raise ValueError(
+            f"invalid model format (expected at most {MAX_SHORT_STRING} characters)"
+        )
     if not _MODEL_NAME_RE.match(model):
         # Read here, not at module level: the facade mirrors every module-level
         # import of its owners, and its import inventory is frozen.
@@ -282,7 +331,9 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
         _cron_add_fail("--agent cannot be combined with --script or --command")
     zero_token = bool(script or command)
     if not message and not zero_token:
-        _cron_add_fail("message is required for an agent job (only --script/--command may omit it)")
+        _cron_add_fail(
+            "message is required for an agent job (only --script/--command may omit it)"
+        )
     if agent and not _AGENT_NAME_RE.match(agent):
         # Read here, not at module level: the facade mirrors every module-level
         # import of its owners, and its import inventory is frozen.
@@ -306,8 +357,12 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     if timeout_secs is not None:
         lo, hi = _cron_add_bounds("timeout_secs")
         if not lo <= int(timeout_secs) <= hi:
-            _cron_add_fail(f"--timeout-secs must be within {lo}..{hi}, got {timeout_secs}")
-    effective_timeout_secs = int(timeout_secs) if timeout_secs is not None else _JOB_TIMEOUT_SECS
+            _cron_add_fail(
+                f"--timeout-secs must be within {lo}..{hi}, got {timeout_secs}"
+            )
+    effective_timeout_secs = (
+        int(timeout_secs) if timeout_secs is not None else _JOB_TIMEOUT_SECS
+    )
     if (
         zero_token
         and timeout is not None
@@ -328,7 +383,9 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     if getattr(args, "cron_expr", None) is not None and cron_expr is None:
         _cron_add_fail("--cron must not be empty")
     given = [
-        flag for flag, val in (("--every", every), ("--cron", cron_expr), ("--at", at_raw)) if val
+        flag
+        for flag, val in (("--every", every), ("--cron", cron_expr), ("--at", at_raw))
+        if val
     ]
     if len(given) != 1:
         _cron_add_fail("provide exactly one of --every, --cron or --at")
@@ -366,7 +423,11 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             if at_ts < _time.time():
                 # Render in the zone parse_time_string resolved the value in,
                 # so the refusal echoes a wall clock the operator recognises.
-                shown_tz = ZoneInfo(resolve_timezone_name(tz) or "UTC") if tz else get_local_tz()[1]
+                shown_tz = (
+                    ZoneInfo(resolve_timezone_name(tz) or "UTC")
+                    if tz
+                    else get_local_tz()[1]
+                )
                 local = datetime.fromtimestamp(at_ts, shown_tz)
                 _cron_add_fail(
                     f"resolved time {local.strftime('%Y-%m-%d %I:%M %p %Z')} is in the past"
@@ -376,7 +437,9 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
 
     # ── Fields validated up front so an invalid value never strands a job ──
     if channel and (len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel)):
-        _cron_add_fail(f"invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})")
+        _cron_add_fail(
+            f"invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})"
+        )
     try:
         model = _cron_model(model)
     except ValueError as e:
@@ -424,8 +487,16 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             )
         try:
             script_file, func = resolve_script_path(script)
-        except (PermissionError, FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
-            _cron_add_fail(str(exc) or "could not resolve script path", audit_kind="script")
+        except (
+            PermissionError,
+            FileNotFoundError,
+            OSError,
+            RuntimeError,
+            ValueError,
+        ) as exc:
+            _cron_add_fail(
+                str(exc) or "could not resolve script path", audit_kind="script"
+            )
         # Reject malformed entry points before reading the script body.
         if not func.isidentifier():
             _cron_add_fail(
@@ -557,7 +628,10 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     print(f"Added job: {job.id} ({job.name}) [{sched_desc}]")
     # Read from its home, not bound here: ``cli_commands`` serves this module's
     # names through a frozen import inventory.
-    from kiro_crew.cron_service.schedule import never_fires_warning, raised_interval_warning
+    from kiro_crew.cron_service.schedule import (
+        never_fires_warning,
+        raised_interval_warning,
+    )
 
     if never_fires := never_fires_warning(job.schedule):
         print(f"Warning: {never_fires}", file=sys.stderr)
@@ -671,7 +745,9 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         "preview",
     ):
         # Before the service below, which creates cron-history/ on a fresh data home.
-        print("Usage: kirocrew cron {list|add|update|remove|pause|resume|trigger|preview}")
+        print(
+            "Usage: kirocrew cron {list|add|update|remove|pause|resume|trigger|preview}"
+        )
         return
 
     svc = CronService(base_dir=config_dir())
@@ -699,21 +775,32 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         if want_folder is not None:
             jobs = [j for j in jobs if (j.folder_id or "") == want_folder]
         if not jobs:
-            print("No cron jobs." if want_folder is None else "No cron jobs in that folder.")
+            print(
+                "No cron jobs."
+                if want_folder is None
+                else "No cron jobs in that folder."
+            )
             return
         running = _running_since()
         for j in jobs:
             status = "✅" if j.enabled else "⏸️"
             sched = _format_schedule(j.schedule, tz_name=job_zone_name(j))
             folder = _cron_folder_label(j.folder_id or "", folder_names)
-            # Name and message are agent-authored, like the folder name.
-            name = safe_terminal_line(j.name)
-            message = safe_terminal_line(j.message)[:60]
+            # The 60-character cut lands AFTER cleaning: slicing the stored
+            # value first can stop inside the four-character ``\\x0a`` escape a
+            # newline becomes, printing a bare ``\\x0`` that no longer names
+            # what was elided.
+            message = _cron_list_clip(_cron_list_cell(j.message), 60)
+            cell_id = _cron_list_cell(j.id)
+            cell_name = _cron_list_cell(j.name)
             started = running.get(j.id)
             run_note = ""
             if started:
                 run_note = f"  [running since {_time.strftime('%H:%M UTC', _time.gmtime(started))}]"
-            print(f"  {status} {j.id}  {name}  ({sched})  [folder: {folder}]{run_note}  {message}")
+            print(
+                f"  {status} {cell_id}  {cell_name}  ({sched})  "
+                f"[folder: {folder}]{run_note}  {message}"
+            )
             # Ownership is printed because it decides which surfaces can manage
             # the job at all: a job with no owning session is outside every chat
             # session's scope, so `cron_list` from chat does not list it and the
@@ -722,8 +809,8 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             # was the only place the state existed and nothing showed it -- which
             # is what made a normal, correct state read as a job that had
             # vanished. `cron adopt` is the way back.
-            owner = j.session_key or ""
-            provenance = j.created_by or ""
+            owner = _cron_list_cell(j.session_key or "")
+            provenance = _cron_list_cell(j.created_by or "")
             if owner:
                 detail = f"owner: {owner}"
             else:
@@ -731,9 +818,9 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             if provenance:
                 detail += f"  created by: {provenance}"
             if j.managed_by:
-                detail += f"  managed by: {j.managed_by}"
+                detail += f"  managed by: {_cron_list_cell(j.managed_by)}"
             if j.project_path:
-                detail += f"  project: {j.project_path}"
+                detail += f"  project: {_cron_list_cell(j.project_path)}"
             print(f"      {detail}")
 
     elif action == "adopt":
@@ -804,7 +891,9 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                     from kiro_crew.dashboard.chat_utils import slot_transcript_key
                     from kiro_crew.dashboard.state import _normalize_slot_key
 
-                    transcript_key = slot_transcript_key(_normalize_slot_key(session_key))
+                    transcript_key = slot_transcript_key(
+                        _normalize_slot_key(session_key)
+                    )
                     known = ConversationLog().has_log(transcript_key)
                 except Exception:
                     known = True  # cannot tell -> stay quiet rather than cry wolf
@@ -817,7 +906,9 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                         file=sys.stderr,
                     )
             else:
-                print(f"Job {job_id} now belongs to {session_key}: that session can manage it.")
+                print(
+                    f"Job {job_id} now belongs to {session_key}: that session can manage it."
+                )
                 print(
                     f"Note: results are not injected into a chat for a "
                     f"{session_key.split(':', 1)[0]!r} owner -- only a dashboard session is "
@@ -852,7 +943,6 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             val = getattr(args, field, None)
             if val is not None:
                 if field == "channel":
-
                     val = val.strip()
                     if not val:
                         # Blank clears the delivery channel, as cron_update does,
@@ -878,7 +968,9 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 sys.exit(1)
             kwargs["agent_id"] = agent_val
         if getattr(args, "approval_mode", None) is not None:
-            kwargs["approval_mode"] = "" if args.approval_mode == "default" else args.approval_mode
+            kwargs["approval_mode"] = (
+                "" if args.approval_mode == "default" else args.approval_mode
+            )
         if getattr(args, "project_path", None) is not None:
             kwargs["project_path"] = args.project_path.strip()
         if getattr(args, "model", None) is not None:
@@ -909,7 +1001,10 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         if "cron_expr" in kwargs and not str(kwargs["cron_expr"]).strip():
             del kwargs["cron_expr"]
             blank_schedule = True
-            print("Warning: an empty --cron leaves the schedule unchanged", file=sys.stderr)
+            print(
+                "Warning: an empty --cron leaves the schedule unchanged",
+                file=sys.stderr,
+            )
         folder_ref = getattr(args, "folder", None)
         if not kwargs and folder_ref is None:
             # A blank schedule was the only field: nothing is written, but a
@@ -962,7 +1057,6 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
         if updated:
-
             audit_resources = f"job_id={args.job_id} fields={','.join(sorted(kwargs))}"
             if "agent_id" in kwargs:
                 # Same rationale as cron.add: the agent picks the sandboxed
@@ -1041,7 +1135,10 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         secret_path = config_dir() / ".local_secret"
         # Local: a module-level name here would be served by the ``cli_commands``
         # facade, whose name set is pinned.
-        from kiro_crew.cron_trigger import ALREADY_RUNNING_STATUS, trigger_cron_job_status
+        from kiro_crew.cron_trigger import (
+            ALREADY_RUNNING_STATUS,
+            trigger_cron_job_status,
+        )
 
         ok, msg, http_status = trigger_cron_job_status(args.job_id, port, secret_path)
         # The success line is the command's output; a failure reason goes to
@@ -1113,7 +1210,10 @@ def _cron_preview(args: argparse.Namespace) -> None:
         # common case while debugging one: report it like the function-error path
         # below, not as a traceback through the CLI, and still audit the run.
         sys.modules.pop(spec.name, None)
-        print(f"Error: cannot load {script_path}: {type(e).__name__}: {e}", file=sys.stderr)
+        print(
+            f"Error: cannot load {script_path}: {type(e).__name__}: {e}",
+            file=sys.stderr,
+        )
         traceback.print_exc()
         sel().log_api_access(
             caller="cli",
@@ -1125,7 +1225,9 @@ def _cron_preview(args: argparse.Namespace) -> None:
         sys.exit(1)
     func = getattr(module, func_name, None)
     if func is None:
-        print(f"Error: function '{func_name}' not found in {script_path}", file=sys.stderr)
+        print(
+            f"Error: function '{func_name}' not found in {script_path}", file=sys.stderr
+        )
         sys.exit(1)
     if inspect.iscoroutinefunction(func):
         print(
@@ -1194,7 +1296,12 @@ def _cron_preview(args: argparse.Namespace) -> None:
             return {"id": f"{self.job.id}-folder", "name": name, "parent_id": parent_id}
 
         def open_session(
-            self, name: str = "", *, folder_id: str = "", agent: str = "", model: str = ""
+            self,
+            name: str = "",
+            *,
+            folder_id: str = "",
+            agent: str = "",
+            model: str = "",
         ) -> str:
             self._suppressed(
                 "open_session", name=name, folder_id=folder_id, agent=agent, model=model
@@ -1209,15 +1316,21 @@ def _cron_preview(args: argparse.Namespace) -> None:
             self._suppressed("set_session_mode", slot=slot, mode=mode)
             return {"ok": True, "mode": mode}
 
-        def crew_log_append(self, type: str, data: dict, *, max_age_s: int | None = None) -> dict:
-            self._suppressed("crew_log_append", type=type, data=data, max_age_s=max_age_s)
+        def crew_log_append(
+            self, type: str, data: dict, *, max_age_s: int | None = None
+        ) -> dict:
+            self._suppressed(
+                "crew_log_append", type=type, data=data, max_age_s=max_age_s
+            )
             recorded = {"type": type, "writer": f"cron:{self.job.id}", "member": ""}
             return {"ok": True, "recorded": recorded}
 
         @staticmethod
         def _suppressed(method: str, **fields: object) -> None:
             # Via JSON, as production sends it: a tuple is redacted, a set raises.
-            print(f"[{method} suppressed]: {_redact_deep(json.loads(json.dumps(fields)))}")
+            print(
+                f"[{method} suppressed]: {_redact_deep(json.loads(json.dumps(fields)))}"
+            )
 
         def close(self):
             self._kept_servers.close()
