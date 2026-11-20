@@ -188,6 +188,36 @@ def test_a_serialized_escape_letter_is_not_taken_for_a_short_name(monkeypatch, t
 
 
 @pytest.mark.parametrize(
+    ("host", "text"),
+    [
+        ("nas", '{"m":"done\\\\nas expected"}'),
+        ("t", '{"a":"x\\\\t"}'),
+        ("n", '{"a":"x\\\\n"}'),
+    ],
+    ids=["nested-newline-then-word", "nested-tab-one-letter", "nested-newline-one-letter"],
+)
+def test_a_doubly_serialized_escape_letter_is_not_taken_for_a_short_name(monkeypatch, host, text):
+    """Nested JSON keeps `\\\\n` whole; the view reads it as a backslash and a letter."""
+    _host(monkeypatch, host)
+    assert _scrubbed(text) == text
+
+
+@pytest.mark.parametrize(
+    ("host", "raw", "expected"),
+    [
+        ("nas", '{"p":"C:\\\\Users\\\\nas"}', '{"p":"C:\\\\Users\\\\<host>"}'),
+        ("t", '{"p":"C:\\\\tmp\\\\t"}', '{"p":"C:\\\\tmp\\\\<host>"}'),
+    ],
+    ids=["nested-path", "nested-path-one-letter"],
+)
+def test_a_doubly_serialized_path_still_replaces_a_name_that_starts_like_an_escape(
+    monkeypatch, host, raw, expected
+):
+    _host(monkeypatch, host)
+    assert _scrubbed(raw) == expected
+
+
+@pytest.mark.parametrize(
     ("raw", "expected"),
     [
         ("C:\\Users\\nas", "C:\\Users\\<host>"),

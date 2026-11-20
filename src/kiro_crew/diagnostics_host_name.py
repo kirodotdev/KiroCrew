@@ -257,6 +257,24 @@ def _follows_escaped_escape(text: str, at: int) -> bool:
     return _ESCAPED_ESCAPE.search(text, max(0, at - 8), at) is not None
 
 
+def _is_escape_letter_after_backslash(
+    view_text: str, at: int, text: str, start: int, end: int
+) -> bool:
+    """Whether the view name at *at* is the letter of a serialized escape, not a name.
+
+    The view reads a doubly serialized ``\\\\n`` as one backslash and a letter, so
+    ``done\\\\nas expected`` shows ``nas`` behind a backslash. Like the raw backslash
+    pass, such a name starting with an escape letter counts only inside a Windows
+    path (:func:`_in_windows_path`, on the original span ``text[start:end]``).
+    """
+    return (
+        at > 0
+        and view_text[at - 1] == "\\"
+        and view_text[at].lower() in _ESCAPE_LETTERS
+        and not _in_windows_path(text, start, end)
+    )
+
+
 def _ends_control_sequence(text: str, at: int) -> bool:
     """Whether an ANSI control sequence (``[`` + parameters + a letter) ends at *at*.
 
@@ -299,8 +317,12 @@ def replace_host_names(
     if short_names:
         each = re.compile(rf"(?=((?:{_alternation(short_names)}){_HOST_END}))", re.IGNORECASE)
         for m in each.finditer(view.text):
-            at = m.start(1)
-            if _starts_segment(view.text, at) or _follows_escaped_escape(text, view.start(at)):
+            at, start = m.start(1), view.start(m.start(1))
+            if _follows_escaped_escape(text, start):
+                in_view(*m.span(1))
+            elif _starts_segment(view.text, at) and not _is_escape_letter_after_backslash(
+                view.text, at, text, start, view.end(m.end(1) - 1)
+            ):
                 in_view(*m.span(1))
         after_backslash = [n for n in short_names if len(n) >= 2]
         if after_backslash:
@@ -359,11 +381,15 @@ _ESCAPE_LETTERS = frozenset("abefnrtuvx")
 #: (``D:\\Project Files\\box``), so they do not end it.
 _PATH_DELIMITERS = "\t\r\n\"'<>|"
 #: Evidence that a run is a Windows path: a drive that is not the end of a word (so
-#: the ``r:`` of ``error:\\n`` is no drive), a UNC ``\\\\``, a collapsed home or
+#: the ``r:`` of ``error:\\n`` is no drive), a UNC ``\\\\`` that no name character
+#: precedes (the ``\\\\`` of ``x\\\\t`` is a serialized backslash), a collapsed home or
 #: data home ``~\\``, or a ``\\`` before anything but an escape letter
 #: (``\\Users``, ``\\Desktop``, ``\\2026``).
 _PATH_HINT = re.compile(
-    r"(?<![A-Za-z0-9])[A-Za-z]:\\|\\\\|(?<![^\s\"'=(\[])~\\|\\(?![abefnrtuvx\\])[^\s\"']"
+    r"(?<![A-Za-z0-9])[A-Za-z]:\\"
+    r"|(?<![A-Za-z0-9_-])\\\\"
+    r"|(?<![^\s\"'=(\[])~\\"
+    r"|\\(?![abefnrtuvx\\])[^\s\"']"
 )
 
 
