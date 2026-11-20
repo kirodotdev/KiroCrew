@@ -962,7 +962,7 @@ async def test_a_rejected_url_and_its_retry_are_screened_off_the_event_loop(
     seen: list[int] = []
     verdicts = iter([True, False])
 
-    def _screen(_url: str) -> bool:
+    def _screen(_url: str, _server: str | None = None) -> bool:
         seen.append(threading.get_ident())
         return next(verdicts)
 

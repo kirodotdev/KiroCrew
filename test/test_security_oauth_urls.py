@@ -296,9 +296,9 @@ class TestOAuthAuthorizationUrlRedaction:
         path = "/services/oauth2/authorize"
         mcp_url = "https://mcp.salesforce.example/auth"
         try:
-            assert record_discovered_oauth_endpoint(host, path, mcp_url=mcp_url)
+            assert record_discovered_oauth_endpoint(host, path, mcp_url=mcp_url, server_name="mcp")
             url = f"https://{host}{path}?client_id={consumer_key}&response_type=code"
-            return oauth_url_contains_credential(url)
+            return oauth_url_contains_credential(url, "mcp")
         finally:
             exfil._OAUTH_DISCOVERED_ENDPOINTS.clear()
 
@@ -1467,9 +1467,12 @@ class TestOperatorOAuthEndpointExtension:
         # A discovered (not operator-listed) endpoint keeps the full scan too.
         try:
             assert record_discovered_oauth_endpoint(
-                self.DCR_HOST, self.DCR_PATH, mcp_url="https://mcp.example.com/mcp"
+                self.DCR_HOST,
+                self.DCR_PATH,
+                mcp_url="https://mcp.example.com/mcp",
+                server_name="mcp",
             )
-            assert oauth_url_contains_credential(self._dcr_url(self.DCR_CLIENT_ID)) is True
+            assert oauth_url_contains_credential(self._dcr_url(self.DCR_CLIENT_ID), "mcp") is True
         finally:
             exfil._OAUTH_DISCOVERED_ENDPOINTS.clear()
 
@@ -1557,9 +1560,12 @@ class TestOperatorOAuthEndpointExtension:
     def _at_discovered_sf_endpoint(self, query: str) -> bool:
         try:
             assert record_discovered_oauth_endpoint(
-                self.SF_HOST, self.SF_PATH, mcp_url="https://mcp.salesforce.example/auth"
+                self.SF_HOST,
+                self.SF_PATH,
+                mcp_url="https://mcp.salesforce.example/auth",
+                server_name="mcp",
             )
-            return oauth_url_contains_credential(self._sf_url(query))
+            return oauth_url_contains_credential(self._sf_url(query), "mcp")
         finally:
             exfil._OAUTH_DISCOVERED_ENDPOINTS.clear()
 

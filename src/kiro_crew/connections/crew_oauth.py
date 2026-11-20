@@ -56,6 +56,8 @@ _GOOGLE: dict[str, Any] = {
     # the account, so two cards share a grant only on the same account.
     "extra_scopes": ("openid",),
     "grant_group": "google",
+    # https://accounts.google.com/.well-known/openid-configuration
+    "issuer": "https://accounts.google.com",
     # Google revokes across every client of one Cloud project, so sharing is
     # judged by the project number that leads each client id.
     "grant_by_project": True,
@@ -68,7 +70,11 @@ DCR_SLUGS = frozenset({"atlassian", "notion", "linear", "stripe", "vercel", "git
 #: token, else the access token); without it the revoke is GitHub's token-scoped
 #: DELETE. ``authorize_params`` are added to the consent URL. Slugs with the same
 #: ``grant_group``, client id and account share one upstream grant.
-#: ``extra_scopes`` are appended to the registry's scopes.
+#: ``extra_scopes`` are appended to the registry's scopes. ``issuer`` is the vendor's
+#: published RFC 8414 / OIDC ``issuer`` (RFC 9207): a callback whose ``iss`` names any
+#: other server is refused. An entry without one (GitHub publishes none) is not
+#: checked. shortcut: an ``iss`` the vendor leaves out is accepted, since no pre-registered
+#: vendor's behaviour is pinned here; require it per entry once one is confirmed to send it.
 _ENDPOINTS: dict[str, dict[str, Any]] = {
     "github": {
         "authorize": "https://github.com/login/oauth/authorize",
@@ -82,6 +88,8 @@ _ENDPOINTS: dict[str, dict[str, Any]] = {
         "token": "https://app.asana.com/-/oauth_token",
         "revoke": "https://app.asana.com/-/oauth_revoke",
         "revoke_form": ("token", "client_id", "client_secret"),
+        # https://app.asana.com/.well-known/oauth-authorization-server
+        "issuer": "https://app.asana.com",
     },
     # Slack's MCP authorization server (https://mcp.slack.com/.well-known/
     # oauth-authorization-server): user-token consent and token endpoints,
@@ -91,6 +99,8 @@ _ENDPOINTS: dict[str, dict[str, Any]] = {
     "slack": {
         "authorize": "https://slack.com/oauth/v2_user/authorize",
         "token": "https://slack.com/api/oauth.v2.user.access",
+        # https://mcp.slack.com/.well-known/oauth-authorization-server
+        "issuer": "https://mcp.slack.com",
         # Revokes one token, the access token (docs.slack.dev/reference/methods/
         # auth.revoke); Slack answers 200 and reports the outcome in the body.
         # shortcut: no Slack endpoint revokes a refresh token, so the rotating
@@ -832,6 +842,23 @@ class SignIn:
             raise CrewOAuthError("callback_port_busy") from None
         self.bound_port = int(self._runner.addresses[0][1])
 
+    def _iss_trusted(self, iss: str | None) -> bool:
+        """RFC 9207: does the callback's ``iss`` fit this sign-in's authorization server?"""
+        if self._dcr is not None:
+            from kiro_crew.connections.crew_oauth_dcr import iss_ok
+
+            return iss_ok(self._dcr.client, iss)
+        issuer = _ENDPOINTS.get(self.slug, {}).get("issuer")
+        if not issuer or not iss:
+            return True
+        from kiro_crew.connections.l0_probe import same_issuer
+
+        try:
+            return same_issuer(iss, issuer)
+        except ValueError:
+            # Vendor text that urlsplit refuses is a mismatch, never a logged traceback.
+            return False
+
     async def _callback(self, request: Any) -> Any:
         from aiohttp import web
 
@@ -840,13 +867,10 @@ class SignIn:
         # Bytes: compare_digest raises on a non-ASCII str, which would answer 500.
         if self._done.done() or not secrets.compare_digest(state.encode(), self._state.encode()):
             return web.Response(status=400, text="This sign-in link is not the current one.")
-        if self._dcr is not None:
-            from kiro_crew.connections.crew_oauth_dcr import iss_ok
-
-            if not iss_ok(self._dcr.client, request.query.get("iss")):
-                # RFC 9207 mix-up defence: the answer came from another server.
-                self._done.set_exception(CrewOAuthError("issuer_mismatch"))
-                return web.Response(status=400, text="This sign-in answer is not trusted.")
+        if not self._iss_trusted(request.query.get("iss")):
+            # RFC 9207 mix-up defence: the answer came from another server.
+            self._done.set_exception(CrewOAuthError("issuer_mismatch"))
+            return web.Response(status=400, text="This sign-in answer is not trusted.")
         if not code or "error" in request.query:
             # An error response is a refusal even beside a code. access_denied
             # is either the user declining or an organization policy blocking the
@@ -1312,8 +1336,11 @@ async def _start_mint_row(
             parts.path,
             # The query-free url discovery used, never the configured one.
             mcp_url=sign_in._dcr.client.resource,
+            server_name=row,
         )
-    if await asyncio.to_thread(oauth_url_contains_credential, _vetted_link(vetted, sign_in._dcr)):
+    if await asyncio.to_thread(
+        oauth_url_contains_credential, _vetted_link(vetted, sign_in._dcr), row
+    ):
         await sign_in.shutdown()
         await _set_row(row, token, {"state": "failed", "reason": "mint_url_rejected"})
         return token

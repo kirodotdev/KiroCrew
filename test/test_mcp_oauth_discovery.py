@@ -141,8 +141,8 @@ def served(monkeypatch):
 
 
 def test_precondition_the_unlisted_endpoint_is_rejected_today():
-    assert security.oauth_url_contains_credential(_consent_url())
-    assert security.oauth_rejection_is_endpoint_exemptible(_consent_url())
+    assert security.oauth_url_contains_credential(_consent_url(), "idp")
+    assert security.oauth_rejection_is_endpoint_exemptible(_consent_url(), server_name="idp")
 
 
 @pytest.mark.asyncio
@@ -150,7 +150,7 @@ async def test_discovery_match_approves_the_endpoint(configured, served):
     configured(registry={"idp": {"url": MCP_URL}})
     served(_documents())
     assert await discovery.approve_discovered_oauth_endpoint("idp", _consent_url())
-    assert not security.oauth_url_contains_credential(_consent_url())
+    assert not security.oauth_url_contains_credential(_consent_url(), "idp")
     exfil.SecurityEventLog.return_value.log.assert_called_once()
     event = exfil.SecurityEventLog.return_value.log.call_args.args[0]
     assert event.event_type == "oauth_endpoint_discovered"
@@ -169,7 +169,7 @@ async def test_advertised_endpoint_on_another_path_is_not_approved(configured, s
     configured(registry={"idp": {"url": MCP_URL}})
     served(_documents(authorize="https://auth.unlisted-idp.example/other/authorize"))
     assert not await discovery.approve_discovered_oauth_endpoint("idp", _consent_url())
-    assert security.oauth_url_contains_credential(_consent_url())
+    assert security.oauth_url_contains_credential(_consent_url(), "idp")
 
 
 @pytest.mark.asyncio
@@ -178,7 +178,7 @@ async def test_consent_url_on_a_host_the_server_does_not_advertise_is_refused(co
     served(_documents())
     evil = _consent_url("https://evil.example.com/oauth/authorize")
     assert not await discovery.approve_discovered_oauth_endpoint("idp", evil)
-    assert security.oauth_url_contains_credential(evil)
+    assert security.oauth_url_contains_credential(evil, "idp")
 
 
 @pytest.mark.asyncio
@@ -255,7 +255,7 @@ async def test_urls_refused_for_other_reasons_stay_refused_with_no_request(confi
     fetched = served(_documents())
     assert not await discovery.approve_discovered_oauth_endpoint("idp", url)
     assert fetched == []
-    assert security.oauth_url_contains_credential(url)
+    assert security.oauth_url_contains_credential(url, "idp")
 
 
 # A Salesforce-shaped consumer key with a 42-character piece. Only an endpoint the
@@ -270,14 +270,16 @@ async def test_salesforce_key_only_an_operator_entry_clears_makes_no_request(con
     configured(registry={"idp": {"url": MCP_URL}})
     fetched = served(_documents())
     url = _consent_url(client_id=_SALESFORCE_KEY_WITH_LONG_PIECE)
-    assert security.oauth_url_contains_credential(url)
-    assert not security.oauth_rejection_is_endpoint_exemptible(url)
-    assert security.oauth_rejection_is_endpoint_exemptible(url, operator_listed=True)
+    assert security.oauth_url_contains_credential(url, "idp")
+    assert not security.oauth_rejection_is_endpoint_exemptible(url, server_name="idp")
+    assert security.oauth_rejection_is_endpoint_exemptible(
+        url, operator_listed=True, server_name="idp"
+    )
     assert not await discovery.approve_discovered_oauth_endpoint("idp", url)
     assert fetched == []
     assert exfil._OAUTH_DISCOVERED_ENDPOINTS == {}
     exfil.SecurityEventLog.return_value.log.assert_not_called()
-    assert security.oauth_url_contains_credential(url)
+    assert security.oauth_url_contains_credential(url, "idp")
 
 
 @pytest.mark.asyncio
@@ -286,7 +288,7 @@ async def test_approved_endpoint_still_scans_unknown_parameters(configured, serv
     served(_documents())
     assert await discovery.approve_discovered_oauth_endpoint("idp", _consent_url())
     smuggled = _consent_url(exfil="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
-    assert security.oauth_url_contains_credential(smuggled)
+    assert security.oauth_url_contains_credential(smuggled, "idp")
 
 
 @pytest.mark.asyncio
@@ -298,7 +300,7 @@ async def test_discovery_error_leaves_the_gate_unchanged(configured, monkeypatch
 
     monkeypatch.setattr(discovery, "_discover", _boom)
     assert not await discovery.approve_discovered_oauth_endpoint("idp", _consent_url())
-    assert security.oauth_url_contains_credential(_consent_url())
+    assert security.oauth_url_contains_credential(_consent_url(), "idp")
 
 
 @pytest.mark.asyncio
@@ -306,7 +308,7 @@ async def test_already_accepted_url_makes_no_request(configured, served):
     configured(registry={"linear": {"url": "https://mcp.linear.app/mcp"}})
     fetched = served({})
     url = _consent_url("https://mcp.linear.app/authorize")
-    assert not security.oauth_url_contains_credential(url)
+    assert not security.oauth_url_contains_credential(url, "idp")
     assert not await discovery.approve_discovered_oauth_endpoint("linear", url)
     assert fetched == []
 
@@ -398,7 +400,7 @@ class TestFetchVetting:
         monkeypatch.setattr(discovery, "vet_unfurl_url", _refuse)
         assert not await discovery.approve_discovered_oauth_endpoint("idp", _consent_url())
         assert fetched == []
-        assert security.oauth_url_contains_credential(_consent_url())
+        assert security.oauth_url_contains_credential(_consent_url(), "idp")
 
     @pytest.mark.asyncio
     async def test_a_name_resolving_to_a_private_address_is_never_fetched(
@@ -456,32 +458,34 @@ class TestRecordDiscoveredEndpoint:
         ],
     )
     def test_shapes_the_operator_file_refuses_are_refused(self, host, path):
-        assert not security.record_discovered_oauth_endpoint(host, path, mcp_url=MCP_URL)
+        assert not security.record_discovered_oauth_endpoint(
+            host, path, mcp_url=MCP_URL, server_name="idp"
+        )
         assert not exfil._OAUTH_DISCOVERED_ENDPOINTS
 
     def test_entries_expire(self, monkeypatch):
         clock = ManualClock()
         clock.install(monkeypatch, exfil)
         assert security.record_discovered_oauth_endpoint(
-            "auth.unlisted-idp.example", "/oauth/authorize", mcp_url=MCP_URL
+            "auth.unlisted-idp.example", "/oauth/authorize", mcp_url=MCP_URL, server_name="idp"
         )
         clock.advance(exfil._OAUTH_DISCOVERED_TTL_SECONDS - 1)
-        assert not security.oauth_url_contains_credential(_consent_url())
+        assert not security.oauth_url_contains_credential(_consent_url(), "idp")
         clock.advance(2)
-        assert security.oauth_url_contains_credential(_consent_url())
+        assert security.oauth_url_contains_credential(_consent_url(), "idp")
 
     def test_set_is_capped_oldest_first(self):
         for i in range(exfil._OAUTH_DISCOVERED_CAP + 3):
             assert security.record_discovered_oauth_endpoint(
-                f"idp{i}.example", "/authorize", mcp_url=MCP_URL
+                f"idp{i}.example", "/authorize", mcp_url=MCP_URL, server_name="idp"
             )
         assert len(exfil._OAUTH_DISCOVERED_ENDPOINTS) == exfil._OAUTH_DISCOVERED_CAP
-        assert ("idp0.example", "/authorize") not in exfil._OAUTH_DISCOVERED_ENDPOINTS
+        assert ("idp0.example", "/authorize", "idp") not in exfil._OAUTH_DISCOVERED_ENDPOINTS
 
     def test_rows_retain_no_server_url_and_the_audit_is_bounded(self):
         long_url = "https://mcp.example/" + "a" * 5000
         security.record_discovered_oauth_endpoint(
-            "auth.unlisted-idp.example", "/oauth/authorize", mcp_url=long_url
+            "auth.unlisted-idp.example", "/oauth/authorize", mcp_url=long_url, server_name="idp"
         )
         assert all(isinstance(v, float) for v in exfil._OAUTH_DISCOVERED_ENDPOINTS.values())
         event = exfil.SecurityEventLog.return_value.log.call_args.args[0]
@@ -491,7 +495,7 @@ class TestRecordDiscoveredEndpoint:
         monkeypatch.setattr(exfil, "SecurityEventLog", SecurityEventLog)
         for _ in range(3):
             security.record_discovered_oauth_endpoint(
-                "auth.unlisted-idp.example", "/oauth/authorize", mcp_url=MCP_URL
+                "auth.unlisted-idp.example", "/oauth/authorize", mcp_url=MCP_URL, server_name="idp"
             )
         log = sel_private_root / "security_events.jsonl"
         rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
