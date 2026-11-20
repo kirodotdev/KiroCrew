@@ -1,9 +1,10 @@
-+102
++109
 The `data-exfil-nc-file-redirect` row read the whole line as text, so a `<` that
 belongs to a later command (`nc -z host 22; sort < in.txt`) was refused as if it
 fed nc (#38524). `exfil_bash._nc_redirect_line_allows` reads the line with the
 shared reader and fails closed on quoting, expansion, a cmd `^`, grouping, heredocs, compound
 commands and the builtins that can hand a later redirect to nc; it allows only
-when every input redirect sits in a pipeline that names no nc. The exfil gate and
+when every input redirect sits in a pipeline that names no nc, and never on
+Windows, where a script hook runs under cmd.exe. The exfil gate and
 the deny gate's shipped row (`deny_gate._nc_redirect_narrows`, audited under its
 own mechanism) both use it, and the exfil facade lists the new names.

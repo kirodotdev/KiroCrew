@@ -1385,6 +1385,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         exfil_query_min_len,
     )
 if TYPE_CHECKING:  # project names it serves from outside its owners, from their homes
+    from kiro_crew import platform_compat  # noqa: F401
     from kiro_crew.credential_patterns import (  # noqa: F401
         AWS_KEY_ID,
     )

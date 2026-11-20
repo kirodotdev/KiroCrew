@@ -15,6 +15,8 @@ from __future__ import annotations
 import fnmatch
 import re
 
+from kiro_crew import platform_compat
+
 from .denied_rules import _INERT_SEARCH_VERBS, BUILTIN_DENIED_RULES, _exception_eligible
 from .shell_commands import pipelines as _pipelines
 from .shell_commands import read_commands as _read_commands
@@ -258,7 +260,11 @@ def _nc_redirect_line_allows(command: str) -> bool:
     holding ``nc`` (``/bin/nc``, ``sort=nc``, ``netcat``) may stand only first in
     its command, or after ``echo`` in a command with no redirect, so nothing on
     the line can make a later command run nc. Then a pipeline that holds such a
-    word must be one command with no input redirect (any redirect word with ``<``)."""
+    word must be one command with no input redirect (any redirect word with ``<``).
+    False on Windows: a script hook runs there under cmd.exe, which does not split
+    on ``;``, so the bash reading this relies on is not the one that runs."""
+    if platform_compat.IS_WINDOWS:
+        return False
     # shortcut: refuses any quoted or expanded line, upgrade only if a real line needs it.
     if any(ch in command for ch in "\\#'\"$`^(){}*?[") or "<<" in command:
         return False
