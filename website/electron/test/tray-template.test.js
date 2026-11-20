@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 /**
  * Drift guards for the macOS menu-bar tray template icon.
  *
@@ -31,7 +32,7 @@ const ROOT = path.join(__dirname, "..");
 
 /** Decode a filter-0, 8-bit RGBA PNG into { width, height, pixels }. */
 function decodeFilter0Png(file) {
-  const buf = fs.readFileSync(file);
+  const buf = readSource(file);
   assert.equal(buf.readUInt32BE(0), 0x89504e47, `${file}: not a PNG`);
   let off = 8;
   let width = 0;
@@ -96,7 +97,7 @@ test("tray template assets are monochrome black-on-transparent at 1x and 2x", ()
 });
 
 test("createTray uses the template image on macOS and colour icons elsewhere", () => {
-  const windowLifecycle = fs.readFileSync(path.join(ROOT, "window-lifecycle.js"), "utf8");
+  const windowLifecycle = readSource(path.join(ROOT, "window-lifecycle.js"), "utf8");
   const start = windowLifecycle.indexOf("function createTray()");
   assert.notEqual(start, -1, "createTray not found");
   const body = windowLifecycle.slice(start, windowLifecycle.indexOf("\n  }", start));

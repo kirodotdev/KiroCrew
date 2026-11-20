@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -251,7 +252,7 @@ describe("installDeepLinks", () => {
 
 describe("main.js wiring", () => {
   // LF whatever the checkout's core.autocrlf: the "\n}\n" needle below would miss on CRLF.
-  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8").replace(/\r\n/g, "\n");
+  const main = readSource(path.join(__dirname, "..", "main.js"), "utf8").replace(/\r\n/g, "\n");
 
   it("routes a second-instance argv through the handler and keeps the show-window fallback", () => {
     // The registration lives in main.js so the GPU-policy ordering tests keep
@@ -283,7 +284,7 @@ describe("main.js wiring", () => {
     assert.match(body, /hostsDashboard\(wc, BACKEND_URL\)/);
     assert.doesNotMatch(body, /https\?/, "no second URL-shape readiness test");
     assert.doesNotMatch(main, /did-finish-load[\s\S]{0,200}flushPending/, "the ack, not did-finish-load, releases a held link");
-    const lifecycle = fs.readFileSync(path.join(__dirname, "..", "window-lifecycle.js"), "utf8");
+    const lifecycle = readSource(path.join(__dirname, "..", "window-lifecycle.js"), "utf8");
     assert.doesNotMatch(lifecycle, /openDashboardRoute/);
   });
 });

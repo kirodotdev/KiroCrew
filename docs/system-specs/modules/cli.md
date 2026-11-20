@@ -3873,3 +3873,8 @@ Those keep asking exactly as without the flag. Other channels already auto-appro
 under the flag itself. That policy, and picking another mode in the dashboard,
 change dashboard chats only: background turns keep following the flag while the
 gateway runs. The tool gate's deny list and protected paths still refuse under it.
+
+The desktop shell reads the effective Connected computers switch with
+`kirocrew connected-computer preview`. This read-only JSON response is
+`{"enabled": true|false}` from the shared flag authority, including Linux,
+edition and Shared Crew restrictions. It starts no connector or desktop host.

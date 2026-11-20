@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 "use strict";
 
 // The trackpad's real finger-down / finger-up, read off Chromium's
@@ -83,9 +84,9 @@ describe("armScrollTouch", () => {
   });
 
   it("is armed on the dashboard webContents and packaged", () => {
-    const lifecycle = fs.readFileSync(path.join(__dirname, "..", "window-lifecycle.js"), "utf8");
+    const lifecycle = readSource(path.join(__dirname, "..", "window-lifecycle.js"), "utf8");
     assert.match(lifecycle, /armScrollTouch\(view\.webContents,/);
-    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+    const pkg = JSON.parse(readSource(path.join(__dirname, "..", "package.json"), "utf8"));
     assert.ok(pkg.build.files.includes("scroll-touch.js"), "scroll-touch.js ships in the app bundle");
   });
 });
@@ -215,7 +216,7 @@ describe("armScrollTouch: Natural scrolling", () => {
   });
 
   it("is wired to systemPreferences on the dashboard webContents", () => {
-    const lifecycle = fs.readFileSync(path.join(__dirname, "..", "window-lifecycle.js"), "utf8");
+    const lifecycle = readSource(path.join(__dirname, "..", "window-lifecycle.js"), "utf8");
     assert.match(lifecycle, /readNatural: \(\) => readNaturalScrolling\(systemPreferences\)/);
   });
 });

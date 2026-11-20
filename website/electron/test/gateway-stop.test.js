@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 const { test } = require("node:test");
 const assert = require("node:assert");
 const http = require("http");
@@ -455,7 +456,7 @@ test("wedge recovery kills the gateway TREE, not just the wedged pid", () => {
   // that the wedge kill go through a tree-scoped path on win32, not that it use
   // any particular helper name.
   const supervisor = SUPERVISOR_FILES
-    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .map((file) => readSource(path.join(__dirname, "..", file), "utf8"))
     .join("\n");
   const marker = "liveness: backend unresponsive — force-killing wedged gateway";
   const at = supervisor.indexOf(marker);
@@ -504,7 +505,7 @@ test("the gateway supervisor bounds the shutdown tree kill to the hard deadline"
   // the parent alone and orphaning the tree it exists to reap), the call site
   // passes TIGHTER timeouts so the whole tree kill provably completes first.
   const supervisor = SUPERVISOR_FILES
-    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .map((file) => readSource(path.join(__dirname, "..", file), "utf8"))
     .join("\n");
   const start = supervisor.indexOf("function killGatewayTreeOnWindowsBounded");
   assert.notStrictEqual(

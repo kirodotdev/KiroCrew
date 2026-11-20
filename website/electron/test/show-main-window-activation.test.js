@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 // A focused showMainWindow answers a user gesture that reaches the app while
 // another app is frontmost: relaunching it (Spotlight, the Dock's Open, a
 // launcher re-exec, all of which arrive as `second-instance`), the tray's Show
@@ -14,8 +15,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const ELECTRON_DIR = path.join(__dirname, "..");
-const WINDOW_LIFECYCLE_JS = fs
-  .readFileSync(path.join(ELECTRON_DIR, "window-lifecycle.js"), "utf8")
+const WINDOW_LIFECYCLE_JS = readSource(path.join(ELECTRON_DIR, "window-lifecycle.js"), "utf8")
   .replace(/\r\n/g, "\n");
 
 // showMainWindow and the helpers it calls sit between unhideApp and
@@ -136,7 +136,7 @@ describe("a focused showMainWindow is reached only from user gestures", () => {
   it("lists every focused call site", () => {
     const sites = {};
     for (const file of shellSources(ELECTRON_DIR)) {
-      const text = fs.readFileSync(file, "utf8");
+      const text = readSource(file, "utf8");
       const count = (text.match(/showMainWindow\(\{ focus: true \}\)/g) || []).length;
       if (count) sites[path.relative(ELECTRON_DIR, file).split(path.sep).join("/")] = count;
     }
@@ -149,8 +149,7 @@ describe("a focused showMainWindow is reached only from user gestures", () => {
   });
 
   it("each focused call site is a user gesture handler", () => {
-    const read = (name) => fs
-      .readFileSync(path.join(ELECTRON_DIR, name), "utf8")
+    const read = (name) => readSource(path.join(ELECTRON_DIR, name), "utf8")
       .replace(/\r\n/g, "\n");
     const mainJs = read("main.js");
     assert.match(

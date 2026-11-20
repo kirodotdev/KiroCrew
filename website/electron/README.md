@@ -502,3 +502,37 @@ left as the user set it.
 - Desktop leaves the child `PATH` unchanged; the gateway-side prerequisite
   service independently probes Kiro CLI's supported user-local, Homebrew,
   macOS app-bundle, and Windows MSI locations
+
+### Sharing this computer
+
+Connected computers is a default-off, Linux-only preview. A local dashboard
+requests native consent through `connected-computers:confirm`; the desktop shell
+checks the sender through the existing local-dashboard gate, reads the consent
+from its gateway, and asks for a folder and each local tool in native dialogs.
+Without a local gateway, the Connection menu offers Share This Computer,
+Sharing Status and Turn Off Sharing. The target is the focused window's saved
+Remote Crew connection, never a renderer-supplied host or folder.
+
+`runtime/gateway/connected-computers-host.js` supervises the Python desktop host
+on a private stdin/stdout pipe. The same local controller, OS keyring, grant
+store and controller lock are used by both launch paths. Quitting ends the pipe
+and stops connectors; turning sharing off revokes grants. macOS and Windows
+start no host. Shared Crews do not permit this preview.
+
+The launch-time preview query is `kirocrew connected-computer preview`. It reads
+through `connected_computers.flag.local_enabled`, including edition and Shared
+Crew exclusions; Electron never interprets the config key itself. An unavailable
+query reads as off. Off wires no sharing menu, IPC channel or preload bridge and
+starts no desktop host. The host also checks the flag before every share.
+
+The bounded facade owners include `runtime/gateway/connect-flow.js` for loading
+and connection recovery, `runtime/ipc/shell.js` for shell channel registration,
+and `runtime/window/contents.js` and `remote-host.js` for dashboard view wiring
+and the Remote Crew form. Their facade functions retain signatures and pass
+call-time accessors to the same state, including write-through accessors for
+mutable bindings. Source-contract readers use `test/source-with-owners.js` to
+follow these bodies; runtime tests continue loading the actual modules.
+
+The supervisor repeats the effective preview query immediately before each host
+spawn, including delayed respawns. Switching the preview off after app launch
+therefore prevents a later connection edit or retry from starting a new host.

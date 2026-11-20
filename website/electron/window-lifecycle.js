@@ -57,7 +57,7 @@ const { openPathHardened } = require("./open-path");
 const { DEFAULT_REMOTE_BIN, DEFAULT_REMOTE_PATH } = require("./remote-token");
 const { identityFamily } = require("./instance-guard");
 const { decideLinuxFrame, applyWindowControl } = require("./linux-frame");
-const { buildMenuTemplate } = require("./app-menu");
+const { buildMenuTemplate, applySharingVisibility } = require("./app-menu");
 const { serializeMenuItems, executeMenuItem } = require("./windows-menu-model");
 const {
   SYMBOL_DARK: WINDOWS_TITLEBAR_SYMBOL_DARK,
@@ -165,6 +165,13 @@ function createWindowLifecycle(options) {
     // for; passed to the will-download handler so only announced downloads
     // auto-save (see download-expectations.js).
     downloadExpectations = null,
+    // Connected computers' native menu actions (connected-computers-desktop.js),
+    // or null when this launch runs a local gateway that owns sharing, or when
+    // the preview is off.
+    desktopSharing = null,
+    // Whether the connected-computers preview was on at launch: a local
+    // gateway's window then gets the preload's native-consent bridge.
+    connectedComputersBridge = false,
   } = options || {};
 
   if (!electron) throw new Error("createWindowLifecycle: electron is required");
@@ -335,367 +342,56 @@ function createWindowLifecycle(options) {
   }
 
   function setupWindowContents(win, windowBackendUrl) {
-    const windowPort = defaultedPort(windowBackendUrl);
-    let customName = null;
-    // isGatewayLocalForWindow reads this.
-    win._mcBackendUrl = windowBackendUrl;
-
-    const view = new WebContentsView({
-      webPreferences: {
-        preload: path.join(__dirname, "preload.js"),
-        contextIsolation: true,
-        nodeIntegration: false,
-        // Frameless Linux is a launch-time decision, not a platform constant.
-        // The preload reads this argument to reserve caption-control space.
-        additionalArguments: LINUX_FRAMELESS ? ["--kc-linux-frameless"] : [],
-      },
-    });
-    // The preload asks this on every load, so a crew configured or cleared for
-    // the port applies from the next load. The ask is synchronous: the listener
-    // is on this view's own WebContents before anything loads, and every path
-    // answers, so the renderer never waits on a reply that does not come.
-    view.webContents.ipc.on("dashboard:is-remote-gateway", (event) => {
-      let remote = true;
-      try {
-        remote = !isGatewayLocalForWindow(win);
-      } catch (err) {
-        glog(`dashboard:is-remote-gateway: ${err && err.message}`);
-      }
-      event.returnValue = remote;
-    });
-    view.setBackgroundColor("#00000000");
-    win.contentView.addChildView(view);
-
-    // Arm before any handoff. Boot, reconnect and token-prompt pages share this
-    // WebContents; leaving one in history lets mouse Back reach a dead-end shell.
-    armSplashHistoryClear(view.webContents, {
-      isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
-      log: glog,
-    });
-    // Mouse software such as Logitech's Options sends Back/Forward to macOS apps
-    // as swipes; the dashboard, or the browser panel under the cursor, takes each
-    // as a history step.
-    armSwipeHistory(win, view.webContents, {
-      isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
-      panelUnderCursor: () => browserPanelUnderCursor(win, screen.getCursorScreenPoint()),
-    });
-    // The trackpad's real finger-down / finger-up, so a two-finger drag in the
-    // dashboard releases on the lift-off instead of a guessed gap (macOS only).
-    // It also tells the page the Natural scrolling setting, which decides
-    // which way the fingers moved for a given wheel sign.
-    armScrollTouch(view.webContents, {
-      platform,
-      isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
-      readNatural: () => readNaturalScrolling(systemPreferences),
-    });
-
-    // Teardown order is load-bearing: no embedded view may outlive the page it
-    // is composited over. Close the dashboard WebContents only after releasing
-    // every embedded panel.
-    win.on("closed", () => {
-      if (win._mcBrowserPanels) {
-        for (const id of [...win._mcBrowserPanels.keys()]) win._mcDestroyBrowserPanel(id);
-      }
-      view.webContents.close();
-    });
-
-    function updateViewBounds() {
-      if (win.isDestroyed()) return;
-      const { width, height } = win.getContentBounds();
-      view.setBounds({ x: 0, y: 0, width, height });
-      // Embedded browser panels are partial rectangles in the same content
-      // area, so a host-window resize invalidates their clamp too.
-      if (win._mcBrowserPanels) {
-        for (const entry of win._mcBrowserPanels.values()) entry.manager.refreshBounds();
-      }
-    }
-
-    updateViewBounds();
-    win.on("resize", updateViewBounds);
-
-    // `menuBarOverlap` tells the renderer whether to keep its menu-bar band
-    // clear: false when macOS already placed the fullscreen window below the
-    // menu bar (a notched built-in display).
-    const sendFullScreen = () => {
-      if (win.isDestroyed() || view.webContents.isDestroyed()) return;
-      view.webContents.send("fullscreen-changed", win.isFullScreen(), {
-        menuBarOverlap: menuBarCanOverlap(win, screen),
-      });
-    };
-
-    // Fullscreen events can precede the window manager's final reflow. Keep the
-    // immediate recompute (no flash where reflow is synchronous) and bounded
-    // deferred passes, including the late backstop slow Linux WMs need. Each
-    // pass re-sends the fullscreen state too, because the menu-bar verdict reads
-    // the window's position, which is only final once the reflow lands.
-    let fullscreenSettleTimers = [];
-    const scheduleFullscreenSettle = () => {
-      for (const timer of fullscreenSettleTimers) clearTimeout(timer);
-      fullscreenSettleTimers = [
-        ...FULLSCREEN_SETTLE_MS.map((ms) => setTimeout(updateViewBounds, ms)),
-        ...FULLSCREEN_SETTLE_MS.map((ms) => setTimeout(sendFullScreen, ms)),
-      ];
-    };
-    win.on("closed", () => {
-      for (const timer of fullscreenSettleTimers) clearTimeout(timer);
-      fullscreenSettleTimers = [];
-    });
-    win.on("enter-full-screen", () => {
-      updateViewBounds();
-      sendFullScreen();
-      scheduleFullscreenSettle();
-    });
-    win.on("leave-full-screen", () => {
-      updateViewBounds();
-      sendFullScreen();
-      scheduleFullscreenSettle();
-    });
-
-    // Electron raises the BaseWindow when a page element goes DOM-fullscreen.
-    // Retain who raised it, so persistence never mistakes a video-raised
-    // transition for the user's launch preference.
-    win._mcHtmlFullScreen = attachHtmlFullScreen({
-      win,
-      webContents: view.webContents,
-    });
-
-    win.on("show", updateViewBounds);
-    win.on("restore", updateViewBounds);
-    win.on("move", updateViewBounds);
-
-    // A display rearrange does not reliably fire a "resize"/"move" on the
-    // window, yet it changes the backing scale factor and content bounds. Bind
-    // the screen-level display events and re-run the reflow on a settle
-    // schedule so the child view tracks the new geometry instead of ghosting on
-    // the old display. Paired with an unbind in "closed" below — the bind/unbind
-    // discipline the pet-overlay leak (#4673) established: a screen listener
-    // that outlives its window keeps firing against a destroyed view.
-    let displaySettleTimers = [];
-    const onDisplayReflow = () => {
-      if (win.isDestroyed()) return;
-      for (const timer of displaySettleTimers) clearTimeout(timer);
-      displaySettleTimers = DISPLAY_SETTLE_MS.map((ms) =>
-        ms === 0 ? (updateViewBounds(), null) : setTimeout(updateViewBounds, ms),
-      ).filter(Boolean);
-    };
-    const DISPLAY_EVENTS = ["display-metrics-changed", "display-added", "display-removed"];
-    if (screen && typeof screen.on === "function") {
-      for (const event of DISPLAY_EVENTS) screen.on(event, onDisplayReflow);
-    }
-    win.on("closed", () => {
-      for (const timer of displaySettleTimers) clearTimeout(timer);
-      displaySettleTimers = [];
-      if (screen && typeof screen.removeListener === "function") {
-        for (const event of DISPLAY_EVENTS) screen.removeListener(event, onDisplayReflow);
-      }
-    });
-
-    view.webContents.on("did-finish-load", () => {
-      updateViewBounds();
-      sendFullScreen();
-      setTimeout(updateViewBounds, DASHBOARD_SETTLE_MS);
-    });
-
-    // BaseWindow has no webContents. Preserve the shell's compatibility alias
-    // before any caller can load the splash or dashboard into this window.
-    win.webContents = view.webContents;
-
-    function applyTitle() {
-      // Resolve the name through the URL so a title an older version pinned under
-      // the empty key on a scheme-default port still renders until the record is
-      // retired onto the resolved key. Reading `getRemoteHostConfig(store,
-      // windowPort)` alone would miss it and the suffix would revert to `[:80]`.
-      const remoteName = getRemoteHostDefaultNameForUrl(store, windowBackendUrl);
-      if (!IS_WIN) {
-        const suffix = customName || remoteName || `[:${windowPort}]`;
-        win.setTitle(`Kiro Crew ${suffix}`);
-        return;
-      }
-      // Windows omits the default local port; secondary/remote windows retain a
-      // suffix so they remain distinguishable in the taskbar.
-      let suffix = customName || remoteName || "";
-      if (!suffix && windowPort && String(windowPort) !== "5476") {
-        suffix = `[:${windowPort}]`;
-      }
-      win.setTitle(suffix ? `Kiro Crew ${suffix}` : "Kiro Crew");
-    }
-
-    win._mcSetCustomName = (name) => {
-      customName = name;
-      applyTitle();
-    };
-    win._mcGetCustomName = () => customName;
-    // The dashboard SPA is a capture surface (the chat composer's snip and the
-    // web-preview crop). Registered against the gateway origin THIS window was
-    // opened on, so a secondary window pointed at a remote gateway is bound to
-    // its own origin and never to a sibling's.
-    registerCaptureSurface(view.webContents, windowBackendUrl);
-    win._mcView = view;
-
-    // One native Preview view per dashboard panel (runtime/window/browser-panels.js).
-    const browserPanels = attachBrowserPanels(win, view, {
-      WebContentsView,
-      shell,
-      partition: BROWSER_PARTITION,
-    });
-
-    // The dashboard's own webContents, so the link block also gets the origin --
-    // which is what turns a `/abs/path` link into a bare-path copy instead of a
-    // useless localhost URL. The embedded browser panel passes no origin: an
-    // arbitrary site's same-origin pathname is not a local file.
-    attachContextMenu(view.webContents, { getAppOrigin: () => windowBackendUrl });
-
-    trackZoomChrome(win, view);
-
-    // Frameless macOS exposes a native system context menu on the drag region.
-    win.on("system-context-menu", (event, point) => {
-      event.preventDefault();
-      Menu.buildFromTemplate([
-        { label: "Rename Window…", click: () => renameCurrentWindow() },
-        { label: "Set Remote Host…", click: () => promptRemoteHost() },
-        { label: "Refresh Token", click: () => refreshToken() },
-        { type: "separator" },
-        { label: "New Connection Window…", click: () => openNewConnectionWindow() },
-      ]).popup({ window: win, x: point.x, y: point.y });
-    });
-
-    view.webContents.on("did-finish-load", applyTitle);
-    view.webContents.on("page-title-updated", (event) => {
-      event.preventDefault();
-      applyTitle();
-    });
-
-    view.webContents.on("did-finish-load", () => {
-      // Every frameless platform needs a drag region. It collapses with the
-      // focus-mode header: app-region hit-testing happens before DOM pointer
-      // hit-testing, so pointer-events:none alone cannot stop an invisible drag
-      // strip from swallowing the transcript's mouse input.
-      if (IS_MAC || IS_WIN || LINUX_FRAMELESS) {
-        view.webContents.insertCSS(`
-          #electron-drag-bar {
-            position: fixed;
-            top: 0; left: 0; right: ${IS_WIN ? "var(--mc-win-drag-reserve, 138px)" : LINUX_FRAMELESS ? "108px" : "0"};
-            height: 42px;
-            -webkit-app-region: drag;
-            z-index: 99999;
-            pointer-events: none;
-          }
-          a, button, input, select, textarea,
-          [role="button"], [tabindex], iframe {
-            -webkit-app-region: no-drag;
-          }
-          body.mc-focus-mode #electron-drag-bar {
-            height: 0;
-          }
-          body.mc-focus-mode.mc-focus-chrome #electron-drag-bar {
-            height: 42px;
-          }
-        `);
-        view.webContents.executeJavaScript(`
-          if (!document.getElementById('electron-drag-bar')) {
-            const bar = document.createElement('div');
-            bar.id = 'electron-drag-bar';
-            document.body.prepend(bar);
-          }
-        `);
-      }
-
-      // Frameless Linux has no OS caption controls, so the shell draws them.
-      if (LINUX_FRAMELESS) injectLinuxCaptionControls(win, view);
-
-      view.webContents.executeJavaScript(
-        `getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()`,
-      ).then((bg) => {
-        if (bg && !win.isDestroyed()) win.setBackgroundColor(bg);
-      }).catch(() => {});
-      syncNativeTheme(view, win);
-    });
-
-    // Native themeSource is process-global, so a focused connection window must
-    // refresh it from its own dashboard before native chrome is painted.
-    win.on("focus", () => syncNativeTheme(view, win));
-    // On re-activation the platform re-resolves which child view receives
-    // keystrokes and may pick a hidden browser view again; each panel heals
-    // that by handing focus back to the dashboard view (see browser-view.js
-    // header note 3). A visible or unfocused panel is left alone.
-    win.on("focus", () => {
-      for (const entry of browserPanels.values()) entry.manager.reclaimFocus();
-    });
-
-    // Same-origin windows remain in-app. Cross-origin web URLs and the audited
-    // custom-scheme allowlist go to the OS; every other target fails closed.
-    const windowOpenHandler = createWindowOpenHandler({
-      openExternal: (url) => shell.openExternal(url),
-      getAppOrigin: () => windowBackendUrl,
-      confirmOpen: async (url) => {
-        const { response, checkboxChecked } = await dialog.showMessageBox(win, {
-          type: "question",
-          buttons: ["Open", "Cancel"],
-          defaultId: 0,
-          cancelId: 1,
-          message: "Open this link in your editor?",
-          detail: url,
-          checkboxLabel: "Don't ask again for this machine until Kiro Crew quits",
-        });
-        return { open: response === 0, remember: checkboxChecked === true };
-      },
-      rememberedEditorTargets,
-      log: glog,
-    });
-    // An allowed same-origin window.open (the session pop-out) is a child window
-    // Electron creates on its own. Give it, and each of its own children, the
-    // same handler, or its external links open yet another in-app window.
-    // A pane iframe can top-navigate the dashboard (or a pop-out) to its own
-    // document, which would then hold the dashboard's session grants. Refuse
-    // every renderer-started navigation off this window's own origin.
-    const navigationGuard = createNavigationGuard({
-      getAppOrigin: () => windowBackendUrl,
-      log: glog,
-    });
-    const redirectGuard = createRedirectGuard({
-      getAppOrigin: () => windowBackendUrl,
-      log: glog,
-    });
-    const armWindowOpen = (contents) => {
-      contents.setWindowOpenHandler(windowOpenHandler);
-      contents.on("will-navigate", navigationGuard);
-      contents.on("will-redirect", redirectGuard);
-      contents.on("did-create-window", (child) => armWindowOpen(child.webContents));
-    };
-    armWindowOpen(view.webContents);
-
-    // Do not leak the dashboard URL/token as a Referer (dashboardRequestHeaders).
-    // This listener remains attached at the same per-window setup point; moving
-    // it to a one-time global policy would be a behavior change.
-    view.webContents.session.webRequest.onBeforeSendHeaders((details, callback) => {
-      callback({ requestHeaders: dashboardRequestHeaders(details) });
-    });
-
-    // Give renderer-triggered downloads (e.g. the Portability "Download Export
-    // (.zip)" button's <a download> blob) a real save path. The dashboard view
-    // is a WebContentsView under a BaseWindow, which Chromium cannot parent a
-    // native "Save As" dialog to, so without this the DownloadItem never
-    // resolves a path and nothing lands on disk (issue #13047). Attached once
-    // per session (every window shares the default session), so N windows do
-    // not stack N handlers.
-    //
-    // Because the single handler is shared by every window, it must resolve the
-    // dashboard origin for the window that OWNS each download rather than
-    // capturing one window's URL: a later window on a different gateway (the
-    // remote-host secondary windows main supports) would otherwise fail the
-    // origin checks and its export would never land. `resolveDashboardUrl` maps
-    // the download's own `webContents` back to its window's `_mcBackendUrl`;
-    // `dashboardUrl` is the fallback for the first window / an unmatched sender.
-    wireWillDownloadOnce(view.webContents.session, {
-      app,
-      log: glog,
-      dashboardUrl: windowBackendUrl,
-      resolveDashboardUrl: (wc) => windowForWebContents(wc)?._mcBackendUrl,
-      pending: downloadExpectations,
-      platform,
-    });
-
-    return view;
+    return require("./runtime/window/contents").setupWindowContents({
+      get app() { return app; },
+      get armScrollTouch() { return armScrollTouch; },
+      get armSplashHistoryClear() { return armSplashHistoryClear; },
+      get armSwipeHistory() { return armSwipeHistory; },
+      get attachBrowserPanels() { return attachBrowserPanels; },
+      get attachContextMenu() { return attachContextMenu; },
+      get attachHtmlFullScreen() { return attachHtmlFullScreen; },
+      get BROWSER_PARTITION() { return BROWSER_PARTITION; },
+      get browserPanelUnderCursor() { return browserPanelUnderCursor; },
+      get connectedComputersBridge() { return connectedComputersBridge; },
+      get dirname() { return __dirname; },
+      get createNavigationGuard() { return createNavigationGuard; },
+      get createRedirectGuard() { return createRedirectGuard; },
+      get createWindowOpenHandler() { return createWindowOpenHandler; },
+      get DASHBOARD_SETTLE_MS() { return DASHBOARD_SETTLE_MS; },
+      get dashboardRequestHeaders() { return dashboardRequestHeaders; },
+      get defaultedPort() { return defaultedPort; },
+      get dialog() { return dialog; },
+      get DISPLAY_SETTLE_MS() { return DISPLAY_SETTLE_MS; },
+      get downloadExpectations() { return downloadExpectations; },
+      get FULLSCREEN_SETTLE_MS() { return FULLSCREEN_SETTLE_MS; },
+      get getRemoteHostDefaultNameForUrl() { return getRemoteHostDefaultNameForUrl; },
+      get glog() { return glog; },
+      get injectLinuxCaptionControls() { return injectLinuxCaptionControls; },
+      get IS_MAC() { return IS_MAC; },
+      get IS_WIN() { return IS_WIN; },
+      get isGatewayLocalForWindow() { return isGatewayLocalForWindow; },
+      get LINUX_FRAMELESS() { return LINUX_FRAMELESS; },
+      get Menu() { return Menu; },
+      get menuBarCanOverlap() { return menuBarCanOverlap; },
+      get openNewConnectionWindow() { return openNewConnectionWindow; },
+      get path() { return path; },
+      get platform() { return platform; },
+      get promptRemoteHost() { return promptRemoteHost; },
+      get readNaturalScrolling() { return readNaturalScrolling; },
+      get refreshToken() { return refreshToken; },
+      get registerCaptureSurface() { return registerCaptureSurface; },
+      get rememberedEditorTargets() { return rememberedEditorTargets; },
+      get renameCurrentWindow() { return renameCurrentWindow; },
+      get screen() { return screen; },
+      get shell() { return shell; },
+      get store() { return store; },
+      get syncNativeTheme() { return syncNativeTheme; },
+      get systemPreferences() { return systemPreferences; },
+      get trackZoomChrome() { return trackZoomChrome; },
+      get WebContentsView() { return WebContentsView; },
+      get windowForWebContents() { return windowForWebContents; },
+      get wireWillDownloadOnce() { return wireWillDownloadOnce; },
+    }, ...arguments);
   }
 
   function applyDashboardChrome(opts, { includeIcon = false } = {}) {
@@ -1157,172 +853,29 @@ function createWindowLifecycle(options) {
   const minimizeToTray = createMinimizeToTray({ store, platform, trayShown: () => tray !== null, log: glog });
 
   async function promptRemoteHost() {
-    const focused = BaseWindow.getFocusedWindow() || mainWindow;
-    if (!focused || focused.isDestroyed() || !focused._mcBackendUrl) return;
-    // Keyed with `defaultedPort` so the entry this form WRITES lands under the
-    // same key `isGatewayLocalForWindow` READS. A raw `URL.port` is "" on a
-    // scheme-default port, so the two would disagree on :80 and a crew the user
-    // configured here would classify as a gateway on this machine.
-    const focusedPort = defaultedPort(focused._mcBackendUrl);
-    // Read through the resolver so a crew an older version left under the empty
-    // key pre-fills this form: stating it again is what moves the record onto
-    // the resolved key, and the write below retires the old one.
-    const config = getRemoteHostConfigForUrl(store, focused._mcBackendUrl);
-    const currentHost = config?.host || "";
-    const currentBin = config?.binPath || DEFAULT_REMOTE_BIN;
-    const currentRemotePort = config?.remotePort || "";
-    const currentRemotePath = config?.remotePath || "";
-    // The app keeps a tunnel only for the port it launched on, so this form
-    // offers the option there alone; for any other tab it carries the stored
-    // choice over unchanged.
-    const isLaunchPort = String(focusedPort) === String(port);
-    const offerTunnel = isLaunchPort && !IS_WINDOWS;
-    const currentManageTunnel = remoteCrewDraft(config || {}, { tunnelByDefault: offerTunnel }).manageTunnel;
-
-    const css = await getModalCSS();
-    const esc = (value) => value
-      .replace(/&/g, "&amp;")
-      .replace(/"/g, "&quot;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
-    const promptWin = new BrowserWindow({
-      width: 480,
-      height: offerTunnel ? 520 : 400,
-      resizable: false,
-      useContentSize: true,
-      parent: focused,
-      modal: true,
-      backgroundColor: "#00000000",
-      webPreferences: { nodeIntegration: false, contextIsolation: true },
-    });
-    const html = `<!DOCTYPE html><html><head><style>
-      ${css}
-    </style></head><body>
-      <label>Remote host for :${focusedPort}</label>
-      <input id="h" value="${esc(currentHost)}" placeholder="myhost.corp.example.com" autofocus>
-      <div class="hint">Leave empty to use local token (no SSH).</div>
-      <label>kirocrew binary path</label>
-      <input id="b" value="${esc(currentBin)}" placeholder="${DEFAULT_REMOTE_BIN}">
-      <label>Remote port <span style="font-weight:normal;opacity:0.6">(default: same as tab = ${focusedPort})</span></label>
-      <input id="rp" value="${esc(currentRemotePort)}" placeholder="${focusedPort}">
-      <label>Remote PATH <span style="font-weight:normal;opacity:0.6">(default: ${DEFAULT_REMOTE_PATH})</span></label>
-      <input id="pa" value="${esc(currentRemotePath)}" placeholder="${DEFAULT_REMOTE_PATH}">
-      ${offerTunnel ? `<label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="mt" style="width:auto"${currentManageTunnel ? " checked" : ""}> ${TUNNEL_OPTION_LABEL}</label>
-      <div class="hint">${esc(tunnelOptionHint(focusedPort))}</div>` : ""}
-      <div class="row"><button class="ok" onclick="save()">Save</button>
-      <button class="cancel" onclick="window.close()">Cancel</button></div>
-      <script>
-        function save() {
-          document.title = JSON.stringify({
-            host: document.getElementById('h').value.trim(),
-            binPath: document.getElementById('b').value.trim(),
-            remotePort: document.getElementById('rp').value.trim(),
-            remotePath: document.getElementById('pa').value.trim(),
-            // Read from the checkbox where this form offers it; elsewhere the
-            // stored choice rides through unchanged, never silently dropped.
-            manageTunnel: ${offerTunnel ? "document.getElementById('mt').checked" : currentManageTunnel ? "true" : "false"},
-          });
-          window.close();
-        }
-        document.addEventListener('keydown', event => {
-          // Enter on a focused button is that button's own press: Cancel must not save.
-          if (event.key === 'Enter' && !(event.target instanceof HTMLButtonElement)) save();
-          if (event.key === 'Escape') window.close();
-        });
-      </script>
-    </body></html>`;
-    promptWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-    promptWin.setMenu(null);
-
-    let savedTitle = null;
-    promptWin.on("page-title-updated", (_event, title) => {
-      savedTitle = title;
-    });
-    promptWin.on("closed", () => {
-      try {
-        const fields = parseRemoteCrewFields(savedTitle);
-        if (fields) {
-          const { host } = fields;
-          const parent = focused && !focused.isDestroyed() ? focused : null;
-          // A record an older version left under the empty key is superseded by
-          // what the user states here, but only ONCE that statement is durable.
-          // Retiring first would erase the record on a write that is refused --
-          // and `saveRemoteCrewConfig` refuses an unselectable port outright, so
-          // on an http window whose port resolves to 80 no write can ever
-          // succeed. The crew would then read as a gateway on this machine, with
-          // no way back, and X-Internal-Secret would go through the tunnel.
-          //
-          // Only a URL whose port is its scheme's default could have produced
-          // that record, so a window on any other port leaves it alone.
-          const retireLegacy = () => {
-            if (portIsSchemeDefault(focused._mcBackendUrl)) {
-              retireLegacyEmptyPortHost(store, focusedPort);
-            }
-          };
-          if (!host) {
-            // A scheme-default port (:80/:443) can't hold a per-port record the
-            // user can rewrite (saveRemoteCrewConfig refuses to WRITE such a
-            // port), so a crew reached on one is marked remote either by the
-            // empty-key legacy record OR by a legacy record left under the
-            // resolved key "80"/"443" itself. Deleting the resolved-key record
-            // AND retiring the legacy one here would leave a FRESH default-port
-            // window later reading no crew at all, so isGatewayLocalForWindow
-            // classifies the loopback window as a local gateway and the
-            // host-presence heartbeat sends X-Internal-Secret through the
-            // still-open ssh tunnel. A tunnelled crew must keep its record.
-            //
-            // There is no in-app probe that a scheme-default port is positively
-            // local (a :80 write is refused by saveRemoteCrewConfig), so the only
-            // fail-closed answer is to REFUSE the Clear and keep the record
-            // intact -- a future default-port window still resolves REMOTE from
-            // the store itself, not merely from a window-scoped latch. Resolve
-            // through getRemoteHostConfigForUrl (not the empty key alone) so a
-            // host under the resolved "80"/"443" key is also caught. Direct the
-            // user to reopen the crew on a selectable port and clear it there,
-            // where a per-port record can be written and removed.
-            if (
-              portIsSchemeDefault(focused._mcBackendUrl)
-              && getRemoteHostConfigForUrl(store, focused._mcBackendUrl)?.host
-            ) {
-              dialog.showMessageBox(parent, {
-                type: "error",
-                title: "Can't clear remote host from this tab",
-                message:
-                  `This crew was reached on a default port (:${focusedPort}), so the app can't change or clear its remote-host setting from this tab. The setting is kept on purpose so this window is never mistaken for a local gateway while the connection is open. To stop reaching this crew, close this tab (and stop the "ssh -L :${focusedPort}" tunnel if you started one). A crew opened on a selectable port (for example "ssh -L 7777:…") can be cleared from its own tab.`,
-              });
-              return;
-            }
-            // Clearing belongs to this surface: the shared writer stores a crew
-            // and refuses an empty host. A scheme-default port with a host-bearing
-            // legacy record was already intercepted by the refusal above, and on
-            // any other port there is no empty-key record to retire, so no
-            // retirement runs here.
-            setRemoteHostConfig(store, focusedPort, {});
-            if (isLaunchPort) syncTunnel();
-            const cleared = `Remote host for :${focusedPort} cleared (using local token)`;
-            console.log(cleared);
-            dialog.showMessageBox(parent, { message: cleared, type: "info" });
-            return;
-          }
-          const { saved, error } = saveRemoteCrewConfig(store, focusedPort, fields);
-          if (!saved) {
-            dialog.showMessageBox(parent, {
-              type: "error",
-              title: "Invalid Input",
-              message: error,
-            });
-            return;
-          }
-          if (isLaunchPort) syncTunnel();
-          retireLegacy();
-          const message = `Remote host for :${focusedPort} set to ${host}`;
-          console.log(message);
-          dialog.showMessageBox(parent, { message, type: "info" });
-        }
-      } catch (error) {
-        console.error("Failed to parse remote host settings:", error.message);
-      }
-    });
+    return require("./runtime/window/remote-host").promptRemoteHost({
+      get BaseWindow() { return BaseWindow; },
+      get BrowserWindow() { return BrowserWindow; },
+      get DEFAULT_REMOTE_BIN() { return DEFAULT_REMOTE_BIN; },
+      get DEFAULT_REMOTE_PATH() { return DEFAULT_REMOTE_PATH; },
+      get defaultedPort() { return defaultedPort; },
+      get dialog() { return dialog; },
+      get getModalCSS() { return getModalCSS; },
+      get getRemoteHostConfigForUrl() { return getRemoteHostConfigForUrl; },
+      get IS_WINDOWS() { return IS_WINDOWS; },
+      get mainWindow() { return mainWindow; }, set mainWindow(value) { mainWindow = value; },
+      get parseRemoteCrewFields() { return parseRemoteCrewFields; },
+      get port() { return port; },
+      get portIsSchemeDefault() { return portIsSchemeDefault; },
+      get remoteCrewDraft() { return remoteCrewDraft; },
+      get retireLegacyEmptyPortHost() { return retireLegacyEmptyPortHost; },
+      get saveRemoteCrewConfig() { return saveRemoteCrewConfig; },
+      get setRemoteHostConfig() { return setRemoteHostConfig; },
+      get store() { return store; },
+      get syncTunnel() { return syncTunnel; },
+      get TUNNEL_OPTION_LABEL() { return TUNNEL_OPTION_LABEL; },
+      get tunnelOptionHint() { return tunnelOptionHint; },
+    }, ...arguments);
   }
 
   async function refreshToken() {
@@ -1536,6 +1089,8 @@ function createWindowLifecycle(options) {
     };
   }
 
+  // The last sharing-menu visibility the connected-computers host asked for.
+  let sharingMenu = null;
   function buildApplicationMenu() {
     appMenu = Menu.buildFromTemplate(buildMenuTemplate({
       isMac: IS_MAC,
@@ -1580,18 +1135,23 @@ function createWindowLifecycle(options) {
       promptRemoteHost: () => promptRemoteHost(),
       refreshToken: () => refreshToken(),
       openConfigFile: () => openPathHardened(shell, store.path),
+      ...(desktopSharing ? {
+        shareThisComputer: () => { void desktopSharing.shareThisComputer(); },
+        showSharingStatus: () => { void desktopSharing.showSharingStatus(); },
+        turnOffSharing: () => { void desktopSharing.turnOffSharing(); },
+      } : {}),
     }));
     Menu.setApplicationMenu(appMenu);
+    if (sharingMenu) setSharingMenu(sharingMenu);
     return appMenu;
   }
 
-  // senderIsLocal is threaded down from the ipc-registrar boundary the same
-  // way it reaches `executeMenu` — computed once via `assertLocalDashboard`
-  // and cached per WebContents, then handed here. `serializeMenuItems`
-  // marks LOCAL_ONLY leaves `enabled: false` for a remote sender so a
-  // connection window paints a greyed row rather than an enabled one that
-  // silently no-ops when clicked. Strict `=== true` matches the fail-closed
-  // rule executeMenuItem uses.
+  function setSharingMenu(visibility) {
+    sharingMenu = visibility;
+    applySharingVisibility(appMenu || Menu.getApplicationMenu(), visibility);
+  }
+
+  // The registrar passes the checked sender locality to keep remote menu items disabled.
   function menuItems(sender, id, senderIsLocal) {
     if (!(IS_WINDOWS || LINUX_FRAMELESS) || !WINDOWS_TITLEBAR_MENU_IDS.has(id)) return [];
     const menu = appMenu || Menu.getApplicationMenu();
@@ -1859,6 +1419,7 @@ function createWindowLifecycle(options) {
     },
     menu: {
       buildApplicationMenu,
+      setSharingMenu,
       items: menuItems,
       execute: executeMenu,
       setDevMode,

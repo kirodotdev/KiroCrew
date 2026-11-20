@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 const { test } = require("node:test");
 const assert = require("node:assert");
 const { createHangRecovery, endHungRenderer, DEFAULT_GRACE_MS } = require("../hang-recovery");
@@ -219,7 +220,7 @@ test("under Rosetta a renderer with no process is left alone", () => {
 test("the main window routes its hang kill through endHungRenderer with the macOS Rosetta flag", () => {
   const fs = require("fs");
   const path = require("path");
-  const src = fs.readFileSync(path.join(__dirname, "..", "window-lifecycle.js"), "utf8");
+  const src = readSource(path.join(__dirname, "..", "window-lifecycle.js"), "utf8");
   assert.ok(
     !src.includes("webContents.forcefullyCrashRenderer("),
     "window-lifecycle must not force-crash directly: under Rosetta that aborts the app",

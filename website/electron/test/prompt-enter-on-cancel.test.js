@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 "use strict";
 
 // Enter in the shell's small forms submits them, but Enter on a focused BUTTON is
@@ -110,7 +111,7 @@ test("Enter in a field still submits the form, and Escape still closes it unsave
 // The remote-host form in window-lifecycle.js is built inside the window
 // lifecycle itself, so its handler is pinned on the source.
 test("the remote-host form in window-lifecycle.js leaves Enter on a button to the button", () => {
-  const source = fs.readFileSync(path.join(__dirname, "..", "window-lifecycle.js"), "utf8");
+  const source = readSource(path.join(__dirname, "..", "window-lifecycle.js"), "utf8");
   const enterHandlers = [...source.matchAll(/if \(event\.key === 'Enter'[^)]*\)?[^\n]*/g)].map((m) => m[0]);
   assert.ok(enterHandlers.length > 0, "the form's Enter handler was found");
   for (const line of enterHandlers) {
