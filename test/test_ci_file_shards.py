@@ -860,8 +860,10 @@ class TestFileShards(unittest.TestCase):
                 self.assertIn('done < "$GATES_FILE"', leaf)
                 self.assertNotIn("--cov=", command)
                 self.assertIn("--no-cov", command)
+        # docs-contract-tests shards its selected readers the same way; its
+        # invocation is pinned in test_fast_gate_barrier.py.
         for name, job in workflow["jobs"].items():
-            if name not in ("backend-test", "backend-test-windows"):
+            if name not in ("backend-test", "backend-test-windows", "docs-contract-tests"):
                 self.assertNotIn("ci_file_shards", json.dumps(job))
 
     def run_windows_scope(

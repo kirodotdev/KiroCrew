@@ -98,6 +98,12 @@ jobs:
     outputs:
       only_backend: ${{ steps.decide.outputs.only_backend }}
       only_frontend: ${{ steps.decide.outputs.only_frontend }}
+      # 'true' only on a pull request whose diff is nothing but prose docs
+      # (.github/scripts/docs_only.py). `lint-gate` and `backend-lint` skip on
+      # it, so every test, build and E2E lane behind them skips too, and
+      # `docs-contract-tests` runs the tests that read docs instead. An absent
+      # output (this job failed) reads as "not docs-only": everything runs.
+      docs_only: ${{ steps.docs-only.outputs.docs_only }}
       linux_packaging: ${{ steps.filter.outputs.linux_packaging }}
       wheel_closure: ${{ steps.filter.outputs.wheel_closure }}
       render_bench: ${{ steps.filter.outputs.render_bench }}
@@ -306,6 +312,36 @@ jobs:
           echo "only_backend=$only_backend"   >> "$GITHUB_OUTPUT"
           echo "only_frontend=$only_frontend" >> "$GITHUB_OUTPUT"
           echo "backend=$BACKEND frontend=$FRONTEND meta=$META full_run=$FULL_RUN -> only_backend=$only_backend only_frontend=$only_frontend"
+
+      # Docs-only is a separate question from the buckets above. Docs still
+      # count as `backend` there, so a docs file never rides along under a
+      # narrowed suite; this answers only "is EVERY changed path a prose doc?".
+      # Well over a thousand backend test files and a few hundred frontend
+      # specs can read a doc as data, so such a diff is not test-free: it
+      # skips the matrix and runs those readers in `docs-contract-tests`.
+      # Pull requests only, and never under `ci-full-run`: a push or merge
+      # group runs the full matrix, so a reader the selector misses still goes
+      # red on main. The diff is the
+      # PR's own (merge base to head), the file list the compare endpoint
+      # gives PR Readiness, which excuses the lanes that skip.
+      - name: Decide docs-only scope
+        id: docs-only
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FULL_RUN: ${{ contains(github.event.pull_request.labels.*.name, 'ci-full-run') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          if [ "$EVENT_NAME" != "pull_request" ] || [ "$FULL_RUN" = "true" ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "Docs-only scope: not a pull request, or ci-full-run is set."
+            exit 0
+          fi
+          # Any git failure leaves the list empty, which classifies as false.
+          paths="$(git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA" 2>/dev/null || true)"
+          printf '%s\n' "$paths" | python3 .github/scripts/docs_only.py classify >> "$GITHUB_OUTPUT" \
+            || echo "docs_only=false" >> "$GITHUB_OUTPUT"
 
       # Tests already red on main (`main-red-watch.yml` files one `Main is red:`
       # issue) fail every pull request opened meanwhile. Read that issue ONCE
@@ -880,9 +916,13 @@ jobs:
   lint-gate:
     name: Lint Gate
     needs: [changes, await-fast-gate, backend-lint, frontend-lint, ai-block-hold]
+    # Skipped on a docs-only pull request: every test, build and E2E lane
+    # needs this job's success, so they all skip with it, and
+    # `docs-contract-tests` runs instead.
     if: >-
       ${{ !cancelled()
       && needs.changes.result == 'success'
+      && needs.changes.outputs.docs_only != 'true'
       && needs.await-fast-gate.result == 'success'
       && contains(fromJSON('["success","skipped"]'), needs.backend-lint.result)
       && contains(fromJSON('["success","skipped"]'), needs.frontend-lint.result)
@@ -909,7 +949,9 @@ jobs:
     # diff cannot change this verdict. Gated on only_frontend (not on a
     # positive "python changed" allowlist) so that anything the selector could
     # not classify as frontend -- docs, a new root file, meta -- still runs it.
-    if: needs.changes.outputs.only_frontend != 'true'
+    # A docs-only diff (prose Markdown only, see `changes`) has no Python to
+    # lint, so it skips too.
+    if: needs.changes.outputs.only_frontend != 'true' && needs.changes.outputs.docs_only != 'true'
     # Large alone did not fix black's process-pool failure. Bound its workers
     # below as well, on hosted and fleet alike; preserve every lint/type gate.
     runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
@@ -1179,7 +1221,7 @@ jobs:
   backend-ratchets:
     name: Backend Ratchets & Boundaries
     needs: [changes, await-fast-gate]
-    if: needs.changes.outputs.only_frontend != 'true'
+    if: needs.changes.outputs.only_frontend != 'true' && needs.changes.outputs.docs_only != 'true'
     # Not `linux_runner_large`: black, the one backend gate that needs the
     # large fleet for its process pool, runs in `backend-lint`. Every gate
     # below is a single-process stdlib scan.
@@ -1346,6 +1388,166 @@ jobs:
           echo "::remove-matcher owner=python::"
           python -c "import kc_native"
           python -m pytest -q test/test_native_redaction_gate.py test/test_native_redaction_fallback.py test/test_credential_prefilter.py
+
+  # The test verdict of a docs-only pull request, which skips every suite
+  # behind `lint-gate` (see the docs-only step in `changes`). Docs are not
+  # test-free: well over a thousand backend test files and a few hundred
+  # frontend specs can read a doc as data and pin it to the code. This job runs
+  # every test file that names a changed doc, globs Markdown, or imports a test/
+  # helper that does (`.github/scripts/docs_only.py readers`), then the whole
+  # Electron shell suite. The selector is over-broad on purpose, and main's
+  # push CI still runs every suite. The backend half is split across three
+  # whole-file shards (scripts.ci_file_shards); shard 1 also runs the frontend
+  # specs and the Electron suite, once.
+  docs-contract-tests:
+    name: Docs Contract Tests
+    needs: [changes, await-fast-gate]
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only == 'true' && needs.await-fast-gate.result == 'success' }}
+    # Large compute, like Backend Tests: a widely read doc (README.md) selects
+    # well over a thousand backend test files for this job.
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        # The full Linux backend suite (~8,300 files) takes ~20 min a shard
+        # over 8 shards; a widely read doc selects ~1,700 files, about two of
+        # those shards' worth, so three keep each leg well under the budget.
+        # To change the count, update this list and SHARD_COUNT.
+        shard: [1, 2, 3]
+    env:
+      SHARD_COUNT: 3
+      KIROCREW_TMP_RESIDUE_STRICT: "1"
+      KIROCREW_CREW_LOG_READ_BUDGET: raise
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      # Every leg computes the same list from the same merge commit; the file
+      # shards below split it.
+      - name: Select the tests that read the changed docs
+        id: scope
+        env:
+          BACKEND_FILE: ${{ runner.temp }}/docs-readers-backend.txt
+          FRONTEND_FILE: ${{ runner.temp }}/docs-readers-frontend.txt
+        run: |
+          set -euo pipefail
+          # The merge commit against its first parent (the base) is the change
+          # this merge makes; depth 2 holds both.
+          mapfile -t docs < <(git diff --no-renames --name-only HEAD^1 HEAD)
+          python3 .github/scripts/docs_only.py readers ${docs[@]+"${docs[@]}"} > "$RUNNER_TEMP/readers.txt"
+          # Frontend specs live under website/; every other line is a backend
+          # test file under one of setup.cfg's testpaths roots.
+          grep -v '^website/' "$RUNNER_TEMP/readers.txt" > "$BACKEND_FILE" || true
+          sed -n 's#^website/##p' "$RUNNER_TEMP/readers.txt" > "$FRONTEND_FILE" || true
+          echo "Changed docs: ${docs[*]+"${docs[*]}"}"
+          echo "Backend test files: $(grep -c . "$BACKEND_FILE" || true); frontend specs: $(grep -c . "$FRONTEND_FILE" || true)"
+          echo "backend=$([ -s "$BACKEND_FILE" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "frontend=$([ -s "$FRONTEND_FILE" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.scope.outputs.backend == 'true'
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        if: steps.scope.outputs.backend == 'true'
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install Python dependencies
+        if: steps.scope.outputs.backend == 'true'
+        run: uv pip install --system -e ".[voice,desktop,otlp]" --group dev
+
+      # As the runner identity: the tests below run unprivileged and cannot
+      # write the job summary. Lists what scripts.ci_main_red_skip deselects.
+      - name: List the tests skipped as red on main
+        if: steps.scope.outputs.backend == 'true'
+        env:
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+        run: python3 scripts/ci_main_red_skip.py summary
+
+      # The tests run unprivileged, as in Backend Tests.
+      - uses: ./.github/actions/run-as-runner
+        if: steps.scope.outputs.backend == 'true'
+
+      - name: Run the backend tests that read the changed docs (shard ${{ matrix.shard }}/${{ env.SHARD_COUNT }})
+        if: steps.scope.outputs.backend == 'true'
+        shell: /usr/local/bin/ci-shell {0}
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          BACKEND_FILE: ${{ runner.temp }}/docs-readers-backend.txt
+          # Node ids red on main, deselected by scripts.ci_main_red_skip (see the
+          # `changes` job). Read by the plugin from the environment only.
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+        run: |
+          set -euo pipefail
+          echo "::remove-matcher owner=python::"
+          # Worker count as in Backend Tests: one per 2 GiB after 2 GiB for the
+          # host, capped at the core count.
+          mem_mib=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)
+          by_mem=$(( (mem_mib - 2048) / 2048 ))
+          WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
+          [ "$WORKERS" -ge 1 ] || WORKERS=1
+          echo "pytest workers: $WORKERS"
+          # The list reaches pytest as --file-shard-targets=PATH, never as
+          # arguments: why is in scripts/ci_file_shards.py.
+          rc=0
+          python -m pytest -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 --no-cov -m "not ipv6_required and not real_venv" \
+            --max-worker-restart=2 -p scripts.ci_main_red_skip \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.shard }} \
+            --file-shard-targets="$BACKEND_FILE" || rc=$?
+          # 5 = nothing collected (this shard owns no selected file, or every
+          # one it owns skips on this platform).
+          if [ "$rc" -eq 5 ]; then exit 0; fi
+          exit "$rc"
+
+      # Shard 1 only, with the frontend specs and the Electron suite below.
+      - uses: ./.github/actions/seed-node-tool-cache
+        if: matrix.shard == 1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: matrix.shard == 1
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            website/package-lock.json
+            website/electron/package-lock.json
+
+      - name: Run the frontend specs that read the changed docs
+        if: matrix.shard == 1 && steps.scope.outputs.frontend == 'true'
+        working-directory: website
+        env:
+          FRONTEND_FILE: ${{ runner.temp }}/docs-readers-frontend.txt
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$I18N_BASE_REF" 'the diff-scoped i18n test gates')"
+          export I18N_BASE_REF
+          mapfile -t targets < "$FRONTEND_FILE"
+          npx vitest run --passWithNoTests ${targets[@]+"${targets[@]}"}
+
+      # The whole suite, about a minute, because its specs read docs by
+      # computed paths the selector cannot see. Install and run as in
+      # `electron-test`.
+      - name: Electron shell suite (whole)
+        if: matrix.shard == 1
+        working-directory: website/electron
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm test
 
   backend-test:
     name: Backend Tests
@@ -3538,6 +3740,7 @@ jobs:
           KERNEL_LOCK_OWNER: ${{ needs.backend-test-kernel-lock-owner.result }}
           ONLY_BACKEND: ${{ needs.changes.outputs.only_backend }}
           ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
           BACKEND_LINT: ${{ needs.backend-lint.result }}
           FRONTEND_LINT: ${{ needs.frontend-lint.result }}
           AI_BLOCK_HOLD: ${{ needs.ai-block-hold.outputs.hold }}
@@ -3548,6 +3751,18 @@ jobs:
           if [ -z "$ONLY_BACKEND" ] || [ -z "$ONLY_FRONTEND" ]; then
             echo "::error::surface detection (changes) never reported -- failing closed."
             exit 1
+          fi
+          # A docs-only pull request skips `lint-gate` on purpose, and with it
+          # every suite this gate measures; `docs-contract-tests` is its test
+          # verdict. Nothing to measure is not a failure here. A test job that
+          # ran anyway is: the skip did not hold.
+          if [ "$DOCS_ONLY" = "true" ]; then
+            if [ "$BE" != "skipped" ] || [ "$FE" != "skipped" ]; then
+              echo "::error::docs-only run but backend-test=$BE frontend-test=$FE (expected exactly 'skipped') -- inconsistent."
+              exit 1
+            fi
+            echo "Docs-only run: the test suites were skipped by design; coverage not measured."
+            exit 0
           fi
           # Lint runs first: a failed or cancelled lint job skips `lint-gate`
           # and with it every test shard, so the checks below would all report
@@ -3684,7 +3899,7 @@ jobs:
           path: backend-cov
 
       - name: Download frontend coverage
-        if: needs.changes.outputs.only_backend != 'true'
+        if: needs.changes.outputs.only_backend != 'true' && needs.changes.outputs.docs_only != 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: coverage-frontend
@@ -3708,7 +3923,7 @@ jobs:
           PY
 
       - name: Check frontend coverage (min ${{ env.FRONTEND_MIN }}%)
-        if: needs.changes.outputs.only_backend != 'true'
+        if: needs.changes.outputs.only_backend != 'true' && needs.changes.outputs.docs_only != 'true'
         run: |
           F=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
           test -n "$F" || { echo "::error::cobertura report missing from coverage-frontend artifact"; exit 1; }
@@ -3734,7 +3949,7 @@ jobs:
             --baseline .github/coverage-baselines/backend.txt
 
       - name: Check per-file coverage, frontend (floor ${{ env.PER_FILE_MIN }}%)
-        if: needs.changes.outputs.only_backend != 'true'
+        if: needs.changes.outputs.only_backend != 'true' && needs.changes.outputs.docs_only != 'true'
         run: |
           F=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
           test -n "$F" || { echo "::error::cobertura report missing from coverage-frontend artifact"; exit 1; }
