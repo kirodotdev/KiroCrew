@@ -5,21 +5,33 @@
   so while it is a member fails too.
 * OUTPUT -- a file name cannot start a workflow command of its own, and a long
   list of failures stays inside the annotation limit.
+* BASE -- the base tier is decided by the base commit's own command, read from
+  a real git export, so a change to the rule shows the files it drops.
 * WIRING -- the gate runs on pull requests only, in a job whose checkout can
   reach the base, and can fail that job.
 """
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 from scripts import ci_guard_tier_membership as membership
+from scripts import ci_test_map
+
+# One module builds one git repository and exports it: keep that on one worker.
+pytestmark = pytest.mark.xdist_group(name="ci_guard_tier_membership")
 
 ROOT = Path(__file__).resolve().parents[1]
+
+#: Each git child below is a few milliseconds of work on a three-file repository.
+GIT_SECS = FALLBACK_TIMEOUT_SECS / 2
 
 # Assembled, so no line of this file is itself a not-a-member line.
 MARK = "# guard-tier: " + "not a member -- "
@@ -130,6 +142,75 @@ def test_no_base_to_compare_with_is_an_error_not_a_pass(
     )
     assert membership.main(["--root", str(root)]) == 2
     assert "shallow clone" in capsys.readouterr().err
+
+
+# ── Base ──────────────────────────────────────────────────────────────────
+
+#: A stand-in for the base commit's `ci_test_map.py`: its rule calls every test a gate.
+EVERY_TEST_IS_A_GATE = """import sys
+from pathlib import Path
+
+root = Path(sys.argv[sys.argv.index("--root") + 1])
+print("\\n".join(sorted(p.relative_to(root).as_posix() for p in root.glob("test/test_*.py"))))
+"""
+#: A stand-in from before the command existed: it refuses the subcommand.
+NO_SUCH_COMMAND = "import sys\n\nsys.exit(2)\n"
+
+
+def _git(repo: Path, *args: str) -> str:
+    identity = ["-c", "user.name=guard tier", "-c", "user.email=guard-tier@example.invalid"]
+    quiet = ["-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"]
+    done = subprocess.run(
+        ["git", "-C", str(repo), *identity, *quiet, *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=GIT_SECS,
+    )
+    return done.stdout.strip()
+
+
+@pytest.fixture(scope="module")
+def two_bases(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str, str]:
+    """A repository, a base without the command, and a base whose rule keeps both tests."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    repo = tmp_path_factory.mktemp("guard_tier_repo")
+    _tree(repo, test_gate=GATE, test_leaf=LEAF)
+    command = repo / "scripts" / "ci_test_map.py"
+    command.parent.mkdir()
+    _git(repo, "init", "--quiet")
+    commits = []
+    for text in (NO_SUCH_COMMAND, EVERY_TEST_IS_A_GATE):
+        command.write_text(text, encoding="utf-8")
+        _git(repo, "add", "--all")
+        _git(repo, "commit", "--quiet", "--message", "base")
+        commits.append(_git(repo, "rev-parse", "HEAD"))
+    return repo, commits[0], commits[1]
+
+
+def test_a_rule_change_that_drops_a_file_is_reported_as_that_file_leaving(
+    two_bases: tuple[Path, str, str],
+) -> None:
+    repo, _old, base = two_bases
+    tier, rule = membership.base_tier(base, repo)
+    assert tier == ["test/test_gate.py", "test/test_leaf.py"]
+    assert rule == "the base's own rule"
+    # This checkout's rule, on the same two unchanged files, keeps only the gate.
+    head = ci_test_map.tier_lines(ci_test_map.guard_tier(repo), None)
+    assert head == ["test/test_gate.py"]
+    verdict = membership.judge(tier, head, repo)
+    assert verdict.unexplained == ["test/test_leaf.py"] and verdict.failed
+
+
+def test_a_base_without_the_command_is_read_by_this_checkouts_rule(
+    two_bases: tuple[Path, str, str],
+) -> None:
+    repo, old, _base = two_bases
+    tier, rule = membership.base_tier(old, repo)
+    assert tier == ["test/test_gate.py"]
+    assert rule.startswith("this checkout's rule")
 
 
 # ── Wiring ────────────────────────────────────────────────────────────────
