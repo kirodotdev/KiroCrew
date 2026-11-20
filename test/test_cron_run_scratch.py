@@ -19,6 +19,7 @@ import pytest
 import kiro_crew.cron_script as cron_script
 from kiro_crew import agent_scratch, agent_scratch_job, sandbox
 from kiro_crew.cron_script import run_command_sandboxed, run_script_sandboxed
+from kiro_crew.testing.wait import default_timeout
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX spawn plumbing")
 
@@ -122,7 +123,7 @@ def test_the_script_child_joins_its_temp_dirs_job_and_is_then_resumed(
     )
     script = _write_script("def run(ctx):\n    raise Done('ran')\n")
     with patch("pathlib.Path.home", return_value=tmp_path):
-        result = run_script_sandboxed(f"{script}:run", "scriptjob", timeout=30)
+        result = run_script_sandboxed(f"{script}:run", "scriptjob", timeout=default_timeout())
 
     assert result["status"] == "done", result
     assert len(order) == 2 and order[1] == "resumed", order
@@ -133,9 +134,9 @@ def test_a_child_that_cannot_be_resumed_is_reaped_and_its_dir_removed(
     monkeypatch, tmp_path, wrap_calls
 ):
     monkeypatch.setattr(cron_script, "_resume_cron_child", lambda proc: False)
-    script = _write_script("def run(ctx):\n    import time\n    time.sleep(60)\n")
+    script = _write_script("def run(ctx):\n    raise Done('never resumed, so never ran')\n")
     with patch("pathlib.Path.home", return_value=tmp_path):
-        result = run_script_sandboxed(f"{script}:run", "frozenjob", timeout=120)
+        result = run_script_sandboxed(f"{script}:run", "frozenjob", timeout=default_timeout())
 
     assert result == {"status": "error", "error": cron_script._RESUME_ERROR}
     assert _scratch_entries() == []

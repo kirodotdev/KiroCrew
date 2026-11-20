@@ -136,7 +136,7 @@ def _record_cron_scratch_owner(scratch: Path | None, proc: subprocess.Popen) -> 
         return False
     # Fail-open like the rest of this hygiene: with no job, the sweep judges the
     # run by the recorded pid alone.
-    agent_scratch_job.join(scratch.name, proc.pid)
+    agent_scratch_job.join(scratch.name, proc)
     return True
 
 

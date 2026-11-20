@@ -4,26 +4,33 @@ The scratch sweep (:func:`kiro_crew.agent_scratch.sweep_dead_scratch`) keeps a
 tree while a process group its owner marker names is alive, and on Linux while
 a process outside those groups still uses it
 (:mod:`kiro_crew.agent_scratch_users`). Windows has no ``/proc`` to read and no
-process groups, so a script cron's run is judged by the recorded script pid
-alone. A script that starts a background process (a watcher, a dev server, a
-detached helper) with the run's temp dir as its working directory and returns
-leaves that process behind a dead recorded owner, and an hour later the sweep
-deletes every file the process does not hold open.
+process groups, so a script cron's run is otherwise judged by the recorded
+script pid alone. A script that starts a background process (a watcher, a dev
+server, a detached helper) with the run's temp dir as its working directory and
+returns leaves that process behind a dead recorded owner, and an hour later the
+sweep would delete every file the process does not hold open.
 
-Windows can answer the question directly. Each run's script child joins a named
-Job object (:func:`join`), and a Windows process's descendants join its job
-automatically, so the job lists exactly the live processes the run started,
-whether or not their parent is still alive. The sweep opens the job by the
-tree's name and reads its process list (:func:`scratch_users`): a non-empty list
-is a live user, and a job the system has freed (its last member exited) is none.
+Windows can answer the question directly. Each run's script child joins a Job
+object of its own (:func:`join`) before it runs, and a Windows process's
+descendants join its job automatically, so the job lists exactly the live
+processes the run started, whether or not their parent is still alive. The
+sweep reads each job's process list (:func:`scratch_users`): a non-empty list is
+a live user.
 
-The job carries no limits and no ``KILL_ON_JOB_CLOSE``, matching the agent Job
-(:func:`kiro_crew.platform_compat.apply_job_limits`): it only names the group, so
-background work a script started on purpose keeps running. It is named from the
-tree's directory name, which the sweep already has, so ``.owner`` is unchanged.
-A job object outlives the handle that created it while a process is assigned to
-it, which is why :func:`join` closes its handle at once and why a gateway that
-restarts still finds the job of a run it did not make.
+This process keeps the job's handle, keyed by the tree's directory name, for as
+long as the job has a live member, and closes it the first time it reads the job
+empty. It has to: a job object outlives its last handle while members remain,
+but nothing can open it again, by name or otherwise (``pod/_windows_job.py``
+records the same rule for a named job), so a handle closed early would leave a
+job no sweep can read. The job carries no limits and no ``KILL_ON_JOB_CLOSE``,
+matching the agent Job (:func:`kiro_crew.platform_compat.apply_job_limits`): it
+only lists the run's processes, so background work a script started on purpose
+keeps running, and closing the handle ends nothing.
+
+shortcut: the handles live in this process only, so after a gateway restart a
+run from before it has no job to read and its tree is judged by the owner
+marker alone, as on macOS. Upgrade when a restart-surviving locator exists
+(a process that holds the handles across gateway lifetimes).
 
 Windows only. Every function answers "nothing" elsewhere.
 """
@@ -32,7 +39,8 @@ from __future__ import annotations
 
 import ctypes
 import logging
-import os
+import subprocess
+import threading
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any
@@ -41,16 +49,16 @@ from kiro_crew import platform_compat
 
 logger = logging.getLogger(__name__)
 
-_JOB_NAME_PREFIX = "Local\\kirocrew-scratch-"
-_PROCESS_SET_QUOTA = 0x0100
-_PROCESS_TERMINATE = 0x0001
-_JOB_OBJECT_QUERY = 0x0004
 _JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3
 _ERROR_MORE_DATA = 234
 
 #: Process ids read per query. One is enough to name a user; the rest only makes
 #: the call fill more of the list.
 _LISTED_PIDS = 8
+
+#: The open job handle of each tree whose job may still have a live member.
+_JOBS: dict[str, int] = {}
+_JOBS_LOCK = threading.Lock()
 
 
 class _BasicProcessIdList(ctypes.Structure):
@@ -63,34 +71,20 @@ class _BasicProcessIdList(ctypes.Structure):
     ]
 
 
-def job_name(tree_name: str) -> str | None:
-    """The Job object name for the scratch tree *tree_name*, or None for one with no legal name.
+def join(tree_name: str, proc: subprocess.Popen[Any]) -> bool:
+    """Put the child *proc* into a new Job object kept for the scratch tree *tree_name*.
 
-    A tree name is one directory name under the scratch root, so a separator in
-    it means the caller handed over something else, and a Job name takes a
-    backslash as its namespace separator.
+    Called for a script child that was created ``CREATE_SUSPENDED``, before it
+    has run any of the script, so every process it starts afterwards is a
+    member. Returns False, and logs, when the job could not be made or the
+    process not assigned: the run goes on and the sweep falls back to the owner
+    marker alone.
     """
-    if not tree_name or "\\" in tree_name or "/" in tree_name:
-        return None
-    return _JOB_NAME_PREFIX + tree_name
-
-
-def join(tree_name: str, pid: int) -> bool:
-    """Put the process *pid* into the Job object of the scratch tree *tree_name*.
-
-    Called for a script child right after it is spawned and before it has run
-    any of the script, so every process it starts afterwards is a member. Returns
-    False, and logs, when the job could not be made or the process not assigned:
-    the run goes on and the sweep falls back to the owner marker alone.
-    """
-    name = job_name(tree_name)
-    if name is None or not platform_compat.IS_WINDOWS:
+    if not platform_compat.IS_WINDOWS:
         return False
-    job = process = None
-    kernel32 = None
     try:  # pragma: no cover - Win32 calls; exercised by test_agent_scratch_job.py on Windows
         kernel32 = _kernel32()
-        job = kernel32.CreateJobObjectW(None, name)
+        job = kernel32.CreateJobObjectW(None, None)
         if not job:
             logger.warning(
                 "agent-scratch: could not create the job for %r (err=%s)",
@@ -98,53 +92,59 @@ def join(tree_name: str, pid: int) -> bool:
                 platform_compat._windows_last_error(),
             )
             return False
-        process = kernel32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
-        if not process:
-            logger.warning(
-                "agent-scratch: could not open pid %d for the job of %r (err=%s)",
-                pid,
-                tree_name,
-                platform_compat._windows_last_error(),
-            )
-            return False
-        if not kernel32.AssignProcessToJobObject(job, process):
+        # Popen's own handle carries every right the assignment needs, and is
+        # the exact process this spawn made, never a reused pid.
+        if not kernel32.AssignProcessToJobObject(job, int(getattr(proc, "_handle"))):
             logger.warning(
                 "agent-scratch: could not put pid %d in the job of %r (err=%s)",
-                pid,
+                proc.pid,
                 tree_name,
                 platform_compat._windows_last_error(),
             )
+            kernel32.CloseHandle(job)
             return False
-        return True
-    except Exception:
+    except Exception:  # pragma: no cover - Windows only
         logger.warning("agent-scratch: joining the job of %r failed", tree_name, exc_info=True)
         return False
-    finally:
-        for handle in (process, job):
-            if handle and kernel32 is not None:
-                kernel32.CloseHandle(handle)
+    with _JOBS_LOCK:  # pragma: no cover - Windows only
+        previous = _JOBS.get(tree_name)
+        _JOBS[tree_name] = int(job)
+    if previous is not None:  # pragma: no cover - a tree is allocated for one run
+        _close(previous)
+    return True  # pragma: no cover - Windows only
 
 
-def job_pids(tree_name: str) -> list[int]:
-    """The ids of the live processes in the Job object of *tree_name*, possibly a few of many.
+def scratch_users(root: Path) -> dict[str, int]:
+    """Map each direct child of *root* whose job has a live member to one member's pid.
 
-    Empty when the tree has no job (none was made, or its last member exited and
-    the system freed it), when the job has no live member, and when the job
-    cannot be read: this is a lower bound, like the ``/proc`` read it stands
-    beside.
+    A job read empty has no member left and none can join it, so its handle is
+    closed and the tree is forgotten. A job that cannot be read is kept for the
+    next sweep and reads as no user: this is a lower bound, like the ``/proc``
+    read it stands beside.
     """
-    name = job_name(tree_name)
-    if name is None or not platform_compat.IS_WINDOWS:
-        return []
-    job = None
-    kernel32 = None
+    with _JOBS_LOCK:
+        held = list(_JOBS.items())
+    users: dict[str, int] = {}
+    for name, job in held:
+        pids = job_pids(job)
+        if pids is None:
+            continue
+        if not pids:
+            with _JOBS_LOCK:
+                if _JOBS.get(name) == job:
+                    del _JOBS[name]
+            _close(job)
+            continue
+        if (root / name).is_dir():
+            users[name] = pids[0]
+    return users
+
+
+def job_pids(job: int) -> list[int] | None:
+    """The ids of the live processes in *job*, possibly a few of many; None when unreadable."""
     try:  # pragma: no cover - Win32 calls; exercised by test_agent_scratch_job.py on Windows
-        kernel32 = _kernel32()
-        job = kernel32.OpenJobObjectW(_JOB_OBJECT_QUERY, False, name)
-        if not job:
-            return []
         listing = _BasicProcessIdList()
-        ok = kernel32.QueryInformationJobObject(
+        ok = _kernel32().QueryInformationJobObject(
             job,
             _JOB_OBJECT_BASIC_PROCESS_ID_LIST,
             ctypes.byref(listing),
@@ -153,38 +153,24 @@ def job_pids(tree_name: str) -> list[int]:
         )
         # More members than the buffer holds still fills the buffer.
         if not ok and platform_compat._windows_last_error() != _ERROR_MORE_DATA:
-            return []
+            return None
         return [int(pid) for pid in listing.ProcessIdList[: listing.NumberOfProcessIdsInList]]
-    except Exception:
-        logger.debug("agent-scratch: reading the job of %r failed", tree_name, exc_info=True)
-        return []
-    finally:
-        if job and kernel32 is not None:
-            kernel32.CloseHandle(job)
+    except Exception:  # pragma: no cover - Windows only
+        logger.debug("agent-scratch: reading a scratch job failed", exc_info=True)
+        return None
 
 
-def scratch_users(root: Path) -> dict[str, int]:
-    """Map each direct child of *root* whose job has a live member to one member's pid."""
+def _close(job: int) -> None:  # pragma: no cover - Windows only
     try:
-        names = os.listdir(root)
-    except OSError:
-        return {}
-    users: dict[str, int] = {}
-    for name in names:
-        pids = job_pids(name)
-        if pids:
-            users[name] = pids[0]
-    return users
+        _kernel32().CloseHandle(job)
+    except Exception:
+        logger.debug("agent-scratch: closing a scratch job failed", exc_info=True)
 
 
 def _kernel32() -> Any:  # pragma: no cover - Windows only
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
     kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
     kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-    kernel32.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
-    kernel32.OpenJobObjectW.restype = wintypes.HANDLE
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
     kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
     kernel32.QueryInformationJobObject.argtypes = [

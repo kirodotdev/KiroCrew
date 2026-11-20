@@ -5527,15 +5527,16 @@ process's environment, so the named groups stay the only liveness signal there.
 Pinned by `test/test_agent_scratch_live_users.py`.
 
 On Windows there is no process table to read and no process group, so a script cron
-run's tree is kept by a named Job object instead (`agent_scratch_job`). The cron runner
-creates the script child suspended, `join` puts it in the job named for the tree's
-directory (`Local\kirocrew-scratch-<tree>`, no limits and no `KILL_ON_JOB_CLOSE`, so
-background work keeps running), and only then resumes it, so every process the script
-starts is a member whether or not its parent has exited. `agent_scratch_users.scratch_users`
-opens each tree's job by name and keeps the tree while the job lists a live process; a job
-that no longer exists, because its last member exited, is no user. The same WARNING names
-the tree and one member's pid. A run whose job could not be made falls back to the owner
-marker alone. Agent runtimes do not join a job, so their trees keep the owner-marker rule
+run's tree is kept by a Job object instead (`agent_scratch_job`). The cron runner
+creates the script child suspended, `join` puts it in a job of its own (no limits and no
+`KILL_ON_JOB_CLOSE`, so background work keeps running), and only then resumes it, so every
+process the script starts is a member whether or not its parent has exited.
+`agent_scratch_users.scratch_users` reads each job's process list and keeps the tree while
+it lists a live process. The gateway holds each job's handle, keyed by the tree's name,
+until it reads the job empty, because nothing can open a job again once its last handle
+closes. The same WARNING names the tree and one member's pid. A run whose job could not be
+made falls back to the owner marker alone, and so does a run from before a gateway restart,
+whose handle went with the old gateway. Agent runtimes do not join a job, so their trees keep the owner-marker rule
 alone. The Job read is proven against the real kernel only by the Windows test in
 `test/test_agent_scratch_job.py`.
 
