@@ -194,7 +194,7 @@ class TestACallerHiddenFilesParentStaysInPlace:
         output = proc.stdout + proc.stderr
         assert proc.returncode == 0, output
         (line,) = [ln for ln in proc.stdout.splitlines() if ln.startswith("REPORT ")]
-        (rename, cross) = json.loads(line[len("REPORT ") :])
+        rename, cross = json.loads(line[len("REPORT ") :])
         warnings.warn(
             f"REALMACHINE-39551 rename rc={rename[0]} err={rename[1]}; "
             f"cross rc={cross[0]} err={cross[1]}",
