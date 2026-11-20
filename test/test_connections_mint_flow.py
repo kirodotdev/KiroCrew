@@ -1308,8 +1308,7 @@ def _self_hosted_discovery(monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setattr(discovery, "_NEGATIVE", {})
     monkeypatch.setattr(exfil, "_load_operator_oauth_endpoints", lambda: frozenset())
-    monkeypatch.setattr(exfil, "SecurityEventLog", MagicMock())
-    monkeypatch.setattr(exfil_oauth, "SecurityEventLog", MagicMock(), raising=False)
+    monkeypatch.setattr(exfil_oauth, "sel", MagicMock())
     monkeypatch.setattr(discovery, "_servers_from_settings_registry", lambda: {})
     docs = {
         f"{_SELF_HOSTED}/.well-known/oauth-authorization-server": {

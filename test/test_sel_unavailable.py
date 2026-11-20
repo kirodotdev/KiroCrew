@@ -86,6 +86,32 @@ def test_a_critical_audit_still_raises(unreachable_trust_root):
         )
 
 
+def test_a_deny_exception_is_refused_when_the_log_cannot_build(unreachable_trust_root):
+    from kiro_crew.security.deny_gate import _emit_deny_exception_event
+
+    assert _emit_deny_exception_event("Bash", "rm -rf /") is False
+    assert sel_mod._unavailable_dropped == 0  # refused, not counted as a dropped row
+
+
+def test_other_event_types_are_still_only_dropped_when_the_log_cannot_build(
+    unreachable_trust_root,
+):
+    event = sel_mod.SecurityEvent(
+        event_id="e1",
+        timestamp="2026-01-01T00:00:00+00:00",
+        event_type="deny",
+        caller_identity="",
+        agent="kirocrew",
+        source="security",
+        operation="Bash",
+        outcome="denied",
+    )
+
+    sel_mod.sel().log(event)
+
+    assert sel_mod._unavailable_dropped == 1
+
+
 def test_reading_the_log_still_raises(unreachable_trust_root):
     with pytest.raises(FileExistsError):
         sel_mod.sel().recent()

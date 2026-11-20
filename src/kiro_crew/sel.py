@@ -53,7 +53,16 @@ from contextlib import contextmanager  # noqa: F401
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone  # noqa: F401
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, overload  # noqa: F401
+from typing import (  # noqa: F401
+    IO,
+    TYPE_CHECKING,
+    Any,
+    Literal,
+    NamedTuple,
+    NoReturn,
+    cast,
+    overload,
+)
 
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import platform_compat  # noqa: F401
@@ -277,6 +286,11 @@ class SecurityEventLog:
     _hmac_key: bytes
     _hmac_key_file: Path
     _last_hash: str
+    #: A process in a spawned app backend's tree writes nothing: it never reads, creates,
+    #: rotates or signs with a key, whatever is on disk, and drops each row (see
+    #: ``_spawned_tree_key``).
+    _no_write = False
+    _no_write_warned = False
 
     def __new__(cls, base_dir: Path | None = None, sync: bool = False) -> SecurityEventLog:
         if cls._instance is None:
@@ -444,6 +458,20 @@ class SecurityEventLog:
             if self._pending == 0:
                 self._pending_cond.notify_all()
 
+    def _drop_unsigned(self, critical: bool) -> None:
+        """Drop a row this process may not sign: one warning, then silence.
+
+        A critical write raises, so a fail-closed caller refuses the action it could
+        not audit, as it does when the log cannot be written.
+        """
+        if not self._no_write_warned:
+            self._no_write_warned = True
+            logger.warning(
+                "SEL: this app backend process may not sign audit rows; its rows are dropped"
+            )
+        if critical:
+            raise OSError("no SEL signing key in this process; the audit row was not written")
+
     def _flush_batch(
         self,
         events: list[SecurityEvent],
@@ -467,6 +495,10 @@ class SecurityEventLog:
         from the running thread means a future inline caller cannot reintroduce
         that stall by forgetting a flag.
         """
+        if self._no_write:
+            deny_exception = any(e.event_type == "deny_exception" for e in events)
+            self._drop_unsigned(raise_on_error or deny_exception)
+            return None
         # Redact caller-supplied text before the chain hash is computed, so the
         # persisted bytes and the HMAC signature agree on the redacted form.
         # This is the single convergence point for every CALLER-originated event
@@ -632,6 +664,7 @@ class SecurityEventLog:
     _load_or_create_hmac_key = _sel_trust_root._load_or_create_hmac_key
     _compute_hash = _sel_trust_root._compute_hash
     _record_signature_matches = _sel_trust_root._record_signature_matches
+    _spawned_tree_key = _sel_trust_root._spawned_tree_key
     # Size rotation, segment retention and the age prune: ``kiro_crew.sel_rotation``.
     _refresh_operator_keep = _sel_rotation._refresh_operator_keep
     _rotation_window = _sel_rotation._rotation_window
@@ -758,6 +791,11 @@ class SecurityEventLog:
         from the running thread rather than from a flag here, so the rule cannot be
         lost at a call site. The background writer rotates on its next batch.
         """
+        if self._no_write:
+            # A deny exception is always critical: the grant waits for its row, and the
+            # caller refuses the grant when the row is not written.
+            self._drop_unsigned(critical or event.event_type == "deny_exception")
+            return
         if self._sync:
             self._flush_batch([event], raise_on_error=critical)
             return
@@ -1174,8 +1212,8 @@ class _UnavailableSecurityEventLog(SecurityEventLog):
 
     A non-critical event is dropped with one warning, the same best-effort loss
     ``log`` accepts when its writer cannot take an event on the event loop, and
-    is counted into ``dropped_events`` once the log builds. A critical event, and
-    every read or maintenance call, raises the error that stopped construction,
+    is counted into ``dropped_events`` once the log builds. A critical event, a
+    ``deny_exception`` event, and every read or maintenance call, raises the error that stopped construction,
     so a fail-closed caller still refuses.
     """
 
@@ -1194,7 +1232,9 @@ class _UnavailableSecurityEventLog(SecurityEventLog):
 
     def log(self, event: SecurityEvent, *, critical: bool = False) -> None:
         global _unavailable_warned, _unavailable_dropped
-        if critical:
+        # A deny exception is always critical: the gate grants it only with its row, so a
+        # row that cannot be written refuses the grant, as the no-write path does.
+        if critical or event.event_type == "deny_exception":
             self._raise()
         with _unavailable_lock:
             _unavailable_dropped += 1
@@ -1227,11 +1267,24 @@ class _UnavailableSecurityEventLog(SecurityEventLog):
 def sel() -> SecurityEventLog:
     """Module-level accessor for the singleton SEL instance.
 
+    Inside a spawned app backend it is the client for the gateway's ``_sel`` route
+    instead: a backend holds no MAC key, and the gateway signs the row. That client
+    has ``log_api_access``, ``log_tool_invocation`` and ``log`` only (all filed as
+    api_access rows), so the return type is a cast. Only an app backend holds the
+    per-app secret, so the client module is imported only when it is set: the gateway
+    and the MCP servers never load it.
+
     If this process cannot build the log (a sandbox that hides the trust
     directory), this returns :class:`_UnavailableSecurityEventLog` instead of
     raising, and the next call tries to build it again.
     """
     global _unavailable_warned, _unavailable_dropped
+    if os.environ.get("KIROCREW_PROXY_SECRET"):
+        from kiro_crew.apps.sel_client import from_env
+
+        client = from_env()
+        if client is not None:
+            return cast("SecurityEventLog", client)
     try:
         inst = SecurityEventLog()
     except OSError as exc:

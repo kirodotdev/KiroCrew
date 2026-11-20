@@ -22,6 +22,7 @@ from oauth_url_corpus import OPERATOR_EXTENSION_OAUTH_URLS
 from kiro_crew import security
 from kiro_crew.security import (
     exfil,
+    exfil_oauth,
     is_sensitive_path,
     oauth_url_contains_credential,
     record_discovered_oauth_endpoint,
@@ -1718,7 +1719,6 @@ class TestOperatorOAuthEndpointExtension:
         self, ext_home: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from kiro_crew import security
-        from kiro_crew.security import exfil
 
         logged: list = []
 
@@ -1726,7 +1726,7 @@ class TestOperatorOAuthEndpointExtension:
             def log(self, event: object) -> None:
                 logged.append(event)
 
-        monkeypatch.setattr(exfil, "SecurityEventLog", lambda: _RecorderLog())
+        monkeypatch.setattr(exfil_oauth, "sel", lambda: _RecorderLog())
         security._emit_oauth_extension_used_event(self.HOST, self.PATH)
         security._emit_oauth_extension_used_event(self.HOST, self.PATH)
         assert len(logged) == 1
@@ -1811,7 +1811,7 @@ class TestOperatorOAuthEndpointExtension:
             def log(self, event: object) -> None:
                 logged.append(event)
 
-        monkeypatch.setattr(exfil, "SecurityEventLog", lambda: _RecorderLog())
+        monkeypatch.setattr(exfil_oauth, "sel", lambda: _RecorderLog())
         assert security._text_contains_bare_secret(consumer_key)
         assert security._approved_oauth_authorization_endpoint(self.HOST, self.PATH, "mcp")
         assert logged == []
@@ -1845,13 +1845,11 @@ class TestOperatorOAuthEndpointExtension:
     def test_audit_failure_does_not_break_the_approval(
         self, ext_home: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from kiro_crew.security import exfil
-
         class _BrokenLog:
             def log(self, event: object) -> None:
                 raise RuntimeError("SEL unavailable")
 
-        monkeypatch.setattr(exfil, "SecurityEventLog", lambda: _BrokenLog())
+        monkeypatch.setattr(exfil_oauth, "sel", lambda: _BrokenLog())
         self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
         assert oauth_url_contains_credential(self.CONSENT_URL) is False
 

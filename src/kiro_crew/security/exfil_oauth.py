@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-from kiro_crew.sel import SecurityEvent, SecurityEventLog
+from kiro_crew.sel import SecurityEvent, SecurityEventLog, sel  # noqa: F401
 
 from .redaction import _contains_fixed_credential, _text_contains_bare_secret
 
@@ -528,7 +528,7 @@ def _log_operator_list_use(
     is logged at debug and never raised, so the audit never changes the outcome.
     """
     try:
-        SecurityEventLog().log(
+        sel().log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
                 timestamp=datetime.now(tz=timezone.utc).isoformat(),
@@ -632,7 +632,7 @@ def _emit_oauth_discovered_endpoint_event(
     if len(mcp_url) > _OAUTH_DISCOVERED_MCP_URL_MAX_LEN:
         mcp_url = mcp_url[: _OAUTH_DISCOVERED_MCP_URL_MAX_LEN - 1] + "…"
     try:
-        SecurityEventLog().log(
+        sel().log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
                 timestamp=datetime.now(tz=timezone.utc).isoformat(),

@@ -201,6 +201,38 @@ def _drop_live_config_snapshot():
     live.reset_for_tests()
 
 
+def _settle_and_forget_sel_route_clients() -> None:
+    client_module = sys.modules.get("kiro_crew.apps.sel_client")
+    if client_module is None:
+        return
+    with client_module._clients_lock:
+        clients = list(client_module._clients.values())
+    for client in clients:
+        client._wait_for_queue(_SEL_CLIENT_SETTLE_SECS)
+    with client_module._clients_lock:
+        client_module._clients.clear()
+
+
+#: The most a test's teardown waits for a route client's queued rows to be sent.
+_SEL_CLIENT_SETTLE_SECS = 10.0
+
+
+@pytest.fixture(autouse=True)
+def _forget_sel_route_clients():
+    """Give every test its own route clients, with no row still queued from another.
+
+    ``kiro_crew.apps.sel_client`` caches one client per (app, origin, secret) for the
+    process, and each client sends its queued rows from a daemon thread. A client a test
+    built (through ``sel()`` in a spawned-backend environment) would otherwise outlive it,
+    and a row it still held would be sent, or fail and warn, inside whichever test runs
+    next on the worker. Queued rows are sent (bounded), then the map is cleared, on both
+    sides of the test. A test that never imported the module pays one dict lookup.
+    """
+    _settle_and_forget_sel_route_clients()
+    yield
+    _settle_and_forget_sel_route_clients()
+
+
 @pytest.fixture(autouse=True)
 def _forget_tracing_switch():
     """Give every test an unread tracing switch.
