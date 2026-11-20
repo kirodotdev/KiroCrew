@@ -220,6 +220,9 @@ export interface SidebarScope {
   filterSortOpen: boolean | 'folders'
   setFilterSortOpen: SetState<boolean | 'folders'>
   folders: ChatFolder[]
+  /** Every folder, including the Bot homes `folders` leaves out: for readers
+   *  that name a folder the Sessions list may not draw (History search groups). */
+  allFolders: ChatFolder[]
   foldersFailed: boolean
   foldersError: Error | null
   refetchFolders: UseQueryResult<ChatFolder[]>['refetch']
