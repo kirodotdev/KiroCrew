@@ -81,6 +81,8 @@ import { readPersistedString, usePersistedString } from '../../hooks/usePersiste
 import { readCompanySignIn, rememberCompanySignIn, sameCompanyPortal } from '../../utils/companySignIn'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { useSelectInstance } from '../../hooks/useSelectInstance'
+import { usePreviewFlag } from '../../hooks/usePreviewFlag'
+import { PREVIEW_LAUNCH_CARD_CLOSE } from '../../utils/previewFlags'
 import { RemoteCrewWindowsNotice } from './RemoteCrewWindowsNotice'
 import { copyToClipboard } from '../../utils/clipboard'
 import { useAppDispatch, useAppSelector, useAppStore } from '../../store'
@@ -98,6 +100,7 @@ import {
   isInProgress, CLOUD_PROFILE_KEY, CLOUD_REGION_KEY, CLOUD_SIZE_KEY, CLOUD_PROVISIONER_KEY,
   DEFAULT_REGION, launchGuardKey, isTerminal, isRemoving, isRegistered, needsSignin, type SizeTier, SIZE_TIERS, X86_TIERS,
   type SigninNotice,
+  LAUNCH_CARD_SHOWN_MS, launchCardDismissable, readDismissedLaunches, writeDismissedLaunches,
 } from './remoteCrewPanelModel'
 import {
   ProvisionerCard, SettingUpRow, LaunchProgressCard,
@@ -1026,6 +1029,34 @@ export function RemoteCrewPanel() {
   // status query has resolved.
   const activeJob = launchStatusQuery.data ?? inProgress[0] ?? null
 
+  // A finished launch's card (it needs nothing more) closes by its button, or by itself about
+  // 2 min after its last write, and stays closed after a reload: the ids are kept in this
+  // browser. A failed, cancelled or running launch, or one still waiting on its sign-in, keeps
+  // its card as before. Only while the `launch_card_close` feature preview is on: off,
+  // the card stays as on main.
+  const cardClose = usePreviewFlag(PREVIEW_LAUNCH_CARD_CLOSE)
+  const [dismissedLaunches, setDismissedLaunches] = useState<string[]>(readDismissedLaunches)
+  const dismissLaunch = useCallback((id: string) => {
+    setDismissedLaunches(prev => {
+      if (prev.includes(id)) return prev
+      const next = [...prev, id]
+      writeDismissedLaunches(next)
+      return next
+    })
+  }, [])
+  const cardJob =
+    cardClose && activeJob && launchCardDismissable(activeJob) && dismissedLaunches.includes(activeJob.id)
+      ? null
+      : activeJob
+  const cardTimerId = cardClose && cardJob && launchCardDismissable(cardJob) ? cardJob.id : null
+  const cardDoneAt = cardJob?.updated_at ?? 0
+  useEffect(() => {
+    if (!cardTimerId) return
+    const left = cardDoneAt * 1000 + LAUNCH_CARD_SHOWN_MS - Date.now()
+    const t = setTimeout(() => dismissLaunch(cardTimerId), Math.max(0, left))
+    return () => clearTimeout(t)
+  }, [cardTimerId, cardDoneAt, dismissLaunch])
+
   // What the built-in Launch sends. It names the lane that is on screen: the
   // built-in form draws EVERY `aws_ec2`-kind row, and an edition may register a
   // second one behind a different engine; omitting the id would let the server
@@ -1335,16 +1366,17 @@ export function RemoteCrewPanel() {
             askAgent
           />
         )}
-        {activeJob && (
+        {cardJob && (
           <LaunchProgressCard
-            job={activeJob}
-            cancelling={cancelMutation.isPending && cancelMutation.variables === activeJob.id}
+            job={cardJob}
+            onDismiss={cardClose ? dismissLaunch : undefined}
+            cancelling={cancelMutation.isPending && cancelMutation.variables === cardJob.id}
             onCancel={id => cancelMutation.mutate(id)}
             onRestartSignin={id => signinRestartMutation.mutate(id)}
             restartingSignin={signinRestartMutation.isPending}
             onFetchSignin={id => signinMutation.mutate(id)}
             fetchingSignin={signinMutation.isPending}
-            signinNotice={signinNotice && signinNotice.jobId === activeJob.id ? signinNotice : null}
+            signinNotice={signinNotice && signinNotice.jobId === cardJob.id ? signinNotice : null}
             onSkipSignin={id => signinSkipMutation.mutate(id)}
             skippingSignin={signinSkipMutation.isPending}
           />

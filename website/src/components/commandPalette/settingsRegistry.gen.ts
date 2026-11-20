@@ -2442,6 +2442,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.close-finished-remote-crew-setup-cards",
+    "label": "Close finished Remote Crew setup cards",
+    "labelKey": "pages.developer.featurePreviewsTab.launch_card_close",
+    "description": "A finished setup card gets a close button and goes away by itself. The crew stays in My Crews.",
+    "hint": "When a new Remote Crew finishes setting up, its card under Settings > Remote Crew gets a close button. It also closes by itself 2 minutes after it finished, and stays closed after a reload. The crew itself stays in My Crews.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.connected-computers",
     "label": "Connected computers",
     "labelKey": "connectedComputers.preview.label",
@@ -2666,6 +2679,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Shared Crew",
     "labelKey": "sharedCrew.preview_title",
     "description": "People tab, invites and shared sessions",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
+    "id": "developer.use-your-company-s-sign-in",
+    "label": "Use your company's sign-in",
+    "labelKey": "pages.developer.featurePreviewsTab.crew_client",
+    "description": "Signs in through your company's setup when one is installed. Your own sign-in is not changed.",
+    "hint": "Some companies install Kiro Crew with their own sign-in setup for one IAM Identity Center portal, and can start the agent with a credential this computer provides. Turn this on to use that setup. Your own sign-in is not changed, and with no company setup installed, nothing happens.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
