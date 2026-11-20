@@ -394,8 +394,9 @@ data pieces of at most 32 KiB, a 1 MiB credit window per channel and direction,
 channel per chat, counted by session key, so one chat's servers never use up
 another chat's room on the same computer; and `MAX_CONNECTION_CHANNELS = 4 *
 MAX_CHANNELS` per connection across its chats, a memory bound since each
-channel may hold up to its 1 MiB window unread). The native dialog offers at most `MAX_EXPOSED_MCP`
-servers too; its cross-language contract test pins that equality. The gateway names only a channel kind
+channel may hold up to its 1 MiB window unread). `protocol.decode`
+refuses a `ready` that exposes more than `MAX_EXPOSED_MCP` servers, and
+`test_connected_computers_broker.py` pins `MAX_CHANNELS == MAX_EXPOSED_MCP + 1`. The gateway names only a channel kind
 (`workspace` or `mcp:<exposed name>`), never a path, argv or environment, and
 any unknown op or field is refused. Unlike `wire`, there is no resend and no
 resume: a channel lives on exactly one connection generation
@@ -439,28 +440,20 @@ failing the connection and every other chat's channels with it.
 on the wire, so a new channel's `open` never goes ahead of it. Since the
 computer answers an `open` with `opened` or `refused` first, a `data`, `eof`,
 `credit` or `closed` frame for a channel still opening belongs to an earlier
-holder of the number and is dropped, never applied to the newer channel. On the computer, the
-connector handles frames in order, so a `close` always follows its `open`. A
-tool server is stopped (`connector._LocalChannel.stop`) by ending its stdin,
-then `platform_compat.terminate_and_reap`: SIGTERM to its process group,
-`STOP_GRACE_SECS` (3 s) for the group to empty, then SIGKILL, signalled only
-while the leader is unreaped; Windows and an already-exited child get the
-platform tree kill. Under the Linux plan the tool server's bubblewrap has its
-own pid namespace and `--die-with-parent`, so nothing in it outlives it.
-Scratch creation, the plan's `wrap` (its file probes and the seccomp pipe
-write) and scratch removal after a stop or a
-failed confined start all run in worker threads (`confinement.run_owned`,
-`confinement.wrap_off_loop`), as does the self-test probe's `wrap` and the
-controller's plan lookup, so slow or stalled storage never blocks the loop that
-enforces revocation and bounded shutdown. A wrap or scratch that a worker
-finishes after its caller was cancelled is released there: the `Confined` fds
-closed, the folder removed.
-`workspace_tools` starts each command in a session of its own, which the group
-stop does not reach. It runs unchanged from every other remote workspace: its
+holder of the number and is dropped, never applied to the newer channel.
+
+**Scope of this repository.** `src/kiro_crew/connected_computers/` is the
+remote gateway half only. The computer half (the connector, the local
+controller that owns consent, the root and the credential, the enrollment
+command, and the confinement of the tool servers it starts) is not in this
+repository. Paragraphs below that describe the computer state what the gateway
+expects of it; they name no module here. The gateway expects the computer to
+answer every `open` with `opened` or `refused` before any other frame for that
+channel, and to stop the tool server when its channel closes.
+`remote_session/workspace_tools` starts each command in a session of its own
+(`start_new_session`). It runs unchanged from every other remote workspace: its
 SIGTERM retirement unwinds a running command (`_unwind`, coreutils `timeout`
-signalling the command's group), and whatever is left in the sandbox ends with
-the tool server's own PID namespace. Pinned by
-`test_connected_computers_broker.py`.
+signalling the command's group).
 
 A connected-computer workspace attachment that fails or is cancelled closes all
 workspace and local-MCP relays opened by that attempt before re-raising. This
@@ -483,13 +476,12 @@ nothing: it only says which enrollment's peer key the gateway proves, so a
 computer whose record was revoked or removed still gets an authenticated answer.
 `Authorization` is refused 400 `credential_too_early`. An unknown device, a
 generation newer than the record's, or (without the header) an inactive record
-is refused 401 before upgrade; the connector only retries that with back-off,
-since a relay can forge it. With the preview off the path is not served at all
-(see Flag-off parity below): the dashboard gate refuses the connector 403, which it
-retries the same way; with the preview on but Session Environments unreachable the
+is refused 401 before upgrade; a connector must treat that only as a failed
+attempt, since a relay can forge it. With the preview off the path is not served at all
+(see Flag-off parity below): the dashboard gate refuses the connector 403; with the preview on but Session Environments unreachable the
 socket answers 503 (`protocol.REMOTE_OFF_STATUS`). The gateway's `hello` adds its fresh nonce and
 `gateway_proof` over both nonces and both ids. The connector checks it in
-constant time before sending anything.
+constant time before it sends anything.
 
 `auth` carries only the unsigned credential payload and an HMAC-SHA256 proof
 keyed by the complete credential, over a client-proof domain label, both ids and
@@ -501,8 +493,7 @@ match the hello's enrollment. The reconstructed token stays inside the gateway
 for periodic rechecks, never in a response or log.
 
 Revocation lives on the device record, written when it happens: Disconnect
-(`DeviceRegistry.revoke`, also run by a local Off's or Stop sharing's queued
-`forget`) marks the record `revoked` and bumps `cgen`; Remove marks it
+(`DeviceRegistry.revoke`) marks the record `revoked` and bumps `cgen`; Remove marks it
 `removed`. The dashboard's revocation generation and logged-out nonce list are
 not consulted for a connector credential, and every dashboard sink refuses one
 (`token_auth_tokens.validate_token` refuses `aud` = `CONNECTOR_AUDIENCE`, so the
@@ -524,8 +515,8 @@ Disconnect and Remove from the dashboard (`remote_routes.end_device`) write the
 record and call `broker.disconnect` inside the same fence. So an end made
 between `auth` and `ready` refuses the admission, and one made later finds the
 attached connection and ends it; the `admitted` send is bounded (5 s) so a
-stalled relay cannot hold a Disconnect. A `revoke`/`remove` from the CLI runs
-in another process and is caught by the 15 s re-check. The record
+stalled relay cannot hold a Disconnect. A record written by another process is
+caught by the 15 s re-check (`ws_route.RECHECK_SECS`). The record
 is checked before expiry, so an expired credential of a revoked or removed
 computer is refused `revoked` / `removed`, never `expired`. While a socket is
 open, `connector_token.verify_standing` re-checks the record every 15 s (expiry is
@@ -542,42 +533,27 @@ still set, as diagnostics only.
 
 Close codes, close reasons, upgrade statuses (401, 403, 503) and unwrapped
 frames are not authenticated: a relay on the forwarded port can forge every one
-of them, so the connector reads none of them (`Connector.admitted` is set only
-by the authenticated `admitted`). Only an authenticated `refusal` raises
-`connector.AuthenticatedRefusal`. Sharing renews automatically for as long as it
-is on; the controller's model (`controller.py`):
+of them, so the connector must read none of them and treat only the
+authenticated `admitted` as admission and only an authenticated `refusal` as a
+refusal. A `refusal` code in `protocol.TERMINAL_REFUSALS` (`revoked`,
+`removed`, `superseded`, `unknown_device`, `wrong_device`, `wrong_owner`) is an
+explicit end of the grant; every other failure (no admission, a MAC, sequence
+or schema failure, lost liveness, any close or upgrade status, any other
+refusal code) is a failed attempt the computer may retry. The final gateway
+admission check uses only its live config snapshot, without yielding or falling
+back to disk, so it is atomic with attachment.
 
-- Before each dial the credential is renewed over SSH when it has under
-  `RENEW_BEFORE_SECS` (1 h) left by the local clock, already expired included
-  (`LocalController._renewal_due`), and also after the gateway's authenticated
-  `expired`. There is no allowance or once-only rule.
-- An authenticated `refusal` in `protocol.TERMINAL_REFUSALS` (`revoked`,
-  `removed`, `superseded`, `unknown_device`, `wrong_device`, `wrong_owner`) ends
-  the grant (below); so does the same code in the remote's SSH answer to a
-  renewal, or an answer naming another gateway or device.
-- Everything else is a failed attempt: a run without admission, a MAC, sequence
-  or schema failure (`Connector.protocol_failed`), lost liveness, any close, any
-  upgrade status, any other refusal code, SSH not reaching the remote, and a
-  local read of the grant or the switch that failed (a `VaultDocError` is
-  retried in the same grant task, never restarting it). Back-off
-  doubles from 5 s to its 300 s cap, with the reason in the grant's state, and
-  resets only after an authenticated admission without a protocol failure.
-- Switch reads that may load config files run through `asyncio.to_thread`: a
-  stalled read must not hold the liveness watchdog, a channel stop or a connector
-  stop. The final gateway admission check uses only its live config snapshot,
-  without yielding or falling back to disk, so it is atomic with attachment.
-
-Renewal (`enroll.renew`) sends the credential it replaces on the SSH command's
-stdin; the remote (`connected-computer enroll --stdin`) runs
-`connector_token.verify_for_renewal`, which checks the signature, audience,
-gateway, device record (active), fingerprint, `cgen` and owner (the SSH user)
-and skips only expiry. `DeviceRegistry.enroll(renew_cgen=)` requires the record
-still to carry that `cgen` in the same locked write, and keeps it: a renewal
-does not move `cgen`, so a renewal whose answer was lost can be repeated with
-the same credential. A refusal answers a `code` (`EnrollmentFailed.code`). So a
-renewal is accepted iff the record is active at the credential's generation,
-whether the credential expired or not, and never after a Disconnect, a Remove or
-a local Off's forget, connected, offline or expired.
+Renewal is checked by `connector_token.verify_for_renewal`, which checks the
+signature, audience, gateway, device record (active), fingerprint, `cgen` and
+owner, and skips only expiry. `DeviceRegistry.enroll(renew_cgen=)` requires the
+record still to carry that `cgen` in the same locked write, and keeps it: a
+renewal does not move `cgen`, so a renewal whose answer was lost can be repeated
+with the same credential. A refused enrollment raises `devices.EnrollmentRefused`,
+whose `code` is `revoked`, `removed` or `superseded` for an explicit end and
+`refused` otherwise. So a renewal is accepted iff the record is active at the
+credential's generation, whether the credential expired or not, and never after
+a Disconnect or a Remove. No command in this repository calls the renewal path
+yet; the computer half that sends it is not here.
 
 `authenticated.SessionFrames` derives a session key with HMAC-SHA256 under the
 peer key over a session domain label and canonical JSON of both identities and
@@ -603,61 +579,19 @@ frame: it never sends and never takes a send lock, so a relay that stops reading
 bounded by the deadline; a send that fails or overruns drops the connection
 too. The WebSocket's own pings and pongs never count, so a relay that drops the
 tail of the traffic (the last data, `close`, `stop` or `refusal`) while keeping
-the transport alive cannot hold the connection open. The connector's deadline
-runs from `ready`, so a missing `admitted` ends it too. On the computer each
-frame's work (`Connector._guarded`: an `open` preparing a confined process, a
-`close` stopping one, the per-`data` switch check) is raced against the
-deadline; when it passes first the work is cancelled without being awaited, the
-run returns and `stop_all` stops every running channel, including one whose
-own stop was cancelled midway (`Connector._stopping`). An `open` checks again
-before it spawns and after, and starts no channel once the run is ending. A lost
-deadline is an interrupted connection, never a refusal: the controller redials
-with back-off; on the gateway the computer is detached and its channels end as
-interrupted. The clock and the heartbeat wait are injected
-(`Connector(clock=, sleep=)`, `ws_route._new_liveness`), so tests move time
-without sleeping.
+the transport alive cannot hold the connection open. A lost deadline is an
+interrupted connection, never a refusal: on the gateway the computer is detached
+and its channels end as interrupted. The heartbeat wait is injected
+(`ws_route._new_liveness`), so tests move time without sleeping.
 
-Compatibility: the local connector shipped in the desktop app and standalone
-local gateway must be updated with the remote gateway. The preview's bearer
-`auth` and unwrapped frames are refused, with no downgrade path; stored grants
-and enrollment payloads are unchanged. No third-party connector is supported.
-A rollback must roll back both ends together and restores the bearer-relay risk.
+Compatibility: the preview's bearer `auth` and unwrapped frames are refused,
+with no downgrade path. No third-party connector is supported.
 
-Every connector child runs under an OS allow-list (`confinement.py`), with two
-policies kept apart. **Network access**: IP networking (out, in and bind) is the
-user's own shell's; no network namespace is added. **Credential protection**:
-only the root, a private scratch (also `HOME`) and the named runtime paths are
-visible; the environment is built from nothing; and no local IPC endpoint of
-the user's session is reachable. Linux (bubblewrap, user/pid/ipc/uts
-namespaces) shares the user's network namespace and so its ABSTRACT unix
-sockets (an X11 display, a session bus), which no mount hides; the plan hands
-bubblewrap a seccomp program (`seccomp.py`, on `--seccomp FD` through an
-inherited pipe) that answers `EPERM` to `socket(AF_UNIX, ...)`, to the io_uring
-calls, to `keyctl`/`add_key`/`request_key` (bubblewrap gives the child no session
-keyring of its own, so it would inherit the user's, which can hold Kerberos
-tickets; `seccomp.DENIED_CALLS`) and to the x32 number space, and kills any other
-architecture.
-`socketpair` stays allowed. A filesystem unix socket inside the root is refused
-too, since seccomp cannot read the address. A processor with no table
-(`seccomp.TABLES`: x86_64, aarch64) has no plan. Sharing is Linux-only for now:
-macOS and Windows have no plan and refuse with that reason
-(`confinement.plan_for_this_machine`).
-
-`self_test` runs once per grant per controller, before its first connector
-start, and refuses the computer unless a fixed probe, run once unconfined (the control) and once confined, answers as a
-fence does against witnesses created for that check: a file, a folder and a
-unix socket outside the root (an abstract one), a symlink in the root pointing
-out, a loopback TCP listener, and the session keyring (a read-only `keyctl(KEYCTL_GET_KEYRING_ID)`, number from `confinement.keyctl_number`).
-The control must reach every witness, except the keyring, which a host whose own
-seccomp refuses `keyctl` (a container's) cannot reach and so has none to protect;
-the confined run must read and write the root, write a file in its own scratch
-through `TMPDIR` (`scratch_write`), reach the TCP listener, and reach no other
-witness (`judge_self_test`). The reason names the probe that failed. The
-self-test goes through the same `wrap` as every connector child. A self-test
-cancelled midway (a revoke, a shutdown) leaves nothing behind: the
-witnesses are prepared through `run_owned`, so ones a worker finishes after the
-cancel are released, and a probe still running is killed and reaped before the
-witnesses go. Pinned by `test_connected_computers_confinement.py`.
+Confinement of the tool servers on the computer (what the root, scratch,
+environment and local IPC a connector child may reach) and the self-test that
+proves it are the computer half's job and are not in this repository. The
+gateway cannot observe them: it only names a channel kind and never sends a
+path, argv or environment.
 
 #### Connected computers behaviors
 
@@ -682,10 +616,10 @@ per-connection channel bounds and bounded stop I/O),
 |---|---|
 | B03 work runs only on the chat's computer | `coder.session_launch.prepare_for_session` sends a `connected_computer` choice to `provider.prepare_connected_session` before any profile or config is read; `ConnectedComputerLaunch.dial` opens channels on that one device id; `start_worker` takes a channel kind only (`workspace`, `mcp:<name>`), never an argv or path; built-in file and shell tools are replaced by `@workspace` (`_remote_workspace_agents`); the agent loop and the gateway's own servers stay on the gateway |
 | B04 declined approval, no effect | `may_skip_gate` never keeps `@workspace` or `@connected-computer-*` (governance.md); a declined call is never written to the link; recording a worker starts nothing on the computer |
-| B05 out of scope | the root is resolved and refused at consent (`root_policy`); the tool server resolves every path through symlinks and refuses one outside the root (`remote_session/workspace_tools.Workspace.resolve`: reads, writes and `cwd`); every child, the workspace tools and each exposed MCP server, is spawned through the plan on the granted root (`Connector._open`), whose sandbox makes only the root and a scratch folder writable and keeps descendants inside it (bwrap `--unshare-pid --die-with-parent --new-session`) |
+| B05 out of scope | the root is chosen at consent on the computer; the tool server resolves every path through symlinks and refuses one outside the root (`remote_session/workspace_tools.Workspace.resolve`: reads, writes and `cwd`); the gateway names only a channel kind, never a path, argv or environment (`protocol.kind_of`), so where each child runs and what it may reach is the computer half's confinement, outside this repository |
 | B08 loss | a lost or ended link closes the bridge and stops the tool server, refuses later writes and never redials (`ChannelLink`); nothing is retried, resent or fabricated. The chat stays bound, so a start on an offline computer is refused, never moved. A runtime's close and end-watcher end only the relays it attached (`ConnectedComputerLaunch.own_relays`, captured at attach and at registration, closed by `close_relays`), so a runtime that dies after a respawn attached new relays to the same launch never closes the respawn's |
 | Files, Git, health and terminal panels | the dashboard has no channel of its own to the computer: `session_browse._resolve` refuses a row recorded `connected_computer` with `ConnectedComputerOnly` before any config or Coder lookup, answered 409 `connected_computer` (the terminal parks as on the wrong machine), and `RemoteFilesPanel` shows a neutral notice for such a placement instead of browsing |
-| B14 exposed MCP | mcp.md § Servers a connected computer exposes: ticked stdio servers only, the agent's own grants decide, every call meets the gate; a tool turned off in the computer's own MCP config (`disabledTools`) is snapshotted into the grant and kept off by the connector on the computer (`mcp_filter.ToolFilter`: the call gets a tool error and never reaches the server, the tool is trimmed from `tools/list`; an entry matches exactly or, with `*`/`?`, as a glob, as kiro-cli reads it, mcp.md), so the server is shared with its other tools rather than refused. Each start re-reads the local MCP config (`local_mcp.live_limits`), which only narrows: a tool turned off since joins the list, and a server removed, turned off or no longer exposable does not start |
+| B14 exposed MCP | mcp.md § Servers a connected computer exposes: ticked stdio servers only, the agent's own grants decide, every call meets the gate; a tool turned off in the computer's own MCP config (`disabledTools`) stays off: keeping it off is the connector's job on the computer (outside this repository), so the server is shared with its other tools rather than refused. The gateway accepts at most `MAX_EXPOSED_MCP` exposed names in `ready` (`protocol.decode`) |
 | Flag off | config.md § Connected computers: enrollment, connector access and new computer choices remain unavailable; a chat already placed on a connected computer runs on this server when Session Environments or the preview is off. The picker offers no computer, so a crafted choice is an unknown profile; narrowing (revoke, remove, Off) still works |
 
 Old providers are unchanged except where named: Coder and VM sessions send the same
@@ -695,8 +629,8 @@ person's own MCP server whose name starts `connected-computer-` loses auto-appro
 (mcp.md), and with it off that server keeps the answer it had before. In the chat's trust
 mode a connected computer's tools run without asking, as every tool does in that mode; the
 sensitive-path and denied-command floors still judge `@workspace` calls as the built-ins
-they replace (governance.md § Path matcher). Sharing is Linux-only for now: native
-confinement is authored for Linux; macOS and Windows refuse with a plain reason (B06).
+they replace (governance.md § Path matcher). Which operating systems can share is decided
+by the computer half, outside this repository (B06).
 
 With Session Environments or the connected-computers preview off, a chat placed
 on a connected computer runs on this server as before. The developer-flag early
