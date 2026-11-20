@@ -16830,7 +16830,7 @@
       "patrol_tasks_still_open_one": "[{{count}} ţàşķ şţìĺĺ øþèñ ··············]",
       "patrol_tasks_still_open_other": "[{{count}} ţàşķş şţìĺĺ øþèñ ···············]",
       "patrol_stopped_manual": "[Ýøù þàùşèð ìţ ············]",
-      "patrol_stopped_runtime": "[Ĥìţ ìţş {{limit}} ţìɱè ĺìɱìţ ·················]",
+      "patrol_stopped_runtime": "[Ĥìţ ìţş ţìɱè ĺìɱìţ øƒ {{limit}} ···············]",
       "patrol_stopped_cycles": "[Ĥìţ ìţş çĥèçķ ĺìɱìţ ·················]",
       "patrol_stopped_other": "[Şţøþþèð ···········]",
       "patrol_pause": "[Þàùşè ········]",
