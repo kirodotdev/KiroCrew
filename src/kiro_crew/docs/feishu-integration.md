@@ -247,7 +247,9 @@ Known gaps, all follow-up work rather than defects:
   button in **Settings → Messaging Channels → Feishu** downloads the pinned,
   hash-checked wheels into `~/.kiro/crew/extras/feishu/`, outside the app. If
   you set up a package mirror for pip (`PIP_INDEX_URL` or pip's `index-url`),
-  it downloads from there, and tries pypi.org once if the mirror fails. It
+  it downloads from there, and tries pypi.org once if the mirror fails. When
+  an app update needs a newer SDK, an enabled channel downloads it again by
+  itself at the next start; otherwise the **Install** button comes back. It
   works only for the dashboard owner on the gateway's own machine, never from a
   remote session or an app token. An enabled channel with both credentials
   saved also gets the SDK installed in the background when the app starts. A
