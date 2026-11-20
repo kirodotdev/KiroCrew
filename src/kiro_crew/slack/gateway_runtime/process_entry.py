@@ -737,6 +737,16 @@ async def run_gateway(
                 daemon=True,
             ).start()
 
+    # ── Installed apps (kirocrew.app.present, once per app per UTC day) ──
+    # A background task, never a request path: the first pass waits ten minutes,
+    # then the task re-checks hourly and just after each UTC midnight. The day
+    # it last recorded is stamped next to the beacon's, so restarts the same day
+    # record once. Skipped in test_mode like the beacon.
+    if not test_mode:
+        from kiro_crew.metrics import app_present
+
+        app_present.start()
+
     # Off-loop: resolving a secret:// channel reference reads and decrypts the vault.
     credentials = await asyncio.to_thread(cfg.load_credentials)
     orchestrator = GatewayOrchestrator(
