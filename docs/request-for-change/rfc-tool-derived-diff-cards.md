@@ -3,10 +3,10 @@ title: Tool-Derived Diff Cards — structured diffs as the primary file-change d
 status: implemented
 author: zezhexu
 created: 2026-08-21
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr:
-implementation-prs: ["#5012"]
+implementation-prs: [5012]
 tracking-issues: []
 supersedes: []
 superseded-by: []

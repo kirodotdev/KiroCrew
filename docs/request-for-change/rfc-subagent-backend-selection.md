@@ -3,8 +3,8 @@ title: Sub-agent backend selection — an orchestrator picks the harness a child
 status: draft
 author: billygerhard
 created: 2026-10-09
-last-audited: 2026-10-09
-audited-at: 33b67aced2
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 18486
 implementation-prs: [18150]
 tracking-issues: [13892]
