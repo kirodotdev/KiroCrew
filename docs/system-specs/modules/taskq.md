@@ -139,8 +139,9 @@ CREATE TABLE meta (key PRIMARY KEY, value);   -- schema_version, incarnation
 ```
 
 `task_events` is append-only. Core store kinds include `accepted`, `claimed`,
-`transition`, `deferred`, `stale_result`, `rejected_transition`, `deliver`,
-`imported`, `awaiting_adapter`, `wake`, `wait_updated`, and `child_settled`;
+`transition`, `deferred`, `stale_result`, `rejected_transition`, `reported`,
+`imported`, `awaiting_adapter`, `wake`, `wait_updated`, `child_settled` and
+`children_settled`;
 wait, dependency, input-answer, and stop-recovery adapters append the additional
 named event kinds described in their sections below. `apply_schema`
 runs the one `CREATE ... IF NOT EXISTS` set above on every open (idempotent; a
