@@ -1240,9 +1240,20 @@ def run_launch(
             extra["on_network_fallback"] = show_fallback
         if _accepts_keyword(engine.provision, "on_progress"):
             extra["on_progress"] = show_progress
-        job.instance_id = engine.provision(
-            tag=job.tag, size_key=job.size_key, profile=job.profile, region=job.region, **extra
-        )
+        if _accepts_keyword(engine.provision, "cancelled"):
+            # The engine may retry a refused launch in another zone; a cancel
+            # stops that retry instead of waiting out every zone.
+            extra["cancelled"] = cancel.is_set
+        try:
+            job.instance_id = engine.provision(
+                tag=job.tag, size_key=job.size_key, profile=job.profile, region=job.region, **extra
+            )
+        except Exception:
+            # A provision that failed after the owner cancelled is a cancel: the
+            # cancel path rolls the stack back and records CANCELLED, not FAILED.
+            if cancel.is_set():
+                raise LaunchCancelled() from None
+            raise
         s.detail = job.instance_id
         s.state = STEP_DONE
         store.save(job)
