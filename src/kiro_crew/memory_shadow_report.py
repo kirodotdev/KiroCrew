@@ -6,8 +6,8 @@ Read-only. It reads only what the stages already record and writes nothing:
   injection receipts under ``<data home>/usage/injections``: the daily counters
   and the policy window in ``stage-log.json``, and the sampled stage fields on the
   ``YYYY-MM-DD.jsonl`` lines;
-* the write stages (kind routing, origin gate, tier policy, private dedup,
-  Dreaming) from the store's ``memory_meta`` counter rows (``<prefix>counts:<day>``)
+* the write stages (kind routing, origin gate, tier policy, fact origin gate,
+  private dedup, Dreaming) from the store's ``memory_meta`` counter rows (``<prefix>counts:<day>``)
   and window keys (``rules_changed_at``, ``rules_version``), through a
   ``mode=ro`` connection.
 
@@ -112,6 +112,7 @@ STAGES: Final[tuple[Stage, ...]] = (
         "upper bound: shadow asks for no quote, so every standing rule counts as demoted",
         ("consolidation",),
     ),
+    Stage("fact_origin_gate", "memory_fact_origin_log:", _modes.fact_origin_gate_mode_from),
     Stage("member_lesson_dedup", "memory_dedup_log:", _modes.member_lesson_dedup_mode_from),
     Stage("dream", "memory_dream:", _modes.dream_mode_from),
 )
@@ -541,6 +542,8 @@ def _base_and_changed(stage: Stage, total: dict[str, int]) -> tuple[int, int | N
         return sum(total.get(k, 0) for k in ("fact", "event", "state")), total.get("state", 0)
     if stage.name in ("lesson_origin_gate", "lesson_tier_policy"):
         return total.get("lessons", 0), total.get("demoted", 0)
+    if stage.name == "fact_origin_gate":
+        return total.get("facts", 0), total.get("gated", 0)
     if stage.name == "member_lesson_dedup":
         return total.get("lessons", 0) + total.get("checked", 0), sum(
             n for k, n in total.items() if k.endswith("_folds")

@@ -1,5 +1,8 @@
 # Connector capability manifest
 
+Status: planned. The schema below has no validator yet, so its field names are not
+in the code.
+
 The field-level schema for a connector capability manifest entry, and the
 work-stream DAG that sequences the connector campaign's implementation
 rounds. This spec is **documentation only**: no validator, no runner, and no

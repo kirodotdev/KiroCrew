@@ -247,6 +247,9 @@ _REVIEWED_EDITABLE = frozenset(
         # Which tier a lesson from a turn no person sent lands in; an enum whose
         # opt-in values only tighten that, so it is not a reach or run boundary.
         "memory.lesson_origin_gate",
+        # Whether a pref.* / user.* fact from a turn no person sent is written; an
+        # enum whose opt-in values only hold writes back.
+        "memory.fact_origin_gate",
         # Which tier a lesson from consolidation is stored in, and the order the
         # session-start rule block lists rules in: memory previews, not a reach or
         # run boundary.

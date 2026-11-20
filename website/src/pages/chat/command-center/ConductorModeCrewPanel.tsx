@@ -350,8 +350,30 @@ export function discussionOf(item: WorkBoardItem): WorkDiscussion | null {
   return item.state === 'open' && d && typeof d === 'object' && typeof d.phase === 'string' && d.phase ? d : null
 }
 
-/** A thread link the board may draw: the server's own LINKABLE rule. */
-const THREAD_LINK = /^(?:https?:\/\/|\/(?:artifacts|chat|schedule|capabilities|settings)\b)/
+/** The talk is live: still talking or checking, and its host's turn runs it. A
+ *  discussing row is already open, not stale and its worker still there. */
+export function talkLive(item: WorkBoardItem, d: WorkDiscussion): boolean {
+  return (d.phase === 'talking' || d.phase === 'checking') && item.alive === 'running'
+}
+
+type TalkRound = { round: number; lines: [string, string][] }
+
+/** The rounds a report carried, oldest first, each with its non-empty lines. An
+ *  older report has none, and the panel then shows its latest lines instead. */
+function talkRounds(d: WorkDiscussion): TalkRound[] {
+  const raw = Array.isArray(d.rounds) ? d.rounds : []
+  return raw
+    .filter(r => r && typeof r === 'object' && Number.isFinite(Number(r.round)))
+    .map(r => ({
+      round: Number(r.round),
+      lines: (Array.isArray(r.lines) ? r.lines : [])
+        .filter(l => l && typeof l === 'object')
+        .map(l => [String(l.who || ''), String(l.text || '')] as [string, string])
+        .filter(([who, text]) => who || text),
+    }))
+    .filter(r => r.lines.length)
+    .sort((a, b) => a.round - b.round)
+}
 
 function minutesBetween(a: string | null | undefined, b: string | number | null | undefined): number {
   const ta = a ? Date.parse(a) : NaN
@@ -383,12 +405,17 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
   const talk = state === 'discussing' ? discussionOf(item) : null
   if (talk) {
     const mins = Number(talk.minutes) || 0
+    const live = talkLive(item, talk)
     const text = [
-      i18nT('components.crewMode.conductor_mode_ms_discussing'),
+      i18nT(talk.phase === 'done' ? 'components.crewMode.conductor_mode_ms_talk_done' : 'components.crewMode.conductor_mode_ms_discussing'),
       i18nT('components.crewMode.conductor_mode_ms_discussing_round', { round: Number(talk.round) || 0 }),
       ...(mins > 0 ? [fmtMinutes(mins)] : []),
     ].join(' · ')
-    sub = <span className={WRAP} title={text} data-testid="conductor-mode-discussing">{text}</span>
+    sub = <>
+      {/* Live only while its host's turn runs the talk: a done, idle or stale one shows no dot. */}
+      {live && <span role="img" aria-label={i18nT('components.crewMode.conductor_mode_ms_talk_live')} title={i18nT('components.crewMode.conductor_mode_ms_talk_live')} className="shrink-0 self-center inline-block w-2 h-2 rounded-full bg-[var(--aim)] motion-safe:animate-pulse" data-testid="conductor-mode-talk-live" />}
+      <span className={WRAP} title={text} data-testid="conductor-mode-discussing">{text}</span>
+    </>
   } else if (state === 'done') {
     const link = artifactEntries(item).find(([, v]) => /^https?:\/\//.test(v))
     sub = <>
@@ -473,9 +500,29 @@ function TalkSection({ label, rows }: { label: string; rows: (string | [string, 
   )
 }
 
+/** The talk round by round, in place: each round's one short line a participant. */
+function TalkRounds({ rounds }: { rounds: TalkRound[] }) {
+  return (
+    <div className="mt-1.5 first:mt-0" data-testid="conductor-mode-talk-rounds">
+      <div className="text-[10.5px] font-semibold text-muted">{i18nT('components.crewMode.conductor_mode_talk_rounds')}</div>
+      <ol className="text-text">
+        {rounds.map(r => (
+          <li key={r.round} className="mt-1 first:mt-0.5" data-testid="conductor-mode-talk-round">
+            <div className="text-[11px] font-medium text-muted">{i18nT('components.crewMode.conductor_mode_ms_discussing_round', { round: r.round })}</div>
+            <ul className="pl-2.5 border-l border-[color-mix(in_srgb,var(--muted)_35%,transparent)]">
+              {r.lines.map(([who, text], n) => <li key={n} className={WRAP}>{who && <b className="font-semibold">{who}</b>}{who && text ? ': ' : ''}{text}</li>)}
+            </ul>
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
+}
+
 /** The discussing row's counts and, behind a toggle, what the discussion holds:
- *  direction, agreed, disputed with each side, being checked, the latest lines and
- *  the thread link. A question for the person is the Needs your input card's, not this. */
+ *  direction, agreed, disputed with each side, being checked, and the talk round by
+ *  round (an older report's latest lines instead). It opens in place: no new page.
+ *  A question for the person is the Needs your input card's, not this. */
 function DiscussionDetail({ id, d }: { id: string; d: WorkDiscussion }) {
   const [open, setOpen] = useState(false)
   const list = <T,>(v: T[] | undefined): T[] => (Array.isArray(v) ? v : [])
@@ -483,7 +530,7 @@ function DiscussionDetail({ id, d }: { id: string; d: WorkDiscussion }) {
   const checking = list(d.checking).filter(x => typeof x === 'string')
   const disputed = list(d.disputed).filter(x => x && typeof x === 'object')
   const recent = list(d.recent).filter(x => x && typeof x === 'object')
-  const thread = typeof d.thread === 'string' && d.thread.length <= 2048 && THREAD_LINK.test(d.thread) ? d.thread : ''
+  const rounds = talkRounds(d)
   const panelId = `conductor-mode-talk-${id.replace(/[^A-Za-z0-9_-]/g, '_')}`
   return (
     <div className="text-[12px]" data-testid="conductor-mode-talk">
@@ -496,8 +543,9 @@ function DiscussionDetail({ id, d }: { id: string; d: WorkDiscussion }) {
         <TalkSection label={i18nT('components.crewMode.conductor_mode_talk_agreed')} rows={agreed} />
         <TalkSection label={i18nT('components.crewMode.conductor_mode_talk_disputed')} rows={disputed.map(x => [String(x.point || ''), String(x.sides || '')] as [string, string])} />
         <TalkSection label={i18nT('components.crewMode.conductor_mode_talk_checking')} rows={checking} />
-        <TalkSection label={i18nT('components.crewMode.conductor_mode_talk_recent')} rows={recent.map(x => [String(x.who || ''), String(x.text || '')] as [string, string])} />
-        {thread && <a className="mt-1.5 inline-block text-[11px] conductor-mode-accent hover:underline" href={thread} target="_blank" rel="noreferrer" title={thread} data-testid="conductor-mode-talk-thread">{i18nT('components.crewMode.conductor_mode_talk_thread')}</a>}
+        {rounds.length
+          ? <TalkRounds rounds={rounds} />
+          : <TalkSection label={i18nT('components.crewMode.conductor_mode_talk_recent')} rows={recent.map(x => [String(x.who || ''), String(x.text || '')] as [string, string])} />}
       </div>
     </div>
   )

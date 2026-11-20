@@ -139,13 +139,20 @@ _TMP_PER_TEST = bool(os.environ.get(_TMP_PER_TEST_ENV))
 #:   deliberately keeps under ``tempfile.gettempdir()`` as a persistent ring buffer
 #:   (pinned by ``test_computer_use_capture.py``). Long-lived BY DESIGN, so its presence
 #:   is the feature working, not a test leaking.
-#: * ``playwright-`` / ``.org.chromium.`` -- created by the browser and its driver, which
-#:   inherit the redirected ``TMPDIR`` like any other child. Third-party scratch this
-#:   suite does not own and cannot register cleanup for.
+#: * ``playwright-`` / ``playwright_<browser>dev_profile-`` / ``.org.chromium.`` -- created
+#:   by the browser and its driver, which inherit the redirected ``TMPDIR`` like any other
+#:   child. Third-party scratch this suite does not own and cannot register cleanup for.
+#:   The ``dev_profile-`` forms are the driver's per-launch browser profile, which the
+#:   driver removes when the browser exits and so stays behind when that child is killed
+#:   instead. Only the three exact profile names are allowed, so any other
+#:   ``playwright_`` entry is still reported.
 _TMP_RESIDUE_ALLOWED_PREFIXES: tuple[str, ...] = (
     "pytest-of-",
     "kirocrew-computer-shots",
     "playwright-",
+    "playwright_chromiumdev_profile-",
+    "playwright_firefoxdev_profile-",
+    "playwright_webkitdev_profile-",
     ".org.chromium.",
 )
 
