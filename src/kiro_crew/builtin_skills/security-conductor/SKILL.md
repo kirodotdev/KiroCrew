@@ -413,10 +413,11 @@ another tool's output.
 ## The patrol cycle
 
 Arm the patrol with `monitor_start` (interval ~120s), never `wait`. Pass BOTH
-bounds explicitly, `max_cycles` and `max_runtime_secs`: each has its own short
-default (24 cycles; 14400 s, four hours of wall clock), they expire
-independently, and a large `max_cycles` does not extend the runtime budget — the
-loop then deactivates and only the person is told. Size both to the round (for
+bounds explicitly, `max_cycles` and `max_runtime_secs`: left out, a gated loop
+has no cycle cap and an ungated one stops after 24 cycles, and the runtime
+falls back to the operator's `monitoring.max_runtime_secs` ceiling (7 days as
+shipped). They expire independently, and a large `max_cycles` does not extend
+the runtime budget — the loop then deactivates and only the person is told. Size both to the round (for
 example `max_cycles=720` and `max_runtime_secs=86400`) and, if a gate or a
 verifier outlasts them, raise either with `monitor_update` before it expires;
 `monitor_start` is create-only. Call `autonudge_stop` yourself when a stop

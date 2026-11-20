@@ -2,7 +2,8 @@
 # Kiro Crew Persistent Sessions Setup
 #
 # Installs kirocrew gateway as a systemd user service.
-# Requires the systemd user manager to be running (see README.md Phase 1).
+# Requires the systemd user manager to be running (see "Hosts without a working
+# systemd --user" in docs/guides/remote-and-mobile.md).
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -15,7 +16,8 @@ echo ""
 # ── Check: systemd user manager running? ──
 if ! systemctl --user status >/dev/null 2>&1; then
     echo "❌ Systemd user manager is not running."
-    echo "   Complete Phase 1 in README.md first (requires sudo, one-time)."
+    echo "   Enable it first: see \"Hosts without a working systemd --user\" in"
+    echo "   docs/guides/remote-and-mobile.md (requires sudo, one-time)."
     exit 1
 fi
 echo "✅ Systemd user manager running"
