@@ -8,7 +8,7 @@ audited-at: fc89562d69
 doc-pr: 20157
 implementation-prs: [20422, 21750, 22828, 22839, 23847, 24512, 24307, 25881, 26500, 26652, 26666, 26938, 27899, 30527, 33805, 37349, 38307]
 tracking-issues: [20156, 25306, 27820, 27946]
-supersedes: []
+supersedes: [rfc-crewmate-greeting.md]
 superseded-by: []
 ---
 
