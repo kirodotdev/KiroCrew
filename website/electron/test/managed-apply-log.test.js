@@ -64,6 +64,62 @@ test("a timeout kill is logged and reported as a timeout, never as exited 1", as
   assert.strictEqual(applied.message, "managed update command timed out after 30 minutes");
 });
 
+// On Windows the child is cmd.exe: killing it alone leaves the command it
+// started running and holding the pipes, so the timeout must end the tree.
+function asWindows(t) {
+  const desc = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { ...desc, value: "win32" });
+  t.after(() => Object.defineProperty(process, "platform", desc));
+}
+
+function fakeWindowsChild(pid) {
+  const child = new EventEmitter();
+  child.pid = pid;
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.killed = false;
+  child.kill = () => { child.killed = true; setImmediate(() => child.emit("close", 1, null)); };
+  return child;
+}
+
+test("on Windows a timeout ends the command's whole process tree with taskkill", async (t) => {
+  const origSpawn = cp.spawn;
+  const origExecFile = cp.execFile;
+  t.after(() => { cp.spawn = origSpawn; cp.execFile = origExecFile; });
+  asWindows(t);
+  const child = fakeWindowsChild(4245);
+  cp.spawn = () => child;
+  const calls = [];
+  cp.execFile = (file, args, opts, cb) => {
+    calls.push({ file, args });
+    // taskkill /T ends cmd.exe and the command under it; the pipes then close.
+    setImmediate(() => { child.emit("close", 1, null); cb(null, "", ""); });
+  };
+  const { log } = recordingLog();
+  const exec = execFor("pkgtool update", log);
+  const r = await exec.runManagedCommand("pkgtool update", { timeout: 1, label: "update command" });
+  assert.strictEqual(calls.length, 1);
+  assert.match(calls[0].file, /\\System32\\taskkill\.exe$/i);
+  assert.deepStrictEqual(calls[0].args, ["/T", "/F", "/PID", "4245"]);
+  assert.strictEqual(child.killed, false, "the tree kill replaces the single cmd.exe kill");
+  assert.deepStrictEqual({ timedOut: r.timedOut, failed: r.failed }, { timedOut: true, failed: true });
+});
+
+test("on Windows a taskkill that fails falls back to killing the child", async (t) => {
+  const origSpawn = cp.spawn;
+  const origExecFile = cp.execFile;
+  t.after(() => { cp.spawn = origSpawn; cp.execFile = origExecFile; });
+  asWindows(t);
+  const child = fakeWindowsChild(4246);
+  cp.spawn = () => child;
+  cp.execFile = (file, args, opts, cb) => setImmediate(() => cb(new Error("taskkill failed")));
+  const { log } = recordingLog();
+  const exec = execFor("pkgtool update", log);
+  const r = await exec.runManagedCommand("pkgtool update", { timeout: 1, label: "update command" });
+  assert.strictEqual(child.killed, true);
+  assert.strictEqual(r.timedOut, true);
+});
+
 test("a command that exits in time is not timed out while a helper still holds its pipes", async (t) => {
   const orig = cp.spawn;
   t.after(() => { cp.spawn = orig; });

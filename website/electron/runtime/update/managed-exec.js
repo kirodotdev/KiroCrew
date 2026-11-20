@@ -6,6 +6,8 @@
  * The marker already passed readExternallyManaged's provenance test before this
  * is built; what this owns is the ENVIRONMENT the commands run in.
  */
+const { windowsSystemToolPaths } = require("../../windows-port");
+
 function createManagedExec({ managed, managedPath, log }) {
   // Bound retained output so a chatty command cannot exhaust memory (we keep
   // DRAINING both streams either way), and cap how long an apply / check runs.
@@ -187,8 +189,29 @@ function createManagedExec({ managed, managedPath, log }) {
     // not when its pipes close: a background helper the command left behind
     // can hold the pipes open past the deadline after a clean exit, and that
     // run finished in time.
+    //
+    // On Windows the child is cmd.exe, and child.kill() ends cmd.exe alone:
+    // the command it started survives and keeps the pipes open, so `close`
+    // (and this promise) waits for that command to end by itself. taskkill /T
+    // follows the kernel's parent links from cmd.exe and ends the whole tree.
+    // The pid is still ours when the timer fires: the timer is cancelled on
+    // `exit`, and until then Node holds the process handle, so Windows cannot
+    // reuse the pid. taskkill is named by path under the same SystemRoot
+    // anchor as the shell, and a taskkill that cannot run falls back to the
+    // single kill.
+    const killOnTimeout = () => {
+      if (process.platform !== "win32" || !child.pid) { child.kill(); return; }
+      try {
+        const { taskkill } = windowsSystemToolPaths(process.env.SystemRoot || "C:\\Windows");
+        cp.execFile(taskkill, ["/T", "/F", "/PID", String(child.pid)], { windowsHide: true, timeout: 10000 }, (err) => {
+          if (err) child.kill();
+        });
+      } catch {
+        child.kill();
+      }
+    };
     if (timeout) {
-      timer = setTimeout(() => { timedOut = true; child.kill(); }, timeout);
+      timer = setTimeout(() => { timedOut = true; killOnTimeout(); }, timeout);
       child.on("exit", () => clearTimeout(timer));
     }
     if (child.stdout) child.stdout.on("data", onStdout);
