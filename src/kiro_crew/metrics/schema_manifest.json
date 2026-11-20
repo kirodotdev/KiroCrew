@@ -31,6 +31,41 @@
       }
     },
     {
+      "name": "kirocrew.app.session_started",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "session_started"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "app"
+          ]
+        },
+        "entity_version": {},
+        "kind": {
+          "values": [
+            "background",
+            "channel",
+            "chat",
+            "cron",
+            "heartbeat",
+            "other",
+            "subagent",
+            "task_runner",
+            "workflow_step"
+          ]
+        }
+      }
+    },
+    {
       "name": "kirocrew.app.task.completed",
       "kind": "counter",
       "unit": "1",

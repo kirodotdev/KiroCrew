@@ -13,6 +13,8 @@ counter                                        one increment per
 ``kirocrew.app.updated``                       registry install over an installed app
 ``kirocrew.app.uninstalled``                   uninstall the person asked for
                                                (``keep_data``)
+``kirocrew.app.session_started``               session start owned by an app
+                                               (``kind``: its ``session_kind``)
 ``kirocrew.channel.message.received``          inbound channel message, once
                                                admission has decided
 ``kirocrew.ui.control.clicked``                click on an agent-rendered control
@@ -60,6 +62,7 @@ SKILL_LAZY_LOAD_COUNT = "kirocrew.skill.lazy_load.count"
 APP_INSTALLED = "kirocrew.app.installed"
 APP_UPDATED = "kirocrew.app.updated"
 APP_UNINSTALLED = "kirocrew.app.uninstalled"
+APP_SESSION_STARTED = "kirocrew.app.session_started"
 CHANNEL_MESSAGE_RECEIVED = "kirocrew.channel.message.received"
 UI_CONTROL_CLICKED = "kirocrew.ui.control.clicked"
 TIPS_FEEDBACK = "kirocrew.tips.feedback"
@@ -375,6 +378,26 @@ def record_app_uninstalled(public_id: object, public_version: object, *, keep_da
             "app": public_id if isinstance(public_id, str) else OTHER,
             "entity_version": public_version if isinstance(public_version, str) else OTHER,
             "keep_data": _bool(keep_data),
+        },
+    )
+
+
+def record_app_session_started(app: object, kind: object) -> None:
+    """A session owned by *app* started; *kind* is its ``session_kind``.
+
+    Called by ``record_session_started`` right after it counts
+    ``kirocrew.session.started``, only when the provider's ``owning_app`` (set by
+    session allocation from the caller's slot app, never from transcript
+    metadata) is not empty, so this never counts more than ``session.started``.
+    """
+    from kiro_crew.metrics.usage_attrs import SESSION_KIND_VALUES
+
+    _emit(
+        APP_SESSION_STARTED,
+        {
+            "app": app_public_id(app),
+            "entity_version": app_public_version(app),
+            "kind": _closed(kind, SESSION_KIND_VALUES),
         },
     )
 
