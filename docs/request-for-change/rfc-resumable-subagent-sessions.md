@@ -3,8 +3,8 @@ title: Resumable Subagent Sessions
 status: partial
 author: zezhexu
 created: 2026-07-28
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 806
 implementation-prs: [1023, 1246]
 tracking-issues: [1113, 1114, 1115]
