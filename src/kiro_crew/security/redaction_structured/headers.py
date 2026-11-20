@@ -135,7 +135,9 @@ def _basic_placeholder(value: str) -> bool:
     return bool(colon) and is_placeholder(password)
 
 
-def _header(text: str, low: str, at: int, name: str, row: HeaderRow, final: bool) -> Hit | None:
+def _header(
+    text: str, low: str, at: int, name: str, row: HeaderRow, final: bool, walk: _Walk
+) -> Hit | None:
     i = _after_name(text, at + len(name))
     if i is None:
         return None
@@ -154,9 +156,15 @@ def _header(text: str, low: str, at: int, name: str, row: HeaderRow, final: bool
             raise _Open
         else:
             return None
-    end = _value(text, i, None, final)
-    if not _keep(text, i, end, row):
+    # ``=`` and ``-`` are token characters, so on ``x-api-key=x-api-key=…`` every anchor's
+    # value runs to the same far end: the shared finder and check read that run once.
+    end = walk.tokens(i)
+    if end == len(text) and not final:
+        raise _Open
+    if not _walk_keep(text, i, end, row, walk):
         return None
+    # A scheme row's value starts after a blank, which ends any earlier value, so these
+    # values never overlap and reading each one whole stays linear.
     if row.scheme == "basic" and _basic_placeholder(text[i:end]):
         return None
     if row.allow_values and text[i:end].rsplit(".", 1)[0] in row.allow_values:
@@ -224,58 +232,69 @@ class _WordNext:
         return best
 
 
-class _NonBlank:
-    """The first index at or after ``i`` whose character is not a blank (``str.find`` of a
-    non-blank). Queries come at rising positions, so the blanks between two of them are read
-    once in total, not once per anchor — the per-anchor ``_skip`` they replace was quadratic
-    on a line of ``name:`` + a long blank run repeated."""
+class _RunEnd:
+    """The first index at or after ``i`` whose character is not one of *chars* (``_skip``).
+    Queries come at rising positions, so the run between two of them is read once in total,
+    not once per anchor — the per-anchor ``_skip`` of blanks was quadratic on a line of
+    ``name:`` + a long blank run repeated, and the per-anchor token run of a header value on
+    ``x-api-key=`` repeated."""
 
-    __slots__ = ("_asked", "_found", "_text")
+    __slots__ = ("_asked", "_chars", "_found", "_text")
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, chars: str | frozenset[str]) -> None:
         self._text = text
+        self._chars = chars
         self._asked = -1
         self._found = -1
 
     def __call__(self, i: int) -> int:
         if not 0 <= self._asked <= i <= self._found:
             text = self._text
+            chars = self._chars
             n = len(text)
             j = i
-            while j < n and text[j] in _BLANKS:
+            while j < n and text[j] in chars:
                 j += 1
             self._asked, self._found = i, j
         return self._found
 
 
-class _CookieWalk:
-    """What one ``Cookie:`` scan shares between its anchors, so the scan stays linear.
+class _Walk:
+    """What one reader's scan (one row and name) shares between its anchors, so the scan
+    stays linear. The cookie, header and ``curl -u`` readers use it.
 
-    A walk from a pair start reads the same pairs whatever anchor reached it: the line
+    For a cookie, a walk from a pair start reads the same pairs whatever anchor reached it: the line
     end, the ``final`` flag and every step after are fixed by the position alone. Each
     pair start a walk reads is kept with how the walk ended (``True``: it raised
     :class:`_Open`). A later walk that reaches one stops there, or raises, as that walk
     did; the hits after it are already in the list.
 
     The finders (``breaks``, ``eqs``, ``semis``, ``stops``, ``masks``, ``words``,
-    ``nonblank``) and the per-line :class:`~.checks._ValueScan` answer every "read from this
-    anchor to a far point" question — the value, the cookie name, the blanks — from shared
+    ``nonblank``, ``tokens``, ``colons``, ``word_stops``) and the per-line
+    :class:`~.checks._ValueScan` answer every "read from this anchor to a far point"
+    question — the value, the cookie name, the blanks, the command words — from shared
     state, so no part of the reader is re-read once per anchor.
     """
 
     __slots__ = (
         "_cur_hi",
         "_cur_lo",
+        "_head_lo",
+        "_head_words",
         "_scan",
         "_spent",
         "breaks",
+        "colons",
         "eqs",
         "masks",
         "nonblank",
+        "quoted",
         "semis",
         "stops",
         "text",
+        "tokens",
         "walked",
+        "word_stops",
         "words",
     )
 
@@ -287,12 +306,18 @@ class _CookieWalk:
         self.stops = _Next(text, "".join(sorted(_COOKIE_VALUE_STOPS)))
         self.masks = _Next(text, MASK_CHARS)
         self.words = _WordNext(low, PLACEHOLDER_TRIGGER_WORDS)
-        self.nonblank = _NonBlank(text)
+        self.nonblank = _RunEnd(text, _BLANKS)
+        self.tokens = _RunEnd(text, _TOKEN)
+        self.colons = _Next(text, ":")
+        self.word_stops = _Next(text, "".join(sorted(_WORD_STOPS)))
+        self.quoted = {q: _Next(text, q + "\r\n") for q in _QUOTES}
         self.walked: dict[int, bool] = {}
         self._scan: _ValueScan | None = None
         self._spent = 0
         self._cur_lo = 0
         self._cur_hi = -1
+        self._head_lo = -1
+        self._head_words: list[tuple[int, int]] = []
 
     def _enter(self, pos: int) -> None:
         """Make the value's own line current. Lines are entered in rising order and never
@@ -301,7 +326,9 @@ class _CookieWalk:
         bounded below by the previous line's end, so each character is read at most once."""
         if not self._cur_lo <= pos < self._cur_hi:
             text = self.text
-            lower = self._cur_hi if self._cur_hi > 0 else 0
+            # The previous line's end bounds the backward search only when *pos* is past it,
+            # so a question out of line order still gets its own line start.
+            lower = self._cur_hi if 0 < self._cur_hi <= pos else 0
             self._cur_lo = max(text.rfind("\n", lower, pos), text.rfind("\r", lower, pos)) + 1
             self._cur_hi = self.breaks(pos)
             self._scan = None
@@ -366,9 +393,43 @@ class _CookieWalk:
             return is_placeholder(self.text[vs:ve])
         return self._line_scan().is_placeholder_at(vs - self._cur_lo, ve - self._cur_lo)
 
+    def runs_curl(self, at: int) -> bool:
+        """Whether one of the first three words of ``text[line_start:at]`` (``|`` read as a
+        blank) is ``curl`` or ends in ``/curl``, where ``line_start`` follows the last line
+        break before *at*.
 
-def _cookie_keep(text: str, start: int, end: int, row: HeaderRow, walk: _CookieWalk) -> bool:
-    """:func:`_keep` for a cookie value, with the placeholder check bounded per anchor."""
+        Those words are the line's own first three words, the last one cut at *at*: a blank
+        or ``|`` splits the head exactly where it splits the whole line. So the line's first
+        three word spans are found once per line (one ``split``), and each anchor reads at
+        most three spans instead of slicing and splitting its whole head."""
+        self._enter(at)
+        lo = self._cur_lo
+        if self._head_lo != lo:
+            line = self.text[lo : self._cur_hi].replace("|", " ")
+            spans: list[tuple[int, int]] = []
+            p = 0
+            for word in line.split(None, 3)[:3]:
+                # A word holds no blank and only blanks come before it, so its first match
+                # at or after the previous word's end is where it starts.
+                p = line.find(word, p)
+                spans.append((lo + p, lo + p + len(word)))
+                p += len(word)
+            self._head_lo, self._head_words = lo, spans
+        text = self.text
+        for ws, we in self._head_words:
+            if ws >= at:
+                break
+            e = min(we, at)
+            if (e - ws == 4 and text.startswith("curl", ws)) or (
+                e - ws >= 5 and text.startswith("/curl", e - 5)
+            ):
+                return True
+        return False
+
+
+def _walk_keep(text: str, start: int, end: int, row: HeaderRow, walk: _Walk) -> bool:
+    """:func:`_keep` for a value with no line break in it (a cookie, header or ``curl -u``
+    value), with the placeholder check bounded per anchor."""
     if any(text.startswith(tag, start) for tag in PLAN_TAGS):
         return False
     if end - start < row.min_length:
@@ -382,9 +443,7 @@ def _cookie_keep(text: str, start: int, end: int, row: HeaderRow, walk: _CookieW
     return not cookie_value_is_placeholder(text, start, end, has_mask, has_trigger, walk.classify)
 
 
-def _cookies(
-    text: str, at: int, name: str, row: HeaderRow, final: bool, walk: _CookieWalk
-) -> list[Hit]:
+def _cookies(text: str, at: int, name: str, row: HeaderRow, final: bool, walk: _Walk) -> list[Hit]:
     i = walk.after_name(at + len(name))
     if i is None:
         return []
@@ -408,7 +467,7 @@ def _cookies(
             ve = walk.stops(vs)
             if ve == n and not (final or line_end < n):
                 raise _Open
-            if walk.session(i, eq) and _cookie_keep(text, vs, ve, row, walk):
+            if walk.session(i, eq) and _walk_keep(text, vs, ve, row, walk):
                 hits.append(Hit(vs, ve, row.id, row.tier, "cookie", "known_key"))
             if first_only:
                 break
@@ -423,13 +482,9 @@ def _cookies(
     return hits
 
 
-def _curl_user(text: str, at: int, row: HeaderRow, final: bool) -> Hit | None:
+def _curl_user(text: str, at: int, row: HeaderRow, final: bool, walk: _Walk) -> Hit | None:
     """``curl ... -u user:password``: the flag at *at* follows ``curl`` on its line."""
-    line_start = max(text.rfind("\n", 0, at), text.rfind("\r", 0, at)) + 1
-    head = text[line_start:at]
-    if not any(
-        word == "curl" or word.endswith("/curl") for word in head.replace("|", " ").split()[:3]
-    ):
+    if not walk.runs_curl(at):
         return None
     flag_end = at + (2 if text.startswith("-u", at) else len("--user"))
     if flag_end < len(text) and text[flag_end] == "=":
@@ -441,10 +496,13 @@ def _curl_user(text: str, at: int, row: HeaderRow, final: bool) -> Hit | None:
     quote = text[i] if i < len(text) and text[i] in _QUOTES else ""
     if quote:
         i += 1
-    stops = frozenset(quote + "\r\n") if quote else frozenset(" \t\r\n\"'")
-    end = _value(text, i, stops, final)
-    colon = text.find(":", i, end)
-    if colon == -1 or not _keep(text, colon + 1, end, row):
+    # Stops: the closing quote or a line break, else a blank or a quote. On ``-u=-u=…``
+    # every anchor's value runs to the same far stop, so the shared finders read it once.
+    end = (walk.quoted[quote] if quote else walk.word_stops)(i)
+    if end == len(text) and not final:
+        raise _Open
+    colon = walk.colons(i)
+    if colon >= end or not _walk_keep(text, colon + 1, end, row, walk):
         return None
     return Hit(colon + 1, end, row.id, row.tier, "curl_user", "known_key")
 
@@ -556,13 +614,15 @@ def _netrc(text: str, at: int, row: HeaderRow, final: bool) -> Hit | None:
 
 
 _Reader = Callable[[str, int, HeaderRow, bool], "Hit | None"]
-#: Readers that anchor on their own fixed literals, and those literals.
+#: Readers that anchor on their own fixed literals, and those literals. ``curl_user`` also
+#: anchors on its flags but shares a :class:`_Walk`, so ``detect_headers`` calls it itself.
 _FIXED: dict[str, tuple[tuple[str, ...], _Reader]] = {
-    "curl_user": (_CURL_FLAGS, _curl_user),
     "mysql_password": (_MYSQL_FLAGS, _mysql_password),
     "docker_login": (_DOCKER_FLAGS, _docker_login),
     "netrc": ((_NETRC_KEYWORD,), _netrc),
 }
+#: Readers that share one :class:`_Walk` between the anchors of a row's name.
+_WALKED = frozenset({"header", "cookie", "curl_user"})
 
 
 def detect_headers(
@@ -572,9 +632,13 @@ def detect_headers(
     opens: list[int] = []
     for row in rows:
         fixed = _FIXED.get(row.reader)
-        names = fixed[0] if fixed is not None else row.names
+        names: tuple[str, ...]
+        if row.reader == "curl_user":
+            names = _CURL_FLAGS
+        else:
+            names = fixed[0] if fixed is not None else row.names
         for name in names:
-            walk: _CookieWalk | None = None
+            walk: _Walk | None = None
             at = low.find(name)
             while at != -1:
                 left_ok = (
@@ -583,14 +647,19 @@ def detect_headers(
                     or (bool(row.scheme) and text[at - 1] == "-")
                 )
                 try:
-                    if left_ok and row.reader == "header":
-                        found = _header(text, low, at, name, row, final)
-                        if found is not None:
-                            hits.append(found)
-                    elif left_ok and row.reader == "cookie":
+                    if left_ok and row.reader in _WALKED:
                         if walk is None:
-                            walk = _CookieWalk(text, low)
-                        hits += _cookies(text, at, name, row, final, walk)
+                            walk = _Walk(text, low)
+                        if row.reader == "cookie":
+                            hits += _cookies(text, at, name, row, final, walk)
+                        else:
+                            found = (
+                                _header(text, low, at, name, row, final, walk)
+                                if row.reader == "header"
+                                else _curl_user(text, at, row, final, walk)
+                            )
+                            if found is not None:
+                                hits.append(found)
                     elif left_ok and fixed is not None:
                         found = fixed[1](text, at, row, final)
                         if found is not None:
