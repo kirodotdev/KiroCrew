@@ -183,24 +183,24 @@ def _open_link_at_members(base: Path, name: str, stack: ExitStack) -> int:
 
 
 def _is_data_home_or_above(fd: int, base_fd: int) -> bool:
-    """Whether *fd* is the folder *base_fd* or one of the folders above it, by identity."""
+    """Whether *fd* is the folder *base_fd* or one of the folders above it, by identity.
+
+    Each level is read with ``stat`` on ``..`` chained from *base_fd*, which needs search
+    permission on the folders passed through and never read permission (an ``open`` of an
+    ancestor would, and a host with ``/home`` at 0711 would then refuse a good link).
+    """
     wanted = os.fstat(fd)
-    cur = os.dup(base_fd)
+    rel = "."
     seen = None
-    try:
-        while True:
-            here = os.fstat(cur)
-            key = (here.st_dev, here.st_ino)
-            if key == (wanted.st_dev, wanted.st_ino):
-                return True
-            if key == seen:
-                return False
-            seen = key
-            up = os.open("..", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0), dir_fd=cur)
-            os.close(cur)
-            cur = up
-    finally:
-        os.close(cur)
+    while True:
+        here = os.stat(rel, dir_fd=base_fd)
+        key = (here.st_dev, here.st_ino)
+        if key == (wanted.st_dev, wanted.st_ino):
+            return True
+        if key == seen:
+            return False
+        seen = key
+        rel = ".." if rel == "." else f"{rel}/.."
 
 
 def _open_link_at_members_by_name(

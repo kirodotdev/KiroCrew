@@ -1202,11 +1202,12 @@ def test_a_chain_of_more_than_forty_links_is_refused_where_the_folder_is_held_by
     _link_at_members(_a_chain_of_links(tmp_path))
     for site in SITES:
         outcome = _run(site)
-        if pinned:
+        if pinned and pinned_fs.supports_pinned_walk():
             assert isinstance(outcome, members.MemberSlugError), outcome
         else:
             assert not isinstance(outcome, Exception), outcome
-    assert (target / members.member_slug(SLUG)).exists() is (not pinned)
+    held = pinned and pinned_fs.supports_pinned_walk()
+    assert (target / members.member_slug(SLUG)).exists() is (not held)
 
 
 @requires_symlinks

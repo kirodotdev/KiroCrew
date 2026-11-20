@@ -213,3 +213,27 @@ def test_a_link_removed_before_it_is_opened_is_refused(
     assert isinstance(_open(), members.MemberSlugError)
     assert fired
     assert list(opened.iterdir()) == []
+
+
+@requires_symlinks
+@needs_pinned_walk
+@pytest.mark.skipif(sys.platform == "win32", reason="search-only folders are a POSIX notion")
+def test_a_folder_above_the_data_home_that_can_be_searched_but_not_read_is_no_obstacle(
+    tmp_path: Path,
+) -> None:
+    """The identity walk needs search permission on the folders above, never read."""
+    outside = _outside(tmp_path)
+    named = _members()
+    named.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(outside, named)
+    above = named.parent.resolve().parent
+    mode = above.stat().st_mode & 0o7777
+    above.chmod(0o111)
+    try:
+        if os.access(above, os.R_OK):
+            pytest.skip("this user can read a folder without the read bit (root)")
+        result = _open()
+    finally:
+        above.chmod(mode)
+    assert result is None, repr(result.__cause__)
+    assert (outside / members.member_slug(SLUG)).is_dir()
