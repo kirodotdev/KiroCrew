@@ -724,22 +724,56 @@ def _diff_header_destination(header: "re.Match[str]", metadata: str) -> str:
     return _unquote_git_path(quoted) if quoted is not None else plain
 
 
-def _patches(text: str) -> dict[str, str]:
-    """Per-destination-path hunks (from the first ``@@``) out of a format-patch body."""
-    out: dict[str, str] = {}
+def _sections(text: str) -> list[tuple[str, str, str]]:
+    """``(destination path, metadata, hunks)`` per ``diff --git`` section of a format-patch body.
+
+    The metadata is the extended-header block between ``diff --git`` and the
+    first ``@@``; the hunks start at that ``@@`` and are ``""`` for a binary or
+    mode-only section, which has none.
+    """
+    out: list[tuple[str, str, str]] = []
     headers = list(_DIFF_HEADER_RE.finditer(text))
     for index, header in enumerate(headers):
         end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
         section = text[header.end() : end]
         hunk_start = section.find("\n@@")
         if hunk_start < 0:
-            # A binary or mode-only entry has no hunks; the row still renders.
-            continue
-        body = section[hunk_start + 1 :].rstrip("\n")
-        if index + 1 == len(headers):
-            body = _strip_signature(body)
-        out[_diff_header_destination(header, section[:hunk_start])] = body
+            metadata, body = section, ""
+        else:
+            metadata = section[:hunk_start]
+            body = section[hunk_start + 1 :].rstrip("\n")
+            if index + 1 == len(headers):
+                body = _strip_signature(body)
+        out.append((_diff_header_destination(header, metadata), metadata, body))
     return out
+
+
+def _patches(text: str) -> dict[str, str]:
+    """Per-destination-path hunks (from the first ``@@``) out of a format-patch body."""
+    # A binary or mode-only entry has no hunks; the row still renders.
+    return {path: body for path, _metadata, body in _sections(text) if body}
+
+
+# Git's mode for a symbolic link. The mode of the file as the change leaves it is
+# on ``new file mode`` / ``new mode``; an unchanged mode is on the ``index`` line;
+# a deleted file carries only ``deleted file mode``.
+_SYMLINK_MODE_RE = re.compile(
+    r"^(?:new file mode|new mode|deleted file mode|index [0-9a-f]+\.\.[0-9a-f]+) 120000$",
+    re.MULTILINE,
+)
+
+
+def _symlink_paths(text: str) -> set[str]:
+    """Destination paths whose section the format-patch marks as a symbolic link.
+
+    A type change is two sections for one path (``deleted file mode`` of the old
+    type, then ``new file mode`` of the new), so the last section for a path
+    decides, as it does for the hunks.
+    """
+    by_path = {
+        path: bool(_SYMLINK_MODE_RE.search(metadata)) for path, metadata, _body in _sections(text)
+    }
+    return {path for path, is_link in by_path.items() if is_link}
 
 
 def _strip_signature(body: str) -> str:
@@ -762,6 +796,7 @@ def _strip_signature(body: str) -> str:
 
 def _file_rows(files: dict[str, Any], patch_text: str) -> list[dict[str, Any]]:
     patches = _patches(patch_text)
+    symlinks = _symlink_paths(patch_text)
     rows = []
     for path, info in files.items():
         # ``/COMMIT_MSG``, ``/MERGE_LIST`` and ``/PATCHSET_LEVEL`` are Gerrit's
@@ -776,6 +811,8 @@ def _file_rows(files: dict[str, Any], patch_text: str) -> list[dict[str, Any]]:
                 "additions": projection._int_or_zero(entry.get("lines_inserted")),
                 "deletions": projection._int_or_zero(entry.get("lines_deleted")),
                 "patch": patches.get(path, ""),
+                # Gerrit's files response carries no mode; the format-patch does.
+                "symlink": path in symlinks,
             }
         )
     return rows

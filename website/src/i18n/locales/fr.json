@@ -9261,6 +9261,7 @@
       "file_status_removed": "Supprimé",
       "file_status_renamed": "Renommé",
       "file_status_unchanged": "Inchangé",
+      "file_symlink": "Lien symbolique",
       "files_changed_many": "{{count}} fichiers modifiés",
       "files_changed_one": "{{count}} fichier modifié",
       "files_changed_other": "{{count}} fichiers modifiés",

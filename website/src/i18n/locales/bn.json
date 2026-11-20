@@ -9039,6 +9039,7 @@
       "file_status_removed": "সরানো হয়েছে",
       "file_status_renamed": "নাম পরিবর্তিত",
       "file_status_unchanged": "অপরিবর্তিত",
+      "file_symlink": "সিমলিংক",
       "files_changed_one": "{{count}}টি ফাইল পরিবর্তিত",
       "files_changed_other": "{{count}}টি ফাইল পরিবর্তিত",
       "github_cli_login_required": "GitHub CLI লগইন প্রয়োজন",

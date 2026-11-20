@@ -545,6 +545,9 @@ function ChangeRow({ file }: { file: PullRequestFile }) {
       >
         {open ? <ChevronDown className="lucide-inline shrink-0 text-muted" /> : <ChevronRight className="lucide-inline shrink-0 text-muted" />}
         <span className="text-[13px] text-text truncate min-w-0 flex-1">{file.path}</span>
+        {file.symlink && (
+          <span className="text-[11px] text-muted shrink-0" data-testid="pr-file-symlink">{i18nT('components.pullRequestPanel.file_symlink')}</span>
+        )}
         <span className="text-[11px] text-muted shrink-0">{i18nT(FILE_STATUS_LABEL_KEY[file.status?.toLowerCase()] ?? 'components.pullRequestPanel.file_status_changed')}</span>
         <span className="text-[11px] shrink-0"><span className="text-ok">+{file.additions}</span> <span className="text-danger">-{file.deletions}</span></span>
       </Btn>

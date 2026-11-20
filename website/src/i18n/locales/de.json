@@ -9039,6 +9039,7 @@
       "file_status_removed": "Entfernt",
       "file_status_renamed": "Umbenannt",
       "file_status_unchanged": "Unverändert",
+      "file_symlink": "Symlink",
       "files_changed_one": "{{count}} geänderte Datei",
       "files_changed_other": "{{count}} geänderte Dateien",
       "github_cli_login_required": "GitHub-CLI-Anmeldung erforderlich",

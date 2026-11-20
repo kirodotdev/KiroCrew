@@ -371,6 +371,11 @@ class SourceChangeFile(TypedDict):
     #: Unified-diff hunks for this file, ``""`` when the provider cannot serve
     #: per-file patches (the panel then renders the row without a diff body).
     patch: str
+    #: True when the provider reports the file as a symbolic link (git mode
+    #: ``120000``), whose ``patch`` is then the link target, not file content.
+    #: False otherwise, including when the provider's wire shape carries no
+    #: file mode (GitHub, Bitbucket Server).
+    symlink: bool
 
 
 class SourceChangeComment(TypedDict):
