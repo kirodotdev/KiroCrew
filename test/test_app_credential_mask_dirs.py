@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from app_backend_helpers import app_env_fixture  # noqa: F401
 from app_manager_helpers import _make_app_source
 
 from kiro_crew import sandbox, sandbox_plan
@@ -468,3 +469,96 @@ class TestInTheNamespaceSandbox:
         report = _report(agent.stdout)
         assert report["marker"] == "1"
         assert report["first"] == [] and report["after"] == [], report
+
+
+_KEY_PROBE = r"""
+import errno, json, os, sys
+
+path = sys.argv[1]
+try:
+    with open(path, "rb") as fh:
+        nbytes = len(fh.read())
+    err = None
+except OSError as exc:
+    nbytes, err = 0, errno.errorcode.get(exc.errno, str(exc.errno))
+print("REPORT " + json.dumps({"nbytes": nbytes, "errno": err, "dir": os.path.isdir(os.path.dirname(path))}), flush=True)
+"""
+
+
+@pytest.mark.xfail(strict=True, reason="evidence run on the base")
+@_NAMESPACE[0]
+@_NAMESPACE[1]
+def test_a_spawned_app_backend_cannot_read_the_sel_key(app_env, tmp_path, monkeypatch):
+    """Spawn a plain app backend's sandbox wrap as the backend does, then probe the key."""
+    import warnings
+
+    import kiro_crew.apps.backend as bmod
+    from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
+    from kiro_crew.sel import SecurityEventLog, sel_hmac_key_path
+
+    # No live log, and the default dir is the tmp home: the key path is never a real one.
+    monkeypatch.setattr(SecurityEventLog, "_instance", None)
+    monkeypatch.setattr("kiro_crew.sel._default_dir", lambda: tmp_path / "kirocrew-home")
+    monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
+    monkeypatch.delenv("KIROCREW_BOUND_HOST", raising=False)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.token_auth.replace_legacy_app_secret", lambda _n: "per-app-secret"
+    )
+    monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True)
+    seen: dict[str, tuple[str, ...]] = {}
+
+    def _spy_wrap(argv, **kwargs):
+        seen["hidden"] = tuple(kwargs.get("extra_hidden_dirs") or ())
+        seen["visible"] = tuple(kwargs.get("extra_visible_dirs") or ())
+        return (list(argv), None)
+
+    src = tmp_path / "source" / "plain-app"
+    src.mkdir(parents=True)
+    (src / APP_MANIFEST_FILENAME).write_text(
+        json.dumps(
+            {
+                "name": "plain-app",
+                "version": "1.0.0",
+                "displayName": "plain-app",
+                "description": "spawn mask",
+                "backend": {"entryPoint": "server.py", "healthCheck": "/health"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (src / "server.py").write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    install_app(src)
+    with monkeypatch.context() as spawn:  # ``subprocess.Popen`` is the shared module's
+        spawn.setattr(bmod, "wrap_argv", _spy_wrap)
+        spawn.setattr(
+            bmod.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("stop"))
+        )
+        bmod.start_app_backend("plain-app")
+
+    key = sel_hmac_key_path()
+    assert str(key).startswith(str(tmp_path)), "the key path must be inside the tmp home"
+    key.parent.mkdir(parents=True, exist_ok=True)
+    key.write_bytes(b"k" * 32)
+    done = subprocess.run(
+        sandbox.namespace_argv(
+            [sys.executable, "-c", _KEY_PROBE, str(key)],
+            "standard",
+            extra_hidden_dirs=seen["hidden"],
+            extra_visible_dirs=seen["visible"],
+        ),
+        cwd=tmp_path,
+        env=_env(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+    )
+    assert done.returncode == 0, done.stderr
+    report = _report(done.stdout)
+    warnings.warn(
+        "REALMACHINE-38807 key_masked_by_spawn=%s key_readable=%s errno=%s dir_visible=%s"
+        % (str(key) in seen["hidden"], report["nbytes"] > 0, report["errno"], report["dir"]),
+        stacklevel=1,
+    )
+    assert report["dir"], report
+    assert report["nbytes"] == 0, "the backend read the key"
