@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -64,11 +65,13 @@ def test_no_name_is_used_after_the_screen(
     os.symlink(outside, named)
     base = named.parent.resolve()
     by_name: list[str] = []
+    me = threading.get_ident()
     real_open = os.open
     real_resolve = Path.resolve
 
     def spy_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
-        if kwargs.get("dir_fd") is None:
+        # Only this thread: a background writer (an audit log) also calls the patched open.
+        if kwargs.get("dir_fd") is None and threading.get_ident() == me:
             by_name.append(os.fspath(path))
         return real_open(path, flags, *args, **kwargs)
 
