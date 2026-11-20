@@ -27,7 +27,7 @@ from kiro_crew.dashboard.turn_dispatch import (
     format_approval_no_budget_card,
     format_approval_timeout_card,
 )
-from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE
+from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, hook_tool_input
 from kiro_crew.safety_override import yolo_policy_permits
 from kiro_crew.security.readonly_bash import (
     command_invokes_git,
@@ -948,10 +948,7 @@ async def _on_permission_prompt(
         # runs, so those calls fire them here.
         pre_hook_results: list[str] = []
         if not turn._pre_tool_hooks_fired:
-            try:
-                _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-            except Exception:
-                _parsed_input = None
+            _parsed_input = hook_tool_input(event.raw_tool_params, event.tool_input)
             try:
                 pre_hook_results = await _fire(
                     turn,

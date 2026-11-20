@@ -751,9 +751,14 @@ class TestAcpClientToolHooks:
     """
 
     @staticmethod
-    def _call_ev(title="Reading /x/SKILL.md", tool_input=None, call_id="tc1"):
-        # Stand-in for an EVENT_TOOL_CALL AcpEvent (reads .title/.tool_input).
-        return types.SimpleNamespace(title=title, tool_input=tool_input, tool_call_id=call_id)
+    def _call_ev(title="Reading /x/SKILL.md", tool_input=None, call_id="tc1", raw_tool_params=None):
+        # Stand-in for an EVENT_TOOL_CALL AcpEvent (reads .title/.tool_input/.raw_tool_params).
+        return types.SimpleNamespace(
+            title=title,
+            tool_input=tool_input,
+            tool_call_id=call_id,
+            raw_tool_params=raw_tool_params,
+        )
 
     @staticmethod
     def _result_ev(output="---\nname: x\n---", call_id="tc1"):
@@ -866,6 +871,37 @@ class TestAcpClientToolHooks:
         fired_str = json.dumps(fired_input)
         assert _SECRET not in fired_str  # raw credential scrubbed
         assert "[REDACTED: credential]" in fired_str  # redaction marker present
+
+    @pytest.mark.asyncio
+    async def test_pre_fire_builds_tool_input_from_raw_params_still_redacted(self, monkeypatch):
+        """A frame that carries ``raw_tool_params`` hands the hook THAT dict, redacted
+        value by value, so a command whose display text does not parse (here the
+        approval card's diff-like text) reaches the hook as ``tool_input.command``.
+        The control the two tests above pin is intact: no raw credential reaches the
+        hook script, and a URL keeps its shape with only the secret value masked.
+        """
+        store = self._Store()
+        monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: store)
+        client = AcpClient(session_key="sk", agent="code-review-sage", audit_source="subagent")
+        url = "https://example.com/a?token=" + "a1b2c3d4" * 4
+        command = f'curl -s --url "{url}" -H "x: {_SECRET}"'
+        display = "--- a\n+++ b\n"  # not JSON: alone it would carry no tool_input
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(display)
+        await client._maybe_fire_pre_tool_hooks(
+            self._call_ev(tool_input=display, raw_tool_params={"command": command})
+        )
+
+        pre = [c for c in store.calls if c["event"] == "PreToolUse"]
+        assert len(pre) == 1
+        fired_input = pre[0]["tool_input"]
+        assert fired_input == {
+            "command": (
+                'curl -s --url "https://example.com/a?token=[REDACTED: credential]"'
+                ' -H "x: [REDACTED: credential]"'
+            )
+        }
+        assert _SECRET not in json.dumps(fired_input)  # raw credential scrubbed
 
     @pytest.mark.asyncio
     async def test_pre_fire_uses_unknown_tool_name_when_title_none(self, monkeypatch):
