@@ -60,7 +60,6 @@ case "$(cat "$STUB_DIR/$me.mode")" in
     # Finish only once the other tool has exited, whatever its status.
     while kill -0 "$(cat "$STUB_DIR/$other.pid")" 2>/dev/null; do sleep 0.05; done ;;
 esac
-: > "$STUB_DIR/$me.finishing"
 exit "$(cat "$STUB_DIR/$me.rc")"
 """
 
@@ -311,8 +310,14 @@ class TestBehaviour:
             env=env,
         ) as proc:
             try:
-                # flake8 has written all it will, and mypy is parked mid-run.
-                wait_until((stub / "flake8.finishing").exists, timeout=FALLBACK_TIMEOUT_SECS)
+                # The step has recorded that flake8 finished (the last thing it
+                # does for a tool), and mypy is parked mid-run.
+                finished = tmp_path / "runner-temp" / "backend-lint" / "flake8.seconds"
+                wait_until(
+                    lambda: finished.is_file()
+                    and finished.read_text(encoding="utf-8").endswith("\n"),
+                    timeout=FALLBACK_TIMEOUT_SECS,
+                )
                 wait_until((stub / "mypy.hanging").exists, timeout=FALLBACK_TIMEOUT_SECS)
                 proc.send_signal(interrupt)
                 stdout, stderr = proc.communicate(timeout=FALLBACK_TIMEOUT_SECS)
