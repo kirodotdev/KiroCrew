@@ -33,7 +33,7 @@ EXTERNAL_TERMINAL_APPS: tuple[str, ...] = (
 # ``<id>://vscode-remote/ssh-remote+<host><absolute path>:1``. The dashboard's own list,
 # with each editor's name, is ``REMOTE_EDITORS`` in
 # ``website/src/utils/remoteEditorUrl.ts``; keep the two equal.
-REMOTE_EDITOR_IDS: tuple[str, ...] = ("vscode",)
+REMOTE_EDITOR_IDS: tuple[str, ...] = ("vscode", "kiro")
 # ``dashboard.remote_editor.host``: a DNS name or ``~/.ssh/config`` alias, the
 # grammar the desktop app's editor-link check takes (``HOSTNAME_RE`` in
 # ``website/electron/validation.js``). Nothing that adds URL structure after

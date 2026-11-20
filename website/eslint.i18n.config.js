@@ -1071,7 +1071,7 @@ export default [
               // The local editor brands the "Open in {{editor}}" row names
               // (utils/remoteEditorUrl.ts `REMOTE_EDITORS`): a product name, the same in
               // every language. Whole-value-anchored like the entries above.
-              '^VS Code$',
+              '^(VS Code|Kiro)$',
               // The PPTX Maker chat-token KEYWORDS (`[Style: name]`,
               // `[Template: name]`). Enumerated and whole-value-anchored, exactly like
               // the modifier-key caps below: the agent prompts parse this literal

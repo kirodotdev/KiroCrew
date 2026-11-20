@@ -20852,7 +20852,7 @@
         "intensity_intense": "Intensa",
         "remote_editor": "Editor remoto",
         "remote_editor_editor": "Editor",
-        "remote_editor_editor_desc": "Adiciona “Abrir no VS Code” ao menu ⋯ de um arquivo aberto no painel lateral. É preciso ter o VS Code com o Remote-SSH no computador que você está usando. O arquivo abre nele, conectado ao host SSH abaixo.",
+        "remote_editor_editor_desc": "Adiciona ao menu ⋯ de um arquivo aberto no painel lateral uma opção que abre o arquivo neste editor. É preciso ter este editor com o Remote-SSH no computador que você está usando. O arquivo abre nele, conectado ao host SSH abaixo.",
         "remote_editor_off": "Desativado",
         "remote_editor_host": "Host SSH",
         "remote_editor_host_desc": "O nome depois de Host no ~/.ssh/config do computador que você está usando, como dev-box. Todo computador em que você abrir este painel precisa desse nome.",

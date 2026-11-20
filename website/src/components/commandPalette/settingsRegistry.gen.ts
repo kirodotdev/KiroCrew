@@ -2812,7 +2812,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "display.editor",
     "label": "Editor",
     "labelKey": "pages.settings.displayPanel.remote_editor_editor",
-    "description": "Adds “Open in VS Code” to the ⋯ menu of a file open in the side panel. Needs VS Code with Remote-SSH on the computer you’re using. The file opens there, connected to the SSH host below.",
+    "description": "Adds a row to the ⋯ menu of a file open in the side panel that opens the file in this editor. Needs this editor with Remote-SSH on the computer you’re using. The file opens there, connected to the SSH host below.",
     "tab": "display",
     "type": "select",
     "occurrence": 1,

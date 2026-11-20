@@ -75,6 +75,8 @@ describe("classifyNavigation", () => {
       "vscode://file/c:/Users/me/repo/a.ts:10",
       "vscode://file/D:/work/x.py:3:2",
       "vscode-insiders://file/C:/Users/me/a.ts",
+      "kiro://vscode-remote/ssh-remote+dev-box/home/me/a.ts:1",
+      "kiro://file/Users/me/repo/a.ts",
     ]) {
       assert.equal(classifyNavigation(url, ORIGIN), "confirm", url);
     }
@@ -82,6 +84,8 @@ describe("classifyNavigation", () => {
 
   it("blocks editor links that are not a plain file path", () => {
     for (const url of [
+      "kiro://some.extension/run",
+      "kiro://vscode-remote/ssh-remote+-oProxyCommand=x/a.ts",
       "vscode://ms-vscode.some-extension/run",
       "vscode://vscode-remote/wsl+Ubuntu/home/me/a.ts",
       "vscode://vscode-remote/ssh-remote+-oProxyCommand=x/a.ts",
