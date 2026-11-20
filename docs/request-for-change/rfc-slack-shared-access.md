@@ -1,18 +1,20 @@
 ---
 title: Shared Slack access - the owner opts in to let named Slack users drive the Crew as the owner
-status: in-progress
+status: implemented
 author: kyleseaman
 created: 2026-11-05
-last-audited: 2026-11-05
-audited-at: 3adab5e0c4
-doc-pr: null
-implementation-prs: []
+last-audited: 2026-11-19
+audited-at: fc89562d69
+doc-pr: 30760
+implementation-prs: [30760]
 tracking-issues: [22759, 30678]
 supersedes: []
 superseded-by: []
 ---
 
 # RFC: Shared Slack access
+
+Status: implemented in [#30760](https://github.com/kirodotdev/KiroCrew/pull/30760) (`slack.shared_access`, built in `config/section_builders.py`).
 
 ## Decision
 

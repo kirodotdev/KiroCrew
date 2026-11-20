@@ -3,8 +3,8 @@ title: Slack Code — agent sessions and code channels for Kiro Crew
 status: partial
 author: kseam
 created: 2026-10-16
-last-audited: 2026-11-16
-audited-at: 09e5482863
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr:
 implementation-prs: [21425, 21410, 22001, 21993]
 tracking-issues: [15175]
