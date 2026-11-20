@@ -124,6 +124,17 @@ already follows; with no art, or art that fails to load, the stock ghosts play.
 Under `prefers-reduced-motion: reduce` the art's `<img>` stays hidden and only
 decodes it, and one frame is painted onto a canvas, as the dashboard's
 `PackLoaderImage` does, so an animated SVG holds still.
+
+`branding.splashFit` in `theme.json` picks how the art is drawn: `contain` (the
+default, and what a pack without the key gets) in a centre box,
+`min(70vw, 720px)` by `56vh`; `cover` over the whole window, cropped to its shape,
+the still frame painted the same way. An install refuses any other value, as it
+refuses an unknown font `role`; re-reading an installed pack drops one, and the
+asset descriptor lists `splashFit` only beside a `splash`. The dashboard sends
+`fit: "cover"` with the bytes, and `theme-splash.js` stores that art as
+`theme-splash-cover.png|svg`, so a fit is never kept apart from the art it came
+with. `loading.html` accepts both names and fills the window for the cover one.
+The status line and the close control keep their accent surface above the art.
 Like the accent, it is the last value any dashboard window reported, so it shows
 from the launch after the theme is picked.
 

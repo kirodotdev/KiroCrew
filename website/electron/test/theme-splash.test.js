@@ -33,6 +33,24 @@ test("a pack's art is kept and named by its type, replacing the previous one", (
   assert.deepEqual(fs.readdirSync(dir), ["theme-splash.svg"]);
 });
 
+test("art whose pack asks for a cover fit is kept under the cover name, and only then", (t) => {
+  const dir = tempDir(t);
+  for (const [image, name] of [
+    [{ type: "image/png", bytes: PNG, fit: "cover" }, "theme-splash-cover.png"],
+    [{ type: "image/svg+xml", bytes: SVG, fit: "cover" }, "theme-splash-cover.svg"],
+    [{ type: "image/png", bytes: PNG }, "theme-splash.png"],
+    [{ type: "image/png", bytes: PNG, fit: "contain" }, "theme-splash.png"],
+    [{ type: "image/png", bytes: PNG, fit: "stretch" }, "theme-splash.png"],
+    [{ type: "image/svg+xml", bytes: SVG, fit: "cover" }, "theme-splash-cover.svg"],
+  ]) {
+    saveThemeSplash(dir, image);
+    assert.equal(path.basename(fileURLToPath(themeSplashUrl(dir))), name, JSON.stringify(image.fit));
+    assert.deepEqual(fs.readdirSync(dir), [name]);
+  }
+  saveThemeSplash(dir, null);
+  assert.deepEqual(fs.readdirSync(dir), []);
+});
+
 test("a theme without art, or art the pack validator would refuse, restores the stock splash", (t) => {
   const dir = tempDir(t);
   for (const image of [
@@ -61,6 +79,8 @@ test("loading.html shows only the stored theme-splash file, and keeps the stock 
   for (const ok of [
     "file:///home/u/.config/KiroCrew/theme-splash.png",
     "file:///C:/Users/u/AppData/Roaming/KiroCrew/theme-splash.svg",
+    "file:///home/u/.config/KiroCrew/theme-splash-cover.png",
+    "file:///C:/Users/u/AppData/Roaming/KiroCrew/theme-splash-cover.svg",
   ]) assert.equal(themeSplashSrc(ok), ok);
   for (const bad of [
     "",
@@ -74,7 +94,25 @@ test("loading.html shows only the stored theme-splash file, and keeps the stock 
     "file:///home/u/theme-splash.png.html",
     "file:///home/u/theme-splash.png?x=1",
     "file:///home/u/theme-splash.svg#x",
+    "file:///home/u/theme-splash-fill.png",
+    "file:///home/u/theme-splash-cover.gif",
+    "https://example.com/theme-splash-cover.png",
   ]) assert.equal(themeSplashSrc(bad), "", bad);
+});
+
+test("loading.html fills the window only for the stored cover-fit art", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "loading.html"), "utf8");
+  const fn = html.match(/function isCoverSplash\(src\) \{[\s\S]*?\n    \}/);
+  assert.ok(fn, "loading.html must define isCoverSplash");
+  assert.match(html, /showThemeArt\(art, artStill, artSrc, reduce, isCoverSplash\(artSrc\),/);
+  assert.match(html, /#art\.cover, #artStill\.cover \{[^}]*width: 100vw; height: 100vh; object-fit: cover;/);
+  const context = {};
+  require("node:vm").runInNewContext(`${fn[0]}; this.isCoverSplash = isCoverSplash;`, context);
+  const { isCoverSplash } = context;
+  assert.equal(isCoverSplash("file:///home/u/.config/KiroCrew/theme-splash-cover.png"), true);
+  assert.equal(isCoverSplash("file:///C:/Users/u/AppData/Roaming/KiroCrew/theme-splash-cover.svg"), true);
+  assert.equal(isCoverSplash("file:///home/u/.config/KiroCrew/theme-splash.png"), false);
+  assert.equal(isCoverSplash("file:///home/u/.config/KiroCrew/theme-splash.svg"), false);
 });
 
 test("loading.html holds a pack's splash art on one still frame under reduced motion", () => {
@@ -85,19 +123,23 @@ test("loading.html holds a pack's splash art on one still frame under reduced mo
   const context = { window: { devicePixelRatio: 1 } };
   require("node:vm").runInNewContext(`${show[0]}; ${paint[0]}; this.showThemeArt = showThemeArt;`, context);
   const { showThemeArt } = context;
+  const classes = () => {
+    const set = new Set();
+    return { set, toggle: (name, on) => (on ? set.add(name) : set.delete(name)) };
+  };
   const make = () => {
     const draws = [];
     const still = {
-      hidden: true, clientWidth: 720, clientHeight: 400,
+      hidden: true, clientWidth: 720, clientHeight: 400, classList: classes(),
       getContext: () => ({ drawImage: (...a) => draws.push(a) }),
     };
-    const art = { hidden: true, naturalWidth: 100, naturalHeight: 50 };
+    const art = { hidden: true, naturalWidth: 100, naturalHeight: 50, classList: classes() };
     return { art, still, draws };
   };
 
   // Reduced motion: the animating <img> is never displayed; one frame is painted.
   let s = make();
-  showThemeArt(s.art, s.still, "file:///x/theme-splash.svg", true, () => assert.fail("no failure"));
+  showThemeArt(s.art, s.still, "file:///x/theme-splash.svg", true, false, () => assert.fail("no failure"));
   assert.equal(s.art.src, "file:///x/theme-splash.svg");
   assert.equal(s.art.hidden, true);
   assert.equal(s.still.hidden, true);
@@ -105,10 +147,24 @@ test("loading.html holds a pack's splash art on one still frame under reduced mo
   assert.equal(s.art.hidden, true);
   assert.equal(s.still.hidden, false);
   assert.equal(s.draws.length, 1);
+  // Contained: the 100x50 art scales to 720x360, centred in the 720x400 box.
+  assert.deepEqual(s.draws[0].slice(1), [0, 20, 720, 360]);
+  assert.equal(s.still.classList.set.has("cover"), false);
+
+  // Cover fit, reduced motion: the still fills the canvas and crops the sides.
+  s = make();
+  showThemeArt(s.art, s.still, "file:///x/theme-splash-cover.svg", true, true, () => assert.fail("no failure"));
+  assert.equal(s.art.classList.set.has("cover"), true);
+  assert.equal(s.still.classList.set.has("cover"), true);
+  s.art.onload();
+  assert.equal(s.art.hidden, true);
+  assert.equal(s.still.hidden, false);
+  // 400 / 50 = 8x: 800x400, 40 px cropped off each side of the 720 px canvas.
+  assert.deepEqual(s.draws[0].slice(1), [-40, 0, 800, 400]);
 
   // Motion allowed: the art itself is shown and nothing is painted.
   s = make();
-  showThemeArt(s.art, s.still, "file:///x/theme-splash.png", false, () => assert.fail("no failure"));
+  showThemeArt(s.art, s.still, "file:///x/theme-splash.png", false, false, () => assert.fail("no failure"));
   assert.equal(s.art.hidden, false);
   assert.equal(s.still.hidden, true);
   assert.equal(s.art.onload, undefined);
@@ -117,7 +173,7 @@ test("loading.html holds a pack's splash art on one still frame under reduced mo
   for (const reduce of [true, false]) {
     s = make();
     let failed = 0;
-    showThemeArt(s.art, s.still, "file:///x/theme-splash.png", reduce, () => { failed += 1; });
+    showThemeArt(s.art, s.still, "file:///x/theme-splash.png", reduce, false, () => { failed += 1; });
     s.art.onerror();
     assert.equal(s.art.hidden, true);
     assert.equal(s.still.hidden, true);

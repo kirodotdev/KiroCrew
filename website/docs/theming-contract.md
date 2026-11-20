@@ -278,6 +278,11 @@ else the stock ghost, in the 48px hero slot. `splash` accepts `.svg` or `.png`
 (512 KB) and takes the place of the ghosts on the desktop app's next boot
 splash, over the theme accent; under `prefers-reduced-motion: reduce` an
 animated SVG holds still on one frame. Without it the stock splash stays.
+`branding.splashFit` says how big it is drawn: `"contain"` (the default) fits it
+in a centre box, `min(70vw, 720px)` by `56vh`; `"cover"` fills the whole window
+and crops what does not fit its shape. The status line and the close control
+stay on top either way, on their own accent surface. Any other value fails the
+install.
 The backend serves only validated files from the installed pack, and the label is
 trimmed to 48 printable characters. When an asset or label is absent, the shell
 falls back independently to its configured Kiro Crew branding. Compiled edition

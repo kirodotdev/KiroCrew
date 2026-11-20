@@ -61,8 +61,9 @@ declare global {
     bootComplete: () => void
     setThemeAccent: (hex: string) => void
     /** Hand the shell the active theme pack's boot-splash art, or null when it
-     *  ships none. Optional: absent on a shell older than the feature. */
-    setThemeSplash?: (image: { type: string; bytes: Uint8Array } | null) => void
+     *  ships none; `fit: 'cover'` fills the window instead of the centre box.
+     *  Optional: absent on a shell older than the feature. */
+    setThemeSplash?: (image: { type: string; bytes: Uint8Array; fit?: 'cover' } | null) => void
     setThemeMode: (pref: string) => void
     setTitleBarOverlayTheme: (mode: string) => void
     setFocusModeChrome: (visible: boolean) => void
