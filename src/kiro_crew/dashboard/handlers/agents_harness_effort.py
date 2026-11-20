@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from kiro_crew import advertised_effort_cache
 from kiro_crew.acp_backends import (
     ACP_BACKENDS_DEFAULT_PSEUDO_MODEL,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
@@ -17,6 +18,7 @@ from kiro_crew.acp_backends import (
     model_registry_namespace,
     selectable_backend_values,
 )
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_ANTIGRAVITY
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.dashboard.chat_persistence import (
     cap_effort_capability_levels,
@@ -62,6 +64,27 @@ def _live_on(state: Any, backend: str, crew: str) -> Any:
     return next((p for p in on if id(p) in mine), next(iter(on), None))
 
 
+def _remembered_effort(backend: str, model: str | None) -> dict:
+    """The answer with no live session on *model*: what a past session advertised, else unknown.
+
+    Antigravity alone, and only for the exact model the draft would serve: its levels are
+    per model, so a record for another model would offer a level this one may refuse. The
+    live session's option replaces the record the moment it reports.
+    """
+    if backend == ACP_BACKEND_ANTIGRAVITY:
+        levels = [
+            lvl
+            for lvl in advertised_effort_cache.recall(backend, model)
+            if lvl in get_reasoning_effort_values()
+        ]
+        if any(lvl != "off" for lvl in levels):
+            return {
+                "effort_supported": True,
+                "effort_levels": cap_effort_capability_levels(levels, source="remembered"),
+            }
+    return {"effort_supported": None, "effort_levels": []}
+
+
 def harness_effort(
     state: Any, backend: str, model: str | None, crew: str = "", *, model_answers: bool = True
 ) -> dict:
@@ -92,8 +115,10 @@ def harness_effort(
             backend in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
             and (not model or model == "auto" or getattr(live, "served_model", "") != model)
         ):
-            return {"effort_supported": None, "effort_levels": []}
+            return _remembered_effort(backend, model)
         advertised = [lvl for lvl in live.get_valid_effort_levels() if isinstance(lvl, str)]
+        if backend == ACP_BACKEND_ANTIGRAVITY and model:
+            advertised_effort_cache.remember(backend, model, advertised)
         # A real session registers its own levels (goose's ``off``) into the shared
         # vocabulary, so the vocabulary filter alone cannot tell an off-only option apart.
         levels = [lvl for lvl in advertised if lvl in get_reasoning_effort_values()]
