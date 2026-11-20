@@ -426,7 +426,8 @@ def _judge_reads_only_the_watched_pr(loop: NudgeLoop, monitor: MonitorState) -> 
     names a session or a second pull request makes the judge count that target as
     unread or read it on the tick it is asked, and skipping the tick would skip that
     target's news -- or the notice that it could not be read -- too. A loop naming no
-    target at all answers ``False`` as well: its judge fires every tick.
+    target at all answers ``False`` as well: under an owner's brief its judge fires
+    every tick, and under the default brief no judge applies.
     """
     from kiro_crew import autonudge_judge as judge
 
