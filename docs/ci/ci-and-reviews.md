@@ -621,14 +621,16 @@ Every workflow of the repository shares it.
 
 | Flag | Value | What it bounds |
 |---|---|---|
-| `--max-points` | 7,500 | The most one run spends: half the bucket. A weekday is about 3,000, and a day up to about five days back still fits |
+| `--max-points` | 5,000 | The most one run spends: a third of the bucket. A weekday is about 3,000, and a day up to about three days back still fits |
 | `--reserve-points` | 7,500 | It never starts a call with less than half the bucket left; it stops instead |
 | `--gh-timeout-seconds` | 900 | One `gh` call: the 600 seconds the `gh` wrapper may sleep inside it on a spent limit, and 300 for the call itself. The wrapper charges a sleep before it starts, so a call ended mid-sleep would have spent the wait budget and read nothing |
 
 A step before the census reads the bucket's size from `/rate_limit`, which
 costs nothing, and fails the job when it is under 10,500 points (the reserve
 and a weekday). The census never waits for a bucket: a job that sleeps holds a
-runner.
+runner. A `schedule` event carries no inputs and no `repository` object, so
+an empty `day` means yesterday and the default branch falls back to
+`github.ref_name`; a test evaluates every step's `env:` under both events.
 
 **The hour.** Counted by the hour on one weekday, runs created were under 2,500
 an hour only from 05:00 to 09:00 UTC and fewest at 07:00. Seven hours after
@@ -645,7 +647,7 @@ the days it has. Any other exit fails the job, and
 
 **Filling a day in.** GitHub may delay or drop a scheduled run, and nothing
 re-reads a missed night by itself. Run the workflow by hand with `day` set to
-the missing day (up to about five days back fits one run's budget), then once
+the missing day (up to about three days back fits one run's budget), then once
 more with `week` ticked and `day` set to the last day of that week.
 
 **What adding days up does and does not do.** A run belongs to the day it was

@@ -11,9 +11,13 @@ job summary. What is pinned, for every job of the workflow unless said:
 * WHEN IN THE DAY -- every tick is in the hours this repository runs least, off
   the top of the hour; the week is added up on exactly one of them, a weekend
   one, after that night's read whatever became of it.
-* BUDGET -- one night's read takes at most half of a 15,000-point bucket and
+* BUDGET -- one night's read takes at most a third of a 15,000-point bucket and
   never starts a call under half of it; the bucket is read, for nothing, before
   any point is spent.
+* BOTH EVENTS -- every expression a step's ``env:`` holds has a value under a
+  ``schedule`` payload (no inputs, no ``repository`` object) and under a
+  dispatch, and the executed steps below get their environment from those
+  expressions, not from a hand-written copy.
 * DEADLINES -- each deadline is longer than the wait inside it: one `gh` call
   against the wrapper's wait, each job's timeout against its work and that wait.
 * THE STEPS, executed with `python3` or `gh` stubbed -- what each is started
@@ -248,12 +252,12 @@ def test_the_week_is_added_up_on_one_weekend_tick_after_the_nights_read() -> Non
 # ── The budget ───────────────────────────────────────────────────────────────
 
 
-def test_one_night_takes_half_the_bucket_at_most_and_leaves_half_alone() -> None:
+def test_one_night_takes_a_third_of_the_bucket_at_most_and_leaves_half_alone() -> None:
     reserve, most = _flag(DAY_STEP, "--reserve-points"), _flag(DAY_STEP, "--max-points")
     assert reserve * 2 >= BUCKET_POINTS
-    assert most * 2 <= BUCKET_POINTS
+    assert most * 3 <= BUCKET_POINTS
     assert most + reserve <= BUCKET_POINTS, "an untouched bucket holds the most a run may spend"
-    assert most >= 2 * WEEKDAY_POINTS, "a heavy day still fits"
+    assert most * 2 >= 3 * WEEKDAY_POINTS, "a day half as heavy again still fits"
     assert "--logs never " in _step(DAY_STEP)["run"]
 
 
@@ -302,6 +306,81 @@ def test_no_job_asks_for_a_larger_runner() -> None:
         assert job["runs-on"] == "ubuntu-latest"
 
 
+# ── Both events ──────────────────────────────────────────────────────────────
+
+SUNDAY_TICK = "17 7 * * 0"
+
+
+def _context(event: str, **inputs: Any) -> dict[str, Any]:
+    """The contexts an expression can read, shaped as GitHub shapes them for ``event``.
+
+    A ``schedule`` payload is ``{"schedule": <cron>}`` and nothing else: no
+    inputs, no ``repository``, no ``sender``. On it ``github.ref_name`` is the
+    default branch.
+    """
+    github = {"token": "stub", "repository": "example/repo", "ref_name": "main"}
+    if event == "schedule":
+        return {"github": {**github, "event": {"schedule": SUNDAY_TICK}}, "inputs": {}}
+    given = {"day": "", "week": False, **inputs}
+    payload = {"inputs": given, "repository": {"default_branch": "main"}}
+    return {"github": {**github, "event": payload}, "inputs": given}
+
+
+def _evaluate(value: str, context: dict[str, Any]) -> str:
+    """``value`` with each ``${{ a.b || c.d }}`` replaced as GitHub would.
+
+    Only property paths joined by ``||`` are understood; anything else fails
+    here, so a new kind of expression has to be taught to this test.
+    """
+
+    def lookup(path: str) -> Any:
+        assert re.fullmatch(r"[a-z_]+(\.[a-z_]+)+", path), f"unknown expression: {path!r}"
+        found: Any = context
+        for part in path.split("."):
+            found = found.get(part) if isinstance(found, dict) else None
+        return found
+
+    def replace(match: re.Match[str]) -> str:
+        chosen: Any = None
+        for path in match.group(1).split("||"):
+            chosen = lookup(path.strip())
+            if chosen:
+                break
+        # A null property renders as the empty string.
+        return "" if chosen is None else str(chosen)
+
+    return re.sub(r"\$\{\{(.*?)\}\}", replace, str(value))
+
+
+def _env(step: str, context: dict[str, Any]) -> dict[str, str]:
+    return {name: _evaluate(value, context) for name, value in _step(step)["env"].items()}
+
+
+ALL_ENV_STEPS = sorted(
+    step["name"] for job in _jobs().values() for step in job["steps"] if "env" in step
+)
+
+
+@pytest.mark.parametrize("step", ALL_ENV_STEPS)
+@pytest.mark.parametrize("event", ["schedule", "workflow_dispatch"])
+def test_every_value_a_step_is_given_exists_under_both_events(step: str, event: str) -> None:
+    env = _env(step, _context(event))
+    # The inputs are the only values that may be empty, and only `day`.
+    assert [name for name, value in env.items() if not value] in ([], ["DAY"])
+    assert env.get("BRANCH", "main") == "main"
+    assert env.get("REPO", "example/repo") == "example/repo"
+
+
+def test_no_job_reads_a_part_of_the_event_a_schedule_lacks() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    read = set(re.findall(r"github\.event\.([a-z_]+)", text))
+    assert read == {"schedule", "repository"}
+    # Each read of the repository object has a fallback right behind it.
+    for line in text.splitlines():
+        if "github.event.repository" in line and not line.lstrip().startswith("#"):
+            assert "|| github.ref_name" in line, line
+
+
 # ── The steps, executed ──────────────────────────────────────────────────────
 
 posix_bash = pytest.mark.skipif(
@@ -316,7 +395,8 @@ COUNTS = "GraphQL calls: 1900 (2900 points)\nREST calls: 1\nRun time: 1300.0s\n"
 def _run_script(
     tmp_path: Path, step: str, status: int, wrote: bool = True, **inputs: str
 ) -> tuple[subprocess.CompletedProcess[str], str, str]:
-    """Run one script step with ``python3`` stubbed.
+    """Run one script step with ``python3`` stubbed, under the environment its own
+    ``env:`` gives it: a ``schedule`` event with no ``inputs``, a dispatch with.
 
     The stub records its arguments, writes ``summary.md`` into the directory it
     was given as ``--out-dir`` when ``wrote``, prints the summary and the count
@@ -347,14 +427,12 @@ def _run_script(
     )
     stub.chmod(0o755)
     job_summary = tmp_path / "job-summary.md"
+    event = _context("workflow_dispatch", **inputs) if inputs else _context("schedule")
     env = dict(os.environ)
+    env.update(_env(step, event))
     env.update(
         {
             "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}",
-            "GH_TOKEN": "stub",
-            "REPO": "example/repo",
-            "BRANCH": "main",
-            "DAY": inputs.get("day", ""),
             "GITHUB_STEP_SUMMARY": str(job_summary),
         }
     )
