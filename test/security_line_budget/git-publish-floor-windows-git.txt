@@ -1,0 +1,2 @@
++16
+argv_floor_git._is_git_program_word: the git-publish floor's detector and push-target reader read git.exe, git.cmd, git.bat, any case and a backslash path to them as git, as Windows runs them.
