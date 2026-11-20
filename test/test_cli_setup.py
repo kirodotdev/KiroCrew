@@ -375,6 +375,7 @@ class TestManifest:
                 "im:write",
                 "reactions:write",
                 "users:read",
+                "users:read.email",
             ],
             "user": [
                 "channels:history",

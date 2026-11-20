@@ -1421,6 +1421,30 @@ class TestDrift:
         assert first["app_dm_url"].startswith("https://slack.com/app_redirect?app=A0123ABCD")
         assert "xoxb-test" not in json.dumps(first)
 
+    @pytest.mark.parametrize("on", [frozenset(), _CC], ids=["no-switch", "code-channels"])
+    @pytest.mark.parametrize("holds", [False, True], ids=["without-it", "with-it"])
+    def test_an_optional_scope_is_neither_missing_nor_a_leftover(
+        self, monkeypatch: pytest.MonkeyPatch, on: frozenset[str], holds: bool
+    ) -> None:
+        # Only Share Slack access's add-by-email needs users:read.email, and its
+        # refusal says so. An install from before the manifest asked for it is not
+        # out of date, and one that holds it is never told it may remove it.
+        import slack_sdk.web.async_client as sdk
+
+        granted = slack_manifest.requirements(on).bot_scopes - slack_manifest.OPTIONAL_BOT_SCOPES
+        assert "users:read.email" not in granted
+        if holds:
+            granted = granted | {"users:read.email"}
+        monkeypatch.setattr(
+            sdk, "AsyncWebClient", lambda **kw: _FakeClient(",".join(sorted(granted)))
+        )
+        cfg = loader.KiroCrewConfig()
+        cfg.slack.code_channels = bool(on)
+        got = asyncio.run(scs.manifest_status(cfg, "xoxb-test", refresh=True))
+        assert got["install"]["status"] == scope_probe.STATUS_UP_TO_DATE
+        assert "users:read.email" not in got["required_scopes"]
+        assert got["install"]["missing_scopes"] == [] and got["install"]["extra_scopes"] == []
+
 
 class TestStatusReadKeepsARemovedToken:
     def test_the_status_read_does_not_put_back_a_token_the_watcher_removed(

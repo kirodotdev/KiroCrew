@@ -8,9 +8,10 @@ turns it on, off, and edits the list:
   Slack gives it and whether Slack confirmed it.
 * ``PUT /api/slack/shared-access`` -- ``{"enabled": bool}``. Turning it on also
   needs ``"confirm": true``, which the page sends only after its warning dialog.
-* ``POST /api/slack/shared-access/users`` -- ``{"user_id": "U..."}``. Refused
-  unless Slack confirms the id now (same workspace as the bot, a person, not
-  deactivated, not the owner).
+* ``POST /api/slack/shared-access/users`` -- ``{"user_id": "U..."}`` or
+  ``{"email": "..."}`` (looked up with ``users.lookupByEmail``; the list keeps the
+  member id). Refused while no owner id is saved, and unless Slack confirms the id
+  now (same workspace as the bot, a person, not deactivated, not the owner).
 * ``DELETE /api/slack/shared-access/users/{user_id}``.
 
 Every route is the dashboard owner's (``require_owner_dashboard_request``). Writes
@@ -241,19 +242,38 @@ async def api_shared_access_add(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return _deny(caller, op, "invalid JSON", code="invalid_json")
-    raw = body.get("user_id") if isinstance(body, dict) else None
+    fields = body if isinstance(body, dict) else {}
+    raw = fields.get("user_id")
     user_id = raw.strip() if isinstance(raw, str) else ""
-    if not is_slack_user_id(user_id):
+    raw_email = fields.get("email")
+    email = raw_email.strip() if isinstance(raw_email, str) else ""
+    if bool(user_id) == bool(email) or (user_id and not is_slack_user_id(user_id)):
         return _deny(
             caller,
             op,
-            "user_id must be a Slack member ID (starts with U or W)",
+            "send one of user_id (a Slack member ID, starts with U or W) or email",
             code=shared_access.REASON_MALFORMED,
         )
+    if email and not shared_access.is_email(email):
+        return _deny(
+            caller, op, "email is not an email address", code=shared_access.REASON_MALFORMED
+        )
     token, owner_id = await _slack_identity()
-    verdict = await shared_access.lookup(
-        _web_client(token), user_id, owner_id=owner_id, refresh=True
-    )
+    # Without a saved owner id the owner's own id would pass as someone else's.
+    if not owner_id:
+        return _deny(
+            caller,
+            op,
+            "save the owner Slack member ID first",
+            code=shared_access.REASON_OWNER_UNSET,
+        )
+    client = _web_client(token)
+    if email:
+        # The audit names the member id Slack returns, never the email.
+        user_id, reason = await shared_access.find_by_email(client, email)
+        if not user_id:
+            return _deny(caller, op, "Slack did not find that email", code=reason)
+    verdict = await shared_access.lookup(client, user_id, owner_id=owner_id, refresh=True)
     if not verdict.ok:
         return _deny(caller, op, f"Slack did not confirm {user_id}", code=verdict.reason)
 
