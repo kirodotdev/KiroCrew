@@ -502,6 +502,28 @@ def _forget_mount_source_sweep_pacing(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _forget_registry_ssh_sign_in_refusals():
+    """Forget the store listing's remembered ssh sign-in refusals around each test.
+
+    ``registry_pipeline.manifests._SSH_SIGN_IN_REFUSED`` lives for the process, so a
+    refusal one test records would make a later test's ssh row at that destination
+    skip its fetch. Read from ``sys.modules`` so a test that never imports the
+    registry pays nothing. A module without the name is left alone: this autouse
+    reset must not error every test's setup on a tree without it (``prove.py``
+    reverts the production hunks and needs the tests' own assertions to run).
+    """
+    module = sys.modules.get("kiro_crew.apps.registry_pipeline.manifests")
+    refused = getattr(module, "_SSH_SIGN_IN_REFUSED", None)
+    if refused is not None:
+        refused.clear()
+    yield
+    module = sys.modules.get("kiro_crew.apps.registry_pipeline.manifests")
+    refused = getattr(module, "_SSH_SIGN_IN_REFUSED", None)
+    if refused is not None:
+        refused.clear()
+
+
+@pytest.fixture(autouse=True)
 def _forget_sandbox_launch_mark():
     """Forget that an entry point saw the sandbox marker.
 
