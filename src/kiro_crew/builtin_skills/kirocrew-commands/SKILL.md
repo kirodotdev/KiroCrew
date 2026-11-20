@@ -88,7 +88,7 @@ transcripts.
 | `kirocrew logs` | Show gateway logs (last 100 lines) |
 | `kirocrew logs -f` | Follow (tail) live log output |
 | `kirocrew logs -n 50` | Show last N lines |
-| `kirocrew tmp` | Remove your idle, unused leftovers from /tmp and /var/tmp |
+| `kirocrew tmp reclaim PATH…` | Remove each named /tmp or /var/tmp entry of yours once it is idle and unused (`--dry-run` removes nothing) |
 
 ## Pods (Isolated Worktree Test Instances)
 
