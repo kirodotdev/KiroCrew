@@ -53,8 +53,9 @@ The electron-builder configuration lives in
   It performs no timer-driven bitmap work or `Sleep` on the NSIS UI thread;
   Windows CI installs the real artifact, records its duration, and enforces a
   5-minute ceiling. Auto-updates skip the assisted wizard's decision pages but
-  keep its native extraction progress visible, then relaunch Kiro Crew and close
-  automatically. A legacy silent `/S --updated` invocation is converted to the
+  keep its native extraction progress visible, then close automatically,
+  starting Kiro Crew again only when the update was launched with
+  `--force-run` (a Restart now the user asked for). A legacy silent `/S --updated` invocation is converted to the
   same visible update path so the transition works from already-fielded clients.
 - linux targets: `AppImage`, `deb`, `rpm` (category `Development`). One backend
   tree is packaged three times, with `scripts/stamp-distribution.sh` re-run
@@ -275,9 +276,9 @@ macOS build fails on any symlink or hardlink in it, because the signing service
 refuses a universal bundle with shared trees.
 The Electron shell (`gateway-env.js`, `bundledKasEnvironment`) reads
 `BUNDLED-VERSION` and the install record beside it, and exports the root as
-`KIROCREW_BUNDLED_KAS_DIR` for either architecture. It runs nothing at boot: the route is off by default, the build
-already probed the staged Node, and a copy that cannot run on this machine
-fails at session spawn, only for a user who turned the switch on. A build
+`KIROCREW_BUNDLED_KAS_DIR` for either architecture. It runs nothing at boot: the route is off by default outside
+nightly builds, the build already probed the staged Node, and a copy that cannot
+run on this machine fails at session spawn, only on a build where the switch is on. A build
 without the payload or a source checkout exports nothing, and the backend then
 sees only the data home, exactly as an unbundled build does.
 The two values the shell joins onto the staged tree, the version and the
@@ -315,10 +316,12 @@ smoke reads the shell's export off a real gateway child, so a build whose root
 electron-builder moved or dropped fails there rather than on an opted-in user's
 first prompt.
 
-Bundling the engine does not turn the route on: `agent.kas_bundle` keeps its
-default (off) on every platform while the route is in shadow testing, and the
-relay route runs on the kiro-cli the user installed. Nothing in the build,
-the installer or the shell flips the switch; that stays the user's own step. `BUNDLE_KAS=0 make desktop` opts a build out (the payload is ~55 MB
+Bundling the engine does not turn the route on: an undeclared
+`agent.kas_bundle` resolves from the build (`kas_bundle_build_default` in
+`config/loader_document.py`), on in a nightly-stamped build and off in insider,
+stable and source builds, where the relay route runs on the kiro-cli the user
+installed. Nothing in the installer or the shell flips the switch; outside
+nightly turning it on stays the user's own step. `BUNDLE_KAS=0 make desktop` opts a build out (the payload is ~55 MB
 compressed, ~370 MB extracted per architecture); the switch then needs
 `kirocrew kas install` first, exactly as a pip install does. `KAS_BUNDLE_URL`
 names another manifest host (a mirror serving the same bytes; the pin refuses
@@ -2169,12 +2172,15 @@ and not once an install has started.
 
 **A package manager's own update pause holds only if the check command honours
 it**: on this managed lane while the app's update switch is on, and on the
-gateway's policy `check_command` (below) while `auto_update` is on or a policy
-floor forces the update. Neither lane compares versions after an apply: if the
-check still prints a version and the apply command exits 0 having changed
-nothing, the gateway restarts and checks again at boot, and the app runs
-`updateCommand` on every quit, so both loop
-([#15798](https://github.com/kirodotdev/KiroCrew/issues/15798)).
+gateway's policy `check_command` (below), whose answer the dashboard shows as an
+update notice. The gateway's check only reports; its `apply_command` runs when a
+person clicks Update. The app lane re-checks after every apply
+(`applyChangedNothing` in `runtime/update/managed-exec.js`): an `updateCommand`
+that exits 0 while the check still offers the same version is recorded as a
+failed apply ("the install did not change"). On quit the arm stays and the app
+exits without relaunching; the next start's apply fails the same way, clears the
+arm and shows the error, so an apply that changes nothing does not repeat on
+every quit.
 
 The commands run with a **constructed environment**, not the app's own. Only an explicit pass-through set reaches them — `USER`, `LOGNAME`, `TZ`, `TMPDIR`, the `LANG`/`LC_*` locale vars, and the proxy vars — plus a narrowed system-only `PATH` and `cwd=/`. `HOME` is deliberately excluded: Python derives its user-site directory from it, so passing it through would let a planted `sitecustomize.py` run on every `python` start. Everything else is absent by construction, because `shell: true` means a shell interprets the command and a shell reads its environment as code: the loader family (`LD_*`/`DYLD_*`), the interpreter family (`PYTHON*`, `NODE_OPTIONS`), the startup files (`BASH_ENV`, `ENV`), the tracing pair (`SHELLOPTS` plus a command-substituting `PS4`), word splitting (`IFS`), and exported shell functions (`BASH_FUNC_*`, which shadow a command name outright). A packager whose updater needs any other variable must set it inside its own command rather than relying on inheritance.
 
