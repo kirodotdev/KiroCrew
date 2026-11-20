@@ -98,6 +98,16 @@ class TestBareUnauthorized:
         assert "authChallenge" not in row.to_dict()
 
     @pytest.mark.asyncio
+    async def test_root_metadata_for_a_sibling_path_is_not_evidence(self) -> None:
+        """Same origin, other endpoint: the root document says nothing about this one."""
+        sibling = {**_METADATA, "resource": "https://mcp.example.test/oauth-mcp"}
+        row, asked = await _probe_bare_401({_ROOT_DOC: sibling})
+
+        assert row.status == "needs_auth"
+        assert row.auth_challenge is False
+        assert asked == [_PATH_DOC, _ROOT_DOC]
+
+    @pytest.mark.asyncio
     async def test_no_metadata_keeps_the_row_unverified(self) -> None:
         row, asked = await _probe_bare_401({})
 
@@ -127,3 +137,18 @@ async def test_anything_short_of_metadata_for_this_server_is_not_evidence(docume
     fetch, _ = _documents({_PATH_DOC: document, _ROOT_DOC: document})
     with patch("kiro_crew.mcp_oauth_discovery._fetch_json", fetch):
         assert await advertises_protected_resource(_URL) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resource",
+    [
+        "https://mcp.example.test/mcp/",
+        "https://MCP.example.test:443/mcp",
+        ["https://mcp.example.test/other", "https://mcp.example.test/mcp"],
+    ],
+)
+async def test_the_same_endpoint_in_another_spelling_is_evidence(resource) -> None:
+    fetch, _ = _documents({_ROOT_DOC: {**_METADATA, "resource": resource}})
+    with patch("kiro_crew.mcp_oauth_discovery._fetch_json", fetch):
+        assert await advertises_protected_resource(_URL) is True
