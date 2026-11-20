@@ -119,7 +119,7 @@ graph LR
    [Relay-delivered requests](#relay-delivered-requests)) verifies a request the
    in-process relay client handed over and serves it with every `x-kiro-relay-*`
    header removed, before any other layer reads one; every other request it hands
-   on unchanged. The client-sent strip (`relay_header_strip`,
+   on unchanged. The client-sent strip (`relay_header_strip_middleware`,
    `dashboard/relay_headers.py`) sits just inside it and is the one place a
    client-sent relay header is dropped
 3. The host barriers and CSRF reject a wrong `Host` and a cross-origin mutating
