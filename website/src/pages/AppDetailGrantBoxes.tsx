@@ -256,7 +256,7 @@ export function KiroOperationsBox({ grant }: { grant?: { approved: string[]; sta
       <div className="flex items-start gap-2 text-text">
         <KeyRound size={13} className="mt-[2px] shrink-0 text-muted" />
         <div className="flex flex-col gap-1">
-          <span>{i18nT('components.appstore.trustAppModal.kiro_operations_heading')}</span>
+          <span>{i18nT('pages.appDetailPage.kiro_operations_card_heading')}</span>
           <div className="flex flex-wrap gap-1">
             {names.map(op => (
               <code key={op} data-testid={`kiro-operation-${op}`} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">
