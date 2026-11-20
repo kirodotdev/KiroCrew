@@ -1448,13 +1448,24 @@ token mint, `restart_remote`, the diagnostics probes — therefore goes through
 SSM transport's `aws` child is built from. That helper APPENDS the well-known install dirs
 (`/opt/homebrew/bin`, `/usr/local/bin`) and withholds them for a bare head, so
 the inherited `PATH` keeps first claim on every name and an `ssh` found only in
-those dirs is never exec'd. The SSM transport's `aws` child also drops the
+those dirs is never exec'd. Before building that env, each spawn re-runs the
+provenance walk for `session-manager-plugin` and `aws`, so a dir holding a
+refused copy stays off the child's `PATH` whether or not an SSM check ran first,
+and a repaired copy is back at the next spawn without a restart. The SSM
+transport's `aws` child also drops the
 gateway's Python interpreter settings (`sandbox.without_python_env`), because
 aws-cli v1 is Python; the ssh children keep them, since a `ProxyCommand` can run
 any program of the user's and stripping there would change more than `aws`. When
 the proxy still cannot find its program, the tunnel and mint errors say so and
 name the `PATH` the child was given, instead of the "connection closed" that ssh
-prints afterwards reading as a network drop.
+prints afterwards reading as a network drop. When that program is a refused
+`session-manager-plugin`, they name its file, the refusal and the fix instead
+(`cloud.ssm.session_manager_plugin_unavailable_message`). For any other
+missing program, a refused plugin or `aws` is named when it is what hid that
+program: the program sits in the refused tool's dir (such as
+`/opt/homebrew/bin`) and that dir is not on the child's `PATH`. The diagnosis
+ladder's `ssh_unreachable` reason adds the same text for a host whose
+`ProxyCommand` runs the plugin.
 
 ### Dev host / home server (primary)
 
