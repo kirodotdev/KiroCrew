@@ -150,7 +150,7 @@ segment is the region source). Social device-flow uses a shared default profile 
 returned by the poll. The engine accepting a reply without one does NOT make it
 optional: the Kiro runtime refuses every request that names no profile with HTTP 400
 `ValidationException` "profileArn is required for this request" (model list, chat,
-remote tools; #26109). Builder ID has no profile of its own (`ListAvailableProfiles`
+remote tools). Builder ID has no profile of its own (`ListAvailableProfiles`
 answers it `AccessDeniedException`), so the vault stores none for it, and
 `auth/provider.kas_profile_arn` gives the engine kiro-cli's fixed Builder ID ARN
 (`BUILDER_ID_PROFILE_ARN`, the value kiro-cli's `builder_id_callback_token` sends) on
@@ -374,7 +374,7 @@ browser last submitted still comes first (`website/src/utils/companySignIn.ts`).
 An approved IdC token carries no profile ARN, so `_poll_oidc` resolves it with the
 control plane's `ListAvailableProfiles` (`auth/login/control_plane.py`). The Identity
 Center region does not name the control plane that serves the profile (a `us-east-1`
-instance can hold an `eu-central-1` profile, #28904), so the call asks every host in
+instance can hold an `eu-central-1` profile), so the call asks every host in
 `_CPS_ENDPOINTS`, the login region's own first, and keeps the first answer that lists
 a profile. A host that refuses or sends an unreadable answer is logged and skipped.
 The poll ends as `error`, with nothing stored, when every host refused or none lists
@@ -768,9 +768,9 @@ engine instead ([aws-control.md](aws-control.md)).
   card, and the agent's "not signed in" error row with its sign-in deep link),
   never silently handed back to whatever `kiro-cli login` holds. Automatic
   demotion to cli-owned after a persistent refresh failure is therefore not a
-  gap to close but a behaviour deliberately not built (see #9772). The spawn
+  gap to close but a behaviour deliberately not built. The spawn
   owner is the shared sign-in resolver's pick (RFC crew-lts-edition D4,
-  `oss` order, amended 2026-10-30; delivered by #26841): any stored vault entry, including one whose access token has
+  `oss` order): any stored vault entry, including one whose access token has
   expired with no refresh token, and a vault that cannot be read, keeps the spawn
   Crew-owned and reports "not signed in"; only an empty vault hands it to
   kiro-cli. Removing the Crew sign-in (`kirocrew kas logout`) is how a user goes

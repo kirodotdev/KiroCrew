@@ -5,7 +5,7 @@ agent template plus a workspace, a memory store, a model and a reasoning effort,
 and it carries free-text `triggers` that decide whether the orchestrator may
 route work to it. The selection path is the `select_crew` MCP tool.
 
-This spec used to own a second thing spelled *crew*: **Crew Mode**, the
+A second thing spelled *crew* is **Crew Mode**, the
 `"crew"` chat-slot mode whose control plane (`crew_chat.py`) fanned one
 session's topics out to sub-sessions. It is retired — see
 [Retired: Crew Mode](#retired-crew-mode) — in favour of the Crew Members page
@@ -186,8 +186,8 @@ lists more than one kind: a header that separates nothing is chrome, and the hin
 contrasts a template against a Bot the list must then be showing. The folded
 rows keep their `selection_kind`. `AgentSelector` (the shared roster picker) always
 renders its rows flat; the schedule job form splits the kinds itself with a **Runs
-as** switch (Custom agent / Bot) and hands the selector one kind at a time
-(#18772). A template pick stores the bare template name -- the backend's name-first
+as** switch (Custom agent / Bot) and hands the selector one kind at a time.
+A template pick stores the bare template name -- the backend's name-first
 resolution runs an unaliased template on `default_workspace` and Global memory, so
 no cron contract changes. Unless the config key
 `dashboard.crewmates_in_agent_picker` is on (off by default, read from the shared
@@ -231,12 +231,10 @@ the other slot-owned metadata (`SLOT_OWNED_META_KEYS`, so a restart restores a
 template pick as a template pick and a later name-only pick retracts it) and the list
 projection exposes it, so a same-name member and template are distinct sessions. A
 local switch publishes the name and kind together and writes them to history in one
-operation. Remote create, switch and adopt carry the kind across the gateway boundary
-and mirror the same pair locally. A successful local metadata write makes that pair
-restart-safe on either machine. If the peer commits but the local metadata write
-fails, the response says `local_persistence: pending`, the live slot stays aligned
-with the peer, and the dirty-slot flush retries the local record; until that retry
-lands, a local restart can restore the prior pair. A
+operation; a history write that fails rolls the selection back and answers 503
+`history_unavailable` (`chat_api/agent_switch.py`), so a restart never restores a pair
+that was not saved. A remote dispatch create carries the kind across the gateway
+boundary (`handlers/remote_dispatch_routes.py`, `agent_kind` `""` or `"template"`). A
 member DM thread's pin covers the namespace too: the same name picked as a template
 is refused like any other re-bind (`409 member_thread_agent_pinned`).
 Request and error contract: [learn-cron-dashboard](learn-cron-dashboard.md) → Chat.
@@ -939,11 +937,11 @@ Duplicate affordance, so the three duplicate entry points read as one flow.
 A crew name with a character that needs percent-encoding (a space becomes
 `%20`) never rides a URL path from the dashboard. A path-normalising reverse
 proxy decodes `%20` back to a bare space, the request-line delimiter, and
-answers 502 before the gateway sees the request (#19976). The record update
-takes the name in the body instead (`PUT /api/agents`, #19981). Every other
+answers 502 before the gateway sees the request. The record update
+takes the name in the body instead (`PUT /api/agents`). Every other
 crew route that names the crew in its path also answers under a base64url
 twin, `/api/agents/b64/{name_b64}...`, whose segment uses only
-`[A-Za-z0-9_-]` (#20083): `DELETE`, `GET`/`POST .../avatar`,
+`[A-Za-z0-9_-]`: `DELETE`, `GET`/`POST .../avatar`,
 `GET`/`PUT .../capabilities`, `POST .../capabilities/preview`,
 `POST .../capabilities/detach`, `GET`/`PUT .../worker-kit` and
 `POST .../worker-kit/preview`.
@@ -1343,7 +1341,7 @@ A crew lives only in `config.json` under `agents.<name>`. It is not a kiro-cli
 agent file: `kiro_agent` points at one. A **session** is started from three
 things -- a template, a folder and a memory store -- and a Bot pick is the
 shorthand that fills all three from its row. `resolve_agent_bindings` turns the
-selection into `ResolvedBindings`, in this order (#18328):
+selection into `ResolvedBindings`, in this order:
 
 1. the named crew, when it is a key of `config.agents` and the stated namespace
    is not `template`: its template, workspace, memory store and model pin;
@@ -1653,7 +1651,7 @@ first Bot (key `mate`), while no message has been exchanged with it
 welcome is the first look at the page); else the Bot the user last OPENED
 in this browser (`mc-members-last-member`, written on every open the user made
 -- click, link, or the page's own default open; sending a message is not
-required, #19341) if it is still on the roster, hidden rows included;
+required) if it is still on the roster, hidden rows included;
 else the conversation holding the newest message (greatest `last_active_ts`,
 whoever sent that message; ties keep roster order; a roster with no stamps keeps
 its first row). The built-in `default` Bot is a row like any other here. A
@@ -2004,7 +2002,7 @@ hidden, the roster says so and names the search. A row from an older gateway
 that carries no `has_dm_message` is listed, and a `default` row that carries no
 `has_user_dm_message` keeps the `has_dm_message` rule. The header count and the filter
 tallies count the listed rows plus any hidden row the search reaches. So that
-count is not read as the whole crew (#21852), the list ends with one muted line
+count is not read as the whole crew, the list ends with one muted line
 naming the Bots the rule hides by the label their row shows, the ones the
 user made first (origin Mine, or created on the dashboard) and then in roster
 order: all of them when there are up to three (`hidden_named_hint`), else the
@@ -2202,7 +2200,7 @@ in the thread header: the closed Glass chip stacks up to three faces and ends in
 a chevron. The page's name (`pages.membersPage.title`, "Mates") is the
 chip's accessible name and slides into view on hover, keyboard focus or while
 the list is open (a `grid-cols-[0fr]` to `[1fr]` column, cut under reduced
-motion); it is not drawn at rest, and neither is the roster count (#19045):
+motion); it is not drawn at rest, and neither is the roster count:
 what the page is and how big the crew is are not what a reader comes to this
 corner for. The action ("Switch mate") is the tooltip.
 Its popover lists the roster's own population, not every Bot: the rows
@@ -2273,10 +2271,10 @@ every time and each ask adds a denial row to the security event log.
 
 Because a bare `/members` reopens a Bot, the folded roster is the desktop
 norm, so the switcher also carries the live per-crewmate signals the roster column
-used to. The page hands it the same `signalsOf` resolver its roster status filters
+would. The page hands it the same `signalsOf` resolver its roster status filters
 read (`MemberSignals`: running / needsYou / unread / patrolling / goal) and the
 same `automationOf`, so a cue here can never disagree with the filter that counts
-it. Each popover row IS the roster row (#24687): both render `CrewmateRowBody`
+it. Each popover row IS the roster row: both render `CrewmateRowBody`
 (`website/src/pages/members/CrewmateRowBody.tsx`), so what a state looks like is
 decided once. Before that the two rows were hand-written twice and had drifted
 (the switcher's unread dot was accent while the roster's was `ok`, its second line
@@ -2328,7 +2326,7 @@ thread open) are the same `CrewmateRowBody` read through the same `signalsOf`
 resolver, so the full roster, the folded switcher and the status filter never
 disagree about who is parked on a question, on watch, or holding a goal.
 
-Unread is also the one signal drawn OUTSIDE the closed chip (#19045). Under it,
+Unread is also the one signal drawn OUTSIDE the closed chip. Under it,
 in the header's floating band, hangs one small Glass pill per Bot with an
 unread message who is not the open one (`crewmate-switcher-unread-pill`, roster
 order): the face with the accent unread dot on its corner, then the display
@@ -2369,7 +2367,7 @@ while the pane's top edge stays glass. The pane pays for the band with its
 scroller's top padding — `ChatPane`'s `topInset`, the header's measured height
 (`useMeasuredHeight`, never a constant) plus the pane's own 12px — so at scroll
 top nothing hides under the pill (a Bot's chat draws no pinned-prompt band,
-#18346, so nothing else hangs under it). Whatever can sit between the header and the pane (notices, the
+so nothing else hangs under it). Whatever can sit between the header and the pane (notices, the
 greeting cards) stays in flow in a measured inner box wrapped by an outer box that is padded
 below the header by that height only while the inner box has a height (no
 `empty:hidden`: a `display:none` child measures 0 but is not `:empty`), and while that box has a height the pane's inset is 0: a card
@@ -2381,7 +2379,7 @@ identity stack is taller than the chips beside it, and centring would push the
 switcher and the panel opener down to its middle. It sits at z-20 — above the pane's own chrome (its
 dock), below the floating Profile card (z-30), whose scrim covers it. No hairline under it.
 
-The identity pill is a stack (#39321): the Bot's face (with its loop mark,
+The identity pill is a stack: the Bot's face (with its loop mark,
 52px; 36px in the phone bar) on top, resting on a Glass name chip whose top
 edge it overlaps by 4px. The chip holds the name and the activity line,
 centred. The whole stack is the one button. In the phone shell bar it leaves
@@ -2857,7 +2855,7 @@ line saying the list fills here and is empty now — under an illustration
 built only from the brand mascot assets (`ghost-poses` pose-7 as the
 Bot, an accent `ArrowRight`, pose-4 and pose-6 at 30% opacity as the
 workers not here yet). The poses are fixed-palette `<img>` assets, so the fade
-is an opacity, never a recolour, and reads on both palettes (#23003). Rows are grouped as the Crew panel groups them (approval, working,
+is an opacity, never a recolour, and reads on both palettes. Rows are grouped as the Crew panel groups them (approval, working,
 "Waiting on <mate>" for `with_conductor`, waiting, done), with Done folded. A click
 opens that session in the side panel's **Sessions** tab (below), revealing the
 panel; a docked Profile column closes behind the schedule-draft question. The list counts only
@@ -3617,11 +3615,11 @@ it. Files is the standard SidePanel browser scoped
 to the workspace rule above, labelled **Workspace** on this page's strip (the
 Profile card's word for the same directory; `SidePanel.viewTitles` changes the
 title only, the tab id stays `files`). The browser's own header carries the same
-`viewTitles` word, so tab and header agree (#28031). Dashboard and Files are the only
+`viewTitles` word, so tab and header agree. Dashboard and Files are the only
 STANDING tabs. Side Chat remains available dynamically through selection Ask
 and the plus menu; it is not a standing entry — and the plus menu offers
 Terminal, Browser and app-contributed tabs, bound to the member's slot
-once the thread is confirmed (#25378). Withheld outright are the
+once the thread is confirmed. Withheld outright are the
 transcript-fed views (Changes / Issues / Links / Pins, plus the session
 Summary), Subagents, Workflows and Git (a Bot hands its work to workers), the
 diagnostics group (Logs / Context / Crew log), the chat page's Command Center,
@@ -3631,8 +3629,7 @@ tab on the chat page that has no place in this page's Dashboard, Sessions + File
 artifact DOCUMENT: `SidePanel.isWithheld` ties every document tab (file, diff,
 folder, artifact) to `'files'`, which this page withholds only while the
 thread is unconfirmed, so an artifact opened from a reply link gets its own
-tab here while the Artifacts list stays off the strip (#18320; before that
-rule an artifact tab was keyed to `'artifacts'` and so appeared and vanished
+tab here while the Artifacts list stays off the strip (an artifact tab keyed to `'artifacts'` would appear and vanish
 in one frame).
 
 SidePanel's resting width on this page is 60% of the row after the live navigation
@@ -3857,7 +3854,7 @@ subagent run or a cron job that picked a synced Bot persists an execution
 record of exactly the removed shape: `selection_kind == "member"`, no
 `member_id`, the `default` store, and `selection_name == template_id`. After
 the row is gone that record names a member that no longer exists, and every
-reader that checks the kind used to refuse it -- a resumed or forked chat
+reader that checks the kind would refuse it -- a resumed or forked chat
 (`Crew Member '<name>' is unavailable`), a continued subagent (`selected member
 is unavailable`), and the prompt builder's member lookup.
 
@@ -4032,7 +4029,7 @@ an error row), and the live `streaming` row. No `tool` row is drawn, a
 `spawn_run` launch included: a Bot's chat runs on its conductor, which
 hands work to worker sessions and starts no sub-agents ("Conductor and
 worker" below), so delegated work shows as those sessions in the sidebar
-(the 2026-10-17 crewmate-chat decision entry, shipped in PR #22444).
+(the 2026-10-17 crewmate-chat decision entry).
 Runtime `notice` rows and
 compaction status cards are hidden rather than removed from history. When the
 filter leaves NOTHING to draw although the transcript is not empty (a patroller
@@ -4048,12 +4045,12 @@ opened), not "chats", so it does not contradict a chat that just said the
 Bot has not spoken. Not "sessions" either: the RFC's vocabulary table keeps
 that word out of user copy. The composer of a Bot's chat
 addresses the Bot by name ("Message <name>…"), not the product. The
-composer floats over the transcript like the main chat's (#18279; the dock
+composer floats over the transcript like the main chat's (the dock
 layout in
 [page-layout](../../../website/docs/page-layout.md#decided-the-transcript-scrolls-under-the-composer-glass)),
 so the conversation scrolls under the glass. The
 pinned-prompt banner (Settings → Chat → pin last prompt) is never drawn in a
-Bot's chat (#18346): `ChatPane` turns the pin off when handed a `crewmate`,
+Bot's chat: `ChatPane` turns the pin off when handed a `crewmate`,
 whatever the setting says. The banner exists for long agent runs in the main
 chat, where the question scrolls out of sight while the answer streams; a DM
 with a colleague has short turns, the user's bubble is one row back, the
@@ -4088,14 +4085,14 @@ draw the turn's progress rows either; the working indicator is a TYPING
 BUBBLE — three bouncing dots in the Bot's own gray bubble (the same
 `.message-bubble.crewmate-bubble` fill, corners and measure as its messages,
 so a theme restyling those restyles this), the iMessage sign that a reply is
-being typed (#19997) — with ONE status line under it naming what the Bot
+being typed — with ONE status line under it naming what the Bot
 is doing right now, both rendered by `CrewmateLiveActivity` in the footer
 column. The chat page's ghost-pose carousel (`ChatFooter`) is NOT mounted in a
 Bot chat: `ChatPane` draws one or the other, never both, so a DM reads as
 a conversation and not as a loader, and only one thing moves. The dots are
 decorative (`aria-hidden`); the caption is the live region. The dots are the
 `TypingDots` glyph; the thread panel's "is replying" row keeps its own smaller
-pulsing dots, a status row outside this surface (maintainer ruling on #20032). The
+pulsing dots, a status row outside this surface (a maintainer ruling). The
 bubble folds by height (it stays mounted) while the reply's text is actively
 arriving — that streaming bubble already carries the caret, and dots under it
 read as a second reply coming — and while the caption reads `stopping` or
@@ -4121,7 +4118,7 @@ label while the call runs (`data-activity=tool`), the indicator's own
 (`thinking`), the pill's other phase words otherwise (`writing`, `working`,
 `delegated`, and — since no footer is mounted to say them — `compacting` and
 `stopping`); and the line goes with the turn. The chat line, and only the chat line, HOLDS each reading
-(`components/chat/useHeldActivity.ts`; #18527): a tool call often returns in
+(`components/chat/useHeldActivity.ts`): a tool call often returns in
 tens of milliseconds, so painting the raw reading made titles flash past a
 line that mostly said "Thinking…". Every step stays at least 600ms
 (`HOLD_STEP_MS`); a finished tool's title stays 1.5s
@@ -4147,7 +4144,7 @@ the Bot works. Transcript rows mounting and unmounting above the
 indicator hopped it by a row on every step, and the "hasn't said anything yet"
 hint stays hidden while the Bot is live for the same reason. The one step
 that never names itself in the chat line, even in flight, is the
-`nothing_to_do` call (#16429; the line reads "Thinking…"): matched inside
+`nothing_to_do` call (the line reads "Thinking…"): matched inside
 the hook on the tool log entry's trusted identity (`tool_name` +
 `mcp_server`, the `QUIET_END_*` constants `store/chat/selectors.ts` defines,
 imported through the `store/chatSlice` facade), never on its title — the
@@ -4250,13 +4247,12 @@ and the reply-thread panel's separate reply endpoint retain their behavior.
 How it is drawn: the Bot's messages form **runs**. A message carries NO
 author line — no avatar, no name, no time row — and no avatar gutter: the chat
 is a 1:1 thread with one speaker besides the user, and the DM header's identity
-chip already names that speaker (#16617 retired the per-run author line #15167
-had made redundant); for assistive tech each message row is a `group`
+chip already names that speaker, so a per-run author line would be redundant; for assistive tech each message row is a `group`
 labelled with the Bot's name, which draws nothing. Every message is its
 own FILLED gray bubble (`.crewmate-bubble`, no border, `max-w-[72ch]`) in the full
 text column, left-aligned; the user's bubble opposite is filled with the theme
 ACCENT (`bg-accent` / `text-accent-fg`, the `tone="accent"` variant of
-`UserMessage`), the iMessage pairing #17839 chose, so colour tells the two
+`UserMessage`), the iMessage pairing, so colour tells the two
 speakers apart before alignment does. The `user` entry that carries the tone is
 emitted by `createTranscriptRenderers` whenever the host passes `crewmate` (or
 asks to hide the steer badge). The Bot surface hides the Steered chip
@@ -4327,7 +4323,7 @@ worker it dispatched, the session it is answering about — as a `/chat?sid=…`
 link, a bare slot key, or a short name (`chat-1380`). In this chat those behave
 exactly as they do on the single-chat page: a plain click switches to that
 session, a key chip is an affordance, and an unresolvable one stays muted text
-with its href intact (the #9914 rule). There is no second resolver — the
+with its href intact. There is no second resolver — the
 markdown renderer's own `SessionActionCtx` does the work on both surfaces, and it
 gates on (`onSessionOpen` AND `sessions`), so what changed is only who supplies
 them. `ChatPane` takes the triple as optional props and hands it to
@@ -4358,8 +4354,8 @@ both open the way they do on the single-chat page: in the side panel docked to
 this page, as a Files document tab or an Artifacts document tab against the DM
 slot (`usePanelDocumentActions`, the chat page's own implementation, bound to
 `confirmedSlot`; in overlay mode the panel reveals itself after the open). The
-pane never resolves either itself: `ChatPane` takes `onFileOpen` (#9487,
-#14458) and `onArtifactOpen` (#18320) as optional props and hands them to
+pane never resolves either itself: `ChatPane` takes `onFileOpen` and
+`onArtifactOpen` as optional props and hands them to
 `ChatMessageList`, whose per-row `MessageRenderContext` carries them to every
 assistant row — the SDK default and the Bot bubble both go through
 `renderAssistantBubble`, which passes them to `AssistantMessage` and so to the
@@ -4369,14 +4365,14 @@ an artifact link stays a plain `target="_blank"` anchor to the standalone view
 — which is right for a side chat or an embedded chat and was wrong for the DM,
 where the artifact a Bot just made opened in another browser tab, or
 nowhere at all when the shell swallows the popup. The split-view pane still passes neither,
-for the reason #3300 records (its dock is `activeSlot`-keyed while pane focus
-is not).
+because its dock is `activeSlot`-keyed while pane focus
+is not.
 
 **A document in the member's side panel takes inline comments.** The side
 panel owner (`useMembersPageSidePanel`) hands the panel `onSubmitComments` and
 `connected`, as the chat page does, so a markdown file tab offers the selection
 comment composer and the comment list, and an artifact tab its submit-to-chat
-bar (#20081). The send lives in `useMemberDocumentComments`
+bar. The send lives in `useMemberDocumentComments`
 (`website/src/hooks/`): Submit sends the batch the panel formats into the DM
 through the chat-core transport (`sendTurn`), carrying the composer's busy-send
 decision for that slot (`slotBusySteer`).
@@ -6222,9 +6218,9 @@ its own standing thread. What remains, and why:
 - **The autonudge crew/member boundary keeps its vocabulary.** `autonudge_authz`
   still lists `"crew"` beside `"member"` in the modes that refuse an outside
   arm. With no slot able to carry the mode the entry is unreachable, and it is
-  left in place rather than re-litigating a security boundary in a removal PR.
+  left in place rather than re-litigating a security boundary.
 
-The sidebar's create menu no longer carries the entry that used to create a
+The sidebar's create menu carries no entry that creates a
 crew-mode session: `/members` is reached from its rail item.
 
 ## Conductor mode in the dashboard: the person's lists

@@ -377,8 +377,7 @@ every wheel apply checks the pin again under the update lock before downloading
     `__version__` outranks the running one AND that the checkout can take
     cleanly (behind-only, or already pulled and awaiting a restart). Below the
     floor with nothing newer, or with a diverged checkout that a reset would
-    strip of local commits, the badge is refreshed and nothing resets
-    ([#15796](https://github.com/kirodotdev/KiroCrew/issues/15796)). A
+    strip of local commits, the badge is refreshed and nothing resets. A
     non-primary branch never applies, floor or not.
   - **The `cli.sh` managed venv** builds the newer build the feed offers (that
     `source` permits) beside the running install and stages it ("update ready,
@@ -750,7 +749,7 @@ rejection does not persist as a poisoned last-known-good after the push is corre
 
 ### The live swap, and the cache it invalidates
 
-**A local file is never a reason for a refresh to stand down.** `KIROCREW_SECURITY_POLICY` is a subordinate tier that *tightens* the fetched ceiling, so the refresher keeps polling with one present; a poll that installs a tighter central document is composed with the local one, not blocked by it. There is no local channel that outranks the central document (see the precedence section above for the withdrawn `break_glass` design).
+**A local file is never a reason for a refresh to stand down.** `KIROCREW_SECURITY_POLICY` is a subordinate tier that *tightens* the fetched ceiling, so the refresher keeps polling with one present; a poll that installs a tighter central document is composed with the local one, not blocked by it. There is no local channel that outranks the central document (see the precedence section above).
 
 **Validate, then publish, then install** — in that order, and the order is the point. A
 cache-only child adopts whatever the cache holds, so installing before publishing leaves a
@@ -1174,7 +1173,7 @@ caller cannot re-open the hole by passing the path:
   flags** (`nosuid`/`nodev`/`noexec`, read off the fresh bind via `statvfs`): inside an
   unprivileged user namespace the kernel rejects a remount that would drop a locked
   bit, so on hosts whose `/tmp` or `/home` is mounted `nosuid,nodev` the plain
-  `MS_RDONLY` remount got EPERM and every spawn refused (#8386). Re-asserting bits
+  `MS_RDONLY` remount would get EPERM and refuse every spawn. Re-asserting bits
   already in force only keeps restrictions. `test_sandbox_mount_checked.py` pins all
   six mount sites; `test_sandbox_seal_locked_flags.py` pins the flag re-assertion.
 - **macOS** keeps the `file-write*` and `file-link` denies and drops only `file-read*`.
@@ -1535,7 +1534,7 @@ asked (off, or any scope; an enabled gate with no scopes permits every use). Eve
 this one predicate, so the grant is withheld on every backend and channel alike: kiro-cli's
 own spec, the KAS wire projection, and the `permissions` block written to disk. With no such
 policy nothing changes. On KAS that includes a spec's `toolsSettings.subagent.trustedAgents`,
-which travels as a name-scoped `subagent` allow (#25320): it goes through the same merge as
+which travels as a name-scoped `subagent` allow: it goes through the same merge as
 an authored allow, so every ref of the sub-agent tool is asked about and one refusal drops
 the rule. Its sibling `availableAgents` travels as a `deny` with the listed names in
 `exclude`, which only narrows and so travels whatever the ceiling says.
@@ -2458,9 +2457,7 @@ read-your-writes should add it deliberately, with its own tests.
 > backstops Plane A's soft fail-open. The spool capability tokens
 > themselves sit on the sensitive-path floor (`mcp-apps` in
 > `security._SENSITIVE_HOME_DIRS`) so the agent cannot harvest them.
-> Remaining Plane A parity refinements are tracked in
-> [issue #418](https://github.com/kirodotdev/KiroCrew/issues/418) — see
-> [mcp-apps.md](mcp-apps.md).
+> See [mcp-apps.md](mcp-apps.md).
 
 - **Plane A — the host gate** (`HookManager.on_tool_call`, the primary
   chokepoint). The deny-floor is the *effective* denied-command rule set —
@@ -2556,7 +2553,14 @@ read-your-writes should add it deliberately, with its own tests.
   THIRD-PARTY app's own server is arbitrary installed code whose internals the
   gate cannot see, so its own-server calls are NOT auto-approved here — the OS
   sandbox it runs under and the third-party admission gate bound its behavior,
-  not this prompt. **Inside**
+  not this prompt. **First-party app-own tools auto-approve** (`app-own-tools`
+  row, `apps/own_agent_tools.py`) is the same grant for the tools a first-party
+  app's manifest declares in `agentTools`, listed as `@kirocrew-core/<tool>`: it
+  runs after every deny row and governance, and approves only when the run is the
+  app's (its slot's app, or a cron job's host-written `created_by`), the agent that
+  actually ran is one that app ships, the call's verified identity is a tool that
+  same app declares, the app is enabled, and no `confirm_tools` pattern names the
+  call. A third-party app's `agentTools` block is not read. **Inside**
   the read-only fast-path the semantic
   `tool_kind` is authoritative and is tested first, as an ALLOW-list: only
   `read`/`fetch` auto-approve, and every other non-empty kind falls through to
@@ -2621,7 +2625,7 @@ read-your-writes should add it deliberately, with its own tests.
   `mcp_core._vet_messaging_governance` plus the per-transport `channels` check
   in `mcp_core._vet_channel_governance`; dashboard cross-surface mirror creation
   in `dashboard.chat_mirror` reuses the fail-closed
-  `dashboard.chat_runner._resolve_channel_target` ladder before opaque target
+  `dashboard.chat_turn/recipient._resolve_channel_target` ladder before opaque target
   resolution and at every outbound send boundary (the pre-resolve call carries
   `check_recipient=False` — its link holds the `user:<id>` configured-target
   spelling, which a recipient predicate over conversation ids can never match —
@@ -3456,8 +3460,7 @@ row** (`capability_default=True`): standalone it defaults to allow, but an
 enterprise POLICY can force-disable **installed-pack persona injection** —
 the scope this row enforces today. (It does NOT gate L2 asset serving —
 overlays/topbar/audio keep working under a denying policy; if wholesale L2
-disablement is wanted it will be its own row or an extension of this one,
-tracked with kirodotdev/KiroCrew#312.) The decision is consulted at the
+disablement is wanted it will be its own row or an extension of this one.) The decision is consulted at the
 injection site (`_turn_build_prompt` in `chat_turn/prompt_assembly.py`,
 via `governance_permits("capabilities.theme_persona",
 "", session_key=...)`); a denying policy skips injection silently (info log).
@@ -3501,10 +3504,9 @@ tone-only, content-bound (sha256), and enterprise-disableable via the row
 above — while a default-off would make every installed persona silently dead
 on arrival. The considered stronger alternatives (server-recorded grants,
 default-off until a headless consent story exists) were explicitly declined
-for v1; server-side grant persistence remains the optional half of
-kirodotdev/KiroCrew#312 and MAY tighten the model later without breaking this
+for v1; server-side grant persistence is an optional later step and MAY tighten the model without breaking this
 contract (a stricter server is backward-compatible with consenting clients).
-**Revisit trigger:** #312 MUST be revisited before any persona-scope
+**Revisit trigger:** this consent model MUST be revisited before any persona-scope
 expansion (longer length bound, per-turn injection, or richer pack tiers) —
 scope growth without server-recorded grants is not covered by this decision.
 
@@ -3915,7 +3917,7 @@ In an LTS build the Discover installs ask the same key. `/api/skills/-/discover/
 
 ### Discovery registries — `external_access.registry_hosts`
 
-The RFC [crew-lts-edition](../../request-for-change/rfc-crew-lts-edition.md) appendix row "Extension sources" ([#12677](https://github.com/kirodotdev/KiroCrew/issues/12677)). A ruleset with the `host` matcher, like `network.egress`, that lists the skill and MCP discovery registries the Discover surfaces may query.
+The RFC [crew-lts-edition](../../request-for-change/rfc-crew-lts-edition.md) appendix row "Extension sources". A ruleset with the `host` matcher, like `network.egress`, that lists the skill and MCP discovery registries the Discover surfaces may query.
 
 - **Where it is asked.** `dashboard/handlers/_shared_access.admits_registry`, the one gate all four registry call sites go through: skills.sh, GitHub and edition-contributed providers in `discover.py`, and the official MCP registry in `mcp_discover.py`. The agent's `skill_discover` reaches the registry through the gateway's discover endpoint, so the key binds it too. `extension_governance.registry_host_denied` asks `governance_permits` on the host key and audits like the keys above. Unlike them it fails open: a governance error is logged and written to the SEL as `governance_degraded`, and the registry is admitted, as Discover did before the key existed. The edition's `external_access.admits_registry` is asked only after the key admits, so the stricter of the two wins; the key sits in the shared gate rather than in `DefaultExternalAccessPolicy` because an edition replaces that slot whole. The admission is then audited as before (`external_access:registry:<kind>`).
 - **Item asked.** `_url_host(api_base)`: the host of the provider's base URL, never its self-chosen name or the raw URL, so `skills.sh` matches `https://skills.sh/api` and a provider that repoints at another host stops being admitted. A provider with no network host is asked about `""`, which an allow list admits only through a pattern that matches it, such as `*`.
@@ -4055,8 +4057,7 @@ allow/deny entry is indistinguishable from a typo'd blank a JSON linter would
 keep. The wire vocabulary is therefore owned in one place rather than translated
 at each reader.
 
-**Additive over a floor — the semantics ruling that unblocked
-[issue #6622](https://github.com/kirodotdev/KiroCrew/issues/6622).**
+**Additive over a floor.**
 
 ```json
 {"agent_backend": {"mode": "allow", "allow": ["claude"]}}
@@ -4070,8 +4071,9 @@ from the dashboard** — the trust-root `security_policy.json` is the one file t
 dashboard may not write (see
 [Self-protection](#self-protection-the-keystone)). The guarantee does not rest on
 the governance caller being careful either: `apply_selectable_denials` force-keeps
-the floor even when a caller names it in `denied`. Issue #6622 remains open for
-the wider enforcement question; only the semantics is settled here.
+the floor even when a caller names it in `denied`. The runtime half (re-narrowing the
+selectable backends when a policy is pushed while the gateway runs) is open in
+#19178; only the semantics is settled here.
 
 kiro-cli is the floor rather than KAS deliberately. KAS is not an independent
 harness — it is served by kiro-cli's own ACP relay
