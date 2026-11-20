@@ -129,6 +129,84 @@ describe('useIsMobile on a touch-first device', () => {
   })
 })
 
+describe('the Touch screen layout choice on a touch-first device', () => {
+  const KEY = 'kc-touch-layout'
+  beforeEach(() => {
+    Object.assign(media, { width: 951, coarse: true, hoverNone: true })
+    listeners.clear()
+    localStorage.removeItem(KEY)
+  })
+  afterEach(() => {
+    localStorage.removeItem(KEY)
+    delete (navigator as unknown as Record<string, unknown>).userAgent
+    delete (navigator as unknown as Record<string, unknown>).userAgentData
+  })
+
+  it('Phone layout gives the phone layout at 951px in a desktop-mode browser', () => {
+    localStorage.setItem(KEY, 'phone')
+    setUA(DESKTOP_UA, false)
+    const { result } = renderHook(() => useIsMobile())
+    expect(result.current).toBe(true)
+    expect(document.documentElement.dataset.layoutForm).toBe('phone')
+  })
+
+  it('Desktop layout gives the desktop layout at 951px in a mobile-mode browser', () => {
+    localStorage.setItem(KEY, 'desktop')
+    setUA(PHONE_UA, true)
+    const { result } = renderHook(() => useIsMobile())
+    expect(result.current).toBe(false)
+    expect(document.documentElement.dataset.layoutForm).toBe('desktop')
+  })
+
+  it('Desktop layout keeps the phone layout below 768px', () => {
+    localStorage.setItem(KEY, 'desktop')
+    media.width = 500
+    setUA(PHONE_UA, true)
+    const { result } = renderHook(() => useIsMobile())
+    expect(result.current).toBe(true)
+  })
+
+  it('Automatic, a missing value and an unknown value all follow the browser mode', () => {
+    setUA(PHONE_UA, true)
+    for (const stored of [null, 'auto', 'sideways']) {
+      if (stored === null) localStorage.removeItem(KEY)
+      else localStorage.setItem(KEY, stored)
+      const { result, unmount } = renderHook(() => useIsMobile())
+      expect(result.current, String(stored)).toBe(true)
+      unmount()
+    }
+    setUA(DESKTOP_UA, false)
+    localStorage.setItem(KEY, 'auto')
+    const { result } = renderHook(() => useIsMobile())
+    expect(result.current).toBe(false)
+  })
+
+  it('a device with a mouse ignores the choice', () => {
+    Object.assign(media, { coarse: false, hoverNone: false })
+    setUA(PHONE_UA)
+    localStorage.setItem(KEY, 'phone')
+    const wide = renderHook(() => useIsMobile())
+    expect(wide.result.current).toBe(false)
+    wide.unmount()
+    media.width = 700
+    localStorage.setItem(KEY, 'desktop')
+    const narrow = renderHook(() => useIsMobile())
+    expect(narrow.result.current).toBe(true)
+  })
+
+  it('changing the choice re-lays-out at once, with no reload', async () => {
+    const { saveTouchLayoutChoice } = await import('../lib/touchLayoutForm')
+    setUA(DESKTOP_UA, false)
+    const { result } = renderHook(() => useIsMobile())
+    expect(result.current).toBe(false)
+    act(() => { saveTouchLayoutChoice('phone') })
+    expect(localStorage.getItem(KEY)).toBe('phone')
+    expect(result.current).toBe(true)
+    act(() => { saveTouchLayoutChoice('desktop') })
+    expect(result.current).toBe(false)
+  })
+})
+
 describe('md: and up are the desktop form (tailwind-theme.css)', () => {
   it('each breakpoint variant from md up is off while <html> is marked phone', () => {
     const css = readFileSync(join(__dirname, '..', 'tailwind-theme.css'), 'utf8')

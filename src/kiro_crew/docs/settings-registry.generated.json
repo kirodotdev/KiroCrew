@@ -1880,6 +1880,13 @@
       "hint": "Select a theme for the dashboard"
     },
     {
+      "id": "display.touch-screen-layout",
+      "label": "Touch screen layout",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.touch-screen-layout",
+      "hint": "Use this if your browser has no Request desktop site option. Automatic follows the browser's mobile or desktop site mode. The desktop layout applies from 768px up; below that the phone layout stays. Saved on this browser only."
+    },
+    {
       "id": "display.translucent-panels",
       "label": "Translucent panels",
       "tab": "display",
