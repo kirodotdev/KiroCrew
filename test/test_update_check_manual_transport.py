@@ -322,14 +322,19 @@ class TestTheClickSignsInThroughTheHelper:
         assert updates._manual_verdict["error_code"] == "git_fetch_failed"  # type: ignore[index]
 
 
-_FAR_FUTURE_TTL = 10**12
+_LIVE_LIFETIME = 10**12
+_EXPIRED_LIFETIME = -1
+
+
+def _lifetime(monkeypatch, seconds: int) -> None:
+    monkeypatch.setattr(updates, "_MANUAL_VERDICT_TTL_S", seconds)
 
 
 def _click_found_an_update(git_checkout, monkeypatch) -> None:
     """The owner's click on a private remote found a newer build (3 commits behind)."""
     _standalone(monkeypatch)
     # The default TTL is minutes; a test never waits on a clock, so it is widened.
-    monkeypatch.setattr(updates, "_MANUAL_VERDICT_TTL_S", _FAR_FUTURE_TTL)
+    _lifetime(monkeypatch, _LIVE_LIFETIME)
     git_checkout["rev_list"] = b"0\t3\n"
     asyncio.run(updates._do_update_check(manual=True))
 
@@ -407,7 +412,7 @@ class TestTheClicksVerdictIsScoped:
         _click_found_an_update(git_checkout, monkeypatch)
         assert updates._live_manual_verdict() is not None
 
-        monkeypatch.setattr(updates, "_MANUAL_VERDICT_TTL_S", -1)
+        _lifetime(monkeypatch, _EXPIRED_LIFETIME)
         assert updates._live_manual_verdict() is None
         fields = updates.status_update_fields(next_start={})
         assert fields["update_available"] is not True
