@@ -16,10 +16,15 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_capabilities import CapabilityError
 from kiro_crew.dashboard.chat_delivery import attachment_meta
-from kiro_crew.dashboard.chat_utils import MODEL_UNAVAILABLE_KIND, TRANSIENT_RETRY_KIND
+from kiro_crew.dashboard.chat_utils import (
+    MODEL_UNAVAILABLE_KIND,
+    TRANSIENT_RETRY_KIND,
+    payload_for_replay,
+)
 from kiro_crew.dashboard.host_sandbox_refusal import host_sandbox_refusal
 from kiro_crew.dashboard.host_sandbox_refusal import row_meta as host_sandbox_row_meta
 from kiro_crew.dashboard.host_sandbox_refusal import row_text as host_sandbox_row_text
+from kiro_crew.dashboard.slot_queue_repository import PROMPT_HOOKS_RAN_META
 from kiro_crew.security import redact
 from kiro_crew.session_capabilities import CapabilityStartupError
 
@@ -53,7 +58,7 @@ if TYPE_CHECKING:
         _turn_retry_outcomes,
     )
     from kiro_crew.dashboard.chat_turn.turn_entry import _session_stop_generation, _stop_pressed
-    from kiro_crew.dashboard.chat_turn.turn_ledgers import _queue_recovery
+    from kiro_crew.dashboard.chat_turn.turn_ledgers import _prompt_hooks_ran, _queue_recovery
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
     from kiro_crew.dashboard.chat_turn.turn_reply_seams import _persist_partial_reply
 
@@ -393,7 +398,15 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         # The verbatim requeue carries the retry identity forward via
         # _queue_recovery itself (one mechanism for every recovery
         # family), so this site needs no site-local re-stamp.
-        _queue_recovery(turn, 0, _message_without_merge_cards, kind=SYNTHETIC_RECOVERY_KIND)
+        _queue_recovery(
+            turn,
+            0,
+            _message_without_merge_cards,
+            kind=SYNTHETIC_RECOVERY_KIND,
+            # Verbatim replay, tagged like its siblings: ORIGINAL for the
+            # person's words, CONTINUATION for the runner's own text.
+            payload=payload_for_replay(turn._is_synthetic),
+        )
         # Fresh conversation ⇒ fresh ladder for the recovery cycle.
         slot._transient_5xx_retries = 0
         slot._infra_retries = 0
@@ -715,6 +728,9 @@ def _unsent_resend(turn: _ChatTurn) -> tuple[str, dict[str, Any]] | None:
     if _mirror_echo_owed(turn):
         # Without the echo flag the linked channel gets the answer with no question.
         meta[MIRROR_ECHO_OWED_META_KEY] = True
+    if _prompt_hooks_ran(turn):
+        # A re-send whose earlier attempt ran the prompt hooks is still a replay to them.
+        meta[PROMPT_HOOKS_RAN_META] = True
     return text, meta
 
 

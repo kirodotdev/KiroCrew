@@ -486,6 +486,87 @@ class TestRunChatTransientRetryPoisonedDiscard:
         assert slot._poisoned_reset_used is False
         assert slot._prestream_exhausted_cycles == 0
 
+    @pytest.mark.parametrize("synthetic", [False, True])
+    @pytest.mark.asyncio
+    async def test_the_discard_requeue_says_whose_words_it_re_sends(
+        self, tmp_path, monkeypatch, synthetic
+    ):
+        """The requeue after the discard tags the person's message ORIGINAL (it re-sends
+        their words, and its prompt hooks are told so) and a runner continuation
+        CONTINUATION, as every other verbatim requeue does."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.chat_utils import SYNTHETIC_RECOVERY_KIND, RecoveryPayload
+        from kiro_crew.hooks import HOOK_EVENT_USER_PROMPT_SUBMIT
+        from kiro_crew.llm_helpers import TRANSIENT_RETRIES
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        _poisoned_calls = 2 * (TRANSIENT_RETRIES + 1)
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= _poisoned_calls:
+                raise AcpError(self._TRANSIENT)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="recovered-after-discard")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        fires: list[tuple[str, str, dict]] = []
+
+        class _Store:
+            async def fire(self, event, context="", **kw):
+                fires.append((event, context, kw))
+                return []
+
+        state = self._make_state(tmp_path, monkeypatch)
+        state._hook_store = _Store()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._agent_fallback_chain", lambda: ())
+        self._wire_sessions(state, self._client(_stream))
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        payloads: list[str] = []
+        repo = slot._queue_repository
+        real_insert = repo.queue_insert
+
+        def _record(owner, index, content, kind="", payload="", *args, **kw):
+            if kind == SYNTHETIC_RECOVERY_KIND and any(
+                "keeps rejecting" in t for t in self._err_texts(slot)
+            ):
+                payloads.append(payload)
+            return real_insert(owner, index, content, kind, payload, *args, **kw)
+
+        kwargs = {"_synthetic_payload": True} if synthetic else {}
+        with (
+            patch.object(chat_runner, "_recovery_delay", new_callable=AsyncMock),
+            patch(
+                "kiro_crew.dashboard.chat_runner.run_bg_oneliner",
+                new_callable=AsyncMock,
+                return_value="OK",
+            ),
+        ):
+            await _run_chat(state, slot, "first try")
+            await self._drain_bg(state)
+            monkeypatch.setattr(repo, "queue_insert", _record)
+            await _run_chat(state, slot, "continue", **kwargs)
+            await self._drain_bg(state)
+
+        state.sessions.discard_conversation.assert_awaited_once()
+        assert any("recovered-after-discard" in t for t in self._assistant_texts(slot))
+        expected = RecoveryPayload.CONTINUATION if synthetic else RecoveryPayload.ORIGINAL
+        assert payloads == [expected], payloads
+        # The row the requeue drains as: the person's re-sent message, or the runner's.
+        re_sent = [
+            m for m in slot.messages if m.get("role") == "inject" and m["content"] == "continue"
+        ]
+        assert re_sent, "the discard requeue never drained -- the test proves nothing"
+        assert (re_sent[-1].get("meta") or {}).get("injectKind") == (
+            "recovery" if synthetic else "user_replay"
+        )
+        last_prompt = [kw for event, _, kw in fires if event == HOOK_EVENT_USER_PROMPT_SUBMIT][-1]
+        assert (last_prompt.get("replay") is True) is (not synthetic)
+
     @pytest.mark.asyncio
     async def test_poisoned_discard_is_one_shot_until_a_turn_lands(self, tmp_path, monkeypatch):
         """If even the fresh post-discard conversation keeps failing (genuine

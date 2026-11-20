@@ -974,6 +974,26 @@ class TestScriptHookStoreFire:
         )
         assert [r.stdout.strip() for r in results] == [expected, expected], results
 
+    @pytest.mark.parametrize("replay", [True, False])
+    @pytest.mark.asyncio
+    async def test_a_replayed_prompt_marks_every_hooks_stdin_only_when_asked(
+        self, hook_store: ScriptHookStore, tmp_path: Path, replay
+    ):
+        """``replay`` puts ``"replay": true`` on a stored hook's and a spec hook's stdin; off, neither has it."""
+        command = _script_command(
+            tmp_path / "replay_hook.py",
+            "import json, sys; print(json.dumps(json.load(sys.stdin).get('replay', '<absent>')))\n",
+        )
+        hook_store.create(
+            {"name": "stored", "event": HOOK_EVENT_USER_PROMPT_SUBMIT, "command": command}
+        )
+        spec = ScriptHook(id="spec:a1:x", event=HOOK_EVENT_USER_PROMPT_SUBMIT, command=command)
+        results = await hook_store.fire(
+            HOOK_EVENT_USER_PROMPT_SUBMIT, "hi", extra_hooks=[spec], replay=replay
+        )
+        expected = "true" if replay else '"<absent>"'
+        assert [r.stdout.strip() for r in results] == [expected, expected], results
+
 
 class TestRunScriptHookSpawnForm:
     """The spawn form per platform, and the guard that keeps isolation ahead of it.

@@ -74,6 +74,274 @@ class TestRunChatTransientRetryStreamFailure:
         # Budget reset to 0 after the successful turn.
         assert slot._transient_5xx_retries == 0
 
+    @staticmethod
+    def _recording_hook_store():
+        """A hook store that records every fire's event, prompt and keywords."""
+        fires: list[tuple[str, str, dict]] = []
+
+        class _Store:
+            async def fire(self, event, context="", **kw):
+                fires.append((event, context, kw))
+                return []
+
+        return _Store(), fires
+
+    @staticmethod
+    def _prompt_marks(fires) -> list[tuple[str, bool]]:
+        """Each UserPromptSubmit fire's prompt, and whether it was marked a replay."""
+        from kiro_crew.hooks import HOOK_EVENT_USER_PROMPT_SUBMIT
+
+        return [
+            (context, kw.get("replay") is True)
+            for event, context, kw in fires
+            if event == HOOK_EVENT_USER_PROMPT_SUBMIT
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_re_sent_prompt_tells_its_prompt_hooks_it_is_a_replay(
+        self, tmp_path, monkeypatch
+    ):
+        """A transient 5xx before any reply re-sends the prompt; only that re-send's
+        UserPromptSubmit fire is marked, the first attempt's is not."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.hooks import HOOK_EVENT_USER_PROMPT_SUBMIT
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise AcpError(self._TRANSIENT)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok-result")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        state._hook_store, fires = self._recording_hook_store()
+        self._wire_sessions(state, self._client(_stream))
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        with patch.object(chat_runner, "_recovery_delay", new_callable=AsyncMock):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        assert call_count == 2
+        assert self._prompt_marks(fires) == [("hello", False), ("hello", True)], fires
+        assert not any(
+            kw.get("replay") for event, _, kw in fires if event != HOOK_EVENT_USER_PROMPT_SUBMIT
+        )
+
+    @staticmethod
+    def _sessions_failing_at(state, client, failures: dict[int, BaseException]) -> list[int]:
+        """Make the session claim raise ``failures[n]`` on its n-th call (1-based),
+        before the turn reaches its prompt hooks; every other call succeeds."""
+        calls: list[int] = []
+
+        async def _get_or_create(*_args, **_kwargs):
+            calls.append(len(calls) + 1)
+            failure = failures.get(len(calls))
+            if failure is not None:
+                raise failure
+            return client, True, False
+
+        state.sessions.get_or_create = AsyncMock(side_effect=_get_or_create)
+        return calls
+
+    @staticmethod
+    def _answers_after(failures: dict[int, BaseException]):
+        """A stream that raises ``failures[n]`` on its n-th prompt, else answers."""
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        prompts: list[str] = []
+
+        async def _stream(msg):
+            prompts.append(msg)
+            failure = failures.get(len(prompts))
+            if failure is not None:
+                raise failure
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok-result")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        return _stream, prompts
+
+    @pytest.mark.asyncio
+    async def test_a_message_whose_first_attempt_died_before_its_prompt_hooks_is_not_a_replay(
+        self, tmp_path, monkeypatch
+    ):
+        """The first attempt died claiming its session, before UserPromptSubmit
+        fired; the re-send's fire is the message's first and only one, so it is not
+        marked: a hook that skips replays would otherwise lose the person's turn.
+        The next message's re-send, whose first attempt did fire, still is."""
+        from kiro_crew.acp.client import AcpError, AcpProcessDied
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _run_chat
+
+        stream, prompts = self._answers_after({2: AcpError(self._TRANSIENT)})
+        client = self._client(stream)
+        state = self._make_state(tmp_path, monkeypatch)
+        state._hook_store, fires = self._recording_hook_store()
+        self._wire_sessions(state, client)
+        claims = self._sessions_failing_at(state, client, {1: AcpProcessDied("cold start died")})
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        with patch.object(chat_runner, "_recovery_delay", new_callable=AsyncMock):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+            assert len(claims) == 2, "the failed claim was never retried -- the test proves nothing"
+            assert len(prompts) == 1
+            assert self._prompt_marks(fires) == [("hello", False)], fires
+            await _run_chat(state, slot, "again")
+            await self._drain_bg(state)
+
+        assert len(prompts) == 3
+        assert self._prompt_marks(fires) == [
+            ("hello", False),
+            ("again", False),
+            ("again", True),
+        ], fires
+
+    @pytest.mark.asyncio
+    async def test_a_re_send_that_dies_before_its_prompt_hooks_keeps_the_next_one_a_replay(
+        self, tmp_path, monkeypatch
+    ):
+        """Attempt 1 fires and fails, attempt 2 dies claiming its session before it
+        fires, attempt 3 answers: attempt 3 is still a replay to the prompt hooks,
+        because the requeue of attempt 2 carries attempt 1's stamp forward."""
+        from kiro_crew.acp.client import AcpError, AcpProcessDied
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.slot_queue_repository import PROMPT_HOOKS_RAN_META
+
+        stream, prompts = self._answers_after({1: AcpError(self._TRANSIENT)})
+        client = self._client(stream)
+        state = self._make_state(tmp_path, monkeypatch)
+        state._hook_store, fires = self._recording_hook_store()
+        self._wire_sessions(state, client)
+        claims = self._sessions_failing_at(state, client, {2: AcpProcessDied("claim died")})
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        with patch.object(chat_runner, "_recovery_delay", new_callable=AsyncMock):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        assert len(claims) == 3 and len(prompts) == 2, (claims, prompts)
+        assert any("ok-result" in t for t in self._assistant_texts(slot))
+        assert self._prompt_marks(fires) == [("hello", False), ("hello", True)], fires
+        replays = [m for m in slot.messages if m.get("role") == "inject"]
+        assert len(replays) == 2, replays
+        assert all((m.get("meta") or {}).get(PROMPT_HOOKS_RAN_META) is True for m in replays)
+
+    @pytest.mark.parametrize("synthetic", [False, True])
+    @pytest.mark.asyncio
+    async def test_a_sign_in_retry_says_whose_words_it_re_sends(
+        self, tmp_path, monkeypatch, synthetic
+    ):
+        """A re-send that hits a signed-out CLI is queued for after sign-in with the
+        payload its siblings use: the person's words ORIGINAL, so the post-sign-in
+        fire is still a replay; a continuation CONTINUATION, never marked."""
+        from kiro_crew.acp.client import AcpAuthRequired, AcpError
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.chat_utils import SYNTHETIC_RECOVERY_KIND, RecoveryPayload
+
+        stream, prompts = self._answers_after({1: AcpError(self._TRANSIENT)})
+        client = self._client(stream)
+        state = self._make_state(tmp_path, monkeypatch)
+        state._hook_store, fires = self._recording_hook_store()
+        self._wire_sessions(state, client)
+        self._sessions_failing_at(state, client, {2: AcpAuthRequired("login required")})
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        text = "continue" if synthetic else "hello"
+
+        with patch.object(chat_runner, "_recovery_delay", new_callable=AsyncMock):
+            await _run_chat(state, slot, text, _synthetic_payload=synthetic)
+            await self._drain_bg(state)
+            held = [q for q in slot._queue if q.get("kind") == SYNTHETIC_RECOVERY_KIND]
+            assert len(held) == 1, f"expected the sign-in retry, queue={slot._queue}"
+            expected = RecoveryPayload.CONTINUATION if synthetic else RecoveryPayload.ORIGINAL
+            assert held[0].get("payload") == expected
+            # Signed in again: the held queue drains.
+            slot._last_turn_auth_required = False
+            await chat_runner._start_next_queued_turn(state, slot)
+            await self._drain_bg(state)
+
+        assert len(prompts) == 2
+        assert any("ok-result" in t for t in self._assistant_texts(slot))
+        assert self._prompt_marks(fires) == [(text, False), (text, not synthetic)], fires
+
+    @pytest.mark.asyncio
+    async def test_a_queued_re_send_the_person_edits_is_a_new_prompt(self, tmp_path, monkeypatch):
+        """The person rewrites the queued re-send before it runs: no prompt hook ever
+        saw the new words, so their fire is not marked. The next message's re-send,
+        left as it was, still is."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.chat_utils import SYNTHETIC_RECOVERY_KIND
+
+        stream, prompts = self._answers_after(
+            {1: AcpError(self._TRANSIENT), 3: AcpError(self._TRANSIENT)}
+        )
+        state = self._make_state(tmp_path, monkeypatch)
+        state._hook_store, fires = self._recording_hook_store()
+        self._wire_sessions(state, self._client(stream))
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        repo = slot._queue_repository
+        real_insert = repo.queue_insert
+        edited: list[str] = []
+
+        def _insert_then_edit(owner, index, content, kind="", *args, **kw):
+            qid = real_insert(owner, index, content, kind, *args, **kw)
+            if kind == SYNTHETIC_RECOVERY_KIND and not edited:
+                assert slot.queue_edit_by_id(qid, "hello, said better")
+                edited.append(qid)
+            return qid
+
+        monkeypatch.setattr(repo, "queue_insert", _insert_then_edit)
+        with patch.object(chat_runner, "_recovery_delay", new_callable=AsyncMock):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+            await _run_chat(state, slot, "again")
+            await self._drain_bg(state)
+
+        assert edited, "no re-send was queued -- the test proves nothing"
+        assert len(prompts) == 4
+        assert self._prompt_marks(fires) == [
+            ("hello", False),
+            ("hello, said better", False),
+            ("again", False),
+            ("again", True),
+        ], fires
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_send_does_not_mark_its_prompt_hooks(self, tmp_path, monkeypatch):
+        """A message that is answered first time fires UserPromptSubmit once, unmarked."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok-result")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        state._hook_store, fires = self._recording_hook_store()
+        self._wire_sessions(state, self._client(_stream))
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        await _run_chat(state, slot, "hello")
+        await self._drain_bg(state)
+
+        assert self._prompt_marks(fires) == [("hello", False)], fires
+
     @pytest.mark.asyncio
     async def test_transient_post_token_textonly_retries_once(self, tmp_path, monkeypatch):
         """A transient 5xx after streamed text is retried once, append-only.

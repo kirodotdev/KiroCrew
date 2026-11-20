@@ -263,6 +263,19 @@ boundary:
 | `workflow` | The gateway's follow-up prompt after a workflow result lands | Collapsed one-line note |
 | `heartbeat` | A heartbeat task's prompt delivered with `deliver:prompt:dashboard:<slot>` | Collapsed one-line note |
 
+A recovery turn that sends an earlier prompt again, unchanged (a `user_replay`
+row, for a person's message), after the prompt hooks already ran for an attempt
+of it that did not finish the turn (it failed, was refused, or stopped early)
+fires `UserPromptSubmit` again, and that fire's hook stdin carries
+`"replay": true`. `turn_dispatch_gates` sets it for a synthetic recovery turn
+whose payload is not a runner continuation and whose row carries the
+`promptHooksRan` stamp, which `_queue_recovery` writes when the attempt it
+requeues, or one before it, ran the fire. A re-send whose earlier attempts all
+died before the fire (a cold start or a session claim that failed) is the
+prompt's first fire and is not marked. A continuation Kiro Crew writes to resume
+a turn is never marked, even when re-sent, and an edit that changes a queued re-send's words
+drops the stamp: it is a new prompt. No other prompt carries the key.
+
 `resolveInjectCard` in `website/src/pages/chat/RecoveryCard.tsx` is the single
 decision point, shared by `ChatPage` and the `transcriptRenderers` registry so the
 surfaces cannot disagree. It prefers a recognised content marker (durable, and

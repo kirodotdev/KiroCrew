@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.steer_queue import _has_user_queued_followup
     from kiro_crew.dashboard.chat_turn.turn_context import _detach_appended_context
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
+    from kiro_crew.dashboard.chat_turn.turn_ledgers import _prompt_hooks_ran
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
     from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _crew_fires_agent_spawn, _fire
 
@@ -333,7 +334,18 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     else:
         spawn_injected = []
 
-    injected = await _fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, message) if _sends_prompt else []
+    # A re-send of a prompt whose prompt hooks already ran for an earlier attempt
+    # tells them so (``"replay": true``), so one person turn is not taken for two.
+    # A runner continuation (``_synthetic_payload``) is not a re-send, and nor is
+    # a requeue whose earlier attempt died before this fire (``_prompt_hooks_ran``).
+    _replays_prompt = (
+        _synthetic_recovery_turn and not turn._synthetic_payload and _prompt_hooks_ran(turn)
+    )
+    if _sends_prompt:
+        injected = await _fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, message, replay=_replays_prompt)
+        turn._prompt_hooks_fired = True
+    else:
+        injected = []
     all_injected = spawn_injected + injected
     if all_injected:
         hook_ctx = "\n\n".join(all_injected)

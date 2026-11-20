@@ -227,6 +227,9 @@ class _ChatTurn:
     _pending_tool_ids: "dict[str, PostToolIdentity]"
     _pending_tools: "dict[str, str]"
     _person_steered_turn: "bool"
+    # This attempt ran its UserPromptSubmit fire (``turn_dispatch_gates``). Set in
+    # __init__ so a turn that dies before the fire reads False.
+    _prompt_hooks_fired: "bool"
     # The permission request being decided had its PreToolUse hooks fired by the
     # gate and they passed; reset at the start of each request's decision.
     _pre_tool_hooks_fired: "bool"
@@ -446,6 +449,7 @@ class _ChatTurn:
         self._agent_started = _agent_started
         self._agent_turn_stream = None
         self._agent_cancel_owed = False
+        self._prompt_hooks_fired = False
         self._agent_cancel_event = None
         # No admission reservation until the context-builder branch opens one.
         self._admission_slot = None

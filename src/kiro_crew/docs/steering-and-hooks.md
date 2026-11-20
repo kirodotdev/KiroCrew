@@ -348,6 +348,19 @@ chat, a channel thread); `subagent_id` and `parent_session_key` appear only on
 an event a spawned subagent fired. To tell a person's turn from a subagent's,
 check for `subagent_id`, not `parent_session_key`.
 
+In a dashboard chat, Kiro Crew can send a prompt again, unchanged, when an
+attempt the prompt hooks already ran for did not finish the turn: it failed, was
+refused, or stopped early. The hooks fire again for the re-send, and that
+`UserPromptSubmit` carries `"replay": true`, so a hook can tell it from a new
+message and choose to skip it or still process the text. A continuation Kiro
+Crew writes to resume a turn is never marked, even when re-sent, and a queued
+re-send you edit is a new prompt and is not marked. The re-sent prompt is an earlier one from
+this chat that got no reply, not always the one just before it: a message sent
+while it waited can run first. The key is absent on every other prompt. Channel
+turns fire `UserPromptSubmit` once per message and never carry it. On kiro-cli's
+older v2 engine kiro-cli runs the agent's own hooks itself, and they do not get
+it.
+
 An agent spec's own `hooks` that Kiro Crew runs itself (for a chat session, a
 subagent or the task runner) also get the session's ACP id, as
 `KIRO_SESSION_ID` in the environment and as `session_id` on stdin, the same
