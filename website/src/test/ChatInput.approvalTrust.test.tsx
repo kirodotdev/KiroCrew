@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@radix-ui/react-dropdown-menu"))
 vi.mock("@radix-ui/react-popover", async () => await import("./__mocks__/@radix-ui/react-popover"))
 
-import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, cleanup, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { COMMAND_WRAP } from '../components/chat-input/CuedScrollBox'
 import { renderWithProviders, renderHookWithProviders, createTestStore } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { useToolApproval } from '../components/chat-input/approval'
@@ -288,6 +289,35 @@ describe('ChatInput approval Trust menu and receipts', () => {
     } finally {
       localStorage.removeItem('mc-chat-config')
     }
+  })
+
+  it('wraps the card\'s command and tool name at spaces, never mid-word', () => {
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
+    expect(screen.getByTestId('approval-command').className).toContain(COMMAND_WRAP)
+    expect(screen.getByTestId('approval-command').className).not.toContain('break-all')
+    cleanup()
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(mcpStateWithPurpose()) })
+    expect(screen.getByTestId('approval-tool').className).toContain(COMMAND_WRAP)
+  })
+
+  it('with simplified names off, shows the agent\'s description as a second line under the label', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ simplifiedToolNames: false }))
+    onTestFinished(() => localStorage.removeItem('mc-chat-config'))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(mcpStateWithPurpose()) })
+    expect(screen.getByTestId('approval-purpose')).toHaveTextContent('Say hello to the team')
+  })
+
+  it('shows no second line when the heading already is the description, or there is none', () => {
+    const { unmount } = renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(mcpStateWithPurpose()) })
+    expect(screen.getByTestId('approval-title')).toHaveTextContent('Say hello to the team')
+    expect(screen.queryByTestId('approval-purpose')).not.toBeInTheDocument()
+    unmount()
+    localStorage.setItem('mc-chat-config', JSON.stringify({ simplifiedToolNames: false }))
+    onTestFinished(() => localStorage.removeItem('mc-chat-config'))
+    const state = mcpStateWithPurpose()
+    state.chat!.messages[1].meta!.tool_purpose = ''
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(state) })
+    expect(screen.queryByTestId('approval-purpose')).not.toBeInTheDocument()
   })
 
   it('Trust dropdown until-midnight command row sends the seconds left in the day', async () => {

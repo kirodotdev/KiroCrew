@@ -96,6 +96,22 @@ describe('the approval card\'s menus on a touch device', () => {
     expect(document.activeElement).toBe(row)
   })
 
+  it('in the real menu, the Duration track stays on one line and the hour\'s end time is a caption under it', async () => {
+    stubTouch()
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
+    await tapOpen(screen.getByRole('button', { name: 'Trust' }))
+    const track = screen.getByRole('group')
+    // A segment never drops to a second row, and none grows a second line.
+    expect(track.className).toContain('flex-nowrap')
+    expect(track.className.split(/\s+/)).not.toContain('flex-wrap')
+    const segments = screen.getAllByRole('menuitemradio')
+    for (const segment of segments) expect(segment.className).toContain('whitespace-nowrap')
+    act(() => { fireEvent.click(segments[0]) })
+    const ends = screen.getByTestId('trust-duration-ends')
+    expect(track.contains(ends)).toBe(false)
+    expect(track.getAttribute('aria-describedby')).toBe(ends.id)
+  })
+
   it('an open Override menu blocks the page too', async () => {
     stubTouch()
     const state = stateWithApproval()

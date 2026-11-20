@@ -355,7 +355,10 @@ DropdownMenuRadioItem.displayName = DropdownMenuPrimitive.RadioItem.displayName
 function DropdownMenuRadioSegments({ className, ...props }: React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.RadioGroup>) {
   return (
     <DropdownMenuPrimitive.RadioGroup
-      className={cn('inline-flex flex-wrap gap-0.5 rounded-lg border border-border bg-bg p-0.5', className)}
+      // One line: a segment that drops to a second row reads as a second
+      // setting. Labels are short, and a caller puts anything longer (an end
+      // time) in a caption beside the track.
+      className={cn('inline-flex flex-nowrap gap-0.5 rounded-lg border border-border bg-bg p-0.5', className)}
       {...props}
     />
   )
