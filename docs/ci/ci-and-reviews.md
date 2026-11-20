@@ -722,6 +722,14 @@ names a file or a symbol precisely BECAUSE it is not there yet. `fenced-path` al
 skips the packaged user docs under `src/kiro_crew/docs/`, where a task-spec path is
 a template for the reader's own project rather than a file in this checkout.
 
+`dead-identifier` has two more exemptions. A doc anywhere else that specifies
+something not built yet puts a `Status: planned` line in its first twelve lines;
+only this check honours it, so the paths such a doc cites into today's code are
+still checked. A name defined outside this repository (a vendor API, another
+harness, an OS facility) goes in `.github/docs-lint-external-identifiers.txt`,
+under a comment naming its source. Never list a name this repo defines: the list
+would hide its rename.
+
 The builtin app tree is the mirror image of that exemption: it keeps every fact
 check and every link check, and drops only the two CURATION rules, reachability and
 the per-directory index. A `SKILL.md` is a skill definition an agent loads verbatim,
