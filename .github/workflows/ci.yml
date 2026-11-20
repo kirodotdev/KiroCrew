@@ -1467,6 +1467,49 @@ jobs:
 
       # As the runner identity: the tests below run unprivileged and cannot
       # write the job summary. Lists what scripts.ci_main_red_skip deselects.
+      - uses: ./.github/actions/seed-node-tool-cache
+        if: matrix.shard == 1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: matrix.shard == 1
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            website/package-lock.json
+            website/electron/package-lock.json
+
+      - name: Run the frontend specs that read the changed docs
+        if: matrix.shard == 1 && steps.scope.outputs.frontend == 'true'
+        working-directory: website
+        env:
+          FRONTEND_FILE: ${{ runner.temp }}/docs-readers-frontend.txt
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$I18N_BASE_REF" 'the diff-scoped i18n test gates')"
+          export I18N_BASE_REF
+          mapfile -t targets < "$FRONTEND_FILE"
+          npx vitest run --passWithNoTests ${targets[@]+"${targets[@]}"}
+
+      # The whole suite, about a minute, because its specs read docs by
+      # computed paths the selector cannot see. Install and run as in
+      # `electron-test`.
+      - name: Electron shell suite (whole)
+        if: matrix.shard == 1
+        working-directory: website/electron
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm test
+
+      # The backend half runs last: run-as-runner hands the workspace to the
+      # unprivileged user, after which git in a root step (resolve-i18n-base.sh
+      # in the frontend step) refuses the checkout as dubious ownership.
       - name: List the tests skipped as red on main
         if: steps.scope.outputs.backend == 'true'
         env:
@@ -1509,45 +1552,6 @@ jobs:
           exit "$rc"
 
       # Shard 1 only, with the frontend specs and the Electron suite below.
-      - uses: ./.github/actions/seed-node-tool-cache
-        if: matrix.shard == 1
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: matrix.shard == 1
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: |
-            website/package-lock.json
-            website/electron/package-lock.json
-
-      - name: Run the frontend specs that read the changed docs
-        if: matrix.shard == 1 && steps.scope.outputs.frontend == 'true'
-        working-directory: website
-        env:
-          FRONTEND_FILE: ${{ runner.temp }}/docs-readers-frontend.txt
-          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
-        run: |
-          set -euo pipefail
-          npm ci --no-audit --no-fund
-          I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
-            "$I18N_BASE_REF" 'the diff-scoped i18n test gates')"
-          export I18N_BASE_REF
-          mapfile -t targets < "$FRONTEND_FILE"
-          npx vitest run --passWithNoTests ${targets[@]+"${targets[@]}"}
-
-      # The whole suite, about a minute, because its specs read docs by
-      # computed paths the selector cannot see. Install and run as in
-      # `electron-test`.
-      - name: Electron shell suite (whole)
-        if: matrix.shard == 1
-        working-directory: website/electron
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
-        run: |
-          set -euo pipefail
-          npm ci --no-audit --no-fund
-          npm test
 
   backend-test:
     name: Backend Tests
