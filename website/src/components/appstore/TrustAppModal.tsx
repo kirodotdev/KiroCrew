@@ -940,7 +940,7 @@ export default function TrustAppModal({
               )}
             </div>
           )}
-          {/* `permissions.kiroOperations`: approving the install approves the names listed here. */}
+          {/* `permissions.kiroOperations`: listed so the owner knows what the app will ask for. Installing approves none of it; the app's page does. */}
           {kiroOperations.length > 0 && (
             <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3" data-testid="trust-kiro-operations">
               <div className="flex items-center gap-2 font-semibold text-text">

@@ -10301,10 +10301,12 @@ prefix or service name. `AppManifest.validate` reports a bad entry, a repeat or 
 non-list (`Permissions.list_errors`); the readers keep only valid names, each once.
 
 **The grant.** Each name is an entry of the `kiroOperations` family of the app's approved
-set, registered explicit-only in `point_grants`. It is staged like `permissions.api`:
-the install consent approves the names the trust prompt lists (`trust-kiro-operations`),
-an update that adds a name holds it while the old names keep working, the owner approves
-it on the app's page (`kiroOperationsGrant` on the app row, `staged-kiro-operations`; the
+set, registered explicit-only in `point_grants` and listed in
+`manager_records._OWNER_APPROVED_FAMILIES`: an install or first registration approves none.
+The trust prompt lists the names (`trust-kiro-operations`; the catalog discloses them
+before install through `official_catalog._disclosed_permissions_manifest`), an update that
+adds a name holds it while the old names keep working, and the owner approves each name
+on the app's page (`kiroOperationsGrant` on the app row, `staged-kiro-operations`; the
 Permissions card lists every declared name and marks the held-back ones, `kiro-operations`),
 and a dropped name needs nothing. A set stored before this family existed approves none.
 `kiro_operations.app_kiro_operations(app)` is the one reader: read fresh on every call,

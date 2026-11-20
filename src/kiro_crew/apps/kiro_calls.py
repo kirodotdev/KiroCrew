@@ -258,6 +258,8 @@ def parse_json_body(raw: bytes) -> dict[str, Any]:
         return {}
     try:
         payload = json.loads(raw)
+    except RecursionError:
+        raise KiroCallError(413, "body_too_large", "The input is nested too deep.") from None
     except ValueError:
         raise KiroCallError(400, "invalid_json", "The input must be a JSON object.") from None
     return check_input(payload)

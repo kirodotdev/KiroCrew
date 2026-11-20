@@ -2,11 +2,11 @@
 
 An app names them in ``permissions.kiroOperations``, a list of exact operation
 names (``["GetWidget", "ListWidgets"]``). Each one is an entry of the
-:data:`GRANT_FAMILY` family in the app's approved-grants set, staged like
-``permissions.api``: the install consent approves the list it shows, an update that
-adds a name holds that name until the owner approves it on the app's page, and an
-update that drops one needs nothing. The family is explicit-only, so a set stored
-before this host knew the key approves none.
+:data:`GRANT_FAMILY` family in the app's approved-grants set. An install never
+approves it (``manager_records._OWNER_APPROVED_FAMILIES``): the trust prompt lists
+the names, and the owner approves them on the app's page. An update that adds a name
+holds it there too, and an update that drops one needs nothing. The family is
+explicit-only, so a set stored before this host knew the key approves none.
 
 :func:`app_kiro_operations` is the one reader the call path uses
 (``apps/kiro_calls.py``), read fresh on every call so a disable, an uninstall or

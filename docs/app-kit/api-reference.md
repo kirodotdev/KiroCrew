@@ -254,9 +254,9 @@ holding their Kiro token. Name each operation in the manifest:
 "permissions": { "kiroOperations": ["GetWidget", "ListWidgets"] }
 ```
 
-The install consent approves the names it lists. An update that adds a name holds it
-until the owner approves it on the app's detail page; the names already approved keep
-working. The gateway forwards only a name that is declared and approved, by exact match.
+Installing approves none of them: the trust prompt lists the names, and the owner
+approves them on the app's detail page. An update that adds a name holds it there too;
+the names already approved keep working. The gateway forwards only a name that is declared and approved, by exact match.
 
 From your backend, with your app token (no `permissions.api` entry is needed):
 

@@ -131,11 +131,24 @@ def test_kiro_operations_is_an_explicit_only_staged_family() -> None:
     assert kiro_operations.GRANT_FAMILY in explicit_only_grant_families()
 
 
+def test_the_catalog_discloses_the_names_before_install() -> None:
+    from kiro_crew.apps.official_catalog import _disclosed_permissions_manifest
+
+    disclosed = _disclosed_permissions_manifest(
+        {"permissions": {"kiroOperations": [*OPS, "bad name", OPS[0]]}}
+    )
+    assert disclosed == {"permissions": {"kiroOperations": OPS}}
+
+
 @pytest.mark.usefixtures("home")
-def test_install_approves_the_shown_names_and_an_added_one_waits(tmp_path: Path) -> None:
+def test_install_approves_nothing_the_owner_approves_and_an_added_name_waits(
+    tmp_path: Path,
+) -> None:
     _install(tmp_path, OPS[:1])
+    assert kiro_operations.app_kiro_operations(APP) == frozenset()
+    assert get_app(APP)["kiroOperationsGrant"] == {"approved": [], "staged": OPS[:1]}
+    assert enable_app(APP, grants_consent={"kiroOperations": OPS[:1]}).ok
     assert kiro_operations.app_kiro_operations(APP) == {OPS[0]}
-    assert get_app(APP)["kiroOperationsGrant"] == {"approved": OPS[:1], "staged": []}
 
     assert update_app(_source(tmp_path, OPS, "1.1.0")).ok
     # The old name keeps working; the added one is held for the owner.
@@ -149,6 +162,7 @@ def test_install_approves_the_shown_names_and_an_added_one_waits(tmp_path: Path)
 @pytest.mark.usefixtures("home")
 def test_a_dropped_name_and_a_disable_end_the_grant_without_approval(tmp_path: Path) -> None:
     _install(tmp_path, OPS)
+    assert enable_app(APP, grants_consent={"kiroOperations": OPS}).ok
     assert kiro_operations.app_kiro_operations(APP) == set(OPS)
     assert update_app(_source(tmp_path, OPS[:1], "1.1.0")).ok
     assert kiro_operations.app_kiro_operations(APP) == {OPS[0]}
@@ -161,6 +175,8 @@ def test_an_untrusted_or_unknown_app_holds_nothing(
     home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _install(tmp_path, OPS)
+    assert enable_app(APP, grants_consent={"kiroOperations": OPS}).ok
+    assert kiro_operations.app_kiro_operations(APP) == set(OPS)
     monkeypatch.setattr(execution, "third_party_ceiling_closed", lambda _n: "untrusted")
     assert kiro_operations.app_kiro_operations(APP) == frozenset()
     assert kiro_operations.app_kiro_operations("not-installed") == frozenset()
@@ -682,3 +698,9 @@ async def test_the_in_flight_refusal_carries_retry_after(
     )
     assert resp.status == 429 and resp.headers["Retry-After"] == "1"
     assert (await resp.json())["code"] == "too_many_calls" and fake.seen == []
+
+
+def test_a_body_nested_past_the_parser_is_too_large_not_a_crash() -> None:
+    with pytest.raises(kiro_calls.KiroCallError) as err:
+        kiro_calls.parse_json_body(b"[" * 200_000)
+    assert (err.value.status, err.value.code) == (413, "body_too_large")
