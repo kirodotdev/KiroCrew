@@ -17691,6 +17691,27 @@
         "provider": "プロバイダー",
         "provider_2": "プロバイダー:"
       },
+      "planLimits": {
+        "title": "プランの上限",
+        "intro": "各エージェントプロバイダーがアカウントについて報告する使用量ウィンドウです。下のトークンとコストの合計は、このインストールのターンだけを数えます。",
+        "window_hours": "{{hours}} 時間",
+        "window_days": "{{days}} 日",
+        "window_minutes": "{{minutes}} 分",
+        "window_label": "{{window}}ウィンドウ",
+        "summary_window": "{{window}} {{used}}",
+        "summary_no_reading": "まだ値がありません",
+        "summary_no_limits": "プランの上限なし",
+        "used_left": "使用 {{used}} · 残り {{left}}",
+        "resets_at": "{{time}} にリセット",
+        "reset_passed": "{{time}} にリセットされました（この値の後）。新しい値はまだありません。",
+        "reset_unknown": "プロバイダーはリセット時刻を報告していません。",
+        "reported_at": "{{relative}}に報告",
+        "reported_unknown": "報告時刻は不明です",
+        "source_codex": "Codex がこのマシンに書き込むセッションログによる値です。",
+        "no_reading_codex": "ChatGPT でサインインしている場合、Codex はターンごとにプランの上限をセッションログに書き込みます。このマシンには、まだ上限を含むログがありません。",
+        "no_windows_codex": "Codex は、現在のサインインにプランの上限がないと報告しています。API キーや別のモデルプロバイダーでのサインインには上限がありません。",
+        "details_label": "{{provider}} のプランの上限"
+      },
       "usageTab": {
         "avg_messages_session": "平均メッセージ数/セッション",
         "billing": "ビリング",

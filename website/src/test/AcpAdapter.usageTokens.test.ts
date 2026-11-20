@@ -70,6 +70,25 @@ describe('AcpAdapter.fetchUsage — token history', () => {
     expect((await new AcpAdapter().fetchUsage()).localDay).toBeUndefined()
   })
 
+  it('puts the Codex plan windows on the report as planLimits', async () => {
+    kiroUsage.mockResolvedValue(payload({
+      codex: {
+        five_hour: { used_percent: 10, resets_at: 1_800_000_000, window_minutes: 300 },
+        weekly: null,
+        captured_at: '2026-11-10T12:00:00Z',
+      },
+    }))
+    expect((await new AcpAdapter().fetchUsage()).planLimits).toEqual({
+      codex: {
+        fiveHour: { usedPercent: 10, resetsAt: 1_800_000_000_000, windowMinutes: 300, stale: false },
+        weekly: null,
+        capturedAt: Date.parse('2026-11-10T12:00:00Z'),
+      },
+    })
+    kiroUsage.mockResolvedValue(payload())
+    expect((await new AcpAdapter().fetchUsage()).planLimits).toEqual({ codex: null })
+  })
+
   it.each([
     ['absent (an older gateway)', {}],
     ['empty (no shard in the window)', { tokens: {} }],

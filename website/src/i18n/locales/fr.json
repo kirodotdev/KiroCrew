@@ -18631,6 +18631,27 @@
         "provider": "Fournisseur",
         "provider_2": "Fournisseur :"
       },
+      "planLimits": {
+        "title": "Limites du forfait",
+        "intro": "Les fenêtres d’utilisation que chaque fournisseur d’agents indique pour ton compte. Les totaux de tokens et de coût ci-dessous ne comptent que les tours de cette installation.",
+        "window_hours": "{{hours}} heures",
+        "window_days": "{{days}} jours",
+        "window_minutes": "{{minutes}} minutes",
+        "window_label": "Fenêtre de {{window}}",
+        "summary_window": "{{window}} : {{used}}",
+        "summary_no_reading": "Pas encore de relevé",
+        "summary_no_limits": "Aucune limite de forfait",
+        "used_left": "{{used}} utilisé · {{left}} restant",
+        "resets_at": "Réinitialisation {{time}}",
+        "reset_passed": "Réinitialisé à {{time}}, après ce relevé. Pas encore de relevé plus récent.",
+        "reset_unknown": "Le fournisseur n’a pas indiqué l’heure de réinitialisation.",
+        "reported_at": "Signalé {{relative}}",
+        "reported_unknown": "Heure du relevé inconnue",
+        "source_codex": "D’après les journaux de session que Codex écrit sur cette machine.",
+        "no_reading_codex": "Avec une connexion ChatGPT, Codex écrit les limites du forfait dans ses journaux de session après chaque tour. Aucun journal de cette machine ne les contient encore.",
+        "no_windows_codex": "Codex indique que sa connexion actuelle n’a aucune limite de forfait. Une connexion par clé d’API ou par un autre fournisseur de modèles n’en a pas.",
+        "details_label": "Limites du forfait {{provider}}"
+      },
       "usageTab": {
         "avg_messages_session": "Messages moyens/session",
         "billing": "Facturation",

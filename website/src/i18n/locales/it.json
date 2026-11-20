@@ -18631,6 +18631,27 @@
         "provider": "Provider",
         "provider_2": "Provider:"
       },
+      "planLimits": {
+        "title": "Limiti del piano",
+        "intro": "Le finestre di utilizzo che ogni provider di agenti segnala per il tuo account. I totali di token e costi qui sotto contano solo i turni di questa installazione.",
+        "window_hours": "{{hours}} ore",
+        "window_days": "{{days}} giorni",
+        "window_minutes": "{{minutes}} minuti",
+        "window_label": "Finestra di {{window}}",
+        "summary_window": "{{window}}: {{used}}",
+        "summary_no_reading": "Ancora nessuna lettura",
+        "summary_no_limits": "Nessun limite del piano",
+        "used_left": "{{used}} usato · {{left}} rimanente",
+        "resets_at": "Si azzera {{time}}",
+        "reset_passed": "Azzerato alle {{time}}, dopo questa lettura. Ancora nessuna lettura più recente.",
+        "reset_unknown": "Il provider non ha segnalato l'ora di azzeramento.",
+        "reported_at": "Segnalato {{relative}}",
+        "reported_unknown": "Ora della segnalazione sconosciuta",
+        "source_codex": "Dai log di sessione che Codex scrive su questa macchina.",
+        "no_reading_codex": "Con un accesso ChatGPT, Codex scrive i limiti del piano nei log di sessione dopo ogni turno. Nessun log su questa macchina li contiene ancora.",
+        "no_windows_codex": "Codex segnala che l'accesso attuale non ha limiti del piano. Un accesso con chiave API o con un altro provider di modelli non ne ha.",
+        "details_label": "Limiti del piano di {{provider}}"
+      },
       "usageTab": {
         "avg_messages_session": "Media messaggi/sessione",
         "billing": "Fatturazione",

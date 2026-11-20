@@ -10198,6 +10198,27 @@
         "provider": "Provider",
         "provider_2": "Provider:"
       },
+      "planLimits": {
+        "title": "Plan Limits",
+        "intro": "The usage windows that each agent provider reports for your account. The token and cost totals below count only the turns on this install.",
+        "window_hours": "{{hours}}-hour",
+        "window_days": "{{days}}-day",
+        "window_minutes": "{{minutes}}-minute",
+        "window_label": "{{window}} window",
+        "summary_window": "{{window}} {{used}}",
+        "summary_no_reading": "No reading yet",
+        "summary_no_limits": "No plan limits",
+        "used_left": "{{used}} used · {{left}} left",
+        "resets_at": "Resets {{time}}",
+        "reset_passed": "Reset at {{time}}, after this reading. No newer reading yet.",
+        "reset_unknown": "The provider did not report a reset time.",
+        "reported_at": "Reported {{relative}}",
+        "reported_unknown": "Report time unknown",
+        "source_codex": "From the session logs that Codex writes on this machine.",
+        "no_reading_codex": "Codex writes plan limits to its session logs after each turn on a ChatGPT sign-in. No log on this machine has them yet.",
+        "no_windows_codex": "Codex reports no plan limits for its current sign-in. A sign-in with an API key or another model provider has none.",
+        "details_label": "{{provider}} plan limits"
+      },
       "usageTab": {
         "avg_messages_session": "Avg messages/session",
         "billing": "Billing",

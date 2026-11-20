@@ -18161,6 +18161,27 @@
         "provider": "Anbieter",
         "provider_2": "Anbieter:"
       },
+      "planLimits": {
+        "title": "Tariflimits",
+        "intro": "Die Nutzungsfenster, die jeder Agent-Anbieter für dein Konto meldet. Die Token- und Kostensummen unten zählen nur die Turns dieser Installation.",
+        "window_hours": "{{hours}}-Stunden",
+        "window_days": "{{days}}-Tage",
+        "window_minutes": "{{minutes}}-Minuten",
+        "window_label": "{{window}}-Fenster",
+        "summary_window": "{{window}} {{used}}",
+        "summary_no_reading": "Noch kein Messwert",
+        "summary_no_limits": "Keine Tariflimits",
+        "used_left": "{{used}} genutzt · {{left}} übrig",
+        "resets_at": "Zurückgesetzt {{time}}",
+        "reset_passed": "Um {{time}} zurückgesetzt, nach diesem Messwert. Noch kein neuerer Messwert.",
+        "reset_unknown": "Der Anbieter hat keine Rücksetzzeit gemeldet.",
+        "reported_at": "Gemeldet {{relative}}",
+        "reported_unknown": "Meldezeit unbekannt",
+        "source_codex": "Aus den Sitzungsprotokollen, die Codex auf diesem Rechner schreibt.",
+        "no_reading_codex": "Bei einer ChatGPT-Anmeldung schreibt Codex die Tariflimits nach jedem Turn in seine Sitzungsprotokolle. Noch kein Protokoll auf diesem Rechner enthält sie.",
+        "no_windows_codex": "Codex meldet für die aktuelle Anmeldung keine Tariflimits. Eine Anmeldung mit API-Schlüssel oder über einen anderen Modellanbieter hat keine.",
+        "details_label": "Tariflimits von {{provider}}"
+      },
       "usageTab": {
         "avg_messages_session": "Ø Nachrichten/Sitzung",
         "billing": "Abrechnung",

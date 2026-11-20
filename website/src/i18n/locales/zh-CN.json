@@ -17691,6 +17691,27 @@
         "provider": "提供方",
         "provider_2": "提供方："
       },
+      "planLimits": {
+        "title": "套餐限额",
+        "intro": "各代理提供方为你的账户报告的用量窗口。下方的令牌和费用合计只统计本安装中的轮次。",
+        "window_hours": "{{hours}} 小时",
+        "window_days": "{{days}} 天",
+        "window_minutes": "{{minutes}} 分钟",
+        "window_label": "{{window}}窗口",
+        "summary_window": "{{window}} {{used}}",
+        "summary_no_reading": "暂无读数",
+        "summary_no_limits": "无套餐限额",
+        "used_left": "已用 {{used}} · 剩余 {{left}}",
+        "resets_at": "{{time}} 重置",
+        "reset_passed": "已于 {{time}} 重置，晚于此读数。暂无更新的读数。",
+        "reset_unknown": "提供方未报告重置时间。",
+        "reported_at": "报告于 {{relative}}",
+        "reported_unknown": "报告时间未知",
+        "source_codex": "来自 Codex 在本机写入的会话日志。",
+        "no_reading_codex": "使用 ChatGPT 登录时，Codex 会在每个轮次之后把套餐限额写入会话日志。本机上还没有包含限额的日志。",
+        "no_windows_codex": "Codex 报告当前登录没有套餐限额。使用 API 密钥或其他模型提供方的登录没有限额。",
+        "details_label": "{{provider}} 套餐限额"
+      },
       "usageTab": {
         "avg_messages_session": "平均消息数/会话",
         "billing": "账单",
