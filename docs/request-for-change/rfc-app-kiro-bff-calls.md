@@ -29,8 +29,8 @@ approved operation for the app, with the user's own Kiro sign-in, and returns
 only the operation's output. The token never leaves the gateway process.
 
 ```
-app backend ──app token──▶ POST /api/kiro/operations/<Op> ─┐
-in-gateway hook ──────────▶ await ctx.kiro_call(<Op>, input) ┤
+app backend / app page ──▶ POST /api/apps/<name>/kiro/<Op> ─┐
+in-gateway hook ─────────▶ await ctx.kiro_call(<Op>, input) ┤
                                                              ▼
                        gateway: grant check → vault token → BFF of the
                        profile's region → output (JSON) back to the app
@@ -88,8 +88,8 @@ user. On main it has three routes, and none of them is supported:
 - The gateway forwards only approved operations, by exact name.
 - The gateway chooses the endpoint from the signed-in profile. The app never
   chooses a host, a path prefix or a header.
-- Callers are the app's own backend (with its app token) and the app's
-  in-gateway hooks (through `ctx`).
+- Callers are the app's own backend (with its app token), the app's page
+  (with the owner's session), and the app's in-gateway hooks (through `ctx`).
 
 ## Non-goals
 
@@ -97,8 +97,9 @@ user. On main it has three routes, and none of them is supported:
 - A choice of identity. The seam uses the gateway's own Kiro sign-in, the one
   in Settings → Kiro account. It never uses kiro-cli's login and never the
   `KIRO_API_KEY` environment bypass.
-- Calls from the dashboard page with the owner's session. A page calls its own
-  backend, and the backend calls this seam.
+- Borrowing a connection's credential (GitHub, Google and the rest). Section 9
+  records how the seam would grow to that later, and what this document fixes
+  now so the growth is not a breaking change.
 - A credential for an app's stdio `mcpServers`. They stay without one.
 - Redesigning third-party `agentTools`. Section 6 says how the two compose.
 - Streaming operations, and input values that JSON cannot carry (CBOR byte
@@ -155,23 +156,32 @@ when the app is not installed, not enabled, or unreadable.
 
 ### 3. Callers
 
-#### 3a. The app's backend
+#### 3a. The gateway route
 
 ```
-POST /api/kiro/operations/{operation}
+POST /api/apps/{name}/kiro/{operation}
 Content-Type: application/json
-Cookie / Authorization: the app's app token
+Cookie / Authorization: app {name}'s own app token, or the dashboard owner
 
 { ...operation input as a JSON object... }
 ```
 
-- Only an app token is accepted. A dashboard session token, an internal-secret
-  caller and an anonymous caller get 403 `app_token_required`. The app comes from
-  the verified token (`request["app"]`), never from the path or the body.
-- `app_token_path_allowed` (`dashboard/token_auth_app_scope.py`) admits this one
-  path for an app token whose `app_kiro_operations` set is not empty. The app
-  does not also declare a `permissions.api` prefix: the family is the grant,
-  and a second entry would add nothing the owner could decide.
+- The route sits in the app's own namespace, which an app token already reaches
+  (`app_token_path_allowed` in `dashboard/token_auth_app_scope.py`). The app
+  declares no `permissions.api` prefix for it.
+- Two callers are accepted:
+  - **App `{name}`'s own app token.** Its backend calls with the token it gets
+    from `KIROCREW_PROXY_SECRET`. The app comes from the verified token
+    (`request["app"]`), and it must equal `{name}`. Another app's token gets 403
+    `forbidden`.
+  - **The dashboard owner.** The app's page, which holds the owner's session,
+    may call the route directly. The owner gate is the one `ctx.require_owner`
+    uses (`apps/context.py`), so the gateway's owner and CSRF checks apply.
+- Every other caller gets 403 `forbidden`: an anonymous caller, a non-owner
+  session, and a caller that presents only the gateway's internal secret.
+- Either way the grant read is app `{name}`'s approved set. The owner calling
+  through the page reaches no operation the owner did not approve for that
+  app.
 - The answer is `200` with `{"output": {...}}`, the operation's output map.
 
 #### 3b. In-gateway hooks
@@ -188,7 +198,8 @@ route, keyed on `ctx`'s own app name. It raises `KiroCallError` with the same
 Both callers go through one function in a new module, `apps/kiro_calls.py`.
 Its order is fixed:
 
-1. Resolve the app from the caller (token or `ctx`).
+1. Resolve the app: `{name}` after the caller check of section 3a, or `ctx`'s
+   own app.
 2. `operation in app_kiro_operations(app)`, exact set membership.
 3. Read and check the body (section 5).
 4. Resolve the sign-in and the endpoint (section 4).
@@ -249,7 +260,7 @@ A chat tool reaches a Kiro operation like this:
 
 ```
 agent ─▶ kirocrew-apps (prompted) ─▶ app's agentTools route ─▶ app handler
-                                                  └─▶ ctx.kiro_call / POST /api/kiro/operations/<Op>
+                                                  └─▶ ctx.kiro_call / POST /api/apps/<name>/kiro/<Op>
 ```
 
 - The app declares an `agentTools` tool whose route is its own handler. The
@@ -272,14 +283,14 @@ and a hook can call it as soon as it ships.
 
 ### 7. Errors
 
-The body is always `{"error": {"code", "message"}}`, plus `kiro` for a BFF
+The body is always `{"error": {"code", "message"}}`, plus `upstream` for a BFF
 error. No status here is 401, because an app client renews its own app token
 on a 401 (`on_auth_expired`), and a Kiro sign-in problem is not an app token
 problem.
 
 | Case | Status | `code` |
 |---|---|---|
-| Caller is not an app token | 403 | `app_token_required` |
+| Caller is neither app `{name}`'s token nor the owner | 403 | `forbidden` |
 | App not enabled | 403 | `app_disabled` |
 | Name not declared | 404 | `unknown_operation` |
 | Declared, not approved | 403 | `operation_not_approved` |
@@ -296,7 +307,7 @@ problem.
 - The three sign-in errors carry the same hint: "Sign in to Kiro in Settings →
   Kiro account." They name no value from the vault. A refresh error names only
   its exception type, because its text can quote response bytes.
-- `kiro_operation_failed` carries `kiro: {status, type, message}`: the BFF's
+- `kiro_operation_failed` carries `upstream: {status, type, message}`: the BFF's
   HTTP status, the short name of its `__type`, and its `message`, cut to 300
   characters and passed through the credential redactor
   (`security/text_redaction.py`). The app can act on a conflict or a throttle.
@@ -315,13 +326,61 @@ problem.
   token from `kiro_crew.testing.synthetic_credentials` and asserts it is absent
   from every log record, error body and audit row.
 
+### 9. Future: extending to connections
+
+**Not in scope.** This document builds the Kiro BFF only. This section records
+how the same seam would later let an app borrow a connection's credential
+(GitHub, Google and the other cards in
+[connections](../system-specs/modules/connections.md)), and what is fixed now
+so that step is additive.
+
+The shape would be the same four rules:
+
+- **A fixed endpoint per connection.** The connection's registry entry, not the
+  app, names the API origin. GitHub would be `https://api.github.com`.
+- **A declared list.** The app declares, per connection, the operations or
+  `METHOD /path` templates it calls. Each entry is matched exactly, with a
+  template's `{param}` segments filled from the input. No pattern match.
+- **The same staged grant.** Adding an entry is held until the owner approves
+  it. Removing one is free.
+- **The token stays in the gateway.** The gateway attaches the credential and
+  returns only the output.
+
+One limit applies. The gateway can only attach a credential it holds. Today
+kiro-cli owns most connection grants, and Kiro Crew observes them by `stat`
+(connections.md: "Kiro Crew never holds a connection's credential"). Only a
+connection on Crew-owned OAuth (`connections/crew_oauth.py`, where the gateway
+keeps the pair in its vault) could take part. Making that extension is an owner
+decision for its own RFC.
+
+What this document fixes now, so the extension needs no breaking change:
+
+| Choice | Now | Later |
+|---|---|---|
+| Manifest key | `permissions.kiroOperations: [<op>]` | a new key `permissions.connectionCalls: {"<slug>": [<entry>]}` beside it |
+| Grant family | `kiroOperations`, entry = the bare operation name | a new explicit-only family `connectionCalls`, entry = `<slug>/<entry>` |
+| Route | `POST /api/apps/{name}/kiro/{operation}` | `POST /api/apps/{name}/connections/{slug}/call` |
+| In-gateway API | `ctx.kiro_call(operation, input)` | `ctx.connection_call(slug, entry, input)` |
+| Error body | `upstream: {status, type, message}` | the same key for any upstream |
+
+- `kiroOperations` stays its own family and is not folded into a keyed one.
+  The Kiro sign-in is the gateway's own account, not a connection. It has no
+  slug and no Connect card. A keyed family later adds a family through
+  `register_permission_grants`, which needs no change to this one.
+- The entry format is a bare name now. A later keyed family uses a `/`
+  separator, which no operation name can hold (section 1), so the two formats
+  can never collide.
+- The error key is `upstream`, not `kiro`, so one client handles both.
+- `kiro_*` error codes stay Kiro-specific. A connection call would get its own
+  `connection_*` codes.
+
 ## Migration plan
 
 Each phase is one PR.
 
 | Phase | Change | Exit criteria |
 |---|---|---|
-| 1 | `permissions.kiroOperations`, the `kiroOperations` family, `app_kiro_operations`, the route, `ctx.kiro_call`, the shared CBOR codec, the region table, the install and detail-page lists, logs and audit. Spec updates in `app-kit-platform.md`, `api-reference.md` and `manifest-reference.md`. App Kit seam level +1. | Against a fake BFF: an approved operation returns its output, and the fake saw the vault's token and identity headers. An undeclared name gets 404, a held-back name 403, and neither reaches the fake. An update that adds a name keeps the old names working and holds the new one. A record written before the family approves nothing. A dashboard token gets 403. An `eu-central-1` profile reaches only the EU origin, and an unknown region gets 503 with no request sent. A 401 from the fake renews once and retries once. A 9th concurrent call gets 429. Bodies over 1 MiB and replies over 8 MiB are refused. The planted token appears in no log, error body or audit row. |
+| 1 | `permissions.kiroOperations`, the `kiroOperations` family, `app_kiro_operations`, the route, `ctx.kiro_call`, the shared CBOR codec, the region table, the install and detail-page lists, logs and audit. Spec updates in `app-kit-platform.md`, `api-reference.md` and `manifest-reference.md`. App Kit seam level +1. | Against a fake BFF: an approved operation returns its output, and the fake saw the vault's token and identity headers. An undeclared name gets 404, a held-back name 403, and neither reaches the fake. An update that adds a name keeps the old names working and holds the new one. A record written before the family approves nothing. Removing a name from the manifest needs no approval and refuses it at once. Another app's token, a non-owner session and an internal-secret caller get 403; the owner's dashboard request reaches only the app's approved names. An `eu-central-1` profile reaches only the EU origin, and an unknown region gets 503 with no request sent. A 401 from the fake renews once and retries once. A 9th concurrent call gets 429. Bodies over 1 MiB and replies over 8 MiB are refused. The planted token appears in no log, error body or audit row. |
 | 2 | Docs: a section in `docs/app-kit/api-reference.md` showing an `agentTools` handler that calls `ctx.kiro_call`. | It lands after phase 1 of the agentTools RFC, and it shows the four approvals of section 6. |
 
 ## Backward compatibility
@@ -351,6 +410,10 @@ Each phase is one PR.
   process in the agent sandbox can read the gateway's internal secret. This
   route refuses an internal-secret caller, so that secret alone does not
   reach it.
+- **Residual: the owner caller.** The app's page runs in the owner's session,
+  so its script can call the route for that app's approved names. That is the
+  same set the app's backend can call, so it grants the page nothing new. The
+  owner gate and its CSRF check keep another site from calling as the owner.
 - **Endpoint pinning.** The origin comes from the profile region and a fixed
   table, the path from one constant, and redirects are not followed. An app
   cannot point the token at a host it controls.
@@ -392,11 +455,13 @@ Let an app send any request to an approved Kiro host with the sign-in attached.
 Rejected: the owner would approve a host, not an action, and the gateway would
 need path and header rules that a pattern match decides.
 
-### Require `permissions.api: ["/api/kiro/operations"]` as well
+### A shared route outside the app's namespace
 
-The `permissions.bots` seam asks for both a path prefix and a family. Rejected
-here: the prefix grants nothing the family does not already decide, and a
-second approval of the same thing gives the owner nothing to choose.
+For example `POST /api/kiro/operations/{operation}`, admitted for an app token
+through a `permissions.api` prefix, as the `permissions.bots` seam does.
+Rejected: the prefix grants nothing the family does not already decide, so the
+owner would approve the same thing twice. A route in the app's own namespace
+also names the app whose grant applies, which an owner caller needs.
 
 ## Open questions
 
