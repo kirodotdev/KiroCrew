@@ -394,6 +394,7 @@ async def acquire_worker_slot(
     await _reserve(app, key, timeout)
     cond = _registry.condition()
     lease: WorkerSlotLease | None = None
+    reserved = ""
     try:
         slot = state.get_or_create_slot(name=key, agent=agent, app=app, model=model)
         owner = str(getattr(slot, "_app", "") or "")
@@ -408,10 +409,15 @@ async def acquire_worker_slot(
             )
         # The registry may fold the requested name; the folded key is the identity.
         canonical = str(getattr(slot, "key", key) or key)
-        if canonical != key and (
-            canonical in _registry.leases or _registry.pending.get(canonical, app) != app
-        ):
-            raise ValueError(f"slot {canonical!r} is already leased")
+        if canonical != key:
+            # Reserve the folded key before anything else: another acquire may hold it
+            # (leased, or in flight while it audits), and this one must neither stamp its
+            # slot nor overwrite its lease.
+            async with cond:
+                if canonical in _registry.leases or canonical in _registry.pending:
+                    raise ValueError(f"slot {canonical!r} is already leased")
+                _registry.pending[canonical] = app
+                reserved = canonical
         slot._app = app
         slot.project = project
         lease = WorkerSlotLease(
@@ -424,6 +430,7 @@ async def acquire_worker_slot(
             _grant_trust(lease, slot, trust, patterns, ttl, audited)
         async with cond:
             _registry.pending.pop(key, None)
+            _registry.pending.pop(canonical, None)
             _registry.leases[canonical] = lease
         push = getattr(state, "push_slots_update", None)
         if callable(push):
@@ -434,5 +441,7 @@ async def acquire_worker_slot(
             lease._withdraw_trust("acquire failed")
         async with cond:
             _registry.pending.pop(key, None)
+            if reserved:
+                _registry.pending.pop(reserved, None)
             cond.notify_all()
         raise

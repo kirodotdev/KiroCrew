@@ -1291,6 +1291,153 @@ async def test_run_async_auto_approves_an_unrestricted_tool(fake_sel, allow_gove
     assert fake_sel.calls[0]["critical"] is True
 
 
+class _Rows:
+    """A healthy gateway route: one token, 204 for every row; the rows it took."""
+
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+
+    def __call__(self, req, timeout):
+        import json
+
+        class _Reply:
+            def __init__(self, status: int, body: bytes = b"") -> None:
+                self.status, self._body = status, body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return None
+
+            def read(self) -> bytes:
+                return self._body
+
+        if req.full_url.endswith("/token"):
+            return _Reply(200, b'{"token": "tok"}')
+        self.rows.append(json.loads(req.data))
+        return _Reply(204)
+
+
+@pytest.fixture
+def route_client(monkeypatch):
+    """The process is a spawned backend with a working route; ``sel()`` is the route client."""
+    from kiro_crew.apps import sel_client
+
+    rows = _Rows()
+    monkeypatch.setattr(sel_client, "loopback_urlopen", rows)
+    for name, value in {
+        "KIROCREW_SPAWNED": "1",
+        "KIROCREW_APP_NAME": "improve-app",
+        "KIROCREW_GATEWAY_ORIGIN": "http://127.0.0.1:8123",
+        "KIROCREW_PROXY_SECRET": "per-app-secret",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("KIROCREW_SEL_CLIENT_PID", raising=False)
+    return rows
+
+
+_S3_DOWNLOAD = "aws s3 cp --no-sign-request s3://public-bucket/input.json ./input.json"
+
+
+def _s3_download_events():
+    return [
+        _ev(
+            kind=EVENT_PERMISSION_REQUEST,
+            tool_kind="bash",
+            request_id="r1",
+            raw_tool_params={"command": _S3_DOWNLOAD},
+        ),
+        _ev(kind=EVENT_COMPLETE),
+    ]
+
+
+def _deny_exception_rows(rows: _Rows) -> list[dict]:
+    return [r for r in rows.rows if r["kwargs"].get("operation") == "security.deny_exception"]
+
+
+@pytest.mark.asyncio
+async def test_run_async_approves_an_s3_download_the_deny_exception_allows(route_client):
+    provider = _FakeProvider(_s3_download_events())
+    res = await _drive(R.SessionAgentRunner(), provider)
+
+    assert res.ok is True
+    assert provider.approved == ["r1"] and provider.rejected == []
+    rows = _deny_exception_rows(route_client)
+    assert rows and all(r["kwargs"]["critical"] is True for r in rows)  # the exception rows landed
+
+
+@pytest.mark.asyncio
+async def test_run_async_denies_when_the_deny_exception_is_written_on_the_loop(
+    route_client, monkeypatch
+):
+    """A missed offload fails closed: the write is refused on the loop, so the tool is denied."""
+
+    async def _inline(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(R.asyncio, "to_thread", _inline)
+    provider = _FakeProvider(_s3_download_events())
+    res = await _drive(R.SessionAgentRunner(), provider)
+
+    assert res.ok is True
+    assert provider.approved == [] and provider.rejected == ["r1"]
+    assert _deny_exception_rows(route_client) == []
+
+
+@pytest.mark.asyncio
+async def test_run_async_denies_when_the_governance_call_itself_raises(monkeypatch, fake_sel):
+    """A failure of the offloaded call (not a hook verdict) is a deny, never an approval."""
+
+    async def _no_thread(func, /, *args, **kwargs):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(R.asyncio, "to_thread", _no_thread)
+    provider = _FakeProvider(
+        [
+            _ev(kind=EVENT_PERMISSION_REQUEST, tool_kind="fsRead", request_id="r1"),
+            _ev(kind=EVENT_COMPLETE),
+        ]
+    )
+    res = await _drive(R.SessionAgentRunner(), provider)
+
+    assert res.ok is True
+    assert provider.rejected == ["r1"] and provider.approved == []
+
+
+@pytest.mark.asyncio
+async def test_run_async_cancelled_while_awaiting_the_governance_call_never_approves(
+    monkeypatch, fake_sel
+):
+    import threading
+
+    from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until
+
+    entered, release = threading.Event(), threading.Event()
+
+    def _held_gate(ev, **_kw) -> str:
+        entered.set()
+        release.wait(FALLBACK_TIMEOUT_SECS)
+        return ""
+
+    monkeypatch.setattr(R, "_governance_denial", _held_gate)
+    provider = _FakeProvider(
+        [
+            _ev(kind=EVENT_PERMISSION_REQUEST, tool_kind="fsRead", request_id="r1"),
+            _ev(kind=EVENT_COMPLETE),
+        ]
+    )
+    task = asyncio.ensure_future(_drive(R.SessionAgentRunner(), provider))
+    await async_wait_until(entered.is_set)
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert provider.approved == []  # the request was never approved
+    assert provider.rejected == []  # it ends unanswered with the run: denied by omission
+
+
 @pytest.mark.asyncio
 async def test_run_async_rejects_a_governance_denied_tool(monkeypatch, fake_sel):
     monkeypatch.setattr(R, "_governance_denial", lambda ev, **kw: "reads ~/.ssh")

@@ -1040,9 +1040,24 @@ class SessionAgentRunner:
                     # — the enterprise ceiling, builtin denied rules, and sensitive-path
                     # (~/.aws/~/.ssh) blocks that the dashboard/Slack paths honor. This
                     # unattended runner must not rely only on the app-local checks below.
-                    gov = _governance_denial(
-                        ev, session_key=session_key, agent=governance_agent, tool_kind=tool
-                    )
+                    # The gate can write a critical audit row (a deny exception), which
+                    # is synchronous and, in a spawned backend, network I/O: off the loop.
+                    # A failure of the call itself (no thread to run it on) denies, like a
+                    # hook fault; a cancel here ends the run before ``approve_tool``, so the
+                    # request is never approved.
+                    try:
+                        gov = await asyncio.to_thread(
+                            lambda: _governance_denial(
+                                ev, session_key=session_key, agent=governance_agent, tool_kind=tool
+                            )
+                        )
+                    except Exception as exc:  # noqa: BLE001 - a broken gate must DENY
+                        logger.warning(
+                            "governance gate failed; denying (fail-closed)", exc_info=True
+                        )
+                        gov = _GovernanceDeny(
+                            f"governance hook unavailable: {exc}", cause=DENY_CAUSE_HOOK_ERROR
+                        )
                     if gov:
                         logger.warning("refusing tool %r — governance: %s", tool, gov)
                         # The gate names its own cause: a hook's deny judged
