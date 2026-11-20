@@ -46,7 +46,7 @@ const NO_SESSION_KEY = [
   'models', 'chatSlotSelectionCapabilities', 'effortLevels', 'slashCommands',
   'chatSlotAutocompact', 'chatSlotTurnTimeout', 'chatSlotsFollowDefaultCount', 'recentProjects', 'favoriteProjects', 'browseDirs', 'browseDrives',
   'browseFiles', 'projectGit', 'projectGitStatus', 'projectGitLog', 'projectGitBranchDiff', 'projectGitRepos',
-  'projectTree', 'workspaces', 'crons', 'updateCron',
+  'projectTree', 'workspaces', 'crons', 'cron', 'updateCron',
   'cronFolders', 'updateCronFolder', 'lessons', 'hooks',
   'kiroHooks', 'webhooks', 'updateWebhookToken', 'prompts',
   'promptDetail', 'skill', 'skillTree', 'skillFile',

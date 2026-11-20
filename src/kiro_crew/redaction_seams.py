@@ -202,6 +202,11 @@ ALWAYS_REDACTED_SITES: Mapping[str, str] = MappingProxyType(
             "_gate_upload_file decides whether a file, by its name or its text, may leave "
             "for a channel: a safety decision"
         ),
+        "dashboard/handlers/cron_board.py": (
+            "_jobs_response: a job's last result and error read the display redaction cache "
+            "for speed, whose pass opens the chat seam; they stay redacted like every other "
+            "cron field, which no seam lists"
+        ),
         "dashboard/handlers/updates_streams.py": (
             "_stream_safe: the live log stream and its ring replay reach every dashboard-user "
             "socket, a relayed teammate's and a log-scoped app's among them"

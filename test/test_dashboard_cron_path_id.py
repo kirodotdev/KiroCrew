@@ -24,6 +24,7 @@ from kiro_crew.dashboard.handlers.cron import (
     api_cron_cancel,
     api_cron_delete,
     api_cron_enable,
+    api_cron_get,
     api_cron_history,
     api_cron_history_detail,
     api_cron_run,
@@ -83,6 +84,7 @@ _JOB_ID_HANDLERS = [
     (api_cron_history, "get_history"),
     (api_cron_history_detail, "get_history"),
     (api_cron_script_source, "get_job_async"),
+    (api_cron_get, "list_jobs_async"),
 ]
 
 

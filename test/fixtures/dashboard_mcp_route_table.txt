@@ -148,6 +148,8 @@ DELETE /api/crons api_cron_batch_delete
 HEAD /api/crons/history api_cron_history_all
 GET /api/crons/history api_cron_history_all
 POST /api/crons/tools api_cron_tools
+HEAD /api/crons/{job_id} api_cron_get
+GET /api/crons/{job_id} api_cron_get
 DELETE /api/crons/{job_id} api_cron_delete
 PATCH /api/crons/{job_id} api_cron_update
 PUT /api/crons/{job_id}/secrets api_cron_secret_grant
