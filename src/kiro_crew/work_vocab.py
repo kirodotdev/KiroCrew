@@ -34,6 +34,7 @@ WORK_ACTIONS: tuple[str, ...] = (
     "steer",
     "retire",
     "destroy",
+    "release",
 )
 WORK_ITEM_STATES: tuple[str, ...] = ("open", "accepted", "rejected", "abandoned")
 WORK_VERDICTS: tuple[str, ...] = ("pass", "fail", "pending", "refused", "error")
@@ -106,7 +107,9 @@ def ask_is_current(events: Sequence[Mapping[str, Any]]) -> bool:
 #: binding into the item's history (rfc-conductor-remote-dispatch §5b); only the
 #: gateway writes it, and only with :data:`WORK_REMOTE_DISPATCH_SETTING` on.
 #: ``destroy`` marks a retired binding ``destroyed`` once its peer slot is closed,
-#: under the same switch.
+#: under the same switch. ``release`` is the gateway unbinding a LOCAL open item
+#: because its worker's transcript is being permanently deleted; only the history
+#: delete writes it, before the unlink, and the item stays open and unbound.
 WORK_EVENT_KINDS: tuple[str, ...] = (
     "create",
     "bind",
@@ -118,6 +121,7 @@ WORK_EVENT_KINDS: tuple[str, ...] = (
     "retire",
     "destroy",
     "ask",
+    "release",
 )
 #: Item records the ``work`` fold may hold for one board at once: a memory bound on
 #: the fold, not on the board's life. The fold holds the open items (at most 32) plus
@@ -182,6 +186,7 @@ WORK_CONDUCTOR_FIELDS: dict[str, tuple[str, ...]] = {
     "ask": ("ask",),
     "retire": ("worker_session_key", "worker_instance_id", "retired_bindings"),
     "destroy": ("retired_bindings",),
+    "release": ("worker_session_key",),
 }
 
 #: The acceptance conditions the evaluator can judge, one example object per kind, as
