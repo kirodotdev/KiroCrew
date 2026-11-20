@@ -15089,6 +15089,8 @@
       "disconnect_entry_left_alone": "서버 구성은 변경되지 않았습니다. 이 항목은 MCP 서버 탭에서 관리할 수 있습니다.",
       "disconnect_spec_not_rewritten": "이 {{productName}}에서 에이전트 구성을 업데이트하지 못해 새 채팅에서도 이 연결이 로드됩니다. 이유는 '로그' 페이지에서 확인하세요.",
       "disconnect_entry_not_ours": "저장된 권한을 삭제했습니다. 서버 구성은 변경되지 않았습니다. 이 항목은 MCP 서버 탭에서 관리할 수 있습니다.",
+      "connect_hand_written_row": "{{provider}}이(가) 직접 작성한 mcp.json에 ‘{{name}}’(으)로 설정되어 있으며, {{productName}}은(는) 이 파일을 변경하지 않습니다. 그 항목을 삭제한 다음 연결을 눌러 여기에서 {{provider}}을(를) 추가하세요.",
+      "connect_rendered_copy_only": "{{provider}}이(가) 직접 작성한 mcp.json에서 삭제되었지만 {{productName}}에 ‘{{name}}’의 자체 사본이 아직 남아 있습니다. MCP 서버에서 ‘{{name}}’의 제거를 누르고 적용한 다음, 연결을 눌러 여기에서 {{provider}}을(를) 추가하세요.",
       "disconnect_grant_shared": "같은 엔드포인트를 다음에서도 구성하고 있으므로 저장된 권한은 유지되었습니다: {{names}}. 제공업체에서 취소하면 이들의 접근도 차단됩니다.",
       "disconnect_grant_survived": "저장된 권한의 일부를 제거할 수 없었습니다. 공급자에서 액세스를 취소하세요.",
       "disconnected_locally": "로컬에서 연결이 해제되었습니다. 권한을 완전히 취소하려면 공급자에서 액세스를 취소하세요.",

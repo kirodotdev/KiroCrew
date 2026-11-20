@@ -15891,6 +15891,8 @@
       "disconnect_entry_left_alone": "Votre configuration de serveur n'a pas été modifiée. Gérez cette entrée depuis l'onglet Serveurs MCP.",
       "disconnect_spec_not_rewritten": "Cette copie de {{productName}} n’a pas pu mettre à jour la configuration de l’agent : les nouveaux chats chargent encore cette connexion. Ouvre la page « Journaux » pour en connaître la raison.",
       "disconnect_entry_not_ours": "L'autorisation stockée a été supprimée. Votre configuration de serveur n'a pas été modifiée. Gérez cette entrée depuis l'onglet Serveurs MCP.",
+      "connect_hand_written_row": "{{provider}} est configuré à la main dans ton propre mcp.json sous le nom « {{name}} », que {{productName}} ne modifie pas. Supprime cette entrée, puis clique sur Connecter pour ajouter {{provider}} ici.",
+      "connect_rendered_copy_only": "{{provider}} n'est plus dans ton propre mcp.json, mais {{productName}} garde encore sa propre copie de « {{name}} ». Dans « Serveurs MCP », clique sur Désinstaller pour « {{name}} », puis sur Appliquer, puis sur Connecter pour ajouter {{provider}} ici.",
       "disconnect_grant_shared": "L'autorisation stockée a été conservée car le même point de terminaison est aussi configuré par : {{names}}. La révoquer chez le fournisseur leur couperait aussi l'accès.",
       "disconnect_grant_survived": "Une partie de l'autorisation stockée n'a pas pu être supprimée. Révoquez l'accès chez le fournisseur.",
       "disconnected_locally": "Déconnecté localement. Révoquez l’accès chez le fournisseur pour annuler entièrement l’autorisation.",

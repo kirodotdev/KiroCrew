@@ -1735,6 +1735,87 @@ describe('a provider that needs attention', () => {
     expect(within(slack).getByRole('button', { name: /Disconnect/ })).toBeInTheDocument()
     expect(within(slack).queryByRole('button', { name: /Reconnect/ })).not.toBeInTheDocument()
   })
+
+  it('says a hand-written mcp.json row is the user\'s to change instead of "not found"', async () => {
+    // The stored-spec read finds only Kiro Crew's own rows, so a row the user
+    // wrote in their global mcp.json answers 404.
+    mcpServers.mockResolvedValue([server({ status: 'needs_auth', url: `${NOTION_URL}/` })])
+    mcpCustomGet.mockRejectedValue(new ApiError(404, "server 'notion' not found"))
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: /Reconnect|Connect/ })))
+
+    await waitFor(() => expect(within(card('notion')).getByRole('alert')).toHaveTextContent(
+      'Notion is set up by hand in your own mcp.json as "notion", which Kiro Crew does not change.',
+    ))
+    expect(within(card('notion')).getByRole('alert')).not.toHaveTextContent('not found')
+    // Nothing is written and no sign-in starts against a file Kiro Crew does not own.
+    expect(mcpCustomUpdate).not.toHaveBeenCalled()
+    expect(mcpApply).not.toHaveBeenCalled()
+    expect(connectionsMint).not.toHaveBeenCalled()
+  })
+
+  it('adds the provider on Connect once the user removes the hand-written row', async () => {
+    // The row stays in the inventory through the first alert, so the card's
+    // cached list still holds it when the user presses Connect again.
+    mcpServers.mockResolvedValue([server({ status: 'needs_auth', url: `${NOTION_URL}/` })])
+    mcpCustomGet.mockRejectedValue(new ApiError(404, "server 'notion' not found"))
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: /Reconnect|Connect/ })))
+    await waitFor(() => expect(within(card('notion')).getByRole('alert')).toHaveTextContent('Kiro Crew does not change'))
+    expect(mcpCustomAdd).not.toHaveBeenCalled()
+
+    // The user removes the row from their mcp.json; one more Connect adds Notion.
+    mcpServers.mockResolvedValue([])
+    fireEvent.click(within(card('notion')).getByRole('button', { name: /Reconnect|Connect/ }))
+
+    await waitFor(() => expect(mcpCustomAdd).toHaveBeenCalledTimes(1))
+    expect(mcpCustomGet).toHaveBeenCalledTimes(2)
+    expect(mcpCustomUpdate).not.toHaveBeenCalled()
+
+    // That press wrote a new entry, so its wait is a new connect: Cancel must
+    // remove the entry again, not keep it as a reconnect would.
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'waiting-for-approval'))
+    fireEvent.click(within(card('notion')).getByRole('button', { name: /Cancel/ }))
+    await waitFor(() => expect(mcpApply).toHaveBeenCalledWith([{ name: 'notion', uninstall: true }]))
+  })
+
+  it('points to Uninstall in MCP Servers when only the rendered copy still holds the removed row', async () => {
+    const row = { status: 'needs_auth' as const, url: `${NOTION_URL}/` }
+    mcpServers.mockResolvedValue([server({ ...row, presence: { kirocrew: true, kiroGlobal: true } })])
+    mcpCustomGet.mockRejectedValue(new ApiError(404, "server 'notion' not found"))
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: /Reconnect|Connect/ })))
+    await waitFor(() => expect(within(card('notion')).getByRole('alert')).toHaveTextContent('Kiro Crew does not change'))
+
+    // The user removed the global row, but the rendered agent config still
+    // lists it (a restart keeps it), so no raw scope holds it any more.
+    mcpServers.mockResolvedValue([server({ ...row, presence: { kirocrew: true, kiroGlobal: false } })])
+    fireEvent.click(within(card('notion')).getByRole('button', { name: /Reconnect|Connect/ }))
+
+    await waitFor(() => expect(within(card('notion')).getByRole('alert')).toHaveTextContent(
+      'Notion is no longer in your own mcp.json, but Kiro Crew still keeps its own copy of "notion". In MCP Servers, press Uninstall on "notion" and then Apply',
+    ))
+    expect(within(card('notion')).getByRole('alert')).not.toHaveTextContent('Restart')
+    expect(mcpCustomAdd).not.toHaveBeenCalled()
+    expect(mcpCustomUpdate).not.toHaveBeenCalled()
+    expect(connectionsMint).not.toHaveBeenCalled()
+  })
+
+  it('passes any other stored-spec read error through unchanged', async () => {
+    mcpServers.mockResolvedValue([server({ status: 'needs_auth', url: `${NOTION_URL}/` })])
+    mcpCustomGet.mockRejectedValue(new ApiError(500, 'boom'))
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: /Reconnect|Connect/ })))
+
+    await waitFor(() => expect(within(card('notion')).getByRole('alert')).toHaveTextContent('boom'))
+    expect(within(card('notion')).getByRole('alert')).not.toHaveTextContent('Kiro Crew does not change')
+    expect(mcpCustomAdd).not.toHaveBeenCalled()
+    expect(mcpCustomUpdate).not.toHaveBeenCalled()
+  })
 })
 
 // Provider brand marks. The art inventory and the card roster are maintained

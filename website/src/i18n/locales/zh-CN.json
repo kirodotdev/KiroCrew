@@ -15089,6 +15089,8 @@
       "disconnect_entry_left_alone": "服务器配置未作更改。你可以在“MCP 服务器”标签页中管理该条目。",
       "disconnect_spec_not_rewritten": "此 {{productName}} 无法更新智能体配置，新聊天仍会加载此连接。请打开“日志”页面查看原因。",
       "disconnect_entry_not_ours": "已删除存储的授权。服务器配置未作更改。你可以在“MCP 服务器”标签页中管理该条目。",
+      "connect_hand_written_row": "{{provider}} 是你在自己的 mcp.json 中以“{{name}}”手动配置的，{{productName}} 不会修改该文件。请删除那里的这个条目，然后点击“连接”在此添加 {{provider}}。",
+      "connect_rendered_copy_only": "{{provider}} 已不在你自己的 mcp.json 中，但 {{productName}} 仍保留着“{{name}}”的自有副本。请在 MCP 服务器中对“{{name}}”点击“卸载”，再点击“应用更改”，然后点击“连接”在此添加 {{provider}}。",
       "disconnect_grant_shared": "由于以下服务器也配置了相同的端点，已保留存储的授权：{{names}}。在提供方撤销授权也会切断它们的访问。",
       "disconnect_grant_survived": "部分已存储的授权无法删除。请在服务商处撤销访问权限。",
       "disconnected_locally": "已在本地断开。请在服务商处撤销访问权限，以彻底取消授权。",
