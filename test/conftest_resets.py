@@ -244,6 +244,26 @@ def _forget_observed_people():
 
 
 @pytest.fixture(autouse=True)
+def _forget_offered_instance_types():
+    """Give every test an empty EC2 instance-type offering cache.
+
+    ``instance_types.clear_cache()`` empties ``_cache``, where ``cloud.instance_types`` keeps each (profile, Region) listing for five
+    minutes. The key does not include the fake AWS reader a test installs, so a
+    listing one test read through its fake would answer a later test on the same
+    worker that uses the same (profile, Region), and that test's own fake would
+    never be called. Cleared before and after, so a test that never imported the
+    module pays one dict lookup.
+    """
+    offered = sys.modules.get("kiro_crew.cloud.instance_types")
+    if offered is not None:
+        offered.clear_cache()
+    yield
+    offered = sys.modules.get("kiro_crew.cloud.instance_types")
+    if offered is not None:
+        offered.clear_cache()
+
+
+@pytest.fixture(autouse=True)
 def _forget_gatewayd_telemetry_override():
     """Give every test the platform-context telemetry provider, not gatewayd's.
 

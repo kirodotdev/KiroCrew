@@ -18,6 +18,7 @@ import {
 } from './remoteCrewPluginRefusal'
 import { PRICE_REGION, PRICING_CALCULATOR_URL, SIZE_TIERS, X86_TIERS, type SizeTier } from './remoteCrewPanelModel'
 import { PrereqRow, SizeCard } from './RemoteCrewPanelLaunch'
+import { CustomInstanceTypePicker } from './RemoteCrewPanelCustomType'
 
 /** The AWS prerequisites card: profile and Region inputs, then the checklist they produce. */
 export function PrereqCard({
@@ -239,16 +240,23 @@ export function PrereqCard({
 
 const SUBNET_ERROR_ID = 'remote-crew-subnet-error'
 
-/** The launch form: size, subnet, the Kiro identity the crew signs in as, billing note and Launch. */
+/** The launch form: size (a tier or a custom instance type), subnet, the Kiro identity the
+ *  crew signs in as, billing note and Launch. */
 export function LaunchFormCard({
-  region, sizeKey, setSizeKey, showMoreSizes, setShowMoreSizes, subnetId, setSubnetId, subnetErr,
+  profile, region, customType, customTypeOffered, setCustomType, sizeKey, setSizeKey, showMoreSizes, setShowMoreSizes, subnetId, setSubnetId, subnetErr,
   identityQuery, identityChosen, identityUnknownCause, identityRadioShown, identityMode,
   identityStartUrl, identityStartUrlOk, identityRegion, identityRegionOk, onIdentity,
   launchBuiltin, launchReady, alreadyLaunched, launching, setupRunning, launchFailed,
   launchFailedBeforeProvision, launchFailedCrewListed, identityResolving, identityUnknown,
   identityOk, regionOk, blockingOk, blockingCheck, signinOnLaunch, setSigninOnLaunch,
 }: {
+  profile: string
   region: string
+  /** A custom EC2 instance type that replaces the tier; '' = the tier. */
+  customType: string
+  /** False on a lane the gateway refuses `instance_type` for: no picker. */
+  customTypeOffered: boolean
+  setCustomType: (v: string) => void
   sizeKey: SizeTier['key']
   setSizeKey: (k: SizeTier['key']) => void
   showMoreSizes: boolean
@@ -288,6 +296,8 @@ export function LaunchFormCard({
 }) {
   // Launch form — profile/region are set in the prerequisites card above,
   // which is the same account this launches into.
+  // A tier and a custom type are one choice: picking either clears the other.
+  const pickTier = (k: SizeTier['key']) => { setCustomType(''); setSizeKey(k) }
   return (
     <Card>
       <div className="text-text font-medium mb-3">{i18nT('pages.settings.remoteCrewPanel.new_cloud_crew')}</div>
@@ -299,7 +309,7 @@ export function LaunchFormCard({
         )}
         <div className="space-y-2.5">
           {SIZE_TIERS.map(tier => (
-            <SizeCard key={tier.key} tier={tier} on={sizeKey === tier.key} onPick={setSizeKey} />
+            <SizeCard key={tier.key} tier={tier} on={customType === '' && sizeKey === tier.key} onPick={pickTier} />
           ))}
         </div>
 
@@ -316,10 +326,13 @@ export function LaunchFormCard({
             <p className="mt-2 text-[12px] text-muted">{i18nT('pages.settings.remoteCrewPanel.more_sizes_hint')}</p>
             <div className="mt-2 space-y-2.5">
               {X86_TIERS.map(tier => (
-                <SizeCard key={tier.key} tier={tier} on={sizeKey === tier.key} onPick={setSizeKey} />
+                <SizeCard key={tier.key} tier={tier} on={customType === '' && sizeKey === tier.key} onPick={pickTier} />
               ))}
             </div>
           </>
+        )}
+        {customTypeOffered && (
+          <CustomInstanceTypePicker profile={profile} region={region} value={customType} onPick={setCustomType} />
         )}
       </div>
 

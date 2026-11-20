@@ -197,12 +197,16 @@ export interface CrewLaunchDraft {
   identity: CrewLaunchIdentity | null
   /** Absent means sign in; only the choice to skip needs to be kept. */
   signinOnLaunch?: boolean
+  /** A custom EC2 instance type picked instead of a size tier. Optional: a
+   *  draft held before the field existed reads as none. */
+  instance_type?: string
 }
 
 const sameLaunchDraft = (a: CrewLaunchDraft | null, b: CrewLaunchDraft | null): boolean =>
   a === b
   || (!!a && !!b && a.subnet_id === b.subnet_id
     && (a.signinOnLaunch ?? true) === (b.signinOnLaunch ?? true)
+    && (a.instance_type ?? '') === (b.instance_type ?? '')
     && (a.identity === b.identity
       || (!!a.identity && !!b.identity
         && a.identity.mode === b.identity.mode

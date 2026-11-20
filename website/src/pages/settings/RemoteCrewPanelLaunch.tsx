@@ -845,6 +845,10 @@ export function LaunchProgressCard({
               // card read as two states the reader had to reconcile.
               : <Badge variant="aim">{i18nT('pages.settings.remoteCrewPanel.setting_up')}</Badge>}
         <span className="text-text-strong text-sm font-medium">{i18nT('pages.settings.remoteCrewPanel.cloud_crew_name', { tag: job.tag })}</span>
+        {/* A custom-type launch names the type it runs, not a tier it did not use. */}
+        {job.instance_type && (
+          <span className="text-[12px] text-muted">{i18nT('pages.settings.remoteCrewPanel.custom_type_job', { instanceType: job.instance_type })}</span>
+        )}
         {/* A sign-in retry and a launch both show this button, and they destroy
             very different things — the reader "would not dare click it" without
             knowing which. Split on the same `isRegistered` test the rest of the

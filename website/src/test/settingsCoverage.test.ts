@@ -297,6 +297,13 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'choice (2 radios), Identity Center start-URL/region and subnet ID fields — per-launch ' +
       'arguments sent with the launch request, not persistent settings',
   },
+  'RemoteCrewPanelCustomType.tsx': {
+    counts: { input: 2 },
+    reason:
+      'the launch form\'s custom instance type: the filter box over the runtime-fetched list ' +
+      'and one radio rendered per offered type -- a per-launch argument sent with the launch ' +
+      'request, not a persistent setting',
+  },
   'RemoteCrewPanelCrewRow.tsx': {
     counts: { Toggle: 1 },
     reason:
