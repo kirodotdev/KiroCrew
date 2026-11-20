@@ -820,14 +820,19 @@ def _selected_ids(base: str) -> list[str]:
 
 @pytest.mark.parametrize("key", [*HOSTILE_GIT_CONFIG, "core.excludesFile"])
 def test_one_hostile_config_key_changes_nothing_from_a_subdirectory(
-    branch_repo, branch_base, branch_expected_gates, tmp_path, monkeypatch, key
+    branch_repo, branch_base, tmp_path, monkeypatch, key
 ) -> None:
-    base, expected_gates = branch_base, branch_expected_gates
+    """Each key alone, from the root and from a subdirectory two levels down.
+
+    Every runner call but ``toplevel()`` runs ``git -C <toplevel>``, so a shallower
+    subdirectory is no new case. The gates are a pure function of ``_changed``; the
+    selection under hostile config is pinned by the all-keys test below.
+    """
+    base = branch_base
     _hostile(branch_repo, tmp_path, only=key)
-    for where in (branch_repo, branch_repo / "website", branch_repo / "src" / "kiro_crew"):
+    for where in (branch_repo, branch_repo / "src" / "kiro_crew"):
         monkeypatch.chdir(where)
         assert gate._changed(base) == EXPECTED_CHANGED, (key, where)
-        assert _selected_ids(base) == expected_gates, (key, where)
         assert gate._worktree_state()[2] == [], (key, where)
         assert Path(gate.toplevel()) == branch_repo
 
