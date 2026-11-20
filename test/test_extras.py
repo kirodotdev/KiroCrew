@@ -105,13 +105,11 @@ def test_every_declared_extra_is_covered() -> None:
     ), f"extras declared in setup.cfg but absent from REQUIREMENTS: {sorted(missing)}"
 
 
-# ── The pins embedded in the UI catalogs ──
+# ── No pin embedded in the UI catalogs ──
 #
-# The Feishu guide spells a command out inside its translated prose, so that
-# specifier is a SECOND copy of the pin that no Python caller reads. Without
-# this test, bumping setup.cfg leaves the same panel showing two different
-# commands -- the generated one and a stale hand-written one -- across 13
-# locale files.
+# Every optional-SDK channel takes its install step from the gateway's card
+# (the command naming the gateway's interpreter, or the desktop app's Install
+# button). A pin spelled out in catalog prose would be a second, stale copy.
 
 
 def _embedded_specs(text: str, package: str) -> set[str]:
@@ -129,25 +127,9 @@ def _embedded_specs(text: str, package: str) -> set[str]:
     return {package + m.group(1).rstrip("<>=,") for m in re.finditer(pattern, text)}
 
 
-@pytest.mark.parametrize(
-    ("extra", "package"),
-    [("feishu", "lark-oapi")],
-)
-def test_locale_catalogs_carry_the_declared_pin(extra: str, package: str) -> None:
-    expected = extras.REQUIREMENTS[extra][0]
-    seen_anywhere = False
-    for path in sorted(LOCALES.glob("*.json")):
-        found = _embedded_specs(path.read_text(encoding="utf-8"), package)
-        assert found <= {
-            expected
-        }, f"{path.name} embeds {sorted(found - {expected})}, expected {expected}"
-        seen_anywhere = seen_anywhere or bool(found)
-    assert seen_anywhere, f"no locale embeds a {package} pin; did the key move?"
-
-
-@pytest.mark.parametrize("package", ["PyJWT", "neonize"])
+@pytest.mark.parametrize("package", ["PyJWT", "neonize", "lark-oapi"])
 def test_locale_catalogs_embed_no_pin_for_card_channels(package: str) -> None:
-    """Teams and WhatsApp take their install command from the gateway's
+    """Feishu, Teams and WhatsApp take their install command from the gateway's
     optional-SDK card, which names the gateway's interpreter. A pin spelled out
     in catalog prose would be a bare ``pip install`` beside it."""
     for path in sorted(LOCALES.glob("*.json")):

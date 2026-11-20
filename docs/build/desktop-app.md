@@ -745,13 +745,23 @@ same way). Key details:
   one, which fails the whole macOS release (see
   [stt-streaming](../system-specs/modules/stt-streaming.md) for how the runtime
   then authenticates a decoder whose bytes signing rewrote).
-- **Feishu SDK bundled** — every backend installs the `[feishu]` extra
-  (`lark-oapi` and its dependencies). Settings shows no `pip` command for a
-  bundled interpreter and each update replaces the whole bundle, so a channel
-  SDK the build leaves out cannot be added later. Windows ships bytecode only
-  for traced import closures, so its build traces `lark_oapi` too: the channel
-  imports it on the gateway loop. macOS does not trace it (see below), so a
-  macOS gateway with the Feishu channel on compiles it in memory at every start.
+- **Feishu SDK installed on first use, not bundled** — `lark-oapi` is about
+  11,000 files per backend that most users never load. The Feishu Settings
+  panel's **Install** (`POST /api/feishu/sdk/install`, `kiro_crew.sdk_extras`)
+  runs the bundle's pip with `--target --no-deps --require-hashes
+  --only-binary :all:` against `sdk_extras_locks/feishu.txt`, into
+  `<data home>/extras/feishu/<cpXY-platform-machine>/`, outside the signed
+  bundle so updates keep it. pip compiles its bytecode there. pip downloads
+  from the package mirror the user set up for pip, if any, and falls back once
+  to pypi.org when that mirror cannot serve the files. The gateway
+  appends that directory to `sys.path` before it probes or imports the SDK. The
+  `extras` leaf is READONLY in every agent sandbox and fenced from the agent's
+  file tools, like `browser-harness`. Only the three distributions core lacks
+  are locked (`lark-oapi`, `pycryptodome`, `requests-toolbelt`); the rest of
+  its closure is already in the bundle. A channel that is already enabled when
+  the SDK is missing gets it installed in the background at gateway start and
+  is then started (`feishu.gateway._schedule_sdk_install`), so updating from a
+  bundled build keeps Feishu working.
 - **Dashboard bundled** — the SPA is staged into
   `lib/python3.12/site-packages/kiro_crew/static/dist/` inside the bundle.
 - **Pruned** — `__pycache__`, test dirs, and unused stdlib (tkinter, idlelib,

@@ -349,6 +349,8 @@ export interface FeishuConfigData {
   sdk_install_supported?: boolean
   /** Install command naming the gateway's OWN interpreter; "" when not useful. */
   sdk_install_command?: string
+  /** True on the desktop app while the SDK is missing: the panel installs it itself. */
+  sdk_install_in_app?: boolean
 }
 
 /** Writable Feishu config fields sent to PUT /api/feishu/config. */
@@ -605,6 +607,7 @@ export function createMessagingEndpoints({ get, post, put, del, j }: ClientTrans
     getWeComConfig: () => get('/api/wecom/config').then(j) as Promise<WeComConfigData>,
     getFeishuConfig: () => get('/api/feishu/config').then(j) as Promise<FeishuConfigData>,
     saveFeishuConfig: (body: Partial<FeishuConfigSave>) => put('/api/feishu/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
+    installFeishuSdk: () => post('/api/feishu/sdk/install', {}).then(j) as Promise<{ ok: boolean; restart_required: boolean }>,
     saveWeComConfig: (body: Partial<WeComConfigSave>) => put('/api/wecom/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
     // Webex integration config
     getWebexConfig: () => get('/api/webex/config').then(j) as Promise<WebexConfigData>,

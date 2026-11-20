@@ -9501,8 +9501,15 @@
         "where_to_find_the_credential": "Where to find the {{label}}",
         "sdk_missing": "Install the {{channel}} SDK",
         "sdk_missing_body": "The {{channel}} channel needs the {{package}} package, which is not installed by default. Run the command below in a terminal to add it.",
-        "sdk_restart_after_install": "Then restart the gateway to start the {{channel}} channel.",
+        "sdk_restart_after_install": "Then restart {{productName}}'s background service and turn {{channel}} on.",
         "sdk_install_unsupported": "This gateway's Python cannot install extra packages, so {{package}} cannot be added here. Run the gateway from a Python environment where pip can install it.",
+        "sdk_install_in_app_body": "{{channel}} needs an add-on (about 120 MB) to connect. Install it, restart, then turn {{channel}} on. It stays installed when the app updates.",
+        "sdk_install": "Install",
+        "sdk_installing": "Installing… this can take a minute.",
+        "sdk_installed_restart": "Installed. Next, restart {{productName}}'s background service. It takes a few seconds and briefly disconnects open chats. Then turn on “Enable {{channel}}” below and save.",
+        "sdk_restart_save_first": "Save your {{channel}} settings first. Restarting now would lose your unsaved changes.",
+        "sdk_download_failed": "Couldn't download the {{channel}} SDK. Check your internet connection, then click {{button}} again.",
+        "sdk_install_failed": "Couldn't install the {{channel}} SDK. Click {{button}} to try again. The gateway log has the details.",
         "verified_and_saved": "Verified with {{channel}} and saved."
       },
       "channelsPanel": {
@@ -10657,7 +10664,7 @@
         "group_allowlist_description": "Feishu group chat_ids allowed to drive a turn. Empty = no group is served.",
         "group_allowlist_label": "Allowed group chat IDs",
         "group_empty_hint": "Group chats are on but no chat_id is listed, so no group is served. Add a chat_id, or turn the toggle off.",
-        "guide_body": "In the Feishu developer console, create a <mono>custom app</mono> and open its <mono>Credentials & Basic Info</mono> page for the <mono>App ID</mono> and <mono>App Secret</mono> — paste both below. Then enable the <mono>Long connection</mono> event mode and subscribe to <mono>im.message.receive_v1</mono>. Each member’s <mono>open_id</mono> goes in the allow-list. The channel also needs its optional dependency: run <mono>pip install \"lark-oapi>=1.4,<2\"</mono> in the environment that runs the gateway, then restart it.",
+        "guide_body": "In the Feishu developer console, create a <mono>custom app</mono> and open its <mono>Credentials & Basic Info</mono> page for the <mono>App ID</mono> and <mono>App Secret</mono> — paste both below. Then enable the <mono>Long connection</mono> event mode and subscribe to <mono>im.message.receive_v1</mono>. Each member’s <mono>open_id</mono> goes in the allow-list.",
         "open_developer_console": "Open Feishu developer console"
       },
       "shortcutsPanel": {

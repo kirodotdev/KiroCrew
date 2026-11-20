@@ -111,7 +111,7 @@ PREDICATE_SITES = {
     "dashboard/handlers/whatsapp_setup.py": 5,
     "dashboard/messaging_api/channel_folder_backfill.py": 1,
     "dashboard/messaging_api/discord_settings.py": 2,
-    "dashboard/messaging_api/feishu_settings.py": 2,
+    "dashboard/messaging_api/feishu_settings.py": 3,
     "dashboard/messaging_api/imessage_settings.py": 2,
     "dashboard/messaging_api/slack_owner_claim.py": 1,
     "dashboard/messaging_api/slack_settings.py": 3,

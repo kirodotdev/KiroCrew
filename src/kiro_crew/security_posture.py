@@ -72,6 +72,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # only to REFUSE a file whose rules, crons or carried files hold a
         # credential-shaped string. It returns no redacted text.
         "crewmate_bundle.py",
+        # The on-demand channel SDK installer: `redact_url` cuts pip's output and
+        # the index it names to scheme and host before they reach the gateway log
+        # and the install error, so a mirror credential in a URL is never logged.
+        # It is not an agent-output egress path.
+        "sdk_extras.py",
         # Pure helper: `_run_apply_child` redacts the tail of the boot-time
         # `kirocrew update` child's output before it is stored as the armed update's
         # `pending_apply_error`. It emits nothing itself; the dashboard status route
