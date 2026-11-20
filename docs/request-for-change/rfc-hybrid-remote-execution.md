@@ -3,9 +3,9 @@ title: Hybrid local/remote execution — routing, memory authority and fallback
 status: draft
 author: koenvincent
 created: 2026-10-17
-last-audited: 2026-10-24
-audited-at: 69e016c117
-doc-pr: null
+last-audited: 2026-11-19
+audited-at: fc89562d69
+doc-pr: 21613
 implementation-prs: []
 tracking-issues: [3278]
 supersedes: []
