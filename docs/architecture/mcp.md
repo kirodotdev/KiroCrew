@@ -812,7 +812,16 @@ the sharing rows and the gateway rewriter use; otherwise it is stdio.
   **Two pieces of evidence split that ambiguity**, and the wording follows what
   they support rather than the status code. The probe parses the challenge (a
   Bearer challenge carrying a `scope` list or an https `resource_metadata` URL sets
-  `authChallenge`), and it asks both runtimes' grant stores whether they hold a
+  `authChallenge`). A `401` with no such challenge gets the spec's fallback
+  (`advertises_protected_resource`): the probe reads the protected-resource
+  metadata at the server's well-known path (RFC 9728, path-inserted then root)
+  with the Connections discovery fetch (`mcp_oauth_discovery._fetch_json`:
+  vetted public HTTPS on 443, pinned, no redirects, size-bounded), and a document
+  that covers the server (`l0_probe._read_resource_metadata`) sets
+  `authChallenge` too. A gateway in front of a server can rename its
+  `WWW-Authenticate` header, and without this such a server reads **Not
+  verified** with no sign-in. It asks both
+  runtimes' grant stores whether they hold a
   grant for the url to set `authGrantPresent`: kiro-cli's cache (a stat of its
   paired grant artifacts) and the KAS grant vault (whether an entry name is
   listed; see below). A server whose sign-in Crew holds (`crew_oauth.owns`:
@@ -828,7 +837,7 @@ the sharing rows and the gateway rewriter use; otherwise it is stdio.
   |---|---|---|
   | challenge, `authGrantPresent` false | **Sign-in required** | "Nobody has signed in" is observed in BOTH stores, so the row names the action and states where it happens. |
   | challenge, `authGrantPresent` true | **Signed in** (muted) | A grant exists in either store. The badge reports THAT, never that the server answers — the probe holds no token, so validity is the one thing it cannot check, and the hover says so. Toned muted rather than warn: amber is the panel's "act now" colour, and a resolved row wearing it is indistinguishable by colour from one that still needs a sign-in. |
-  | no challenge, or `authGrantPresent` absent | **Not verified** | An older gateway, or a bare `401`. Naming any state here would assert more than the probe observed. |
+  | no challenge, or `authGrantPresent` absent | **Not verified** | An older gateway, or a bare `401` whose server publishes no metadata naming itself. Naming any state here would assert more than the probe observed. |
 
   On the KAS harness, a remote row whose own `oauth` block reaches no engine
   (`oauthWithheld`, from `mcp_oauth_projection.oauth_withheld`: the block names a
