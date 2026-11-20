@@ -300,6 +300,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _ensure_event_loop,
     _fake_computer_use_backend,
     _forget_app_declared_row_listings,
+    _forget_app_token_refusal_streaks,
     _forget_app_turn_approver,
     _forget_enterprise_profile_pin,
     _forget_gatewayd_telemetry_override,

@@ -251,6 +251,13 @@ async def _restart_gateway(
             await asyncio.to_thread(flush_breadcrumb_writes, 2.0)
         except Exception:
             logger.debug("Breadcrumb flush before restart failed", exc_info=True)
+        # The exec runs no atexit handler and does not join the SEL writer thread, so
+        # the queued audit tail, with the rows the pre-exec stops wrote, would die
+        # with this image. Drained the bounded off-loop way the hard exits use.
+        step("draining the security event log")
+        from kiro_crew.sel import flush_audit_queue_before_hard_exit
+
+        await flush_audit_queue_before_hard_exit()
         await asyncio.sleep(0.5)
         step("exec")
         # Same point of no return as the orchestrator path: the refusal above

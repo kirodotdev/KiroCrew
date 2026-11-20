@@ -34,6 +34,8 @@ class StubGateway:
         # generic ``{"error": ...}`` body, so a test can assert on a code field
         # like ``context_not_queued``.
         self.status_bodies: dict[int, Any] = {}
+        # Optional per-status response headers, such as a ``Retry-After``.
+        self.status_headers: dict[int, dict[str, str]] = {}
         self.break_stream = False
         self.omit_stream_done = False
         self.chat_response: dict[str, Any] | None = None
@@ -73,7 +75,9 @@ class StubGateway:
             status = self.statuses.pop(0)
             if status >= 400:
                 body = self.status_bodies.get(status, {"error": f"status {status}"})
-                return web.json_response(body, status=status)
+                return web.json_response(
+                    body, status=status, headers=self.status_headers.get(status)
+                )
         if request.method == "POST" and request.path == "/api/chat":
             if self.chat_response is not None:
                 return web.json_response(self.chat_response)
@@ -779,3 +783,118 @@ class TestWebSocket:
         ws = KiroCrewClient().create_ws()
         assert not hasattr(ws, "on_raw_message")
         assert not hasattr(ws, "_raw_msg_listeners")
+
+
+class TestAppTokenExchangeBackoff:
+    """A refused app secret exchange holds the next one.
+
+    An app whose secret went stale must not exchange on every 401, because the
+    Gateway writes a security event row for each refusal. The client waits the
+    refusal's ``Retry-After``, and at least 1 s doubling to 30 s, before it asks again.
+    """
+
+    _TOKEN_PATH = "/api/apps/notes/token"
+
+    @pytest.fixture
+    def clock(self, monkeypatch) -> list[float]:
+        from kirocrew_client import client as client_mod
+
+        now = [1000.0]
+        monkeypatch.setattr(client_mod, "_exchange_holds", {})
+        monkeypatch.setattr(client_mod, "_now", lambda: now[0])
+        monkeypatch.setenv("KIROCREW_APP_NAME", "notes")
+        monkeypatch.setenv("KIROCREW_PROXY_SECRET", "stale")
+        return now
+
+    async def test_retry_after_holds_the_next_exchange(self, gw, clock):
+        gw.statuses = [429]
+        gw.status_headers = {429: {"Retry-After": "60"}}
+        gw.responses[("POST", self._TOKEN_PATH)] = {"token": "fresh"}
+        async with _client(gw, app_name="notes") as mc:
+            assert await mc.authenticate() is False
+            clock[0] += 59
+            with pytest.raises(KiroCrewError) as exc:
+                await mc._auto_refresh_token()
+            assert exc.value.code == ErrorCode.RATE_LIMITED
+            assert "next attempt in 1s" in str(exc.value)
+            assert len(gw.requests) == 1, "inside the hold no request is sent"
+            clock[0] += 1
+            assert await mc.authenticate() is True
+            assert mc.token == "fresh"
+        assert [r["path"] for r in gw.requests] == [self._TOKEN_PATH] * 2
+
+    async def test_refusals_back_off_and_a_grant_clears_the_hold(self, gw, clock):
+        from kirocrew_client import client as client_mod
+
+        gw.statuses = [403, 403, 403]
+        gw.responses[("POST", self._TOKEN_PATH)] = {"token": "fresh"}
+        async with _client(gw, app_name="notes") as mc:
+            holds = []
+            for _ in range(3):
+                assert await mc.authenticate() is False
+                [hold] = client_mod._exchange_holds.values()
+                holds.append(hold.not_before - clock[0])
+                clock[0] += holds[-1]
+            assert holds == [1.0, 2.0, 4.0]
+            assert await mc.authenticate() is True
+        assert client_mod._exchange_holds == {}
+
+    async def test_a_server_error_holds_nothing(self, gw, clock):
+        from kirocrew_client import client as client_mod
+
+        gw.statuses = [503]
+        gw.responses[("POST", self._TOKEN_PATH)] = {"token": "fresh"}
+        async with _client(gw, app_name="notes") as mc:
+            assert await mc.authenticate() is False
+            assert client_mod._exchange_holds == {}, "a 5xx says nothing about the secret"
+            assert await mc.authenticate() is True
+        assert [r["path"] for r in gw.requests] == [self._TOKEN_PATH] * 2
+
+    async def test_a_new_client_shares_the_hold_and_a_new_secret_skips_it(
+        self, gw, clock, monkeypatch
+    ):
+        gw.statuses = [403]
+        gw.responses[("POST", self._TOKEN_PATH)] = {"token": "fresh"}
+        async with _client(gw, app_name="notes") as mc:
+            assert await mc.authenticate() is False
+        async with _client(gw, app_name="notes") as mc:
+            assert await mc.authenticate() is False
+        assert len(gw.requests) == 1
+
+        monkeypatch.setenv("KIROCREW_PROXY_SECRET", "rotated")
+        async with _client(gw, app_name="notes") as mc:
+            assert await mc.authenticate() is True
+        assert len(gw.requests) == 2
+
+    async def test_a_request_refused_inside_the_hold_sends_no_exchange(self, gw, clock):
+        gw.statuses = [401, 429, 401]
+        gw.status_headers = {429: {"Retry-After": "60"}}
+        async with _client(gw, app_name="notes") as mc:
+            for _ in range(2):
+                with pytest.raises(KiroCrewError) as exc:
+                    await mc.get_status()
+                assert exc.value.code == ErrorCode.AUTH_EXPIRED
+        assert [r["path"] for r in gw.requests] == [
+            "/api/status",
+            self._TOKEN_PATH,
+            "/api/status",
+        ]
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (None, 0.0),
+            ("", 0.0),
+            ("60", 60.0),
+            ("1.5", 1.5),
+            ("86400", 300.0),
+            ("-1", 0.0),
+            ("inf", 0.0),
+            ("nan", 0.0),
+            ("Wed, 21 Oct 2015 07:28:00 GMT", 0.0),
+        ],
+    )
+    def test_retry_after_is_read_as_bounded_seconds(self, raw, expected):
+        from kirocrew_client.client import _retry_after_secs
+
+        assert _retry_after_secs(raw) == expected

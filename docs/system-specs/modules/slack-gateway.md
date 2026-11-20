@@ -914,7 +914,11 @@ restarts call `pre_exec_stops.run_pre_exec_stops()`. The exec skips every
 cleanup hook but keeps the pid, so an owner that supervises a child process
 registers its stop there instead of being named by the restart; see
 [instances](instances.md) for its owners, the instance tunnels and the sleep
-inhibitor. The exit path calls it too, before its `os._exit` (Shutdown Sequence
+inhibitor. An owner whose state lives only in memory registers too, when that
+state must reach disk: the skill-usage ledger, and the app token refusal
+summaries ([dashboard-token-auth](dashboard-token-auth.md)). After the stops the
+dashboard restart drains the SEL queue (`flush_audit_queue_before_hard_exit`),
+so a row a stop writes is on disk before the exec. The exit path calls `run_pre_exec_stops()` too, before its `os._exit` (Shutdown Sequence
 step 4), because a graceful shutdown that runs out of time skips those hooks the
 same way. An owner's cleanup hook unregisters its stop only once the hook's own
 stop has returned, so a hook the graceful bound cancels mid-stop leaves it for

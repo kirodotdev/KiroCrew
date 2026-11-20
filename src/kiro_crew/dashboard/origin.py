@@ -260,6 +260,14 @@ def request_is_unix_socket(request: web.Request) -> bool:
 #: lives here.
 AUDIT_CLAIMED_KEY = "_kc_audit_claimed"
 
+#: Request key meaning "this response is a refusal its handler counted into a
+#: summary row instead of writing a row for it". Read by both chains'
+#: ``sel_audit_middleware``, which then writes no request row for it either: the
+#: summary row is the record, and one request row per refusal would bring back
+#: the log volume the count removes. Only server code sets it, after the
+#: handler has decided; nothing a client sends can.
+AUDIT_COUNTED_KEY = "_kc_audit_counted"
+
 
 def _split_authority(authority: str) -> tuple[str, str] | None:
     """Split ``host[:port]`` (IPv6 in brackets) into ``(host, ":port" or "")``.
@@ -336,6 +344,16 @@ def mark_audit_claimed(request: web.Request) -> None:
     reason, which is the whole point of the guarantee being positional.
     """
     request[AUDIT_CLAIMED_KEY] = True
+
+
+def mark_audit_counted(request: web.Request) -> None:
+    """Declare that this request's refusal is counted in a summary row.
+
+    Call it only where a module writes that summary itself
+    (``app_token_denials``). The request audit then skips its own row for this
+    request; a raised error is still recorded.
+    """
+    request[AUDIT_COUNTED_KEY] = True
 
 
 #: Seconds during which a repeat refusal for the same (reason, origin) pair is

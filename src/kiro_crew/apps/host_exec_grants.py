@@ -26,7 +26,10 @@ so a disabled app can never keep one.
 These functions are generic -- they act on whatever app name they are handed and know
 no specific app id, so core (`sandbox_leaves`, `manager_records`, `manager_uninstall`)
 stays app-agnostic. A marker for an app with no host-exec path is harmless: nothing
-reads it. The only reader is the pod gate inside ``apps/builtins/dev_fleet/``.
+reads it. The pod gate inside ``apps/builtins/dev_fleet/`` and the app token exchange
+(``token_auth_tokens.validate_app_secret``, ``token_auth_app_scope``) read it as the
+owner's grant, and the exchange's refusal audit (``dashboard.app_token_denials``)
+counts every name without one under one key.
 """
 
 from __future__ import annotations
