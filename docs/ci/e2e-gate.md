@@ -360,14 +360,14 @@ background step writes every 5 s while the suite runs, with a UTC timestamp,
 `/proc/pressure/{cpu,io,memory}`, the `cpu ` line of `/proc/stat` (steal),
 `/proc/loadavg`, and the job cgroup's `cpu.stat` and `memory.events`. It exists
 to tell a runner that stopped scheduling the gateway from a stall inside it when
-the loop-stall watchdog ends the gateway with -14 (#22314). Inside the container
+the loop-stall watchdog ends the gateway with -14. Inside the container
 `/proc/pressure` and `/proc/stat` are host-wide, and a gap in the log's own
 timestamps means the sampler was frozen too.
 
 The job's log alone is not enough to triage a spec failure: it names
-`error-context.md` and prints nothing from it. #8526 (a ghost transcript from the
-previous session rendering for a few hundred ms after the first send) was
-narrowed for hours from that one line before a local run produced the snapshot.
+`error-context.md` and prints nothing from it. A failure such as a ghost
+transcript from the previous session rendering for a few hundred ms after the
+first send cannot be narrowed from that one line; the snapshot can.
 Download the artifact first; bisect second.
 
 `if-no-files-found: ignore`, deliberately: a run that fails before the specs
@@ -633,7 +633,7 @@ leg, and `nightly.yml`'s `pod-scenarios`, which boots a real service-managed pod
 Outside this job, no macOS or Windows job starts a gateway: the whole E2E
 surface is gated on `KIROCREW_E2E`, which only `setup.py test_e2e` sets, and
 only the Linux `e2e` job runs that. A unit test cannot close that gap.
-[#8117](https://github.com/kirodotdev/KiroCrew/pull/8117) is the defining case:
+The defining case:
 a settings-file probe in `sandbox.wrap_argv`'s Windows delegation branch made
 the Kiro ACP spawn on a fresh Windows host (where that file does not exist) fall
 through to the no-backend fail-closed path, so the gateway never became usable.
@@ -662,7 +662,7 @@ and Windows that tail is the only evidence a maintainer without that OS gets.
 | `test_prompt_returns_the_fake_backend_reply` | One session create plus one prompt returns the fake backend's reply. `/api/health` can answer while the ACP spawn is refused, so this is the load-bearing one. |
 | `test_tool_marker_prompt_completes_the_turn` | A `[[TOOL]]` prompt still completes its turn. |
 | `test_seeded_sandbox_mode_boots_and_runs_a_turn[minimal]` | `agent.sandbox: "off"` boots and serves. |
-| `test_seeded_sandbox_mode_boots_and_runs_a_turn[rich]` | The shipped `auto` default boots and serves. **This is the #8117 pin.** |
+| `test_seeded_sandbox_mode_boots_and_runs_a_turn[rich]` | The shipped `auto` default boots and serves. **This pins the Windows sandbox-delegation case above.** |
 | `test_shutdown_leaves_no_gateway_child_alive` | Teardown reaps the tree: the pid is gone (via `platform_compat.pid_exists`, never `os.kill(pid, 0)`) and the port refuses connections. |
 
 The tier is expressed as a SEED FIXTURE rather than a post-boot config write,
@@ -714,7 +714,7 @@ Linux user namespaces) must complete the turn; a host that genuinely has none
 must FAIL CLOSED with a named sandbox refusal and stay healthy. `ubuntu-latest`
 is that second host: its unprivileged user namespaces are AppArmor-restricted,
 which is why `backend-test-sandbox` has to clear a sysctl to get one. On Windows
-the expectation is unconditionally the first, so a #8117-style regression cannot
+the expectation is unconditionally the first, so a regression like the sandbox-delegation case above cannot
 hide in the fail-closed branch.
 
 ### `KIROCREW_E2E_REQUIRE=1` on the boot matrix
@@ -849,8 +849,7 @@ any run made under it.
   Windows. It lives in the job env, not the test, so a slow runner is retunable
   without a code change. Windows needs the widest window: subprocess spawn and
   filesystem latency there are measurably slower, the conditions
-  [#9172](https://github.com/kirodotdev/KiroCrew/pull/9172) addressed when a slow
-  disk killed the gateway.
+  under which a slow disk can kill the gateway.
 - **`-n0` with `--timeout=420`**: the module spawns a real process per test, and
   under xdist a block takes the worker with it, which on Windows aborts the run.
   The cap sits above the widest readiness window plus the per-turn reply ceiling,
