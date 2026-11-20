@@ -35,8 +35,11 @@ LABEL_BEATS_RULES = frozenset({"git.object_name"})
 # A hit whose unit is still running when a stream window ends, decided as a Secret:
 # ``all`` covers everything to the end of the text, ``b64run`` the rest of a base64 run,
 # ``encrun`` the rest of an encoded run (base64 in either alphabet, or percent-encoded).
-# A run's tail also takes at most two ``=`` after it.
+# A run's tail also takes at most two ``=`` after it. ``line`` covers the rest of the
+# hit's line: a stream shows one tag for it and hides its output to the next line break,
+# while it still reads that text, so the reply after the line streams on.
 TAIL_ALL = "all"
+TAIL_LINE = "line"
 TAIL_B64RUN = "b64run"
 TAIL_ENCRUN = "encrun"
 
