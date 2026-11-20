@@ -2138,6 +2138,34 @@ thread, and the race-safety argument (the state test and the cancel sharing one
 `only_from` under the generation the read returned) is the same code rather than the same
 intent restated.
 
+**A claimed row is left to its claimer, and the parent end is recorded on its run
+folder.** The store refuses to cancel a row that is claimed but not started
+(`allow_admitted=False`), and the teardown does not reap it through the live path either.
+The claimer (`claim_and_start`) reads the teardown mark after its claim and again after
+its start write, and cancels a marked row under the claim's generation instead of starting
+it. The mark lives in memory and ages out, so the teardown also writes a `parent_end`
+tombstone on that row's run folder (`subagent_manager/parent_end_record.py`), and a claimer
+whose cancel cannot reach the store writes one when it retains the claim. The record names
+the claim's generation as `taskq_attempt` and the outcome `stopped`. The run folder is the
+row id's, so a row claimed again keeps the tombstone of an earlier attempt, such as the
+restart that stopped a recovered row's run or the failure before a retry. The record
+replaces a tombstone that names no attempt or another one, and keeps its
+`leaked_process` mark. A tombstone that names the claim's attempt is the run's own
+ending: the create is exclusive, so that tombstone stays, and the refused record is
+logged. A `parent_end` tombstone that names the claim's attempt is this record, which
+the teardown wrote before the claimer's cancel failed, so the claimer's write and each
+retained-claim retry count it as recorded and log nothing. A `gateway_restart` write that
+lands after the parent end, such as an owed orphan notice's drain, keeps the
+`parent_end` cause (`subagent_persistence_tombstones.py`). The boot reconcile's artifact probe maps the
+tombstone to `STOPPED`, which settles the row `cancelled` in the active pass and in the
+queued pass, as a queued-stop marker does. The queued pass matters when the claimer is
+cancelled before its start: `_claim_or_release_on_cancel` gives the claim back to `queued`
+after the teardown wrote the record. The retained-claim retry reads the tombstone before it takes the claim,
+so the row is cancelled after a restart or after the mark has aged out. The reaper's
+tombstone pruner keeps a `parent_end` tombstone past its window while the row is not
+terminal (`_refusal_tombstone_unsettled`, as for a refusal or queued-stop tombstone), so
+the record lasts as long as the row it stands for (`test_taskq_parent_end_tombstone.py`).
+
 ### Dashboard Stop and subagent UI
 
 Stop ends the parent turn but leaves its subagents running: Stop is a

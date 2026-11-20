@@ -1266,7 +1266,8 @@ requeues from `admitted` is not read twice; counted in
 `artifact_probe` verdict of `REFUSED` (the subagent refusal tombstone,
 `cause="refused"`, [subagent](subagent.md) § Refused-row settle), settled
 `failed`, and one of `STOPPED` (the queued-stop tombstone, `cause="queued_stop"`,
-written when a Stop of a waiting run could not land its cancel), settled
+written when a Stop of a waiting run could not land its cancel, or a `parent_end`
+tombstone, written when the row's parent conversation ended), settled
 `cancelled`; a store that refuses either write holds the row out of every claim
 for that state (`hold_until_settled(id, state)`). An `admitted` row carrying the
 queued-stop marker is settled `cancelled` by the active pass, through the same
@@ -1276,7 +1277,8 @@ settle one on a plain `done` / `failed` / `cancelled`: a row comes back to
 row, this table's own lost-owner requeue), and that attempt's ending on disk is
 not this row's; the refusal marker is written only for a spawn refused before
 its row was claimed, and the queued-stop marker only for a run stopped before it
-started, so either can only be this row's own. A `queued` row whose
+started, so either can only be this row's own. A parent end ends every attempt of
+its row, because the conversation that owns the row is gone. A `queued` row whose
 artifacts say nothing, or record only such an ending, is left as it was.
 
 One plain ending is acted on, for one state: a `cancelled` verdict on a
