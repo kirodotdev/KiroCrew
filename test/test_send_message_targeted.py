@@ -3,28 +3,17 @@
 from __future__ import annotations
 
 import contextlib
-import sys
-import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.dashboard.handlers import api_send_message, api_slack_profile
+from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.telegram.client import TELEGRAM_MAX_TEXT
 from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
-
-# Ensure kiro_crew.slack.handler is importable for patching even when
-# heavy transitive deps (cron_descriptor, etc.) aren't installed.
-if "kiro_crew.slack.handler" not in sys.modules:
-    _stub = types.ModuleType("kiro_crew.slack.handler")
-    _stub.is_allowed_user = lambda uid: False  # type: ignore[attr-defined]
-    _stub.is_tracked_channel = lambda cid: False  # type: ignore[attr-defined]
-    sys.modules["kiro_crew.slack.handler"] = _stub
-
-from kiro_crew.dashboard.handlers import api_send_message, api_slack_profile  # noqa: E402
-from kiro_crew.messaging.link import ChannelLink  # noqa: E402
-from kiro_crew.telegram.client import TELEGRAM_MAX_TEXT  # noqa: E402
-from kiro_crew.validation import CHANNEL_ID_RE, CHANNEL_MAX_LEN  # noqa: E402
+from kiro_crew.validation import CHANNEL_ID_RE, CHANNEL_MAX_LEN
 
 
 def _make_app(state) -> web.Application:
