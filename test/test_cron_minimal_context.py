@@ -93,18 +93,30 @@ class TestBuildCronSessionContextMinimal:
         assert "x" * 2001 not in prompt
         assert "[truncated]…" + "x" * 2000 in prompt
 
-    def test_without_minimal_context_long_result_not_capped(self):
-        long_result = "x" * 5000
+    def test_without_minimal_context_long_result_capped_at_2000(self):
         job = CronJob(
             id="j1",
             name="x",
             message="do work",
             persistent_session=True,
             minimal_context=False,
-            last_result=long_result,
+            last_result="a" * 2000 + "b" * 2000,
         )
         prompt = cron_prior_result_context(job)
-        assert long_result in prompt
+        assert "[truncated]…" + "b" * 2000 in prompt
+        assert "a" not in prompt.split("[truncated]…", 1)[1]
+
+    def test_without_minimal_context_short_result_unchanged(self):
+        job = CronJob(
+            id="j1",
+            name="x",
+            message="do work",
+            persistent_session=True,
+            minimal_context=False,
+            last_result="y" * 2000,
+        )
+        prompt = cron_prior_result_context(job)
+        assert "y" * 2000 in prompt
         assert "[truncated]" not in prompt
 
     def test_no_last_result_works_fine(self):
