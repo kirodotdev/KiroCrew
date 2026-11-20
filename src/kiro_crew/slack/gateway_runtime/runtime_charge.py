@@ -59,7 +59,7 @@ def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
     failed would otherwise reach the auto-pause threshold in three runs rather
     than five — pausing on arithmetic instead of on evidence.
 
-    Four outcomes, not two. A run with every call security-blocked is a
+    Five outcomes, not two. A run with every call security-blocked is a
     failure and is counted. A run with SOME call security-blocked keeps
     ``last_status = "error"`` with the refusal as its reason but is counted in
     neither direction: the approved calls prove the job can work, so it must
@@ -68,9 +68,12 @@ def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
     failure-alert dedup the way a success does. A run with no approved call and
     no security block, but at least one call refused another way, is recorded
     the same way: nothing ran, so it did not succeed, and a policy state or an
-    absent approver is not evidence the job is broken. Only a run with at least
-    one approved call and no security block, or no tool call at all, records a
-    success.
+    absent approver is not evidence the job is broken. A run with an approved
+    call and no security block, but at least one call blocked because a policy
+    refused to run a spec hook, is recorded the same way: that hook never ran,
+    so its calls are lost on every run however the model adapts. Only a run
+    with at least one approved call, no security block and no such call, or no
+    tool call at all, records a success.
     """
     if tally.all_blocked:
         # Nothing the model attempted was permitted, so the run accomplished
@@ -87,9 +90,10 @@ def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
                 job.consecutive_failures,
             )
         return True
-    if tally.partially_blocked or tally.none_approved:
+    if tally.partially_blocked or tally.none_approved or tally.hook_refused_some:
         # The run did work AND lost work, or every call it tried was refused
-        # by policy or left unapproved. "error" is the one non-ok status the
+        # by policy or left unapproved, or a policy refused to run a hook that
+        # guards some of its calls. "error" is the one non-ok status the
         # row, cron_list and the history record understand, and the reason
         # names the refused calls. Neither counter moves: not record_failure(),
         # because approved calls, a policy state or an absent approver are not

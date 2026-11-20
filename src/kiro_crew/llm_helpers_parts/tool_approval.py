@@ -290,14 +290,16 @@ async def _resolve_permission(
     app: str = "",
     app_run: tuple[str, str] = ("", ""),
     on_decision: Callable[[str, str, str], None] | None = None,
-    spec_floor: Callable[[LLMEvent], Awaitable[str | None]] | None = None,
+    spec_floor: Callable[[LLMEvent], Awaitable[tuple[str, bool] | None]] | None = None,
 ) -> bool:
     """Resolve a tool permission request. Returns True if approved.
 
     *spec_floor*, when given, is asked first (after a reject-all policy): the
-    agent spec's own PreToolUse hooks on a backend that never runs them. A reason
-    it returns refuses the call under ``mechanism`` ``"spec_hook"``, which, like
-    a governance deny, says nothing about the job: under its own harness the hook
+    agent spec's own PreToolUse hooks on a backend that never runs them. A
+    ``(reason, policy_refused)`` it returns refuses the call under ``mechanism``
+    ``"spec_hook"``, or ``"spec_hook_refused"`` when *policy_refused* says a
+    policy refused to run the blocking hook, so it never ran. Either, like a
+    governance deny, says nothing about the job: under its own harness the hook
     refuses the call with no gate decision at all.
 
     *on_decision*, when given, receives ``(outcome, mechanism, reason)`` for the
@@ -310,7 +312,9 @@ async def _resolve_permission(
     gate or through a regex-tier rule that only a governance PIN put back into
     the effective set), ``"always_deny_transport"`` (the transport's security
     floor refused an approval), ``"batch_write_guard"`` (the batch write guard
-    deferred an approval to the next step), or ``""`` for an approval, an
+    deferred an approval to the next step), ``"spec_hook"`` (the agent spec's
+    own PreToolUse hook blocked the call), ``"spec_hook_refused"`` (a policy
+    refused to run that hook), or ``""`` for an approval, an
     interactive rejection or an approval prompt that expired unanswered.
     The ``always_deny`` prefix is therefore what marks a refusal as "the attempt
     itself was the problem"; everything else describes policy state or an absent
@@ -373,9 +377,11 @@ async def _resolve_permission(
         return False
 
     if spec_floor is not None:
-        spec_reason = await spec_floor(event)
-        if spec_reason is not None:
-            _log("denied", error=spec_reason, metadata={"mechanism": "spec_hook"})
+        spec_refusal = await spec_floor(event)
+        if spec_refusal is not None:
+            spec_reason, policy_refused = spec_refusal
+            spec_mechanism = "spec_hook_refused" if policy_refused else "spec_hook"
+            _log("denied", error=spec_reason, metadata={"mechanism": spec_mechanism})
             await _steer_host_deny(provider, event, spec_reason, cause=DENY_CAUSE_POLICY)
             await provider.reject_tool(event.request_id)
             return False
