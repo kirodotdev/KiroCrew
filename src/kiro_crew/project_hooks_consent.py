@@ -5,7 +5,9 @@ does not) carries ``hooks``: commands from a cloned folder. They run only when
 :func:`hooks_enabled` says so for that folder, decided in this order:
 
 1. The owner's own choice in Crew, ``on`` or ``off``. A Crew ``off`` beats
-   kiro-cli's trust.
+   kiro-cli's trust. An ``on`` covers only the hooks the folder held when it was
+   given (:func:`hooks_fingerprint`); once they differ it reads as
+   :data:`STALE`: off, kiro-cli not consulted, and the notice asks again.
 2. Otherwise kiro-cli's own "Trust this workspace?" record
    (:func:`kiro_crew.kiro_cli_workspace_trust.kiro_cli_trusts_folder`), read
    only. When kiro-cli later drops it, the hooks stop again.
@@ -21,6 +23,7 @@ fails soft to "no choice".
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -102,16 +105,64 @@ def _load() -> dict[str, Any]:
     notified = doc.get("kiro_cli_notified", [])
     if not isinstance(notified, list) or not all(isinstance(k, str) for k in notified):
         raise StoreUnreadable("project-hooks consent store has an unknown notice entry")
+    prints = doc.get("hook_fingerprints", {})
+    if not isinstance(prints, dict) or not all(
+        isinstance(k, str) and _is_fingerprint(v) for k, v in prints.items()
+    ):
+        raise StoreUnreadable("project-hooks consent store has an unknown fingerprint entry")
     return doc
+
+
+def _is_fingerprint(value: object) -> bool:
+    return (
+        isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+    )
+
+
+def hooks_fingerprint(folder: str) -> str:
+    """sha256 of every hook definition *folder*'s ``.kiro/agents`` specs declare.
+
+    An ``on`` is bound to this, not to the path alone: a folder deleted and
+    re-created (or re-cloned) at the same path with other hooks no longer matches,
+    so its hooks wait for a new ``on``. Covers each spec that reads and sets
+    ``hooks``, through the same scanner and reader the firing path uses; that is a
+    superset of the hooks that can run, so a change can only re-ask, never skip one.
+    Only ``hooks`` is hashed: an edit to a prompt or tools list does not re-ask.
+
+    shortcut: a script a hook command runs is not hashed, so a swapped folder that
+    copies the old hook text but changes that script still runs; hash referenced
+    files if that ever matters.
+    """
+    from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files
+
+    entries = []
+    for path in project_agent_files(
+        folder, operation="project_hooks_fingerprint", source="unknown"
+    ):
+        spec = _read_agent_spec(path, operation="project_hooks_fingerprint", source="unknown")
+        if isinstance(spec, dict) and "hooks" in spec:
+            entries.append([path.name, spec.get("name"), spec["hooks"]])
+    entries.sort(key=lambda e: e[0])
+    data = json.dumps(entries, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
 #: :func:`crew_choice` for a record that exists but cannot be trusted: hooks off.
 UNREADABLE = "unreadable"
+#: :func:`crew_choice` for an ``on`` given to other hooks than the folder holds now:
+#: hooks off, kiro-cli not consulted, and the notice asks again.
+STALE = "stale"
 
 
 def crew_choice(folder: str | os.PathLike[str] | None) -> str | None:
     """The owner's own choice for *folder*: ``"on"``, ``"off"``, ``None`` (no choice),
-    or :data:`UNREADABLE` when the record exists but cannot be read."""
+    :data:`UNREADABLE` when the record exists but cannot be read, or :data:`STALE`
+    when the ``on`` was given to other hooks than the folder declares now.
+
+    An ``on`` saved before fingerprints existed adopts the current one here, once,
+    so an existing user is not asked again; if that save fails it stays ``on`` and
+    the next read tries again.
+    """
     key = folder_key(folder)
     if key is None:
         return None
@@ -120,23 +171,43 @@ def crew_choice(folder: str | os.PathLike[str] | None) -> str | None:
         # not a whole record, which an unlocked read would take as UNREADABLE.
         with _LOCK:
             doc = _load()
+            choice = doc.get("folders", {}).get(key)
+            if choice != ON:
+                return choice
+            try:
+                current = hooks_fingerprint(key)
+            except Exception:  # noqa: BLE001 - fail closed: unread hooks are not consented
+                logger.warning("could not read the folder's hooks; project hooks stay off")
+                return STALE
+            stored = doc.get("hook_fingerprints", {}).get(key)
+            if stored is None:
+                doc["hook_fingerprints"] = {**doc.get("hook_fingerprints", {}), key: current}
+                try:
+                    _write(doc)
+                except OSError:
+                    logger.debug("could not record the project-hooks fingerprint", exc_info=True)
+                return ON
     except StoreUnreadable:
         logger.warning("project-hooks consent store is unreadable; project hooks stay off")
         return UNREADABLE
-    return doc.get("folders", {}).get(key)
+    if stored != current:
+        logger.info("project hooks changed since they were turned on; they wait for a new yes")
+        return STALE
+    return ON
 
 
 def hooks_enabled(folder: str | os.PathLike[str] | None) -> tuple[bool, str]:
     """Whether *folder*'s project-only spec hooks run, and who decided it.
 
     ``(True, "crew")``, ``(True, "kiro_cli")``, ``(False, "crew")`` for an owner
-    turn-off or a Crew record that cannot be read (kiro-cli is not consulted then),
+    turn-off, an ``on`` whose hooks have changed since (:data:`STALE`), or a Crew
+    record that cannot be read (kiro-cli is not consulted then),
     or ``(False, "")`` when nobody turned them on. Read-only.
     """
     choice = crew_choice(folder)
     if choice == ON:
         return True, SOURCE_CREW
-    if choice is not None:  # OFF, or UNREADABLE: never fall back to kiro-cli
+    if choice is not None:  # OFF, STALE or UNREADABLE: never fall back to kiro-cli
         return False, SOURCE_CREW
     from kiro_crew.kiro_cli_workspace_trust import kiro_cli_trusts_folder
 
@@ -254,6 +325,13 @@ def set_choice(folder: str | os.PathLike[str], enabled: bool) -> str:
             raise StoreFull("the project-hooks record holds the most folders it can")
         folders[key] = ON if enabled else OFF
         doc["folders"] = folders
+        # The "on" covers the hooks the folder holds now (:func:`hooks_fingerprint`).
+        prints = dict(doc.get("hook_fingerprints", {}))
+        if enabled:
+            prints[key] = hooks_fingerprint(key)
+        else:
+            prints.pop(key, None)
+        doc["hook_fingerprints"] = prints
         _write(doc)
     return key
 

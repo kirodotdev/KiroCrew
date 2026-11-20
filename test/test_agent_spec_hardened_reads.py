@@ -1237,6 +1237,8 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # A manifest's `commands[].agent` is checked against the names its own source
     # specs declare; those live in the app root, which the app can rewrite.
     "kiro_crew/apps/manifest_containment.py": [("app_manifest_agent_names", "unknown")],
+    # The hook fingerprint a folder's project-hooks "on" is bound to.
+    "kiro_crew/project_hooks_consent.py": [("project_hooks_fingerprint", "unknown")],
 }
 
 
@@ -1283,6 +1285,8 @@ _EXPECTED_PROJECT_FILES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("side_readonly_spec", "dashboard"),
     ],
     "kiro_crew/member_essential_context.py": [("member_essentials", "context")],
+    # The hook fingerprint a folder's project-hooks "on" is bound to.
+    "kiro_crew/project_hooks_consent.py": [("project_hooks_fingerprint", "unknown")],
     # Slack's shared discovery helper forwards the operation its two routes name
     # (the listing, the name resolution); the channel is fixed, so it is a literal.
     "kiro_crew/slack/handler_runtime/agent_names.py": [("forward:operation", "slack")],
