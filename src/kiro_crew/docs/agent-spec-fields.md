@@ -567,7 +567,7 @@ itself:
   runs on KAS's default prompt, as kiro-cli runs it with no prompt, and a
   session-start notice names the file (`kas_prompt.prompt_unread_notice`);
 - a missing or blank prompt is sent as `"prompt": ""`, so the agent runs on
-  KAS's own default prompt alone, as it runs on kiro-cli's (#25320). KAS needs
+  KAS's own default prompt alone, as it runs on kiro-cli's. KAS needs
   the key present, not non-empty: an entry without it is not registered and the
   session falls back to KAS's `vibe` mode. Crew's own `kirocrew-lite` is the one
   exception and gets the short `_KAS_FALLBACK_PROMPT` brief for its one-shot text
@@ -611,9 +611,8 @@ pointer, or a superseded stub spelling, to the current stub. A
 capability-materialized owned member is the exception to both:
 `agent_capabilities._maintain_owned` snapshots and restores its `prompt` around
 that heal, so one still carrying the `file://` pointer keeps delivering the
-persona natively — the same double delivery tracked in #13305 — and one still
-carrying a superseded stub keeps that older, weaker system-role framing until
-the carve-out is settled there. The two readers
+persona natively — the same double delivery kiro-cli has — and one still
+carrying a superseded stub keeps that older, weaker system-role framing. The two readers
 that must not deliver the managed contract twice (member essentials and the
 session-start load in `context_assembly/agent_spec.py`) recognise the stub and managed file URIs
 through `is_managed_prompt`: essentials omit the contract, and the session-start load
@@ -638,7 +637,7 @@ sends its session head there instead (`[AGENT SYSTEM PROMPT]`, the dashboard
 later chats (`session_head.py`); a remote-workspace notice after the head does not
 stop it being recognised. The turn after a compaction re-sends the block on every
 backend. On kiro-cli the persona still arrives both
-natively and through the injection (#13305).
+natively and through the injection.
 
 The reader also recognizes an older managed `file://` pointer under a Crew data
 home or installed package. A desktop update or fallback gateway can leave that
