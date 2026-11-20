@@ -13165,8 +13165,8 @@
         "tool_stopped_responding": "도구가 응답하지 않습니다",
         "turn_interrupted": "턴이 중단되었습니다",
         "turn_stalled": "턴이 멈춰 있습니다",
-        "continued_by_a_hook": "훅에 의해 계속 진행했습니다",
-        "hook_requested_continuing": "훅에서 요청함 · 계속 진행 중",
+        "hook_asked_for_another_turn": "훅이 턴을 한 번 더 요청했습니다",
+        "sent_after_the_previous_turn_ended": "이전 턴이 끝난 후 전송됨",
         "hook_loop_halted": "훅 루프가 중지되었습니다",
         "nudge_cap_reached": "넛지 한도에 도달함"
       },
