@@ -84,6 +84,7 @@ from kiro_crew.acp import kas_engine_features as engine  # noqa: F401
 from kiro_crew.acp import kas_env_launch, session_label  # noqa: F401
 from kiro_crew.acp.kas_agents_mcp_servers import (  # noqa: F401 - re-exported
     MANAGED_MCP_SERVER_NAMES,
+    NOT_RUN_CONFIG_UNREAD,
     NOT_RUN_INSECURE_URL,
     NOT_RUN_REGISTRY,
     NOT_RUN_REGISTRY_IF_GOVERNED,

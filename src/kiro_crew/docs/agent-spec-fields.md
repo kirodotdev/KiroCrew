@@ -768,7 +768,11 @@ withheld. KAS connects only to an `https://` url or `http://` on this machine
 `headers` does not run, and the session notice names it. One with `headers` still
 connects through Crew's bridge, which sends the headers in cleartext, unless
 `agent.kas_refuse_plain_http_mcp_headers` is `true` (off by default); then it does
-not run either, and the notice names it. With
+not run either, and the notice names it. The setting also reads as on while
+`config.json` or `config.local.json` cannot be read or the `agent` section is
+discarded, so a broken config does not send the headers; the notice then says the
+config could not be read and names the setting. A repaired `agent` section takes
+effect after the gateway restarts. With
 `agent.mcp_registry_mode` on, Crew withholds every server it did not author, and the
 notice names them; it also names Crew's own servers, which KAS drops when the Kiro
 profile is registry-governed, since KAS then runs only the admin's registry servers.
