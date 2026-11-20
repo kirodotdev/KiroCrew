@@ -6,7 +6,7 @@ created: 2026-10-31
 last-audited: 2026-10-31
 audited-at: 4e605b0d2b
 doc-pr:
-implementation-prs: [34104]
+implementation-prs: [34104, 39564]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -589,7 +589,8 @@ listed here so the count is not read as "everything the gateway exposes":
 |---|---|---|---|---|
 | `/v1/crew/owner/instance/*` | Control plane: health, configuration, upgrade and rollback, start and stop | The owner | 3 | No OpenAPI yet |
 | The wrapped Owner route for the Bot roster | Wraps `GET /api/members` | The owner | 1b | In `crew-owner.yaml` |
-| Local authorization: `GET /oauth/authorize`, `POST /oauth/token`, `POST /oauth/revoke`, `GET /.well-known/oauth-authorization-server` on the local gateway | A client on the same machine asks for a grant | Programs on the same machine; consent needs the owner in the dashboard | 1a | No OpenAPI; parameters follow OAuth 2.1 and RFC 8414 |
+| Local authorization: `GET /oauth/authorize`, `POST /oauth/token`, `POST /oauth/revoke`, `GET /.well-known/oauth-authorization-server` on the local gateway | A client on the same machine asks for a grant | Programs on the same machine; consent needs the host owner's credential through the Owner API | 1a | No OpenAPI; parameters follow OAuth 2.1 and RFC 8414 |
+| The owner's side of local authorization: `GET /v1/crew/owner/grant-requests`, `POST /v1/crew/owner/grant-requests/{request_id}/decision` (amendment, 2026-11-19) | The host owner lists the waiting grant requests and approves or denies one | Host-owner credential, including authenticated remote access; Shared Crew teammates and app credentials get 403 `owner_only`. Rule 5 of this RFC (the Owner tier is for the owner only) already requires this | 1a | In `crew-owner.yaml` (amendment) |
 | Embed page: `GET /embed` and its sign-in routes | The embedded page where the user signs in and answers approvals; `/embed?approval=<id>` shows one approval | Reachable without a token; reads no conversation data | 2 | No OpenAPI yet |
 | Site connection: `GET /connect/start`, `GET /connect/callback` | Connects the user's account at an app's site when the app's MCP server needs it | Reachable without a token; accepts only a one-time code and `state` | 2 | No OpenAPI yet |
 | `POST /v1/chat/completions` | Frozen transition route | The owner and local apps | Exists today | Not specified here |
@@ -597,6 +598,28 @@ listed here so the count is not read as "everything the gateway exposes":
 
 The routes that are reachable without a token need a specification as detailed as the `/v1`
 operations before phase 2 starts ([Q8](#open-questions)).
+
+**Local authorization: how the app waits for the owner** (amendment, 2026-11-19; proposed with the
+pull request that builds the four routes, and in force once a maintainer merges it).
+
+A machine that runs Kiro Crew as a server often has no browser, and the owner answers some time
+after the app asks. So `GET /oauth/authorize` never grants by itself:
+
+1. The first call records a grant request and answers that it waits: 202 with `request_id`,
+   `user_code`, `expires_at` and `interval` for a program that accepts `application/json`, else a
+   page that reloads.
+2. The owner approves or denies the request. With a dashboard this is the consent page; without
+   one it is an Owner route. The owner can narrow the requested scopes, never widen them. An app
+   credential cannot answer a request.
+3. The app asks again with `request_id` and the same parameters, no sooner than `interval`
+   seconds. Once the owner answered, the gateway redirects to the app's loopback `redirect_uri`
+   with a one-time code, or with `error=access_denied`.
+
+The four routes answer only a request made directly from this machine; one that arrives through
+the relay or another entry gets 404. Each request and grant stores a `namespace` field, fixed to
+`default`. The access token is a JWT with `typ` `kiro-crew-local+jwt`, valid 5 minutes. The two Owner routes the owner answers through are added to `crew-owner.yaml` with this amendment; they are not counted in the 59. Proposals
+to be confirmed: a request waits 10 minutes, a code lives 60 seconds, a refresh token expires
+after 24 hours unused and 7 days in all, and at most 5 requests wait per `client_id` and 20 in all.
 
 ### 9. Versioning and compatibility
 
