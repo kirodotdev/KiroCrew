@@ -737,7 +737,7 @@ audience is the host-owner split above (`is_host_owner_dashboard_request`, and
 which admits a teammate. The owner's socket, stream and reads keep the whole
 diagnostic, and the persisted row keeps it. A session export (`GET
 /api/chat/slots/{slot}/export`, either format) carries user and assistant turns
-only, so no reader's file holds the row. Session search (`_searchable_contents`) and the
+only, so no reader's file holds the row. Session search (`history_search.py::_iter_message_texts`, the one source of the search fold and its snippets) and the
 session-list preview (`last_message_info`, the `preview` of `GET /api/sessions?preview=1`)
 skip the row for every reader: neither string carries a row type to redact by.
 The machine owner is never a teammate, whichever path they came in on: the owner on

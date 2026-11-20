@@ -1047,15 +1047,10 @@ inference rather than an edge case. A build that cannot be interrogated reports
 `unknown` and `accelerated: false`: the module never guesses, because a guess here
 tells a user to stop expecting a speedup they are not getting.
 
-**There is deliberately no `stt.local_backend` key.** One was built and then removed
-before merge, and the reason is worth keeping: its only reader was the status echo
-that reported whether it had been honoured. No load path consulted it, so naming
-`cuda` on a CPU-only build changed nothing except the sentence the panel printed
-about the value the user had just set. A config key is honoured forever once it
-ships, and a 14-value one whose entire effect is a note about itself is surface with
-no function -- the same objection that retired the adaptive partial-cadence budget in
-this change. `detect()` and the badge stay, because reporting the backend the build
-actually links is the fix; asking for one was never the fix.
+**There is deliberately no `stt.local_backend` key.** No load path could honour one:
+the build links the backend it links, so a key naming `cuda` on a CPU-only build
+would change nothing except a status line about itself. `detect()` and the badge
+report the backend the build actually links instead.
 
 Installing acceleration is a packaging problem (the published wheel links none), and
 a config key cannot solve it. If backend selection ever becomes real it needs a
