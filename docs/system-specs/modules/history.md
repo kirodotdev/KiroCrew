@@ -781,8 +781,10 @@ scroll stub (`chat-sidebar/rows.ts`) and the two cleanup lists
 thread's tooltip, a dragged session reference, the command center node, the chat
 page title, a short-name match and the chat, share and popout URL slugs also ask
 `isUntitledSession`, and each keeps its own fallback: the rename box opens empty
-and the URLs carry no slug. The browser tab title and the popout window title
-(`shell/appShell.tsx`, `PopoutFrame.tsx`) are not among them yet.
+and the URLs carry no slug. The browser tab title and the popout window title ask
+it too: the main tab reads the panel alone (`Chat — <product>`, `shell/appShell.tsx`),
+as with no session open, and a chat popout its generic `Session` label
+(`pages/PopoutFrame.tsx`).
 
 `ChatSidebar.tsx` is a facade over owners that each hold one responsibility. It
 calls each owner hook where that block used to sit, so React runs the effects in
