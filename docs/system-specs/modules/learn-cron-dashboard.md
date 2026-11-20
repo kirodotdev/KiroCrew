@@ -7013,8 +7013,11 @@ slot. The authorizer mints the loop id itself, writes that record BEFORE
 (denies 503 "self-arm record unavailable" with the store untouched — so a
 stopped loop the arm would have displaced is never removed for nothing),
 because a self-armed loop with no entry would never be allowed to fire; if
-the add itself then refuses, the pre-written entry is forgotten. A pre-minted
-id already in use is refused as a conflict rather than silently re-minted,
+the add itself then refuses, the pre-written entry is forgotten. A record that
+exists but will not open (on Windows, a sharing violation that outlasts the
+read retry) takes the same path: the record is left untouched, so every other
+loop's entry survives, and the arm is refused rather than armed unrecorded. A
+pre-minted id already in use is refused as a conflict rather than silently re-minted,
 since the record would then name the wrong loop. A boolean `true` forged into `autonudge.json` therefore has no
 trust entry and refuses. The entry is REVOKED when its loop is removed or
 replaced — for EVERY loop leaving the store, not only those whose stored
