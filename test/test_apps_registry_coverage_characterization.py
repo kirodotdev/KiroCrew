@@ -504,9 +504,11 @@ class TestGitFetchAndPullFailClosed:
             "ok": False,
             "error": "git pull failed (exit 1); not installing stale code",
         }
-        # The hooks/fsmonitor neutralizer is spliced in right after ``git``.
+        # The hooks/fsmonitor neutralizer and the LFS endpoint pin are spliced in
+        # right after ``git``.
         hooks = ("-c", f"core.hooksPath={os.devnull}", "-c", "core.fsmonitor=false")
-        assert spawned == [("git", *hooks, "pull", "--ff-only", url, "main")]
+        lfs_pin = ("-c", f"lfs.url={url}/info/lfs")
+        assert spawned == [("git", *hooks, *lfs_pin, "pull", "--ff-only", url, "main")]
         assert log[-1] == "git pull failed (exit 1) — aborting"
         assert (dest / ".git").is_dir(), "a failed pull leaves the checkout in place"
 

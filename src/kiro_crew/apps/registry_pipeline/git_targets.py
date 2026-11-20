@@ -397,6 +397,43 @@ _GIT_EXEC_NEUTRALIZER_PAIRS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _lfs_endpoint_pin_argv(git_url: str) -> tuple[str, ...]:
+    """``-c lfs.url=<endpoint>`` that pins Git LFS to *git_url*'s own host.
+
+    Git LFS reads ``lfs.url`` and ``remote.<name>.lfsurl`` from a repository's
+    committed ``.lfsconfig``, and the checkout's smudge step then sends requests to
+    that URL. The clone-host gate (``is_clone_host_trusted``) only vets *git_url*,
+    so without this pin a repository on a trusted forge could aim the smudge step at
+    a loopback or internal address. Command-line config beats ``.lfsconfig`` and
+    Git LFS checks ``lfs.url`` before any ``remote.<name>.lfsurl``, so one pin
+    covers both keys.
+
+    The value is the endpoint Git LFS derives from the clone URL when nothing
+    overrides it: ``<url>.git/info/lfs`` over HTTP(S), the same over HTTPS for
+    ``git://``, and the SSH remote itself for an ssh or scp-like URL (Git LFS then
+    authenticates over SSH as it does by default). A hostless target (a local
+    path, ``file://``) gets no pin; the clone-host gate refuses it before any
+    network clone.
+    """
+    target = (git_url or "").strip()
+    if not _git_url_host(target):
+        return ()
+    scheme, sep, rest = target.partition("://")
+    scheme = scheme.lower() if sep else ""
+    if scheme in {"http", "https", "git"}:
+        base = target.rstrip("/")
+        if scheme == "git":
+            base = "https://" + rest.rstrip("/")
+        if not base.endswith(".git"):
+            base += ".git"
+        endpoint = f"{base}/info/lfs"
+    elif _is_ssh_git_url(target):
+        endpoint = target
+    else:
+        return ()
+    return ("-c", f"lfs.url={endpoint}")
+
+
 def _git_transport_env(
     credential_target: str, safe_target: str, env: dict[str, str]
 ) -> dict[str, str]:
