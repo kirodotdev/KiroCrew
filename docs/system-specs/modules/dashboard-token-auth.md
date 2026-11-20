@@ -417,9 +417,13 @@ Request flow:
    this gateway spawned, the backend registry's name for that app
    (`apps.backend.spawned_backend_owner`) is consulted before the host-process
    leg, so an unsandboxed backend that would also pass as a host process is still
-   attributed to its app. The success record's `resources` is `token-issued` for
-   a host process and `token-issued app=<name>` for an app backend; the response
-   body is unchanged. The name is the registry key, which `apps.manifest.app_name_error`
+   attributed to its app. The success record's `resources` is
+   `token-issued basis=<leg>` for a host process and
+   `token-issued app=<name> basis=spawned-app` for an app backend; the response
+   body is unchanged. `<leg>` names the host-process leg that admitted the caller:
+   `linux-namespace-match`, `darwin-unsandboxed` or `win32-unverified` (Windows
+   has no positive host-process check). The basis is recorded, never minted into
+   the token. The name is the registry key, which `apps.manifest.app_name_error`
    holds to kebab-case, so it can carry neither a space nor `=` and cannot forge a
    second field in the row. It is NOT a token claim: an `app`-scoped token is
    refused by `is_owner_dashboard_request`, so a claim would withdraw the

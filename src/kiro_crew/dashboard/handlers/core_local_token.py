@@ -158,6 +158,9 @@ async def api_token_local(request: web.Request) -> web.Response:
         operation="token.local",
         outcome="success",
         source="local-bootstrap",
-        resources=f"token-issued app={app_name}" if app_name else "token-issued",
+        # The admitting leg, from a fixed vocabulary with no space or ``=`` in it, so
+        # a mint no host check verified (``basis=win32-unverified``) is visible.
+        resources=(f"token-issued app={app_name}" if app_name else "token-issued")
+        + f" basis={provenance.basis or 'unknown'}",
     )
     return web.json_response({"token": token, "expires_in": ttl})

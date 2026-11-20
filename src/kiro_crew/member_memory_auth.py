@@ -237,9 +237,15 @@ class LocalOwnerProvenance:
     owner token minted by an app is attributed to that app. It is NOT a token
     claim: an ``app``-scoped token is refused by the owner-dashboard check, so
     carrying it in the token would withdraw the capability this admission grants.
+
+    ``basis`` names the leg that admitted the caller, from a fixed vocabulary
+    (:func:`_host_process_basis`, or ``spawned-app``), so the mint's success row
+    tells an operator's mint from one no host check verified. It is recorded,
+    never minted into a token.
     """
 
     app: str | None = None
+    basis: str = ""
 
 
 def local_owner_bootstrap_provenance(request: Any) -> LocalOwnerProvenance | None:
@@ -263,12 +269,21 @@ def local_owner_bootstrap_provenance(request: Any) -> LocalOwnerProvenance | Non
             # decides admission exactly as it does for a caller no backend owns.
             app = None
         if app:
-            return LocalOwnerProvenance(app=str(app))
+            return LocalOwnerProvenance(app=str(app), basis="spawned-app")
         if _verified_host_process(pid):
-            return LocalOwnerProvenance()
+            return LocalOwnerProvenance(basis=_host_process_basis())
         return None
     except Exception:
         return None
+
+
+def _host_process_basis() -> str:
+    """The audit name of the host-process leg :func:`_verified_host_process` ran."""
+    return {
+        "linux": "linux-namespace-match",
+        "darwin": "darwin-unsandboxed",
+        "win32": "win32-unverified",
+    }.get(sys.platform, "unknown")
 
 
 def local_owner_bootstrap_allowed(request: Any) -> bool:
