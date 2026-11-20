@@ -814,7 +814,7 @@ on their own artifact, and the arm64 publishers go red on their missing one
 rather than skipping. `release.yml` keeps the coupling, because its run records
 the stable promotion candidate and all three arm64 Linux roles are REQUIRED in
 `scripts/release_promotion.py` -- an x64-only publish there burns immutable keys
-for a version that can never be promoted (tracked in #1030).
+for a version that can never be promoted.
 
 `SHA256SUMS` sits beside the wheel for legacy tooling, but it is only a
 corruption check. Authenticity comes from a canonical JSON artifact manifest

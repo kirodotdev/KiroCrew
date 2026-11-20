@@ -114,14 +114,13 @@ otherwise, and `UNIVERSAL=0` is the opt-out.)
 The shipped app carries **no** kiro-cli. It detects the one the user installed
 (`kiro_cli.known_kiro_cli_dirs`), and the first-run gate shows the install and
 sign-in commands until it finds one; the KAS bundle route (next section) needs
-no kiro-cli at all. Bundling was the default from #5130 / #13207 until #22018,
-and it was turned off for three reasons. The bundled copy ranked above every
-system install, so the gate read it as "installed" and users who installed Kiro
-Crew in that window never installed kiro-cli themselves. The copy they ran was
-frozen at `packaging/kiro-cli-version` instead of following upstream, so kiro-cli
-fixes reached them only when someone bumped the pin. And it was the largest
-single payload: ~250 MB of the macOS universal update zip, within ~50 MiB of the
-1 GiB Squirrel cliff (#21716), 100-200 MB on every other platform. Everything
+no kiro-cli at all. Bundling is off for three reasons. A bundled copy ranks above
+every system install, so the gate reads it as "installed" and its users never
+install kiro-cli themselves. The copy is frozen at `packaging/kiro-cli-version`
+instead of following upstream, so kiro-cli fixes reach it only when someone bumps
+the pin. And it is the largest single payload: ~250 MB of the macOS universal
+update zip, within ~50 MiB of the 1 GiB Squirrel cliff, 100-200 MB on every other
+platform. Everything
 below describes the `BUNDLE_KIRO_CLI=1` opt-in; the code paths it names stay in
 the tree and are exercised only by such a build.
 
@@ -1965,8 +1964,7 @@ before the deferral (on Windows those commands never run; see
 way when it runs the app's own bundled backend. A separately installed one (from
 the CLI, as a service, or reached over an SSH tunnel) follows its own
 `auto_update` ([where to set it](../../src/kiro_crew/docs/configuration.md#turning-it-off-and-updating-by-hand)). A
-container defers to its image. Both updaters running on one install is
-[#15797](https://github.com/kirodotdev/KiroCrew/issues/15797).
+container defers to its image.
 
 Settings → About renders the app's update section in the desktop app's own
 window and the gateway's in a browser. A desktop window also draws the gateway's
@@ -2012,10 +2010,9 @@ ones the packager never reads). The body is optional JSON:
 `relaunchPath` is for an install whose launch path changes with each version,
 such as a version-pinned payload behind a stable launch link. When the app
 relaunches after an apply (the start-time apply, or Restart now) it normally calls Electron's `app.relaunch()`, which
-re-runs the path the app was started as. A macOS app opened from the Dock was
-started as its version's own payload path, so it came back on the version the
-apply had just replaced, and the dashboard kept offering Restart to update
-([#22774](https://github.com/kirodotdev/KiroCrew/issues/22774)). With
+re-runs the path the app was started as. A macOS app opened from the Dock is
+started as its version's own payload path, so it would come back on the version
+the apply just replaced, and the dashboard would keep offering Restart to update. With
 `relaunchPath` set, the app relaunches that executable instead, with the same
 arguments. The value must be absolute or start with `~/`, which is the
 account's home read from the account entry, not from `HOME`. Anything else is
