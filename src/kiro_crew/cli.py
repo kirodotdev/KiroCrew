@@ -1108,7 +1108,10 @@ def main() -> None:
 
         run_computer(getattr(args, "computer_args", []))
     elif args.command == "eval":
+        from kiro_crew.agent_sdk.drivers.acp_vocab import AcpError, AcpRuntimeError
+        from kiro_crew.agent_sdk.host_auth import for_terminal
         from kiro_crew.cli_commands import _eval_run_flag_refusal, _run_eval, _run_eval_tasks
+        from kiro_crew.terminal_safe import safe_terminal_line
 
         _eval_refusal = _eval_run_flag_refusal(args)
         if _eval_refusal:
@@ -1116,7 +1119,15 @@ def main() -> None:
             sys.exit(2)
         if args.scenarios[:1] == ["run"]:
             sys.exit(_run_eval_tasks(args))
-        asyncio.run(_run_eval(args))
+        try:
+            asyncio.run(_run_eval(args))
+        except (AcpError, AcpRuntimeError) as exc:
+            # The backend refused to start a scenario or judge session (a signed-out
+            # kiro-cli, a KAS engine that cannot be installed). Its text names what
+            # failed, so that one line is the output; the traceback is logged at DEBUG.
+            logger.debug("eval: the backend refused to start a session", exc_info=True)
+            print(f"Error: {safe_terminal_line(for_terminal(str(exc)))}", file=sys.stderr)
+            sys.exit(1)
     elif args.command == "security":
         from kiro_crew.cli_commands import _security
 
