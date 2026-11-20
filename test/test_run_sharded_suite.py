@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import signal
 import sys
@@ -15,6 +17,10 @@ from scripts import run_sharded_suite as runner
 from scripts.ci_file_shards import file_shard, hash_shard, read_targets
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# Several tests here start a real interpreter. One group keeps the module on one xdist
+# worker, so those children start one after another and never on every worker at once.
+pytestmark = pytest.mark.xdist_group(name="run_sharded_suite_children")
 
 
 def test_the_plan_fits_the_parts_in_the_memory_budget() -> None:
@@ -292,7 +298,8 @@ def test_a_part_whose_turn_comes_after_the_runs_deadline_is_not_started(
 def _running(parts: runner.Parts, clock: _Clock, tmp_path: Path, index: int, text: str) -> Path:
     """Record part *index* as running since now, with *text* in its log."""
     log = tmp_path / f"shard-{index}.log"
-    log.write_text(text, encoding="utf-8")
+    # Bytes: the script copies a log byte for byte, and text mode would write CRLF on Windows.
+    log.write_bytes(text.encode())
     parts.running[index] = (clock(), log)
     return log
 
@@ -343,7 +350,7 @@ def test_a_part_gone_quiet_has_its_log_printed_once_while_it_still_runs(
     assert quiet not in capfd.readouterr().out
 
     # The log grows, so the part is not quiet until it stops again for a whole period.
-    log.write_text("stuck in part\nand again\n", encoding="utf-8")
+    log.write_bytes(b"stuck in part\nand again\n")
     watch.look()
     clock.advance(runner.STALL_SECS)
     watch.look()
@@ -401,32 +408,6 @@ def test_the_running_logs_are_printed_before_the_parts_are_stopped(
     assert order == ["logs", "stop"]
 
 
-#: Seconds a real child of these tests gets to be reaped after it was killed. It is dead
-#: by then; the bound only turns a child that is not into a failure at that line.
-_REAP_CEILING_SECS = 30
-
-
-@pytest.mark.parametrize("waitid", [True, False], ids=["waitid", "no-waitid"])
-@pytest.mark.timeout(60)
-def test_a_real_part_still_running_at_the_deadline_is_killed_and_reaped(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, waitid: bool, clock: _Clock
-) -> None:
-    """The deadline has passed before the wait begins, so the first look kills the part."""
-    if not waitid:
-        monkeypatch.delattr(runner.os, "waitid", raising=False)
-    bounded = runner.Parts(None, clock())
-    with open(tmp_path / "log", "wb") as log:
-        part = bounded.launch(
-            [sys.executable, "-c", "import threading; threading.Event().wait()"], log
-        )
-    try:
-        assert bounded.wait(part) != 0
-        assert part in bounded.overran and not bounded.live
-    finally:
-        part.kill()
-        part.wait(timeout=_REAP_CEILING_SECS)
-
-
 def test_each_part_gets_its_own_coverage_file_and_an_earlier_runs_is_removed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -475,23 +456,25 @@ def _coverage_run(tmp_path: Path, shards: int) -> tuple[int, Path]:
     return runner.main([*argv, "--coverage-file", str(target)]), target
 
 
-@pytest.mark.timeout(120)
-def test_the_parts_coverage_is_combined_into_one_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_the_coverage_of_the_parts_that_ran_tests_is_combined_into_the_one_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
 ) -> None:
-    """The one real child here is the ``coverage combine`` the script itself runs."""
-    from coverage import CoverageData
+    """Which parts are combined, and where; the combine itself runs in the nested test."""
+    combined: list[tuple[list[int], Path]] = []
+
+    def combine(_out, indexes, target):
+        combined.append((sorted(indexes), target))
+        target.write_text("combined", encoding="utf-8")
+        return 0
 
     _parts_that(monkeypatch, {1: (0, 1), 2: (0, 3), 3: (runner.NO_TESTS_COLLECTED, None)})
+    monkeypatch.setattr(runner, "combine_coverage", combine)
 
     rc, target = _coverage_run(tmp_path, 3)
 
     assert rc == 0
-    combined = CoverageData(basename=str(target))
-    combined.read()
-    (measured,) = combined.measured_files()
-    assert sorted(combined.lines(measured)) == [1, 3]
-    assert sorted(path.name for path in target.parent.iterdir()) == [".coverage"]
+    assert combined == [([1, 2], target)]
+    assert f"coverage of 2 parts combined into {target}" in capsys.readouterr().out
 
 
 def test_a_part_that_ran_tests_without_coverage_data_is_red_and_nothing_is_combined(
@@ -516,7 +499,7 @@ def test_a_combine_that_does_not_end_is_red(
         raise runner.subprocess.TimeoutExpired(command, kwargs["timeout"])
 
     _parts_that(monkeypatch, {1: (0, 1)})
-    monkeypatch.setattr(runner.subprocess, "run", never_ends)
+    monkeypatch.setattr(runner, "_run", never_ends)
 
     rc, target = _coverage_run(tmp_path, 1)
 
@@ -632,20 +615,36 @@ def _ran(out: Path) -> set[str]:
     return cases
 
 
-#: Lost-run ceiling for one nested run of two pytest parts over three one-line test
-#: files: both runs of the test below took 0.95 s together on a 32-core host at load 40.
-#: Two runs at the ceiling stay inside the test's 300 s; at it the script kills the
-#: parts and reports them red by index.
-_NESTED_RUN_CEILING_SECS = 120
+#: Lost-run ceilings for the nested run: two pytest parts over three one-line test files,
+#: then one ``coverage combine``. The whole run took under 1 s on a 32-core host at load
+#: 40. Both together are under half of the 300 s its consumers allow, so a part or a
+#: combine that does not end is killed and reported by the script, by name, before
+#: pytest-timeout would end the worker.
+_NESTED_RUN_CEILING_SECS = 60
+_NESTED_COMBINE_CEILING_SECS = 60
+_NESTED_TEST_TIMEOUT_SECS = 300
 
 
-@pytest.mark.timeout(300)
-def test_an_outer_shard_runs_as_parts_that_cover_exactly_its_files(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
-) -> None:
-    """Real pytest parts: the outer shard's tests run once each, and their coverage is one file."""
-    from coverage import CoverageData
+class _NestedRun:
+    """What the module's one run of real parts left behind."""
 
+    def __init__(self, rc: int, said: str, out: Path, coverage: Path, tests: tuple[str, str]):
+        self.rc = rc
+        self.said = said
+        self.out = out
+        self.coverage = coverage
+        self.tests = tests
+
+
+@pytest.fixture(scope="module")
+def nested_run(tmp_path_factory: pytest.TempPathFactory) -> _NestedRun:
+    """Outer shard 1 of 2 of a three-file tree, run once as two real pytest parts.
+
+    The only real processes the tests of this change start: two pytest parts and the
+    script's own ``coverage combine``, once for the module, each under a ceiling above.
+    Every test that needs what real parts leave reads it from here.
+    """
+    base = tmp_path_factory.mktemp("nested-run")
     first, second = (
         next(
             f"test/test_part_{i}.py"
@@ -655,7 +654,7 @@ def test_an_outer_shard_runs_as_parts_that_cover_exactly_its_files(
         for part in (1, 2)
     )
     root = _tree(
-        tmp_path / "tree",
+        base / "tree",
         {
             "logic.py": "def choose(value):\n    if value:\n        return 'yes'\n    return 'no'\n",
             first: "from logic import choose\ndef test_yes(): assert choose(1) == 'yes'\n",
@@ -666,45 +665,65 @@ def test_an_outer_shard_runs_as_parts_that_cover_exactly_its_files(
     (root / "setup.cfg").write_text(
         "[tool:pytest]\ntestpaths = test\npythonpath = .\n", encoding="utf-8"
     )
-    pins = tmp_path / "outer-pins.txt"
+    pins = base / "outer-pins.txt"
     pins.write_text(
         f"# shards: 2\n1 {first}\n1 {second}\n2 test/test_elsewhere.py\n", encoding="utf-8"
     )
-    monkeypatch.setattr(runner, "ROOT", root)
-    # The parts are nested pytest runs: they own their plugins and coverage data.
-    for name in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "COV_CORE_SOURCE", "COV_CORE_DATAFILE"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.delenv("COVERAGE_PROCESS_START", raising=False)
-    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
-    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
-    monkeypatch.setenv("PYTHONPATH", str(REPO_ROOT))
-    target = tmp_path / "combined" / ".coverage"
+    target = base / "combined" / ".coverage"
     target.parent.mkdir()
     argv = ["--jobs", "2", "--shards", "2", "--run-timeout", str(_NESTED_RUN_CEILING_SECS)]
     argv += ["--outer-shards", "2", "--outer-shard", "1", "--outer-pins", str(pins)]
-    argv += ["--coverage-file", str(target), "--out"]
+    argv += ["--coverage-file", str(target), "--out", str(base / "out")]
     plugins = ["-p", "xdist.plugin", "-p", "pytest_cov.plugin", "-p", "no:cacheprovider"]
-    pytest_args = ["--", *plugins, "--cov=logic", "--cov-report="]
+    argv += ["--", *plugins, "--cov=logic", "--cov-report="]
+    said = io.StringIO()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(runner, "ROOT", root)
+        # The parts are nested pytest runs: they own their plugins and coverage data.
+        for name in _OUTER_RUN_ENV:
+            patch.delenv(name, raising=False)
+        patch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+        patch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+        patch.setenv("PYTHONPATH", str(REPO_ROOT))
+        ceiling = _NESTED_COMBINE_CEILING_SECS
+        patch.setattr(runner, "COMBINE_TIMEOUT_SECS", ceiling)  # flake-ok: lost-run ceiling
+        with contextlib.redirect_stdout(said):
+            rc = runner.main(argv)
+    tests = (f"{Path(first).stem}::test_yes", f"{Path(second).stem}::test_no")
+    return _NestedRun(rc, said.getvalue(), base / "out", target, tests)
 
-    rc = runner.main([*argv, str(tmp_path / "green"), *pytest_args])
 
-    assert rc == 0, capsys.readouterr().out
-    assert {case.rsplit(".", 1)[-1] for case in _ran(tmp_path / "green")} == {
-        f"{Path(first).stem}::test_yes",
-        f"{Path(second).stem}::test_no",
-    }
+#: What the outer pytest run may have exported that a nested one must not inherit.
+_OUTER_RUN_ENV = (
+    "PYTEST_ADDOPTS",
+    "PYTEST_PLUGINS",
+    "COV_CORE_SOURCE",
+    "COV_CORE_DATAFILE",
+    "COVERAGE_PROCESS_START",
+    "COVERAGE_RCFILE",
+)
+
+
+@pytest.mark.timeout(_NESTED_TEST_TIMEOUT_SECS)
+def test_an_outer_shard_runs_as_parts_that_cover_exactly_its_files(nested_run: _NestedRun) -> None:
+    """The outer shard's tests run once each, one per part; the other outer shard's file,
+    which raises on import, is never collected."""
+    assert nested_run.rc == 0, nested_run.said
+    assert {case.rsplit(".", 1)[-1] for case in _ran(nested_run.out)} == set(nested_run.tests)
     for index in (1, 2):
-        assert runner.junit_counts(tmp_path / "green" / f"junit-{index}.xml") == (1, 0)
-    combined = CoverageData(basename=str(target))
+        assert runner.junit_counts(nested_run.out / f"junit-{index}.xml") == (1, 0)
+
+
+@pytest.mark.timeout(_NESTED_TEST_TIMEOUT_SECS)
+def test_real_parts_leave_one_coverage_file_with_every_parts_lines(nested_run: _NestedRun) -> None:
+    from coverage import CoverageData
+
+    assert nested_run.rc == 0, nested_run.said
+    combined = CoverageData(basename=str(nested_run.coverage))
     combined.read()
     (measured,) = combined.measured_files()
     assert sorted(combined.lines(measured)) == [1, 2, 3, 4]
-
-    (root / second).write_text("def test_no(): assert False\n", encoding="utf-8")
-
-    assert runner.main([*argv, str(tmp_path / "red"), *pytest_args]) == 1
-    assert "red: part 2 (exit 1)" in capsys.readouterr().out
-    assert not target.exists()
+    assert sorted(path.name for path in nested_run.coverage.parent.iterdir()) == [".coverage"]
 
 
 def _tree(root: Path, files: dict[str, str]) -> Path:

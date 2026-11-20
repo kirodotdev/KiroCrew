@@ -223,9 +223,7 @@ def combine_coverage(out: Path, indexes: list[int], target: Path) -> int:
     command = [sys.executable, "-m", "coverage", "combine", f"--data-file={target}"]
     command += [str(path) for index in sorted(indexes) for path in coverage_files(out, index)]
     try:
-        return subprocess.run(
-            command, cwd=ROOT, check=False, timeout=COMBINE_TIMEOUT_SECS
-        ).returncode
+        return _run(command, cwd=ROOT, check=False, timeout=COMBINE_TIMEOUT_SECS).returncode
     except subprocess.TimeoutExpired:
         print(f"  red: coverage combine was still running after {COMBINE_TIMEOUT_SECS:.0f}s")
         return PART_TIMED_OUT
@@ -295,6 +293,8 @@ COMBINE_TIMEOUT_SECS = 300.0
 _now = time.monotonic
 #: The pause between two looks at a part that has not ended.
 _pause = time.sleep
+#: What runs a child this script waits for to the end (``coverage combine``).
+_run = subprocess.run
 
 
 class Interrupted(Exception):
