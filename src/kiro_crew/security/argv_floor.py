@@ -220,6 +220,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _kill_prefix_keeps_anchor,
         _matches_self_subcommand,
         _operands_lead_with,
+        _powershell_assignment,
+        _powershell_tokens,
         _python_body_is_data,
         _quoted_assignment_scripts,
         _self_cli_operands,

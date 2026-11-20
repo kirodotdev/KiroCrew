@@ -23,6 +23,8 @@ from denied_commands_security_helpers import (
 )
 from named_cases_helpers import named_cases
 
+from kiro_crew.security import argv_floor as _argv_floor
+
 # Each test starts with the macOS libc and libproc handle caches unbuilt and puts them
 # back after, as every test of the test_denied_commands_security family does (see conftest.py).
 pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
@@ -271,6 +273,36 @@ class TestSelfProtectionKillTargetScoping:
                 (f"X={_NAME}; ${{X}} {_TOK}", _RULE_MINT),
                 (f"X={_NAME}; $X>/tmp/x {_TOK}", _RULE_MINT),
                 (f"P={_PK}; $P -f {_NAME}", _RULE_KILL),
+            ),
+            # PowerShell's `$name = value`, however its `=` or `;` is spaced, binds the name for a
+            # later use by the mint; a value that is not the verb keeps the command allowed.
+            # A value with more words after it runs a command and binds nothing.
+            # Bash runs the same words as a command or a test, so each line's bash reading
+            # is judged too and still refuses what it refused before.
+            *_named(
+                "test_powershell_assignment_resolves",
+                (f"$t = '{_TOK}'; {_NAME} $t", _RULE_MINT),
+                (f'$t = "{_TOK}"; {_NAME} $t', _RULE_MINT),
+                (f"$t='{_TOK}'; {_NAME} $t", _RULE_MINT),
+                (f"$t= '{_TOK}'; {_NAME} $t", _RULE_MINT),
+                (f"$t ='{_TOK}'; {_NAME} $t", _RULE_MINT),
+                (f"$t = 'doctor'; $t = '{_TOK}'; {_NAME} $t", _RULE_MINT),
+                (f"T=doctor; $T = '{_TOK}'; {_NAME} $T", _RULE_MINT),
+                (f"$x = '{_NAME}'; & $x {_TOK}", _RULE_MINT),
+                (f"$a = 'x';$t='{_TOK}';{_NAME} $t", _RULE_MINT),
+                (f"$a = '{_TOK}'; $b = $a; {_NAME} $b", _RULE_MINT),
+                (f"$t = '{_TOK}'; $t = '' | {_NAME} $t", _RULE_MINT),
+                (f"echo \"$( $t = '{_TOK}'; {_NAME} $t )\"", _RULE_MINT),
+                (f"$t = 'doctor'; {_NAME} $t", None),
+                (f'[ "$m" = {_TOK} ] || {_NAME} $m', None),
+                (f"T={_TOK}; [ $T = doctor ] || {_NAME} $T", _RULE_MINT),
+                (f"T={_TOK}; $T = doctor; {_NAME} $T", _RULE_MINT),
+                (f"$t = 'x'; t+={_TOK}; {_NAME} $t", _RULE_MINT),
+                (f"T={_TOK}; $BASH = 'x'; echo \"{_NAME} $T\" | $BASH", _RULE_MINT),
+                (f"${_NAME} = 'x'; ${_NAME} {_TOK}", _RULE_MINT),
+                (f"$out = {_NAME} doctor; $out -match '{_TOK}'", None),
+                (f"$out = ({_NAME} doctor); $out -match '{_TOK}'", None),
+                (f"$s = {_NAME} status | out-string; $s -match '{_TOK}'", None),
             ),
             # A carrier's quoted script that assigns the name and then uses it is read
             # as a script of its own, so the assignment resolves inside it.
@@ -1316,3 +1348,12 @@ class TestSelfKillRawWindowSearchesDequotedView:
     )
     def test_named_allowances_stay_allowed(self, cmd):
         assert _denied_by(cmd.format(n=_NAME, q=self._SPLICED)) is None
+
+
+def test_a_powershell_value_doubled_each_step_stays_within_the_line():
+    # ``$a1 = $a0$a0; $a2 = $a1$a1; ...`` doubles a bound value each step; bound with no
+    # limit, the gate's PowerShell reading of the line would grow as 2**n.
+    line = "$a0 = 'x'; " + " ".join(f"$a{i} = $a{i - 1}$a{i - 1};" for i in range(1, 21))
+    command = f"{line} {_NAME} $a20"
+    spoken = _argv_floor._powershell_tokens(command)
+    assert spoken is not None and max(map(len, spoken)) <= 2 * len(command)

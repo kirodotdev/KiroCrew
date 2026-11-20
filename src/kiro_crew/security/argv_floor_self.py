@@ -257,6 +257,65 @@ def _self_token_frames(text_lower: str, literal_single_quotes: bool = True) -> "
     return [tokens for _source, tokens in _self_frames(text_lower, literal_single_quotes)]
 
 
+def _powershell_assignment(tokens: "list[str]", idx: int) -> "re.Match[str] | None":
+    """PowerShell's ``$name = value`` at *idx*, read as bash's ``name=value``.
+
+    ``shlex`` splits on whitespace, so a spaced ``=`` arrives at a word's edge and the word
+    beside it joins on. It binds only as a whole statement: ``[ $t = v ]`` compares in
+    either shell, and ``$out = kirocrew doctor`` runs a command.
+    """
+    word, end = tokens[idx], idx + 1
+    if not word.startswith("$") or (
+        idx and not tokens[idx - 1].endswith((";", "&", "|", "{", "("))
+    ):
+        return None
+    for nxt in tokens[end : idx + 3]:
+        if not (word.endswith("=") or ("=" not in word and nxt.startswith("="))):
+            break
+        word, end = word + nxt, end + 1
+    if not word.endswith((";", "&", "|")) and (tokens[end:] or [";"])[0][:1] not in ";&|)}#":
+        return None
+    return _shell_normalizer._LOCAL_ASSIGN_RE.match(word[1:])
+
+
+def _powershell_tokens(text_lower: str) -> "list[str] | None":
+    """*text_lower* as PowerShell reads its variables, or ``None`` when it assigns none.
+
+    ``$name = <literal>`` binds the name and a later ``$name`` / ``${name}`` reads the
+    literal; bash's ``NAME=value`` is a command there, not an assignment.
+    """
+    if "$" not in text_lower or "=" not in text_lower:
+        return None
+    n = _shell_normalizer
+    # ``shlex`` splits on whitespace only, so ``$a='x';$t='y'`` is one word and its second
+    # statement opens nowhere; an unquoted ``;`` is padded, as ``_self_tokens`` does a newline.
+    spaced = "".join(
+        " ; " if step.active and step.char == ";" else step.text
+        for step in n._iter_shell_chars(text_lower)
+    )
+    tokens = n._self_tokens(spaced, resolve=False)
+    values: dict[str, str] = {}
+
+    def expand(word: str) -> str:
+        return n._VAR_USE_RE.sub(lambda m: values.get(m.group(1) or m.group(2), m.group(0)), word)
+
+    out: list[str] = []
+    for idx, token in enumerate(tokens):
+        if values and "$" in token:
+            token = expand(token)
+        out.append(token)
+        spoken = _powershell_assignment(tokens, idx)
+        raw = spoken.group(2).strip("\"'").rstrip(";&|") if spoken else ""
+        # A value built from a name bound earlier holds that name's literal, as in bash;
+        # one only repetition makes longer than the line keeps its words as written.
+        value = expand(raw)
+        if len(value) > len(text_lower):
+            value = raw
+        if spoken and value and not n._is_computed_value(value):
+            values[spoken.group(1)] = value
+    return out if values else None
+
+
 def _shell_payload_sources(text_lower: str) -> "list[str]":
     """*text_lower* plus the source text of every nested shell payload in it."""
     return [source for source, _tokens in _shell_payload_walk(text_lower)]
@@ -377,7 +436,14 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
     # next command's payload.
     submitted = raw_text if raw_text is not None else text_lower
     decoded_literals = _decoded_b64_literal_sources(submitted)
-    for tokens in _self_token_frames(text_lower):
+    readings = _self_token_frames(text_lower)
+    # PowerShell's reading of each source is judged BESIDE the bash one, never in its
+    # place: bash runs ``$T = v`` as a command and ``[ $T = v ]`` as a test.
+    for source, _tokens in _self_frames(text_lower):
+        spoken = _powershell_tokens(source)
+        if spoken is not None:
+            readings.append(spoken)
+    for tokens in readings:
         programs = _argv_programs(tokens)
         # The command-level half of ``_data_consumer_exempt`` reads only *tokens*, so its
         # answer is the same for every token in this frame.  Held here and computed at
