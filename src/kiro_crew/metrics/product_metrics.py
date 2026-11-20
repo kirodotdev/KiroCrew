@@ -106,6 +106,9 @@ _FEATURES = frozenset(
         # Adds a turn's seconds; duration is app_duration_bucket.
         "kirocrew.app.run_time",
         "kirocrew.app.present",
+        # Owner views only: sent through the owner-gated /api/telemetry/app-view.
+        "kirocrew.app.opened",
+        "kirocrew.app.foreground_time",
         "kirocrew.channel.message.received",
         "kirocrew.ui.control.clicked",
     }
