@@ -3384,6 +3384,13 @@ the config PATCH also stamps the record with the gateway's `stored_at`, and the
 hold runs to the later of `snoozed_until` plus the window and `stored_at` plus
 the snooze (`SNOOZE_SECS`) plus the window: a browser clock behind the host
 cannot cut it short. A record with no stamp keeps the `snoozed_until` reading alone.
+The prompt opens in the same cycle that starts the unattended build, so the
+answer usually lands while that build runs. Saving it stops the build at once
+(`wheel_apply.stop_put_off_applies`, the dashboard's live subscriber on
+`dashboard.update_nudge`, ending `cancelled`), and the swap reads the record
+again beside the unattended pin (ending `deferred`), so neither a slow subscriber
+nor a click just before the swap lets the put-off version promote. A person's
+approve and a policy floor are not stopped.
 The managed-venv route
 does not pause admission and does not restart: it builds, promotes and records
 "update ready, restart to use it" (`update_restart_ready`), and the new version

@@ -468,6 +468,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.metrics.chat_runtime_share": "record_toggled",
     "kiro_crew.metrics.crew_log_export": "install_otel_crew_log_subscriber",
     "kiro_crew.page_cache": "read_now",
+    "kiro_crew.platform": "wheel_apply",
     "kiro_crew.security": "redact_credentials redact_exfiltration_urls",
     "kiro_crew.sel": "sel",
     "kiro_crew.slack.handler": "load_voice_reply_config",

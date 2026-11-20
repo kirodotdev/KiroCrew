@@ -1476,6 +1476,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.platform.wheel_engine_contract import (  # noqa: F401
         _PIP_BINARY_ONLY,
+        _PUT_OFF_REASON,
         _VERSION_RE,
         _WHEEL_FETCH_TOTAL_SECS,
         WheelUpdateNotReady,

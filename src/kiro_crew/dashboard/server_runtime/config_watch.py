@@ -12,11 +12,7 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 if TYPE_CHECKING:
-    from kiro_crew.dashboard.server import (
-        DashboardState,
-        KiroCrewConfig,
-        logger,
-    )
+    from kiro_crew.dashboard.server import DashboardState, KiroCrewConfig, logger
 
 
 def _register_config_watch(
@@ -295,6 +291,16 @@ def _register_config_watch(
         if chat_runtime_sharing_enabled(change.old) != after:
             record_toggled(after)
 
+    def _stop_put_off_update(change: ConfigChange) -> None:
+        # "Remind me tomorrow" or "Skip this version" answered while an
+        # unattended build of that version runs: stop it now, not at the swap.
+        if change.old is None or not change.touched("dashboard.update_nudge"):
+            return
+        from kiro_crew.platform import wheel_apply
+
+        if wheel_apply.stop_put_off_applies(change.new):
+            logger.info("Stopped an unattended update the user put off")
+
     def _push_app_settings(change: ConfigChange) -> None:
         # The app session mute and the per-app model picker read ``apps`` off the
         # ``kirocrewConfig`` query, which only a refresh frame invalidates.
@@ -376,6 +382,11 @@ def _register_config_watch(
             "dashboard.feature_previews",
             callback=_count_chat_runtime_sharing_toggle,
             name="dashboard.chat_runtime_sharing_toggle",
+        ),
+        live.subscribe(
+            "dashboard.update_nudge",
+            callback=_stop_put_off_update,
+            name="dashboard.update_nudge",
         ),
         live.subscribe("apps", callback=_push_app_settings, name="apps"),
         live.subscribe("agents", callback=_push_mate_listing, name="agents.show_sessions_in_list"),
