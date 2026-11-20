@@ -182,7 +182,9 @@ Cookie / Authorization: app {name}'s own app token, or the dashboard owner
 - Either way the grant read is app `{name}`'s approved set. The owner calling
   through the page reaches no operation the owner did not approve for that
   app.
-- The answer is `200` with `{"output": {...}}`, the operation's output map.
+- The answer is `200` with the operation's output map as the bare JSON
+  object, decoded as section 5 says. It has no wrapper key. An error always
+  has the `error` key of section 7, so a client tells the two apart by status.
 
 #### 3b. In-gateway hooks
 
