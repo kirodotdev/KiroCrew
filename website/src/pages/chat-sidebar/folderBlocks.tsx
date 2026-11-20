@@ -3,7 +3,7 @@
  *  sorted and dormant rows and the hidden-folder reveal, and the folder-scoped
  *  create-failure notice. Built once per shell render (`createFolderBlocks`). */
 import { Fragment } from 'react'
-import { X, Eye, EyeOff, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Plus, Pencil, Pin, PinOff, Link2, MoreVertical, Settings } from 'lucide-react'
+import { X, Eye, EyeOff, FolderPlus, FolderX, XCircle, MessageSquare, MessageSquarePlus, Plus, Pencil, Pin, PinOff, Link2, MoreVertical, Settings } from 'lucide-react'
 import { FolderBody } from '../../components/FolderBody'
 import { FolderRail } from '../../components/FolderRail'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -46,7 +46,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     hiddenByContainer, hideEmptyFolderBody, hideEmptyFolders, ime, instantCloseId, isFolderFilteredOut, keepCrewWorkerShown,
     isFolderHidden, listNarrowed, moveFolderTo, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot,
     pinned, pinnedFolderAncestors, pinnedFolderSubtree, renameCommit, renderSessionRow, renderStaleSection, revealFlash, revealedContainers,
-    searchRanked, setEditName, setEditScope, setEditingId, setFolderCleanupRoot, setFolderCreateError, setFolderModal, setFolderOfflineNotice, sidebarRows,
+    searchRanked, setEditName, setEditScope, setEditingId, setFolderCleanupRoot, setFolderCloseAllRoot, setFolderCreateError, setFolderModal, setFolderOfflineNotice, sidebarRows,
     slotFilter, slotFolders, splitStale, staleExpanded, startsAutomaticSection, suppressMenuRestore, kindSections,
     toggleCollapse, toggleFolderFilter, toggleReveal, unreadSet, updateFolderMutation,
     conductorExpanded, subagentApprovalCounts } = shell
@@ -399,6 +399,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
           <Item data-testid={tid('hide')} {...offlineMenuRow(connected, i18nT('utils.offline.hide_folders'), i18nT('pages.chatSidebar.hide_when_empty'), () => { updateFolderMutation.mutate({ id: folder.id, body: { hidden: true } }) })}><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_when_empty')}</Item>
         )}
         <Separator />
+        <Item className="text-danger focus:text-danger" data-testid={tid('close-all-sessions')} {...offlineMenuRow(connected, i18nT('utils.offline.close_sessions'), i18nT('pages.chatSidebar.close_all_sessions'), () => { setFolderCloseAllRoot(folder) })}><XCircle size={13} /> {i18nT('pages.chatSidebar.close_all_sessions')}</Item>
         <Item className="text-danger focus:text-danger" data-testid={tid('delete')} {...offlineMenuRow(connected, i18nT('utils.offline.delete_folders'), i18nT('pages.chatSidebar.delete_folder'), () => { deleteFolderWithConfirm(folder) })}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</Item>
         <Item className="text-danger focus:text-danger" data-testid={tid('close-and-delete')} {...offlineMenuRow(connected, i18nT('utils.offline.delete_folders'), i18nT('pages.chatSidebar.close_sessions_and_delete_menu'), () => { setFolderCleanupRoot(folder) })}><FolderX size={13} /> {i18nT('pages.chatSidebar.close_sessions_and_delete_menu')}</Item>
         {/* Last, so its mount on disconnect shifts no row under the pointer. */}
