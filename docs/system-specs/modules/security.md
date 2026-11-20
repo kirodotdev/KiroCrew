@@ -4105,6 +4105,25 @@ through to the unchanged denial — including the reporter's multi-statement
 diagnostic loop, which needs `$(…)` and is not carved out; its individual
 `date` conversion run on its own is.
 
+A whole line passes too when every command on it, read by the shared reader
+(`_inert_line_allows`), runs nothing that could send: `date`, the inert-search
+verbs, `echo`, `cat`, `head`, `tail`, `wc`, or a read-only `gh` call (`search`,
+`issue view`, `issue list`, `pr view`, `pr list`, written with no flag before the
+subcommand), joined by a list or a pipe, with no live `$` or backtick, no
+redirection and no `#`. `printf` and `sort` are not in the set (`-v` writes a
+variable, `--compress-program` runs one), nor is any `gh` call that can send a
+file. A backslash passes only where bash reads it as a plain character inside
+quotes, and never on a line that also holds `$(`, where the quoting starts over.
+
+A refusal by this gate gets its own guidance (`deny_guidance.DENY_CLASS_FILE_BODY_TEXT`):
+it keeps the upload answer and names the forms that pass. The gate's first line names
+no rule, so the guidance is chosen by the rule id on its own last diagnostic line
+(`diagnostics.refusal_rule_id`). The regex tier's row for the same id
+(`.*curl.*--?data…@.*`) has no inert-line carve-out, so a search line naming `curl`
+with a `--data @` form is still refused there; its refusal keeps the exfil-shape
+guidance, and the file-body guidance says to search for that pair with the
+file-search tool.
+
 A file search is not a command line at all. A call whose host-trusted identity names
 the `grep` or `glob` built-in (`mcp_identity_trusted`, no server, the name in
 `hooks._HOST_SEARCH_BUILTIN_TOOLS`) and that carries no command (no recovered
