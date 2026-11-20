@@ -1371,29 +1371,30 @@ def _deny_reason(
 # Block: declare -p AWS_SECRET*, env | grep AWS_, printenv AWS_,
 #         awk 'ENVIRON["AWS_*"]', export -p | grep AWS_
 
-_ENV_CRED_PATTERNS: list[re.Pattern[str]] = [
+# Keyed by the rule id a refusal's diagnostic line names; these rules have no catalog row.
+_ENV_CRED_PATTERNS: dict[str, re.Pattern[str]] = {
     # declare -p AWS_SECRET_ACCESS_KEY / declare -p AWS_SESSION_TOKEN
-    re.compile(
+    "keystone-env-cred-declare": re.compile(
         r"declare\s+(?:-[a-zA-Z]+\s+)*-?p\s+AWS_(?:SECRET|SESSION|SECURITY)",
         re.IGNORECASE,
     ),
     # echo $AWS_SECRET* / echo ${AWS_SECRET*}
-    re.compile(
+    "keystone-env-cred-echo": re.compile(
         r"(?:echo|printf|cat)\s+.*\$\{?AWS_(?:SECRET|SESSION|SECURITY)",
         re.IGNORECASE,
     ),
     # awk ENVIRON["AWS_SECRET*"] / awk ENVIRON["AWS_SESSION*"]
-    re.compile(
+    "keystone-env-cred-awk-environ": re.compile(
         r"awk\s+.*ENVIRON\s*\[\s*[\"']AWS_(?:SECRET|SESSION|SECURITY)",
         re.IGNORECASE,
     ),
     # python/ruby/node reading os.environ for AWS secrets
-    re.compile(
+    "keystone-env-cred-interpreter": re.compile(
         r"(?:python|ruby|node|perl)\S*\s+.*(?:os\.environ|ENV|process\.env)"
         r".*AWS_(?:SECRET|SESSION|SECURITY)",
         re.IGNORECASE,
     ),
-]
+}
 
 # Two intents this tier and the deny catalog express identically: an environment
 # dump piped through grep/awk/sed for AWS variables, and ``printenv`` naming a
@@ -1425,7 +1426,7 @@ _ENV_CRED_DENIAL_REASON = "Blocked: command reads AWS credentials from environme
 def _check_env_credential_access(command: str) -> str | None:
     """Detect attempts to read AWS credentials from environment variables.
 
-    Returns denial reason if env credential access detected, None otherwise.
+    Returns the refusal, its last line naming the rule that fired, or None.
 
     The shared rules run through the same ``_deny_matcher`` the catalog tier uses,
     not a raw ``re.search``. Sharing the regex TEXT alone is not enough: this tier
@@ -1438,10 +1439,12 @@ def _check_env_credential_access(command: str) -> str | None:
     """
     for rule in _ENV_CRED_SHARED_RULES:
         if _deny_matcher(rule.pattern).match(command):
-            return _ENV_CRED_DENIAL_REASON
-    for pattern in _ENV_CRED_PATTERNS:
-        if pattern.search(command):
-            return _ENV_CRED_DENIAL_REASON
+            diagnostic = refusal_diagnostic(rule.id, "env-credential", command)
+            return annotate_refusal(_ENV_CRED_DENIAL_REASON, diagnostic)
+    for rule_id, pattern in _ENV_CRED_PATTERNS.items():
+        if match := pattern.search(command):
+            diagnostic = refusal_diagnostic(rule_id, "env-credential", command, match.span())
+            return annotate_refusal(_ENV_CRED_DENIAL_REASON, diagnostic)
     return None
 
 
