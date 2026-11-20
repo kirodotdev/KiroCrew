@@ -811,3 +811,52 @@ def test_a_refused_approval_is_audited_and_names_only_valid_operations(
     assert [r["outcome"] for r in rows] == ["denied", "denied"]
     assert "operation=DeleteWidget" in rows[0]["resources"]
     assert "operation=<invalid>" in rows[1]["resources"]
+
+
+def test_the_validator_reports_each_bad_shape() -> None:
+    assert kiro_operations.kiro_operation_errors(None) == []
+    assert kiro_operations.kiro_operation_errors("GetWidget") == [
+        "permissions.kiroOperations must be an array of strings"
+    ]
+    assert any("not an operation name" in e for e in kiro_operations.kiro_operation_errors(["x"]))
+    assert kiro_operations.declared_operations("GetWidget") == []
+
+
+@pytest.mark.usefixtures("home")
+def test_the_readers_answer_for_a_real_install(tmp_path: Path) -> None:
+    _install(tmp_path, OPS)
+    assert kiro_operations.declared_kiro_operations(APP) == set(OPS)
+    assert kiro_operations.kiro_app_enabled(APP) is True
+    assert kiro_operations.declared_kiro_operations("not-installed") == frozenset()
+    assert kiro_operations.kiro_app_enabled("not-installed") is False
+    assert kiro_operations.kiro_operations_grant_row(APP, {"permissions": {}}) == {}
+    row = kiro_operations.kiro_operations_grant_row(APP, {"permissions": {"kiroOperations": OPS}})
+    assert row == {"kiroOperationsGrant": {"approved": [], "staged": OPS}}
+
+
+def _boom(*_a: Any, **_k: Any) -> Any:
+    raise OSError("unreadable")
+
+
+@pytest.mark.parametrize("bad", ["", None, 3])
+def test_the_readers_refuse_a_name_that_is_not_one(bad: Any) -> None:
+    assert kiro_operations.app_kiro_operations(bad) == frozenset()
+    assert kiro_operations.declared_kiro_operations(bad) == frozenset()
+    assert kiro_operations.kiro_app_enabled(bad) is False
+
+
+def test_the_readers_fail_closed_when_the_record_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("kiro_crew.apps.manager.get_app_manifest", _boom)
+    monkeypatch.setattr("kiro_crew.apps.manager.is_app_enabled", _boom)
+    assert kiro_operations.app_kiro_operations(APP) == frozenset()
+    assert kiro_operations.declared_kiro_operations(APP) == frozenset()
+    assert kiro_operations.kiro_app_enabled(APP) is False
+
+
+def test_an_enabled_app_with_no_manifest_holds_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("kiro_crew.apps.manager.is_app_enabled", lambda _n: True)
+    monkeypatch.setattr("kiro_crew.apps.manager.get_app_manifest", lambda _n: None)
+    assert kiro_operations.app_kiro_operations(APP) == frozenset()
+    assert kiro_operations.declared_kiro_operations(APP) == frozenset()
