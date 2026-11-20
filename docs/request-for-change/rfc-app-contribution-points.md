@@ -3,8 +3,8 @@ title: App contribution points on one sandboxed frame model
 status: draft
 author: buluoray, with kirocrew-worker
 created: 2026-10-30
-last-audited: 2026-10-31
-audited-at: 4537582b9b
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
 implementation-prs: [26479]
 tracking-issues: []

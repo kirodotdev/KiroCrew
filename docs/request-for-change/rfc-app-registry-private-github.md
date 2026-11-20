@@ -3,8 +3,8 @@ title: App registry sources in private GitHub repositories, read through the hos
 status: draft
 author: buluoray
 created: 2026-11-17
-last-audited: 2026-11-17
-audited-at: 0e618612ac5
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: null
 implementation-prs: [38999]
 tracking-issues: [38988]
