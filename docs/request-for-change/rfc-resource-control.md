@@ -1,6 +1,6 @@
 ---
 title: Resource control — CPU in the host posture, re-wakes while the host stays tight, and a conductor-authored wake filter
-status: draft
+status: accepted
 author: zejiangg (drafted with an agent session)
 created: 2026-11-19
 last-audited: 2026-11-19
@@ -14,9 +14,9 @@ superseded-by: []
 
 # RFC: Resource control
 
-Status: draft. Nothing in this document is built, and it changes no code.
-Acceptance is requested from a maintainer, who records it on this Status line.
-The repository owner will circulate it to their team for review before that.
+Status: accepted. #39344 was approved and merged 2026-11-19 16:37Z after the
+repository owner's review in the conductor chat. Nothing in this document is
+built, and it changes no code.
 
 Every code reference was read at `dcc312174e` (origin/main,
 2026-11-19T01:14Z). Code paths without a leading directory are under
