@@ -83,15 +83,25 @@ def edition_engine_auth() -> EngineAuth | None:
 def active_engine_auth() -> EngineAuth | None:
     """The credential a new KAS spawn runs under, while the ``crew_client`` preview is on.
 
-    The edition's (:func:`edition_engine_auth`). None while the preview is off.
-    Blocking; call off the loop. Never raises: a provider that fails reads as None,
-    Crew's own sign-in.
+    The edition's (:func:`edition_engine_auth`) first; else Crew's own machine mode
+    (``agent_sdk/kas_machine.py``), which answers None unless ``agent.kas_auth`` is
+    ``machine``. None while the preview is off. Blocking; call off the loop. Never
+    raises: a provider that fails reads as None, Crew's own sign-in.
     """
     from kiro_crew.crew_client_preview import preview_on
 
     if not preview_on():
         return None
-    return edition_engine_auth()
+    auth = edition_engine_auth()
+    if auth is not None:
+        return auth
+    from kiro_crew.agent_sdk.kas_machine import builtin_engine_auth
+
+    try:
+        return builtin_engine_auth()
+    except Exception:  # noqa: BLE001 -- a broken config keeps the default route
+        logger.warning("KAS machine mode unreadable; using Crew's sign-in", exc_info=True)
+        return None
 
 
 def cold_spawn_refused(auth: EngineAuth | None) -> bool:
