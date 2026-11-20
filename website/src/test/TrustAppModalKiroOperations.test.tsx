@@ -88,6 +88,15 @@ describe('Kiro operations on the app page', () => {
     expect(staged.hasStagedGrants).toBe(true)
   })
 
+  it('reads a first install, where no name was ever approved, as a first approval', () => {
+    const first = { name: 'widgets', kiroOperationsGrant: { approved: [], staged: ['GetWidget'] } } as unknown as AppInfo
+    expect(stagedGrantsOf(first).firstKiroApproval).toBe(true)
+    const update = { name: 'widgets', kiroOperationsGrant: { approved: ['GetWidget'], staged: ['ListWidgets'] } } as unknown as AppInfo
+    expect(stagedGrantsOf(update).firstKiroApproval).toBe(false)
+    const mixed = { ...first, browserSitesGrant: { approved: [], staged: ['https://a.example/x'] } } as unknown as AppInfo
+    expect(stagedGrantsOf(mixed).firstKiroApproval).toBe(false)
+  })
+
   it('holds nothing back once every name is approved', () => {
     const app = { name: 'widgets', kiroOperationsGrant: { approved: ['GetWidget'], staged: [] } } as unknown as AppInfo
     expect(stagedGrantsOf(app).hasStagedGrants).toBe(false)

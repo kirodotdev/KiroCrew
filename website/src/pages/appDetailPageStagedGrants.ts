@@ -46,10 +46,15 @@ export function stagedGrantsOf(app: AppInfo | null) {
   // `permissions.browser` verbs: an install never approves them either.
   const stagedBrowser = knownBrowserVerbs(app?.browserGrant?.staged)
   const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length + stagedUserSessionReach.length + stagedDesktopCapabilities.length + stagedFrameSources.length + stagedBrowserSites.length + stagedKiroOperations.length + stagedBrowser.length > 0 || stagedFullUrl || stagedOpenFullUrl || stagedWorkerAutoApprove
+  // Only Kiro operations wait, and none was ever approved: this is the first approval
+  // (an install approves none), not an update asking for more.
+  const firstKiroApproval = stagedKiroOperations.length > 0 && !(app?.kiroOperationsGrant?.approved || []).length
+    && stagedKiroOperations.length === stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length + stagedUserSessionReach.length + stagedDesktopCapabilities.length + stagedFrameSources.length + stagedBrowserSites.length + stagedKiroOperations.length + stagedBrowser.length
+    && !stagedFullUrl && !stagedOpenFullUrl && !stagedWorkerAutoApprove
   return {
     stagedApi, stagedEvents, stagedLinkHosts, stagedLinkPatterns, stagedFullUrl,
     stagedMessageActions, declaredMessageActions, stagedOpenHosts, stagedOpenFullUrl,
     stagedComposerActions, stagedSelection, declaredSelectionActions, stagedWorkerAutoApprove,
-    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, stagedKiroOperations, stagedBrowser, hasStagedGrants,
+    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, stagedKiroOperations, stagedBrowser, hasStagedGrants, firstKiroApproval,
   }
 }

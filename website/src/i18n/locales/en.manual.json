@@ -5502,6 +5502,8 @@
       "grants_reconsent_browser_sites": "Browsing sites: the app's own agent can open, read, type and click on these pages in your browser, signed in as you, without asking each time.",
       "grants_reconsent_kiro_operations": "Kiro operations: the app can call these as you, with your Kiro sign-in. It gets the answers, never the sign-in.",
       "kiro_operations_card_heading": "Kiro operations this app can call as you",
+      "kiro_operations_first_notice": "{{name}} asks to call these Kiro operations as you. None of them run until you approve them here.",
+      "approve_kiro_operations": "Approve these Kiro operations",
       "grants_reconsent_browser": "Browser tabs of its own chats: Approve new permissions lets the app do each thing below right away, with no further prompt. Turning the app off stops all of them until you turn it on again.",
       "grants_reconsent_frame_sources": "Framed sites: lets the app's pages show these sites inside the dashboard.",
       "grants_reconsent_link_open_hosts": "Opened links: lets the app open links to these sites when you click one in a chat message.",

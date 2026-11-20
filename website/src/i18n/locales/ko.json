@@ -12023,6 +12023,8 @@
       "grants_reconsent_browser_sites": "탐색 사이트: 앱 자체 에이전트가 매번 묻지 않고 브라우저에서 내 로그인 상태로 이 페이지들을 열고, 읽고, 입력하고, 클릭할 수 있습니다.",
       "grants_reconsent_kiro_operations": "Kiro 작업: 앱이 당신의 Kiro 로그인으로, 당신으로서 이 작업을 호출할 수 있습니다. 앱은 결과만 받고 로그인 정보는 받지 않습니다.",
       "kiro_operations_card_heading": "이 앱이 당신으로서 호출할 수 있는 Kiro 작업",
+      "kiro_operations_first_notice": "{{name}} 앱이 당신으로서 이 Kiro 작업을 호출하도록 요청합니다. 여기서 승인하기 전에는 어느 것도 실행되지 않습니다.",
+      "approve_kiro_operations": "이 Kiro 작업 승인",
       "grants_reconsent_browser": "자체 채팅의 브라우저 탭: 새 권한 승인을 누르면 아래 항목이 바로 적용되며 다시 확인하지 않습니다. 앱을 끄면 다시 켤 때까지 모두 멈춥니다.",
       "grants_reconsent_frame_sources": "삽입된 사이트: 앱 페이지가 대시보드 안에서 이 사이트들을 표시하도록 허용합니다.",
       "grants_reconsent_link_open_hosts": "여는 링크: 채팅 메시지에서 이 사이트로 가는 링크를 클릭하면 앱이 그 링크를 열 수 있습니다.",

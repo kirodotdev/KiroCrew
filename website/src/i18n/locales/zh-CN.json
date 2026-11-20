@@ -12023,6 +12023,8 @@
       "grants_reconsent_browser_sites": "浏览网站：应用自带的智能体可以在你浏览器里用你登录的账号打开、阅读这些页面，并在上面输入和点击，不再每次询问。",
       "grants_reconsent_kiro_operations": "Kiro 操作：应用可以用你的 Kiro 登录、以你的身份调用这些操作。它只拿到结果，拿不到登录凭据。",
       "kiro_operations_card_heading": "此应用可以以你的身份调用的 Kiro 操作",
+      "kiro_operations_first_notice": "{{name}} 请求以你的身份调用这些 Kiro 操作。在你于此处批准之前，它们都不会运行。",
+      "approve_kiro_operations": "批准这些 Kiro 操作",
       "grants_reconsent_browser": "它自己对话里的浏览器标签页：点“批准新权限”后，下面每一项马上生效，不会再弹出确认。关掉这个应用，这些都会停下，直到你重新打开。",
       "grants_reconsent_frame_sources": "嵌入的网站：允许应用的页面在仪表板内显示这些网站。",
       "grants_reconsent_link_open_hosts": "打开的链接：你在聊天消息中点击指向这些网站的链接时，允许应用打开它。",

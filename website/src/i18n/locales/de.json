@@ -12296,6 +12296,8 @@
       "grants_reconsent_browser_sites": "Besuchte Websites: Der eigene Agent der App kann diese Seiten in deinem Browser, mit deiner Anmeldung, öffnen, lesen, darauf tippen und klicken, ohne jedes Mal zu fragen.",
       "grants_reconsent_kiro_operations": "Kiro-Operationen: Die App kann sie in deinem Namen mit deiner Kiro-Anmeldung aufrufen. Sie bekommt die Antworten, nie die Anmeldung.",
       "kiro_operations_card_heading": "Kiro-Operationen, die diese App in deinem Namen aufrufen kann",
+      "kiro_operations_first_notice": "{{name}} möchte diese Kiro-Operationen in deinem Namen aufrufen. Keine davon läuft, bis du sie hier genehmigst.",
+      "approve_kiro_operations": "Diese Kiro-Operationen genehmigen",
       "grants_reconsent_browser": "Browser-Tabs der eigenen Chats: Mit Neue Berechtigungen genehmigen gilt jeder Punkt unten sofort, ohne weitere Abfrage. Schaltest du die App aus, stoppt alles, bis du sie wieder einschaltest.",
       "grants_reconsent_frame_sources": "Eingebettete Websites: Erlaubt den Seiten der App, diese Websites im Dashboard anzuzeigen.",
       "grants_reconsent_link_open_hosts": "Geöffnete Links: erlaubt der App, Links zu diesen Seiten zu öffnen, wenn du in einer Chat-Nachricht auf einen klickst.",

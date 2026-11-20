@@ -115,11 +115,12 @@ export default function AppDetailPage() {
     stagedApi, stagedEvents, stagedLinkHosts, stagedLinkPatterns, stagedFullUrl,
     stagedMessageActions, declaredMessageActions, stagedOpenHosts, stagedOpenFullUrl,
     stagedComposerActions, stagedSelection, declaredSelectionActions, stagedWorkerAutoApprove,
-    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, stagedKiroOperations, stagedBrowser, hasStagedGrants: hasOtherStagedGrants,
+    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, stagedKiroOperations, stagedBrowser, hasStagedGrants: hasOtherStagedGrants, firstKiroApproval: firstKiroOnly,
   } = stagedGrantsOf(app)
   // Bot scopes the owner has not approved wait the same way (`AppDetailBotGrants.tsx`).
   const stagedBots = stagedBotScopes(app)
   const hasStagedGrants = hasOtherStagedGrants || stagedBots.length > 0
+  const firstKiroApproval = firstKiroOnly && stagedBots.length === 0
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
   const enableLabel = app?.sessionApprovalConsentPending
@@ -1134,10 +1135,10 @@ export default function AppDetailPage() {
             <div className="text-text text-sm flex-1 min-w-0 grid gap-2">
               <span>
                 {app.enabled
-                  ? i18nT('pages.appDetailPage.grants_reconsent_notice', { name: appDisplayName(app) })
+                  ? i18nT(firstKiroApproval ? 'pages.appDetailPage.kiro_operations_first_notice' : 'pages.appDetailPage.grants_reconsent_notice', { name: appDisplayName(app) })
                   : i18nT('pages.appDetailPage.grants_reconsent_notice_disabled', { name: appDisplayName(app) })}
               </span>
-              {app.enabled && (
+              {app.enabled && !firstKiroApproval && (
                 <span className="text-[13px] text-text">{i18nT('pages.appDetailPage.grants_reconsent_keep', { name: appDisplayName(app) })}</span>
               )}
               {stagedApi.length > 0 && (
@@ -1289,7 +1290,7 @@ export default function AppDetailPage() {
               }}
               disabled={actionBusy}
             >
-              {i18nT('pages.appDetailPage.approve_new_permissions')}
+              {i18nT(firstKiroApproval ? 'pages.appDetailPage.approve_kiro_operations' : 'pages.appDetailPage.approve_new_permissions')}
             </Btn>
             )}
           </div>

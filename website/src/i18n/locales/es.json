@@ -12569,6 +12569,8 @@
       "grants_reconsent_browser_sites": "Sitios de navegación: el agente propio de la aplicación puede abrir, leer, escribir y hacer clic en estas páginas en tu navegador, con tu sesión iniciada, sin preguntar cada vez.",
       "grants_reconsent_kiro_operations": "Operaciones de Kiro: la app puede llamarlas en tu nombre, con tu inicio de sesión de Kiro. Recibe las respuestas, nunca el inicio de sesión.",
       "kiro_operations_card_heading": "Operaciones de Kiro que esta app puede llamar en tu nombre",
+      "kiro_operations_first_notice": "{{name}} pide llamar a estas operaciones de Kiro en tu nombre. Ninguna se ejecuta hasta que las apruebes aquí.",
+      "approve_kiro_operations": "Aprobar estas operaciones de Kiro",
       "grants_reconsent_browser": "Pestañas del navegador de sus propios chats: Aprobar los nuevos permisos activa al momento cada punto de abajo, sin otra confirmación. Si desactivas la app, todo se detiene hasta que la vuelvas a activar.",
       "grants_reconsent_frame_sources": "Sitios incrustados: permite que las páginas de la aplicación muestren estos sitios dentro del panel.",
       "grants_reconsent_link_open_hosts": "Enlaces abiertos: permite a la app abrir enlaces a estos sitios cuando haces clic en uno en un mensaje del chat.",

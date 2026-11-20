@@ -12023,6 +12023,8 @@
       "grants_reconsent_browser_sites": "閲覧サイト：アプリ自身のエージェントが、毎回確認せずに、あなたのブラウザーであなたのログインのまま、これらのページを開き、読み、入力し、クリックできます。",
       "grants_reconsent_kiro_operations": "Kiro の操作: アプリはあなたの Kiro サインインで、あなたとしてこれらを呼び出せます。受け取るのは結果だけで、サインイン情報は受け取りません。",
       "kiro_operations_card_heading": "このアプリがあなたとして呼び出せる Kiro の操作",
+      "kiro_operations_first_notice": "{{name}} はあなたとしてこれらの Kiro の操作を呼び出す許可を求めています。ここで承認するまで、どれも実行されません。",
+      "approve_kiro_operations": "これらの Kiro の操作を承認",
       "grants_reconsent_browser": "自分のチャットのブラウザータブ：「新しい権限を承認」を押すと、下の各項目はすぐに有効になり、確認はもう出ません。アプリをオフにすると、オンに戻すまですべて止まります。",
       "grants_reconsent_frame_sources": "埋め込むサイト：アプリのページがダッシュボード内でこれらのサイトを表示できるようにします。",
       "grants_reconsent_link_open_hosts": "開くリンク: チャットメッセージ内のこれらのサイトへのリンクをクリックしたとき、アプリがそのリンクを開けるようにします。",
