@@ -81,6 +81,7 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.session_pid import register_protected_pid, unregister_protected_pid
+from kiro_crew.startup_deadline import startup_deadline
 
 logger = logging.getLogger(__name__)
 
@@ -954,7 +955,9 @@ async def _validate_existing_grant(
         try:
             # ONE deadline over readiness AND both commands, so the whole
             # validation costs at most what a cold mint spawn is already allowed.
-            results = await asyncio.wait_for(_ready_and_read(), timeout=_MINT_READY_TIMEOUT_SECONDS)
+            # Not wait_for: a start this deadline cuts is a startup timeout.
+            async with startup_deadline(_MINT_READY_TIMEOUT_SECONDS):
+                results = await _ready_and_read()
         finally:
             claim.cancel()
             _claim_mint_pid(client, holdings)
@@ -1100,7 +1103,9 @@ async def start_oauth_mint(
                 _claim_mint_pid_when_spawned(client, holdings)
             )
             try:
-                await asyncio.wait_for(client.ensure_ready(), timeout=_MINT_READY_TIMEOUT_SECONDS)
+                # Not wait_for: a start this deadline cuts is a startup timeout.
+                async with startup_deadline(_MINT_READY_TIMEOUT_SECONDS):
+                    await client.ensure_ready()
             finally:
                 claim.cancel()
                 # Covers the fast path, where readiness beat the poller's first tick,
@@ -1120,7 +1125,9 @@ async def start_oauth_mint(
                 # raises and makes no request for a URL refused for any other reason.
                 await approve_discovered_oauth_endpoint(mcp_server_alias(slug), oauth_url)
             credential_bearing = (
-                await asyncio.to_thread(oauth_url_contains_credential, oauth_url)
+                await asyncio.to_thread(
+                    oauth_url_contains_credential, oauth_url, mcp_server_alias(slug)
+                )
                 if oauth_url
                 else False
             )

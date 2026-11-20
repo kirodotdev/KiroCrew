@@ -223,6 +223,23 @@ class TestMergeShapes:
         assert label == "main...HEAD"
         assert paths == {"feature.py"}
 
+    @pytest.mark.parametrize("merge_ref", [False, True], ids=["three-dot", "merge-ref"])
+    def test_a_non_ascii_path_comes_back_by_its_real_name(
+        self, repo: Path, merge_ref: bool
+    ) -> None:
+        # Line output C-quotes this name as "f\303\251e.py", which names no
+        # file, so a gate scoped by it would check nothing.
+        _set_origin_main(repo)
+        _git(repo, "checkout", "feature")
+        _commit_file(repo, "fée.py", "a change with a non-ASCII name")
+        if merge_ref:
+            _git(repo, "checkout", "--detach", "main")
+            _git(repo, "merge", "--no-ff", "-m", "merge ref", "feature")
+
+        paths, _ = scope.changed_paths()
+
+        assert paths == {"feature.py", "fée.py"}
+
 
 class TestReleaseBase:
     """A backport PR is scoped against the release branch it targets."""

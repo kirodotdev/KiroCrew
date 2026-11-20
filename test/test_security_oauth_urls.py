@@ -297,9 +297,9 @@ class TestOAuthAuthorizationUrlRedaction:
         path = "/services/oauth2/authorize"
         mcp_url = "https://mcp.salesforce.example/auth"
         try:
-            assert record_discovered_oauth_endpoint(host, path, mcp_url=mcp_url)
+            assert record_discovered_oauth_endpoint(host, path, mcp_url=mcp_url, server_name="mcp")
             url = f"https://{host}{path}?client_id={consumer_key}&response_type=code"
-            return oauth_url_contains_credential(url)
+            return oauth_url_contains_credential(url, "mcp")
         finally:
             exfil._OAUTH_DISCOVERED_ENDPOINTS.clear()
 
@@ -967,7 +967,7 @@ class TestOAuthRejectionIsEndpointExemptible:
         endpoint nobody actually approved."""
         looked_up: list[tuple[str, str]] = []
 
-        def spy(host: str, path: str) -> bool:
+        def spy(host: str, path: str, server_name: str | None = None) -> bool:
             looked_up.append((host, path))
             return False
 
@@ -1468,9 +1468,12 @@ class TestOperatorOAuthEndpointExtension:
         # A discovered (not operator-listed) endpoint keeps the full scan too.
         try:
             assert record_discovered_oauth_endpoint(
-                self.DCR_HOST, self.DCR_PATH, mcp_url="https://mcp.example.com/mcp"
+                self.DCR_HOST,
+                self.DCR_PATH,
+                mcp_url="https://mcp.example.com/mcp",
+                server_name="mcp",
             )
-            assert oauth_url_contains_credential(self._dcr_url(self.DCR_CLIENT_ID)) is True
+            assert oauth_url_contains_credential(self._dcr_url(self.DCR_CLIENT_ID), "mcp") is True
         finally:
             exfil._OAUTH_DISCOVERED_ENDPOINTS.clear()
 
@@ -1558,9 +1561,12 @@ class TestOperatorOAuthEndpointExtension:
     def _at_discovered_sf_endpoint(self, query: str) -> bool:
         try:
             assert record_discovered_oauth_endpoint(
-                self.SF_HOST, self.SF_PATH, mcp_url="https://mcp.salesforce.example/auth"
+                self.SF_HOST,
+                self.SF_PATH,
+                mcp_url="https://mcp.salesforce.example/auth",
+                server_name="mcp",
             )
-            return oauth_url_contains_credential(self._sf_url(query))
+            return oauth_url_contains_credential(self._sf_url(query), "mcp")
         finally:
             exfil._OAUTH_DISCOVERED_ENDPOINTS.clear()
 
@@ -1779,12 +1785,15 @@ class TestOperatorOAuthEndpointExtension:
         self, monkeypatch: pytest.MonkeyPatch, query: str, rejected: bool
     ) -> None:
         endpoint = (self.HOST, self.PATH)
-        monkeypatch.setattr(exfil, "_OAUTH_DISCOVERED_ENDPOINTS", {endpoint: float("inf")})
+        monkeypatch.setattr(
+            exfil, "_OAUTH_DISCOVERED_ENDPOINTS", {(*endpoint, "mcp"): float("inf")}
+        )
         loader = Mock(return_value=frozenset({endpoint}))
         monkeypatch.setattr(exfil, "_load_operator_oauth_endpoints", loader)
         # Discovery supplies approval, isolating the client_id lookup.
-        assert security._approved_oauth_authorization_endpoint(*endpoint)
-        assert oauth_url_contains_credential(f"https://{self.HOST}{self.PATH}?{query}") is rejected
+        assert security._approved_oauth_authorization_endpoint(*endpoint, "mcp")
+        url = f"https://{self.HOST}{self.PATH}?{query}"
+        assert oauth_url_contains_credential(url, "mcp") is rejected
         loader.assert_not_called()
 
     def test_discovered_operator_endpoint_audits_salesforce_client_id_once(
@@ -1794,7 +1803,7 @@ class TestOperatorOAuthEndpointExtension:
         url = f"https://{self.HOST}{self.PATH}?client_id={consumer_key}&response_type=code"
         self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
         monkeypatch.setattr(
-            exfil, "_OAUTH_DISCOVERED_ENDPOINTS", {(self.HOST, self.PATH): float("inf")}
+            exfil, "_OAUTH_DISCOVERED_ENDPOINTS", {(self.HOST, self.PATH, "mcp"): float("inf")}
         )
         logged: list = []
 
@@ -1804,7 +1813,7 @@ class TestOperatorOAuthEndpointExtension:
 
         monkeypatch.setattr(exfil_oauth, "sel", lambda: _RecorderLog())
         assert security._text_contains_bare_secret(consumer_key)
-        assert security._approved_oauth_authorization_endpoint(self.HOST, self.PATH)
+        assert security._approved_oauth_authorization_endpoint(self.HOST, self.PATH, "mcp")
         assert logged == []
         loader = Mock(wraps=security._load_operator_oauth_endpoints)
         monkeypatch.setattr(exfil, "_load_operator_oauth_endpoints", loader)
@@ -1822,9 +1831,9 @@ class TestOperatorOAuthEndpointExtension:
         assert security._OAUTH_EXTENSION_AUDITED == set()
         loader.assert_not_called()
 
-        assert oauth_url_contains_credential(url) is False
+        assert oauth_url_contains_credential(url, "mcp") is False
         loader.assert_called_once_with()
-        assert oauth_url_contains_credential(url) is False
+        assert oauth_url_contains_credential(url, "mcp") is False
         assert loader.call_count == 2
         assert len(logged) == 1
         event = logged[0]

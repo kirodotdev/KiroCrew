@@ -5,7 +5,7 @@
  * message-level "Fork conversation from here" uses, and still calls the
  * existing whole-session fork (api.forkChatSlot) -- no new behaviour.
  * Its row buttons carry no native `title`, so each shows its name in the
- * instant tip.
+ * instant tip. The row's ⋯ menu and right-click menu carry the same action.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
@@ -128,6 +128,28 @@ describe('session row "Fork chat" action', () => {
     unsubscribe()
     expect(listedWhenActive).toBe(true)
     expect(store.getState().dashboard.slots.find(r => r.key === 'chat-forked')?.title).toBe('Fork of Fork me')
+  })
+
+  // A mouse user finds Fork chat in the ⋯ menu and the right-click menu, not only
+  // on the hover glyph.
+  it('offers Fork chat in the ⋯ row menu and forks that session', async () => {
+    mocks.forkChatSlot.mockResolvedValue({ ok: true, key: 'chat-forked' })
+    renderSidebar()
+    const row = document.querySelector(`[data-session-row="${SLOT_KEY}"]`) as HTMLElement
+    const more = Array.from(row.querySelectorAll('button')).find(b => b.getAttribute('aria-label') === 'More options')!
+    expect(more, 'row carries a ⋯ button').toBeTruthy()
+    fireEvent.pointerDown(more, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Fork chat' }))
+    await waitFor(() => expect(mocks.forkChatSlot).toHaveBeenCalledWith(SLOT_KEY))
+  })
+
+  it('offers Fork chat in the right-click row menu and forks that session', async () => {
+    mocks.forkChatSlot.mockResolvedValue({ ok: true, key: 'chat-forked' })
+    renderSidebar()
+    const row = document.querySelector(`[data-session-row="${SLOT_KEY}"]`) as HTMLElement
+    fireEvent.contextMenu(row)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Fork chat' }))
+    await waitFor(() => expect(mocks.forkChatSlot).toHaveBeenCalledWith(SLOT_KEY))
   })
 
   it('reports nothing when the fork is refused', async () => {

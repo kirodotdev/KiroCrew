@@ -209,6 +209,63 @@ async def test_validation_bounds_readiness_and_both_commands_with_one_deadline(
     await mint._dispose_mint(mint._mints["notion"])
 
 
+def _hung_start_client(outcomes: list[str | None]) -> type[_FakeClient]:
+    """A fake client whose start waits until it is cancelled, recording what the cancel stands for."""
+    from kiro_crew.startup_deadline import cancel_outcome
+
+    class _HungStart(_FakeClient):
+        async def ensure_ready(self) -> None:
+            try:
+                await asyncio.Event().wait()  # unblocked only by the deadline
+            except asyncio.CancelledError as exc:
+                outcomes.append(cancel_outcome(exc))
+                raise
+
+    return _HungStart
+
+
+@pytest.mark.asyncio
+async def test_a_validation_start_its_deadline_cuts_is_a_startup_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # The startup metric files a start its caller's deadline cut as `timeout` (a
+    # startup fault) and any other cancel as `cancelled`. A zero deadline has run
+    # out by the time the start first waits, so no clock decides the run.
+    monkeypatch.setattr(mint, "_MINT_READY_TIMEOUT_SECONDS", 0)
+    outcomes: list[str | None] = []
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _hung_start_client(outcomes))
+
+    proven = await finished(mint._validate_existing_grant("notion", _URL), "validation")
+
+    assert outcomes == ["timeout"]
+    # The caller still reads an unproven grant, and the validator is disposed.
+    assert proven is False
+    validator = _FakeClient.instances[-1]
+    assert validator.commands == []
+    assert validator.shutdowns == 1
+
+
+@pytest.mark.asyncio
+async def test_a_mint_start_its_ready_deadline_cuts_is_a_startup_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Same rule for the mint's own ready wait: no grant on disk, so the flow
+    # spawns the mint client, and a zero deadline cuts its start.
+    monkeypatch.setattr(mint, "_MINT_READY_TIMEOUT_SECONDS", 0)
+    outcomes: list[str | None] = []
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _hung_start_client(outcomes))
+
+    await finished(mint.start_oauth_mint("notion", _URL), "mint")
+
+    assert outcomes == ["timeout"]
+    # The flow still fails the way a ready timeout always has.
+    view = mint.pending_mint_for("notion")
+    assert view is not None
+    assert view["state"] == "failed"
+    assert view["reason"] == "mint_timeouterror"
+    assert _FakeClient.instances[-1].shutdowns == 1
+
+
 # ── the watcher must not resurrect a disproven pair ──
 
 
@@ -962,7 +1019,7 @@ async def test_a_rejected_url_and_its_retry_are_screened_off_the_event_loop(
     seen: list[int] = []
     verdicts = iter([True, False])
 
-    def _screen(_url: str) -> bool:
+    def _screen(_url: str, _server: str | None = None) -> bool:
         seen.append(threading.get_ident())
         return next(verdicts)
 

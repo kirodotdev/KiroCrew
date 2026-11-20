@@ -237,7 +237,9 @@ def test_kirocrew_markers_load_bundled_profile(tmp_path):
     assert prof["source"] == "kirocrew"
     assert prof["single_commit"] is True
     assert prof["base_branch"] == "main"
-    assert prof["setup"] == ["(cd website && npx playwright install chromium)"]
+    assert prof["setup"] == [
+        "(cd website && node ./node_modules/playwright/cli.js install chromium)"
+    ]
     assert all("playwright install" not in gate for gate in prof["gates"])
     assert prof["readiness"]["status_context"] == "PR Readiness"
     models = {r["name"]: r["model"] for r in prof["reviewers"]}
@@ -443,6 +445,9 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         "scripts/ci_main_red_skip.py",
         # Chooses WHICH tests to run for the changed surface; not itself a gate.
         "scripts/ci-surface-tests.py",
+        # Decides whether a pull request is docs-only, and so which lanes run
+        # and which tests read the changed docs; not itself a gate.
+        "scripts/docs_only.py",
         # Linux-only E2E orchestration, not a static scan: boots isolated
         # gateways and browsers after CI provisions its namespace capability.
         # Keep real E2E proof in CI, not in the repeated local scan floor.
@@ -706,6 +711,45 @@ def test_floor_typechecks_the_way_ci_does():
         "the floor reaches type-checking through an npm script, so a package.json "
         "edit can silently change what this gate runs"
     )
+
+
+def _shell_words(command: str) -> list[str]:
+    """*command* split the way the shell would, so a quoted `npx` stays one word."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+def test_profile_runs_website_tools_from_the_locked_install():
+    """Each website tool runs from the package `website/package-lock.json` installed.
+
+    In a worktree without `npm ci`, a bare `npx <name>` downloads the newest
+    registry package of that name. For `tsc` that is an unrelated package called
+    `tsc`, not TypeScript. `npx --no-install` still runs a globally installed
+    binary of that name first. Naming the package's own entry point under
+    `./node_modules/` is the one form that fails when the locked install is
+    missing.
+    """
+    assert "npx" in _shell_words("(cd website && npx eslint src/)")
+    assert "npx" not in _shell_words("grep -oE 'npx eslint' ci.yml")
+
+    data = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
+    commands = data["setup"] + data["gates"]
+    for command in commands:
+        assert "npx" not in _shell_words(command), f"{command!r} lets npx pick the binary"
+
+    locked = json.loads((REPO_ROOT / "website" / "package-lock.json").read_text(encoding="utf-8"))
+    referenced = {
+        match.group(1)
+        for command in commands
+        for word in _shell_words(command)
+        if (match := re.match(r"\./node_modules/((?:@[^/]+/)?[^/.][^/]*)/", word))
+    }
+    assert referenced, "found no ./node_modules/ entry point in the profile"
+    for package in sorted(referenced):
+        assert (
+            f"node_modules/{package}" in locked["packages"]
+        ), f"the profile runs {package!r}, which website/package-lock.json does not lock"
 
 
 def test_typecheck_script_actually_type_checks():

@@ -107,7 +107,9 @@ async def test_the_other_backend_run_callers_land_as_app_api_access_rows(
         deny_gate._emit_deny_event("Bash", "rm -rf", "rm -rf /")
         deny_gate._emit_push_allow_event("git push origin feature")
         deny_gate.audit_injection_dropped(surface="slack_thread_parent")
-        exfil_oauth._emit_oauth_discovered_endpoint_event("idp.example", "/authorize", "https://x")
+        exfil_oauth._emit_oauth_discovered_endpoint_event(
+            "idp.example", "/authorize", "https://x", "idp"
+        )
         exfil_oauth._log_operator_list_use("oauth_endpoint_extension_used", "o", "r", lambda: {})
         backend._queue.join()  # the non-critical rows are sent from a thread
 

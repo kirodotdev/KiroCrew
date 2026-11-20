@@ -37,7 +37,7 @@ const subscribeVisibility = (cb: () => void) => {
 }
 
 /** Whether the document is visible, re-rendering on change. */
-const useDocumentVisible = (): boolean => useSyncExternalStore(subscribeVisibility, documentVisible, () => true)
+export const useDocumentVisible = (): boolean => useSyncExternalStore(subscribeVisibility, documentVisible, () => true)
 
 /** Run one read of `id`, timing the answer and counting a consecutive failed one. */
 export async function timedPoll<T>(id: string, read: () => Promise<T>): Promise<T> {

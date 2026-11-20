@@ -132,6 +132,7 @@ from kiro_crew.sandbox import (
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.team_ids import apply_slack_team_env
+from kiro_crew.startup_deadline import cancel_outcome
 
 if TYPE_CHECKING:
     from kiro_crew.acp.client import AcpClient
@@ -1281,8 +1282,8 @@ async def ensure_ready(self: AcpClient) -> None:
 
     # Telemetry (kirocrew.session.startup.duration): time the cold-start work
     # below (spawn + session init) and emit in the finally so every exit path
-    # — success, auth-required, error — is measured. The warm fast-path above
-    # is intentionally NOT measured (no startup work). Best-effort: a
+    # — success, auth-required, error, cancel — is measured. The warm fast-path
+    # above is intentionally NOT measured (no startup work). Best-effort: a
     # telemetry failure must never affect session startup.
     _startup_t0 = time.monotonic()
     _startup_spawned = False
@@ -1432,6 +1433,13 @@ async def ensure_ready(self: AcpClient) -> None:
                             "ACP session startup failed", _throttled
                         ) from exc
                     raise
+    except asyncio.CancelledError as exc:
+        # Stop, a closed chat or a reset is "cancelled", a caller's expired
+        # startup_deadline is "timeout", and a cancel raised while a failure is
+        # handled (its cleanup, its classification, the retry backoff) keeps
+        # the failure's label.
+        _startup_outcome = cancel_outcome(exc) or _startup_outcome
+        raise
     finally:
         try:
             # circular import: importing get_recorder at module top would

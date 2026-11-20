@@ -1006,6 +1006,17 @@ carries over to it, and that turn's end folds it as usual; an agent op while the
 person holds the reopened tab is held for the hand-back like any other. The done
 line keeps two actions: Open live and Replay when the tab is open (Open in Chrome
 moves into the live view's menu), else Replay and Open in Chrome.
+An app's `BrowserView` with `stayLive` sends this same reopen by itself when its
+slot's current turn folds with `tab: open` and the view is on screen in a visible
+dashboard document, once per `turn_id` while it stays mounted. A hidden document
+defers that attempt without consuming it until visible, if the current turn is
+still folded with its tab open: a refusal shows as the button's refusal does and
+is not retried, Close live view on the reopened turn leaves it folded, and the next
+turn that folds gets its own reopen. While that reopen is due or unanswered the
+view keeps its live face on the last frame, with no Take over, instead of the
+done face; a refusal or a closed tab ends the hold. The `turn_id` is the one the
+view already holds for its Show the live page button; the route and its checks
+are unchanged.
 
 **Sign-in from the Secrets vault** (`browser_harness/vault_fill.py`). The agent's
 side does not change:
