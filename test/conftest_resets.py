@@ -1140,6 +1140,27 @@ def _reset_subagent_not_due_memo():
 
 
 @per_test_guard
+def _reset_chromium_opt_in_record():
+    """Start each test with no browser pid already opted in to page content.
+
+    Tests reuse fake pids, so a record one test left would make the next test's
+    snapshot of a Chromium browser skip the opt-in it should run.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.computer_use.snapshot_macos")
+        record = getattr(module, "_CHROMIUM_OPT_IN_RETRY_AT", None)
+        if record is not None:
+            record.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_resource_subscription_state():
     """Start each test with no MCP resource-subscription state another test left.
 
