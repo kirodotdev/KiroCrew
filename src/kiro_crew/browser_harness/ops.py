@@ -160,11 +160,13 @@ _SleepFn = Callable[[float], Awaitable[None]]
 
 
 def _load_walker() -> str:
-    """The walker as one JavaScript expression: the file minus its leading comments."""
-    lines = WALKER_PATH.read_text(encoding="utf-8").splitlines()
-    while lines and (not lines[0].strip() or lines[0].lstrip().startswith("//")):
-        lines.pop(0)
-    return "\n".join(lines).strip()
+    """The walker as one JavaScript expression, without its comment lines or indents.
+
+    Every page call resends it as ONE line to the Harness daemon, which reads at most
+    64 KiB per line (``test_browser_walker_ipc_line.py`` pins the margin).
+    """
+    lines = (line.strip() for line in WALKER_PATH.read_text(encoding="utf-8").splitlines())
+    return "\n".join(line for line in lines if line and not line.startswith("//"))
 
 
 # Read once per process: the file ships in the package and never changes at runtime.

@@ -1212,7 +1212,10 @@ component that draws it is the RFC's step 1c), and it never enters the page.
 `browser_harness.ops.run_op(op, args, ctx)` runs in the gateway. It reaches the
 browser only through `ctx.helper(name, **kwargs)` -- one allowlisted Harness
 helper over the daemon's IPC -- and the `js` helper is only ever given
-`snapshot_walker.js` plus one method call. Every method but three runs through
+`snapshot_walker.js` plus one method call. The walker is sent without its comment
+lines and indents (`ops.WALKER_SOURCE`): Harness writes each call as one line to its
+daemon, which reads at most 64 KiB a line, and `test_browser_walker_ipc_line.py`
+keeps the call 8 KiB under that. Every method but three runs through
 `js_isolated`: the same walker call, evaluated in an isolated world of the tab's
 top frame (`helper_worker._local_js_isolated`), so a page script that replaces
 `document.querySelectorAll`, `getAttribute` or a property getter in its own world
