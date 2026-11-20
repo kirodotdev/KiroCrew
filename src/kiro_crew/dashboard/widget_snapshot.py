@@ -13,10 +13,24 @@ one widget into the wire snapshot of the mobile widgets design (section 3.2.3):
    agent share.
 4. **Shape** each block, with its freshness taken from the source's own timestamps.
 
-TWO SEAMS ARE LEFT OPEN ON PURPOSE. ``redact`` runs on every resolved value before a
-block reads it, and ``clean`` on every string a block emits. Both default to the
-identity here: the widget boundary's redaction and its text sanitizer are separate
-steps, and each replaces one default without touching the shaping.
+REDACTION IS NOT OPTIONAL. The widget routes are a new way for fold and agent data to
+leave the gateway, so this module applies the page's own rule itself rather than
+trusting a caller to (design section 6). Three passes, all of them the page's existing
+functions:
+
+* every resolved value goes through :func:`member_dashboard.page_safe_for` before any
+  block reads it: masked keys dropped, session keys removed, strings and mapping keys
+  run through ``redact_via_context``. :func:`resolve_snapshot` always builds it from
+  the gateway state and the Bot's slot; :func:`shape_snapshot` defaults to the
+  state-free form, never to the identity;
+* every string a block emits is redacted before ``clean`` sees it, so a later cut to a
+  length can never keep part of a secret the whole string would have matched;
+* the finished body goes through the same pass once more, so text ``clean`` produced
+  (a control character removed from between two halves of a key) and every envelope
+  string are checked as the bytes that leave.
+
+``clean`` is the text sanitizer's seam and defaults to the identity here; it is display
+safety, not redaction.
 
 FRESHNESS IS NEVER INVENTED. Each block's ``freshness`` names its ``source``:
 
@@ -134,6 +148,20 @@ DEFAULT_WIDGET: Final[Mapping[str, Any]] = {
 
 def _identity(value: Any) -> Any:
     return value
+
+
+def _page_redactor(state: Any = None, slot: str = "") -> Callable[[Any], Any]:
+    """The dashboard page's own value pass, :func:`member_dashboard.page_safe_for`."""
+    from kiro_crew.dashboard.handlers.member_dashboard import page_safe_for
+
+    return page_safe_for(state, slot)
+
+
+def _redacting(clean: Callable[[str], str]) -> Callable[[str], str]:
+    """*clean* with ``redact_via_context`` run on its input first."""
+    from kiro_crew.platform.context import redact_via_context
+
+    return lambda text: clean(redact_via_context(text))
 
 
 # --------------------------------------------------------------------------
@@ -567,17 +595,22 @@ def shape_snapshot(
     bot: Mapping[str, str],
     layout_version: int,
     now: datetime,
-    redact: Callable[[Any], Any] = _identity,
+    redact: Callable[[Any], Any] | None = None,
     clean: Callable[[str], str] = _identity,
 ) -> dict[str, Any]:
     """The 3.2.3 snapshot of *widget* from one field *read*. Pure: no IO.
 
     Only the fields the widget binds are looked at, so a value the read happens to hold
     for any other name never reaches the body. *redact* sees each of those values once,
-    before any block reads it.
+    before any block reads it; ``None`` is the page's pass with no gateway state, so
+    no caller gets an unredacted snapshot by leaving it out. The finished body is
+    redacted once more (module docstring).
     """
     from kiro_crew.dashboard_agentic import stale_after_map
 
+    page_safe = _page_redactor()
+    redact = redact or page_safe
+    clean = _redacting(clean)
     fields = getattr(read, "fields", {}) or {}
     bound = bound_fields(widget)
     values = {name: redact(fields[name]) for name in bound if name in fields}
@@ -592,7 +625,7 @@ def shape_snapshot(
         if default and block.get("type") == "title" and "field" not in block:
             block = {**block, "text": bot.get("name", "")}
         blocks.append(shape_block(block, values, fresh, now=now, clean=clean))
-    return {
+    body = {
         "v": SNAPSHOT_V,
         "bot": {key: str(bot.get(key, "")) for key in ("slug", "member", "name")},
         "widget": {
@@ -606,6 +639,8 @@ def shape_snapshot(
         "blocks": blocks,
         "tap": {"open": "bot", "value": str(bot.get("slug", ""))},
     }
+    redacted: dict[str, Any] = page_safe(body)
+    return redacted
 
 
 # --------------------------------------------------------------------------
@@ -620,12 +655,16 @@ async def resolve_snapshot(
     *,
     name: str = "",
     now: datetime | None = None,
-    redact: Callable[[Any], Any] = _identity,
+    state: Any = None,
     clean: Callable[[str], str] = _identity,
 ) -> dict[str, Any] | None:
     """The snapshot of the Bot's widget *widget_id*, or ``None`` when it has no such widget.
 
-    The read is blocking IO and runs off the loop.
+    Redacted with :func:`member_dashboard.page_safe_for` over *state* (the gateway
+    state) and the Bot's dashboard slot, the page route's own pass. It takes no
+    redactor argument: a caller cannot swap the boundary's redaction out.
+
+    The read and the slot lookup are blocking IO and run off the loop.
     """
     from kiro_crew.dashboard.handlers import member_dashboard as md
 
@@ -636,6 +675,7 @@ async def resolve_snapshot(
     types = types_of(package, widget)
     manifest = cut_manifest(types, widget, slug=slug, version=layout_version)
     read = await asyncio.to_thread(md.read_fields, slug, member, manifest)
+    slot = await asyncio.to_thread(md._dashboard_slot, member, slug) if state is not None else ""
     return shape_snapshot(
         widget,
         types,
@@ -644,6 +684,6 @@ async def resolve_snapshot(
         bot={"slug": slug, "member": member, "name": name or member},
         layout_version=layout_version,
         now=now or datetime.now(timezone.utc),
-        redact=redact,
+        redact=_page_redactor(state, slot),
         clean=clean,
     )
