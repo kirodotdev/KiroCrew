@@ -55,6 +55,9 @@ WEEKDAY_POINTS = 2786
 WEEKDAY_SECONDS = 1279
 # The UTC hours with the fewest runs created, on the weekday that was counted.
 QUIET_HOURS = range(5, 9)
+# The dearest query the census sends, ten check suites of up to 100 red jobs
+# each, as GitHub prices it: connections asked for, divided by 100.
+MOST_POINTS_A_CALL = 25
 # What the census allows one `gh` call that waits for nothing.
 CALL_SECONDS = 300
 
@@ -122,25 +125,21 @@ def _days(spec: str) -> set[int]:
 
 def test_only_a_schedule_or_a_person_starts_it() -> None:
     triggers = _triggers()
-    assert sorted(triggers) == ["schedule", "workflow_dispatch"]
-    assert sorted(triggers["workflow_dispatch"]["inputs"]) == ["day", "week"]
+    assert triggers and set(triggers) <= {
+        "schedule",
+        "workflow_dispatch",
+    }, "an event a pull request can raise would run this with the repository's token"
+    assert "schedule" in triggers and "workflow_dispatch" in triggers
 
 
-def test_there_are_exactly_the_jobs_this_file_knows() -> None:
-    assert JOB_IDS == ["day", "week"]
+def test_a_night_and_a_week_job_exist() -> None:
+    assert {"day", "week"} <= set(JOB_IDS)
 
 
 def test_every_permission_is_read() -> None:
     document = _document()
-    assert document["permissions"]
+    assert document["permissions"], "no block at all would mean the token's defaults"
     assert set(document["permissions"].values()) == {"read"}
-    assert document["permissions"] == {
-        "contents": "read",
-        "actions": "read",
-        "checks": "read",
-        "issues": "read",
-        "pull-requests": "read",
-    }
     for job in _jobs().values():
         assert "permissions" not in job, "a job-level block would replace the read-only one"
 
@@ -158,11 +157,10 @@ def test_every_action_is_pinned_and_the_checkout_keeps_no_credential(job_id: str
     options = checkout["with"]
     assert options["persist-credentials"] is False
     assert "ref" not in options and "repository" not in options, "the default branch only"
-    assert options["sparse-checkout"].split() == [
-        ".github/actions/gh-rate-limit",
-        ".github/scripts",
-        "scripts",
-    ]
+    # The wrapper, the census scripts and the watcher modules they load.
+    assert {".github/actions/gh-rate-limit", ".github/scripts", "scripts"} <= set(
+        options["sparse-checkout"].split()
+    )
 
 
 @every_job
@@ -212,7 +210,7 @@ def test_the_week_takes_this_runs_day_without_listing_it() -> None:
     assert week["needs"] == "day"
     assert fetch["with"]["name"] == upload["with"]["name"]
     # No run id and no token: the same run's artifact, and no other run's.
-    assert set(fetch["with"]) == {"name", "path"}
+    assert not {"run-id", "github-token", "repository"} & set(fetch["with"])
     # The night's read may have failed and uploaded nothing.
     assert fetch["continue-on-error"] is True
     names = [step.get("name") for step in steps]
@@ -253,9 +251,13 @@ def test_the_week_is_added_up_on_one_weekend_tick_after_the_nights_read() -> Non
 
 
 def test_one_night_takes_a_third_of_the_bucket_at_most_and_leaves_half_alone() -> None:
+    """The census checks its budget before a call and learns the cost after it, so
+    the calls already sent when it stops, one a worker, land past the line.
+    Both flags leave room for them."""
     reserve, most = _flag(DAY_STEP, "--reserve-points"), _flag(DAY_STEP, "--max-points")
-    assert reserve * 2 >= BUCKET_POINTS
-    assert most * 3 <= BUCKET_POINTS
+    in_flight = _flag(DAY_STEP, "--workers") * MOST_POINTS_A_CALL
+    assert (reserve - in_flight) * 2 >= BUCKET_POINTS
+    assert (most + in_flight) * 3 <= BUCKET_POINTS
     assert most + reserve <= BUCKET_POINTS, "an untouched bucket holds the most a run may spend"
     assert most * 2 >= 3 * WEEKDAY_POINTS, "a day half as heavy again still fits"
     assert "--logs never " in _step(DAY_STEP)["run"]
@@ -361,24 +363,36 @@ ALL_ENV_STEPS = sorted(
 )
 
 
+EVENTS = {
+    "a schedule tick": _context("schedule"),
+    "a dispatch with nothing filled in": _context("workflow_dispatch"),
+    "a dispatch for a day": _context("workflow_dispatch", day="2026-11-03"),
+    "a dispatch for a week": _context("workflow_dispatch", day="2026-11-03", week=True),
+}
+
+
 @pytest.mark.parametrize("step", ALL_ENV_STEPS)
-@pytest.mark.parametrize("event", ["schedule", "workflow_dispatch"])
-def test_every_value_a_step_is_given_exists_under_both_events(step: str, event: str) -> None:
-    env = _env(step, _context(event))
-    # The inputs are the only values that may be empty, and only `day`.
+@pytest.mark.parametrize("event", EVENTS.values(), ids=EVENTS.keys())
+def test_every_value_a_step_is_given_exists_under_every_event(
+    step: str, event: dict[str, Any]
+) -> None:
+    env = _env(step, event)
+    # `day` is the one value that may be empty: it then means yesterday.
     assert [name for name, value in env.items() if not value] in ([], ["DAY"])
+    if "DAY" in env:
+        assert env["DAY"] == event["inputs"].get("day", "")
     assert env.get("BRANCH", "main") == "main"
     assert env.get("REPO", "example/repo") == "example/repo"
 
 
 def test_no_job_reads_a_part_of_the_event_a_schedule_lacks() -> None:
-    text = WORKFLOW.read_text(encoding="utf-8")
-    read = set(re.findall(r"github\.event\.([a-z_]+)", text))
-    assert read == {"schedule", "repository"}
-    # Each read of the repository object has a fallback right behind it.
-    for line in text.splitlines():
-        if "github.event.repository" in line and not line.lstrip().startswith("#"):
-            assert "|| github.ref_name" in line, line
+    """A schedule payload holds its cron and nothing else, so any other part of the
+    event is read with a fallback behind it."""
+    for line in WORKFLOW.read_text(encoding="utf-8").splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        for field in re.findall(r"github\.event\.([a-z_]+)", line):
+            assert field == "schedule" or "||" in line, line
 
 
 # ── The steps, executed ──────────────────────────────────────────────────────

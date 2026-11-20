@@ -59,7 +59,7 @@ from typing import Any, Callable, NamedTuple
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT = "ci-red-census-day"
 EVENTS = ("schedule", "workflow_dispatch")
-DEFAULT_DAYS = 7
+DAYS = 7
 # The most artifacts one run opens: a month of nightly ones. Which day an
 # artifact holds is known only once it is open, so a week further back than
 # this is out of reach.
@@ -352,7 +352,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="the last UTC day of the week, YYYY-MM-DD (default: yesterday)",
     )
-    parser.add_argument("--days", type=CENSUS._positive, default=DEFAULT_DAYS)
     parser.add_argument(
         "--local",
         type=Path,
@@ -379,7 +378,7 @@ def main(argv: list[str] | None = None, api: Any = None, download: Download | No
     api = api or CENSUS.Api(run=lambda argv: CENSUS.run_gh(argv, timeout))
     download = download or (lambda path: download_with_gh(path, timeout))
     last = args.until.at.date() if args.until else api.now().date() - dt.timedelta(days=1)
-    wanted = days_ending(last, args.days)
+    wanted = days_ending(last, DAYS)
     downloads = 0
     try:
         held = read_folder(args.local) if args.local is not None else None

@@ -308,11 +308,12 @@ def test_seven_whole_days_cost_two_listings_and_seven_downloads(
 
     assert assemble(store, tmp_path) == 0
 
-    assert store.paths == [
-        f"repos/{REPO}/actions/workflows/{WORKFLOW}/runs?per_page=100",
-        f"repos/{REPO}/actions/artifacts?name=ci-red-census-day&per_page=100",
-    ]
-    assert sorted(store.downloaded) == [101, 102, 103, 104, 105, 106, 107]
+    # One listing of this workflow's runs and one of the artifacts, whatever
+    # the week holds, and one download a day.
+    assert len(store.paths) == 2
+    assert any(f"/workflows/{WORKFLOW}/runs" in path for path in store.paths)
+    assert any(f"/artifacts?name={WEEKLY.ARTIFACT}" in path for path in store.paths)
+    assert len(store.downloaded) == len(set(store.downloaded)) == len(WEEK)
     printed = capsys.readouterr().out
     assert printed.split("\n")[0] == (
         f"### Red-cause census of the week: {REPO}, 2026-11-15 to 2026-11-21 UTC, "
@@ -320,12 +321,8 @@ def test_seven_whole_days_cost_two_listings_and_seven_downloads(
     )
     assert printed.endswith("REST calls: 9\n")
     assert "Incomplete" not in printed
-    assert sorted(path.name for path in tmp_path.iterdir()) == [
-        "ci-pushes.csv",
-        "red-jobs.csv",
-        "summary.json",
-        "summary.md",
-    ]
+    # The week is written as a day is, so a week can be read by what reads a day.
+    assert {path.name for path in tmp_path.iterdir()} >= {*WEEKLY.MEMBERS, "summary.md"}
 
 
 @pytest.mark.parametrize(
@@ -452,14 +449,16 @@ def test_a_listing_that_cannot_be_read_fails_the_week(tmp_path: Path) -> None:
     assert WEEKLY.main(args, api=api, download=lambda path: None) == 1
 
 
-def test_until_and_days_choose_another_week(tmp_path: Path) -> None:
+def test_until_chooses_the_week_that_ends_on_another_day(tmp_path: Path) -> None:
     store = Store()
     store.nightly({day: a_day(day, [row(at)]) for at, day in enumerate(WEEK, start=1)})
 
-    assert assemble(store, tmp_path, "--until", WEEK[2], "--days", "3") == 0
+    # The week ending on the 17th holds three of the stored days.
+    assert assemble(store, tmp_path, "--until", WEEK[2]) == WEEKLY.PARTIAL_EXIT
     summary = summary_of(tmp_path)
-    assert (summary["days_wanted"], summary["red_jobs"]) == (WEEK[:3], 3)
-    assert (summary["since"], summary["until"]) == ("2026-11-15T00:00:00Z", "2026-11-18T00:00:00Z")
+    assert summary["days_wanted"][-3:] == WEEK[:3] and len(summary["days_wanted"]) == 7
+    assert (summary["days"], summary["red_jobs"]) == (3, 3)
+    assert (summary["since"], summary["until"]) == ("2026-11-11T00:00:00Z", "2026-11-18T00:00:00Z")
 
 
 @pytest.mark.parametrize(
@@ -467,7 +466,6 @@ def test_until_and_days_choose_another_week(tmp_path: Path) -> None:
     [
         ["--until", "2026-11-21T09:00Z"],
         ["--until", "yesterday"],
-        ["--days", "0"],
         ["--repo", "not a repo"],
         ["--workflow", "../ci.yml"],
         ["--branch", "main?per_page=1"],

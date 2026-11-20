@@ -35,11 +35,13 @@ name: CI Red-Cause Census
 # from `/rate_limit`, which costs nothing, and fails before a point is spent
 # when it could not hold the reserve and a day. Then:
 #
-#   --max-points 5000         the most one run spends, a third of the bucket:
-#                             a weekday is about 3,000, and a day up to
-#                             three days back still fits
-#   --reserve-points 7500     it never starts a call with under half the
-#                             bucket left; it stops instead, and says Partial
+#   --max-points 4800         the most one run spends: a third of the bucket,
+#                             less 100 for the calls already sent when it
+#                             stops (one a worker). A weekday is about
+#                             3,000; a day up to three days back still fits
+#   --reserve-points 7700     it stops, and says Partial, before a call that
+#                             would start with less: half the bucket, and
+#                             the same 100 for the calls already sent
 #   --gh-timeout-seconds 900  one `gh` call: the 600 s the wrapper below may
 #                             sleep inside it on a spent limit, and 300 for
 #                             the call. A call ended mid-sleep would have
@@ -159,7 +161,7 @@ jobs:
           fi
           echo "GraphQL bucket of this token: ${limit} points an hour, ${remaining} left." | tee -a "$GITHUB_STEP_SUMMARY"
           if [ "$limit" -lt "$NEEDED_POINTS" ]; then
-            echo "::error::This token's GraphQL bucket is ${limit} points an hour; the census leaves 7,500 and a weekday costs 3,000, so it needs ${NEEDED_POINTS}. Nothing was read."
+            echo "::error::This token's GraphQL bucket is ${limit} points an hour; the census leaves 7,700 and a weekday costs 3,000, so it needs ${NEEDED_POINTS}. Nothing was read."
             exit 1
           fi
 
@@ -181,7 +183,7 @@ jobs:
           mkdir -p census
           status=0
           python3 scripts/ci_red_cause_census.py "$@" --repo "$REPO" --out-dir census \
-            --logs never --workers 4 --reserve-points 7500 --max-points 5000 \
+            --logs never --workers 4 --reserve-points 7700 --max-points 4800 \
             --gh-timeout-seconds 900 > census/run.txt || status=$?
           cat census/run.txt
           {

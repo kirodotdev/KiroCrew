@@ -621,8 +621,8 @@ Every workflow of the repository shares it.
 
 | Flag | Value | What it bounds |
 |---|---|---|
-| `--max-points` | 5,000 | The most one run spends: a third of the bucket. A weekday is about 3,000, and a day up to about three days back still fits |
-| `--reserve-points` | 7,500 | It never starts a call with less than half the bucket left; it stops instead |
+| `--max-points` | 4,800 | The most one run spends: a third of the bucket, less 200 points for the calls already sent when the census stops (one for each worker, about 30 points at most). A weekday is about 3,000, and a day up to about three days back still fits |
+| `--reserve-points` | 7,700 | It stops before a call that would start with less: half the bucket, and the same 200 points for the calls already sent |
 | `--gh-timeout-seconds` | 900 | One `gh` call: the 600 seconds the `gh` wrapper may sleep inside it on a spent limit, and 300 for the call itself. The wrapper charges a sleep before it starts, so a call ended mid-sleep would have spent the wait budget and read nothing |
 
 A step before the census reads the bucket's size from `/rate_limit`, which
