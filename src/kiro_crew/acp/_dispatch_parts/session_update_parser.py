@@ -212,6 +212,26 @@ def _build_tool_call_event(
         safe_input = _redact(input_str)
         input_redacted = safe_input != input_str or _derived_redacted
         input_str = safe_input
+    # A ``tool_call`` frame announces a call; the id is the model's. One for an id the
+    # caches already hold, and stating no arguments, is a new call under a reused id:
+    # the earlier call's params, shell verdict, identity and rendered input must not
+    # survive to be read for it, as a refused frame's row does not (see
+    # ``admit_tool_call_cache_entry``). The frame's own writes follow.
+    if tool_call_id and not raw_input:
+        for _stale in (
+            raw_params_cache,
+            shell_cache,
+            mcp_server_name_cache,
+            tool_name_cache,
+            diff_path_cache,
+            tool_kind_cache,
+            tool_input_cache,
+            tool_input_redacted_cache,
+            identity_unreadable_cache,
+            harness_tool_name_cache,
+        ):
+            if _stale is not None:
+                _stale.pop(_ck, None)
     # The admission runs only for a caller that hands an overflow record: the
     # record is what the refusal is written to, and a harness whose handle
     # hands none (every non-KAS harness, H13) retains as it always did.
