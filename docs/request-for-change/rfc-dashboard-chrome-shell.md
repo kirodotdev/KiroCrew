@@ -3,8 +3,8 @@ title: Dashboard chrome shell — one continuous surface with a fixed desktop ra
 status: accepted
 author: krewworker
 created: 2026-10-02
-last-audited: 2026-10-02
-audited-at: fa37aa54f
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr:
 implementation-prs: [16052]
 tracking-issues: []

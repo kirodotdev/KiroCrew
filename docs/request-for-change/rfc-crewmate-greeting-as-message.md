@@ -3,8 +3,8 @@ title: The crewmate greeting is a message in its chat, not a card above it
 status: accepted
 author: iamwhatever
 created: 2026-10-09
-last-audited: 2026-10-09
-audited-at: d4c3a7334d
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr:
 implementation-prs: []
 tracking-issues: []
