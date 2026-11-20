@@ -63,9 +63,11 @@ as the tool takes them.
    re-asserts it. So absence there is the normal steady state,
    not recovery, and resolving on it would close live work on a successful poll. For those
    sources, resolve only from an explicit entry in `cleared` (step 4).
+   A push-only incident whose signal is merely absent stays open: the dispatch heartbeat resolves it itself when the sender delivers a cleared event (state ok) for that signal.
+   If POST /incident/transition answers 409 with code recovery_evidence_required, leave that incident open and do not retry the resolve in this run; no cleared event is spooled for it.
 
    ```
-   # Only for an incident whose source polled OK, or one listed in `cleared`.
+   # Only for an incident whose source polled ok with snapshot != false, or one listed in `cleared`.
    ops_mission_control_api(method="POST", path="/incident/transition",
      body_json='{"id": "INV-7", "status": "resolved",
                  "resolution": "signal cleared at the provider — no longer firing"}')
@@ -76,6 +78,7 @@ as the tool takes them.
 
 4. A signal in **`cleared`** needs no health check — an explicit `ok` from the provider
    is positive evidence rather than an inference, so resolve those directly.
+   When you resolve a signal listed in cleared, start the resolution with: Resolved on an explicit cleared event:
 
 5. **A signal in `suppressed` must NOT be resolved.** A human parked it; nothing was
    fixed, so `resolution: "signal cleared at the provider"` would be false — and

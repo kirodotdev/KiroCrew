@@ -110,6 +110,7 @@ diagnosis" while a complete root-cause analysis was one scroll away.
 
    Pick `status` from your Phase 3 decision:
    - **Resolved** → `"status": "resolved"` plus a `resolution`.
+     For a webhook incident, resolve only after the sender delivered a cleared event; otherwise set needs_human with your diagnosis, because the server refuses the resolve with recovery_evidence_required.
    - **Propose / Needs human** → `"status": "needs_human"` with the `diagnosis`.
      The board then shows *what you concluded*, not "stopped".
    - **Escalated** → `"status": "escalated"`, naming the owner in `resolution`.

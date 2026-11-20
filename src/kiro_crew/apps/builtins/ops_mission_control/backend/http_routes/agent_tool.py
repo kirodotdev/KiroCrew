@@ -122,6 +122,26 @@ class AgentCall:
         return copy.deepcopy(self._body)
 
 
+def is_automated_call(request: Any) -> bool:
+    """Whether a handler is answering an automated caller (an agent or a cron), never raising.
+
+    Positive on either of two marks, never on the absence of one:
+
+    - an :class:`AgentCall`: the call arrived through this app's agent tool, which production
+      reaches only via the gateway's ``/api/app-tools/call`` with the internal secret
+      (``dashboard/server_internal_paths.py``). Every SOP's and the reconcile cron's call
+      arrives this way. The dashboard button posts to the app's route directly, so it is a
+      plain request and never one of these;
+    - a request the gateway's token-auth middleware marked ``internal_auth``: a direct
+      internal-secret call, should the gateway ever admit one on an app route.
+
+    An ``AgentCall`` has no ``get``, so it is recognised before that read.
+    """
+    if isinstance(request, AgentCall):
+        return True
+    return request.get("internal_auth") is True
+
+
 def _refuse(status: int, code: str, error: str) -> web.Response:
     return web.json_response({"ok": False, "error": error, "code": code}, status=status)
 

@@ -29,16 +29,79 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.http_routes._shared imp
     _store_read_refusal,
     logger,
 )
+from kiro_crew.apps.builtins.ops_mission_control.backend.http_routes.agent_tool import (
+    is_automated_call,
+)
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
     CLAIMED_BY_OPERATOR,
     STATE_FIRING,
     STATUS_NEEDS_HUMAN,
+    STATUS_RESOLVED,
+    TERMINAL_STATUSES,
+    Incident,
 )
 from kiro_crew.apps.builtins.ops_mission_control.backend.providers import webhook as webhook_mod
+from kiro_crew.apps.builtins.ops_mission_control.backend.registry import OpsProviderRegistry
+
+
+class _PushOnlyCheck:
+    """The resolve guard ``store.transition`` runs under the index lock on the STORED incident.
+
+    Applies to an AUTOMATED resolve only (``agent_tool.is_automated_call``: the reconcile cron
+    and every agent call arrive through the app's agent tool; the dashboard button does not). A
+    push-only incident (a source that is not a registered snapshot source) may be resolved
+    only when the latest spooled entry for its signal is a cleared delivery, and then its
+    stored resolution is the cleared-event sentence. Everything else it leaves exactly as the
+    unguarded call would do it:
+
+    - a terminal incident: ``resolved -> resolved`` stays the same-status field edit and
+      ``escalated -> resolved`` the existing illegal transition;
+    - a snapshot source: its absence rule is ``reconcile.md`` Pass 1 step 3, unchanged.
+
+    Deciding on the locked read rather than the route's earlier display read is what keeps
+    the guard closed when that read fails: ``get_incident`` answers None on an unreadable
+    index, while the locked read raises and the route answers its store refusal.
+    """
+
+    def __init__(self, *, registry: OpsProviderRegistry, note: str, body_diagnosis: str) -> None:
+        self._registry = registry
+        self._note = note
+        self._body_diagnosis = body_diagnosis
+        #: The resolution this check wrote, or "" when it left the request's own.
+        self.resolution = ""
+
+    def __call__(self, stored: Incident) -> dict[str, Any]:
+        if stored.status in TERMINAL_STATUSES:
+            return {}
+        snapshot_source = self._registry.is_snapshot_source(stored.signal.source)
+        # Only a webhook incident reads the webhook spool, which holds only webhook entries:
+        # a snapshot source keeps its absence rule, and any other push-only source (a
+        # companion adapter, or one not loaded) has no entry there, so it is refused here
+        # and the dispatch heartbeat resolves it on the cleared delivery its own poll returns.
+        is_webhook = stored.signal.source == webhook_mod.PROVIDER_ID
+        spooled = webhook_mod.peek() if is_webhook and not snapshot_source else []
+        refusal = dispatch.push_only_resolve_refusal(
+            stored, snapshot_source=snapshot_source, spooled=spooled
+        )
+        if refusal:
+            raise store.TransitionRefused(refusal, dispatch.RECOVERY_EVIDENCE_REQUIRED)
+        entry = dispatch.cleared_event(spooled, stored.signal.id)
+        if entry is None:
+            return {}
+        self.resolution = dispatch.cleared_event_resolution(
+            entry,
+            note=self._note,
+            diagnosed=bool(stored.diagnosis or self._body_diagnosis),
+        )
+        return {"resolution": self.resolution}
 
 
 async def _handle_transition(
-    request: web.Request, *, _audit: AuditWriter, _safe_outbound: Callable[[str], str]
+    request: web.Request,
+    *,
+    get_registry: RegistryLookup,
+    _audit: AuditWriter,
+    _safe_outbound: Callable[[str], str],
 ) -> web.StreamResponse:
     body = await _json_body(request)
     if body is None:
@@ -76,8 +139,27 @@ async def _handle_transition(
     # each one.
     previous = await asyncio.to_thread(store.get_incident, incident_id)
     previous_status = previous.status if previous is not None else ""
+    # The push-only resolve guard. Passed only when it applies, so every other call is the
+    # unguarded one. It never reads `previous` above: that display read answers None on an
+    # unreadable index, so a guard keyed on it would fail open.
+    guard: _PushOnlyCheck | None = None
+    transition_kwargs: dict[str, Any] = dict(updates)
+    if new_status == STATUS_RESOLVED and is_automated_call(request):
+        guard = _PushOnlyCheck(
+            registry=get_registry(),
+            note=updates.get("resolution", ""),
+            body_diagnosis=updates.get("diagnosis", ""),
+        )
+        transition_kwargs["check"] = guard
     try:
-        incident = await asyncio.to_thread(store.transition, incident_id, new_status, **updates)
+        incident = await asyncio.to_thread(
+            store.transition, incident_id, new_status, **transition_kwargs
+        )
+    except store.TransitionRefused as exc:
+        # Before every other arm: the refusal carries its own code, and nothing was written,
+        # so the Slack mirror below must not run either.
+        _audit("incident_transition", f"{incident_id}->{new_status}", "denied", error=exc.code)
+        return web.json_response({"error": exc.message, "code": exc.code}, status=409)
     except KeyError:
         return web.json_response(
             {"error": "unknown incident", "code": "unknown_incident"}, status=404
@@ -100,7 +182,14 @@ async def _handle_transition(
     # durable at this point.
     client = _slack_client(request)
     await slack_out.publish(incident, client)
-    detail = updates.get("resolution") or updates.get("diagnosis") or ""
+    # When the guard wrote the resolution, the thread gets what the board stores (the
+    # cleared-event sentence), not the caller's note alone.
+    detail = (
+        (guard.resolution if guard is not None else "")
+        or updates.get("resolution")
+        or updates.get("diagnosis")
+        or ""
+    )
     if detail:
         await slack_out.post_detail(incident, detail, client)
 

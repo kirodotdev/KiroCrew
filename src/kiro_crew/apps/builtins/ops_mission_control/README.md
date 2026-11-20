@@ -50,6 +50,13 @@ This is a deliberate divergence from a common shortcut: auto-resolving alert typ
 believe are always benign. A team that built those alerts itself can reason about which
 are safe to close unread; a stranger's first install cannot.
 
+The same holds for closing an incident on the board. A webhook sender announces a fault
+once and never repeats it, so its silence is not recovery: an investigating agent (or the
+reconcile cron) cannot resolve a push-only incident until the sender has delivered a
+cleared event, and the server refuses it with 409 `recovery_evidence_required`. The agent
+sets the incident to `needs_human` with its diagnosis instead, and you resolve it from the
+board.
+
 ## Credentials
 
 - **AWS** uses your ambient credential chain. No key is ever stored.
