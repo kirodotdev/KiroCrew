@@ -234,7 +234,7 @@ and soft enforcement boundary. Each scope has:
   leaves the scope at `memory.high=max` as before; anything else uses the default), the
   **per-runtime isolation** ceiling. The kernel charges page cache to the cgroup that read the
   file, so without it one runtime's file-heavy work (build trees, repo checkouts) filled the
-  shared slice `memory.high` below and every runtime was throttled together (#24201). With it,
+  shared slice `memory.high` below and every runtime was throttled together. With it,
   a runtime past its own `memory.high` reclaims its own cache and is throttled alone first. 90%
   keeps an anon-heavy single tree (a JVM build) reaching its hard `MemoryMax` at nearly the
   same point as before on a small host. The value is floored at 1 MB and never exceeds
@@ -332,7 +332,7 @@ exist (macOS/Windows, no cgroup v2, slice not materialized).
 charges page cache to the cgroup that read the file, so file-heavy agent work (build trees,
 checkouts, logs) fills `memory.high` with clean cache. `memory.current` then sits at the
 ceiling and the kernel throttles the whole subtree, even when almost none of it is process
-memory (issue #24201 measured 1030 GiB of file cache against 27 GiB of anon).
+memory (one host measured 1030 GiB of file cache against 27 GiB of anon).
 `sandbox.reclaim_agents_slice_page_cache()` runs on every tick of the resource-pressure
 sampler (`notifications/resource_pressure.py`, already on a worker thread) and writes the
 slice's `memory.reclaim` when all of these hold:
@@ -628,7 +628,7 @@ locator forward.
 > page counters differently. The budget's version is tighter — it does not re-add
 > `speculative_count` (which `free_count` already contains) and it bounds `inactive_count`
 > by `external_page_count`. The spawn memory floor reads the tighter version on macOS
-> (`subagent._host_available_gb`, #21574): the floor promises what stays free after a
+> (`subagent._host_available_gb`): the floor promises what stays free after a
 > start, and the looser sum read about 3.5 GiB above what a new process could take. The
 > sub-agent version is knowingly looser and stays that way for the TaskRunner's
 > memory-sized auto value, the auto cap's disabled-floor fallback and the memory posture,

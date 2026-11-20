@@ -390,8 +390,8 @@ closed, since no emitted spec defines it). See
 A user entry that is a **bare registry pointer** — `"type": "registry"` with no
 `command` and no `url` in any source, the shape Kiro IDE and kiro-cli write when
 a server is installed from the catalog — is carried into the emitted spec
-verbatim by `resolve_mcp_servers` instead of taking the generic "no command" drop
-(#3308). The spec pins `includeMcpJson: false`, so that copy is the only route by
+verbatim by `resolve_mcp_servers` instead of taking the generic "no command" drop.
+The spec pins `includeMcpJson: false`, so that copy is the only route by
 which kiro-cli sees the pointer, and kiro-cli is the only party that can resolve
 it. Its `@ref` then goes through `sync_shared_server_refs` and the auto-approve
 gate like any other shared server. The readiness probe's structural check
@@ -852,7 +852,7 @@ the sharing rows and the gateway rewriter use; otherwise it is stdio.
   `clientId` of its own at the url of a registry provider whose vendor has not
   admitted Kiro yet (`vendor_approval_pending`, matched by url whatever the entry
   is named: `vendorPendingProviderForServer`) is the same case, because the vendor
-  refuses the engine's client, so no chat sign-in can finish (#36337); its sentence
+  refuses the engine's client, so no chat sign-in can finish; its sentence
   names the vendor instead of the server's own settings. Its badge reads **Sign-in unavailable** whether or not a
   Kiro CLI grant is held (a KAS chat does not use one), with no hover tip,
   and the row says in plain words that the server cannot sign in with this
@@ -3436,7 +3436,7 @@ server is missing. Today that is the Computer Use pointer, the slot a closed spe
 gate resolves to.
 
 Each text opens with a one-line summary of at most `MAX_SUMMARY_CHARS` (250) and
-stays within `MAX_INSTRUCTIONS_CHARS` (4,096), measured 2026-10-27 (#24859):
+stays within `MAX_INSTRUCTIONS_CHARS` (4,096), measured 2026-10-27:
 
 | Harness | Where the text lands | Limit |
 |---|---|---|
@@ -3451,7 +3451,7 @@ stays within `MAX_INSTRUCTIONS_CHARS` (4,096), measured 2026-10-27 (#24859):
 
 The v2 engine is deprecated and gets no fallback: a session on it, including one a
 KAS default or member backend degrades to (`apply_kas_cli_floor`), runs without these
-servers' usage text. That is the maintainer's recorded decision on #24869.
+servers' usage text. That is a recorded maintainer decision.
 
 So pi is handed the text by Crew: `pi_mcp_handoff_payload` seals the entries of the
 servers the session mounts beside the servers themselves, and the pi gate extension
@@ -3679,7 +3679,7 @@ Mission Control's — are declared in its manifest and listed by the `app_tools`
 the `apps` domain that once held the hand-written ones is gone. `POST
 /api/app-tools/call` refuses a disabled app's call with `app_not_enabled`, on
 `kiro_crew.apps.manager`'s read of the app's `installed.json`. `tools/list` advertised every one of them
-regardless (#16099), so a
+regardless, so a
 session with none of the apps enabled was told about tools that could only
 refuse — and because kiro-cli reads `tools/list` once per session and Crew's own
 servers are exempt from `tool_search` deferral, each one cost its full schema in
@@ -6193,8 +6193,7 @@ applier returns a `DirectiveOutcome(text, ends_turn=True)` through
 `apply_session_directive_outcome`, and only on the path where the effect landed
 (a quiet step recorded): a refusal or an error text leaves `ends_turn` False. Both consumers read that flag — the
 dashboard runner skips its empty-response ladder, the channel driver owes no
-empty-turn notice — and neither derives it from the outcome prose (the
-prose match the first fix used was the thing #9324 asked to replace). The string-returning `apply_session_directive` remains for callers
+empty-turn notice — and neither derives it from the outcome prose. The string-returning `apply_session_directive` remains for callers
 that need the text alone. `nothing_to_do` exists for the turn-end contract the
 base prompt states: after its tool calls a turn ends with a closing text or with
 `nothing_to_do`, never by stopping bare after an ordinary tool — a bare stop
