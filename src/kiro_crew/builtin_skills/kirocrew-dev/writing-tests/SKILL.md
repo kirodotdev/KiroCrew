@@ -573,7 +573,7 @@ memory):
 
 ## Checklist before you push a test
 
-### Determinism top 12
+### Determinism top 13
 
 One box per rule of the [Determinism contract](../../../../../docs/system-specs/common/testing-conventions.md#determinism-contract-read-this-first),
 naming the shape; the contract line holds the detail and its numbers. The helpers are in

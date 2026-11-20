@@ -443,8 +443,8 @@ text, so markup in a value shows as typed.
 | `sparkline` | `label`, `field`; `point`, `max_points` (2 to 48) | array |
 | `status` | `label`, `field`; `tones` (value to `ok`, `warn`, `bad`, `idle`, at most 8) | enum, bool, text |
 
-Limits: 1 to 6 blocks a widget; `id` of lowercase letters, digits and `-`, at
-most 32 characters and unique; `title` and `label` 1 to 40 characters, `unit`
+Limits: 1 to 6 blocks a widget; `id` of lowercase letters, digits and `-`,
+starting with a letter, at most 32 characters and unique; `title` and `label` 1 to 40 characters, `unit`
 at most 8; `sizes` a subset of `small`, `medium`, `large`; `tap.open` is
 `bot` only; the stored `widgets` at most 16 KiB. A small widget draws the first
 2 blocks, a medium one 4, a large one all 6, so put the most important first.
