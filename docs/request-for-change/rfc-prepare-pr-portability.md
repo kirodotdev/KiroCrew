@@ -3,8 +3,8 @@ title: Portable `prepare-pr` via pluggable project profiles
 status: implemented
 author: Bolin Chen
 created: 2026-07-28
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr:
 implementation-prs: [662]
 tracking-issues: []

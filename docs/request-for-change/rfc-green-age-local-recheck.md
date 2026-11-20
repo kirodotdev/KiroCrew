@@ -3,8 +3,8 @@ title: A moved base is a reason to re-test locally, not to push -- the prepare-p
 status: draft
 author: rnoack1, with a kirocrew agent session
 created: 2026-11-17
-last-audited: 2026-11-17
-audited-at: a347c11883
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: null
 implementation-prs: [38192]
 tracking-issues: [38153]
