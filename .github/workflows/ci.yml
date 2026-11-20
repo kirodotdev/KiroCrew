@@ -3341,9 +3341,23 @@ jobs:
     runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
+      # Sparse: this job reads only setup.cfg (the [coverage:*] sections), the
+      # measured source and pyproject.toml (setup-uv hashes it with setup.cfg
+      # for its cache key). Every file the shards measure is under src/: each
+      # `--cov` target is a package or a directory there, and [coverage:paths]
+      # maps every spelling onto it. A measured file outside this list stops
+      # `coverage xml` and `coverage report` with "No source for code", so a
+      # list that falls behind turns this job red and can never shrink what
+      # is measured. test/test_ci_coverage_sparse_checkout.py holds the list
+      # against the `--cov` targets and setup.cfg.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          sparse-checkout: |
+            /src/
+            /setup.cfg
+            /pyproject.toml
+          sparse-checkout-cone-mode: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -3384,7 +3398,12 @@ jobs:
         # apiece on the combined data, against ~4s for the combine), and both
         # only READ .coverage, so they run side by side. Each exit status is
         # waited on by PID, so either one failing still fails the step.
+        #
+        # setup.cfg is asserted because coverage runs without it too: with no
+        # `relative_files` it matches no recorded path to a source file and
+        # reports every file at 0%.
         run: |
+          test -f setup.cfg || { echo "::error::setup.cfg missing from the checkout, so coverage has no [coverage:*] configuration"; exit 1; }
           test -f .coverage.ipv6 || { echo "::error::required IPv6 coverage data missing"; exit 1; }
           test -f .coverage.kernel-lock-owner || { echo "::error::required kernel lock owner coverage data missing"; exit 1; }
           coverage combine
@@ -3622,9 +3641,22 @@ jobs:
       # and the two baselines from the tree. It sits BEFORE the artifact
       # downloads because actions/checkout cleans the workspace by default and
       # would otherwise delete them.
+      #
+      # Sparse: the script imports only the standard library and defusedxml,
+      # and pyproject.toml is here for setup-uv, which hashes it for its cache
+      # key and warns when its glob matches nothing. A missing script exits 2,
+      # and a missing baseline reads as an empty one, which holds every
+      # baselined file to the floor it is recorded as being under.
+      # test/test_ci_coverage_sparse_checkout.py holds the list against the
+      # paths this job runs and the script's imports.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          sparse-checkout: |
+            /scripts/check_per_file_coverage.py
+            /.github/coverage-baselines/
+            /pyproject.toml
+          sparse-checkout-cone-mode: false
 
       # The gate parses the Cobertura reports through defusedxml rather than the
       # stdlib parser, which resolves external entities -- and on a fork PR the
