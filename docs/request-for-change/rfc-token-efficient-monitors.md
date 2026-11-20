@@ -3,8 +3,8 @@ title: Token-efficient monitors — probe first, wake on change
 status: implemented
 author: kseam
 created: 2026-08-22
-last-audited: 2026-09-22
-audited-at: 80bd0a81f
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr:
 implementation-prs: [5180, 5181, 5182, 5183, 5184, 5185, 5186, 5305]
 tracking-issues: []
