@@ -803,19 +803,19 @@ two files. Change them in the SAME pull request:
   for: `git grep -n "<function the fake answered>" -- src test`, then read each
   production caller and the tests that reach it.
 
-MEASURED: one pull request removed the shared `home` fixture's
-`is_default_home() -> True` fake, because `destinations()` no longer read the home.
-A second pull request, written in parallel, made `off_offer_due()` return `False`
-off the default home. Each was green on its own base; once both merged, three
-`TestOffOffer` tests were red on every run of `main` (`assert False is True`) and
-blocked every open pull request until the fake came back, scoped to that class.
+MEASURED: one pull request removed a shared `home` fixture's
+`is_default_home() -> True` fake, because the function it was written for stopped
+reading the home. A second pull request, written in parallel, made another check
+return `False` off the default home. Each was green on its own base; once both
+merged, that check's tests were red on every run of `main` (`assert False is True`)
+and blocked every open pull request until the fake came back, scoped to their class.
 Repeat runs cannot catch this shape, because it fails every time: the guard is the
 search, done by whichever change lands second, plus a rebase onto current `main`
 before the merge.
 
 Scope the fake to the tests that need it (a class-level autouse fixture), not the
 shared fixture, and keep one test that drops it and proves the "no" branch
-(`TestOffOffer`'s `home` case). A fake in a shared fixture outlives the check it
+(a `home` case in the same class). A fake in a shared fixture outlives the check it
 was written for, and nothing reports that it now hides a branch.
 
 ### Transport readiness before event assertions
@@ -1606,10 +1606,10 @@ Nothing about shutdown is re-implemented in the harness, so a step added to
 that makes the interception sufficient: `os._exit` is the last statement of
 `_shutdown_and_exit` and the only hard exit `run()` reaches. A `run()` that
 does not reach its exit within `SHUTDOWN_PATH_SECS` of the event is cancelled
-and `_shutdown()` awaited directly, and the teardown reports it. The serve/stop
-seam on `GatewayOrchestrator` (issue #13627) would let an in-process caller
-skip the interception altogether; until it lands, a change to the exit path
-that trips the pin is a change that needs the harness updated in the same PR.
+and `_shutdown()` awaited directly, and the teardown reports it.
+`GatewayOrchestrator` has no serve/stop seam an in-process caller could use
+instead, so a change to the exit path that trips the pin needs the harness
+updated in the same PR.
 Do not set `shutdown_event` from a test, do not call `run()` yourself, and do
 not `await` the helper's task.
 
