@@ -243,6 +243,8 @@ def _install(
 ):
     monkeypatch.setattr(runtime, "_run_cmd", fake.run_cmd)
     monkeypatch.setattr(release_worktree, "_run_git", fake.run_git)
+    # The populate after the add is `test_worktree_populate.py`'s subject, against real git.
+    monkeypatch.setattr(release_worktree, "populate_worktree", lambda *_a: _Completed(0))
 
     def _filter(_root: str) -> str:
         if filter_raises:
@@ -924,8 +926,9 @@ def _direct_runners(monkeypatch, env: dict[str, str], *, net_env: dict[str, str]
         p = _git(net, Path(cmd[2]), *cmd[3:])
         return p.returncode, p.stdout, p.stderr
 
-    def _run_git(args, cwd, **_kw):
-        p = _git(env, Path(cwd), *_no_code, *args)
+    def _run_git(args, cwd, **kw):
+        # A caller that passes its own `env` (the hermetic populate) gets exactly that env.
+        p = _git(kw.get("env") or env, Path(cwd), *_no_code, *args)
         return _Completed(p.returncode, p.stdout, p.stderr)
 
     def _checkout_filter(root):

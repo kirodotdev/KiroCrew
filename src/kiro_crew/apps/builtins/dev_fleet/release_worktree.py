@@ -7,10 +7,10 @@ pins no fleet row and changes no prune rule: it is the create and nothing else.
 
 WHERE IT RUNS, AND WHY. The checkout is driven from the GATEWAY process
 (``gateway_routes.handle_create_release_worktree``), never the sandboxed Dev
-Fleet backend. ``git worktree add <tag>`` reads the repository's own
+Fleet backend. A plain ``git worktree add <tag>`` reads the repository's own
 ``.git/config`` and follows ``include.path`` during checkout, so a hostile
 config could name a ``filter.<name>.smudge`` driver or point ``include.path``
-at a credential file. The gateway can give that checkout a FRESH strict-tier
+at a credential file. The gateway can give these local steps a FRESH strict-tier
 sandbox (``~/.aws``, ``~/.ssh`` bind-masked away); the backend cannot -- a
 ``mode="strict"`` spawn from inside the already-sandboxed backend is a nested
 passthrough that re-applies only the env scrub, not the file hides. So the
@@ -18,6 +18,18 @@ same checkout the dashboard's ``handlers/worktree.py`` performs for the
 follow-up card -- strict tier, ``core.hooksPath``/``core.fsmonitor`` off,
 config hooks disabled by name, and a refusal when a checkout filter is
 declared -- is reused here verbatim rather than re-implemented.
+
+THE POPULATE READS NO REPOSITORY CONFIG. ``git worktree add --no-checkout --detach``
+registers the worktree and writes no file, so no content-filter driver runs there. The
+files are then written by ``worktree_populate.populate_worktree``, which runs
+``read-tree -u --reset <oid>`` under a throwaway git dir whose config carries only
+non-executing settings (line endings, symlinks, case, sparse-checkout) and whose objects
+are the repository's, with system and global config off. A ``filter.<name>`` driver written
+to the repository config between the ``_checkout_filter`` probe and the checkout is never
+consulted, which closes the probe-to-populate gap the probe alone left. Two behaviours
+follow. A Git LFS file lands as its pointer, because the LFS filter is a driver and none is
+defined. A repository that declares a filter in its own config is still refused up front
+(``filter_declared``), now as a friendly early refusal rather than the only defence.
 
 RESOLUTION IS FROM WHAT THE REMOTE ADVERTISES, not a local ref store. The
 newest stable tag and its commit come from ``git ls-remote`` against the
@@ -31,10 +43,10 @@ and no ``FETCH_HEAD``, when the action runs; the action adds no background tag f
 
 THE TRUST BOUNDARY, in one statement. No git child this action runs is ever LESS
 confined than an agent's own commands. The local steps (the worktree-list,
-``_checkout_filter`` and promisor probes, ``rev-parse``, ``worktree add``, the HEAD
-readback, cleanup) run STRICT via ``_run_git``. The route's main-checkout discovery
-(``gateway_routes._ensure_repo``), which runs before this module, is outside that
-statement. The two network steps (``ls-remote``, ``fetch``) run at the STRICTER of
+``_checkout_filter`` and promisor probes, ``rev-parse``, ``worktree add --no-checkout``,
+the populate, the HEAD readback, cleanup) run STRICT via ``_run_git``. The route's
+main-checkout discovery (``gateway_routes._ensure_repo``), which runs before this module,
+is outside that statement. The two network steps (``ls-remote``, ``fetch``) run at the STRICTER of
 ``standard`` and this install's effective ``agent.sandbox`` tier (``_network_tier``):
 on the default ``agent.sandbox = standard`` that is ``standard``, and on a ``cc`` or
 ``strict`` install they clamp UP to that tier rather than running at a hardcoded
@@ -96,6 +108,8 @@ from kiro_crew.dashboard.handlers.worktree import (
     _run_git,
 )
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.worktree_populate import populate_worktree
+from kiro_crew.worktree_populate import promisor_in_force as _promisor_in_force
 
 #: The characters one part of a release tag may hold. ``str.isdigit`` would also accept
 #: the digits of other scripts, which ``int()`` reads, so ``v\u0669.0.0`` (an
@@ -116,10 +130,6 @@ _HEX_DIGITS = frozenset("0123456789abcdef")
 
 #: The lengths of an object id as git prints it: sha1 and sha256, nothing between.
 _OID_LENGTHS = (40, 64)
-
-#: git's spellings of a false boolean, lower-cased, an empty value among them. git reads
-#: every other value as true (any non-zero integer included), so anything else counts.
-_GIT_FALSE = frozenset({"false", "no", "off", "0", ""})
 
 #: The most bytes a single network step's combined output may buffer in the gateway
 #: process before the child is killed and the step refuses. An ``ls-remote`` ref list and
@@ -287,33 +297,6 @@ def is_release_tag(tag: str) -> bool:
 def worktree_path(repo: str) -> str:
     """Where the release worktree lives: a sibling of the primary checkout."""
     return str(Path(repo).parent / WORKTREE_NAME)
-
-
-def _promisor_in_force(config_list: str) -> bool:
-    """Whether ``git config --list -z`` output names a promisor remote in force.
-
-    git records a promisor remote two ways: ``extensions.partialClone`` (a remote name;
-    set at all means partial) and ``remote.<name>.promisor`` (a boolean -- a hydrated
-    clone can keep it as ``false``). Each entry of the listing is ``key`` and ``value``
-    joined by a newline and ended by a NUL, and a key with no value is the bare key, so a
-    value that holds a newline cannot pass for a key. Keys are compared exactly, after
-    lower-casing (git's section and variable names are case-insensitive).
-
-    Read by value, and closed: a ``remote.<name>.promisor`` counts unless it holds one of
-    git's false spellings, so a ``false`` left behind by a hydrated clone is no partial
-    clone while ``2`` is one. The bare key is true and an empty value is false. A rare
-    false spelling outside the set (``00``) reads as in force and is refused, the safe
-    side of the mistake.
-    """
-    for entry in config_list.split("\0"):
-        key, sep, value = entry.partition("\n")
-        key = key.lower()
-        if key == "extensions.partialclone":
-            return True
-        if key.startswith("remote.") and key.endswith(".promisor"):
-            if not sep or value.strip().lower() not in _GIT_FALSE:
-                return True
-    return False
 
 
 async def _advertised_stable_tags(repo: str, mode: str) -> tuple[list[str] | None, str | None]:
@@ -565,7 +548,9 @@ async def _claim_and_check_out(repo: str, dest: str, oid: str) -> dict | None:
     # another writer's tree must leave that tree.
     try:
         proc = await asyncio.to_thread(
-            _run_git, [_NO_REPLACE, "worktree", "add", "--detach", dest, oid], repo
+            _run_git,
+            [_NO_REPLACE, "worktree", "add", "--no-checkout", "--detach", dest, oid],
+            repo,
         )
     except SandboxUnavailable as exc:
         await _release_claim(dest)
@@ -593,6 +578,42 @@ async def _claim_and_check_out(repo: str, dest: str, oid: str) -> dict | None:
             "ok": False,
             "code": "git_failed",
             "error": f"git worktree add failed: {_error_detail(proc.stderr)}",
+        }
+
+    # Fill the tree. The add above checked no file out, so no filter driver the
+    # repository's config names has run. `populate_worktree` reads that config only for
+    # six non-executing settings and checks the files out under a throwaway git dir, so a
+    # driver written to the config after the filter probe is never consulted. A failure
+    # from here on removes the worktree the add registered, as a failed readback does;
+    # after a timeout the checkout may still be finishing, so nothing is removed.
+    try:
+        filled = await asyncio.to_thread(populate_worktree, _run_git, dest, oid)
+    except SandboxUnavailable as exc:
+        left = await _remove_own_worktree(repo, dest)
+        return _sandbox_refusal(str(exc) + left)
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "ok": False,
+            "code": "git_failed",
+            "error": (
+                f"filling the worktree did not complete: {runtime._redact(str(exc))}; it may "
+                f"still be finishing at {runtime._redact(dest)} -- once it stops, clear what "
+                f"it leaves with `git worktree remove -f -f {runtime._redact(dest)}`"
+            ),
+        }
+    except (OSError, subprocess.SubprocessError) as exc:
+        left = await _remove_own_worktree(repo, dest)
+        return {
+            "ok": False,
+            "code": "git_failed",
+            "error": f"filling the worktree did not complete: {runtime._redact(str(exc))}{left}",
+        }
+    if filled.returncode != 0:
+        left = await _remove_own_worktree(repo, dest)
+        return {
+            "ok": False,
+            "code": "git_failed",
+            "error": f"filling the worktree failed: {_error_detail(filled.stderr)}{left}",
         }
 
     # Confirm the tree landed detached at the oid we resolved: a plain file read
