@@ -3551,7 +3551,10 @@ change card, and the server is written to the template's additions record
   `unattended_caller`, `channel_caller`, `not_user_turn`). Unlike the Bot
   route there is no own-thread exemption: a card nobody sees is never raised.
   The template is the caller's execution record's `template_id`; the record
-  folds an alias onto its target on every read and write.
+  folds an alias onto its target on every read and write. A session with no
+  template is refused `409 no_template`, and a Bot's own thread, its worker
+  sessions and any Bot-owned template are refused `403 crewmate_caller`,
+  which points at `request_capabilities`.
 - **The default agent and the worker get a mount-only card.** Both normally
   take their servers from the MCP page
   (`template_mcp_additions.DEFAULT_TEMPLATES`), whose add also approves every
@@ -3659,7 +3662,8 @@ nothing at runtime notices when only one half lands:
   descriptor, never add or reshape one
   (`test_a_domain_advertises_only_what_it_declares`). The names-only build
   (`build_tool_names`, the in-process discovery read) takes `schemas()` and never
-  consults `advertised()`. `apps` defines one, below, and so does `app_tools`, whose
+  consults `advertised()`. Two domains define one: `code_channels`, which lists
+  its tools only while `slack.code_channels` is on, and `app_tools` (below), whose
   `schemas()` names every tool a shipped first-party manifest declares so an app
   agent's deny universe holds it before the app is installed.
 - Its **handler** is an entry in that module's `HANDLERS` map, called as
@@ -3693,6 +3697,7 @@ of its responsibility:
 | `spawn_parts/schemas.py` | every spawn descriptor, the agent roster hint and the parent allowlist filter |
 | `spawn_parts/listing.py` | `spawn_list`, `spawn_status` and the queued-wait wording |
 | `spawn_parts/wave.py` | `spawn_sub_agents` with its deferred step and resume hold, and the audit owner |
+| `spawn_parts/session_memory.py` | `resource_status`'s block on the caller's own memory footprint, read from `GET /api/spawn/session-memory` |
 
 ### An app's tools follow the app's enablement
 
@@ -4038,7 +4043,10 @@ browser, and re-checks `capabilities.browse` governance on every call: a denial
 refuses outright and never falls back to another driver. It accepts public
 HTTP(S) navigation only, plus the operator-listed
 `dashboard.browser_local_origins`; `type` refuses a password field; while the
-person has taken the live card over, every op returns `user_in_control` at once.
+person has taken the live card over, an op is held until they hand the browser
+back and then runs, and returns `user_in_control` only after
+`browser_harness.budgets.HOLD_TIMEOUT_S` (10 minutes) with the person still in
+control.
 See [browser](../system-specs/modules/browser.md).
 
 ### find_ui and the UI location index
@@ -4309,14 +4317,15 @@ panel is opened.
 Selection and gate conditions become steps of their own, outermost first
 (after the page): one `gate` step per gate the path needs, then one `select`
 step per selection, then the reveal and menu steps, then the location. A gate
-is a condition in `UI_GATES` (`developer_mode` turned on by
-`developer.developer-mode`, `terminal_enabled` with no setting to name) or a
+is a condition in `UI_GATES` (`terminal_enabled` with no setting to name,
+`topbar_search_shown` turned on by `display.show-search-in-the-top-bar`) or a
 preview flag, compiled to `preview_flag:<flag>` with the enabler from
 `PREVIEW_FLAG_ENABLERS`; its step is `{id, kind: "gate", gate, setting_id?}`
 and points at nothing. A selection is a condition in `UI_SELECTION_SCOPES`
 (`session_open` at `sessions.list`, `crewmate_selected` at
 `members.roster-list`, `job_open` and `one_job_checked` at `schedule.job-list`,
-`crewmate_editor_open` at `agents.crew-list`, each a registered
+`crewmate_editor_open` at `agents.crew-list`, `app_tile_menu_open` at
+`apps.library.app-list`, `artifact_open` at `artifacts.list`, each a registered
 `kind: list` picker that `find_ui` search never ranks); its step is `{id,
 kind: "select", location: <picker>, label_key, selection, entity,
 requires?}`, after the picker's own reveal steps. The index lists both
@@ -4396,7 +4405,7 @@ Wired today: the sessions sidebar and drawer (`SessionsSidebarChrome`), the chat
 (`ChatPage`), the message box (`composer.box`, `ChatInput`), the navigation
 rail (`shell.nav-rail`, `RailBrandToggle`), the docked terminal panel
 (`shell.terminal-panel`, `BottomTerminalPanel`), the phone menu
-(`menu:shell.mobile-menu`, `App`), the Bot roster on a wide screen and on
+(`menu:shell.mobile-menu`, `appShell`), the Bot roster on a wide screen and on
 a phone (`members.roster`, `members.roster-phone`, `MembersPage`), the
 Bot's profile card (`members.profile`, `MembersPage`, the scope of the
 header pill that reveals its Permissions row, `members.permissions`), the
@@ -4409,24 +4418,30 @@ MCP tab (`open:connections.mcp-servers-tab`), and Knowledge's Sources view
 (`open:knowledge.sources-tab`, `KnowledgePage`). A scope with no owner mounted reads
 `unknown` and a step on it keeps its `reach` fallback (a later target on
 screen). A reporter of a runtime predicate is `useGuidePredicate(id, value)`
-(`ChatPage` reports both sessions-toggle predicates, `App` reports
-`not_on_sessions_page`, `SchedulePage` reports `schedule_list_view`). While a step's target is
+(the chat page's `pageEnvironment` reports both sessions-toggle predicates,
+`appShell` reports `not_on_sessions_page` and `phone_connect_available`,
+`SchedulePage` reports `schedule_list_view` and `has_schedules`, `MembersPage`
+`has_crewmates` and `crewmate_panel_not_docked`, `KiroCrewAgentsPage` the three
+crewmate pane predicates, `ChatInput` `mouse_input`, `ContextShelf`
+`no_response_running`, `SessionAutomationPopover` `goal_loop_running` and
+`monitor_running`). While a step's target is
 absent and one of its predicates is unmet, the guide shows a blocker naming
 what is needed instead of pointing, reports `target_missing` with detail
 `predicate_unmet` after the 1.5 s settle (the guide's `reason` becomes
 `predicate_unmet`), and recovers only once the predicates hold and the target
 is drawn.
 
-A gate's reporter is `useGuideGate(id, on)` (`App` reports `developer_mode` and
-`terminal_enabled`); a preview flag is read from storage. A gate step that is on
-is observed at once; off, the guide shows the gate's line ("Turn on “Developer
-Mode” in Settings first…"), points at nothing, and after the settle reports
+A gate's reporter is `useGuideGate(id, on)` (`appShell` reports
+`terminal_enabled` and `topbar_search_shown`); a preview flag is read from
+storage. A gate step that is on is observed at once; off, the guide shows the
+gate's line ("Turn on “<setting>” in Settings first…"), points at nothing, and after the settle reports
 `target_missing` with detail `gate_off`; the guide's `reason` becomes `gate_off`
 and its public record carries `blocker: {kind: "gate_off", gate, setting_id}`
 from the record's own plan (`step_meta`). It recovers (`target_found`) only once
 the gate is on. A selection's reporter is `useGuideSelection(id, {selected,
-available, name?})` in the page owning the picker (`ChatPage`, `MembersPage`,
-`SchedulePage`, `KiroCrewAgentsPage`): two booleans reported, plus the picked
+available, name?})` in the page owning the picker (the chat page's
+`pageEnvironment`, `MembersPage`, `SchedulePage`, `KiroCrewAgentsPage`, the
+apps `LibraryPage`, `ArtifactsPage`): two booleans reported, plus the picked
 entity's name kept in the tab (the same string its row is registered with by
 `guidePick(name)`) to bind a `pick` and name the entity in the confirm line;
 which entity never reaches the gateway. A select step points at its
@@ -4501,7 +4516,7 @@ runs through one, or when it matches the area's id prefixes or surface; areas
 may overlap, and `sessions` excludes `composer`. `settings` is split: its listing
 names one `settings.<tab>` sub-area per Settings tab (`sub_areas`, with the
 localized tab label and a count) and lists only what no sub-area holds. An area
-may name `related` areas (Settings and Customize; Connections and Settings,
+may name `related` areas (Sessions and Composer; Settings and Customize; Connections and Settings,
 whose Agent Harness tab holds the model provider sign-in and whose Kiro account
 tab holds the Kiro sign-in; Shell and Sessions, whose chat
 side panel holds the built-in browser).
@@ -4792,7 +4807,7 @@ heading, or a control drawn in one) gives way to one that is not, and for a
 the same name in the section it opens. Without `location_id`, a single match
 in the main navigation wins over same-named controls outside every navigation
 region (the Bots rail row over the Bots page's switcher chip, which is also
-named "Mates"), so a tour of the rail never asks the person to pick; a rail
+named "Bots"), so a tour of the rail never asks the person to pick; a rail
 entry and another navigation entry of the same name (a Customize tab) stay
 ambiguous. With `location_id`, a visible
 control carrying that id is the match before any name is compared, whatever
@@ -5359,6 +5374,10 @@ already renders such a session as unfiled, which is the same state the person's
 full delete leaves on every archived session it does not touch, and nothing in the
 transcript is lost. Closing that seam means registering every in-flight close
 across all of the slot-removal paths, which this verb does not justify.
+A Bot's home folder is never deleted (`403 mate_home_locked`), and a folder
+inside one is deleted only from the person's browser and only when empty
+(`dashboard/mate_subfolder_delete.py`); an agent call there gets the same
+`mate_home_locked`.
 
 The policy lives in the endpoints, not in the MCP server. Only the endpoint holds
 the store lock and sees the authoritative tree, so a second copy of the rule in
@@ -5801,9 +5820,10 @@ can persist it.
 gatewayd spawns a pooled backend from its OWN environment, so the per-session
 token the stub carries never reaches the backend's `os.environ`. That is right
 for a third-party server, which has no business proving a session to anyone.
-`kirocrew-core`, `kirocrew-cron`, `kirocrew-guide` and the opt-in Crew servers
-(`kirocrew-dashboard`, `kirocrew-work`, `kirocrew-crew-log`, `kirocrew-debug`,
-`kirocrew-panel`) are
+`kirocrew-core`, `kirocrew-cron`, `kirocrew-guide`, `kirocrew-mate`,
+`kirocrew-computer` and the opt-in Crew servers (`kirocrew-secrets`,
+`kirocrew-dashboard`, `kirocrew-work`, `kirocrew-crew-log`, `kirocrew-debug`,
+`kirocrew-panel`; together `mcp_cleanup.KIROCREW_BIN_MCP_SERVERS`) are
 different: they
 post back to the gateway over loopback (`/api/crons/tools`, the memory routes,
 the session and folder routes) on behalf of the session they act for, and every
