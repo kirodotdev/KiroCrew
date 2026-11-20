@@ -26,6 +26,7 @@ from kiro_crew.cron import (
     job_zone_name,
     load_cron_folders,
 )
+from kiro_crew.cron_history import keep_ends
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.port_resolution import resolve_serving_port
@@ -430,11 +431,8 @@ def _render_cron_list_compact(jobs: list[Any]) -> str:
         # Show last_error preview when in error; otherwise last_result for
         # script/command jobs whose result isn't the trivial "ok".
         if last_status == "error" and isinstance(j.last_error, str) and j.last_error:
-            san_err = _sanitize(j.last_error)
-            err_short = (
-                san_err if len(san_err) <= _ERR_PREVIEW_LEN else san_err[:_ERR_PREVIEW_LEN] + "…"
-            )
-            extras.append(f"err={err_short}")
+            # Start and end both kept: a refusal names its rule at the end.
+            extras.append(f"err={keep_ends(_sanitize(j.last_error), _ERR_PREVIEW_LEN)}")
         elif (
             last_status == "ok"
             and (getattr(j, "script", "") or getattr(j, "command", ""))
