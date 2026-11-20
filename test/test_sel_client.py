@@ -228,6 +228,7 @@ async def test_an_oversized_field_is_redacted_then_clipped_and_the_row_is_not_dr
         await async_wait_until(
             lambda: any(kw["operation"] == f"{_A}.x.big" for _n, kw in rec.app_rows())
         )
+        await asyncio.to_thread(settle, backend)
     (row,) = [kw for _n, kw in rec.app_rows() if kw["operation"] == f"{_A}.x.big"]
     assert len(row[field]) <= 500
     assert "AKIA" not in row[field]
@@ -323,6 +324,7 @@ async def test_an_operation_is_normalized_and_the_row_is_kept(
             backend.log_api_access, operation=operation, outcome="ok", critical=critical
         )
         await async_wait_until(lambda: bool(rec.app_rows()))
+        await asyncio.to_thread(settle, backend)
     assert [kw["operation"] for _n, kw in rec.app_rows()] == [f"{_A}.{stored}"]
 
 
@@ -341,6 +343,7 @@ async def test_a_credential_in_the_operation_is_redacted_before_it_is_normalized
             backend.log_api_access, operation=operation, outcome="ok", critical=critical
         )
         await async_wait_until(lambda: bool(rec.app_rows()))
+        await asyncio.to_thread(settle, backend)
     (row,) = rec.app_rows()
     stored = row[1]["operation"]
     assert no_part_of(secret, stored)
@@ -406,6 +409,7 @@ async def test_a_governance_decision_becomes_an_app_attributed_api_access_row(
         await async_wait_until(
             lambda: any(kw["operation"] == f"{_A}.governance.decision" for _n, kw in rec.app_rows())
         )
+        await asyncio.to_thread(settle, backend)
     name, row = [
         (n, kw) for n, kw in rec.app_rows() if kw["operation"] == f"{_A}.governance.decision"
     ][0]
@@ -431,6 +435,7 @@ async def test_a_governance_degraded_becomes_an_app_attributed_api_access_row(ga
         await async_wait_until(
             lambda: any(kw["operation"] == f"{_A}.governance.degraded" for _n, kw in rec.app_rows())
         )
+        await asyncio.to_thread(settle, backend)
     (row,) = [kw for _n, kw in rec.app_rows() if kw["operation"] == f"{_A}.governance.degraded"]
     assert row["outcome"] == "failed_open" and "spawn_gate" in row["resources"]
 
