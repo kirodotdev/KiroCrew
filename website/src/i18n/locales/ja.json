@@ -342,6 +342,11 @@
     "projectPicker": {
       "not_declared": "このアプリはプロジェクトピッカーを表示できません。権限に {{path}} が宣言されていません。"
     },
+    "sessionChanges": {
+      "not_declared": "このアプリはこのチャットの変更を表示できません。権限に {{path}} が宣言されていません。",
+      "pick_a_file": "ファイルを選ぶと変更が表示されます。",
+      "diff_unavailable": "このチャットはこの変更の前後のファイル全体を記録していないため、表示できる差分がありません。"
+    },
     "issues": {
       "assigned_to": "担当者: {{names}}",
       "assigned_to_me": "自分が担当",

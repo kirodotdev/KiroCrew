@@ -372,6 +372,11 @@
     "projectPicker": {
       "not_declared": "Este app não pode mostrar o seletor de projetos: suas permissões não declaram {{path}}."
     },
+    "sessionChanges": {
+      "not_declared": "Este app não pode mostrar as alterações deste chat: suas permissões não declaram {{path}}.",
+      "pick_a_file": "Escolha um arquivo para ver suas alterações.",
+      "diff_unavailable": "Este chat não registrou o arquivo inteiro antes e depois desta alteração, então não há diff para mostrar."
+    },
     "issues": {
       "assigned_to": "Atribuída a {{names}}",
       "assigned_to_me": "Atribuídas a mim",

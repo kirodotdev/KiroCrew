@@ -867,6 +867,56 @@ composer and source strip, which an app page does not have.
 | `selectedUrl` | `string` | yes | The url of the one shown |
 | `onSelect` | `(url: string) => void` | yes | Called when the user picks another tab |
 
+## Session Changes and Diff View
+
+`SessionChanges` is the chat window's list of the files a chat session created or
+changed, the **Edited** view of its **Files** tab, with the diff of the file you pick
+shown beside it. `DiffView` is the diff viewer the chat window's diff tabs draw. An
+app page that embeds a chat (`ChatEmbed`, `ChatPanel`) renders them to show what that
+chat changed, instead of restating either. Both need `APP_SDK_LEVEL >= 12`.
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+sdk.APP_SDK_LEVEL >= 12 && sdk.SessionChanges
+  ? <sdk.SessionChanges slotKey={slotKey} projectDir={projectDir} />
+  : null
+
+sdk.DiffView && <sdk.DiffView filePath="src/app.ts" original={before} modified={after} />
+```
+
+`DiffView` takes both texts and sends no request, so it needs nothing declared.
+`SessionChanges` reads through your app's scoped client and needs two paths in your
+manifest's `permissions.api`:
+
+| Endpoint | What it backs |
+|---|---|
+| `/api/project/session-files` | The list of files the session changed |
+| `/api/project/session-file-diff` | The diff of the file picked in the list |
+
+The two are siblings, not parent and child, so declaring one does not declare the
+other. Without the list's path, or outside an app, `SessionChanges` renders a refusal
+naming it, with the **Ask the agent** hand-off, and sends nothing. With the list's path
+alone, the list shows and picking a file renders the same refusal for the diff's path
+in the diff's place, sending nothing. The diff is the change the session recorded; when
+its record holds no whole before-and-after copy, the pane says so. Both reads are
+read-only. A built-in page keeps the dashboard's client. The list draws no **Browse**
+hand-off and picking a row does not open the file in a tab: those belong to the chat
+window's side panel, which an app page does not have.
+
+| `SessionChanges` prop | Type | Required | Purpose |
+|---|---|---|---|
+| `slotKey` | `string` | yes | The chat session whose changes are shown, as `ChatEmbed` takes it |
+| `projectDir` | `string` | no | The session's project folder: each row names its folder relative to it, else the absolute folder |
+
+| `DiffView` prop | Type | Required | Purpose |
+|---|---|---|---|
+| `filePath` | `string` | yes | Shown in the footer (click to copy) and used for highlighting |
+| `original` | `string` | yes | The text before the change; empty for a new file |
+| `modified` | `string` | yes | The text after the change; empty for a deleted file |
+| `sideBySide` | `boolean` | no | Side by side (default) or one unified column |
+| `lineNumbers` | `boolean` | no | Show line numbers (default off) |
+
 ## Issue Search
 
 `POST /api/source/issues` lists or searches the issues of one GitHub repository
@@ -2297,7 +2347,8 @@ shared embedder's batch members (`ctx.embed.embed_batch`, see
 [Shared embedder](#shared-embedder-ctxembed)), and level 11
 adds the page's [`BrowserView`, `useBrowserView` and `useBrowserCoords`](#browser-view) and the
 dashboard's `appWebOriginStatus(name)`, and level 12 adds
-`permissions.kiroOperations` with its route and `ctx.kiro_call` ([Kiro calls](#kiro-calls)); each level
+`permissions.kiroOperations` with its route and `ctx.kiro_call` ([Kiro calls](#kiro-calls)) and the dashboard's
+[`SessionChanges` and `DiffView`](#session-changes-and-diff-view); each level
 includes every level below it. Several seams share level 7, three share level 8, and
 level 10 is shared by the seams of the batch it opens, so an app that needs one
 feature-detects it, never the level alone. Read it

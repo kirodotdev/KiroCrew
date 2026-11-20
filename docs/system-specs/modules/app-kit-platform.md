@@ -6240,6 +6240,48 @@ Writers: `apps/app_web_origin.py`, `apps/pane_ports.py`, `dashboard/token_auth.p
 Tests: `test/test_app_web_origin.py`, `test/test_app_web_origin_panes.py`,
 `website/src/app-sdk/webOrigin.test.ts`.
 
+## 18l. A session's changed files and their diffs reach an app through the SDK, behind the declared reads
+
+`SessionChanges` on `@kirocrew/app-sdk` (`website/src/app-sdk/SessionChanges.tsx`) is
+the chat window's own `pages/chat/SessionFilesList` (the Files tab's Edited view) beside
+`components/DiffPanel` showing the change picked in it, offered to an app page.
+`DiffView` (`website/src/app-sdk/DiffView.tsx`) is `components/DiffPanel` alone: it
+takes both texts, sends no request and renders the same under any identity. Both are
+App Kit seam level 12. The list and the diff read through one injected client
+(`pages/chat/sessionFilesClient.tsx`, two members); with no provider in context they
+use the dashboard's `api`, and no dashboard surface provides one.
+
+Which client `SessionChanges` hands them is decided by the identity the host published,
+the way §18g chooses the pull-request client:
+
+- **external**: a client over the app's scoped transport (`scopedSessionFilesClient`),
+  each member sending the query the dashboard client sends. The list mounts once
+  `apiPathAllowed` admits `/api/project/session-files`; without it the export renders an
+  `ErrorNotice` naming the path, with the agent hand-off on, and mounts nothing, so no
+  request is sent. The diff of a picked file needs `/api/project/session-file-diff`;
+  without it the diff's place shows the same refusal naming that path and the diff is
+  never mounted. The two paths are siblings at a slash boundary, so neither declaration
+  admits the other, and the scoped transport still checks each request.
+- **builtin**: the dashboard's client, as §18g keeps it for a builtin page.
+- **none**: the external answer with nothing declared, the refusal.
+
+This grants nothing the app does not have already: both reads are the ones `useAppApi()`
+would send for the same declaration, and each handler refuses an app token's foreign slot
+(`dashboard/session_files.py`, `_gated_slot`). The list's `onBrowse` and its file-open
+hand-off are not offered: they open tabs in the chat window's side panel. Picking a row,
+or its Show changes control, shows that file's recorded change; the diff query's key
+carries the row's change time, so a newer edit reads the diff again. The list and diff
+load behind one `React.lazy` boundary, and `DiffView` behind its own, so the shell chunk
+every app loads carries neither. `AppSdkSessionChanges.test.tsx` pins the three answers,
+the per-path refusals, that the dashboard client is untouched under an external app, and
+the request queries.
+
+Writers: `website/src/app-sdk/SessionChanges.tsx`, `website/src/app-sdk/SessionChangesBody.tsx`,
+`website/src/app-sdk/DiffView.tsx`, `website/src/app-sdk/index.ts`,
+`website/public/vendor/kirocrew-app-sdk.mjs`, `website/src/pages/chat/sessionFilesClient.tsx`,
+`website/src/pages/chat/SessionFilesList.tsx`, `website/src/app-sdk/sdkLevel.ts`,
+`apps/app_sdk_level.py`.
+
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
 Spec Builder's backend carries more orchestration than a typical app: agent turns
@@ -7710,7 +7752,7 @@ on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 `useBrowserMedia` (§45), and `ctx.embed`'s batch members; level 11 adds the SDK's `BrowserView`,
 `useBrowserView` and `useBrowserCoords` (RFC app-sdk-browser, step 1c) and the SDK's
 `appWebOriginStatus` (§18k); level 12 adds `permissions.kiroOperations`, its route and
-`ctx.kiro_call` (§47). Several seams share level 7,
+`ctx.kiro_call` (§47), and the SDK's `SessionChanges` and `DiffView` (§18l). Several seams share level 7,
 three share level 8, and the open batch that level 10 starts shares level 10, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
