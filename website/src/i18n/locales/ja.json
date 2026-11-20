@@ -19089,7 +19089,7 @@
         "no_browser_desc": "チャットで初めてブラウザーが必要になったとき、Kiro が接続します。「接続」で今すぐ接続できます。",
         "no_browser_yet": "ブラウザーはまだありません",
         "origin_invalid": "host:port の形式で、host は localhost、127.0.0.1、[::1] のいずれか。例: localhost:5173。",
-        "origins_desc": "自分の開発サーバーをプレビューするためだけのものです。Kiro はこのタブを操作しません。",
+        "origins_desc": "自分の開発サーバーをプレビューするためのものです。Kiro のブラウザーもこれらのアドレスを開けますが、Kiro はこのタブを操作しません。",
         "origins_empty": "まだありません",
         "origins_full": "最大 {{count}} 件。追加するには 1 件削除してください。",
         "origins_label": "プレビュータブが開けるローカルアドレス",

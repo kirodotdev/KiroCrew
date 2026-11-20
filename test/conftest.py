@@ -295,6 +295,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _forget_mount_source_sweep_pacing,
     _forget_observed_people,
     _forget_offered_instance_types,
+    _forget_pending_trace_links,
     _forget_registry_ssh_sign_in_refusals,
     _forget_sandbox_launch_mark,
     _forget_tracing_switch,

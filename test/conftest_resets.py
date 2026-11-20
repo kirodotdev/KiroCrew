@@ -224,6 +224,29 @@ def _forget_tracing_switch():
 
 
 @pytest.fixture(autouse=True)
+def _forget_pending_trace_links():
+    """Start each test with no pending worker-creation or patrol report links.
+
+    ``tracing.workers`` keeps each new session's creation link until its first turn,
+    and ``tracing.work`` each board's report links until its next patrol turn, keyed
+    by slot key. Tests reuse slot keys, so a link one test left would attach to the
+    next test's first turn or patrol turn on the same xdist worker.
+    """
+
+    def clear():
+        for name in ("kiro_crew.tracing.work", "kiro_crew.tracing.workers"):
+            module = sys.modules.get(name)
+            if module is not None:
+                module.reset_for_testing()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@pytest.fixture(autouse=True)
 def _forget_observed_people():
     """Give every test an empty Shared Crew people registry.
 

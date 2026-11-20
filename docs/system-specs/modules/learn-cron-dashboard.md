@@ -7175,7 +7175,11 @@ ancestor fallback. `monitor_inspect` and `monitor_stop` resolve the general
 nudge binding, so both reach whichever shape the session's loop holds and a
 Webex key valid for finite legacy loops reaches them too. Inspect returns the
 structured record when one exists and the legacy presence/cadence reading under
-`autonudge_loop` otherwise; stop routes by the resolved loop's shape. Only
+`autonudge_loop` otherwise. Both carry what `monitor_update` can change, so the
+owning session can confirm an update applied: the structured record its
+`target` and `wake_instructions`, the legacy reading its credential-scrubbed
+`message` and, for a gated loop, the watched `kind` and `target`. Stop routes by
+the resolved loop's shape. Only
 `monitor_watch`, `monitor_update`, and the strict-internal structured create/update
 path keep the narrower structured resolver, since structured wake delivery is
 unavailable on Webex. Internal read failures carry the MCP failure marker and are

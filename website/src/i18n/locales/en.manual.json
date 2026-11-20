@@ -10761,7 +10761,7 @@
         "max_fps_desc": "60 is the most this machine streams. Nothing is sent while the card is off screen.",
         "fps_value": "{{fps}} fps",
         "origins_label": "Local addresses the Preview tab can open",
-        "origins_desc": "For previewing your own dev server only. Kiro never drives this tab.",
+        "origins_desc": "For previewing your own dev server. Kiro’s browser can open these addresses too, but Kiro never drives this tab.",
         "origins_empty": "None yet",
         "add_origin": "Add address",
         "remove_origin": "Remove {{origin}}",
