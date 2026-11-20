@@ -1502,6 +1502,33 @@ def test_closing_a_remote_item_revokes_its_grant(recorded, peer):
     asyncio.run(go())
 
 
+def test_a_failed_revoke_is_resent_when_the_retire_did_not_record(recorded, peer, monkeypatch):
+    """No ``retired`` entry means no sweep retries the close, so the PATCH is resent."""
+    answers = [False, False, True]
+    sent: list[str] = []
+
+    async def _revoke(mgr: Any, instance_id: str, slot: str) -> bool:
+        sent.append(slot)
+        return answers[len(sent) - 1]
+
+    async def _no_retire(*_a: Any, **_k: Any) -> None:
+        return None
+
+    async def go() -> None:
+        item_id = await _bound_with(peer, _trust_state(peer, trust=True))
+        monkeypatch.setattr(remote_ingest, "_record_retire", _no_retire)
+        monkeypatch.setattr(remote_ingest, "revoke_peer_trust", _revoke)
+        monkeypatch.setattr(remote_ingest, "CLOSE_RETRY_SECS", 0.0)
+        status, body = await _record_via(
+            peer, {"action": "close", "item_id": item_id, "state": "abandoned"}
+        )
+        assert status == 200, body
+        await asyncio.wait_for(asyncio.gather(*remote_ingest._CLOSE_TASKS), 60)
+        assert sent == [PEER_SLOT] * 3  # the first try, a failed resend, the one taken
+
+    asyncio.run(go())
+
+
 class _OlderPeer(StubCrew):
     """A peer that predates ``trust``: it refuses the field as an unknown one."""
 
