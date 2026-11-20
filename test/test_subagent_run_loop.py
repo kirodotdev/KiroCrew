@@ -172,6 +172,109 @@ class TestSubagentPostToolUseHook:
         assert len(output) == 2000
         assert output == "x" * 2000
 
+    @staticmethod
+    async def _post_tool_output(tool_output: str, parent_session_key: str = "slack:C:T") -> str:
+        """Drive one sub-agent tool call and return the PostToolUse ``output``."""
+        from kiro_crew.providers.base import EVENT_TOOL_CALL, EVENT_TOOL_RESULT, LLMEvent
+        from kiro_crew.subagent import SubagentInfo
+
+        async def _stream(*_a, **_kw):  # type: ignore[no-untyped-def]
+            yield LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="ReadFile",
+                tool_call_id="t-3",
+                tool_input="",
+                tool_kind="builtin",
+            )
+            yield LLMEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="t-3",
+                tool_output=tool_output,
+                tool_final=True,
+            )
+
+        sessions = _mock_sessions()
+        provider = AsyncMock()
+        provider.start = AsyncMock()
+        provider.shutdown = AsyncMock()
+        provider.context_usage_pct = lambda: 0.0
+        provider.stream = MagicMock(side_effect=lambda *a, **kw: _stream())
+        sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+        ctx = _mock_ctx_builder_auto_spawn()
+        ctx.hooks.auto_approve_subagent_tools = True
+        manager = SubagentManager(sessions=sessions, ctx_builder=ctx)
+        manager.hook_store = MagicMock()
+        manager.hook_store.fire = AsyncMock()
+        info = SubagentInfo(
+            execution_context=execution_for_store(""),
+            id="t03",
+            task="test",
+            parent_session_key=parent_session_key,
+        )
+        try:
+            manager._log_spawned(info)
+            with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+                await manager._run_inner(info, "subagent:t03")
+        finally:
+            manager.close()
+        post_calls = [
+            c
+            for c in manager.hook_store.fire.await_args_list
+            if c.args and c.args[0] == "PostToolUse"
+        ]
+        assert len(post_calls) == 1
+        return post_calls[0].kwargs["tool_response"]["output"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("parent_session_key", ["slack:C:T", ""])
+    @pytest.mark.parametrize("before_cut", [4, 10, 16, 39])
+    async def test_post_tool_use_redacts_credential_straddling_the_cut(
+        self, before_cut: int, parent_session_key: str
+    ) -> None:
+        """A credential across char 2000 leaves no fragment in the hook output.
+
+        Cutting before redacting split the credential so neither part matched.
+        """
+        from kiro_crew.testing.synthetic_credentials import github_classic
+
+        secret = github_classic(seed=38616)
+        raw = "x" * (2000 - before_cut) + secret + " trailing"
+        output = await self._post_tool_output(raw, parent_session_key)
+        assert len(output) <= 2000
+        assert output.startswith("x" * (2000 - before_cut) + "[RED")
+        for size in range(4, len(secret) + 1):
+            assert secret[:size] not in output
+
+    @pytest.mark.asyncio
+    async def test_post_tool_use_exactly_2000_chars_is_passed_whole(self) -> None:
+        assert await self._post_tool_output("y" * 2000) == "y" * 2000
+
+    @pytest.mark.asyncio
+    async def test_post_tool_use_redacts_credential_ending_at_char_2000(self) -> None:
+        from kiro_crew.testing.synthetic_credentials import github_classic
+
+        secret = github_classic(seed=38617)
+        output = await self._post_tool_output("x" * (2000 - len(secret)) + secret)
+        assert secret not in output
+        assert output.endswith("[REDACTED: credential]")
+
+    @pytest.mark.asyncio
+    async def test_post_tool_use_empty_output(self) -> None:
+        assert await self._post_tool_output("") == ""
+
+    @pytest.mark.asyncio
+    async def test_post_tool_use_binary_output_redacts_straddling_credential(self) -> None:
+        """Non-text bytes (decoded 1:1) around the cut do not stop redaction."""
+        from kiro_crew.testing.synthetic_credentials import github_classic
+
+        secret = github_classic(seed=38618)
+        noise = bytes(range(256)).decode("latin-1").replace("g", "")
+        raw = (noise * 8)[:1975] + " " + secret + " " + noise
+        output = await self._post_tool_output(raw)
+        assert len(output) <= 2000
+        assert secret[:8] not in output
+        assert "[REDACTED: credential]" in output
+
     @pytest.mark.asyncio
     async def test_post_tool_use_no_hook_store_is_noop(self) -> None:
         """When hook_store is None, EVENT_TOOL_RESULT does not raise."""
