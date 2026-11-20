@@ -21,9 +21,10 @@ off for that code object (`DISABLE`); `restart_events()` turns them all back on
 at the next test. So each code object costs one callback per test, and every
 thread the test starts is seen. A child process is not.
 
-shortcut: a module body that ran at collection time, before any test, is not
-linked to the tests that use its values (a constant, a decorator). Upgrade when
-the shadow report shows misses of that kind.
+Collection: the same switch is on while pytest collects each test module, so
+every module body its import starts (a constant, a decorator, a table built at
+import) is linked to that test file. A module already imported by an earlier
+test file is cached in `sys.modules`, so its body is linked to the first one only.
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ class _Recorder:
         self.out_dir = out_dir
         self.current: set[str] | None = None
         self.by_test_file: dict[str, dict[str, Any]] = {}
+        self.collected: dict[str, set[str]] = {}
         self._seen_code: dict[str, str | None] = {}
 
     def _rel(self, filename: str) -> str | None:
@@ -89,12 +91,20 @@ class _Recorder:
         entry["nodes"] += 1
         entry["files"].update(files)
 
+    def record_collection(self, nodeid: str, files: set[str]) -> None:
+        self.collected.setdefault(nodeid.split("::", 1)[0], set()).update(files)
+
     def write(self) -> Path:
         worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
         self.out_dir.mkdir(parents=True, exist_ok=True)
         path = self.out_dir / f"part-{worker}.json"
+        # A test file that collected but ran no test here (deselected, or another
+        # xdist worker ran it) stays out: its collection links travel with its tests.
         doc = {
-            name: {"nodes": entry["nodes"], "files": sorted(entry["files"])}
+            name: {
+                "nodes": entry["nodes"],
+                "files": sorted(entry["files"] | self.collected.get(name, set())),
+            }
             for name, entry in sorted(self.by_test_file.items())
         }
         path.write_text(json.dumps(doc, separators=(",", ":")), encoding="utf-8")
@@ -143,6 +153,24 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
     finally:
         files, recorder.current = recorder.current, None
         recorder.record(item.nodeid, files)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_make_collect_report(collector: pytest.Collector):
+    recorder = _RECORDER
+    if recorder is None or not isinstance(collector, pytest.Module):
+        yield
+        return
+    outer, recorder.current = recorder.current, set()
+    sys.monitoring.restart_events()
+    try:
+        yield
+    finally:
+        files, recorder.current = recorder.current, outer
+        recorder.record_collection(collector.nodeid, files)
+        # A collection inside a test (an in-process pytester run) is that test's work too.
+        if outer is not None:
+            outer.update(files)
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
