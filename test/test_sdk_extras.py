@@ -6,6 +6,7 @@ import asyncio
 import configparser
 import importlib
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -107,13 +108,19 @@ def test_install_is_offered_only_on_the_bundled_interpreter(monkeypatch) -> None
     assert sdk_extras.install_supported("feishu") is False
 
 
+def _mark_current(target: Path, extra: str = "feishu") -> None:
+    """Write the marker a finished install made from the shipped lock carries."""
+    marker = {sdk_extras.MARKER_LOCK_KEY: sdk_extras.lock_hash(extra)}
+    (target / sdk_extras.MARKER_FILE).write_text(json.dumps(marker), encoding="utf-8")
+
+
 def test_activate_appends_only_a_finished_install(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(sys, "path", list(sys.path))
     target = sdk_extras.extra_dir("feishu", tmp_path)
     target.mkdir(parents=True)
     sdk_extras.activate(tmp_path)
     assert str(target) not in sys.path
-    (target / sdk_extras.MARKER_FILE).write_text("{}", encoding="utf-8")
+    _mark_current(target)
     sdk_extras.activate(tmp_path)
     sdk_extras.activate(tmp_path)
     assert sys.path.count(str(target)) == 1
@@ -177,7 +184,7 @@ def test_a_finished_install_is_returned_untouched(tmp_path: Path, monkeypatch) -
     (target / "lark_oapi").mkdir(parents=True)
     module = target / "lark_oapi" / "__init__.py"
     module.write_text("LOADED = 1\n", encoding="utf-8")
-    (target / sdk_extras.MARKER_FILE).write_text("{}", encoding="utf-8")
+    _mark_current(target)
     seen: list[list[str]] = []
     monkeypatch.setattr(sdk_extras.subprocess, "run", _fake_pip(0, seen))
     assert sdk_extras.install_extra("feishu", tmp_path) == target
@@ -205,7 +212,7 @@ def finished_feishu_install(tmp_path: Path, monkeypatch):
     target = sdk_extras.extra_dir("feishu")
     (target / _FAKE_SDK).mkdir(parents=True)
     (target / _FAKE_SDK / "__init__.py").write_text("FROM_EXTRAS = True\n", encoding="utf-8")
-    (target / sdk_extras.MARKER_FILE).write_text("{}", encoding="utf-8")
+    _mark_current(target)
     monkeypatch.delitem(sys.modules, _FAKE_SDK, raising=False)
     importlib.invalidate_caches()
     assert importlib.util.find_spec(_FAKE_SDK) is None
@@ -276,6 +283,112 @@ def test_an_unfinished_leftover_is_replaced(tmp_path: Path, monkeypatch) -> None
     assert sdk_extras.install_extra("feishu", tmp_path) == target
     assert not (target / "stale.py").exists()
     assert (target / sdk_extras.MARKER_FILE).is_file()
+
+
+@pytest.fixture
+def own_lock(tmp_path: Path, monkeypatch) -> Path:
+    """A feishu lock the test may rewrite, in place of the shipped one."""
+    locks = tmp_path / "locks"
+    locks.mkdir()
+    monkeypatch.setattr(sdk_extras, "LOCKS_DIR", locks)
+    lock = locks / "feishu.txt"
+    lock.write_text("# first\nlark-oapi==1.8.0 \\\n    --hash=sha256:aa\n", encoding="utf-8")
+    return lock
+
+
+def test_the_lock_hash_follows_the_pins_and_nothing_else(own_lock: Path) -> None:
+    first = sdk_extras.lock_hash("feishu")
+    assert re.fullmatch(r"[0-9a-f]{64}", first)
+    own_lock.write_bytes(b"# reworded\r\n\r\nlark-oapi==1.8.0 \\\r\n  --hash=sha256:aa\r\n")
+    assert sdk_extras.lock_hash("feishu") == first
+    own_lock.write_text("lark-oapi==1.8.1 \\\n    --hash=sha256:aa\n", encoding="utf-8")
+    assert sdk_extras.lock_hash("feishu") != first
+    own_lock.write_text("lark-oapi==1.8.0 \\\n    --hash=sha256:bb\n", encoding="utf-8")
+    assert sdk_extras.lock_hash("feishu") != first
+    own_lock.unlink()
+    assert sdk_extras.lock_hash("feishu") == ""
+
+
+@pytest.mark.parametrize(
+    "marker",
+    ["{}", '{"lock_sha256": "0000"}', '{"lock_sha256": ""}', "[1, 2]", "{not json"],
+    ids=["no-lock-recorded", "another-lock", "empty-lock", "not-an-object", "not-json"],
+)
+def test_an_install_from_another_lock_is_not_loaded_and_is_replaced(
+    tmp_path: Path, monkeypatch, marker: str
+) -> None:
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    target = sdk_extras.extra_dir("feishu", tmp_path)
+    target.mkdir(parents=True)
+    (target / "old_pin.py").write_text("", encoding="utf-8")
+    (target / sdk_extras.MARKER_FILE).write_text(marker, encoding="utf-8")
+    sdk_extras.activate(tmp_path)
+    assert str(target) not in sys.path
+    assert sdk_extras.is_installed("feishu", tmp_path) is False
+    seen: list[list[str]] = []
+    monkeypatch.setattr(sdk_extras.subprocess, "run", _fake_pip(0, seen))
+    assert sdk_extras.install_extra("feishu", tmp_path) == target
+    assert len(seen) == 1
+    assert not (target / "old_pin.py").exists()
+    assert (target / "lark_oapi" / "__init__.py").is_file()
+    written = json.loads((target / sdk_extras.MARKER_FILE).read_text(encoding="utf-8"))
+    assert written[sdk_extras.MARKER_LOCK_KEY] == sdk_extras.lock_hash("feishu")
+    assert sdk_extras.is_installed("feishu", tmp_path) is True
+    assert sorted(p.name for p in target.parent.iterdir()) == [target.name]
+    assert str(target) in sys.path
+
+
+def test_a_changed_pin_makes_a_finished_install_reinstall(
+    tmp_path: Path, monkeypatch, own_lock: Path
+) -> None:
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    seen: list[list[str]] = []
+    monkeypatch.setattr(sdk_extras.subprocess, "run", _fake_pip(0, seen))
+    target = sdk_extras.install_extra("feishu", tmp_path)
+    assert sdk_extras.install_extra("feishu", tmp_path) == target
+    assert len(seen) == 1
+    own_lock.write_text("lark-oapi==1.8.1 \\\n    --hash=sha256:cc\n", encoding="utf-8")
+    assert sdk_extras.is_installed("feishu", tmp_path) is False
+    assert sdk_extras.install_extra("feishu", tmp_path) == target
+    assert len(seen) == 2
+    assert sdk_extras.is_installed("feishu", tmp_path) is True
+
+
+def test_a_failed_reinstall_keeps_the_old_install_on_disk(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    target = sdk_extras.extra_dir("feishu", tmp_path)
+    target.mkdir(parents=True)
+    (target / "old_pin.py").write_text("", encoding="utf-8")
+    (target / sdk_extras.MARKER_FILE).write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(sdk_extras.subprocess, "run", _fake_pip(1, []))
+    with pytest.raises(sdk_extras.InstallError, match="pip said no"):
+        sdk_extras.install_extra("feishu", tmp_path)
+    assert (target / "old_pin.py").is_file()
+    assert sorted(p.name for p in target.parent.iterdir()) == [target.name]
+    assert str(target) not in sys.path
+
+
+def test_the_old_install_is_put_back_when_the_new_one_cannot_take_its_place(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    target = sdk_extras.extra_dir("feishu", tmp_path)
+    target.mkdir(parents=True)
+    (target / "old_pin.py").write_text("", encoding="utf-8")
+    (target / sdk_extras.MARKER_FILE).write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(sdk_extras.subprocess, "run", _fake_pip(0, []))
+    real_rename = Path.rename
+
+    def _rename(self, new):
+        if self.name.endswith(".partial"):
+            raise PermissionError("access denied")
+        return real_rename(self, new)
+
+    monkeypatch.setattr(Path, "rename", _rename)
+    with pytest.raises(sdk_extras.InstallError, match="access denied"):
+        sdk_extras.install_extra("feishu", tmp_path)
+    assert (target / "old_pin.py").is_file()
+    assert sorted(p.name for p in target.parent.iterdir()) == [target.name]
 
 
 def _raise_oserror(*_args, **_kwargs):

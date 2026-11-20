@@ -7287,6 +7287,15 @@ app, `maybe_start_feishu` schedules one background `sdk_extras.install_extra`
 per start and then `restart_channel("feishu")`, so an update that stopped
 bundling the SDK does not leave an existing user's channel off. Installs are
 serialized by a process lock in `sdk_extras`.
+The marker in a finished install (`kirocrew-extra.json`) records
+`sdk_extras.lock_hash`, a SHA-256 over the lock's pins and hashes (comments and
+blank lines left out). `activate()` and `is_installed()` accept an install only
+when that value is the shipped lock's, so after an app update that changes a pin
+the old install is not put on `sys.path`, the SDK reads as missing, and the same
+two paths (the background install for an enabled channel, the panel's Install)
+build the new set. The old directory stays until the new one is built and is
+deleted only after the new one has been renamed into its place; a failed
+install leaves the old directory on disk, still not loaded.
 pip first uses the index the user set for pip (the gateway's `PIP_INDEX_URL` and
 related variables, merged key by key over the index lines of `pip config list`), and on a download
 failure there runs once more against pypi.org; nothing else from pip's config

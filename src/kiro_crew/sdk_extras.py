@@ -22,11 +22,16 @@ The python tag carries the interpreter version and the machine, because a wheel
 with native code (``pycryptodome``) only loads in the interpreter it was built for.
 A new app with a different Python finds no install for its tag and offers Install
 again, rather than importing a library built for another interpreter.
+
+The marker written into a finished install records the hash of the lock's pins.
+An app update that ships different pins finds an install whose recorded hash is
+not its own, so that install is not loaded and is replaced by the next install.
 """
 
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib
 import importlib.util
 import json
@@ -56,6 +61,9 @@ LOCKS_DIR = Path(__file__).with_name("sdk_extras_locks")
 
 #: Written last, so a directory without it is an install that did not finish.
 MARKER_FILE = "kirocrew-extra.json"
+
+#: The marker key holding ``lock_hash`` of the lock the install was made from.
+MARKER_LOCK_KEY = "lock_sha256"
 
 #: The extras this installer may lay down. Each has a lock in ``LOCKS_DIR``.
 INSTALLABLE: frozenset[str] = frozenset({"feishu"})
@@ -152,8 +160,40 @@ def lock_file(extra: str) -> Path:
     return LOCKS_DIR / f"{extra}.txt"
 
 
+def lock_hash(extra: str) -> str:
+    """SHA-256 over the pins and hashes in *extra*'s lock; ``""`` when it cannot be read.
+
+    Comments, blank lines and line endings are left out, so only a change to
+    what pip would install gives a new hash.
+    """
+    try:
+        text = lock_file(extra).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    lines = (line.strip() for line in text.splitlines())
+    pins = "\n".join(line for line in lines if line and not line.startswith("#"))
+    return hashlib.sha256(pins.encode("utf-8")).hexdigest()
+
+
+def _is_current(extra: str, target: Path) -> bool:
+    """True when *target* holds a finished install made from the shipped lock.
+
+    A directory with no marker did not finish. One whose marker names another
+    lock, or none, holds pins this app does not ship. Neither is loaded, and
+    ``install_extra`` replaces both.
+    """
+    try:
+        marker = json.loads((target / MARKER_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(marker, dict):
+        return False
+    expected = lock_hash(extra)
+    return bool(expected) and marker.get(MARKER_LOCK_KEY) == expected
+
+
 def is_installed(extra: str, home: Path | None = None) -> bool:
-    return (extra_dir(extra, home) / MARKER_FILE).is_file()
+    return _is_current(extra, extra_dir(extra, home))
 
 
 def install_supported(extra: str) -> bool:
@@ -171,14 +211,16 @@ def install_supported(extra: str) -> bool:
 
 
 def activate(home: Path | None = None) -> None:
-    """Append every finished install for this interpreter to ``sys.path``. Idempotent.
+    """Append every current install for this interpreter to ``sys.path``. Idempotent.
 
     Called before anything probes or imports an optional SDK. Only reads the disk.
+    An install made from another lock is skipped, so the SDK reads as missing and
+    the Install button and the start-up install for an enabled channel replace it.
     """
     added = False
     for extra in sorted(INSTALLABLE):
         target = extra_dir(extra, home)
-        if not (target / MARKER_FILE).is_file():
+        if not _is_current(extra, target):
             continue
         entry = str(target)
         if entry not in sys.path:
@@ -193,9 +235,12 @@ def install_extra(extra: str, home: Path | None = None) -> Path:
 
     Built in a sibling ``.partial`` directory and renamed into place, so a failed
     or interrupted install never leaves a half-filled directory that ``activate``
-    would load. A finished install is returned untouched: the running gateway may
-    already have imported it (on Windows its native files are then locked), so it
-    is never deleted or rebuilt. Every failure, a disk or permission error
+    would load. A finished install made from the shipped lock is returned
+    untouched: the running gateway may already have imported it (on Windows its
+    native files are then locked), so it is never deleted or rebuilt. An install
+    made from another lock was never loaded by this process (``activate`` skips
+    it); it stays in place until the new one is built, and is removed only after
+    the new one has taken its place. Every failure, a disk or permission error
     included, is an ``InstallError`` and leaves no ``.partial`` behind.
     """
     if extra not in INSTALLABLE:
@@ -209,7 +254,7 @@ def install_extra(extra: str, home: Path | None = None) -> Path:
 
 
 def _install_locked(extra: str, lock: Path, target: Path, home: Path | None) -> Path:
-    if (target / MARKER_FILE).is_file():
+    if _is_current(extra, target):
         activate(home)
         return target
     partial = target.with_name(f".{target.name}.partial")
@@ -422,12 +467,33 @@ def _lay_down(extra: str, lock: Path, target: Path, partial: Path) -> None:
         if number < len(attempts) and kind == KIND_DOWNLOAD:
             continue
         raise InstallError(_pip_failure_summary(output, result.returncode), kind=kind)
-    (partial / MARKER_FILE).write_text(
-        json.dumps({"extra": extra, "python": python_tag()}) + "\n", encoding="utf-8"
-    )
-    # Only an unfinished leftover can be here (a finished one returned above), and
-    # ``activate`` never loads one, so removing it touches nothing the gateway runs.
-    shutil.rmtree(target, ignore_errors=True)
-    if target.exists():
-        raise InstallError(f"could not remove an unfinished install at {target}")
-    partial.rename(target)
+    marker = {"extra": extra, "python": python_tag(), MARKER_LOCK_KEY: lock_hash(extra)}
+    (partial / MARKER_FILE).write_text(json.dumps(marker) + "\n", encoding="utf-8")
+    _swap_in(partial, target)
+
+
+def _swap_in(partial: Path, target: Path) -> None:
+    """Put *partial* at *target*; what was there is deleted only once that is done.
+
+    Only an unfinished leftover or an install made from another lock can be at
+    *target* (a current one returned earlier), and ``activate`` loads neither, so
+    moving it touches nothing the gateway runs. If the new tree cannot take the
+    place, the old one is moved back.
+    """
+    replaced = target.with_name(f".{target.name}.replaced")
+    shutil.rmtree(replaced, ignore_errors=True)
+    if replaced.exists():
+        raise InstallError(f"could not remove an old install at {replaced}")
+    had_old = target.exists()
+    if had_old:
+        try:
+            target.rename(replaced)
+        except OSError as exc:
+            raise InstallError(f"could not move the old install at {target}: {exc}") from exc
+    try:
+        partial.rename(target)
+    except OSError:
+        if had_old:
+            replaced.rename(target)
+        raise
+    shutil.rmtree(replaced, ignore_errors=True)
