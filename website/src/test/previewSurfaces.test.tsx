@@ -58,6 +58,7 @@ import {
   PREVIEW_BRIDGE_APPROVALS,
   PREVIEW_WORKER_GRILL,
   PREVIEW_APP_BROWSER_SDK,
+  PREVIEW_WIDGETS,
   readPreviewFlag,
   setPreviewFlag,
 } from '../utils/previewFlags'
@@ -705,6 +706,14 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(browser.getAttribute('aria-checked')).toBe('false')
     await act(async () => { browser.click() })
     expect(localStorage.getItem(PREVIEW_APP_BROWSER_SDK)).toBe('1')
+  })
+
+  it('offers the phone widgets switch, off by default', async () => {
+    renderTab()
+    const widgets = screen.getByRole('switch', { name: /^phone widgets$/i })
+    expect(widgets.getAttribute('aria-checked')).toBe('false')
+    await act(async () => { widgets.click() })
+    expect(localStorage.getItem(PREVIEW_WIDGETS)).toBe('1')
   })
 
   it('has a Visual refresh switch that starts off and writes only its own key', async () => {

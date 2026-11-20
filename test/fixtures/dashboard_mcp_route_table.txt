@@ -81,6 +81,10 @@ GET /api/members/{slug}/dashboard api_member_dashboard
 POST /api/members/{slug}/dashboard/refetch api_member_dashboard_refetch
 POST /api/members/{slug}/dashboard/preview/apply api_member_dashboard_preview_apply
 POST /api/members/{slug}/dashboard/preview/discard api_member_dashboard_preview_discard
+HEAD /api/widgets api_widgets
+GET /api/widgets api_widgets
+HEAD /api/members/{slug}/widgets/{widget_id} api_member_widget
+GET /api/members/{slug}/widgets/{widget_id} api_member_widget
 GET /api/guide/agent/actions api_guide_agent_actions
 POST /api/guide/agent/start api_guide_agent_start
 GET /api/guide/agent/status api_guide_agent_status

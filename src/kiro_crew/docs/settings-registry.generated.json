@@ -1497,6 +1497,14 @@
       "hint": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
     },
     {
+      "id": "developer.phone-widgets",
+      "label": "Phone widgets",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.phone-widgets",
+      "description": "Lets the Kiro Mobile app show your Bots' latest numbers in home-screen widgets.",
+      "hint": "The Kiro Mobile app can list each Bot's widgets and fetch their latest values from this Crew. Only you, the Crew's owner, can read them; teammates can't. While this is off, the Crew sends no widget data."
+    },
+    {
       "id": "developer.quick-worker-check-before-a-hard-choice",
       "label": "Quick worker check before a hard choice",
       "tab": "developer",

@@ -325,6 +325,15 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/members/{slug}/dashboard/preview/discard",
         _deferred("member_dashboard", "api_member_dashboard_preview_discard"),
     )
+    # Phone widgets: the catalog and one widget's snapshot. Deferred for the same
+    # reason; the handlers answer `404 widgets_off` while the `widgets` preview is
+    # off. The paths are duplicated from `member_widgets.register_member_widgets_routes`,
+    # and `test_member_widgets_routes` pins both spellings against each other.
+    app.router.add_get("/api/widgets", _deferred("member_widgets", "api_widgets"))
+    app.router.add_get(
+        "/api/members/{slug}/widgets/{widget_id}",
+        _deferred("member_widgets", "api_member_widget"),
+    )
     # UI guides (``kirocrew-guide``). The agent half is MCP-only and sits under
     # the strict "/api/guide/agent" prefix; the browser half is cookie-authed and
     # owner-only, deliberately OFF that prefix. Deferred like the panel: the server

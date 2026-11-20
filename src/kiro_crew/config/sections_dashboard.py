@@ -71,6 +71,9 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "session_harness",
     "visual_refresh",
     "webhooks",
+    # Has server behavior: kiro_crew.dashboard.handlers.member_widgets gates the
+    # phone widget routes, which answer 404 widgets_off while it is off.
+    "widgets",
     "worker_grill",
 )
 

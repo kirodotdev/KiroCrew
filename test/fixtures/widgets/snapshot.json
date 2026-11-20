@@ -1,0 +1,53 @@
+{
+  "v": 1,
+  "bot": {
+    "slug": "mem-0000",
+    "member": "pebble",
+    "name": "Pebble"
+  },
+  "widget": {
+    "id": "build-health",
+    "title": "Build health",
+    "sizes": [
+      "small",
+      "medium"
+    ],
+    "default": false
+  },
+  "layout_version": 12,
+  "generated_at": "2026-11-18T00:30:00Z",
+  "blocks": [
+    {
+      "type": "status",
+      "label": "Pipeline",
+      "text": "amber",
+      "tone": "idle",
+      "freshness": {
+        "state": "current",
+        "at": "2026-11-18T00:21:00Z",
+        "stale_after": "2026-11-19T00:21:00Z",
+        "failed_at": null,
+        "source": "agentic"
+      }
+    },
+    {
+      "type": "metric",
+      "label": "Open PRs",
+      "value": 7,
+      "format": "integer",
+      "unit": "",
+      "tone": "ok",
+      "freshness": {
+        "state": "current",
+        "at": "2026-11-18T00:29:00Z",
+        "stale_after": "2026-11-19T00:29:00Z",
+        "failed_at": null,
+        "source": "agentic"
+      }
+    }
+  ],
+  "tap": {
+    "open": "bot",
+    "value": "mem-0000"
+  }
+}
