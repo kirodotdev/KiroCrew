@@ -1053,11 +1053,8 @@ jobs:
         # serial run's (measured: 32s serial, ~5s at 8 jobs, same exit code).
         run: isort --check-only src/kiro_crew test conftest.py xdist_budget.py --jobs "$(nproc)"
 
-      - name: Lint (flake8)
-        run: flake8 src/kiro_crew test conftest.py xdist_budget.py
-
-      # mypy is the longest step on the lint path (~150s cold over ~3,900
-      # files, ~5s warm). A pull request restores the cache main last saved,
+      # mypy takes ~150s cold over ~3,900 files and ~5s warm. A pull request
+      # restores the cache main last saved,
       # and mypy's own incremental check re-verifies every module whose source
       # hash (or any dependency's) differs, so the verdict is the cold run's.
       # A push to main never restores: it type-checks cold and saves the result,
@@ -1074,8 +1071,82 @@ jobs:
           restore-keys: |
             mypy-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml', 'setup.cfg') }}-
 
-      - name: Type check (mypy)
-        run: mypy src/kiro_crew/
+      # flake8 and mypy read the same checkout and neither reads the other's
+      # output, so they run side by side: in series they are the two longest
+      # steps on the path to `lint-gate` (~2.5 min each), and every heavy job
+      # waits for that gate. Both stay blocking. Each exit status is collected
+      # from its own PID, so one tool failing neither hides the other's verdict
+      # nor stops it early, and a tool that was killed (128+signal, e.g. 137
+      # for SIGKILL from the kernel's OOM killer) fails the step by name like
+      # any other non-zero exit. Output goes to one file per tool and is
+      # printed after both have finished, flake8 first, each under its own
+      # group; two writers on one log would interleave their lines. The group
+      # title carries how long after the step's start the tool finished: the
+      # step's duration is only the slower of the two. If the step is
+      # interrupted first (job timeout, cancellation), whatever each tool had
+      # written is printed before it exits, so a hang is not a blank log.
+      #
+      # flake8 keeps its default of one worker per core and mypy is one
+      # process, so the pair is one process over the core count.
+      - name: Lint and type check (flake8 and mypy, side by side)
+        run: |
+          logs="$RUNNER_TEMP/backend-lint"
+          mkdir -p "$logs"
+
+          # Runs in a background subshell, one per tool: output to the tool's
+          # own file, the second it finished beside it, and the tool's exit
+          # status as the subshell's. TERM is passed on to the tool.
+          timed() {
+            local tool=$1 status=0
+            "$@" > "$logs/$tool.log" 2>&1 &
+            local child=$!
+            trap 'kill "$child" 2>/dev/null' TERM
+            wait "$child" || status=$?
+            echo "$SECONDS" > "$logs/$tool.seconds"
+            exit "$status"
+          }
+
+          report() {
+            local tool
+            for tool in flake8 mypy; do
+              if [ -s "$logs/$tool.seconds" ]; then
+                echo "::group::$tool (finished $(cat "$logs/$tool.seconds")s into the step)"
+              else
+                echo "::group::$tool (did not finish)"
+              fi
+              cat "$logs/$tool.log"
+              echo "::endgroup::"
+            done
+          }
+
+          timed flake8 src/kiro_crew test conftest.py xdist_budget.py &
+          flake8_pid=$!
+          timed mypy src/kiro_crew/ &
+          mypy_pid=$!
+
+          # The tools are stopped last: `kill` is non-zero when one has already
+          # exited, and under `bash -e` that ends the trap, with the failure
+          # status it was about to return anyway.
+          trap 'report; echo "::error::interrupted before flake8 and mypy had both finished; the output above is partial"; kill "$flake8_pid" "$mypy_pid" 2>/dev/null; exit 1' INT TERM
+
+          flake8_status=0
+          wait "$flake8_pid" || flake8_status=$?
+          mypy_status=0
+          wait "$mypy_pid" || mypy_status=$?
+          trap - INT TERM
+
+          report
+
+          failed=0
+          if [ "$flake8_status" -ne 0 ]; then
+            echo "::error title=Lint (flake8)::flake8 exited $flake8_status; its output is in the 'flake8' group above"
+            failed=1
+          fi
+          if [ "$mypy_status" -ne 0 ]; then
+            echo "::error title=Type check (mypy)::mypy exited $mypy_status; its output is in the 'mypy' group above"
+            failed=1
+          fi
+          exit "$failed"
 
       - name: Save the mypy cache (main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
