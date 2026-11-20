@@ -315,9 +315,11 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
         from kiro_crew.dashboard.chat_utils_injected_rows import KIRO_CLI_SIGN_IN_KIND
 
         return {"kind": KIRO_CLI_SIGN_IN_KIND}
-    # The route read here is the process's last KAS spawn, not this turn's own
-    # runtime, so another chat's later spawn can pick the row kind.
-    relay_crew = _relay_takes_crew_sign_in() if getattr(exc, "auth_required", False) else None
+    # The route is the one this error's own sign-in sentence names, so another
+    # chat's later spawn cannot pick the row kind.
+    relay_crew = (
+        _relay_takes_crew_sign_in(str(exc)) if getattr(exc, "auth_required", False) else None
+    )
     if relay_crew is not None:
         from kiro_crew.dashboard.chat_utils_injected_rows import KIRO_CLI_SIGN_IN_KIND
 
@@ -382,16 +384,27 @@ def _limit_reset_meta(exc: BaseException) -> dict[str, object]:
         return {}
 
 
-def _relay_takes_crew_sign_in() -> bool | None:
-    """Whether the last KAS spawn ran through kiro-cli's relay, and if so whether
-    Crew's sign-in can start it (``agent_sdk.kas_bundle.last_relay_takes_crew_sign_in``).
+def _relay_takes_crew_sign_in(text: str) -> bool | None:
+    """Whether the route *text* was written for is kiro-cli's relay, and if so
+    whether Crew's sign-in can start it (``agent_sdk.kas_bundle.relay_takes_crew_sign_in``).
 
-    ``None`` before any spawn and on the bundle route, where only Crew's sign-in
+    The route is the one a KAS signed-out sentence names
+    (``host_auth.kas_sentence_route``): the failing runtime's own. Text that is no
+    such sentence reads the last KAS spawn in the process, as before.
+
+    ``None`` with no route and on the bundle route, where only Crew's sign-in
     fixes it and the row keeps ``auth_required``.
     """
-    from kiro_crew.agent_sdk.kas_bundle import last_relay_takes_crew_sign_in
+    from kiro_crew.agent_sdk import host_auth
+    from kiro_crew.agent_sdk.kas_bundle import (
+        last_relay_takes_crew_sign_in,
+        relay_takes_crew_sign_in,
+    )
 
-    return last_relay_takes_crew_sign_in()
+    route = host_auth.kas_sentence_route(text)
+    if route is host_auth.NOT_A_KAS_SENTENCE:
+        return last_relay_takes_crew_sign_in()
+    return relay_takes_crew_sign_in(route)
 
 
 def _kas_signed_out_notice(text: str) -> dict[str, object]:

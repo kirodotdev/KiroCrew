@@ -839,7 +839,8 @@ class AcpSessionProvider(LLMProvider):
         except AcpError as exc:
             if not emitted and await self._connection_failure_is_signed_out(exc):
                 raise AcpAuthRequired(
-                    host_auth.signed_out_message(self.backend), backend=self.backend
+                    host_auth.signed_out_message(self.backend, route=self._runtime.kas_spawn_route),
+                    backend=self.backend,
                 ) from exc
             # A masked codex can open its session and only fail the AWS
             # credential load at the turn; name the mask the way the start
@@ -1058,7 +1059,9 @@ class AcpSessionProvider(LLMProvider):
             # every runtime-touching call, so a literal here would misinform an
             # operator on any harness that does not sign in through kiro-cli.
             return AcpAuthRequired(
-                host_auth.signed_out_message(self._runtime.acp_backend),
+                host_auth.signed_out_message(
+                    self._runtime.acp_backend, route=self._runtime.kas_spawn_route
+                ),
                 backend=self._runtime.acp_backend,
             )
         # A stdin-stall death is the host's own verdict, never a throttle: the

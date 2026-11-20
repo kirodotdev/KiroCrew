@@ -783,6 +783,10 @@ class KasHarness(MembershipHarness):
     #: kiro-cli a relay spawn ran under, set at each spawn; "" on Crew's own bundle,
     #: whose engine is the pinned one (``acp/kas_pin.py``).
     untested_version_notice = ""
+    #: The route the process this harness last spawned took, set at each spawn.
+    #: The sign-in messages for THIS runtime read it, never the process-wide
+    #: ``kas_route.last_spawn_route``, which another chat's spawn may have moved.
+    spawn_route: kas_route_mod.KasRoute | None = None
 
     # ── Seam 1: spawn ──
 
@@ -951,6 +955,7 @@ class KasHarness(MembershipHarness):
                 crew_auth=bool(host_auth),
             )
         kas_route_mod.note_spawn_route(relay)
+        self.spawn_route = relay
         # From the floor release an omitted --auth-method means cli, so a
         # Crew-owned spawn names client there and when the version is unknown.
         # Only a version known to be below the floor keeps the flag off, which
@@ -1031,6 +1036,7 @@ class KasHarness(MembershipHarness):
         from kiro_crew.config.loader import KiroCrewConfig
 
         kas_route_mod.note_spawn_route(route)
+        self.spawn_route = route
         bundle = await asyncio.to_thread(kas_bundle_mod.installed_bundle)
         if bundle is None:
             base_url = await asyncio.to_thread(lambda: KiroCrewConfig.load().agent.kas_bundle_url)

@@ -541,6 +541,61 @@ def test_other_signed_out_wording_keeps_its_english(monkeypatch: pytest.MonkeyPa
     assert meta == {"kind": "kiro_cli_sign_in", "crew_sign_in": True}
 
 
+_RELAY_NOTICE = {"notice": "kas_signed_out", "notice_args": {"route": "relay"}}
+_BUNDLE_NOTICE = {"notice": "kas_signed_out", "notice_args": {"route": "bundle"}}
+
+
+@pytest.mark.parametrize(
+    ("written", "expected"),
+    [
+        (None, {"kind": "auth_required", "notice": "kas_signed_out"}),
+        (
+            KasRoute(bundle=False),
+            {"kind": "kiro_cli_sign_in", "crew_sign_in": True, **_RELAY_NOTICE},
+        ),
+        (
+            KasRoute(bundle=True, reason=REASON_NO_KIRO_CLI),
+            {"kind": "auth_required", **_BUNDLE_NOTICE},
+        ),
+        (
+            KasRoute(bundle=True, reason=REASON_CONFIGURED),
+            {"kind": "auth_required", **_BUNDLE_NOTICE},
+        ),
+        (KasRoute(bundle=False, reason=REASON_KIRO_CLI_LAUNCHER), {"kind": "kiro_cli_sign_in"}),
+        (
+            KasRoute(bundle=False, reason=REASON_KIRO_CLI_LAUNCHER, crew_auth=True),
+            {"kind": "kiro_cli_sign_in", "crew_sign_in": True},
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "moved_to",
+    [
+        None,
+        KasRoute(bundle=False),
+        KasRoute(bundle=True, reason=REASON_KIRO_CLI_SIGNED_OUT),
+        KasRoute(bundle=False, reason=REASON_KIRO_CLI_LAUNCHER),
+    ],
+)
+def test_the_row_follows_the_route_its_sentence_was_written_for(
+    monkeypatch: pytest.MonkeyPatch,
+    written: KasRoute | None,
+    expected: dict[str, object],
+    moved_to: KasRoute | None,
+) -> None:
+    """A second chat's spawn moves the process-wide route between the
+    failing runtime's spawn and its row. The row's kind and token follow the
+    failing runtime's route, read from its own sentence, whatever the last spawn
+    now says."""
+    from kiro_crew.acp.transport_errors import AcpAuthRequired
+    from kiro_crew.agent_sdk.host_auth import signed_out_message
+    from kiro_crew.dashboard.chat_turn.recovery import _terminal_error_meta
+
+    text = signed_out_message(ACP_BACKEND_KAS, route=written)
+    monkeypatch.setattr(kas_route, "_LAST_SPAWN_ROUTE", moved_to)
+    assert _terminal_error_meta(AcpAuthRequired(text, backend=ACP_BACKEND_KAS)) == expected
+
+
 @pytest.mark.parametrize(
     ("route", "named"),
     [

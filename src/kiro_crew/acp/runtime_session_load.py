@@ -19,7 +19,7 @@ Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_refuse_over_ceiling_start``,
 ``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
 ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``, ``can_release``,
-``release_session``.
+``kas_spawn_route``, ``release_session``.
 """
 
 from __future__ import annotations
@@ -1008,7 +1008,8 @@ async def _wait_managed_mcp(
                 # auth can be checked here; kiro-cli owns a cli-owned relay's.
                 if self._kas_host_auth and await sign_in_refused(self._kas_served_token_digest):
                     raise AcpAuthRequired(
-                        host_auth.signed_out_message(self.acp_backend), backend=self.acp_backend
+                        host_auth.signed_out_message(self.acp_backend, route=self.kas_spawn_route),
+                        backend=self.acp_backend,
                     ) from exc
                 raise
         else:

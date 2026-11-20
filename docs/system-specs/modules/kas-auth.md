@@ -47,11 +47,18 @@
 > 2026-10-30 prompt clause): on kiro-cli's relay they show kiro-cli's commands and,
 > after "or", Kiro Crew's sign-in; on the bundle, the Sign in button. The route stays
 > in Settings, `kirocrew doctor` and the log. The message text itself: the declaration's
-> `sign_in_remedy` and `signed_out_message` name that card alone, led by the route
-> of the last spawn once one ran (`host_auth._with_kas_route`). The chat row for
-> that sentence carries the `meta.notice` token `kas_signed_out`, and the route it
+> `sign_in_remedy` and `signed_out_message` name that card alone, led by a route
+> once a spawn ran (`host_auth._with_kas_route`). A caller holding the failing
+> runtime passes that runtime's own route (`AcpRuntime.kas_spawn_route`, which
+> `KasHarness.spawn_route` records at each spawn), so a second chat spawning on
+> another route cannot change what this one's prompt says; only a
+> caller with no runtime in hand falls back to the last spawn in the process.
+> The row reads the route back from that sentence (`host_auth.kas_sentence_route`),
+> never from the last spawn: its kind (the kiro-cli sign-in row, with or without
+> Crew's Sign in) and its `meta.notice` token `kas_signed_out` with the route it
 > names in `notice_args.route` (both set when `host_auth.kas_signed_out_route`
-> recognises it), so the dashboard draws it in the user's language, led by the
+> recognises it). Only a row whose text is no KAS signed-out sentence takes its
+> kind from the last spawn. The dashboard draws the sentence in the user's language, led by the
 > route in plain words; beside the card's sign-in button the copy points at that button.
 > The sentence counts when it leads the row, alone or followed by more text after a
 > space: the ACP error formatter appends its model-switch note and a request id. The

@@ -5729,8 +5729,11 @@ The decision is per spawn, so a later kiro-cli install or sign-in moves the next
 process back. It is never silent: `kas_route.note_spawn_route` logs each change
 of route (WARNING when automatic) and keeps the last spawn's route in a process
 slot that `GET /api/kas-bundle` returns as `route` (the Agent Harness engine card
-says why Crew's engine runs) and that leads the KAS sign-in messages
-(`host_auth._with_kas_route`); `kirocrew doctor` prints a `route:` row computed
+says why Crew's engine runs) and that leads a KAS sign-in message written with
+no runtime in hand (`host_auth._with_kas_route`). A message for a runtime's own
+failure names the route that runtime's harness recorded (`KasHarness.spawn_route`,
+read as `AcpRuntime.kas_spawn_route`), never this slot, which another chat's spawn
+can move first; `kirocrew doctor` prints a `route:` row computed
 fresh. **The gateway installs a missing engine.** `acp/kas_engine_install.install_pinned_engine`
 runs in the gateway process, one install at a time (a process lock; a second
 caller waits and reads what the first laid down), for both callers: a KAS spawn
