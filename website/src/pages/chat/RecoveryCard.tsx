@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { ChevronRight, Info, Layers, RotateCcw, TriangleAlert } from 'lucide-react'
+import { Anchor, ChevronRight, Info, Layers, RotateCcw, TriangleAlert } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
 import { DENY_REASON_MARKER } from '../../utils/denyReason'
@@ -267,10 +267,12 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
     // Its own copy rather than a reused interruption label: the turn ran to
     // completion and a Stop hook asked for another, so nothing was interrupted,
     // stalled or recovered. The hook's own instruction is the expandable body.
+    // The card stays in the transcript long after that turn ends, so neither
+    // line may say it is still running.
     return {
       kind,
-      title: i18nT('pages.chat.recoveryCard.continued_by_a_hook'),
-      detail: i18nT('pages.chat.recoveryCard.hook_requested_continuing'),
+      title: i18nT('pages.chat.recoveryCard.hook_asked_for_another_turn'),
+      detail: i18nT('pages.chat.recoveryCard.sent_after_the_previous_turn_ended'),
       chip: '',
       body,
     }
@@ -562,9 +564,18 @@ export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: P
   // Synthesis is routine, but the retry glyph would misdescribe it — nothing is
   // being retried, several results are being folded into one. Layers says that.
   // A generic notice makes no claim at all about what happened, so it gets the
-  // neutral info glyph rather than borrowing another kind's meaning.
+  // neutral info glyph rather than borrowing another kind's meaning. A hook
+  // continuation retried nothing either; it wears the Hooks page's anchor.
   const Icon =
-    kind === 'synthesis' ? Layers : kind === 'generic' ? Info : routine ? RotateCcw : TriangleAlert
+    kind === 'synthesis'
+      ? Layers
+      : kind === 'generic'
+        ? Info
+        : kind === 'hook'
+          ? Anchor
+          : routine
+            ? RotateCcw
+            : TriangleAlert
 
   return (
     <div
