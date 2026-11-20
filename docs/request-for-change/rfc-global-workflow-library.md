@@ -4,8 +4,8 @@ status: implemented
 revision: v2
 author: Kyle Seaman, with Codex
 created: 2026-08-25
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 5951
 implementation-prs: [5951]
 tracking-issues: []
