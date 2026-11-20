@@ -561,12 +561,11 @@ async def test_the_internal_secret_caller_still_reaches_the_mcp_server_routes() 
     """CONTROL: the one gated route whose designed caller is not the owner.
 
     ``/api/mcp/servers`` is listed in ``server._STRICT_INTERNAL_API_PATHS``, so its
-    caller is an internal loopback process presenting ``X-Internal-Secret`` -- the
-    App Kit SDK's ``register_mcp_server`` / ``remove_mcp_server`` in
-    ``packages/kirocrew-client-py``. ``token_auth`` grants that request, marks it
+    caller is an internal loopback process presenting ``X-Internal-Secret`` from a
+    session the transport attests. ``token_auth`` grants that request, marks it
     ``internal_auth`` and deliberately leaves ``request["app"]`` ABSENT, which the
     owner predicate reads as not-the-owner. An owner gate applied to it as well
-    would answer 403 to the one caller the route exists for.
+    would answer 403 to that caller.
 
     A blank name is the first thing the handler body checks, so its own 400 is the
     proof the request got PAST the gate -- and it is also why this test writes
@@ -576,6 +575,7 @@ async def test_the_internal_secret_caller_still_reaches_the_mcp_server_routes() 
     @web.middleware
     async def _internal(request, handler):
         request["internal_auth"] = True
+        request["peer_verified"] = True
         return await handler(request)
 
     app = web.Application(middlewares=[_internal])
@@ -584,7 +584,12 @@ async def test_the_internal_secret_caller_still_reaches_the_mcp_server_routes() 
 
     async with TestClient(TestServer(app)) as client:
         for method in ("PUT", "DELETE"):
-            resp = await client.request(method, "/api/mcp/servers/%20", json={})
+            resp = await client.request(
+                method,
+                "/api/mcp/servers/%20",
+                json={},
+                headers={"X-Session-Key": "agent-session"},
+            )
             assert resp.status == 400, f"{method} did not reach the body: {resp.status}"
             assert (await resp.json())["error"] == "server name is required"
 
