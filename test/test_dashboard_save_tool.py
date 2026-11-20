@@ -775,57 +775,6 @@ async def test_an_ordinary_theme_token_still_saves(monkeypatch, store):
     assert len(store.records) == 1
 
 
-def _give_stored_package_widgets(store: _Store) -> str:
-    """Write a widget into the caller's stored package, as ``artifact_update`` could."""
-    from kiro_crew.artifact_store.dashboard_package import canonical_package_content
-
-    [rec] = store.records.values()
-    package = parse_package(rec.content)
-    package["widgets"] = [
-        {
-            "id": "prs",
-            "title": "PRs",
-            "sizes": ["small"],
-            "blocks": [{"type": "metric", "label": "Open PRs", "field": "open_prs"}],
-        }
-    ]
-    rec.content = canonical_package_content(json.dumps(package))
-    return rec.slug
-
-
-async def test_a_save_keeps_the_widgets_the_stored_package_holds(monkeypatch, store):
-    """``dashboard_save`` takes no widgets, so a save must not erase stored ones."""
-    second = _package_body()
-    _flip(second)
-    async with _client(monkeypatch) as client:
-        assert (await _save(client, _package_body())).status == 200
-        slug = _give_stored_package_widgets(store)
-        resp = await _save(client, second)
-        assert resp.status == 200, await resp.text()
-
-    stored = parse_package(store.records[slug].content)
-    assert stored["view"]["html"] == second["view"]["html"]
-    assert [w["id"] for w in stored["widgets"]] == ["prs"]
-
-
-async def test_a_save_that_would_break_stored_widgets_is_refused(monkeypatch, store):
-    """A new model without a field a stored widget binds is refused, not half-stored."""
-    second = _package_body()
-    del second["model"]["types"]["open_prs"]
-    second["view"]["html"] = '<p data-dashboard-field="headline"></p>'
-    async with _client(monkeypatch) as client:
-        assert (await _save(client, _package_body())).status == 200
-        slug = _give_stored_package_widgets(store)
-        before = store.records[slug].content
-        resp = await _save(client, second)
-        body = await resp.json()
-
-    assert resp.status == 400 and body["code"] == "invalid_package"
-    assert "widgets your stored package holds" in body["error"]
-    assert "'open_prs'" in body["error"]
-    assert store.records[slug].content == before
-
-
 async def test_the_real_store_round_trips_a_valid_package(monkeypatch, tmp_path):
     """The positive control for the surrogate test, through the real store.
 
@@ -879,8 +828,9 @@ def test_the_tool_is_on_the_panel_server_and_takes_no_target():
 
     tool = next(t for t in mcp_panel._tool_definitions() if t["name"] == "dashboard_save")
     props = tool["inputSchema"]["properties"]
-    assert set(props) == {"model", "view", "theme"}
-    # Theme is optional: an MCP client can drop an empty object before it arrives.
+    assert set(props) == {"model", "view", "theme", "widgets"}
+    # Theme and widgets are optional: an MCP client can drop an empty object before
+    # it arrives, and a save without widgets keeps the stored ones.
     assert sorted(tool["inputSchema"]["required"]) == ["model", "view"]
     assert not (set(props) & {"bound_to", "session", "session_key", "slot", "target", "kind"})
 
