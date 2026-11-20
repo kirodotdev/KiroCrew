@@ -483,7 +483,7 @@ jobs:
                 elif [ "$have_label" != 1 ]; then
                   continue
                 fi
-                if ! gh issue list --repo "$REPO" --state closed "${closed_label[@]}" \
+                if ! gh issue list --repo "$REPO" --state closed ${closed_label[@]+"${closed_label[@]}"} \
                   --json number,title,body,author > "$work/closed-$closed_list.json" 2> "$work/read-error.txt"; then
                   unread "the closed main-red issues"
                   say notice "$looked; the red runs before this one are not replayed."
