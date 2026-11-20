@@ -125,6 +125,7 @@ async def stream_and_collect(
     session_key: str = "",
     agent: str = "",
     app: str = "",
+    app_run: tuple[str, str] = ("", ""),
     unattended: bool = False,
     model_fallback: bool = False,
     fallback_models: Sequence[str] = (),
@@ -200,6 +201,10 @@ async def stream_and_collect(
         agent: Calling agent name, forwarded to the gate alongside *session_key*.
         app: Owning app name, forwarded to the gate so the app's governance
             PROFILE is resolved — not just the enterprise ceiling.
+        app_run: ``(app, agent)`` of an unattended run with no slot: the app the
+            gateway stamped on it and the agent that ran it, read by the gate's
+            ``app-own-tools`` grant alone (``ToolCall.app_run``). Never a
+            governance input.
 
             All three matter for ``AUTO_APPROVE``, ``HOOK_BASED``, and
             ``READ_ONLY`` callers. The gate resolves ``ceiling ∩ profile``, and
@@ -357,6 +362,7 @@ async def stream_and_collect(
                             session_key=session_key,
                             agent=agent,
                             app=app,
+                            app_run=app_run,
                             on_decision=lambda outcome, mech, why: _decision.append(
                                 (outcome, mech, why)
                             ),

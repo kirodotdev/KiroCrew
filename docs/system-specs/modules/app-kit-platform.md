@@ -7181,6 +7181,22 @@ the app can ship its own `mcpServers` entry, whose calls are approved one by one
 path that asks before each call (a server of its own outside `allowedTools`, or a
 per-tool approval); that is a maintainer's decision, not this seam's.
 
+**The app's own agent calls them unasked too.** An app agent carries no `allowedTools`,
+so on its own its call to a tool listed here reaches the approval card, and an
+unattended run (the app's cron) is refused when the card expires. The tool gate's `app-own-tools` row
+(`hooks._tier_app_own_tools`, conditions in `apps/own_agent_tools.gate_grants`) approves
+the call when three facts name one first-party app: the gateway's stamp on the run (the
+slot's `_app`, or a cron job's host-written `created_by`, which the cron turn hands the
+gate as `app_run` beside the agent its client was started on), the agent that actually
+ran (a shipped manifest of that app declares it), and the app that declares the tool
+here. The declared set is the one this section defines, read at each call, so the row
+adds no second rule for a changed manifest: a tool an installed tree adds beyond its
+wheel copy is not declared and asks. Another app's tool, a core tool, a shell call, an
+agent the app does not ship (the owner's agent that an alias such as `default` resolves
+to included), a person's session and a job an agent made with `cron_add` keep the card.
+The row runs after every deny row and governance, and a `confirm_tools` pattern still
+asks.
+
 **The readers.** The scan stats `<apps dir>/<name>/app.json` for every installed app and
 caches on each file's mtime and size and on the first-party set. It keeps a tool only
 when the app's whole block validates, and drops a name two apps both declare. Nothing

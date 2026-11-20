@@ -1081,6 +1081,12 @@ calendar fields), each for a reason a follow-up `update_job` cannot serve:
   which feeds the SDK-persisted job to the real gateway cron callback and
   asserts `AUTO_APPROVE` with no approval callback for `"auto"` and
   `HOOK_BASED` with one for `""`.
+  A hook-based job of an app still runs that app's own declared agent tools
+  unasked when it runs on one of the app's own agents: the cron turn hands the
+  gate `app_run`, the job's `created_by` app and the agent its client was started
+  on, and the gate's `app-own-tools` row
+  ([memory-skills-hooks](memory-skills-hooks.md)) decides. Every other call of
+  the run asks as before.
 - **`timeout_secs`** (the per-wake budget) is cross-validated against the
   subprocess timeout in `build_job`, at create, and again in
   `apply_job_update` on the post-update values whenever an update changes

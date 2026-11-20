@@ -191,6 +191,7 @@ async def _cron_run_sequence(
     # done work, even if a later agent was blocked outright.
     _gate = _GateTally()
     # Imported here: this module's functions run on the gateway's globals.
+    from kiro_crew.apps.own_agent_tools import app_run_of
     from kiro_crew.tracing import turns as trace_turns
 
     for step in steps:
@@ -395,6 +396,7 @@ async def _cron_run_sequence(
                     # name applies here; the template is for dispatch only.
                     session_key=agent_session_key,
                     agent=step.alias,
+                    app_run=app_run_of(job, client),
                     unattended=True,
                     approval_policy=(
                         ToolApprovalPolicy.AUTO_APPROVE
@@ -940,6 +942,7 @@ async def _cron_run_single(
         # The agent spec's own hooks on a backend that never runs them (KAS), as
         # on the sequence site: AgentSpawn and UserPromptSubmit on the job's own
         # prompt, PreToolUse on each permission request, Stop once the turn lands.
+        from kiro_crew.apps.own_agent_tools import app_run_of
         from kiro_crew.cron_service.turn_hooks import CronTurnHooks
         from kiro_crew.messaging.script_hooks import with_hook_context
 
@@ -971,6 +974,7 @@ async def _cron_run_single(
             # the template it dispatches.
             session_key=session_key,
             agent=cap.gate_agent or "",
+            app_run=app_run_of(job, client),
             unattended=True,
             approval_policy=(
                 ToolApprovalPolicy.AUTO_APPROVE
