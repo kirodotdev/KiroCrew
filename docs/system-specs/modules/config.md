@@ -5252,16 +5252,20 @@ whose items are all strings, and nothing else (a scalar, `null`, an object or a 
 400 `must be a list of strings`, with nothing written). Every `str_list` entry declares
 `max_items` and `max_item_len`, and a longer list or a longer item is a 400 (`must be at most
 <n> items`, `each item must be at most <n> characters`), as every `str` entry has a `max_len`;
-`skills.extra_paths` allows 64 items of up to 4096 characters. A refusal records only the key
-as its SEL resource, never the value. Within the bounds the check is shape only: `[]`, empty
-items from a non-UI caller, duplicates, relative and non-existent paths are stored as sent, in
-order. `skills.extra_paths` is the one such entry. It is written through the normal locked
+`skills.extra_paths` allows 64 items of up to 4096 characters. An entry that also declares
+`item_pattern` (`browser.credentials.domains`, `dashboard.browser_local_origins`) refuses a list
+with any item that does not fully match it, a 400 `an item has the wrong shape`. All three
+checks live in one helper, `_str_list_problem`, which the nested `str_list` keys of a `dict`
+entry (`dashboard.update_nudge.skipped_versions`) use too. A refusal records only the key
+as its SEL resource, never the value. Without an `item_pattern`, the check within the bounds is
+shape only: `[]`, empty items from a non-UI caller, duplicates, relative and non-existent paths
+are stored as sent, in order. `skills.extra_paths` is such an entry. It is written through the normal locked
 writer, and the `SkillsLoader` watcher applies it live (no restart): the loader's own
 screening (expansion, resolution, sensitive-path exclusion, existence) stays the only judge of
 a path. Settings → Skills trims each line and drops blank ones before it sends the list; the
 same list is what `kirocrew config set skills.extra_paths --value-base64=…` stores.
-`dashboard.change_cards.check_setting_value` has the same `str_list` branch and bounds, so a card fails up
-front rather than falling through (no card can carry the list; see crew-mode).
+`dashboard.change_cards.check_setting_value` calls the same `_str_list_problem`, so a card is held
+to the same bounds and item pattern and fails up front rather than falling through (no card can carry the list; see crew-mode).
 
 ### Default context discovery
 
