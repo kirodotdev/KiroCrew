@@ -5,7 +5,7 @@ This is the canonical pipeline pattern, ported from an external agent CLI's
 Illustrative; see this folder's README for what it does on the shipped host.
 
 Run:  the `workflow_run` tool with this file as `source` and
-      `args={"cr": "CR-1234567"}`.
+      `args={"cr": "<review id>"}`.
 """
 
 # META must be a pure literal (no calls, no interpolation) — parsed statically.
