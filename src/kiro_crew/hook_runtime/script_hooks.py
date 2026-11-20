@@ -41,9 +41,9 @@ if TYPE_CHECKING:
         _context_matches,
         _decode_capped,
         _governance_pinned_command_ids,
+        _hook_tool_matches,
         _read_capped_stream,
         _script_hooks_capability_denied,
-        _tool_matches,
         current_context,
         effective_denied_regexes_from_config,
         logger,
@@ -1048,11 +1048,12 @@ class ScriptHookStore:
                 if event in (HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE):
                     if extra_hooks_tool_names is not None and id(hook) in extra_ids:
                         if hook.matcher != "*" and not any(
-                            _tool_matches(hook.matcher, name) for name in extra_hooks_tool_names
+                            _hook_tool_matches(hook.matcher, name)
+                            for name in extra_hooks_tool_names
                         ):
                             continue
                     elif not any(
-                        _tool_matches(hook.matcher, name)
+                        _hook_tool_matches(hook.matcher, name)
                         for name in (tool_match_names or (tool_name,))
                     ):
                         continue

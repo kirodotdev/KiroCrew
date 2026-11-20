@@ -391,7 +391,10 @@ A hook's fields:
 **A tool matcher and a message matcher are matched differently.** On
 `PreToolUse` and `PostToolUse` the matcher is compared against the tool name with
 a fixed glob-style vocabulary — an exact name, `prefix*`, `*suffix`,
-`*contains*`, or `*` for everything — and `matcher_mode` is not consulted at all.
+`*contains*`, or `*` for everything, with `|` between plain tool names
+(`fs_write|execute_bash` meets either tool, and the whole text is still one
+pattern too, so the shell command `ls|wc` meets `ls|wc`; a matcher holding a glob
+character or a space is not split) — and `matcher_mode` is not consulted at all.
 The form knows this and hides the mode control for those two events. On
 `UserPromptSubmit`, `AgentSpawn` and `Stop` the matcher runs against the message
 or the final assistant text, and on `SessionLaneChanged` against the lane tokens
