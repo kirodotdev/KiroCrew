@@ -122,6 +122,18 @@ def test_a_yaml_value_and_a_code_name() -> None:
         assert redact(text)[0] == text
 
 
+@pytest.mark.parametrize("lead", ["q ", "line\nq ", "'", '"', "[", "{", "x,", "q export "])
+def test_an_assignment_after_a_word_or_an_opener_is_masked(lead: str) -> None:
+    # The same pair the line-start reader masks, later on a line.
+    value = "FAKEfake0000TESTtest1111"
+    assert redact(f"{lead}password={value}")[0] == f"{lead}password={TAG}"
+    if lead.endswith(" "):
+        assert redact(f"{lead}secret = {value}")[0] == f"{lead}secret = {TAG}"
+    # A bare name with no digit still reads as a code variable there.
+    for text in (f"{lead}password=user_password", f"{lead}password=pw"):
+        assert redact(text)[0] == text
+
+
 @pytest.mark.parametrize(
     "value", ["my-secret-pw", "see the vault", "${DB_PASSWORD}", "$db_password"]
 )
