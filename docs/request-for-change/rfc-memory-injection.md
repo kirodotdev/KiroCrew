@@ -3,8 +3,8 @@ title: Memory lifecycle for the session-start memory block
 status: draft
 author: iamwhatever
 created: 2026-11-09
-last-audited: 2026-11-09
-audited-at: 79bff1f741
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: []
 tracking-issues: []

@@ -3,8 +3,8 @@ title: Native OpenTelemetry traces for every turn, step and session, with credit
 status: partial
 author: kyleseaman, with devmate
 created: 2026-11-05
-last-audited: 2026-11-12
-audited-at: 386875ed0d
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 31433
 implementation-prs: [31460, 35077]
 tracking-issues: [1643]
