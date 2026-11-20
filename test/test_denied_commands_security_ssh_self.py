@@ -872,10 +872,10 @@ class TestSandboxEscapeSshSelf:
         real = bodies._self_tokens
         chars = 0
 
-        def counting(text):
+        def counting(text, **kwargs):
             nonlocal chars
             chars += len(text)
-            return real(text)
+            return real(text, **kwargs)
 
         with patch.object(bodies, "_self_tokens", counting):
             assert _denied_by(cmd) is None

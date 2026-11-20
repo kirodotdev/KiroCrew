@@ -99,11 +99,17 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: floor reads the Windows by-name kill programs through its own
 #: ``kiro_crew.security.self_kill_windows``, which ``argv_floor_self`` imports; the module
 #: count rose by that one file and nothing else loads (``mcp-cron`` and ``mcp-guide`` had room).
+#: Raised by 1 for all four servers by the ssh-to-self descent (``mcp-cron`` and ``mcp-guide``
+#: join because the self-kill floor's module above used their headroom): the
+#: empty-quote collapse lives in ``shell_normalizer_quote_pairs``, the line-cap split of
+#: ``shell_normalizer``, which the security package loads before the list; the module
+#: count rose by that one file and nothing else loads. Measured on the rebased tree: 498, 365,
+#: 359 and 361; with the self-kill floor's module none of the four had headroom left.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 497,
-    "mcp-cron": 364,
-    "mcp-guide": 358,
-    "mcp-mate": 360,
+    "mcp-core": 498,
+    "mcp-cron": 365,
+    "mcp-guide": 359,
+    "mcp-mate": 361,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are
