@@ -357,6 +357,11 @@
     "projectPicker": {
       "not_declared": "Diese App kann die Projektauswahl nicht anzeigen, denn ihre Berechtigungen deklarieren {{path}} nicht."
     },
+    "sessionChanges": {
+      "not_declared": "Diese App kann die Änderungen dieses Chats nicht anzeigen, denn ihre Berechtigungen deklarieren {{path}} nicht.",
+      "pick_a_file": "Wähle eine Datei, um ihre Änderungen zu sehen.",
+      "diff_unavailable": "Dieser Chat hat die ganze Datei vor und nach dieser Änderung nicht aufgezeichnet, daher gibt es keinen Diff."
+    },
     "issues": {
       "assigned_to": "Zugewiesen an {{names}}",
       "assigned_to_me": "Mir zugewiesen",

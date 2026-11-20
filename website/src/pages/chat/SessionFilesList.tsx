@@ -2,8 +2,8 @@ import { useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { FileText, FilePen, Diff, FolderTree } from 'lucide-react'
-import { api } from '../../api/client'
 import type { SessionFile } from '../../api/client/files'
+import { useSessionFilesClient } from './sessionFilesClient'
 import ErrorNotice from '../../components/ErrorNotice'
 import { EmptyState } from '../../components/ui'
 import Clickable from '../../components/Clickable'
@@ -18,9 +18,10 @@ const SESSION_FILES_POLL_MS = 5_000
 
 /** The query both the list and the tab header read; one request serves both. */
 export function useSessionFiles(slot: string | null | undefined, active: boolean) {
+  const client = useSessionFilesClient()
   return useQuery({
     queryKey: ['session-files', slot ?? ''],
-    queryFn: () => api.sessionFiles(slot ?? ''),
+    queryFn: () => client.sessionFiles(slot ?? ''),
     enabled: !!slot && active,
     refetchInterval: q => (q.state.error ? false : SESSION_FILES_POLL_MS),
     refetchOnWindowFocus: true,
@@ -60,6 +61,7 @@ export default function SessionFilesList({ slot, projectDir, active, onFileOpen,
   onBrowse?: () => void
 }) {
   const { t } = useTranslation()
+  const client = useSessionFilesClient()
   const { data, error, isPending, refetch } = useSessionFiles(slot, active)
   const files: SessionFile[] = Array.isArray(data?.files) ? data.files : []
 
@@ -80,7 +82,7 @@ export default function SessionFilesList({ slot, projectDir, active, onFileOpen,
     if (onOpenDiff) {
       let diff
       try {
-        diff = await api.sessionFileDiff(slot, path)
+        diff = await client.sessionFileDiff(slot, path)
       } catch (error) {
         if (request === diffRequestRef.current) setDiffError({ slot, path, error })
         return
