@@ -100,14 +100,17 @@ documented by their own in-panel help.
 | Computer Use | Driving native desktop apps; off by default | [Computer use](computer-use.md) |
 | Webhooks | Inbound tokens and request signing — hidden unless you enable it under Feature Previews | [Inbound webhooks](inbound-webhooks.md) |
 | Remote Crew | Additional gateways this dashboard can reach | [Remote crew](remote-crew.md) |
-| People | Who else may use this Crew; shown only while the gateway runs with the Shared Crew preview (`KIROCREW_SHARED_CREW_PREVIEW=1`) | — |
 | Privacy | What leaves the host | [Snapshot and restore](snapshot-and-restore.md) |
 | Security | The sandbox, denied commands, and the audit log | [Blocked commands](blocked-commands.md) |
 | Connections | Provider cards, each with its OAuth app when the provider needs a registered client; MCP servers have their own MCP Servers page | [Connections](connections.md) |
 | Secrets | The encrypted credential vault | [Secrets vault](secrets-vault.md) |
-| Session Environments | Remote workspaces a session can start in; hidden unless you enable it under Feature Previews | — |
 | Developer | A list of pages: Feature Previews (with an optional local-gateway toggle), then logs, metrics, storage and the other developer views | [Dashboard](dashboard.md) |
 | About | Version, update channel, check for updates, release notes, and license | [Getting Started](getting-started.md) |
+
+Two more tabs appear only behind a preview: **Session Environments** (remote
+workspaces a session can start in) once its Feature Previews switch is on, and
+**People** (who else may use this Crew) while the gateway runs with
+`KIROCREW_SHARED_CREW_PREVIEW=1`.
 
 ## Chat Channels
 
