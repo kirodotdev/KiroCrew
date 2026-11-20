@@ -45,7 +45,7 @@ import type { useActiveSlotState } from './activeSlotState'
 import type { useModelPickerModels } from './sessionPicks'
 import { REFUSED_PRESS_TITLE_KEYS, type useRefusedPress } from './turnActions'
 import type { useComposerSend } from './composerSend'
-import type { useSessionControlChips } from './sessionControls'
+import { sessionControlContext, type useSessionControlChips } from './sessionControls'
 import { enclosingRepoRootOf, type useComposerChips } from './composerChips'
 import type { useSessionAutomation } from './sessionAutomation'
 import { SELECTION_INERT_ATTR } from '../useSelectionInertOverlays'
@@ -998,12 +998,12 @@ export default function ComposerDockView({
                     setOpenSessionControl(null)
                     refreshSessionControlStatuses()
                   }}
-                  session={{
+                  session={sessionControlContext({
                     sessionKey: sessionControlKey,
-                    folderId: currentSlot?.folder_id || '',
+                    currentSlot,
                     folderName: activeFolderName,
-                    cwd: currentSlot?.project || '',
-                  }}
+                    agents: installedAgents,
+                  })}
                 />
               )
             })()}
