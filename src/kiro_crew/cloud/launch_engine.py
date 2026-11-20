@@ -169,6 +169,7 @@ class RealLaunchEngine:
         region: str,
         subnet_id: str = "",
         on_network_fallback: Optional[Callable[[str], None]] = None,
+        cancelled: Optional[Callable[[], bool]] = None,
     ) -> str:
         tier = sizes.get_tier(size_key)
         # No dashboard_port override: the stack binds its own DashboardPort
@@ -183,6 +184,7 @@ class RealLaunchEngine:
             region=region,
             subnet_id=subnet_id,
             on_network_fallback=on_network_fallback,
+            cancelled=cancelled,
         )
         return result.instance_id
 

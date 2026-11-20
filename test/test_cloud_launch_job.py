@@ -839,6 +839,27 @@ class TestCancelRollsBackTheStack:
         assert out.tag in (out.error or ""), "the user must be told what to delete"
         assert "billing" in (out.error or "")
 
+    def test_a_provision_that_fails_after_a_cancel_is_a_cancel(self, tmp_path):
+        """The engine may retry a refused launch in another zone; it is handed the
+        cancel, and its failure once the owner cancelled rolls back as a cancel."""
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        cancel = threading.Event()
+        seen: list = []
+
+        class RetryingEngine(FakeEngine):
+            def provision(self, *, tag, size_key, profile, region, cancelled):
+                seen.append(cancelled)
+                cancel.set()  # the owner cancels while the deploy runs
+                raise RuntimeError("no capacity in any zone")
+
+        eng = RetryingEngine()
+        out = lj.run_launch(job, s, eng, cancel=cancel)
+
+        assert seen == [cancel.is_set]
+        assert out.status == lj.CANCELLED
+        assert ("teardown", out.tag) in eng.calls
+
     def test_a_cancel_before_provisioning_deletes_nothing(self, tmp_path):
         s = _store(tmp_path)
         job = s.create(profile="dev", region="us-east-1", size_key="balanced")
