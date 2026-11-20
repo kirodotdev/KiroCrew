@@ -1069,6 +1069,7 @@ import * as sdk from '@kirocrew/app-sdk'
 | `slot` | required; one of your slot keys (`<app>-<id>`), a slot your app made with `ctx.chat_slots` |
 | `aria-label` | required; the name of the view for a screen reader |
 | `interactive` | may the person take over; default `true` |
+| `stayLive` | keep the picture after the Bot's turn ends while its tab is still open (music still playing): the view streams that tab again by itself, once per turn while mounted and on screen. A closed tab stays folded, and a refused reopen shows its error and is not retried. Default `false`: the view folds to a "Show the live page" button. An older dashboard ignores it |
 | `onTakeover()` | the person took over in this view, once the gateway accepted it |
 | `onHandBack(note?)` | the person handed back, with their note or chosen reply if they gave one |
 | `onNavigate({ url, title })` | the page changed address or title |
