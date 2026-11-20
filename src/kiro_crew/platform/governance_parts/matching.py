@@ -156,8 +156,16 @@ def _match_denied_path(item: str, pattern: str) -> bool:
     ``private`` and ``Private`` are two directories. Folding case in an allow would
     admit the one the operator did not name; folding it in a deny refuses at most
     a directory the operator did not name, which fails closed.
+
+    A deny also meets the item before ``_fold_windows_alias``: a deny written in a
+    spelling the fold rewrites (``\\\\localhost\\C$\\x``) keeps refusing that
+    spelling, so the fold only ever adds paths a deny refuses.
     """
-    return _match_path(item, pattern, any_case=True)
+    if _match_path(item, pattern, any_case=True):
+        return True
+    if isinstance(item, GuestPath):
+        return False
+    return _match_local_path(os.path.abspath(_expand(item)), _expand(pattern), any_case=True)
 
 
 def _match_host(item: str, pattern: str) -> bool:
@@ -330,8 +338,9 @@ def _norm_item(path_str: str) -> str:
        plain spelling (``_fold_windows_alias``, the keystone's own fold):
        ``\\\\?\\C:\\x``, ``\\\\.\\C:\\x``, ``//?/C:/x``, ``\\??\\C:\\x`` and
        ``C:\\x::$DATA`` all open ``C:\\x``, so each would otherwise dodge a deny
-       naming ``C:\\x`` and satisfy no allow that names it. UNC, volume GUID and
-       named-stream spellings stay as written. Identity off Windows.
+       naming ``C:\\x`` and satisfy no allow that names it. A loopback admin share
+       (``\\\\localhost\\C$\\x``) folds to ``C:\\x`` too; any other UNC, volume GUID
+       and named-stream spellings stay as written. Identity off Windows.
     3. ``os.path.abspath`` — anchor a relative path (e.g. ``../../etc/passwd`` or
        ``etc/passwd``) to the host CWD so it cannot dodge an absolute DENY glob by
        failing to match; ``abspath`` also runs ``normpath``, collapsing ``..``.

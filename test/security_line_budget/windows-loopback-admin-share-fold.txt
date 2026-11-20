@@ -1,0 +1,2 @@
++15
+_fold_windows_alias folds a loopback admin share (\\localhost\C$ and its \\?\UNC\, \\.\UNC\ and \??\UNC\ forms, plus 127.x and ::1 hosts) to the local drive it opens, so every sensitive-path check that calls the fold sees the drive path. One compiled regex and the branch that applies it.

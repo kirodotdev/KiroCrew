@@ -711,11 +711,26 @@ _WIN_DEFAULT_STREAM_RE = re.compile(
 )
 
 
+#: A drive's administrative share on THIS machine: ``\\localhost\C$\x``,
+#: ``\\127.0.0.1\C$\x`` and their ``\\?\UNC\``, ``\\.\UNC\`` and ``\??\UNC\`` forms open
+#: the local ``C:\x`` for a member of the local Administrators group. Only loopback
+#: hosts are folded; a share on any other host stays lexical and is never probed.
+#: shortcut: the machine's own name (``\\MYHOST\C$``) and ``ADMIN$`` are not folded;
+#: fold them too if a report shows the fence missed one.
+_WIN_LOOPBACK_ADMIN_SHARE_RE = re.compile(
+    r"^(?:[\\/]{2}(?:[?.][\\/]UNC[\\/])?|\\\?\?[\\/]UNC[\\/])"
+    r"(?:localhost|127(?:\.\d{1,3}){3}|::1|0--1\.ipv6-literal\.net)"
+    r"[\\/]([A-Za-z])\$(?=[\\/]|$)",
+    re.IGNORECASE,
+)
+
+
 def _fold_windows_alias(path: str) -> str:
     """Lexically fold a Windows alias of a local path to its plain spelling; identity off Windows."""
     if not _ON_WINDOWS:
         return path
-    folded = _WIN_LOCAL_NS_RE.sub("", path, count=1)
+    folded = _WIN_LOOPBACK_ADMIN_SHARE_RE.sub(lambda m: m[1].upper() + ":", path, count=1)
+    folded = _WIN_LOCAL_NS_RE.sub("", folded, count=1)
     folded += "\\" if folded != path and len(folded) == 2 else ""  # bare volume -> drive root
     return _WIN_DEFAULT_STREAM_RE.sub("", folded)
 
