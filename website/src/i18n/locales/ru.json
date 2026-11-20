@@ -11924,7 +11924,7 @@
       "copy_request_id_failed": "Не удалось скопировать. Выдели ID запроса и скопируй его сам: {{id}}",
       "keep_title": "Войди в Kiro, чтобы продолжить чат",
       "sign_in": "Войти",
-      "title": "Войди в Kiro, чтобы начать чат"
+      "title_engine": "Войди в {{productName}} один раз"
     },
     "concurrencyCutChip": {
       "exec_reduced": "<0>Под нагрузкой:</0> <1>{{cap}} из {{configured}} агентов одновременно</1>",
@@ -17210,22 +17210,25 @@
         "remote_dispatch_connect": "Подключи машины в <0>Settings › Remote Crew</0>."
       },
       "kasBundleCard": {
-        "toggle_label": "Запускать KAS на собственном движке {{productName}}",
-        "toggle_description": "Использует ту версию движка KAS, с которой тестировался этот выпуск {{productName}}, вместо Kiro CLI. Действует для каждой новой сессии этого {{productName}}, а не только на этом устройстве. Вход через твой аккаунт Kiro в разделе Настройки → Аккаунт Kiro. Вступает в силу после перезапуска {{productName}}.",
-        "installed": "Движок KAS {{version}} (установлен тобой)",
-        "installed_bundled": "Движок KAS {{version}} (входит в состав приложения)",
-        "off_note": "Выключено: KAS использует установленный у тебя Kiro CLI. Включено: используется движок из этого выпуска.",
+        "installed": "Встроенный движок {{version}}",
+        "installed_bundled": "Встроенный движок {{version}} (входит в состав приложения)",
         "saved_restart_pending": "Сохранено. {{productName}} пока работает по прежнему маршруту движка; переключение произойдёт после перезапуска: Настройки → О программе → Перезапустить шлюз.",
-        "not_installed": "Движок KAS {{version}} ещё не установлен.",
-        "install": "Установить движок KAS",
-        "installing": "Установка KAS {{version}}…",
-        "installing_progress": "Установка KAS {{version}}: {{percent}} ({{done}} из {{total}})",
-        "install_failed": "Не удалось начать установку движка KAS.",
-        "save_failed": "Не удалось сохранить настройку движка KAS.",
-        "status_unavailable": "Не удалось получить состояние движка KAS.",
-        "route_auto_no_kiro_cli": "Kiro CLI не установлен, поэтому KAS работает на собственном движке {{productName}}.",
-        "route_auto_kiro_cli_signed_out": "В Kiro CLI не выполнен вход, поэтому KAS работает на собственном движке {{productName}}.",
-        "route_auto_sharing_preview": "Включена предварительная функция «Общая среда выполнения ACP», поэтому KAS работает на собственном движке {{productName}}."
+        "not_installed": "Встроенный движок {{version}} ещё не установлен.",
+        "install": "Установить встроенный движок",
+        "installing": "Установка встроенного движка {{version}}…",
+        "installing_progress": "Установка встроенного движка {{version}}: {{percent}} ({{done}} из {{total}})",
+        "install_failed": "Не удалось начать установку встроенного движка.",
+        "save_failed": "Не удалось сохранить выбор движка.",
+        "status_unavailable": "Не удалось прочитать состояние встроенного движка.",
+        "route_auto_no_kiro_cli": "Kiro CLI не установлен, поэтому Kiro Agent использует встроенный движок.",
+        "route_auto_kiro_cli_signed_out": "В Kiro CLI не выполнен вход, поэтому Kiro Agent использует встроенный движок.",
+        "route_auto_sharing_preview": "Включён предпросмотр общего доступа к среде ACP, поэтому Kiro Agent использует встроенный движок.",
+        "engine_label": "Движок",
+        "engine_description": "Kiro Agent работает на одном из них.",
+        "engine_builtin": "Встроенная оболочка",
+        "engine_kiro_cli": "Kiro CLI",
+        "engine_restart": "Чаты переключатся после перезапуска.",
+        "engine_sign_in_reason": "Войди в {{productName}}, чтобы перейти на встроенный движок."
       },
       "kiroSignInCard": {
         "title": "Вход в Kiro",

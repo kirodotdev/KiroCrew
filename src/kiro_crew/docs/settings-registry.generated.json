@@ -36,6 +36,14 @@
       "description": "Version, update channel, check for updates, and license"
     },
     {
+      "id": "agent.engine",
+      "label": "Engine",
+      "tab": "agent",
+      "route": "/settings/agent?highlight=key%3Aagent.kas_bundle",
+      "description": "Kiro Agent runs on one of these.",
+      "configKey": "agent.kas_bundle"
+    },
+    {
       "id": "agent.kiro-memory",
       "label": "Kiro Memory",
       "tab": "agent",
@@ -1527,13 +1535,6 @@
       "route": "/settings/developer/feature-previews?highlight=developer.run-a-local-gateway",
       "description": "Leave it on unless “Set Remote Host…” and a tunnel already reach a crew. Otherwise the app cannot connect.",
       "hint": "Start a gateway on this machine. Leave it on unless this app's port already reaches a crew on another machine, or the app cannot connect the next time it opens, which is when this takes effect. That needs the crew saved for this port with “Set Remote Host…” in the Connection menu, plus a tunnel: tick “Keep an SSH tunnel to this crew open” there (macOS and Linux) or keep your own SSH tunnel running. Settings → Remote Crew connections stop when this is off, so they do not count."
-    },
-    {
-      "id": "developer.run-kas-on-kiro-crew-s-own-engine",
-      "label": "Run KAS on Kiro Crew's own engine",
-      "tab": "developer",
-      "route": "/settings/developer/feature-previews?highlight=developer.run-kas-on-kiro-crew-s-own-engine",
-      "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Kiro account. Takes effect when Kiro Crew restarts."
     },
     {
       "id": "developer.send-pending-approvals-to-chat-apps",

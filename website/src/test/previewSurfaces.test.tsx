@@ -557,24 +557,10 @@ describe('Settings > Developer > Feature Previews', () => {
       )
         .map(nameOf)
         .sort()
-    /**
-     * The built-in KAS engine card is WALKED the same way. This tab stubs no API, so
-     * its status read fails and it draws the read-failure notice's Retry and the
-     * hand-off; neither navigates. Its Install button exists only once a status
-     * says nothing is installed, which `KasBundleCard.test.tsx` pins.
-     */
-    // The KAS card is a plain row of its group box; its own `data-settings-card`
-    // wrapper is the frame, so the walk stays inside the card.
-    const kasFrame = () =>
-      container.querySelector('[data-testid="kas-bundle-card"]')?.closest('[data-settings-card]') ?? null
-    const kasButtons = () =>
-      Array.from(kasFrame()?.querySelectorAll('button') ?? [])
-        .map(nameOf)
-        .sort()
     // Outside those cards, unfiltered and unchanged: this is the ingress property.
     const ingressButtons = () =>
       realButtons()
-        .filter(el => !decisionsFrame()?.contains(el) && !kasFrame()?.contains(el))
+        .filter(el => !decisionsFrame()?.contains(el))
         .map(nameOf)
         .sort()
     // Every button outside the Decisions card is observed and partitioned:
@@ -601,9 +587,6 @@ describe('Settings > Developer > Feature Previews', () => {
     // moment it hit. A button this set does not name never converges, so it fails here.
     await waitFor(() => {
       expect(decisionsButtons()).toEqual(['Ask the agent', 'More information', 'More information'])
-    })
-    await waitFor(() => {
-      expect(kasButtons()).toEqual(['Ask the agent', 'Retry'])
     })
     // The webhooks card HAS its link, so the empty census above is not the
     // ingress mechanism having been broken.

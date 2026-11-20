@@ -11147,7 +11147,7 @@
       "copy_request_id_failed": "복사하지 못했습니다. 요청 ID를 선택해 직접 복사하세요: {{id}}",
       "keep_title": "채팅을 계속하려면 Kiro에 로그인하세요",
       "sign_in": "로그인",
-      "title": "채팅을 시작하려면 Kiro에 로그인하세요"
+      "title_engine": "{{productName}}에 한 번 로그인하세요"
     },
     "concurrencyCutChip": {
       "exec_reduced": "<0>부하 상태:</0> <1>에이전트 {{configured}}개 중 {{cap}}개 동시 실행</1>",
@@ -15947,22 +15947,25 @@
         "remote_dispatch_connect": "<0>Settings › Remote Crew</0>에서 머신을 연결하세요."
       },
       "kasBundleCard": {
-        "toggle_label": "{{productName}} 자체 엔진으로 KAS 실행",
-        "toggle_description": "이 {{productName}} 릴리스에서 테스트한 KAS 엔진 버전을 Kiro CLI 대신 사용합니다. 이 기기뿐 아니라 이 {{productName}}의 모든 새 세션에 적용됩니다. 설정 → Kiro 계정에서 로그인합니다. {{productName}}을(를) 다시 시작하면 적용됩니다.",
-        "installed": "KAS 엔진 {{version}}(직접 설치함)",
-        "installed_bundled": "KAS 엔진 {{version}}(앱에 포함)",
-        "off_note": "꺼짐: KAS는 설치된 Kiro CLI를 사용합니다. 켜짐: 이 릴리스에 포함된 엔진을 사용합니다.",
+        "installed": "내장 엔진 {{version}}",
+        "installed_bundled": "내장 엔진 {{version}}(앱에 포함)",
         "saved_restart_pending": "저장했습니다. {{productName}}은(는) 아직 이전 엔진 경로로 실행 중이며, 다시 시작하면 전환됩니다: 설정 → 정보 → 게이트웨이 다시 시작.",
-        "not_installed": "KAS 엔진 {{version}}이(가) 아직 설치되지 않았습니다.",
-        "install": "KAS 엔진 설치",
-        "installing": "KAS {{version}} 설치 중…",
-        "installing_progress": "KAS {{version}} 설치 중: {{percent}} ({{done}} / {{total}})",
-        "install_failed": "KAS 엔진 설치를 시작할 수 없습니다.",
-        "save_failed": "KAS 엔진 설정을 저장할 수 없습니다.",
-        "status_unavailable": "KAS 엔진 상태를 읽을 수 없습니다.",
-        "route_auto_no_kiro_cli": "Kiro CLI가 설치되어 있지 않아 KAS가 {{productName}} 자체 엔진에서 실행됩니다.",
-        "route_auto_kiro_cli_signed_out": "Kiro CLI에 로그인되어 있지 않아 KAS가 {{productName}} 자체 엔진에서 실행됩니다.",
-        "route_auto_sharing_preview": "ACP 런타임 공유 미리 보기가 켜져 있어 KAS가 {{productName}} 자체 엔진에서 실행됩니다."
+        "not_installed": "내장 엔진 {{version}}이(가) 아직 설치되지 않았습니다.",
+        "install": "내장 엔진 설치",
+        "installing": "내장 엔진 {{version}} 설치 중…",
+        "installing_progress": "내장 엔진 {{version}} 설치 중: {{percent}} ({{total}} 중 {{done}})",
+        "install_failed": "내장 엔진 설치를 시작하지 못했습니다.",
+        "save_failed": "엔진 선택을 저장하지 못했습니다.",
+        "status_unavailable": "내장 엔진 상태를 읽지 못했습니다.",
+        "route_auto_no_kiro_cli": "Kiro CLI가 설치되어 있지 않아 Kiro Agent가 내장 엔진을 사용합니다.",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI에 로그인되어 있지 않아 Kiro Agent가 내장 엔진을 사용합니다.",
+        "route_auto_sharing_preview": "ACP 런타임 공유 미리 보기가 켜져 있어 Kiro Agent가 내장 엔진을 사용합니다.",
+        "engine_label": "엔진",
+        "engine_description": "Kiro Agent는 이 중 하나에서 실행됩니다.",
+        "engine_builtin": "내장 하네스",
+        "engine_kiro_cli": "Kiro CLI",
+        "engine_restart": "다시 시작하면 채팅이 전환됩니다.",
+        "engine_sign_in_reason": "내장 엔진으로 바꾸려면 {{productName}}에 로그인하세요."
       },
       "kiroSignInCard": {
         "title": "Kiro 로그인",

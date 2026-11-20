@@ -11406,7 +11406,7 @@
       "copy_request_id_failed": "কপি করা যায়নি। অনুরোধ আইডিটি নির্বাচন করে নিজে কপি করো: {{id}}",
       "keep_title": "চ্যাট চালিয়ে যেতে Kiro-তে সাইন ইন করো",
       "sign_in": "সাইন ইন করো",
-      "title": "চ্যাট শুরু করতে Kiro-তে সাইন ইন করো"
+      "title_engine": "{{productName}}-এ একবার সাইন ইন করো"
     },
     "concurrencyCutChip": {
       "exec_reduced": "<0>লোডের মধ্যে:</0> <1>একসাথে {{configured}}টির মধ্যে {{cap}}টি এজেন্ট</1>",
@@ -16368,22 +16368,25 @@
         "remote_dispatch_connect": "<0>Settings › Remote Crew</0>-এ মেশিন সংযুক্ত করো।"
       },
       "kasBundleCard": {
-        "toggle_label": "{{productName}}-এর নিজস্ব ইঞ্জিনে KAS চালাও",
-        "toggle_description": "এই {{productName}} রিলিজের সাথে পরীক্ষিত KAS ইঞ্জিন সংস্করণ ব্যবহার করে, Kiro CLI-এর বদলে। শুধু এই ডিভাইস নয়, এই {{productName}}-এর প্রতিটি নতুন সেশনে প্রযোজ্য। সেটিংস → Kiro অ্যাকাউন্ট থেকে তোমার Kiro অ্যাকাউন্ট দিয়ে সাইন ইন করে। {{productName}} রিস্টার্ট হলে কার্যকর হয়।",
-        "installed": "KAS ইঞ্জিন {{version}} (তুমি ইনস্টল করেছ)",
-        "installed_bundled": "KAS ইঞ্জিন {{version}} (অ্যাপে অন্তর্ভুক্ত)",
-        "off_note": "বন্ধ: KAS তোমার Kiro CLI ইনস্টল ব্যবহার করে। চালু: এই রিলিজের সাথে আসা ইঞ্জিন ব্যবহার করে।",
+        "installed": "বিল্ট-ইন ইঞ্জিন {{version}}",
+        "installed_bundled": "বিল্ট-ইন ইঞ্জিন {{version}} (অ্যাপে অন্তর্ভুক্ত)",
         "saved_restart_pending": "সেভ হয়েছে। {{productName}} এখনও আগের ইঞ্জিন রুটে চলছে; রিস্টার্ট করলে বদলে যাবে: সেটিংস → সম্পর্কে-তে গেটওয়ে রিস্টার্টের বোতাম।",
-        "not_installed": "KAS ইঞ্জিন {{version}} এখনও ইনস্টল করা হয়নি।",
-        "install": "KAS ইঞ্জিন ইনস্টল করো",
-        "installing": "KAS {{version}} ইনস্টল হচ্ছে…",
-        "installing_progress": "KAS {{version}} ইনস্টল হচ্ছে: {{percent}} ({{total}}-এর মধ্যে {{done}})",
-        "install_failed": "KAS ইঞ্জিনের ইনস্টল শুরু করা যায়নি।",
-        "save_failed": "KAS ইঞ্জিনের সেটিং সেভ করা যায়নি।",
-        "status_unavailable": "KAS ইঞ্জিনের অবস্থা পড়া যায়নি।",
-        "route_auto_no_kiro_cli": "Kiro CLI ইনস্টল করা নেই, তাই KAS {{productName}}-এর নিজস্ব ইঞ্জিনে চলে।",
-        "route_auto_kiro_cli_signed_out": "Kiro CLI-তে সাইন ইন করা নেই, তাই KAS {{productName}}-এর নিজস্ব ইঞ্জিনে চলে।",
-        "route_auto_sharing_preview": "ACP রানটাইম শেয়ার করা প্রিভিউ চালু আছে, তাই KAS {{productName}}-এর নিজস্ব ইঞ্জিনে চলে।"
+        "not_installed": "বিল্ট-ইন ইঞ্জিন {{version}} এখনও ইনস্টল হয়নি।",
+        "install": "বিল্ট-ইন ইঞ্জিন ইনস্টল করো",
+        "installing": "বিল্ট-ইন ইঞ্জিন {{version}} ইনস্টল হচ্ছে…",
+        "installing_progress": "বিল্ট-ইন ইঞ্জিন {{version}} ইনস্টল হচ্ছে: {{percent}} ({{total}}-এর মধ্যে {{done}})",
+        "install_failed": "বিল্ট-ইন ইঞ্জিনের ইনস্টল শুরু করা যায়নি।",
+        "save_failed": "ইঞ্জিনের পছন্দ সেভ করা যায়নি।",
+        "status_unavailable": "বিল্ট-ইন ইঞ্জিনের অবস্থা পড়া যায়নি।",
+        "route_auto_no_kiro_cli": "Kiro CLI ইনস্টল নেই, তাই Kiro Agent বিল্ট-ইন ইঞ্জিন ব্যবহার করে।",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI-তে সাইন ইন নেই, তাই Kiro Agent বিল্ট-ইন ইঞ্জিন ব্যবহার করে।",
+        "route_auto_sharing_preview": "ACP রানটাইম শেয়ারিং প্রিভিউ চালু, তাই Kiro Agent বিল্ট-ইন ইঞ্জিন ব্যবহার করে।",
+        "engine_label": "ইঞ্জিন",
+        "engine_description": "Kiro Agent এগুলোর একটিতে চলে।",
+        "engine_builtin": "বিল্ট-ইন হারনেস",
+        "engine_kiro_cli": "Kiro CLI",
+        "engine_restart": "রিস্টার্টের পরে চ্যাটগুলো বদলে যাবে।",
+        "engine_sign_in_reason": "বিল্ট-ইন ইঞ্জিনে যেতে {{productName}}-এ সাইন ইন করো।"
       },
       "kiroSignInCard": {
         "title": "Kiro সাইন-ইন",

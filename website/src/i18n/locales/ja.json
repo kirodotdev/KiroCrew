@@ -11147,7 +11147,7 @@
       "copy_request_id_failed": "コピーできませんでした。リクエスト ID を選択して自分でコピーしてください: {{id}}",
       "keep_title": "チャットを続けるには Kiro にサインインしてください",
       "sign_in": "サインイン",
-      "title": "チャットを始めるには Kiro にサインインしてください"
+      "title_engine": "{{productName}} に一度サインインしてください"
     },
     "concurrencyCutChip": {
       "exec_reduced": "<0>高負荷:</0> <1>同時実行 {{configured}} 中 {{cap}} エージェント</1>",
@@ -15947,22 +15947,25 @@
         "remote_dispatch_connect": "<0>Settings › Remote Crew</0> でマシンを接続します。"
       },
       "kasBundleCard": {
-        "toggle_label": "{{productName}} 独自のエンジンで KAS を実行",
-        "toggle_description": "この {{productName}} リリースでテスト済みの KAS エンジンを、Kiro CLI の代わりに使います。このデバイスだけでなく、この {{productName}} のすべての新しいセッションに適用されます。設定 → Kiro アカウントでサインインします。{{productName}} の再起動後に反映されます。",
-        "installed": "KAS エンジン {{version}}（自分でインストール）",
-        "installed_bundled": "KAS エンジン {{version}}（アプリに同梱）",
-        "off_note": "オフ：KAS はインストール済みの Kiro CLI を使います。オン：このリリースに同梱のエンジンを使います。",
+        "installed": "内蔵エンジン {{version}}",
+        "installed_bundled": "内蔵エンジン {{version}}（アプリに同梱）",
         "saved_restart_pending": "保存しました。{{productName}} はまだ以前のエンジン経路で動作しています。再起動すると切り替わります：設定 → 情報 → ゲートウェイを再起動。",
-        "not_installed": "KAS エンジン {{version}} はまだインストールされていません。",
-        "install": "KAS エンジンをインストール",
-        "installing": "KAS {{version}} をインストール中…",
-        "installing_progress": "KAS {{version}} をインストール中: {{percent}}（{{done}} / {{total}}）",
-        "install_failed": "KAS エンジンのインストールを開始できませんでした。",
-        "save_failed": "KAS エンジンの設定を保存できませんでした。",
-        "status_unavailable": "KAS エンジンの状態を読み取れませんでした。",
-        "route_auto_no_kiro_cli": "Kiro CLI がインストールされていないため、KAS は {{productName}} 自身のエンジンで動作します。",
-        "route_auto_kiro_cli_signed_out": "Kiro CLI にサインインしていないため、KAS は {{productName}} 自身のエンジンで動作します。",
-        "route_auto_sharing_preview": "ACP ランタイムの共有プレビューがオンのため、KAS は {{productName}} 自身のエンジンで動作します。"
+        "not_installed": "内蔵エンジン {{version}} はまだインストールされていません。",
+        "install": "内蔵エンジンをインストール",
+        "installing": "内蔵エンジン {{version}} をインストール中…",
+        "installing_progress": "内蔵エンジン {{version}} をインストール中: {{percent}}（{{done}} / {{total}}）",
+        "install_failed": "内蔵エンジンのインストールを開始できませんでした。",
+        "save_failed": "エンジンの選択を保存できませんでした。",
+        "status_unavailable": "内蔵エンジンの状態を読み取れませんでした。",
+        "route_auto_no_kiro_cli": "Kiro CLI がインストールされていないため、Kiro Agent は内蔵エンジンを使います。",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI にサインインしていないため、Kiro Agent は内蔵エンジンを使います。",
+        "route_auto_sharing_preview": "ACP ランタイム共有プレビューがオンのため、Kiro Agent は内蔵エンジンを使います。",
+        "engine_label": "エンジン",
+        "engine_description": "Kiro Agent はどちらかで動きます。",
+        "engine_builtin": "内蔵ハーネス",
+        "engine_kiro_cli": "Kiro CLI",
+        "engine_restart": "再起動後にチャットが切り替わります。",
+        "engine_sign_in_reason": "内蔵エンジンに切り替えるには {{productName}} にサインインしてください。"
       },
       "kiroSignInCard": {
         "title": "Kiro サインイン",

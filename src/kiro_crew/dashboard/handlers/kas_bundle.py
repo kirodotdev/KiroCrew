@@ -55,8 +55,14 @@ def _status_payload(app: web.Application) -> dict[str, Any]:
     from kiro_crew.agent_sdk import kas_bundle
     from kiro_crew.agent_sdk.kas_bundle import KAS_PIN_VERSION, pinned_version
     from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.config.loader_document import kas_bundle_declared
 
     cfg = KiroCrewConfig.load().agent
+    saved = kas_bundle_declared()
+    # Unsaved, the choice is the engine the next KAS spawn really takes
+    # (``kas_route``: the build's preference, the sign-in, cooldowns and pins all
+    # decided), so the card never shows the engine chosen while chats run on kiro-cli.
+    on_engine = bool(cfg.kas_bundle) if saved else bool(kas_bundle.kas_route().bundle)
     installed = kas_bundle.installed_bundle()
     state = _install_state(app)
     # The gateway's one installer also runs installs a KAS spawn started; this
@@ -75,6 +81,10 @@ def _status_payload(app: web.Application) -> dict[str, Any]:
     error = (str(state.get("error") or "") or shared["error"]) if installed is None else ""
     return {
         "enabled": bool(cfg.kas_bundle),
+        # The Settings engine choice: a saved ``agent.kas_bundle``, else the route the
+        # next KAS spawn takes. ``choice_saved`` says which.
+        "engine_choice": "engine" if on_engine else "kiro_cli",
+        "choice_saved": saved,
         "pinned_version": KAS_PIN_VERSION,
         "runs_version": pinned_version(),
         "installed": (
@@ -122,6 +132,24 @@ def _chat_needs_sign_in() -> bool:
     return kas and kas_bundle.bundle_route_lacks_sign_in()
 
 
+def _sign_in_moves_to_engine() -> bool:
+    """Whether signing in to Kiro Crew would move new chats onto its engine.
+
+    True with KAS as the main harness, kiro-cli signed in here, Kiro Crew not, and
+    a build that prefers the engine (``kas_route.crew_sign_in_moves_to_bundle``).
+    Blocking; False when it cannot be worked out.
+    """
+    from kiro_crew.agent_sdk import kas_bundle
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    try:
+        kas = KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS
+    except Exception:  # noqa: BLE001 - unreadable config: no prompt
+        return False
+    return kas and kas_bundle.crew_sign_in_moves_to_bundle()
+
+
 async def _reply_payload(request: web.Request) -> dict[str, Any]:
     """The status both routes answer with, so every reply carries every field.
 
@@ -131,8 +159,12 @@ async def _reply_payload(request: web.Request) -> dict[str, Any]:
     payload = await asyncio.to_thread(_status_payload, request.app)
     # Owner only: signing in is an owner action (``kas_login._require_owner``),
     # so a prompt to sign in is no use to anyone else.
-    payload["chat_needs_sign_in"] = is_owner_dashboard_request(request) and (
-        await asyncio.to_thread(_chat_needs_sign_in)
+    owner = is_owner_dashboard_request(request)
+    payload["chat_needs_sign_in"] = owner and (await asyncio.to_thread(_chat_needs_sign_in))
+    payload["sign_in_moves_to_engine"] = (
+        owner
+        and not payload["chat_needs_sign_in"]
+        and (await asyncio.to_thread(_sign_in_moves_to_engine))
     )
     return payload
 

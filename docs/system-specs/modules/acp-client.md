@@ -5481,10 +5481,10 @@ engaged for this backend and KAS is excluded from
 
 **KAS bundle route: the same harness, no kiro-cli.** `agent.kas_bundle = true`
 makes `KasHarness.resolve_spawn` spawn the engine from Kiro Crew's OWN install
-instead of kiro-cli's relay. Unset, it is on in a Nightly build and off in every
-other build (`config.loader_document.kas_bundle_build_default`, read from the
-build's own `_build_info.BUILD_CHANNEL` stamp, never the update-channel file;
-see config.md's omitted-key departures); a saved value always wins. `kirocrew kas install` (`cli_kas.py` →
+instead of kiro-cli's relay. Unset, a packaged build prefers it (rule 1b in the
+route paragraph below, `acp/kas_build_default`, read from the build's own
+distribution stamp, never the update-channel file; see config.md's omitted-key
+departures); a saved value always wins. `kirocrew kas install` (`cli_kas.py` →
 `acp/kas_bundle.py`) fetches the pinned version's manifest from `agent.kas_bundle_url`
 (`<base>/kas/<version>/manifest.json`; there is no "current" pointer, because the
 release's pin is the only version anything asks for), picks this
@@ -5643,7 +5643,33 @@ selected it, and `resolve_spawn` decides the automatic half itself. Pinned by
 Choosing KAS means Kiro Crew's own engine and Kiro Crew's own sign-in. The
 route is `acp/kas_route.py`, one rule read by the harness and, through
 `agent_sdk.kas_bundle.kas_route()`, by every reader that describes a spawn:
-(1) `agent.kas_bundle` on is the bundle route; (2) a stored Kiro CLI pick is
+(1) `agent.kas_bundle` on is the bundle route; (1b) `agent.kas_bundle` unset
+in a packaged build (`acp/kas_build_default.kas_bundle_preferred_by_build`: a
+`beacon.baked_distribution()` stamp other than `source`, on a host
+`host_unsupported_reason()` clears) is the bundle route once Kiro Crew's own
+sign-in is usable, or the engine already ran on the host, and the route is open
+to the switch (no `KIROCREW_KIRO_BIN`, no stored Kiro CLI pick, no first-switch
+or sharing-preview failure cooling down), reason `build_default`
+(`kas_route.build_default_selects_bundle`). kiro-cli's sign-in is never copied:
+a host signed in only to kiro-cli keeps the relay, and the dashboard asks the
+owner to sign in once (`crew_sign_in_moves_to_bundle`, `GET /api/kas-bundle`
+`sign_in_moves_to_engine`, the chat's `KiroSignInPrompt`). A saved
+`agent.kas_bundle` of either value turns the rule off. Two kinds of host,
+told apart by the data-home marker `kas_engine_ran` (written after the first
+engine start that succeeded, `remember_engine_ran`): on a FIRST SWITCH (the
+default moved the host and the engine never ran there) a start that cannot build
+its plan (`kas_build_default.build_default_plan`) or whose engine dies or leaves
+`initialize` unanswered (`runtime_spawn_entry._fell_back_from_preview_bundle`)
+runs that chat on kiro-cli once, says so in a notice row
+(`ENGINE_FALLBACK_NOTICE`, `LLMProvider.engine_fallback_notice`), and keeps new
+chats on kiro-cli for `FIRST_SWITCH_COOLDOWN_SECS`, each spawn the cooldown alone
+keeps there carrying the same notice (a chat may land on a later spawn than the
+one that failed, such as a pre-started session); a host ALREADY ON THE ENGINE
+(the marker, a saved `true`, or no usable relay) is fixed in place: the engine
+start is tried `ENGINE_RETRIES` more times `ENGINE_RETRY_DELAY_SECS` apart
+(`runtime_spawn_entry._spawn_retrying_engine_in_place`), then fails with the
+plain `ENGINE_DID_NOT_START` and the chat's own Resume, the cause in the log
+only, and kiro-cli is never offered; (2) a stored Kiro CLI pick is
 the relay, because it runs on KAS only where kiro-cli itself offers v3
 ([2026-10-28](../../decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md)):
 the session's own Bot pin (`agents.<name>.acp_backend == "kiro"`) when it has
