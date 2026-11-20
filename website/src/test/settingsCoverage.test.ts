@@ -290,10 +290,10 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     reason: 'backup-restore form: the export\'s include-chat-history, include-agent-templates and memory-only boxes, the export zip file picker, the import\'s memory-only box, the import preview\'s per-template install box (one control rendered once per bundled template) and the merge/replace mode for that one import — per-export and per-import arguments, not persistent settings',
   },
   'RemoteCrewPanelSetupCards.tsx': {
-    counts: { input: 7 },
+    counts: { input: 8 },
     reason:
       'the Add Crew modal\'s setup-form AWS profile/region convenience fields (localStorage), ' +
-      'which a deep link cannot open; plus the launch form\'s identity ' +
+      'which a deep link cannot open; plus the launch form\'s sign-in-on-launch checkbox, identity ' +
       'choice (2 radios), Identity Center start-URL/region and subnet ID fields — per-launch ' +
       'arguments sent with the launch request, not persistent settings',
   },

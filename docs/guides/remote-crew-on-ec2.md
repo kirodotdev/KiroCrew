@@ -205,6 +205,14 @@ property of the launch, not of whichever `kiro-cli login` happens to run:
 The same three flags exist on `kirocrew cloud login` for an already-launched crew;
 with a wrong-but-valid session present, run `kirocrew cloud logout` first.
 
+**The sign-in is optional.** A crew that runs another agent harness works without
+a Kiro sign-in. Turn off **Sign in to Kiro on the new crew** in the launch form,
+press **Skip for now** on the progress card while the sign-in runs, or pass
+`kirocrew cloud launch --no-login`. The sign-in step then reads skipped, not
+failed, and a code already shown is stopped on the instance. The crew connects
+as usual, and it can sign in later in its own Settings → Kiro Account (or with
+`kirocrew cloud login`).
+
 ### Port/tunnel mismatch (the common one)
 
 `kirocrew doctor`'s "Remote access" hint and its `dashboard: http://localhost:5476`

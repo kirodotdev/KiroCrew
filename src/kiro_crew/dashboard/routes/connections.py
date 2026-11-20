@@ -16,6 +16,7 @@ from kiro_crew.dashboard import (
     handlers,
     handlers_channel,
     handlers_cloud,
+    handlers_cloud_signin_skip,
     handlers_crew_turn,
     handlers_instances,
     handlers_project,
@@ -204,6 +205,10 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/cloud/launch/{id}/signin/restart",
         handlers_cloud.api_cloud_launch_signin_restart,
+    )
+    app.router.add_post(
+        "/api/cloud/launch/{id}/signin/skip",
+        handlers_cloud_signin_skip.api_cloud_launch_signin_skip,
     )
     app.router.add_post("/api/cloud/{tag}/stop", handlers_cloud.api_cloud_stop)
     app.router.add_post("/api/cloud/{tag}/start", handlers_cloud.api_cloud_start)
