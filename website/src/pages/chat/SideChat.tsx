@@ -14,6 +14,7 @@ import { deriveFollowUpOptions } from '../../app-sdk/protocol'
 import { useComposerDraft, draftByteSize } from '../../app-sdk/useComposerDraft'
 import ChatInput from '../../components/ChatInput'
 import ErrorNotice from '../../components/ErrorNotice'
+import { GUIDE_KEEP_CLEAR } from '../../guide/trustRoot'
 import StatusNotice from '../../components/StatusNotice'
 import InfoTip from '../../components/InfoTip'
 import { SlotProvider } from '../../providers/SlotContext'
@@ -1169,6 +1170,8 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
             onDragOver={dropTargetProps.onDragOver}
             onDragLeave={dropTargetProps.onDragLeave}
           />
+          {/* The composer's notices are kept clear like the composer itself. */}
+          <div data-testid="side-chat-composer-notices" {...GUIDE_KEEP_CLEAR}>
           <StatusNotice
             className="mx-1 mt-1.5 mb-0"
             testId="side-chat-upload-hint"
@@ -1214,6 +1217,7 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
                   : i18nT('pages.chat.sideChat.context_only_tools_unavailable_backend')}
             </div>
           ) : null}
+          </div>
         </SlotProvider>
       </div>
     </div>
