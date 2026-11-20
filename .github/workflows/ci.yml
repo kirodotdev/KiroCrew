@@ -4175,6 +4175,9 @@ jobs:
   # process launched through a junction is matched however Win32_Process spells
   # its ExecutablePath -- so those test files also run once on a real Windows
   # host. No npm ci: the two modules under test require only the Node stdlib.
+  # managed-exec-real-tree.test.js runs a real command under the pinned cmd.exe
+  # to prove a managed update timeout ends the whole tree; it also needs only
+  # the stdlib.
   electron-test-windows:
     name: Electron Shell Tests (Windows port identity)
     needs: [changes, await-fast-gate, lint-gate]
@@ -4196,7 +4199,7 @@ jobs:
 
       - name: Windows port-identity tests
         working-directory: website/electron
-        run: node --test test/windows-port.test.js test/windows-port-junction.test.js test/windows-port-real-junction.test.js test/find-bin-real-ssh.test.js
+        run: node --test test/windows-port.test.js test/windows-port-junction.test.js test/windows-port-real-junction.test.js test/find-bin-real-ssh.test.js test/managed-exec-real-tree.test.js
 
   frontend-test:
     name: Frontend Tests
