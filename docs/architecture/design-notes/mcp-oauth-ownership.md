@@ -39,12 +39,32 @@ reads their contents. Concretely:
 
 The ACP-level workarounds we've built (the OAuth banner, dedup, completion patching, role-aware redaction, `chat_message_update`) are all symptoms of the same thing: **we're rendering UI for a flow we don't own.**
 
+## The other two owners
+
+The limits above hold on the kiro-cli backend only. Two other paths store the
+credential where Kiro Crew keeps it:
+
+- **KAS backend (the default).** The KAS engine runs the OAuth flow and keeps
+  its state through Kiro Crew's secret-storage bridge
+  (`acp/kas_secret_storage.py`). With `agent.kas_persist_mcp_sign_in` on (the
+  default), the client registration and tokens persist in a dedicated encrypted
+  vault under `<data home>/kas/mcp-grants/.vault/`. It is not the Secrets vault,
+  and the agent cannot read it. The engine still does the protocol work; Kiro Crew
+  holds the bytes but never logs or exposes them.
+- **Crew-owned OAuth for Connections** (`dashboard.feature_previews.crew_oauth`,
+  off by default, KAS chats only). The gateway runs the whole chain itself
+  (`connections/crew_oauth.py`): PKCE consent URL, a one-shot loopback callback,
+  the code exchange, tokens in the user's Secrets vault, refresh before expiry,
+  and an upstream revoke on **Disconnect**. Its design is
+  [`../../request-for-change/rfc-crew-owned-oauth.md`](../../request-for-change/rfc-crew-owned-oauth.md).
+
 ## The boundary in one sentence
 
-kiro-cli owns the OAuth chain end to end and Kiro Crew never reads or holds the
-credential. Kiro Crew can observe that a known grant exists by `stat` on the paired
-token and registration artifacts, and can locally remove an ownership-proven,
-unshared pair by `unlink`; it cannot inspect, refresh, or revoke the credential at
-the provider. A design that would move custody into Kiro Crew is a proposal, not
-current behaviour, and is argued in
+On the kiro-cli backend, kiro-cli owns the OAuth chain end to end and Kiro Crew
+never reads or holds the credential. Kiro Crew can observe that a known grant
+exists by `stat` on the paired token and registration artifacts, and can locally
+remove an ownership-proven, unshared pair by `unlink`; it cannot inspect, refresh,
+or revoke the credential at the provider. On KAS, Kiro Crew stores the engine's
+grants in its own vault, and under the `crew_oauth` preview the gateway owns the
+whole chain for Connections cards. The wider agent-SDK boundary is argued in
 [`../../request-for-change/rfc-crew-agent-sdk-boundary.md`](../../request-for-change/rfc-crew-agent-sdk-boundary.md).
