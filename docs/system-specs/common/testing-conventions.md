@@ -6039,6 +6039,36 @@ path other tests drive gets its entry in `test/conftest_resets.py` in the same P
 only knows those initializer spellings; a global bound to anything else still needs a
 reviewer's eye.
 
+**A switch or allowlist snapshot that a handler test publishes is the same leak, and the
+grep above does not see it.** `dashboard.source_providers.hosts` holds the session-card
+chip switch as `_session_card_chips_snapshot: bool = True` and the host allowlists as
+`frozenset()` snapshots. The real `/api/dashboard/config` PUT publishes the switch, so
+`test_session_card_source_links_knob.py::TestConfigEndpoint::test_put_persists_off`, which
+sends `session_card_source_links: false` and patches nothing, left the chips off for its
+worker. Every later `to_dict` there reported `source_links_total` 0: MEASURED, that test
+followed by `test_source_link_github_case.py` fails 4 of 21 at `-n0`, every run; on CI it
+reddened backend shard 7 on main and on four unrelated PRs in one morning. A pin in the
+polluting file's fixture stops that file; the floor entry `_cold_source_link_settings`
+stops the next file too, by pinning every snapshot the publishers write to its cold value
+for every test. Leave a monotonic generation counter unpinned, because caches key on it
+and putting an older number back can match an entry built under other settings. Before
+push, also grep for scalar and frozen initializers of a global that a write path
+republishes:
+
+```bash
+git diff origin/main -- 'src/kiro_crew/*.py' \
+  | grep -nE '^\+_[A-Za-z0-9_]+ *(:[^=]+)?= *(True|False|frozenset\(|[0-9.]+$)'
+```
+
+```python
+# WRONG: the real PUT publishes False into the module global, and nothing puts it back.
+async def test_put_persists_off(self, handler_app, cfg_file):
+    await client.put("/api/dashboard/config", json={"session_card_source_links": False})
+
+# RIGHT: the floor hands every test the cold snapshot (test/conftest_resets.py).
+_floor_monkeypatch.setattr(hosts, "_session_card_chips_snapshot", True)
+```
+
 **Work QUEUED by a test is shared state too, and resetting the object it runs against is
 not enough.** MEASURED: a member row's event is fire-and-forget on the single `eventlog-io`
 worker (`eventlog_hooks.submit`), and the member log's path is resolved from

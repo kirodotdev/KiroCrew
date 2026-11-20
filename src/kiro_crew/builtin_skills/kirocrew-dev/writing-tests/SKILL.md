@@ -416,6 +416,9 @@ a worker. Ship its floor entry in `test/conftest_resets.py` with the change, not
 your own test file, and find the new state with the `git diff ... | grep` line in
 [testing-conventions.md](../../../../../docs/system-specs/common/testing-conventions.md)
 § 4 Order dependence and shared state ("That rule did not stop #37659").
+A switch or allowlist snapshot (`= True`, `= frozenset()`) that a handler test publishes
+through the real write path is the same leak and needs the same floor entry; that section
+has the second grep line for those spellings (`_cold_source_link_settings`).
 
 ## Rule 3 — Cross-platform: macOS, Linux (x86_64 + arm64), Windows
 

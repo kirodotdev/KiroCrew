@@ -279,6 +279,7 @@ from conftest_opt_in import (  # noqa: E402,F401 -- bound for pytest and importe
 # Per-test resets of process-global kiro_crew state, and the network fences.
 from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importers
     _approve_every_mcp_launch,
+    _cold_source_link_settings,
     _cold_vault_read_audit,
     _crewmate_dynamic_capabilities_on,
     _disable_dev_fleet_background_tasks,

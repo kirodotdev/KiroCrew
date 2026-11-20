@@ -618,6 +618,33 @@ def _cold_vault_read_audit(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _cold_source_link_settings(_floor_monkeypatch):
+    """Start each test with the source-link settings snapshot a fresh process holds.
+
+    ``dashboard.source_providers.hosts`` keeps the provider host allowlists and the
+    session-card chip switch as process globals, published by the config refresh and
+    by the ``/api/dashboard/config`` PUT. A test that drives that PUT with
+    ``session_card_source_links: false`` leaves the switch off, and every later
+    ``to_dict`` on the same worker reports no chips and a ``source_links_total`` of 0.
+    The generation counter is left alone: it only ever grows, and the per-slot link
+    cache keys on it. Patched only when the module is already imported, like the
+    vault read audit above.
+    """
+    hosts = sys.modules.get("kiro_crew.dashboard.source_providers.hosts")
+    if hosts is not None:
+        _floor_monkeypatch.setattr(hosts, "_session_card_chips_snapshot", True)
+        for name in (
+            "_gitlab_hosts_snapshot",
+            "_jira_hosts_snapshot",
+            "_github_hosts_snapshot",
+            "_bitbucket_server_hosts_snapshot",
+            "_gerrit_hosts_snapshot",
+        ):
+            _floor_monkeypatch.setattr(hosts, name, frozenset())
+        _floor_monkeypatch.setattr(hosts, "_gitlab_hosts_loaded_at", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_hardlink_spec_warnings():
     """Start each test with no hardlink refusal of an agent spec already warned about.
 
