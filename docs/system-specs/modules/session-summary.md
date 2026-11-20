@@ -184,7 +184,7 @@ to 50; a long list stops being read. Durable cross-session preferences belong in
 
 `extract_turns()` reduces raw transcript records to a bounded input:
 
-- **`role` and `content` only.** Every other field is ignored, notably the `meta`
+- **`role`, `content` and `ts` only.** Every other field is ignored, notably the `meta`
   blob on assistant rows — in one real 15.6 MB session, message content totalled
   602 KB and `meta` was the other 14.65 MB. Ignoring it rather than excerpting it
   is the single largest saving available.
@@ -215,7 +215,8 @@ without judgement, so they are labelled in extraction rather than left to the
 prompt:
 
 - **Automation posting under `role: "user"`** — cron notifications, subagent
-  completion events, auto-nudge cycles, structured monitor wakes, tool refusals,
+  completion events, auto-nudge cycles, structured monitor and work-ledger wakes,
+  tool refusals and stalls, `[system]` rows,
   the turn the gateway runs when a workflow finishes, restored webhook context.
   These are flagged `injected`, excluded from the user-turn count, and rendered
   as `[automation, not the user]`. Counting one invents a goal the person never
@@ -246,7 +247,7 @@ indistinguishable from one that is broken.
 | `disabled` | The flag is off — the common case, and it costs nothing |
 | `in_flight` | A pass for this slot is already running. The marker is taken **before the first await**, so two concurrent callers cannot both reach the model call — on-demand generation made that reachable from two clients at once |
 | `running` | A turn is in flight (`slot.running`). Consulted directly rather than inferred from the stop reason, because the marker is cleared at turn start: an empty `_last_stop_reason` means BOTH "idle session restored in a later process" and "streaming right now". **Holds under `force`** |
-| `memory_mode` | Incognito or temporary: no derived artifact from this conversation (mirrors `history.INCOGNITO_MEMORY_MODES` — the transcript is kept for the user's own History, and a summary is exactly the kind of model-produced artifact the mode withholds). Checked on the live slot AND on the on-disk line (`history.transcript_withholds_derivation`, before and after the transcript read, failing closed on an unreadable line), because the rows come from disk and the file can be stricter than the slot that kept it in memory. The panel read applies the same two gates while holding the transcript lock across its `.intents` sidecar read, so a summary cached before a same-key restricted recreation is not served. The sidecar is retained rather than deleted: a later persistent holder may legitimately reuse it if its transcript signature still matches. |
+| `memory_mode` | Incognito or temporary: no derived artifact from this conversation (mirrors `history.INCOGNITO_MEMORY_MODES` — the transcript is kept for the user's own History, and a summary is exactly the kind of model-produced artifact the mode withholds). Checked on the live slot AND on the on-disk line (`ConversationLog.derive_messages_chained` validates the line and reads the rows under one lock hold, failing closed on an unreadable line), because the rows come from disk and the file can be stricter than the slot that kept it in memory. The panel read applies the same two gates while holding the transcript lock across its `.intents` sidecar read, so a summary cached before a same-key restricted recreation is not served. The sidecar is retained rather than deleted: a later persistent holder may legitimately reuse it if its transcript signature still matches. |
 | `stop_reason:<r>` | The turn did not cleanly end |
 | `too_few_turns` | Below `min_user_turns` |
 | `cadence` | Fewer than `regenerate_after_turns` since the last pass |
@@ -265,7 +266,7 @@ finished" and skips as `stop_reason:missing`.
 keeps only the most recent 500 messages in memory (`chat_persistence` caps the
 restore), so summarizing the in-memory tail of a long session would regenerate
 from a truncated view and overwrite the sidecar — earlier intents would silently
-vanish from the panel. The generator reads `read_messages_chained()` off the event
+vanish from the panel. The generator reads `derive_messages_chained()` off the event
 loop; the cheap slot-level gates (disabled, unclean stop) run first so the common
 skip cases cost no disk IO, and `extract_turns` plus `render_bounded_input` bound
 what the model reads.
@@ -471,8 +472,8 @@ the true reason is recorded via SEL.
 The payload is model output derived from transcript text, so anything the user
 pasted into the conversation — a token, a key, a beacon URL — can be reproduced
 inside it. `normalize_payload()` therefore runs the whole payload through the
-standard `redact_credentials` + `redact_exfiltration_urls` chain before it is
-returned, recursively: the payload nests (intents → next_steps → strings) and a
+canonical `security.redact` composition (exfiltration-URL then credential
+redaction) before it is returned, recursively: the payload nests (intents → next_steps → strings) and a
 top-level-only pass would leave every field the panel actually renders unredacted.
 
 Redaction sits in normalization rather than at the write site so that every path
