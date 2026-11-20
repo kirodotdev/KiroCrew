@@ -285,16 +285,12 @@ naming what moved (truncated at `MAX_WAKE_BRIEF_CHARS`, 4000) and then one
 `work_ledger_read(compact=true)` for the board. The conductor reads the ledger
 itself, through its own identity-gated, audited and containment-judged route.
 
-The wake used to carry the compact board inline, built at delivery by
-`compact_wake_snapshot` and bounded by `WAKE_SNAPSHOT_BUDGET_CHARS` (24000). That
-made the cost of one item moving proportional to the whole goal -- on a twenty-item
-board, around 20 KB of mostly-closed rows re-sent on every wake to save one tool
-call -- so it was replaced by the pointer and the builder, its `WakeSnapshot` value
-and its `work_ledger_wake_snapshot` audit operation were deleted. The board was also
-the only reason the delivery needed an audience fence
-(`record_audience_admission(..., for_pending_turn=True)`, likewise deleted): ledger
-prose may enter only a turn whose cross-surface publication is fenced for that
-turn's whole life, and the fence now belongs to the read route alone.
+The wake does not carry the board inline. That would make the cost of one item
+moving proportional to the whole goal -- on a twenty-item board, around 20 KB of
+mostly-closed rows re-sent on every wake to save one tool call. Leaving the board
+out also means the delivery needs no audience fence: ledger prose may enter only a
+turn whose cross-surface publication is fenced for that turn's whole life, and that
+fence belongs to the read route alone.
 
 A wake that lands while the slot is already running is STEERED into that running
 turn (`_steer_work_ledger_wake`) rather than declined, because its payload is small.
@@ -312,7 +308,7 @@ with `meta.steer`, so it draws as the nudge chip and never as a bubble the perso
 typed; the sender names the origin, the role follows from it. A steer the turn ends
 before taking is requeued with `AUTOMATION_STEER_META` on its entry: the drain
 writes it as a `nudge` row too, and the entry drains alone, never merged into the
-person's own queued text (#22747).
+person's own queued text.
 
 The wake reaches the steer through `session_deliver.deliver`, the session-side entry
 point a non-human sender calls with its origin (`automation`, `cron`, `app`). The
@@ -696,16 +692,12 @@ asks for. `irq.py` carries it as:
 Observation(key, severity, brief="", resets_on=ResetsOn.REVISION)
 ```
 
-with `Severity` carrying `WAKE`, `TERMINAL` and `IMMEDIATE`. This landed as a
-**rename of the existing type, not a new one**: `epoch_scoped: bool` became
-`resets_on: ResetsOn`, and `NMI` became `IMMEDIATE`. `PrWatchProbe` in
-`probes/gh_pr.py` constructs these, so it was a mechanical rewrite of live code
-rather than a greenfield addition.
+with `Severity` carrying `WAKE`, `TERMINAL` and `IMMEDIATE`. `PrWatchProbe` in
+`probes/gh_pr.py` constructs these.
 
-Each new name describes the condition where the old one described the
-implementation. `epoch_scoped` said which bookkeeping bucket an entry fell in;
-`resets_on` says what clears it. `NMI` borrowed an interrupt term for what is
-really an urgency claim.
+Each name describes the condition, not the implementation: `resets_on` says what
+clears an entry rather than which bookkeeping bucket it falls in, and `IMMEDIATE`
+is an urgency claim rather than an interrupt term.
 
 `resets_on` is an enum rather than a renamed boolean, because the field answers
 *what clears this* and a boolean can only answer *yes or no*: read as a flag,
@@ -1087,7 +1079,7 @@ replay is not held: a user turn cancels a held timer and the re-arm goes to the
 hours-long deadline, which would lose the replay, while an overdue loop re-armed
 that way is overdue again and fires on the overdue beat. A host short of memory
 otherwise starts every woken session and its MCP servers in the same few seconds
-and crash-loops (#33355).
+and crash-loops.
 
 ### 7. Delivery and turn injection
 
