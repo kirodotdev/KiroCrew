@@ -711,6 +711,15 @@ describe("first-download installer design contract", () => {
     );
     assert.match(windowsBuilder, /"kirocrew\[voice-aws\] @ \$root_uri"/);
     assert.match(buildScript, /"\$ROOT\[voice-codex\]"/);
+    // Codex dictation is an experimental opt-in, so a target without its media
+    // wheels ships without it; only the default recogniser may fail the build.
+    const codexInstall = buildScript.slice(
+      buildScript.lastIndexOf("env PYTHONNOUSERSITE", buildScript.indexOf('"$ROOT[voice-codex]"')) - 5,
+      buildScript.indexOf("fi", buildScript.indexOf('"$ROOT[voice-codex]"'))
+    );
+    assert.match(codexInstall, /^if ! env PYTHONNOUSERSITE/);
+    assert.match(codexInstall, /"\$ROOT\[voice-codex\]"; then\n\s+log "Codex dictation media packages did not install/);
+    assert.doesNotMatch(codexInstall, /exit 1/);
     assert.doesNotMatch(windowsBuilder, /"kirocrew\[voice-codex\] @ \$root_uri"/);
     assert.match(windowsBuilder, /"kirocrew\[voice\] @ \$root_uri"/);
     assert.doesNotMatch(windowsBuilder, /"\$ROOT\[voice(?:-aws)?\]"/);
