@@ -688,6 +688,63 @@ class TestApplyTrustFields:
         assert {r["name"] for r in rows} >= {e["name"] for e in ext}
         assert peak <= limit
 
+    @pytest.mark.asyncio
+    async def test_list_registry_answers_without_waiting_for_a_hung_manifest_fetch(
+        self, monkeypatch
+    ):
+        """A fetch still running at the deadline leaves its row with the index's
+        minimal info, and keeps running so the next listing can use its answer."""
+        from kiro_crew.apps.registry_pipeline import catalog
+
+        monkeypatch.setattr(catalog, "_MANIFEST_LISTING_DEADLINE_S", 0, raising=False)
+        release = asyncio.Event()
+        finished: list[str] = []
+
+        async def _hung_resolve(entry):
+            await release.wait()
+            finished.append(entry["name"])
+            return {**entry, "description": "from app.json"}
+
+        async def _fake_external():
+            return [{"name": "ext-slow", "_registry": "labs"}]
+
+        monkeypatch.setattr(registry, "_load_registry_file", lambda: [])
+        monkeypatch.setattr(registry, "_load_external_registries", _fake_external)
+        monkeypatch.setattr(registry, "_resolve_manifest", _hung_resolve)
+        monkeypatch.setattr(registry, "list_installed_apps", lambda: [])
+
+        listing = asyncio.ensure_future(registry.list_registry())
+        try:
+            done, _ = await asyncio.wait({listing}, timeout=30)
+            assert listing in done, "the listing waited for a fetch that had not ended"
+        finally:
+            if not listing.done():
+                release.set()
+                await listing
+        rows = {r["name"]: r for r in listing.result()}
+        assert "description" not in rows["ext-slow"]
+        assert finished == []
+        (pending,) = catalog._BACKGROUND_RESOLVES
+        release.set()
+        answer = await asyncio.wait_for(pending, 30)
+        assert (answer["name"], answer["description"]) == ("ext-slow", "from app.json")
+        assert finished == ["ext-slow"]
+        assert catalog._BACKGROUND_RESOLVES == set()
+
+    @pytest.mark.asyncio
+    async def test_a_listing_still_reports_a_fetch_that_failed_before_the_deadline(self):
+        from kiro_crew.apps.registry_pipeline import catalog
+
+        async def _resolve(entry):
+            if entry["n"]:
+                raise RuntimeError("clone failed")
+            return entry
+
+        out = await asyncio.wait_for(catalog._gather_bounded([{"n": 0}, {"n": 1}], _resolve), 30)
+        assert out[0] == {"n": 0}
+        assert isinstance(out[1], RuntimeError)
+        assert not getattr(catalog, "_BACKGROUND_RESOLVES", set())
+
 
 # External registries must surface on the ONLINE catalog path.
 #

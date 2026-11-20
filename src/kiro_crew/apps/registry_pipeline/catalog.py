@@ -73,16 +73,57 @@ logger = logging.getLogger(_FACADE)
 # A manifest cache miss spawns a ``git clone``; on Windows asyncio's CreateProcess
 # runs on the loop thread, so an unbounded burst stalls the loop past its watchdog.
 _MANIFEST_RESOLVE_CONCURRENCY = 8
+# How long one listing waits for its manifest fetches. A clone can take up to
+# ``_CLONE_TIMEOUT`` and a cold cache pays one per row, so the listing answers at
+# this deadline with the rows it has; a fetch still running keeps going and fills
+# the cache for the next listing.
+_MANIFEST_LISTING_DEADLINE_S = 5.0
+# Fetches a listing stopped waiting for. Held so the loop does not drop them.
+_BACKGROUND_RESOLVES: set[asyncio.Task[Any]] = set()
+
+
+def _background_resolve_done(task: asyncio.Task[Any]) -> None:
+    _BACKGROUND_RESOLVES.discard(task)
+    if not task.cancelled():
+        task.exception()  # retrieved: a failed fetch is already logged where it failed
 
 
 async def _gather_bounded(entries: list[Any], resolve: Any) -> list[Any]:
+    """Resolve every entry, at most ``_MANIFEST_RESOLVE_CONCURRENCY`` at a time.
+
+    Answers in entry order, with an exception in place of a resolve that raised
+    and a ``TimeoutError`` in place of one still running at the listing deadline.
+    """
+    if not entries:
+        return []
+    # shortcut: the bound is per listing, so a listing that starts while an earlier
+    # one's fetches still run can add up to the bound again; a shared bound would
+    # make its cached rows wait behind those clones. Share it per source when
+    # overlapping listings show up as a clone burst.
     gate = asyncio.Semaphore(_MANIFEST_RESOLVE_CONCURRENCY)
 
     async def _one(entry: Any) -> Any:
         async with gate:
             return await resolve(entry)
 
-    return await asyncio.gather(*[_one(e) for e in entries], return_exceptions=True)
+    tasks = [asyncio.ensure_future(_one(e)) for e in entries]
+    try:
+        await asyncio.wait(tasks, timeout=_MANIFEST_LISTING_DEADLINE_S)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        raise
+    out: list[Any] = []
+    for task in tasks:
+        if not task.done():
+            _BACKGROUND_RESOLVES.add(task)
+            task.add_done_callback(_background_resolve_done)
+            out.append(TimeoutError("manifest fetch still running at the listing deadline"))
+        elif task.cancelled():
+            out.append(asyncio.CancelledError())
+        else:
+            out.append(task.exception() or task.result())
+    return out
 
 
 # Source type prefix for registry-installed apps.

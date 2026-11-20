@@ -642,6 +642,8 @@ if _typing.TYPE_CHECKING:
         time,
     )
     from kiro_crew.apps.registry_pipeline.catalog import (  # noqa: F401
+        _BACKGROUND_RESOLVES,
+        _MANIFEST_LISTING_DEADLINE_S,
         _MANIFEST_RESOLVE_CONCURRENCY,
         _VERSION_RELEASE_RE,
         _VERSION_STRING_RE,
@@ -650,6 +652,7 @@ if _typing.TYPE_CHECKING:
         SOURCE_REGISTRY_PREFIX,
         _append_external_registry_apps,
         _apply_trust_fields,
+        _background_resolve_done,
         _catalog_installable_rows,
         _catalog_row_supersedes_seed,
         _detect_installed_probe,
