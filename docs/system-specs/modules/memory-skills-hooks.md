@@ -575,8 +575,8 @@ One pass runs at a time per gateway process, across every session and every
 incognito and persistence checks and before it takes the session's lease. A queued
 pass holds no lease and its key stays in `_running`, so a duplicate trigger for it
 stays a no-op. The gate is released first in the pass's `finally`. Without it each
-idle or ending session started its own multi-minute pass, and several at once in
-the process serving HTTP and the websocket starved the event loop.
+idle or ending session would start its own multi-minute pass, and several at once in
+the process serving HTTP and the websocket would starve the event loop.
 
 For V2, `VectorMemoryStore.apply_consolidation` is the publication boundary.
 The original transcript snapshot determines a stable source span; the caller
@@ -607,10 +607,10 @@ maintenance and cannot hold the write lock during provider inference. Before a
 retry calls a provider, a committed receipt recovers a lost transcript progress
 acknowledgement and leaves later appended messages pending.
 
-Display-only rows (`history_projection.DISPLAY_ONLY_ROLES`, the `notice` role)
-never reach a consolidation or skill-detection prompt: they are drawn for the
-person reading the transcript, and the Slack thread-parent notice carries
-untrusted text. They stay in the snapshot, and a span holding nothing else
+Display-only rows (`history_projection.DISPLAY_ONLY_ROLES`, the `notice` and
+`card` roles) never reach a consolidation or skill-detection prompt: they are
+drawn for the person reading the transcript, the Slack thread-parent notice
+carries untrusted text, and a `card` row's state belongs to the card store. They stay in the snapshot, and a span holding nothing else
 costs no model call: a history pass marks it consolidated, while a
 skill-detection pass leaves the offset alone.
 
@@ -959,10 +959,10 @@ existing transcript's header probed on a worker thread and the mode copied in
 where it is missing or weaker (tighten-only, never creating a transcript).
 Serialized because the snapshot goes stale under live traffic: a reservation
 released after the snapshot restores the header and clears the row, and a stamp
-from the snapshot alone re-wrote the released mode into that header over a row
-that was gone -- which nothing loosens again (the sweep only tightens, from
+from the snapshot alone would re-write the released mode into that header over a
+row that is gone -- which nothing loosens again (the sweep only tightens, from
 rows; a later release of the same mode reads the stale stamp as its own
-`header_before`), so the thread's consolidation stayed refused for good. A flag
+`header_before`), so the thread's consolidation would stay refused for good. A flag
 tightened during the probe is re-stamped by the next pass, and a header that
 already records the mode costs no write (`needs_tightening`). The rows are
 capped at the module constant `session_map.PRIVACY_ROW_CAP` (the trackers' `PRIVACY_LRU_MAX`), held
@@ -985,8 +985,8 @@ through `run_in_memory_background_pool` (the `mc-membg` pool, which admits two
 consolidation passes at a time) because
 `_consolidate` runs on the gateway event loop, and a slow or hung embed inline
 would stall heartbeats, Slack, and the dashboard. It is not `mc-embed`: turn
-context (`build_message`) runs there, and a backlog of consolidation passes once
-held seven of its eight workers. The gateway's embedding backfill and member
+context (`build_message`) runs there, and a backlog of consolidation passes could
+hold most of its eight workers. The gateway's embedding backfill and member
 repair loops run on `mc-membg` too, on two threads of their own outside that
 admission, so a backfill that runs for hours never takes a consolidation worker
 and background memory work waits only for itself. An app's batch embed
