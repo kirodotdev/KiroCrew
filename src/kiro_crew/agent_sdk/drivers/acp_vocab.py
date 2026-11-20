@@ -112,6 +112,7 @@ __all__ = [
     "STOP_RECOVERY_MAX_RETRIES",
     "TERMINAL_TOOL_STATUSES",
     "WAIT_REASON_INPUT",
+    "AcpError",
     "AcpRequestTimeout",
     # The runtime family outside ``AcpError``: a session start the backend
     # refuses (a KAS engine that cannot be fetched) raises it.
