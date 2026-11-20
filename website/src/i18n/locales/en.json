@@ -6827,7 +6827,6 @@
       "past_version": "Past version: read only",
       "linked_file": "Linked file: read only",
       "load_failed": "The canvas couldn't load",
-      "hidden_text": "Hidden text: read only",
       "zoom_menu": "Zoom options",
       "reset_zoom": "Reset zoom to 100%",
       "saturation_brightness": "Saturation and brightness",

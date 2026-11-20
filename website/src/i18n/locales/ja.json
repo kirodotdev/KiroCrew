@@ -11486,7 +11486,6 @@
       "past_version": "過去のバージョン：読み取り専用",
       "linked_file": "リンクされたファイル：読み取り専用",
       "load_failed": "キャンバスを読み込めませんでした",
-      "hidden_text": "非表示のテキスト：読み取り専用",
       "zoom_menu": "ズームオプション",
       "reset_zoom": "ズームを100%にリセット",
       "saturation_brightness": "彩度と明度",

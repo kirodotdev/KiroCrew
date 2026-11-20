@@ -34,15 +34,15 @@ function mount() {
 }
 
 describe('the canvas edit callback across read-only transitions', () => {
-  it('refuses a retained edit callback after adopting masked content', async () => {
+  it('refuses a retained edit callback after adopting a linked-file read', async () => {
     const { rerender, body, onChange } = mount()
-    const masked = { ...initial, shapes: initial.shapes.map(s => ({ ...s, text: '[REDACTED]' })) }
-    rerender(body(artifact(masked, { content_redacted: true, content_token: 'tMasked' })))
+    const linked = { ...initial, shapes: initial.shapes.map(s => ({ ...s, text: 'On disk' })) }
+    rerender(body(artifact(linked, { content_token: undefined, source_path: '/boards/board.canvas' })))
     expect(vi.mocked(CanvasEditor).mock.lastCall?.[0].readOnly).toBe(true)
-    act(() => { onChange({ ...masked, shapes: masked.shapes.map(s => ({ ...s, hex: '#123456' })) }) })
+    act(() => { onChange({ ...linked, shapes: linked.shapes.map(s => ({ ...s, hex: '#123456' })) }) })
     await act(async () => { expect(await flushCanvas('board')).toBe(true) })
     expect(api.updateArtifact).not.toHaveBeenCalled()
-    expect(canvasDocument('board')).toBe(serializeCanvas(masked))
+    expect(canvasDocument('board')).toBe(serializeCanvas(linked))
   })
 
   it('still flushes a valid pending draft after switching to a past version', async () => {

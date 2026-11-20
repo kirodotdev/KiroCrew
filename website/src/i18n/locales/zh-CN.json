@@ -11486,7 +11486,6 @@
       "past_version": "历史版本：只读",
       "linked_file": "关联文件：只读",
       "load_failed": "无法加载画布",
-      "hidden_text": "隐藏的文本：只读",
       "zoom_menu": "缩放选项",
       "reset_zoom": "将缩放重置为 100%",
       "saturation_brightness": "饱和度和亮度",

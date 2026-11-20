@@ -12028,7 +12028,6 @@
       "past_version": "Versión anterior: solo lectura",
       "linked_file": "Archivo vinculado: solo lectura",
       "load_failed": "No se pudo cargar el lienzo",
-      "hidden_text": "Texto oculto: solo lectura",
       "zoom_menu": "Opciones de zoom",
       "reset_zoom": "Restablecer el zoom al 100 %",
       "saturation_brightness": "Saturación y brillo",

@@ -23,6 +23,11 @@ from kiro_crew.artifacts import (
     has_unthemed_hardcoded_colors,
     webapp_metadata_from_dict,
 )
+from kiro_crew.dashboard.artifact_masked_merge import (
+    MaskedMergeError,
+    carries_placeholder,
+    restore_masked_values,
+)
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session
 from kiro_crew.dashboard.handlers.artifacts_parts.dashboard_package_gate import (
     _SNAPSHOT_ABSENT,
@@ -36,7 +41,10 @@ from kiro_crew.dashboard.handlers.artifacts_parts.dashboard_package_gate import 
     _promote_verdict,
     _stored_snapshot_for,
 )
-from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import _serialize
+from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import (
+    _redact_text,
+    _serialize,
+)
 from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _artifact_source_for_request,
     _audit,
@@ -54,6 +62,16 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     logger,
 )
 from kiro_crew.dashboard.handlers.artifacts_parts.session_documents import _collision_report
+
+
+def _keep_masked_canvas_values(slug: str, stored_content: str, content: str) -> str:
+    """*content* with the values a masked canvas read hid put back; other kinds as sent.
+
+    Blocking file IO, so callers run it off the event loop.
+    """
+    if get_default_store().get(slug).kind != "canvas":
+        return content
+    return restore_masked_values(stored_content, content, _redact_text)
 
 
 def _validate_inbound_webapp_metadata(body: dict[str, Any]) -> str | None:
@@ -724,6 +742,33 @@ async def api_artifact_update(request: web.Request) -> web.Response:
         # compare-and-set for every other kind, untouched, because the editor's
         # autosave depends on a prose write not being fenced it never asked for.
         expected_token = body.get("expected_token")
+        content = body.get("content")
+        # A canvas autosave built from a masked read carries placeholders where the
+        # stored document holds credential values: put those values back so the
+        # owner's edit keeps them. Only against the version the save names (any
+        # other answers 409 below anyway), and only for the owner's own dashboard.
+        if (
+            not is_mcp
+            and isinstance(content, str)
+            and raw_kind is None
+            and isinstance(stored_content, str)
+            and expected_token
+            and expected_token == stored_token
+            and carries_placeholder(content)
+        ):
+            try:
+                content = await _run_off_loop(
+                    lambda: _keep_masked_canvas_values(slug, stored_content, content)
+                )
+            except MaskedMergeError as exc:
+                _audit(
+                    tool="artifact_update",
+                    request=request,
+                    outcome="denied",
+                    error=str(exc),
+                    extra={"slug": slug},
+                )
+                return _err(f"{exc}; nothing was written")
         # OFF the event loop: update() writes current.html, a version snapshot
         # and -- for a linked artifact -- the source file itself, so running it
         # inline stalls the gateway for every other session on a large file or a
@@ -734,7 +779,7 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             lambda: get_default_store().update(
                 slug,
                 kind=raw_kind,
-                content=body.get("content"),
+                content=content,
                 description=body.get("description"),
                 tags=body.get("tags"),
                 name=body.get("name"),
