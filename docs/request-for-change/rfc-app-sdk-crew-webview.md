@@ -3,8 +3,8 @@ title: App SDK for the Crew Webview — app templates, live data, a lifecycle fe
 status: draft
 author: iamwhatever
 created: 2026-09-27
-last-audited: 2026-09-28
-audited-at: dceaca3a95
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
 implementation-prs: []
 tracking-issues: []

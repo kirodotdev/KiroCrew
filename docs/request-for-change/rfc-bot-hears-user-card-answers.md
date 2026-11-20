@@ -1,10 +1,10 @@
 ---
 title: A Bot wakes for one turn when the user answers its card or runs its command
-status: accepted
+status: implemented
 author: buluoray, with kirocrew-worker
 created: 2026-11-16
-last-audited: 2026-11-16
-audited-at: e1d7ff2428
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 32182
 implementation-prs: [32182]
 tracking-issues: []
@@ -14,10 +14,11 @@ superseded-by: []
 
 # RFC: A Bot wakes for one turn when the user answers its card or runs its command
 
-Status: accepted. The repository owner (buluoray) decided on 2026-11-16 to
+Status: implemented. The repository owner (buluoray) decided on 2026-11-16 to
 keep this behaviour and to record it here, in the same pull request that builds
-it ([#32182](https://github.com/kirodotdev/KiroCrew/pull/32182)). It takes
-effect when that pull request merges. Every code reference was read at
+it ([#32182](https://github.com/kirodotdev/KiroCrew/pull/32182)), which merged
+on 2026-11-17 (`dashboard/mate_user_actions.py`,
+queued by `dashboard/mate_thread_wakes.py`). Every code reference was read at
 `e1d7ff2428` with #32182 applied.
 
 Related: [`rfc-crewmate-goals.md`](rfc-crewmate-goals.md) (its §3.8 wakes a Bot
