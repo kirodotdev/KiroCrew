@@ -19,7 +19,7 @@ from dashboard_owner_helpers import as_owner
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.connections import get_provider, tool_test
 from kiro_crew.dashboard.handlers import connections
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import await_until, finished
 
 
 def _provider() -> dict[str, Any]:
@@ -151,6 +151,43 @@ async def test_timeout_returns_failed_and_still_shuts_down(fake_client):
 
     assert result["verdict"] == "failed"
     assert result["code"] == "connection_test_timeout"
+    assert fake_client.instances[-1].shutdown_called is True
+
+
+@pytest.mark.asyncio
+async def test_a_start_the_batch_deadline_cuts_is_a_startup_timeout(
+    fake_client, monkeypatch, tmp_path
+):
+    # The startup metric files a start its caller's deadline cut as `timeout` (a
+    # startup fault) and any other cancel as `cancelled`. A zero deadline has run
+    # out by the time the start first waits, so no clock decides the run.
+    from kiro_crew.startup_deadline import cancel_outcome
+
+    outcomes: list[str | None] = []
+
+    async def hung_start(client) -> None:
+        try:
+            await asyncio.Event().wait()  # unblocked only by the deadline
+        except asyncio.CancelledError as exc:
+            outcomes.append(cancel_outcome(exc))
+            raise
+
+    monkeypatch.setattr(fake_client, "ensure_ready", hung_start)
+
+    result = await finished(
+        acp_driver.run_kiro_native_commands(
+            ("/mcp", "/tools"),
+            work_dir=tmp_path,
+            agent="kirocrew",
+            session_key="connection-test-linear",
+            timeout_seconds=0,
+        ),
+        "native command batch",
+    )
+
+    assert outcomes == ["timeout"]
+    assert result == ("connection_test_timeout", [])
+    assert fake_client.instances[-1].commands == []
     assert fake_client.instances[-1].shutdown_called is True
 
 
