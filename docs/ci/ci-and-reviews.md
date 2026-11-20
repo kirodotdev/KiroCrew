@@ -828,7 +828,10 @@ only this check honours it, so the paths such a doc cites into today's code are
 still checked. A name defined outside this repository (a vendor API, another
 harness, an OS facility) goes in `.github/docs-lint-external-identifiers.txt`,
 under a comment naming its source. Never list a name this repo defines: the list
-would hide its rename.
+would hide its rename. docs-lint holds the list to that rule: a listed name the code
+now defines is a `dead-identifier` finding against the list file, and unlike a doc's
+dead identifier it fails the run without `--strict-identifiers`, until the line is
+deleted.
 
 The builtin app tree is the mirror image of that exemption: it keeps every fact
 check and every link check, and drops only the two CURATION rules, reachability and
