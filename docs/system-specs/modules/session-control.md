@@ -2298,7 +2298,11 @@ facts, and any it cannot establish answers **false**.
    DM whose pairing a gateway restart dropped, until the DM is re-opened or its
    peer writes into it. That is `MIRROR_PEER_NOT_ON_RECORD`, the counterpart of
    `ORIGIN_NOT_ON_RECORD`: it names both causes and states the remedy for the DM
-   it may be and for nothing else. Every other outcome is the roster clause's own
+   it may be and for nothing else. With exactly one allow-listed user, the gateway
+   re-opens that user's DM once Discord is READY (`discord.gateway._reopen_owner_dm`,
+   the `create_dm_channel` call the connect row makes), so a restart drops the
+   owner's pairing only until then and a conductor whose tab or Bot thread mirrors
+   to that DM keeps reaching its workers. Every other outcome is the roster clause's own
    refusal: a DM the transport DOES place, with a peer the roster does not name as
    its sole owner — a stranger's DM, or the owner's DM on a roster that names two
    people — refuses with the same words the channel-born shape uses.
