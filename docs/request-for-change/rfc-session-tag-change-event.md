@@ -1,13 +1,13 @@
 ---
 title: Session Tag-Change Event as a server-side signal on lane transitions
-status: in-review
+status: draft
 author: (issue #7663 author)
 created: 2026-09-02
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 10930
-implementation-prs: [7669]
-implementation-scope: partial — 7669 (not merged) carries the delta-only payload, the dispatcher and the two `chat_tags.py` emit sites; it defers folder inheritance (written, held back for review size), channel first-filing, the choke point and re-entrancy
+implementation-prs: [7669, 32962, 36132]
+implementation-scope: partial — 7669 closed unmerged; 32962 and 36132 ship phases 1 and 3 as `SessionLaneChanged`; phase 2 (`origin`, `hook_reentry_depth`) is not built
 tracking-issues: [13865]
 supersedes: []
 superseded-by: []
@@ -21,11 +21,13 @@ fires when a session's **status** tags change, so an automation can respond to a
 lane transition, the motivating case being a close-out prompt that runs when a
 session enters **Done**. It argues for reusing the existing script-hook engine
 rather than adding a subsystem, and settles the four design questions the issue
-flagged as expensive to reverse once anything subscribes. It is a design of
-record only: nothing here is on main.
+flagged as expensive to reverse once anything subscribes. No acceptance is
+recorded. Phases 1 and 3 are on main under the name `SessionLaneChanged`
+([#32962](https://github.com/kirodotdev/KiroCrew/pull/32962),
+[#36132](https://github.com/kirodotdev/KiroCrew/pull/36132)); phase 2 is not.
 
 > **Event name.** This document proposes the event as `SessionTagsChanged`; the
-> implementation PR #7669, which is not merged, names it **`SessionLaneChanged`**, because the event fires on a
+> first implementation PR #7669 (closed unmerged) and the shipped #32962 name it **`SessionLaneChanged`**, because the event fires on a
 > change to a session's **status** tags — a board-lane transition — and not on a
 > change to its tags generally. The name below is the proposal as written; read
 > every `SessionTagsChanged` in this document as `SessionLaneChanged`.
