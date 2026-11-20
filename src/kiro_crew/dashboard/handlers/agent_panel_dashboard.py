@@ -702,7 +702,8 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
     (`rfc-crewmate-dynamic-dashboard.md`, "a page goes live on apply").
 
     The body carries the three declarations -- ``model``, ``view`` and ``theme`` --
-    and the gateway supplies the other two keys of the package: ``kind``, which is
+    and an optional ``widgets`` list (sent, it replaces the stored one; left out, the
+    stored one is kept), and the gateway supplies the other two keys of the package: ``kind``, which is
     fixed, and ``bound_to``, which is the authorization decision. A caller that sends
     either is refused by the argument schema. Because ``bound_to`` is derived from the
     vetted caller, this route only ever writes the caller's OWN package.
@@ -748,6 +749,11 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
         "view": args.get("view"),
         "theme": args.get("theme"),
     }
+    # Sent widgets REPLACE the stored ones (an empty list removes them); a save
+    # that leaves the key out keeps what is stored, as before widgets existed.
+    widgets_sent = "widgets" in args
+    if widgets_sent:
+        package["widgets"] = args["widgets"]
     where = _credential_shaped_names(package)
     if where:
         # REFUSED HERE, before anything is written, and by the page's own rule. The
@@ -791,8 +797,8 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
     def _keep_stored_widgets(content: str, stored: dict[str, Any]) -> str:
         """*content* with the stored package's ``widgets`` carried forward.
 
-        A save sends only ``model`` / ``view`` / ``theme``, so rebuilding the package
-        from them alone would silently erase widgets written another way. They are
+        A save that leaves ``widgets`` out sends only ``model`` / ``view`` / ``theme``,
+        so rebuilding the package from them alone would silently erase widgets written another way. They are
         re-validated against the NEW model: a save that drops a field a widget binds
         is refused, saying so, rather than storing widgets that point at nothing.
         """
@@ -832,7 +838,8 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
                     f"the dashboard package {existing!r} is not bound to you any more; "
                     "nothing was written -- save again"
                 )
-            content = _keep_stored_widgets(content, stored)
+            if not widgets_sent:
+                content = _keep_stored_widgets(content, stored)
             art = store.update(
                 existing,
                 content=content,

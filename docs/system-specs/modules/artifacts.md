@@ -1752,7 +1752,11 @@ folds and the agentic projection only. Every widget refusal is passed through
 `redact_via_context` before it is raised, since it quotes what the author wrote.
 `widgets` is layout: `_layout_fingerprint` hashes it when present, so a
 widgets-only edit is a new version, and `revert_package` brings the target
-version's widgets back with the rest of its layout.
+version's widgets back with the rest of its layout. `dashboard_save` takes an
+optional `widgets` argument: sent, it replaces the stored widgets (`[]` removes
+them); left out, the save carries the stored widgets forward and refuses a new
+model that would break them. The dashboard skill's "Phone widgets" section is
+what an agent reads to write one, and its example is validated by a test.
 
 ### Canvases (`kind="canvas"`)
 
