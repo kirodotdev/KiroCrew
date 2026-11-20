@@ -43,7 +43,9 @@ be cut, and the last :data:`~.stream.TAIL` characters, so a partial anchor is
 never committed. A unit decided while still running (a private-key block with no
 END past its bound) is replaced and the stream drops input to that unit's end
 (:func:`discard_run`). Each committed window is read after the raw text that
-preceded it (:func:`look_behind`), as the whole text reads it.
+preceded it (:func:`look_behind`), as the whole text reads it. A read that fails
+while the detectors can still load holds the whole buffer, never a cut chosen
+without them.
 """
 
 from __future__ import annotations
@@ -110,7 +112,9 @@ def old_rule(rule_id: str) -> str:
 # ── Detectors ──
 
 #: Set once a load fails, so a broken table costs one failed import per process
-#: rather than one per call; every plan then fails closed.
+#: rather than one per call; every plan then fails closed. A ``RecursionError``
+#: or ``MemoryError`` does not set it: that is the caller's exhausted stack or
+#: heap at that one call, not the table.
 _LOAD_FAILED = False
 
 #: Serializes the first load. Redaction's first call can come from two threads
@@ -148,6 +152,12 @@ def _load() -> None:
 
             table.TABLE  # noqa: B018 - built at import; a bad row raises there
             engine.scan  # noqa: B018
+        except (RecursionError, MemoryError):
+            # The caller's stack or heap ran out at this call, which says
+            # nothing about the table: this plan fails closed, the next one
+            # loads again. A table whose own import recursed without end
+            # would be retried, and fail closed, on every plan.
+            raise
         except Exception:
             _LOAD_FAILED = True
             raise
@@ -392,8 +402,15 @@ def _tail_cut(buf: str, base: int, cut: int) -> int:
 def stream_read(context: str, buf: str, *, boundary: bool = False) -> StreamRead | None:
     """The detectors' hold on ``buf`` read after ``context``.
 
-    None when the detectors cannot load: the batch plan fails closed on the same
-    error, so there is nothing to hold for.
+    None only once a load has failed for good (``_LOAD_FAILED``): every later batch
+    plan fails closed over its whole window, so there is nothing to hold for. Any
+    other failure to read (a ``RecursionError`` or ``MemoryError`` that left the
+    detectors loadable, or an error inside the read itself) holds the whole buffer
+    as undecided: the next batch plan may succeed, and a cut chosen without the
+    detectors could split a credential and stream its unanchored tail as written.
+    shortcut: while reads keep failing, nothing with no credential anchor is
+    committed until a read succeeds or the stream flushes (whose batch plan fails
+    closed on a failure); bound the hold if a read can fail for a whole long turn.
 
     With ``boundary`` (a display boundary: a tool call, a prompt, the turn's end)
     the fixed :data:`~.stream.TAIL` hold is skipped; every unit still undecided and
@@ -412,7 +429,9 @@ def stream_read(context: str, buf: str, *, boundary: bool = False) -> StreamRead
         with look_behind(context, buf):
             read = _read(buf, final=False)
     except Exception:
-        return None
+        if _LOAD_FAILED:
+            return None
+        return StreamRead(0, undecided=True)
     base, open_from = read.base, read.replace_open_from
     # An Identifier-value hit (a structure reading that is not structural).
     resolved = [
