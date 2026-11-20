@@ -123,10 +123,11 @@ class AgentConfig:
             "(agent.model) and then to the provider default, so an unpinned "
             "role stays usable on every subscription tier. Pin a cheaper model "
             "here to run background / sub-agent work on it without changing the "
-            "interactive chat default. A 'subagent' pin runs each spawned "
-            "sub-agent in its own runtime (its own agent process and MCP "
-            "servers, about 0.55 GB of memory each) where it could otherwise "
-            "share the parent chat's.",
+            "interactive chat default. A 'subagent' pin still shares the parent "
+            "chat's runtime where its backend sets a model per session (kiro-cli "
+            "and codex) and no reasoning effort applies; elsewhere it runs each "
+            "spawned sub-agent in its own runtime (its own agent process and MCP "
+            "servers, about 0.55 GB of memory each).",
         ),
     )
     role_efforts: dict[str, str] = field(
@@ -136,10 +137,9 @@ class AgentConfig:
             "Optional per-task-class reasoning effort, paired with role_models "
             "(keys: 'background', 'subagent', 'subagent_light'). Empty for a role inherits the chat "
             "default (agent.reasoning_effort) and then the provider/model default. "
-            "Only applies on reasoning-capable models. Like a model pin, a "
-            "'subagent' effort runs each spawned sub-agent in its own runtime "
-            "(about 0.55 GB of memory each) where it could otherwise share the "
-            "parent chat's.",
+            "Only applies on reasoning-capable models. A 'subagent' effort "
+            "runs each spawned sub-agent in its own runtime (about 0.55 GB of "
+            "memory each) where it could otherwise share the parent chat's.",
         ),
     )
     model_context_tokens: dict[str, int] = field(
@@ -1655,9 +1655,9 @@ class AgentConfig:
             "agent.role_efforts.subagent_light for whichever of the two its call "
             "left unset; a model or effort the call names always wins. A spawn "
             "that names an agent, a crew or a backend is not changed. A pinned "
-            "model or effort starts the sub-agent in its own process, as any "
-            "per-spawn pin does. Off by default: with it off every spawn picks the "
-            "model and effort it always has.",
+            "model or effort decides whether the sub-agent shares its parent's "
+            "process the way any per-spawn pin does. Off by default: with it off "
+            "every spawn picks the model and effort it always has.",
         ),
     )
     subagent_max_turns: int = field(

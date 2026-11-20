@@ -8,15 +8,18 @@ fresh processes — and that fallback to legacy path works correctly.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from kiro_crew.acp.runtime import AcpRuntimeDead
 from kiro_crew.acp.session_provider import AcpSessionProvider
-from kiro_crew.acp.types import AcpEvent
+from kiro_crew.acp.types import ACP_BACKEND_CODEX, ACP_BACKEND_KIRO, AcpEvent
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.testing.wait import async_wait_until, await_until
@@ -216,12 +219,11 @@ class TestSessionSharingDecision:
 
         from kiro_crew.subagent import SubagentInfo
 
-        # model override forces CC path
         info = SubagentInfo(
             id="test4",
             task="hello",
             parent_session_key="dashboard:slot1",
-            model="opus-4",
+            allowed_tools=["read"],
         )
         with _cfg_patch(session_sharing=True):
             result = manager._should_use_session_sharing(info)
@@ -243,6 +245,217 @@ class TestSessionSharingDecision:
         with _cfg_patch(session_sharing=True):
             result = manager._should_use_session_sharing(info)
         assert result is False
+
+
+#: A model id no catalog lists, so every harness takes it as its own pin.
+_PIN = "pin-model-x"
+
+
+def _pinned_parent(sessions: MagicMock, backend: str = ACP_BACKEND_KIRO, **caps: bool) -> MagicMock:
+    """Give *sessions* a live parent on *backend*, and a shared session that records its model.
+
+    The parent answers only the capability question (``capabilities``), as a real
+    provider does; *caps* overrides one answer for a harness that lacks it.
+    """
+    sessions.get_provider = MagicMock(
+        return_value=SimpleNamespace(
+            capabilities=dataclasses.replace(capabilities_for(backend), **caps)
+        )
+    )
+    runtime = sessions.get_subagent_runtime.return_value
+    runtime.acp_backend = backend
+    handle = runtime.create_session.return_value
+    handle.available_models = [{"modelId": _PIN}]
+    handle.model_pin_refused = ""
+    handle.set_model = AsyncMock()
+    return handle
+
+
+def _pin_cfg_patch(*, inherited_effort: str = "", role_model: str = "", role_effort: str = ""):
+    """``_cfg_patch`` with the three config answers a pinned start reads."""
+    cfg = MagicMock()
+    cfg.agent.session_sharing = True
+    cfg.agent.spawn_min_memory_gb = 0
+    cfg.agent.subagent_cwd_allowed_roots = ["~/workspace", "~/workplace"]
+    cfg.agent.role_models = {"subagent": role_model} if role_model else {}
+    cfg.agent.role_efforts = {"subagent": role_effort} if role_effort else {}
+    cfg.resolve_session_effort = MagicMock(return_value=inherited_effort)
+    # The factory's selection: an in-scope pin comes back as itself.
+    cfg.acp_effective_model = MagicMock(side_effect=lambda _agent, model, **_kw: model)
+    return patch("kiro_crew.subagent.KiroCrewConfig.load", return_value=cfg)
+
+
+class TestPinnedModelSharing:
+    """A run started on a model shares its parent's runtime where that runtime
+    can put one session on it, and takes a process of its own everywhere else."""
+
+    @staticmethod
+    def _manager(sessions: MagicMock) -> SubagentManager:
+        return SubagentManager(
+            sessions=sessions, ctx_builder=_mock_ctx_builder_auto(), is_yolo=lambda: True
+        )
+
+    @staticmethod
+    def _info(**kwargs) -> SubagentInfo:
+        kwargs.setdefault("agent", "kirocrew")
+        return SubagentInfo(id="pinned", task="t", parent_session_key="dashboard:slot1", **kwargs)
+
+    @pytest.mark.parametrize(
+        "backend",
+        [pytest.param(ACP_BACKEND_KIRO, id="kiro"), pytest.param(ACP_BACKEND_CODEX, id="codex")],
+    )
+    @pytest.mark.parametrize(
+        "pin",
+        [
+            pytest.param({"model": _PIN}, id="per-spawn"),
+            pytest.param({"routed_model": _PIN}, id="routed"),
+        ],
+    )
+    def test_a_pinned_run_shares_on_a_per_session_model_backend(self, backend, pin):
+        sessions = _mock_sessions(sharing_eligible=True)
+        _pinned_parent(sessions, backend)
+        with _pin_cfg_patch():
+            plan = self._manager(sessions)._sharing_plan(self._info(**pin))
+        assert plan.shared is True
+        assert plan.eff_model == _PIN
+
+    def test_a_role_model_shares_like_a_per_spawn_one(self):
+        sessions = _mock_sessions(sharing_eligible=True)
+        _pinned_parent(sessions)
+        with _pin_cfg_patch(role_model=_PIN):
+            plan = self._manager(sessions)._sharing_plan(self._info())
+        assert (plan.eff_model, plan.shared) == (_PIN, True)
+
+    def test_a_backend_without_the_capability_takes_a_dedicated_process(self):
+        """Sharing-eligible is not enough: the per-session model is its own answer."""
+        sessions = _mock_sessions(sharing_eligible=True)
+        _pinned_parent(sessions, takes_model_per_session=False)
+        manager = self._manager(sessions)
+        with _pin_cfg_patch():
+            assert manager._sharing_plan(self._info(model=_PIN)).shared is False
+            # The same run without its model would share, so the pin is the reason.
+            assert manager._sharing_plan(self._info()).shared is True
+
+    def test_a_parent_that_cannot_answer_takes_a_dedicated_process(self):
+        """A double with no capability record reads as every capability withheld."""
+        sessions = _mock_sessions(sharing_eligible=True)
+        with _pin_cfg_patch():
+            assert self._manager(sessions)._sharing_plan(self._info(model=_PIN)).shared is False
+
+    def test_a_pin_another_harness_owns_keeps_the_dedicated_start(self, monkeypatch):
+        """The factory lets a foreign pin defer to the next tier; a shared session has none."""
+        from kiro_crew import model_registry
+
+        monkeypatch.setattr(
+            model_registry, "_ADVERTISED_MODELS", {"acp": ["served-a"], "codex": [_PIN]}
+        )
+        sessions = _mock_sessions(sharing_eligible=True)
+        _pinned_parent(sessions, ACP_BACKEND_KIRO)
+        manager = self._manager(sessions)
+        with _pin_cfg_patch():
+            assert manager._sharing_plan(self._info(model=_PIN)).shared is False
+            assert manager._sharing_plan(self._info(model="served-a")).shared is True
+
+    @pytest.mark.parametrize(
+        "effort",
+        [
+            pytest.param({"info": {"reasoning_effort": "high"}}, id="per-spawn-effort"),
+            pytest.param({"cfg": {"role_effort": "high"}}, id="role-effort"),
+            pytest.param({"cfg": {"inherited_effort": "high"}}, id="config-default-effort"),
+        ],
+    )
+    def test_an_effort_with_the_model_pin_keeps_the_dedicated_start(self, effort):
+        """A level is applied when a process starts, never to a session that joins one."""
+        sessions = _mock_sessions(sharing_eligible=True)
+        _pinned_parent(sessions)
+        with _pin_cfg_patch(**effort.get("cfg", {})):
+            plan = self._manager(sessions)._sharing_plan(
+                self._info(model=_PIN, **effort.get("info", {}))
+            )
+        assert plan.shared is False
+
+    def test_a_kept_run_owns_its_process_whatever_its_model(self):
+        """``spawn_continue`` of a shared pinned child resumes on a dedicated process,
+        where the same pin is applied by the same function."""
+        sessions = _mock_sessions(sharing_eligible=True)
+        _pinned_parent(sessions)
+        with _pin_cfg_patch():
+            plan = self._manager(sessions)._sharing_plan(self._info(model=_PIN, keep=True))
+        assert (plan.eff_model, plan.shared) == (_PIN, False)
+
+    @pytest.mark.asyncio
+    async def test_the_shared_session_is_put_on_the_pinned_model(self):
+        sessions = _mock_sessions(sharing_eligible=True)
+        handle = _pinned_parent(sessions)
+        manager = self._manager(sessions)
+        with _pin_cfg_patch(), patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            info = manager.spawn("t", parent_session_key="dashboard:slot1", model=_PIN)
+            await _wait_until_done(info)
+
+        assert info._session_sharing is True
+        sessions.get_or_create.assert_not_awaited()
+        handle.set_model.assert_awaited_once_with(_PIN)
+        assert info.requested_model == _PIN
+
+    @pytest.mark.asyncio
+    async def test_an_unpinned_shared_session_is_sent_no_model(self):
+        sessions = _mock_sessions(sharing_eligible=True)
+        handle = _pinned_parent(sessions)
+        manager = self._manager(sessions)
+        with _pin_cfg_patch(), patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            info = manager.spawn("t", parent_session_key="dashboard:slot1")
+            await _wait_until_done(info)
+
+        assert info._session_sharing is True
+        handle.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_two_spawns_with_different_pins_each_get_their_own(self):
+        """One runtime, two sessions, two models: the pin follows the session."""
+        sessions = _mock_sessions(sharing_eligible=True)
+        template = _pinned_parent(sessions)
+        handles: dict[str, MagicMock] = {}
+
+        async def _create_session(*, session_key: str, **_kwargs):
+            handle = MagicMock()
+            handle.session_id = f"shared-{len(handles)}"
+            handle.memory_mode = "persistent"
+            handle.is_turn_active = False
+            handle.destroy = AsyncMock()
+            handle.prompt = template.prompt
+            handle.last_prompt_stats = template.last_prompt_stats
+            handle.available_models = [{"modelId": _PIN}, {"modelId": "pin-model-y"}]
+            handle.model_pin_refused = ""
+            handle.set_model = AsyncMock()
+            handles[session_key] = handle
+            return handle
+
+        sessions.get_subagent_runtime.return_value.create_session = _create_session
+        manager = self._manager(sessions)
+        manager._spawn_stagger_secs = 0.0
+        with _pin_cfg_patch(), patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            one = manager.spawn("a", parent_session_key="dashboard:slot1", model=_PIN)
+            two = manager.spawn("b", parent_session_key="dashboard:slot1", model="pin-model-y")
+            await _wait_until_done(one)
+            await _wait_until_done(two)
+
+        sent = {key: handle.set_model.await_args.args for key, handle in handles.items()}
+        assert sent == {f"subagent:{one.id}": (_PIN,), f"subagent:{two.id}": ("pin-model-y",)}
+
+    @pytest.mark.asyncio
+    async def test_a_model_write_that_fails_keeps_the_shared_session(self):
+        """As on a dedicated start: the run goes on, on the model the session has."""
+        sessions = _mock_sessions(sharing_eligible=True)
+        handle = _pinned_parent(sessions)
+        handle.set_model = AsyncMock(side_effect=RuntimeError("write refused"))
+        manager = self._manager(sessions)
+        with _pin_cfg_patch(), patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            info = manager.spawn("t", parent_session_key="dashboard:slot1", model=_PIN)
+            await _wait_until_done(info)
+
+        assert info._session_sharing is True
+        assert not info.error
+        sessions.get_or_create.assert_not_awaited()
 
 
 class TestSessionSharingSpawn:

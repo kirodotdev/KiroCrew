@@ -45,9 +45,11 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         LLMProvider,
         SubagentInfo,
+        _apply_shared_start_model,
         _cost_bucket,
         _dedicated_start_price_gb,
         _host_memory_reading_off_loop,
+        _pinned_model_shares,
         _selection_kind,
         _SharingPlan,
         _spawn_memory_floor_and_cost,
@@ -62,11 +64,12 @@ if TYPE_CHECKING:
 
 
 def _should_use_session_sharing_impl(self: RunEventCoordinator, info: SubagentInfo) -> bool:
-    """Decide whether a subagent should use the shared-runtime path.
+    """Decide whether a subagent should use the shared-runtime path, its pins aside.
 
     All must hold: session_sharing config True; parent session exists and
-    is ACP/kiro-backed (not CC); not a CC-specific spawn (model/allowed_tools/bare);
-    no per-spawn backend.
+    is ACP/kiro-backed (not CC); not a CC-specific spawn (allowed_tools/bare);
+    no per-spawn backend. A model or effort the run was started on is the
+    sharing plan's question (:meth:`_sharing_plan_impl`), not this one's.
     """
     # Member capability and native prompt documents are prepared at launch.
     if info._force_dedicated:
@@ -79,7 +82,7 @@ def _should_use_session_sharing_impl(self: RunEventCoordinator, info: SubagentIn
             return False
     except Exception:
         return False
-    if info.model or info.routed_model or info.allowed_tools or info.bare:
+    if info.allowed_tools or info.bare:
         return False
     # The shared runtime is the parent's own process, on the parent's backend:
     # a run asked onto a backend of its own needs a process of its own.
@@ -104,11 +107,14 @@ def _sharing_plan_impl(
     the price can never follow a copy of the rule that drifted. Shared needs
     template execution, no ``keep`` (a kept or continued run owns its
     process), :meth:`_should_use_session_sharing_impl`, and no per-spawn or
-    per-role model / reasoning-effort pin: a pin cannot be applied to the
+    per-role reasoning-effort pin: an effort cannot be applied to the
     parent's already-started runtime, so it forces the dedicated process
-    where the override reaches the provider factory. Eligibility is the
-    backend's opt-in membership (``is_session_sharing_eligible``); nothing
-    here names a harness. *cfg* is a config the caller already loaded.
+    where the override reaches the provider factory. A model (per-spawn,
+    per-role or routed) shares only where :func:`_pinned_model_shares` says
+    the parent's runtime can put one session on it; the shared session is
+    then put on it by ``_bind_shared_handle_impl``. Eligibility and that
+    answer are the backend's opt-in capabilities; nothing here names a
+    harness. *cfg* is a config the caller already loaded.
 
     A run whose ``cwd`` binds another AWS profile (``aws.project_profiles``)
     than the binding set on the parent also takes the dedicated arm, where
@@ -130,20 +136,33 @@ def _sharing_plan_impl(
     shared = (
         kind == "template"
         and not info.keep
-        and not (eff_model or eff_effort)
+        and not eff_effort
         and self._manager._should_use_session_sharing(info)
     )
-    if shared and self._aws_profile_split_possible(info):
-        if child_aws_profile is None:
-            shared = False
-        else:
-            differs = getattr(self._manager._sessions, "aws_profile_differs_from_parent", None)
-            if (
-                differs is not None
-                and differs(info.parent_session_key, child_aws_profile.name) is True
-            ):
-                shared = False
+    if shared and eff_model:
+        shared = _pinned_model_shares(self._manager._sessions, info, eff_model, cfg)
+    if shared and self._aws_profile_rules_out_sharing(info, child_aws_profile):
+        shared = False
     return _SharingPlan(eff_model, eff_effort, shared)
+
+
+def _aws_profile_rules_out_sharing(
+    self: RunEventCoordinator,
+    info: SubagentInfo,
+    child_aws_profile: ResolvedAwsProfile | None,
+) -> bool:
+    """Whether *info*'s AWS profile binding alone keeps it off the shared arm.
+
+    The plan's AWS term (:func:`_sharing_plan_impl`): a split must be possible,
+    and then an unresolved binding, or one the session manager says differs
+    from the parent's, rules sharing out.
+    """
+    if not self._aws_profile_split_possible(info):
+        return False
+    if child_aws_profile is None:
+        return True
+    differs = getattr(self._manager._sessions, "aws_profile_differs_from_parent", None)
+    return differs is not None and differs(info.parent_session_key, child_aws_profile.name) is True
 
 
 def _aws_profile_split_possible(self: RunEventCoordinator, info: SubagentInfo) -> bool:
@@ -442,8 +461,8 @@ async def _create_shared_session_impl(
 
     async def _serve_cli_default(handle: Any) -> None:
         # After the bind, which publishes ownership before any cancellable await.
-        # A shared sub-agent carries no model pin (``_sharing_plan_impl``), so on
-        # KAS it starts on kiro-cli's chat.defaultModel unless Crew pins its agent one.
+        # On KAS a shared sub-agent carries no model pin (``_pinned_model_shares``), so
+        # it starts on kiro-cli's chat.defaultModel unless Crew pins its agent one.
         start_agent = agent or getattr(shared_runtime, "_agent", "") or None
         await serve_kiro_cli_default_model(
             shared_runtime,
@@ -650,6 +669,9 @@ async def _bind_shared_handle_impl(
                 info.id,
                 exc_info=True,
             )
+    # After ownership is published, so a run cancelled inside the model write
+    # is still found and its handle destroyed.
+    await _apply_shared_start_model(info, handle, runtime)
     logger.info(
         "Subagent %s using session sharing on runtime PID %s (session %s, key %s)",
         info.id,
