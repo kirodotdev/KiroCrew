@@ -1831,9 +1831,9 @@ class TestOperatorOAuthEndpointExtension:
         assert security._OAUTH_EXTENSION_AUDITED == set()
         loader.assert_not_called()
 
-        assert oauth_url_contains_credential(url) is False
+        assert oauth_url_contains_credential(url, "mcp") is False
         loader.assert_called_once_with()
-        assert oauth_url_contains_credential(url) is False
+        assert oauth_url_contains_credential(url, "mcp") is False
         assert loader.call_count == 2
         assert len(logged) == 1
         event = logged[0]
