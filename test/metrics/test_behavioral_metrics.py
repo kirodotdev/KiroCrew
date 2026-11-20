@@ -137,6 +137,17 @@ from kiro_crew.metrics.recorder import MetricsRecorder
                 "kind": "subagent",
             },
         ),
+        (
+            "kirocrew.app.run_time",
+            {"app": "weather-app", "entity_version": "2.1.0", "duration": "le_1m"},
+            {
+                "Feature": "app",
+                "Activity": "run_time",
+                "Entity": "weather-app",
+                "entity_version": "2.1.0",
+                "duration": "le_1m",
+            },
+        ),
     ],
 )
 def test_each_metric_gets_its_shape(name, attrs, expected):

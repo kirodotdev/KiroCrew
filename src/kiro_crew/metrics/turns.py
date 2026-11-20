@@ -46,6 +46,7 @@ from __future__ import annotations
 import logging
 
 from kiro_crew.messaging.link import telemetry_channel_of
+from kiro_crew.metrics.feature_usage import record_app_run_time
 from kiro_crew.metrics.harness import ATTR_HARNESS, HARNESS_UNKNOWN
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.metrics.turn_completed import emit_turn_completed
@@ -174,6 +175,7 @@ def emit_turn_duration(
     harness: str = HARNESS_UNKNOWN,
     trigger: str = TRIGGER_OTHER,
     origin: str | None = None,
+    owning_app: str = "",
 ) -> None:
     """Emit one ``kirocrew.turn.duration`` sample (best-effort, never raises).
 
@@ -185,6 +187,11 @@ def emit_turn_duration(
     that passes nothing records ``other``. ``origin`` overrides the origin
     derived from ``session_key``, for a surface whose key does not say where the
     input arrived (a webhook).
+
+    ``owning_app`` is the live provider's trusted ``owning_app``. When it is set,
+    the turn's seconds also go to ``kirocrew.app.run_time``
+    (:func:`kiro_crew.metrics.feature_usage.record_app_run_time`); a turn with no
+    duration adds nothing there, as here.
 
     ``harness`` is the EFFECTIVE harness of the session that ran the turn, as
     :func:`kiro_crew.metrics.harness.harness_of` resolved it from the live
@@ -257,6 +264,7 @@ def emit_turn_duration(
         get_recorder().histogram(TURN_METRIC, value, unit="ms", attrs=attrs)
     except Exception:
         logger.debug("turn metric emit failed", exc_info=True)
+    record_app_run_time(owning_app, value)
 
 
 def _model_attrs(model: str, provider: str) -> dict:

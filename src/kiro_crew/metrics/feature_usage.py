@@ -15,6 +15,10 @@ counter                                        one increment per
                                                (``keep_data``)
 ``kirocrew.app.session_started``               session start owned by an app
                                                (``kind``: its ``session_kind``)
+
+
+``kirocrew.app.run_time``                      finished turn of an app's session,
+                                               adds its seconds (``duration``)
 ``kirocrew.channel.message.received``          inbound channel message, once
                                                admission has decided
 ``kirocrew.ui.control.clicked``                click on an agent-rendered control
@@ -50,6 +54,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import math
 import re
 
 logger = logging.getLogger(__name__)
@@ -63,6 +68,7 @@ APP_INSTALLED = "kirocrew.app.installed"
 APP_UPDATED = "kirocrew.app.updated"
 APP_UNINSTALLED = "kirocrew.app.uninstalled"
 APP_SESSION_STARTED = "kirocrew.app.session_started"
+APP_RUN_TIME = "kirocrew.app.run_time"
 CHANNEL_MESSAGE_RECEIVED = "kirocrew.channel.message.received"
 UI_CONTROL_CLICKED = "kirocrew.ui.control.clicked"
 TIPS_FEEDBACK = "kirocrew.tips.feedback"
@@ -400,6 +406,74 @@ def record_app_session_started(app: object, kind: object) -> None:
             "kind": _closed(kind, SESSION_KIND_VALUES),
         },
     )
+
+
+#: The ``duration`` label of an app's timed rows: the upper edge of the bucket the
+#: seconds fall in, ``gt_4h`` past four hours, ``other`` when there is no number.
+APP_DURATION_VALUES: tuple[str, ...] = (
+    "le_10s",
+    "le_1m",
+    "le_5m",
+    "le_15m",
+    "le_1h",
+    "le_4h",
+    "gt_4h",
+    OTHER,
+)
+
+
+def app_duration_bucket(seconds: object) -> str:
+    """The :data:`APP_DURATION_VALUES` bucket of *seconds*; each edge is in the lower bucket."""
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        return OTHER
+    if not 0 < seconds < math.inf:
+        return OTHER
+    if seconds <= 10:
+        return "le_10s"
+    if seconds <= 60:
+        return "le_1m"
+    if seconds <= 300:
+        return "le_5m"
+    if seconds <= 900:
+        return "le_15m"
+    if seconds <= 3600:
+        return "le_1h"
+    if seconds <= 14400:
+        return "le_4h"
+    return "gt_4h"
+
+
+def record_app_run_time(owning_app: object, duration_ms: object) -> None:
+    """Add one finished turn's wall seconds, rounded up, to its app's run time.
+
+    *owning_app* is the trusted app of the session that ran the turn (the live
+    provider's ``owning_app``); empty or not a string records nothing, so a turn
+    outside an app adds nothing. A turn with no positive duration adds nothing
+    either: a 0 would read as a measured instant turn. The bucket is taken from the
+    rounded seconds, so the value and its ``duration`` agree. Never raises.
+    """
+    if not isinstance(owning_app, str) or not owning_app:
+        return
+    if isinstance(duration_ms, bool) or not isinstance(duration_ms, (int, float)):
+        return
+    if not 0 < duration_ms < math.inf:
+        return
+    try:
+        from kiro_crew.metrics.provider import get_recorder
+
+        seconds = math.ceil(duration_ms / 1000)
+        get_recorder().counter(
+            APP_RUN_TIME,
+            seconds,
+            unit="s",
+            attrs={
+                "app": app_public_id(owning_app),
+                "entity_version": app_public_version(owning_app),
+                "duration": app_duration_bucket(seconds),
+            },
+        )
+    except Exception:  # telemetry must never break the measured path
+        logger.debug("app run time emit failed", exc_info=True)
 
 
 # -- channel.message.received -------------------------------------------------
