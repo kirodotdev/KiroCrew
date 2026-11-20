@@ -10,6 +10,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -55,7 +56,7 @@ echo "$me says: line on stdout"
 echo "$me says: line on stderr" >&2
 case "$(cat "$STUB_DIR/$me.mode")" in
   killed) kill -KILL "$$" ;;
-  hang) echo "$me says: about to hang"; : > "$STUB_DIR/$me.hanging"; exec sleep 600 ;;
+  hang) echo "$me says: about to hang"; exec sleep 600 ;;
   after-other)
     # Finish only once the other tool has exited, whatever its status.
     while kill -0 "$(cat "$STUB_DIR/$other.pid")" 2>/dev/null; do sleep 0.05; done ;;
@@ -169,8 +170,10 @@ class TestWiring:
 def _prepare(tmp_path: Path, **tools: tuple[str, int]) -> tuple[str, Path, dict[str, str]]:
     """Stub both tools as ``tool=(mode, exit status)`` and return what runs the step."""
     bash = _bash()
-    if os.name == "nt":
-        pytest.skip("executes a Linux-only workflow step; needs a POSIX bash")
+    # The job runs on Linux runners only, and the script and these stubs lean on
+    # what a Linux host has: its bash, a fractional `sleep`, signal numbering.
+    if sys.platform != "linux":
+        pytest.skip("executes a workflow step that only ever runs on Linux")
     assert bash is not None, "bash is not on PATH"
     bin_dir, stub_dir = tmp_path / "bin", tmp_path / "stub"
     for directory in (bin_dir, stub_dir, tmp_path / "runner-temp"):
@@ -318,7 +321,11 @@ class TestBehaviour:
                     and finished.read_text(encoding="utf-8").endswith("\n"),
                     timeout=FALLBACK_TIMEOUT_SECS,
                 )
-                wait_until((stub / "mypy.hanging").exists, timeout=FALLBACK_TIMEOUT_SECS)
+                mypy_log = finished.with_name("mypy.log")
+                wait_until(
+                    lambda: "about to hang\n" in mypy_log.read_text(encoding="utf-8"),
+                    timeout=FALLBACK_TIMEOUT_SECS,
+                )
                 proc.send_signal(interrupt)
                 stdout, stderr = proc.communicate(timeout=FALLBACK_TIMEOUT_SECS)
             finally:
