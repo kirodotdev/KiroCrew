@@ -16,6 +16,7 @@ vi.mock('../i18n/t', () => ({
 import TrustAppModal, { type TrustAppTarget } from '../components/appstore/TrustAppModal'
 import { trustGrants } from '../components/appstore/trustGrants'
 import { stagedGrantsOf } from '../pages/appDetailPageStagedGrants'
+import { KiroOperationsBox } from '../pages/AppDetailGrantBoxes'
 import type { AppInfo } from '../pages/appDetailPageTypes'
 
 const K = 'components.appstore.trustAppModal'
@@ -48,6 +49,20 @@ describe('Kiro operations at the trust gate', () => {
   it('shows no box for an app that declares none', () => {
     const dialog = renderModal({ ...BASE, ...trustGrants({}) })
     expect(dialog.queryByTestId('trust-kiro-operations')).toBeNull()
+  })
+})
+
+describe('Kiro operations in the permissions card', () => {
+  it('lists every declared name and marks the held-back one', () => {
+    render(<KiroOperationsBox grant={{ approved: ['GetWidget'], staged: ['ListWidgets'] }} />)
+    const box = within(screen.getByTestId('kiro-operations'))
+    expect(box.getByTestId('kiro-operation-GetWidget').textContent).toBe('GetWidget')
+    expect(box.getByTestId('kiro-operation-ListWidgets').textContent).toContain('pages.appDetailPage.grant_not_approved')
+  })
+
+  it('renders nothing when the app declares none', () => {
+    const { container } = render(<KiroOperationsBox grant={undefined} />)
+    expect(container.innerHTML).toBe('')
   })
 })
 

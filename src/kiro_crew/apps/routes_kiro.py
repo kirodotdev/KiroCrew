@@ -10,7 +10,7 @@ Two callers are admitted, each named positively:
   (``is_host_owner_dashboard_request``). A Shared Crew teammate is not admitted:
   the call would run as the owner's Kiro sign-in.
 
-Every other caller gets 403 ``kiro_caller_refused`` and nothing is sent. The path
+Every other caller gets 403 ``forbidden`` and nothing is sent. The path
 sits in the app's own namespace (``token_auth_app_scope._app_owns_path``), so the
 app declares no ``permissions.api`` entry for it; ``kiro`` is a core segment of
 that namespace (``manifest.CORE_APP_ROUTE_SEGMENTS``). An ``agentTools`` handler
@@ -28,6 +28,8 @@ from kiro_crew.apps.kiro_calls import (
     parse_json_body,
 )
 
+_KIRO_READ_CHUNK = 64 * 1024
+
 
 def kiro_caller(request: web.Request, name: str) -> str | None:
     """``"backend"`` or ``"owner"`` when *request* may call *name*'s operations; else None."""
@@ -44,8 +46,20 @@ def kiro_caller(request: web.Request, name: str) -> str | None:
 
 def _kiro_error(exc: KiroCallError) -> web.Response:
     return web.json_response(
-        {"error": exc.message, "code": exc.code, "kiro": exc.kiro}, status=exc.status
+        {"error": exc.message, "code": exc.code, "upstream": exc.upstream},
+        status=exc.status,
+        headers={"Retry-After": "1"} if exc.status == 429 else None,
     )
+
+
+async def _read_kiro_body(request: web.Request) -> bytes:
+    """The whole body, read until it ends; past :data:`MAX_REQUEST_BYTES` it is refused."""
+    raw = bytearray()
+    while chunk := await request.content.read(_KIRO_READ_CHUNK):
+        raw += chunk
+        if len(raw) > MAX_REQUEST_BYTES:
+            raise KiroCallError(413, "body_too_large", "The input is too large.")
+    return bytes(raw)
 
 
 async def handle_kiro_call(request: web.Request) -> web.Response:
@@ -57,14 +71,14 @@ async def handle_kiro_call(request: web.Request) -> web.Response:
         return _kiro_error(
             KiroCallError(
                 403,
-                "kiro_caller_refused",
+                "forbidden",
                 "Only this app's own token or the owner may call its Kiro operations.",
             )
         )
     if request.content_length is not None and request.content_length > MAX_REQUEST_BYTES:
         return _kiro_error(KiroCallError(413, "body_too_large", "The input is too large."))
     try:
-        payload = parse_json_body(await request.content.read(MAX_REQUEST_BYTES + 1))
+        payload = parse_json_body(await _read_kiro_body(request))
         output = await call_kiro_operation(name, operation, payload, caller=caller)
     except KiroCallError as exc:
         return _kiro_error(exc)

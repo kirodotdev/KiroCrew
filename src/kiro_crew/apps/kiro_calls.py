@@ -50,7 +50,11 @@ from typing import Any, Protocol
 
 import aiohttp
 
-from kiro_crew.apps.kiro_operations import app_kiro_operations, declared_kiro_operations
+from kiro_crew.apps.kiro_operations import (
+    app_kiro_operations,
+    declared_kiro_operations,
+    kiro_app_enabled,
+)
 from kiro_crew.apps.rpc_cbor import cbor_decode, cbor_encode
 from kiro_crew.http_proxy import resolve_proxy
 
@@ -99,22 +103,22 @@ _CHUNK = 64 * 1024
 class KiroCallError(Exception):
     """A call that did not succeed. ``code`` and ``status`` are the route's error body.
 
-    ``kiro`` carries the upstream's own status, error type and message when the
+    ``upstream`` carries the upstream's own status, error type and message when the
     upstream answered an error. Nothing here holds a credential.
     """
 
     def __init__(
-        self, status: int, code: str, message: str, *, kiro: dict[str, Any] | None = None
+        self, status: int, code: str, message: str, *, upstream: dict[str, Any] | None = None
     ) -> None:
         super().__init__(message)
         self.status = status
         self.code = code
         self.message = message
-        self.kiro = kiro
+        self.upstream = upstream
 
     def body(self) -> dict[str, Any]:
-        """``{"error": <message>, "code": <code>, "kiro": <upstream error or None>}``."""
-        return {"error": self.message, "code": self.code, "kiro": self.kiro}
+        """``{"error": <message>, "code": <code>, "upstream": <upstream error or None>}``."""
+        return {"error": self.message, "code": self.code, "upstream": self.upstream}
 
 
 @dataclass(frozen=True)
@@ -338,6 +342,10 @@ async def _post(url: str, body: bytes, signed: SignedCall) -> _Reply:
         ) from None
 
 
+def _url(signed: SignedCall, target: Upstream, operation: str) -> str:
+    return f"{signed.base_url}/service/{target.service}/operation/{operation}"
+
+
 def _output(reply: _Reply, sent: tuple[str, ...]) -> dict[str, Any]:
     if reply.protocol.lower() != _PROTOCOL:
         raise KiroCallError(502, "kiro_bad_reply", "The Kiro reply is not rpc-v2-cbor.")
@@ -352,18 +360,20 @@ def _output(reply: _Reply, sent: tuple[str, ...]) -> dict[str, Any]:
     error_type = decoded.get("__type")
     error_type = error_type.rsplit("#", 1)[-1] if isinstance(error_type, str) else ""
     message = _short(decoded.get("message", decoded.get("Message")), sent)
-    if reply.status in (401, 403):
+    # Only a 401 after the renewal is a sign-in problem; a 403 can be the
+    # operation's own refusal of a valid sign-in, which signing in again cannot fix.
+    if reply.status == 401:
         raise KiroCallError(
             409,
             "kiro_sign_in_refused",
             f"Kiro refused the sign-in. {SIGN_IN_HINT}",
-            kiro={"status": reply.status, "type": _short(error_type, sent), "message": message},
+            upstream={"status": reply.status, "type": _short(error_type, sent), "message": message},
         )
     raise KiroCallError(
         502,
         "kiro_operation_failed",
         message or f"Kiro answered HTTP {reply.status}.",
-        kiro={"status": reply.status, "type": _short(error_type, sent), "message": message},
+        upstream={"status": reply.status, "type": _short(error_type, sent), "message": message},
     )
 
 
@@ -399,16 +409,24 @@ async def call_kiro_operation(
     """
     approved = await asyncio.to_thread(app_kiro_operations, app)
     if operation not in approved:
-        declared = await asyncio.to_thread(declared_kiro_operations, app)
         _audit(app, operation, caller, "denied", "not approved")
+        if not await asyncio.to_thread(kiro_app_enabled, app):
+            raise KiroCallError(403, "app_disabled", "This app is not enabled.")
+        declared = await asyncio.to_thread(declared_kiro_operations, app)
         if operation in declared:
             raise KiroCallError(
                 403,
                 "operation_not_approved",
-                f"{operation!r} is not approved for this app, or the app is not enabled.",
+                f"The owner has not approved {operation!r} for this app.",
             )
         raise KiroCallError(404, "unknown_operation", "This app declares no such Kiro operation.")
-    body = cbor_encode(check_input(payload))
+    try:
+        body = cbor_encode(check_input(payload))
+    except (ValueError, TypeError, UnicodeEncodeError):
+        # A JSON value CBOR cannot carry: an integer past 64 bits, a lone surrogate.
+        raise KiroCallError(
+            400, "invalid_json", "The input holds a value Kiro cannot take."
+        ) from None
     if _in_flight.get(app, 0) >= MAX_IN_FLIGHT:
         _audit(app, operation, caller, "denied", "too many calls")
         raise KiroCallError(429, "too_many_calls", "Too many Kiro calls are running for this app.")
@@ -418,12 +436,12 @@ async def call_kiro_operation(
     try:
         target = upstream if upstream is not None else KIRO_UPSTREAM
         signed = await target.sign()
-        url = f"{signed.base_url}/service/{target.service}/operation/{operation}"
-        reply = await _post(url, body, signed)
+        reply = await _post(_url(signed, target, operation), body, signed)
         sent: tuple[str, ...] = (signed.rejected,)
         if reply.status in (401, 403):
+            # The renewed sign-in may name another profile, so the URL is rebuilt.
             signed = await target.sign(rejected=signed)
-            reply = await _post(url, body, signed)
+            reply = await _post(_url(signed, target, operation), body, signed)
             sent += (signed.rejected,)
         status = reply.status
         output = jsonable(_output(reply, sent))

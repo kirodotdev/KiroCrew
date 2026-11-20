@@ -10304,8 +10304,9 @@ non-list (`Permissions.list_errors`); the readers keep only valid names, each on
 set, registered explicit-only in `point_grants`. It is staged like `permissions.api`:
 the install consent approves the names the trust prompt lists (`trust-kiro-operations`),
 an update that adds a name holds it while the old names keep working, the owner approves
-it on the app's page (`kiroOperationsGrant` on the app row, `staged-kiro-operations`), and
-a dropped name needs nothing. A set stored before this family existed approves none.
+it on the app's page (`kiroOperationsGrant` on the app row, `staged-kiro-operations`; the
+Permissions card lists every declared name and marks the held-back ones, `kiro-operations`),
+and a dropped name needs nothing. A set stored before this family existed approves none.
 `kiro_operations.app_kiro_operations(app)` is the one reader: read fresh on every call,
 empty unless the app is enabled, `third_party_ceiling_closed` admits it, and the live
 manifest declares the names the approved set holds.
@@ -10317,7 +10318,7 @@ manifest declares the names the approved set holds.
   exactly `{name}` and that did not come through the internal secret (a process in an agent
   sandbox can read that secret), or the host owner's own dashboard session
   (`is_host_owner_dashboard_request`; a Shared Crew teammate is refused, since the call
-  runs as the owner's sign-in). Anything else is 403 `kiro_caller_refused`. The path is in
+  runs as the owner's sign-in). Anything else is 403 `forbidden`. The path is in
   the app's own namespace, so no `permissions.api` entry is needed; `kiro` is listed in
   `CORE_APP_ROUTE_SEGMENTS` so no app can claim it, and an app hook route at the same
   path is shadowed by the core route.
@@ -10328,10 +10329,13 @@ An app's future `agentTools` handler (RFC app-agent-tools-third-party-grant) rea
 seam the same way: its handler holds the app's token or its `ctx`.
 
 **The call** (`apps/kiro_calls.call_kiro_operation`), in a fixed order; a refusal at any
-step sends nothing: exact membership in `app_kiro_operations` (declared but not approved
-is 403 `operation_not_approved`, undeclared is 404 `unknown_operation`); the input is a
-JSON object of at most 1 MiB and 32 levels; at most 8 calls of one app in flight (429
-`too_many_calls`); the upstream signs; the call goes out with no redirect followed, the
+step sends nothing: exact membership in `app_kiro_operations` (an app that is not enabled
+is 403 `app_disabled`, declared but not approved is 403 `operation_not_approved`, undeclared
+is 404 `unknown_operation`); the input is a
+JSON object of at most 1 MiB and 32 levels, read until the body ends (the route reads it in
+chunks, refusing past 1 MiB), and a value CBOR cannot carry (an integer past 64 bits, a lone
+surrogate) is 400 `invalid_json`; at most 8 calls of one app in flight (429
+`too_many_calls` with `Retry-After: 1`); the upstream signs; the call goes out with no redirect followed, the
 system proxy honoured, and a 30-second bound; the reply must carry
 `smithy-protocol: rpc-v2-cbor`, at most 8 MiB, checked on `Content-Length` and on the
 bytes read. A CBOR byte string comes back as base64 text and a timestamp as ISO-8601.
@@ -10348,15 +10352,17 @@ origin from `profile_region` through `KIRO_ORIGINS` (`us-east-1` → `https://ap
 region not in the table is 503 `kiro_region_unsupported` and is never sent to another
 region's host. No app config, manifest key or environment variable changes the origin or
 the service. A 401 or 403 renews the sign-in once (`rejected_access_token`) and retries
-once; nothing else is retried.
+once, rebuilding the URL from the renewed sign-in, since it may name another region;
+nothing else is retried.
 
-**Errors.** `{"error": <message>, "code": <code>, "kiro": <upstream error or null>}`, the
-gateway's error contract (`test_error_code_contract.py`); `kiro` is `{status, type, message}`
+**Errors.** `{"error": <message>, "code": <code>, "upstream": <upstream error or null>}`, the
+gateway's error contract (`test_error_code_contract.py`); `upstream` is `{status, type, message}`
 when the upstream answered an error. No status is 401, because an app client renews its app token on a 401.
 Signed out is 409 `kiro_sign_in_required`; a read or renewal that failed is 503
-`kiro_sign_in_unavailable` naming only the exception type; a refused renewed token is 409
-`kiro_sign_in_refused`; all three say to sign in to Kiro in Settings. An upstream error is
-502 `kiro_operation_failed`; a timeout 504 and a network error 502 `kiro_unreachable`; a
+`kiro_sign_in_unavailable` naming only the exception type; a 401 to the renewed token is 409
+`kiro_sign_in_refused`; all three say to sign in to Kiro in Settings. Any other upstream error, a 403
+after the renewal included (an operation can refuse a valid sign-in, which signing in again
+cannot fix), is 502 `kiro_operation_failed`; a timeout 504 and a network error 502 `kiro_unreachable`; a
 reply too large or not RPC v2 CBOR 502 `kiro_bad_reply`.
 
 **The token stays in the gateway.** It is in no answer, error body, log line, audit row

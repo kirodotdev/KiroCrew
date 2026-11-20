@@ -195,8 +195,11 @@ class FakeBff:
 
 
 class FakeProvider:
-    def __init__(self, *, arn: str | None = None, signed_in: bool = True) -> None:
+    def __init__(
+        self, *, arn: str | None = None, signed_in: bool = True, renewed_arn: str | None = None
+    ) -> None:
         self.arn = arn
+        self.renewed_arn = renewed_arn
         self.signed_in = signed_in
         self.rejected: list[str | None] = []
 
@@ -209,7 +212,7 @@ class FakeProvider:
             access_token=access,
             provider="Google",
             identity="social",
-            profile_arn=self.arn,
+            profile_arn=(self.renewed_arn or self.arn) if rejected_access_token else self.arn,
             auth_method=None,
         )
 
@@ -219,6 +222,7 @@ async def bff(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[tuple[FakeBff, s
     fake = FakeBff()
     app = web.Application()
     app.router.add_post("/service/{service}/operation/{op}", fake.handle)
+    app.router.add_post("/{prefix}/service/{service}/operation/{op}", fake.handle)
     server = TestServer(app)
     await server.start_server()
     monkeypatch.setattr(kiro_calls, "resolve_proxy", lambda _url: None)
@@ -233,6 +237,7 @@ def approved(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         kiro_calls, "app_kiro_operations", lambda app: frozenset(OPS) if app == APP else frozenset()
     )
+    monkeypatch.setattr(kiro_calls, "kiro_app_enabled", lambda app: app in (APP, "other"))
     monkeypatch.setattr(
         kiro_calls,
         "declared_kiro_operations",
@@ -379,7 +384,7 @@ async def test_a_bff_error_passes_its_type_and_a_redacted_message(
             APP, "GetWidget", {}, caller="hook", upstream=_upstream(origin, FakeProvider())
         )
     assert err.value.code == "kiro_operation_failed" and err.value.status == 502
-    assert err.value.kiro == {"status": 409, "type": "ConflictException", "message": "taken"}
+    assert err.value.upstream == {"status": 409, "type": "ConflictException", "message": "taken"}
 
 
 @pytest.mark.asyncio
@@ -526,7 +531,7 @@ async def test_only_the_apps_own_token_or_the_owner_may_call(
     body = await resp.json()
     assert resp.status == status, body
     if status == 403:
-        assert body["code"] == "kiro_caller_refused" and fake.seen == []
+        assert body["code"] == "forbidden" and fake.seen == []
     else:
         assert body == {"widget": {"id": "w-1", "blob": "AAE="}}
 
@@ -571,3 +576,109 @@ async def test_concurrent_calls_release_their_in_flight_slot(
     )
     assert [r.status for r in resps] == [200, 200, 200]
     assert kiro_calls._in_flight == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("approved")
+async def test_a_403_after_renewal_is_the_operations_refusal_not_a_sign_in(
+    bff: tuple[FakeBff, str],
+) -> None:
+    fake, origin = bff
+    fake.replies = [(403, {"__type": "x#AccessDeniedException", "message": "not yours"}, {})]
+    with pytest.raises(kiro_calls.KiroCallError) as err:
+        await kiro_calls.call_kiro_operation(
+            APP, "GetWidget", {}, caller="hook", upstream=_upstream(origin, FakeProvider())
+        )
+    assert err.value.code == "kiro_operation_failed"
+    assert err.value.upstream == {
+        "status": 403,
+        "type": "AccessDeniedException",
+        "message": "not yours",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("approved")
+async def test_a_renewal_that_names_another_region_goes_to_that_regions_origin(
+    bff: tuple[FakeBff, str],
+) -> None:
+    fake, origin = bff
+    fake.replies = [(401, {"message": "expired"}, {}), (200, {"ok": True}, {})]
+    provider = FakeProvider(renewed_arn=EU_ARN)
+    upstream = kiro_calls.KiroSignIn(
+        provider=lambda: provider, origins={"us-east-1": origin, "eu-central-1": f"{origin}/eu"}
+    )
+    out = await kiro_calls.call_kiro_operation(
+        APP, "GetWidget", {}, caller="hook", upstream=upstream
+    )
+    assert out == {"ok": True}
+    assert [s["path"] for s in fake.seen] == [
+        "/service/KiroWebBearerService/operation/GetWidget",
+        "/eu/service/KiroWebBearerService/operation/GetWidget",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("approved")
+@pytest.mark.parametrize("payload", [{"n": 2**64}, {"s": "\ud800"}])
+async def test_a_value_cbor_cannot_carry_is_a_client_error(
+    bff: tuple[FakeBff, str], payload: dict[str, Any]
+) -> None:
+    fake, origin = bff
+    with pytest.raises(kiro_calls.KiroCallError) as err:
+        await kiro_calls.call_kiro_operation(
+            APP, "GetWidget", payload, caller="hook", upstream=_upstream(origin, FakeProvider())
+        )
+    assert (err.value.status, err.value.code) == (400, "invalid_json")
+    assert fake.seen == []
+
+
+class _ChunkedContent:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = list(chunks)
+
+    async def read(self, _n: int) -> bytes:
+        return self.chunks.pop(0) if self.chunks else b""
+
+
+@pytest.mark.asyncio
+async def test_the_route_reads_a_body_that_arrives_in_pieces() -> None:
+    from kiro_crew.apps.routes_kiro import _read_kiro_body
+
+    request = SimpleNamespace(content=_ChunkedContent([b'{"id":', b' "w-1"}']))
+    assert kiro_calls.parse_json_body(await _read_kiro_body(request)) == {"id": "w-1"}
+    big = _ChunkedContent([b"x" * kiro_calls.MAX_REQUEST_BYTES, b"y"])
+    with pytest.raises(kiro_calls.KiroCallError) as err:
+        await _read_kiro_body(SimpleNamespace(content=big))
+    assert err.value.code == "body_too_large"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("approved")
+async def test_a_disabled_app_is_told_so_and_sends_nothing(
+    bff: tuple[FakeBff, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake, origin = bff
+    monkeypatch.setattr(kiro_calls, "app_kiro_operations", lambda _app: frozenset())
+    monkeypatch.setattr(kiro_calls, "kiro_app_enabled", lambda _app: False)
+    with pytest.raises(kiro_calls.KiroCallError) as err:
+        await kiro_calls.call_kiro_operation(
+            APP, "GetWidget", {}, caller="hook", upstream=_upstream(origin, FakeProvider())
+        )
+    assert (err.value.status, err.value.code) == (403, "app_disabled")
+    assert fake.seen == []
+
+
+@pytest.mark.asyncio
+async def test_the_in_flight_refusal_carries_retry_after(
+    gateway: tuple[TestClient, FakeBff], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, fake = gateway
+    monkeypatch.setattr(kiro_calls, "_in_flight", {APP: kiro_calls.MAX_IN_FLIGHT})
+    resp = await client.post(
+        f"/api/apps/{APP}/kiro/GetWidget",
+        json={},
+        headers={"X-Test-Caller": "app", "X-Test-App": APP},
+    )
+    assert resp.status == 429 and resp.headers["Retry-After"] == "1"
+    assert (await resp.json())["code"] == "too_many_calls" and fake.seen == []

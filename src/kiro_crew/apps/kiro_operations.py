@@ -113,6 +113,19 @@ def declared_kiro_operations(app: str) -> frozenset[str]:
         return frozenset()
 
 
+def kiro_app_enabled(app: str) -> bool:
+    """Whether *app* is installed and enabled right now. False on any failure."""
+    if not isinstance(app, str) or not app:
+        return False
+    try:
+        from kiro_crew.apps.manager import is_app_enabled  # noqa: PLC0415
+
+        return bool(is_app_enabled(app))
+    except Exception:  # noqa: BLE001 - an unreadable record is not enabled
+        logger.warning("could not read whether an app is enabled", exc_info=True)
+        return False
+
+
 def app_kiro_operations(app: str) -> frozenset[str]:
     """The operations *app* may call right now. Blocking; fails closed.
 
@@ -168,6 +181,7 @@ __all__ = [
     "declared_kiro_operations",
     "declared_operations",
     "is_operation_name",
+    "kiro_app_enabled",
     "kiro_operation_errors",
     "kiro_operation_grant_entries",
     "kiro_operations_grant_row",

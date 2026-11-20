@@ -1,4 +1,4 @@
-import { EyeOff, Globe, Monitor, MessagesSquare, ShieldAlert, Webhook } from 'lucide-react'
+import { EyeOff, Globe, KeyRound, Monitor, MessagesSquare, ShieldAlert, Webhook } from 'lucide-react'
 import { i18nT } from '../i18n/t'
 import { desktopCapabilityLine, knownDesktopCapabilities, type DesktopCapability } from '../components/appstore/desktopCapabilities'
 import { browserVerbLine, knownBrowserVerbs, type BrowserVerb } from '../components/appstore/browserVerbs'
@@ -242,6 +242,32 @@ export function StagedCodeList({ label, entries, testId }: { label: string; entr
         {entries.map(o => (
           <code key={o} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{o}</code>
         ))}
+      </div>
+    </div>
+  )
+}
+
+/** `permissions.kiroOperations`: every declared name, the held-back ones marked. */
+export function KiroOperationsBox({ grant }: { grant?: { approved: string[]; staged: string[] } }) {
+  const names = [...(grant?.approved || []), ...(grant?.staged || [])]
+  if (names.length === 0) return null
+  return (
+    <div className="rounded-md border border-border px-2.5 py-2" data-testid="kiro-operations">
+      <div className="flex items-start gap-2 text-text">
+        <KeyRound size={13} className="mt-[2px] shrink-0 text-muted" />
+        <div className="flex flex-col gap-1">
+          <span>{i18nT('components.appstore.trustAppModal.kiro_operations_heading')}</span>
+          <div className="flex flex-wrap gap-1">
+            {names.map(op => (
+              <code key={op} data-testid={`kiro-operation-${op}`} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">
+                {op}{grant?.staged.includes(op) && <span className="ml-1 text-warn">· {i18nT('pages.appDetailPage.grant_not_approved')}</span>}
+              </code>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="mt-1.5 text-[11px] text-muted">
+        {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>kiroOperations</code>
       </div>
     </div>
   )

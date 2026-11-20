@@ -425,7 +425,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resync_app_crons_after_update,
     )
     from kiro_crew.apps.routes_kiro import (  # noqa: F401
+        _KIRO_READ_CHUNK,
         _kiro_error,
+        _read_kiro_body,
         handle_kiro_call,
         kiro_caller,
     )

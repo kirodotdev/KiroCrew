@@ -269,7 +269,7 @@ Content-Type: application/json
 
 The answer is the operation's output map as JSON: a byte string is base64 text and a
 timestamp is ISO-8601 text. The owner's own dashboard session may call the route too; any
-other caller gets 403 `kiro_caller_refused`. From an in-gateway hook:
+other caller gets 403 `forbidden`. From an in-gateway hook:
 
 ```python
 output = await ctx.kiro_call("GetWidget", {"widgetId": "w-1"})
@@ -281,22 +281,23 @@ An `agentTools` handler calls the seam the same way.
 The gateway sends the call with the person's Kiro sign-in to the BFF of their profile's
 region. Your app chooses no host, path or header. The input is at most 1 MiB and 32
 levels deep, the reply at most 8 MiB, a call at most 30 seconds, and at most 8 calls of
-one app run at once. An error body is `{"error": "<message>", "code": "<code>", "kiro":
-null}`; `kiro` is `{status, type, message}` when the BFF answered an error:
+one app run at once. An error body is `{"error": "<message>", "code": "<code>", "upstream":
+null}`; `upstream` is `{status, type, message}` when the BFF answered an error:
 
 | Case | Status | `code` |
 |---|---|---|
-| Not your app's token, nor the owner | 403 | `kiro_caller_refused` |
+| Not your app's token, nor the owner | 403 | `forbidden` |
+| App not enabled | 403 | `app_disabled` |
 | Name not declared | 404 | `unknown_operation` |
 | Declared, not approved | 403 | `operation_not_approved` |
 | Input too large or too deep | 413 | `body_too_large` |
-| Input not a JSON object | 400 | `invalid_json` |
-| More than 8 calls running | 429 | `too_many_calls` |
+| Input not a JSON object, or a value Kiro cannot take (an integer past 64 bits) | 400 | `invalid_json` |
+| More than 8 calls running (with `Retry-After: 1`) | 429 | `too_many_calls` |
 | Not signed in to Kiro | 409 | `kiro_sign_in_required` |
 | Sign-in could not be read or renewed | 503 | `kiro_sign_in_unavailable` |
-| The BFF refused the renewed sign-in | 409 | `kiro_sign_in_refused` |
+| The BFF answered 401 to the renewed sign-in | 409 | `kiro_sign_in_refused` |
 | Profile region not served | 503 | `kiro_region_unsupported` |
-| The BFF answered an error | 502 | `kiro_operation_failed` |
+| The BFF answered any other error, a 403 included | 502 | `kiro_operation_failed` |
 | Timeout / network error | 504 / 502 | `kiro_unreachable` |
 | Reply too large or not RPC v2 CBOR | 502 | `kiro_bad_reply` |
 
