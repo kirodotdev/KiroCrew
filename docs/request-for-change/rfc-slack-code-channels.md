@@ -162,7 +162,11 @@ before the switch silently lacks `code_channels:manage` and every call fails.
   and the reference implementation refuses code channels over HTTP for the same
   reasons: cross-worker Stop and slash routing.
 * Multi-user Slack. Slack stays owner-only; a code channel inherits the
-  authorization of the conversation it was opened from.
+  authorization of the conversation it was opened from. Amended 2026-11-20: with
+  `slack.shared_access` on, a shared user may open a code channel of their own,
+  which admits the owner and that opener only, with its settings and Archive kept
+  the owner's ([rfc-slack-shared-access](rfc-slack-shared-access.md), "The
+  owner-only line").
 
 ## Design
 

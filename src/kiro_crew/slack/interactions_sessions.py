@@ -565,15 +565,16 @@ async def _handle_session_end(
             pass
 
 
-async def _outside_code_channel(channel: str) -> bool:
+async def _outside_code_channel(channel: str, user_id: str = "") -> bool:
     """Whether a shared user may act in *channel*: not a code channel of the owner's,
-    bound or revoked (a DM never is one, so the store is not read for it)."""
+    bound or revoked, unless *user_id* opened it (a DM never is one, so the store is
+    not read for it)."""
     from kiro_crew.slack.code_channels.routing import (
         shared_user_refused_in,
         shared_user_refused_unbound,
     )
 
-    if await asyncio.to_thread(shared_user_refused_in, channel):
+    if await asyncio.to_thread(shared_user_refused_in, channel, user_id):
         return False
     return not await shared_user_refused_unbound(getattr(_orch, "slack", None), channel)
 
@@ -600,7 +601,7 @@ async def _handle_inline_stop(
         is_owner(user_id)
         or (
             (is_allowed_user(user_id) or is_shared_user(user_id))
-            and await _outside_code_channel(channel)
+            and await _outside_code_channel(channel, user_id)
         )
     ):
         sel().log_api_access(
@@ -665,8 +666,24 @@ async def _handle_inline_stop(
     )
     # ``preserve_queue`` with the force, for the reason the confirm button gives.
     _kw = {"force": True, "preserve_queue": True} if _force else {}
+    # Judged again with nothing awaited before the stop: the checks above do not
+    # carry across the cosmetic edit's await.
+    from kiro_crew.slack.code_channels.shared_refusal import shared_stop_still_admitted
     from kiro_crew.slack.events import _entry_owner, slack_stop_in_flight
 
+    _thread = str((payload.get("message") or {}).get("thread_ts") or msg_ts or "")
+    if not is_owner(user_id) and not shared_stop_still_admitted(
+        user_id, session_key, _thread, channel
+    ):
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.inline_stop",
+            outcome="denied",
+            source="slack",
+            resources=session_key,
+            error="shared access ended before the stop",
+        )
+        return
     # The presser's queued messages only, held until the stop settles, for the
     # reasons the confirm button gives.
     async with slack_stop_in_flight(_orch, session_key):

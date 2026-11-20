@@ -24,7 +24,9 @@ conduct, bounded so neither protection is given up:
   drop every message whose author fails ``access.is_allowed_user`` before it is
   routed. A channel-origin turn is admitted only when every Slack author whose
   message was ROUTED into this slot -- as a turn or as a steer -- IS the owner
-  (``is_owner``, by identity, so the clause does not widen with the allow-list) NOW (:func:`note_channel_sender` records them at routing); a
+  (``is_owner``, by identity, so the clause does not widen with the allow-list), or
+  the shared user who opened that very channel and is one still (``opener_admitted``),
+  NOW (:func:`note_channel_sender` records them at routing); a
   dashboard turn and the slot's own patrol wake carry no routed channel text and
   pass. This clause is about who DRIVES the conversation, not about what it reads:
   third-party text the session reads as content -- the origin thread the first
@@ -193,8 +195,15 @@ def _turn_carries_channel_text(slot: Any) -> bool:
     )
 
 
-def _sender_refusal(slot: Any) -> str:
-    """Why the running turn is not one the owner alone drove; ``""`` when it is."""
+def _sender_refusal(slot: Any, binding: Any = None) -> str:
+    """Why the running turn is not one the owner (or *binding*'s opener) alone drove;
+    ``""`` when it is.
+
+    A code channel a shared user opened admits its opener as an author too
+    (:func:`kiro_crew.slack.code_channels.shared_refusal.opener_admitted`, asked of
+    the person now), so their turns follow the owner's helper-agent switch like the
+    owner's own. Any other shared user's text still refuses.
+    """
     if not _turn_carries_channel_text(slot):
         # A dashboard turn (the owner typed it), the slot's own patrol or monitor
         # wake, or a worker's report. None carries channel text. Another session
@@ -209,14 +218,15 @@ def _sender_refusal(slot: Any) -> str:
             "kept across a gateway restart, so send a message in the channel and retry"
         )
     try:
+        from kiro_crew.slack.code_channels.shared_refusal import opener_admitted
         from kiro_crew.slack.handler import is_owner
     except Exception:  # pragma: no cover - import failure fails closed
         return "the Slack owner check is unavailable"
     try:
         # The OWNER, by identity: the clause is "only the owner's Slack text drove
         # this conversation", which must not widen if the Slack allow-list ever
-        # admits other people again.
-        if all(is_owner(author) for author in authors):
+        # admits other people again. The one other author is the channel's opener.
+        if all(is_owner(author) or opener_admitted(binding, author) for author in authors):
             return ""
     except Exception:
         logger.debug("code-channel sender check failed", exc_info=True)
@@ -461,7 +471,7 @@ def judge_code_channel(
         why, admission = _publish_clauses(state, slot, binding)
         _note_handoff_state(binding.channel_id)
     if not why:
-        why = _sender_refusal(slot)
+        why = _sender_refusal(slot, binding)
     verdict = CodeChannelVerdict(
         applies=True,
         refusal=why,

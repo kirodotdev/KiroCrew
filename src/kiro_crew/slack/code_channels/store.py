@@ -43,7 +43,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from kiro_crew.atomic_write import atomic_write
 
@@ -100,6 +100,9 @@ class Route:
     seeded_at: float = 0.0
     #: The origin thread the message was in (its own ts when it opened one).
     origin_thread_ts: str = ""
+    #: The shared user (``slack.shared_access``) whose message asked for the
+    #: channel; ``""`` when the owner asked. Copied onto the binding it opens.
+    opener: str = ""
 
 
 @dataclass(frozen=True)
@@ -122,8 +125,12 @@ class Binding:
     git checkout the channel's worktree was first cut from, written by the
     gateway when it cut it: a workspace record rebuilt later (lost, evicted)
     while the session already runs in that worktree uses it instead of the
-    worktree's own top level. ``""`` / ``0`` mean unset, so a record written
-    before these fields existed loads unchanged.
+    worktree's own top level. ``opener`` is the shared user
+    (``slack.shared_access``) who asked for the channel, the one person besides
+    the owner it admits (:func:`.shared_refusal.opener_admitted`); ``""`` is the
+    owner's channel, so a row written before openers were recorded stays the
+    owner's alone. ``""`` / ``0`` mean unset, so a record written before these
+    fields existed loads unchanged.
     """
 
     channel_id: str
@@ -141,6 +148,7 @@ class Binding:
     wrapped_up_at: float = 0.0
     origin_thread_ts: str = ""
     repo_root: str = ""
+    opener: str = ""
 
     @property
     def origin_link(self) -> tuple[str, str] | None:
@@ -546,6 +554,12 @@ class CodeChannelStore:
         self._read()
         return self._routes.get(session_id)
 
+    def route_to(self, channel_id: str) -> Route | None:
+        """The newest route whose recorded destination is *channel_id*, or None."""
+        self._read()
+        found = [r for r in self._routes.values() if channel_id and r.channel_id == channel_id]
+        return max(found, key=lambda r: r.created_at) if found else None
+
     def record_decision(self, route: Route) -> Route:
         """Store *route*'s decision unless one is already recorded.
 
@@ -811,14 +825,29 @@ class CodeChannelStore:
                 self._commit(resume={**self._resume, key: dict(record)})
             return True
 
-    def put_binding(self, binding: Binding) -> Binding:
-        """Store *binding* unless the channel is already bound; returns the stored one."""
+    def put_binding(
+        self,
+        binding: Binding,
+        *,
+        admit: Callable[[], bool] | None = None,
+        keep_revoked: bool = False,
+    ) -> Binding | None:
+        """Store *binding* unless the channel is already bound; returns the stored one.
+
+        *admit*, asked under the lock right before the write, refuses it: None, and
+        nothing written, when it answers False. *keep_revoked* refuses it the same way
+        when the channel is revoked, so the write can never clear a revocation.
+        """
         with self._lock:
             self._ensure_loaded()
             self._refuse_quarantined(binding.channel_id)
             existing = self._bindings.get(binding.channel_id)
             if existing is not None:
                 return existing
+            if keep_revoked and binding.channel_id in self._revoked:
+                return None
+            if admit is not None and not admit():
+                return None
             stored = Binding(**{**asdict(binding), "created_at": binding.created_at or time.time()})
             self._commit(
                 bindings={**self._bindings, binding.channel_id: stored},
@@ -866,11 +895,29 @@ class CodeChannelStore:
             return None
         return {k: v for k, v in self._revoked.items() if k != channel_id}
 
-    def replace_binding(self, binding: Binding) -> Binding:
-        """Overwrite the channel's binding (its session was closed and remade)."""
+    def replace_binding(
+        self,
+        binding: Binding,
+        *,
+        expected_session: str = "",
+        admit: Callable[[], bool] | None = None,
+    ) -> Binding | None:
+        """Overwrite the channel's binding (its session was closed and remade).
+
+        With *expected_session*, only while the stored binding still names that
+        session; with *admit*, only while it answers True. Both are asked under the
+        lock with the write: None, and nothing written, when the channel was unbound,
+        revoked or rebound meanwhile, or *admit* refuses.
+        """
         with self._lock:
             self._ensure_loaded()
             self._refuse_quarantined(binding.channel_id)
+            if expected_session:
+                current = self._bindings.get(binding.channel_id)
+                if current is None or current.session_key != expected_session:
+                    return None
+            if admit is not None and not admit():
+                return None
             stored = Binding(**{**asdict(binding), "created_at": binding.created_at or time.time()})
             self._commit(
                 bindings={**self._bindings, binding.channel_id: stored},

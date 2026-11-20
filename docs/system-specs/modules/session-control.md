@@ -2473,7 +2473,9 @@ is a code channel's. Every other caller meets exactly the refusals above.
   `read`, `summary`, `broadcast`, `fork`, or `retry` / `continue` / `reload` / `set_model`;
 - *turn author* -- on a channel-origin or channel-narrowed turn, every Slack author routed into
   the slot (`note_channel_sender`, from `maybe_route_linked_thread`) is the owner by identity
-  (the handler's `is_owner`, not the allow-list) now. The clause governs who DRIVES the session; third-party text it reads
+  (the handler's `is_owner`, not the allow-list), or the shared user who opened that channel
+  and is listed and Slack-confirmed now (`shared_refusal.opener_admitted`, read without the
+  confirmation cache's expiry, so a long turn keeps it). The clause governs who DRIVES the session; third-party text it reads
   as content (the origin thread the first turn carries as fenced untrusted data, files, issues)
   is bounded by reach, not by authorship.
 
