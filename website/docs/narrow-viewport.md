@@ -336,7 +336,7 @@ That is the `topbar-single` header variant (`src/styles/shell-chrome.css`), appl
 `.tb-right`.** Those two are inline-size containers for the collapse ladders, and
 a size container in an `auto` track has no content size to give, so it collapses
 to its padding and clips its contents -- the measurement is recorded in
-`test/topbarMenuButtonNarrow.test.ts`, and `test/topbarSingleVariant.test.ts`
+`src/test/topbarMenuButtonNarrow.test.ts`, and `src/test/topbarSingleVariant.test.ts`
 pins that no container class reaches the variant's side cells. The single bar
 has no ladder to run (the readout capsule is not rendered on it), so it needs no
 containers. `.tb-trail` keeps `.tb-right`'s padding/negative-margin pair for the
