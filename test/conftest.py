@@ -371,8 +371,10 @@ from conftest_resets_acp import (  # noqa: E402,F401 -- bound for pytest and imp
     _reset_kas_agent_config_error_reports,
 )
 
-# Per-test resets of the scratch job handles a Windows script cron run holds.
+# Per-test resets of the scratch job handles a Windows script cron run holds, and the
+# resume of a cron child a test mocked.
 from conftest_resets_scratch import (  # noqa: E402,F401 -- bound for pytest and importers
+    _a_mocked_cron_child_has_no_thread_to_resume,
     _reset_scratch_job_handles,
 )
 
