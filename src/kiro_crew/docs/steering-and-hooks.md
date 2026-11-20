@@ -225,8 +225,8 @@ agent to act on.
 
 ### The six Kiro Agent triggers
 
-A Kiro Agent session has eleven triggers where the gateway has five. The other
-six can be authored and saved here, and a saved one reads back unchanged.
+A Kiro Agent session has triggers the gateway has no event for. Six of them can
+be authored and saved here, and a saved one reads back unchanged.
 
 **No event fires any of them.** The gateway has no lifecycle moment for the six,
 so nothing fires one on its own, and no other reader exists. Authoring one records
@@ -474,8 +474,9 @@ so a spec written for either tool loads here:
 
 Both shapes are held to the same bar: same command and matcher rules, same
 dedup, same per-event and total caps. Twelve triggers are accepted, each in
-kiro-agent's own PascalCase, its IDE camelCase spelling, or its CLI alias —
-the whole table from kiro-agent's `packages/kiro-agent/src/hooks/trigger-names.ts` at blob `2d4a3127e32e5e81e68d5c2ea406a6a5728f6d78`, matched without regard to case. Five map onto the five kiro-cli event
+kiro-agent's own PascalCase, its IDE camelCase spelling, its CLI alias, or the
+Open Plugins alias `afterFileEdit` — the whole table from kiro-agent's
+`packages/kiro-agent/src/hooks/trigger-names.ts`, matched without regard to case. Five map onto the five kiro-cli event
 names: `PreToolUse` to `preToolUse`, `PostToolUse` to `postToolUse`,
 `UserPromptSubmit` to `userPromptSubmit`, `SessionStart` to `agentSpawn`, `Stop`
 to `stop`. Only those five reach kiro-cli; a hook on `SessionEnd`, `PreTaskExec`,

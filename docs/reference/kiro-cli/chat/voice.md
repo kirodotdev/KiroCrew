@@ -121,7 +121,7 @@ default needs nothing installed:
 | `system` (default) | nothing on macOS and Windows | The host's own engine: `say` on macOS, `System.Speech` through Windows PowerShell on Windows, `espeak-ng` (or legacy `espeak`) on Linux/BSD when installed. Linux is the one platform where it can be missing; install `espeak-ng` or pick another provider. |
 | `polly` | the `aws` CLI, AWS credentials, network | Paid AWS service, and it asks you to confirm the account first. |
 
-The `piper` provider was removed ([#23154](https://github.com/kirodotdev/KiroCrew/issues/23154)): its engine and voice models were installed unpinned and unverified, and the engine is GPL-licensed. A config that still names `piper`, or still carries `piper_model`, speaks with `system` and logs one warning per gateway start; set `provider` to `system` (or `polly`) in `config.json` to silence it. The `piper_*` keys are ignored and nothing on disk is removed; delete a Piper install or voice files yourself if you no longer want them.
+There is no `piper` provider: its engine and voice models would be installed unpinned and unverified, and the engine is GPL-licensed. A config that still names `piper`, or still carries `piper_model`, speaks with `system` and logs one warning per gateway start; set `provider` to `system` (or `polly`) in `config.json` to silence it. The `piper_*` keys are ignored and nothing on disk is removed; delete a Piper install or voice files yourself if you no longer want them.
 
 Two playback modes are available:
 

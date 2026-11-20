@@ -15,8 +15,8 @@ helper subdirectories that hold shared fixtures rather than tests (for
 example `test/workflows/`). What distinguishes a top-level
 `test/test_<module>.py` is not whether nested files are collected but
 the `scripts/leaf_test_scope.py` CI fast path: only `test/test_*.py`
-files count as *leaves* there (`_LEAF_NAME`, `scripts/leaf_test_scope.py`
-lines 124-127), which limits that fast path without stopping collection
+files count as *leaves* there (`_LEAF_NAME` in `scripts/leaf_test_scope.py`),
+which limits that fast path without stopping collection
 of nested files. Placement is enforced by the `testpaths-coverage` gate
 (`scripts/check_testpaths_coverage.py`). A file
 outside those roots is never collected, so it stays green by omission.

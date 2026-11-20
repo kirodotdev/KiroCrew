@@ -168,8 +168,7 @@ A stdio entry's `env` values are passed through as declared. A
 `secret://<name>` value is **not** resolved for app servers when kiro-cli
 spawns them: the server receives the literal reference text. Registration logs
 a warning naming the app, server and env key when it sees one. How an app may
-receive a vault secret is undecided
-([#10641](https://github.com/kirodotdev/KiroCrew/issues/10641)).
+receive a vault secret is not defined: no path resolves one for it.
 
 ### Host paths in an agent file
 
@@ -496,9 +495,11 @@ slot: an overlay `id` must name a component compiled into the dashboard bundle, 
 there is no ESM `entryPoint` for overlays the way `ui.pages` has one. An installed app
 declaring `ui.overlays` is refused at install, and a self-registered one is refused
 when slots are resolved -- `builtin` provenance is assigned only by the builtin
-registration Kiro Crew runs at startup and cannot be self-reported. Treat this as the
-mechanism builtin apps use to replace a host surface, not yet as a third-party
-extension point.
+registration Kiro Crew runs at startup and cannot be self-reported. The dashboard's
+overlay registry (`BUILTIN_OVERLAY_REGISTRY` in `website/src/apps/overlayRegistry.ts`)
+is empty: the Command Bar that once held the slot is the shell's own quick-search
+launcher, and no new built-in may add an overlay. So no overlay `id` resolves to a
+component, and this is not a third-party extension point.
 
 A builtin declaring `ui.overlays` must NOT also declare `ui.entry`: builtin
 registration re-derives `origin` on every startup and downgrades an app that ships a
@@ -1928,7 +1929,10 @@ Spawns run through the HOST's subagent manager, which means they inherit the
 host's spawn accounting and approval mode rather than getting a private path.
 Cost is the app's to bound: an app that spawns on a timer needs its own budget
 (see the activity-budget pattern in `builtins/mochi/activity_budget.py`), because
-the platform does not rate-limit spawns per app today.
+the platform does not rate-limit spawns per app. The one exception is Fair Admission
+(`shared_crew.admission_enabled`, off by default and behind the Shared Crew preview):
+with it on, each spawn is admitted as a child charged to the app's own system
+principal, under the per-person and Crew-wide limits.
 
 API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
 `build_continue_impl`, `SpawnError`. The calls are described in
@@ -2547,8 +2551,7 @@ The two user-bus locators, `XDG_RUNTIME_DIR` (from the allowlist) and
 `DBUS_SESSION_BUS_ADDRESS` (from the desktop hints), **reach the child** on this
 path. The sandbox's restore-then-drop of those two variables applies to spawns
 that go through `sandbox.sandboxed_spawn_argv`; `openCommand` does not. Keeping
-them is the stated policy, decided in
-[#16520](https://github.com/kirodotdev/KiroCrew/issues/16520): the standard tier
+them is the stated policy: the standard tier
 does not keep an app's children off the user session bus. The launcher reaches
 it, and so do the app's backend and its lifecycle and install commands, which is
 the same documented residual the agent's own shell has (see

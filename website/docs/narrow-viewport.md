@@ -271,7 +271,7 @@ therefore keep their authored size on touch, and the composer uses the message f
 setting on every device. One size for the composer's typed text and its placeholder
 is also what keeps an empty composer one line tall: its auto-size measures the
 placeholder at the field's font size, so a field held at 16px over a 14px hint
-measured the hint a line too tall on a 375px phone (#28843).
+measured the hint a line too tall on a 375px phone.
 
 **There is deliberately no app-wide 16px field rule either**, because CSS cannot
 express a floor at all: it can only SET a size, so the two available shapes are wrong
@@ -336,7 +336,7 @@ That is the `topbar-single` header variant (`src/styles/shell-chrome.css`), appl
 `.tb-right`.** Those two are inline-size containers for the collapse ladders, and
 a size container in an `auto` track has no content size to give, so it collapses
 to its padding and clips its contents -- the measurement is recorded in
-`test/topbarMenuButtonNarrow.test.ts`, and `test/topbarSingleVariant.test.ts`
+`src/test/topbarMenuButtonNarrow.test.ts`, and `src/test/topbarSingleVariant.test.ts`
 pins that no container class reaches the variant's side cells. The single bar
 has no ladder to run (the readout capsule is not rendered on it), so it needs no
 containers. `.tb-trail` keeps `.tb-right`'s padding/negative-margin pair for the
@@ -566,7 +566,7 @@ hamburger-opened drawer cannot be dragged shut.
 the main-thread path, framer's `stop()` COMPLETES an animation whose duration has already
 passed, and `animate()` delivers that `onComplete` a microtask later, after the new
 gesture has committed. A busy main thread is exactly when that happens, and the stale
-arrival slid the side panel back open over a closing drag (#29908). Both main-thread
+arrival slid the side panel back open over a closing drag. Both main-thread
 settles, `animateDrawer`'s and the trackpad's `settleTrackpadDrag`, therefore note
 framer's `onStop` (it runs inside `stop()`, before that late `onComplete`) and drop an
 arrival that comes after it.
@@ -598,11 +598,15 @@ around a dozen such widget families in `src/` today (`ResizeHandle`, `ColumnSpli
 `components/ui.tsx`, …); asking each to remember an attribute means the next one
 silently fights the nav drawer instead.
 
-**Count the panels before believing the rule holds.** Four are driven by
-`registerDrawerTargets` today: the nav drawer, the chat page's sessions drawer and
-activity panel (all three with gestures), and the notification sheet (no gesture,
-portaled). Only the chat page declares a claim, because it is the only one that binds
-its own gesture inside the shell.
+**Count the panels before believing the rule holds.** Six are driven by
+`registerDrawerTargets` today: the nav drawer (`shell/appShell.tsx`), the chat page's
+sessions drawer and side panel (`pages/chat/page/sessionsDrawer.ts`), the Bots page's
+roster drawer and side panel (`pages/members/useMembersPageDrawers.ts`), all five with
+gestures, and the notification sheet (no gesture, portaled). The two pages that bind
+their own gesture inside the shell declare a claim (`ChatPageFrame.tsx`, and
+`MembersPage.tsx` while its roster drawer or side-panel swipe is available), and so does
+the session tab strip (`SessionTabStrip.tsx`), whose long-press reorder needs the touch
+before the shell drawer sees it.
 
 **Two sibling instances exclude each other on INTENT, not on arrival.** The chat page
 binds `useDrawerSwipe` twice on one element — sessions drawer on the left, side panel on
@@ -758,7 +762,7 @@ does this, correctly.
 like a feel problem rather than a bug: a MotionValue deliberately does not re-render
 React, so the drag writes the value every frame while the DOM moves only on whatever
 re-render happens to occur — the panel comes out a little, freezes, and completes on
-release when the settle takes over. Bind it instead, as all three gesture-driven
+release when the settle takes over. Bind it instead, as every gesture-driven
 panels do:
 
 ```tsx

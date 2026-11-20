@@ -44,8 +44,7 @@ the chat's own effort, so the chat's next reply uses the Bot's values. This
 happens on every save from the Bot's editor, which always sends both fields,
 so renaming the Bot or saving it unchanged resets them too. A change made
 outside the dashboard, with `kirocrew agent update --model` or by editing
-`config.json`, does not reset the chat's own model or effort yet
-([#36614](https://github.com/kirodotdev/KiroCrew/issues/36614)); save the Bot
+`config.json`, does not reset the chat's own model or effort; save the Bot
 in its editor to bring the chat back onto it. A `/model` typed in the chat
 after the save wins again until the next save.
 Other chats and the sessions the Bot starts keep their own picks.

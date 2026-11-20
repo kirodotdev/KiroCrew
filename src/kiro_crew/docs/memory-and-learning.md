@@ -232,7 +232,7 @@ Just tell it naturally:
 - "Prefer ruff over flake8 for linting"
 
 Kiro Crew saves these via the `learn_add` MCP tool. View them with `learn_list`
-or on the dashboard Overview → Lessons tab.
+or in the Lessons table of the Memory page (**Settings → Overview → Memory**).
 
 To change whether a saved lesson applies in every session (`always`) or only
 when the task is about it (`on_topic`), ask Kiro Crew: the `learn_update` tool
@@ -325,10 +325,10 @@ original diagnostic text.
 
 Kiro Crew automatically consolidates conversations into memory:
 - **Preferences/projects**: every 30 messages per session
-- **Daily history + lessons**: after 3 hours idle per session
+- **Daily history + lessons**: after 3 hours idle per session (`memory.history_idle_hours`)
 
 No manual action needed — it happens in the background. The manual trigger
-(Overview → Memory tab → Summarize now, or `POST /api/memory/consolidate`) refuses
+(**Summarize now** on the Memory page, **Settings → Overview → Memory**, or `POST /api/memory/consolidate`) refuses
 an Incognito or Temporary session with a 403 no matter which session triggers it,
 and the background paths skip those sessions — including a Slack or Telegram
 thread marked `!incognito` / `!temporary`, whose mode is recorded in the thread's
@@ -386,5 +386,5 @@ answering and grading may take. Nothing runs until you start the planned run.
 
 ## Editing Memory
 
-- **Dashboard**: Overview → Memory tab → edit preferences.md or projects.md
+- **Dashboard**: **Settings → Overview → Memory**, then edit preferences.md or projects.md
 - **Chat**: ask Kiro Crew to remember or correct a fact through its memory tools

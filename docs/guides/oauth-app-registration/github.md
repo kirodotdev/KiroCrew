@@ -9,7 +9,7 @@ Kiro Crew connects to the remote GitHub MCP server at `https://api.githubcopilot
 - A GitHub account. If the repositories you want to reach belong to an organization, you also need to know whether that organization has "OAuth app access restrictions" turned on (it is on by default for new organizations). If it is, an organization owner must approve the app before it can read organization data; plan for that hand-off.
 - A running Kiro Crew gateway with the dashboard open, so you can copy the redirect URI from the card and paste credentials back in.
 - Decide who owns the registration. An OAuth app can be created under your personal account or under any organization where you have admin rights. A registration owned by the organization is automatically trusted when the organization enables OAuth app access restrictions.
-- Note the exact redirect URI you will register: `http://127.0.0.1:48101/callback`. It is plain HTTP on the loopback interface. Kiro Crew's callback listener runs inside kiro-cli on the loopback interface over plain HTTP only; an https loopback is not possible.
+- Note the exact redirect URI you will register: `http://127.0.0.1:48101/callback`. It is plain HTTP on the loopback interface. The callback listener (kiro-cli's own, or the gateway's when the **MCP sign-in by Kiro Crew** feature preview runs the sign-in) binds `127.0.0.1` on that port over plain HTTP only; an https loopback is not possible.
 - Optional alternative: GitHub's MCP documentation also accepts a fine-grained Personal Access Token (PAT) in the `Authorization: Bearer` header for any host that supports remote MCP servers. This runbook covers the OAuth path; a PAT is not entered through the Connections card.
 
 ## 1. Create the app
@@ -23,7 +23,7 @@ Kiro Crew connects to the remote GitHub MCP server at `https://api.githubcopilot
 7. Optionally fill in **Application description**. Users see it on the authorization page.
 8. In **Authorization callback URL**, type exactly `http://127.0.0.1:48101/callback`. Section 2 explains why.
 9. Leave **Enable Device Flow** unchecked. Kiro Crew uses the browser redirect flow.
-10. **Expire user access tokens** is checked by default. Leave it checked: GitHub then issues an 8-hour access token plus a refresh token that expires after six months without use. If your Kiro Crew build predates refresh-token support for this provider, uncheck it; the runbook does not know your build, so check the release notes.
+10. **Expire user access tokens** is checked by default. Leave it checked: GitHub then issues an 8-hour access token plus a refresh token that expires after six months without use, and the sign-in refreshes the access token before it expires.
 11. Click **Register application**.
 12. On the app page, copy the **Client ID**. Then click **Generate a new client secret**, and copy the secret immediately; GitHub shows it only once.
 
