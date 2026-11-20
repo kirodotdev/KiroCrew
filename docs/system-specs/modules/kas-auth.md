@@ -271,7 +271,12 @@ Endpoints (host: `https://prod.us-east-1.auth.desktop.kiro.dev`, portal:
   `/oauth/callback?login_option=<google|github>&code=…&state=…`; then
   `POST {host}/oauth/token` with `{code, code_verifier, redirect_uri}` where
   `redirect_uri` MUST equal `http://localhost:<port>/oauth/callback?login_option=<p>`
-  (path + login_option query, exactly as rebuilt in portal.rs). A callback carrying
+  (path + login_option query, exactly as rebuilt in portal.rs). The tab's reply to a
+  valid callback waits for that exchange (`wait_for_callback` runs it as its own task,
+  so a tab closed early does not stop it): it says "Login complete" only once the
+  exchange has succeeded, and a failed or timed-out exchange, or a sign-in cancelled
+  mid-exchange, gets a fixed failure page sending the user back to the dashboard's
+  code. A callback carrying
   `error` fails the sign-in at once, and the tab names the reason in fixed words for
   each RFC 6749 §4.1.2.1 code (`_PORTAL_ERROR_REASONS`); nothing the request carries,
   `error_description` included, reaches the page.

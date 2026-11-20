@@ -263,12 +263,71 @@ async def test_loopback_failed_code_exchange_is_its_own_code(
     """The browser came back with a good code; the exchange, not the return, failed."""
     service, _ = _service(tmp_path, responses=[response])
     begin = await service.begin_loopback("google")
-    await _hit_callback(
+    page = await _hit_callback(
         begin["port"],
         {"login_option": "google", "code": "c", "state": _state_from(begin["auth_url"])},
     )
+    # The tab is answered after the exchange, so it names the failure, in fixed
+    # words that leave the auth service's response body off the page.
+    assert "Login complete" not in page
+    assert "Sign-in could not finish" in page
+    assert "boom" not in page
     result = await _poll_until_terminal(service, begin["login_id"])
     assert result == {"status": "error", "code": "loopback_exchange_failed", "error": error}
+    assert TokenStore(tmp_path).resolve() is None
+
+
+class _GatedResp(_FakeResp):
+    """A token answer held back until the test releases it."""
+
+    def __init__(self, status: int, payload):
+        super().__init__(status, payload)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __aenter__(self):
+        self.entered.set()
+        await self.release.wait()
+        return self
+
+
+@pytest.mark.asyncio
+async def test_loopback_tab_says_login_complete_only_after_the_exchange(tmp_path, loopback_shape):
+    ok = {"accessToken": "a", "expiresIn": 3600, "profileArn": "arn:p"}
+    gated = _GatedResp(200, ok)
+    service, _ = _service(tmp_path, responses=[gated])
+    begin = await service.begin_loopback("google")
+    page = asyncio.create_task(
+        _hit_callback(
+            begin["port"],
+            {"login_option": "google", "code": "c", "state": _state_from(begin["auth_url"])},
+        )
+    )
+    await asyncio.wait_for(gated.entered.wait(), timeout=5)
+    # The exchange is in flight: the tab has no answer yet.
+    assert not page.done()
+    gated.release.set()
+    assert "Login complete" in await asyncio.wait_for(page, timeout=5)
+    result = await _poll_until_terminal(service, begin["login_id"])
+    assert result == {"status": "authorized", "provider": "Google"}
+
+
+@pytest.mark.asyncio
+async def test_loopback_cancelled_mid_exchange_tells_the_tab(tmp_path, loopback_shape):
+    gated = _GatedResp(200, {"accessToken": "a", "expiresIn": 3600, "profileArn": "arn:p"})
+    service, _ = _service(tmp_path, responses=[gated])
+    begin = await service.begin_loopback("google")
+    page = asyncio.create_task(
+        _hit_callback(
+            begin["port"],
+            {"login_option": "google", "code": "c", "state": _state_from(begin["auth_url"])},
+        )
+    )
+    await asyncio.wait_for(gated.entered.wait(), timeout=5)
+    await service.cancel(begin["login_id"])
+    text = await asyncio.wait_for(page, timeout=5)
+    assert "Login complete" not in text
+    assert "Sign-in could not finish" in text
     assert TokenStore(tmp_path).resolve() is None
 
 
