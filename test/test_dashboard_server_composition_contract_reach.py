@@ -778,7 +778,7 @@ _DASHBOARD_BOOT = tuple("""
     current_context
     _apply_builtin_adoptions
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes _deferred
-    _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
+    _deferred _deferred _deferred _deferred _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
@@ -866,7 +866,7 @@ _API_BOOT = tuple("""
     relay_ingress_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _insert_lts_gate _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
-    _deferred
+    _deferred _deferred _deferred _deferred _deferred
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred

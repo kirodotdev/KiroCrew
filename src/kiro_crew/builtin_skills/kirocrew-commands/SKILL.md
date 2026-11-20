@@ -239,6 +239,15 @@ leftover prefix without touching it.
 | `kirocrew cron preview SCRIPT` | Run a script cron locally with real MCP tools; notifications and session and crew-log calls are printed, not made |
 | `kirocrew cron preview SCRIPT -m "msg" -e K=V` | Preview with an input message / extra env vars |
 
+## MCP Resource Subscriptions
+
+A session subscribes with the `resource_subscribe` MCP tool once `mcp_gateway.resource_subscriptions.enabled` is on (off by default; needs a restart). These commands are the operator's view.
+
+| Command | Description |
+|---------|-------------|
+| `kirocrew resource-subs list` | List every session's MCP resource subscriptions |
+| `kirocrew resource-subs remove ID` | Remove one subscription by its id (the `rsub_...` id `list` shows) |
+
 ## Learning & Memory
 
 | Command | Description |

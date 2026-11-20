@@ -277,7 +277,8 @@ in `card_send.py` pinned by a test:
   is refused;
 - existing sub-agents: steer (a follow-up queues work that runs after the card turn),
   retry, continue;
-- nudge loops: create, update, fire; monitors: create, update, restart.
+- nudge loops: create, update, fire; monitors: create, update, restart;
+- resource subscriptions: subscribe (each later change starts a wake turn).
 
 Stop, cancel, status and read routes are not delegation and stay open. The check is on
 the route, so it holds whether or not the agent spec pre-allows the tool that calls it.

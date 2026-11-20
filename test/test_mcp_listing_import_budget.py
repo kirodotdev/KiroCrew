@@ -81,8 +81,11 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: root asks, reads the relay switch through ``remote_control.hosting`` (a stdlib-only
 #: leaf), since an unset ``tunnel.relay_enabled`` hosts only with a team key or a
 #: workload identity; the module count rose by that one file and nothing else loads.
+#: Raised by 1 for ``mcp-core`` (491 to 492): the resource-subscription tools'
+#: declarations live in their own ``kiro_crew.mcp_tools.catalog.resources``, which
+#: the core listing loads from ``mcp_tools.DOMAIN_MODULES`` like every other domain.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 491,
+    "mcp-core": 492,
     "mcp-cron": 361,
     "mcp-guide": 355,
     "mcp-mate": 356,
