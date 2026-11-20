@@ -107,6 +107,33 @@ describe('canvas model', () => {
     expect(connectorRoute(a, b, { line: 'curve' }).d).toContain(' C')
   })
 
+  it('an elbow between aligned shapes on sides that face away goes round both, never through them', () => {
+    const a: Shape = { ...sticky('a', 0, 0), w: 100, h: 100 }
+    const b: Shape = { ...sticky('b', 200, 0), w: 100, h: 100 }
+    const inside = (p: { x: number; y: number }, s: Shape) => p.x > s.x && p.x < s.x + s.w && p.y > s.y && p.y < s.y + s.h
+    // Every point on each leg, sampled, stays out of both shapes.
+    const clear = (pts: { x: number; y: number }[], other: Shape) => pts.slice(1).every((q, i) => {
+      const p = pts[i]
+      return Array.from({ length: 21 }, (_, k) => ({ x: p.x + (q.x - p.x) * k / 20, y: p.y + (q.y - p.y) * k / 20 }))
+        .every(m => !inside(m, a) && !inside(m, other))
+    })
+    // Back to back: a's left side to b's right side.
+    const back = connectorRoute(a, b, { fromSide: 'left', toSide: 'right' })
+    expect(back.points).toEqual([
+      { x: 0, y: 50 }, { x: -24, y: 50 }, { x: -24, y: -24 }, { x: 324, y: -24 }, { x: 324, y: 50 }, { x: 300, y: 50 },
+    ])
+    // The last leg enters b from its right, so the arrowhead points into b.
+    expect(back.points[4].x).toBeGreaterThan(back.points[5].x)
+    // Both ends on the same side, and the vertical counterparts.
+    const same = connectorRoute(a, b, { fromSide: 'right', toSide: 'right' })
+    const c: Shape = { ...b, x: 0, y: 200 }
+    const stacked = connectorRoute(a, c, { fromSide: 'top', toSide: 'bottom' })
+    const sameTop = connectorRoute(a, c, { fromSide: 'bottom', toSide: 'bottom' })
+    for (const r of [back, same]) expect(clear(r.points, b)).toBe(true)
+    for (const r of [stacked, sameTop]) expect(clear(r.points, c)).toBe(true)
+    expect(stacked.points[stacked.points.length - 2].y).toBeGreaterThan(stacked.points[stacked.points.length - 1].y)
+  })
+
   it('dragging an elbow segment reshapes it; an end segment keeps a stub on its shape and adds a jog', () => {
     const a: Shape = { ...sticky('a', 0, 0), w: 200, h: 100 }
     const b: Shape = { ...sticky('b', 400, 200), w: 200, h: 100 }
@@ -672,6 +699,26 @@ describe('the canvas', () => {
     } finally {
       measured.mockRestore()
       rects.mockRestore()
+    }
+  })
+
+  it.each(['Shape', 'Colour', 'Text size'])('desktop panel in a narrow canvas pane is capped to the pane: %s', async label => {
+    const measured = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function () {
+      return this.dataset.testid === 'canvas-toolbar-place' ? 300 : 346
+    })
+    try {
+      const shape: Shape = { ...sticky('r', 100, 300, 'Text'), kind: 'rect', w: 40, h: 120 }
+      render(<Harness initial={{ ...emptyCanvas(), shapes: [shape] }} />)
+      // A wide window with companion chat open leaves the canvas about 320 wide.
+      Object.defineProperty(canvas(), 'clientWidth', { configurable: true, value: 320 })
+      press(120, 360)
+      release(120, 360)
+      await act(async () => { fireEvent.click(screen.getByLabelText(label)) })
+      const panel = label === 'Colour' ? screen.getByTestId('swatch-panel') : screen.getByRole('menu', { name: label })
+      // Both 12px edges stay clear, so the swatch rows wrap instead of clipping.
+      expect(panel.style.maxWidth).toBe('296px')
+    } finally {
+      measured.mockRestore()
     }
   })
 

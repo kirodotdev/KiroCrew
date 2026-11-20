@@ -1091,6 +1091,9 @@ function ToolbarPlace({ at, narrow, children }: { at: { style: CSSProperties; be
       const bounds = canvas.getBoundingClientRect()
       for (const panel of panels) {
         if (!el.contains(panel)) { observer.unobserve(panel); panels.delete(panel); continue }
+        // A panel wider than a narrow pane is capped first, so its rows wrap
+        // instead of the clamp below pushing its far end past the edge.
+        panel.style.maxWidth = `${width - 2 * edge}px`
         const trigger = panel.parentElement!.getBoundingClientRect()
         const panelWidth = panel.offsetWidth
         // Prefer the trigger's left edge; flip to its right edge if needed,
@@ -1115,7 +1118,7 @@ function ToolbarPlace({ at, narrow, children }: { at: { style: CSSProperties; be
     return () => {
       observer.disconnect()
       mutations.disconnect()
-      for (const panel of panels) panel.style.left = ''
+      for (const panel of panels) { panel.style.left = ''; panel.style.maxWidth = '' }
     }
   }, [at, narrow, widths])
   const half = widths.toolbar / 2
