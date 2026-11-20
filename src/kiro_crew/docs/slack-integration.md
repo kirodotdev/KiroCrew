@@ -15,7 +15,7 @@ Each channel can have a different activation mode:
 | `mention` | Only respond when @mentioned; continue in thread replies | Group channels |
 | `observe` | Passively record messages; respond only when @mentioned (full context) | — |
 | `off` | Ignore all messages | — |
-| `review` | Require explicit activation before replying to each message | — |
+| `review` | Draft each reply and show it to the owner as a private draft to send or edit, instead of posting it | — |
 
 Set per-channel: `!channel always` / `!channel mention` / `!channel observe` / `!channel review` / `!channel off`
 
@@ -408,9 +408,9 @@ exactly as with the switch off, and the page says why under the switch.
   and their sub-agents, and says how many it stopped and how many it could not stop. A
   session on the board that the channel's agent did not start as a helper (a chat
   filed in the channel's folder, for one) is not stopped; the reply says how many
-  such sessions still run. Stop does not hold them yet: a message
+  such sessions still run. Stop does not hold them: a message
   queued for a stopped helper, its own timer or patrol, or the channel's agent can
-  start it again. Keeping them stopped until someone writes is a follow-up change. On
+  start it again. On
   the board, a task waiting on you links to its chat. A code channel adds no reactions to your
   messages: its progress is the channel's status and the board. In the dashboard the helper agents sit under the channel's session, in
   the channel's folder (a channel whose chat has conductor mode on keeps them out of folders, as conductor mode does everywhere).
