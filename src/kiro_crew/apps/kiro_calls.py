@@ -113,10 +113,8 @@ class KiroCallError(Exception):
         self.kiro = kiro
 
     def body(self) -> dict[str, Any]:
-        error: dict[str, Any] = {"code": self.code, "message": self.message}
-        if self.kiro is not None:
-            error["kiro"] = self.kiro
-        return {"error": error}
+        """``{"error": <message>, "code": <code>, "kiro": <upstream error or None>}``."""
+        return {"error": self.message, "code": self.code, "kiro": self.kiro}
 
 
 @dataclass(frozen=True)

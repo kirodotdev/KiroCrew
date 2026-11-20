@@ -43,7 +43,9 @@ def kiro_caller(request: web.Request, name: str) -> str | None:
 
 
 def _kiro_error(exc: KiroCallError) -> web.Response:
-    return web.json_response(exc.body(), status=exc.status)
+    return web.json_response(
+        {"error": exc.message, "code": exc.code, "kiro": exc.kiro}, status=exc.status
+    )
 
 
 async def handle_kiro_call(request: web.Request) -> web.Response:

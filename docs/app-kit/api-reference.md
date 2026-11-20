@@ -281,8 +281,8 @@ An `agentTools` handler calls the seam the same way.
 The gateway sends the call with the person's Kiro sign-in to the BFF of their profile's
 region. Your app chooses no host, path or header. The input is at most 1 MiB and 32
 levels deep, the reply at most 8 MiB, a call at most 30 seconds, and at most 8 calls of
-one app run at once. An error body is `{"error": {"code", "message"}}`, plus `kiro:
-{status, type, message}` when the BFF answered an error:
+one app run at once. An error body is `{"error": "<message>", "code": "<code>", "kiro":
+null}`; `kiro` is `{status, type, message}` when the BFF answered an error:
 
 | Case | Status | `code` |
 |---|---|---|

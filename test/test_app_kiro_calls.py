@@ -526,7 +526,7 @@ async def test_only_the_apps_own_token_or_the_owner_may_call(
     body = await resp.json()
     assert resp.status == status, body
     if status == 403:
-        assert body["error"]["code"] == "kiro_caller_refused" and fake.seen == []
+        assert body["code"] == "kiro_caller_refused" and fake.seen == []
     else:
         assert body == {"widget": {"id": "w-1", "blob": "AAE="}}
 
@@ -541,7 +541,7 @@ async def test_the_route_refuses_a_large_or_bad_body_before_sending(
     resp = await client.post(f"/api/apps/{APP}/kiro/GetWidget", data=big, headers=headers)
     assert resp.status == 413
     resp = await client.post(f"/api/apps/{APP}/kiro/GetWidget", data=b"[1]", headers=headers)
-    assert resp.status == 400 and (await resp.json())["error"]["code"] == "invalid_json"
+    assert resp.status == 400 and (await resp.json())["code"] == "invalid_json"
     resp = await client.post(f"/api/apps/{APP}/kiro/Nope", json={}, headers=headers)
     assert resp.status == 404
     assert fake.seen == []

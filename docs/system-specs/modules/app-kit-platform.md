@@ -10350,8 +10350,9 @@ region's host. No app config, manifest key or environment variable changes the o
 the service. A 401 or 403 renews the sign-in once (`rejected_access_token`) and retries
 once; nothing else is retried.
 
-**Errors.** `{"error": {"code", "message"}}`, plus `kiro: {status, type, message}` for an
-upstream error. No status is 401, because an app client renews its app token on a 401.
+**Errors.** `{"error": <message>, "code": <code>, "kiro": <upstream error or null>}`, the
+gateway's error contract (`test_error_code_contract.py`); `kiro` is `{status, type, message}`
+when the upstream answered an error. No status is 401, because an app client renews its app token on a 401.
 Signed out is 409 `kiro_sign_in_required`; a read or renewal that failed is 503
 `kiro_sign_in_unavailable` naming only the exception type; a refused renewed token is 409
 `kiro_sign_in_refused`; all three say to sign in to Kiro in Settings. An upstream error is
