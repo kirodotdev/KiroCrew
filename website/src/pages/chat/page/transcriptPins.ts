@@ -12,23 +12,8 @@ import { useChatNavigation } from '../../../hooks/useChatNavigation'
 import { useChatPins } from '../../../hooks/useChatPins'
 import type { ChatMessage } from '../../../types'
 import { i18nT } from '../../../i18n/t'
-import { supersededSuccessorIdx } from '../groupDisplayItems'
+import { buildMessageToDisplayIdx, supersededSuccessorIdx } from '../groupDisplayItems'
 import { userResendText } from '../userMessageText'
-
-/** Map message index → displayItems index, for scroll-to-match and the turn minimap. */
-function buildMessageToDisplayIdx(items: DisplayItem[]): Map<number, number> {
-  const map = new Map<number, number>()
-  items.forEach((item, di) => {
-    if (item.kind === 'turn') {
-      for (const ti of item.items) {
-        if (ti.kind === 'single') map.set(ti.idx, di)
-        else if (ti.kind === 'group') ti.msgs.forEach((_, mi) => map.set(ti.startIdx + mi, di))
-      }
-    } else if (item.kind === 'single') map.set(item.idx, di)
-    else if (item.kind === 'group') item.msgs.forEach((_, mi) => map.set(item.startIdx + mi, di))
-  })
-  return map
-}
 
 /**
  * The row a jump to `messages[idx]` should land on. A superseded steer is not
