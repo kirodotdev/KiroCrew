@@ -322,6 +322,10 @@ WORK_DISCUSSION_OBJECT_LISTS: dict[str, tuple[int, dict[str, int]]] = {
     "recent": (6, {"who": 20, "text": 200}),
 }
 WORK_DISCUSSION_COUNTS: dict[str, int] = {"round": 99, "minutes": 1440}
+#: ``rounds``: the talk so far, one entry a round (``{round, lines}``), each line
+#: one participant's ``{who, text}``, so the Board reads it in place. Caps:
+#: ``(max rounds, max lines a round, {key: max chars})``; the grill stops by six.
+WORK_DISCUSSION_ROUNDS: tuple[int, int, dict[str, int]] = (6, 4, {"who": 20, "text": 120})
 #: What ``thread`` must look like: the Board's own LINKABLE rule, so the link it
 #: draws is one the host opens.
 WORK_DISCUSSION_THREAD_RE = re.compile(
@@ -339,7 +343,7 @@ def discussion_problem(raw: Any) -> tuple[str, str, str] | None:
     if not isinstance(raw, dict):
         return ("invalid", "discussion", "discussion must be an object")
     known = {"phase", *WORK_DISCUSSION_TEXT_CHARS, *WORK_DISCUSSION_STRING_LISTS}
-    known |= {*WORK_DISCUSSION_OBJECT_LISTS, *WORK_DISCUSSION_COUNTS}
+    known |= {*WORK_DISCUSSION_OBJECT_LISTS, *WORK_DISCUSSION_COUNTS, "rounds"}
     for key in raw:
         if key not in known:
             return ("invalid", f"discussion.{key}", f"discussion has no field {key!r}")
@@ -397,6 +401,47 @@ def discussion_problem(raw: Any) -> tuple[str, str, str] | None:
             for key, cap in shape.items():
                 if bad := text(entry.get(key), cap, f"{at}.{key}"):
                     return bad
+    return _rounds_problem(raw.get("rounds", []), text)
+
+
+def _rounds_problem(value: Any, text: Any) -> tuple[str, str, str] | None:
+    """Why ``discussion.rounds`` is not valid, as :func:`discussion_problem` says it."""
+    most, most_lines, shape = WORK_DISCUSSION_ROUNDS
+    where = "discussion.rounds"
+    if not isinstance(value, list):
+        return ("invalid", where, f"{where} must be a list")
+    if len(value) > most:
+        return ("too_long", where, f"{where} has {len(value)} entries; the cap is {most}")
+    for i, entry in enumerate(value):
+        at = f"{where}[{i}]"
+        if not isinstance(entry, dict):
+            return ("invalid", at, f"{at} must be an object")
+        for key in entry:
+            if key not in ("round", "lines"):
+                return ("invalid", f"{at}.{key}", f"{at} has no field {key!r}")
+        number = entry.get("round")
+        cap = WORK_DISCUSSION_COUNTS["round"]
+        if isinstance(number, bool) or not isinstance(number, int) or not 1 <= number <= cap:
+            return ("invalid", f"{at}.round", f"{at}.round must be 1..{cap}")
+        lines = entry.get("lines")
+        if not isinstance(lines, list):
+            return ("invalid", f"{at}.lines", f"{at}.lines must be a list")
+        if len(lines) > most_lines:
+            return (
+                "too_long",
+                f"{at}.lines",
+                f"{at}.lines has {len(lines)} entries; the cap is {most_lines}",
+            )
+        for j, line in enumerate(lines):
+            line_at = f"{at}.lines[{j}]"
+            if not isinstance(line, dict):
+                return ("invalid", line_at, f"{line_at} must be an object")
+            for key in line:
+                if key not in shape:
+                    return ("invalid", f"{line_at}.{key}", f"{line_at} has no field {key!r}")
+            for key, chars in shape.items():
+                if bad := text(line.get(key), chars, f"{line_at}.{key}"):
+                    return bad
     return None
 
 
@@ -417,6 +462,12 @@ def coerce_discussion(raw: Any) -> dict[str, Any] | None:
         out[name] = list(raw.get(name, []))
     for name in WORK_DISCUSSION_OBJECT_LISTS:
         out[name] = [dict(entry) for entry in raw.get(name, [])]
+    # Only when sent: an older report has none, and its fold stays as it was.
+    if "rounds" in raw:
+        out["rounds"] = [
+            {"round": entry["round"], "lines": [dict(line) for line in entry["lines"]]}
+            for entry in raw["rounds"]
+        ]
     return out
 
 
