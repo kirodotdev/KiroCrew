@@ -638,8 +638,11 @@ def frontend_argv(targets: list[str] | None) -> list[str]:
     # `validated_targets` is the real protection and is strictly stronger anyway:
     # it rejects a leading `-` outright rather than asking the runner to stop
     # parsing.
+    # `--no-install`: without the lockfile's install, npx would download whatever
+    # vitest the registry serves today and run THAT against the specs.
     return [
         _node_launcher("npx"),
+        "--no-install",
         "vitest",
         "run",
         *validated_targets(targets, REPO_ROOT / "website"),
@@ -1087,7 +1090,10 @@ def _self_test() -> int:
     except SelectionUntrustworthy:
         pass
     fe = frontend_argv(["src/test/i18nGateTable.test.ts"])
-    check("frontend reduced argv is vitest run", [Path(fe[0]).stem, *fe[1:3]] == ["npx", "vitest", "run"])
+    check(
+        "frontend reduced argv is a no-install vitest run",
+        [Path(fe[0]).stem, *fe[1:4]] == ["npx", "--no-install", "vitest", "run"],
+    )
     # Regression trap: `vitest run -- <paths>` silently stops filtering and runs
     # the WHOLE suite (measured: 1,474 files / 22,939 tests) while the gate still
     # reports a narrow scope.
