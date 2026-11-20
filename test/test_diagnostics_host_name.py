@@ -221,6 +221,30 @@ def test_a_short_name_starting_with_an_escape_letter_is_replaced_in_a_path(
     assert _scrubbed(raw) == expected
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '"text":"{\\"stdout\\": \\"Linux\\\\njane\\\\n\\"}"',
+        '"msg": "line\\\\tjane"',
+        "x\\\\x1bjane",
+        "x\\\\u001bjane",
+        "x\\\\n%6Aane",
+        "x\\\\n\\u006aane",
+    ],
+    ids=["nested-stdout", "nested-tab", "nested-hex", "nested-unicode", "percent-name", "u-name"],
+)
+def test_a_short_name_after_a_doubly_serialized_escape_is_replaced(monkeypatch, raw):
+    """A tool result nested in a JSON log line writes `\\n` as `\\\\n`."""
+    _host(monkeypatch, "jane")
+    clean = _scrubbed(raw)
+    assert "jane" not in clean and "<host>" in clean, clean
+
+
+def test_a_long_name_in_a_raw_windows_path_is_replaced(monkeypatch):
+    _host(monkeypatch, "jane-laptop")
+    assert _scrubbed("open D:\\jane-laptop\\logs now") == "open D:\\<host>\\logs now"
+
+
 def test_a_one_letter_host_name_leaves_escapes_and_paths_intact(monkeypatch):
     _host(monkeypatch, "t")
     text = '{"stderr":"failure\\t","path":"C:\\\\tmp\\\\t"}'

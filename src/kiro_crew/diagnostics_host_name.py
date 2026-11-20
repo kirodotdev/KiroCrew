@@ -25,7 +25,8 @@ rewrite ordinary words.
 A short name starts a segment after a non-name character, after an ANSI control
 sequence (``[32m``), after a literal ``\\`` when the name has two characters or
 more (a Windows path separator; a one-letter name would take the letter of a
-serialized ``\\t``), and where a hidden character the credential scrub removes
+serialized ``\\t``), after an escape serialized twice (``\\\\n``, as in a tool result
+nested in a JSON log line), and where a hidden character the credential scrub removes
 joined it onto the word in front (:func:`find_joined_host_words`).
 """
 
@@ -241,6 +242,21 @@ def _starts_segment(text: str, at: int) -> bool:
     return _ends_control_sequence(text, at)
 
 
+#: A serialized escape that was serialized again (``\\\\n``, ``\\\\x1b``, ``\\\\u001b``),
+#: the shape of a tool result nested in a JSON log line. The view reads its ``\\\\``
+#: as one backslash and the letter as a name character, so it is no segment start there.
+_ESCAPED_ESCAPE = re.compile(r"\\\\(?:x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|[abefnrtv])\Z")
+
+
+def _follows_escaped_escape(text: str, at: int) -> bool:
+    """Whether the original *text* has a doubly serialized escape right before *at*.
+
+    Over-replacing a path folder that starts like one (``C:\\\\nbox``) is the safe
+    direction for a privacy scrub.
+    """
+    return _ESCAPED_ESCAPE.search(text, max(0, at - 8), at) is not None
+
+
 def _ends_control_sequence(text: str, at: int) -> bool:
     """Whether an ANSI control sequence (``[`` + parameters + a letter) ends at *at*.
 
@@ -283,7 +299,8 @@ def replace_host_names(
     if short_names:
         each = re.compile(rf"(?=((?:{_alternation(short_names)}){_HOST_END}))", re.IGNORECASE)
         for m in each.finditer(view.text):
-            if _starts_segment(view.text, m.start(1)):
+            at = m.start(1)
+            if _starts_segment(view.text, at) or _follows_escaped_escape(text, view.start(at)):
                 in_view(*m.span(1))
         after_backslash = [n for n in short_names if len(n) >= 2]
         if after_backslash:

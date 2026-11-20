@@ -29,9 +29,9 @@ crash reports, `versions.txt` and `manifest.json`. Every text file in it passes
 through the credential redaction first, and the command prints how many secrets it
 removed. Home-directory paths are shortened to `~`, and this machine's current
 host name is replaced with `<host>`, including its escaped, percent-encoded and
-IDNA spellings. A name the machine had before, the domain after a short name, or a
-name followed by `-`, `_` or a digit can remain, so look through the zip before
-you attach it.
+IDNA spellings. A name the machine had before, the domain after a short name, a
+name followed by `-`, `_` or a digit, or a less common spelling of the name can
+remain, so look through the zip before you attach it.
 It then prints a GitHub new-issue link on the bug-report form; drag the
 zip into that issue. The link fills in the version and the release channel from
 the build's own release record. When the build cannot prove its channel, the
