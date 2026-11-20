@@ -19006,7 +19006,7 @@
         "resources": "Recursos",
         "read_only_here": "somente leitura aqui",
         "mcp_servers": "Servidores MCP — conexões com ferramentas externas",
-        "mcp_read_only_hint": "somente leitura nesta versão — gerencie os servidores em Servidores MCP",
+        "mcp_read_only_hint": "somente leitura aqui — servidores adicionados na página Servidores MCP não chegam a este agente",
         "none": "Nenhum",
         "unsaved_changes": "Alterações não salvas",
         "discard": "Descartar",

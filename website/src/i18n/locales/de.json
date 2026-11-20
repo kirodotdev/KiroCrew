@@ -18518,7 +18518,7 @@
         "resources": "Ressourcen",
         "read_only_here": "hier schreibgeschützt",
         "mcp_servers": "MCP-Server – externe Tool-Verbindungen",
-        "mcp_read_only_hint": "in dieser Version schreibgeschützt – Server unter MCP-Server verwalten",
+        "mcp_read_only_hint": "hier schreibgeschützt – auf der Seite MCP-Server hinzugefügte Server erreichen diesen Agent nicht",
         "none": "Keine",
         "unsaved_changes": "Ungespeicherte Änderungen",
         "discard": "Verwerfen",

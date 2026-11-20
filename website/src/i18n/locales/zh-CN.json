@@ -18030,7 +18030,7 @@
         "resources": "资源",
         "read_only_here": "此处只读",
         "mcp_servers": "MCP 服务器——外部工具连接",
-        "mcp_read_only_hint": "当前版本只读 — 请在 MCP 服务器 中管理服务器",
+        "mcp_read_only_hint": "此处只读 — 在 MCP 服务器 页面添加的服务器不会进入这个代理",
         "none": "无",
         "unsaved_changes": "有未保存的更改",
         "discard": "放弃",
