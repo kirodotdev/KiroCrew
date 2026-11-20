@@ -142,6 +142,21 @@ describe('canvas model', () => {
     expect(connectorRoute(small, offset, { fromSide: 'right', toSide: 'right' }).points).toEqual([
       { x: 96, y: 48 }, { x: 228, y: 48 }, { x: 228, y: -24 }, { x: 204, y: -24 },
     ])
+    // Tiny touching shapes: a leg runs along the target's edge, so the bend at
+    // its end is eased rather than rounded into the target.
+    const tiny: Shape = { ...a, w: 24, h: 24 }
+    const touching: Shape = { ...tiny, id: 't', x: -24, y: -12 }
+    const { d } = connectorRoute(tiny, touching, { fromSide: 'left', toSide: 'right' })
+    const num = '(-?[\\d.]+)'
+    const bends = [...d.matchAll(new RegExp(`L${num},${num} Q${num},${num} ${num},${num}`, 'g'))].map(m => m.slice(1).map(Number))
+    expect(bends.length).toBeGreaterThan(0)
+    for (const [sx, sy, px, py, ex, ey] of bends) {
+      for (const t of [0.25, 0.5, 0.75]) {
+        const u = 1 - t
+        const m = { x: u * u * sx + 2 * u * t * px + t * t * ex, y: u * u * sy + 2 * u * t * py + t * t * ey }
+        expect(inside(m, tiny) || inside(m, touching)).toBe(false)
+      }
+    }
   })
 
   it('dragging an elbow segment reshapes it; an end segment keeps a stub on its shape and adds a jog', () => {
