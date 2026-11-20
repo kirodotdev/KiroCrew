@@ -9,10 +9,12 @@ namespace shows.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -468,3 +470,50 @@ class TestInTheNamespaceSandbox:
         report = _report(agent.stdout)
         assert report["marker"] == "1"
         assert report["first"] == [] and report["after"] == [], report
+
+
+class TestARegistryProbeCannotReadTheGatewaySecrets:
+    """The strict-tier ``detectInstalled`` probe runs registry-supplied shell text.
+
+    It goes through the real call site and the real namespace sandbox. Each probe exits 0
+    when its file is readable, so a name in the detected set names a file the shell read.
+    A control file next to the secrets proves the probe can see ``run/`` at all.
+    """
+
+    pytestmark = _NAMESPACE
+
+    def test_the_probe_reads_no_gateway_secret_file(self, tmp_path, monkeypatch):
+        from kiro_crew.apps.registry_pipeline import catalog
+
+        user_home = (tmp_path / "home").resolve()
+        crew = user_home / ".kirocrew"
+        (crew / "run").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setenv("KIROCREW_HOME", str(crew))
+        monkeypatch.setenv("KIROCREW_ASSUME_GATEWAY_RUNNING", "0")
+        monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
+        sandbox.reset_backend()
+        monkeypatch.setattr(catalog, "app_execution_denied", lambda *a, **k: "")
+        (crew / ".local_secret").write_text("probe-secret-38758", encoding="utf-8")
+        (crew / "run" / "gateway-8000.secret").write_text("probe-secret-38758", encoding="utf-8")
+        (crew / "run" / "gateway-8000.pid").write_text("probe-control-38758", encoding="utf-8")
+        targets = {
+            "local-secret": crew / ".local_secret",
+            "run-secret": crew / "run" / "gateway-8000.secret",
+            "control": crew / "run" / "gateway-8000.pid",
+        }
+        entries = [
+            {"name": name, "detectInstalled": f"grep -q probe- '{path}'"}
+            for name, path in targets.items()
+        ]
+        try:
+            detected = asyncio.run(catalog._detect_installed_probe(entries, {}))
+        finally:
+            sandbox.reset_backend()
+        warnings.warn(
+            f"REALMACHINE-38758 strict detect probe read: {sorted(detected)} "
+            f"(control readable: {'control' in detected})",
+            stacklevel=1,
+        )
+        assert "control" in detected, detected
+        assert detected - {"control"} == set(), detected
