@@ -800,6 +800,7 @@ if _typing.TYPE_CHECKING:
         _git_url_host,
         _is_ssh_auth_refusal,
         _is_ssh_git_url,
+        _lfs_endpoint_pin_argv,
         _loggable_git_transport_output,
         _looks_like_git_url,
         _normalize_git_target,
