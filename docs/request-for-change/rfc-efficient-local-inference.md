@@ -4,9 +4,9 @@ status: draft
 author: Sergii Pogorielov
 created: 2026-10-07
 last-audited: 2026-11-20
-audited-at: cdb601611f
+audited-at: 0c5d8bd5f3
 doc-pr: 18560
-implementation-prs: [18548]
+implementation-prs: [18548, 21763]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -19,7 +19,7 @@ superseded-by: []
   `power_source()` (`platform_compat.py`) and `power.on_battery`, read by the
   knowledge background sweeps in `knowledge/watcher.py`, are on main from
   [#21763](https://github.com/kirodotdev/KiroCrew/pull/21763) (checked at
-  `cdb601611f`); nothing else in this document is built. Every claim about current behaviour was verified
+  `0c5d8bd5f3`); nothing else in this document is built. Every claim about current behaviour was verified
   against `67c1304b06`, the baseline before Phase 1. The status stays `draft`
   rather than `partial` because the design is not accepted: Phase 1 is a
   performance fix that needed no RFC and landed on its own, and `partial`

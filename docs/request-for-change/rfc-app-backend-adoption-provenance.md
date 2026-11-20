@@ -5,9 +5,9 @@ kind: decision
 author: kirocrew-worker (drafted for maintainer decision)
 created: 2026-09-25
 last-audited: 2026-11-20
-audited-at: c157748343
+audited-at: 0c5d8bd5f3
 doc-pr:
-implementation-prs: [13650]
+implementation-prs: [13650, 35334]
 tracking-issues: [13403]
 supersedes: []
 superseded-by: []
@@ -18,8 +18,10 @@ superseded-by: []
 Status: draft. This document exists to put a decision on the base branch, because
 the change it covers REMOVES two capabilities the current specs describe. It asks
 maintainers to accept the removals, or to reject them and say what should ship
-instead. Nothing here is implemented by this document; the implementation is
-[#13650](https://github.com/kirodotdev/KiroCrew/pull/13650).
+instead. Nothing here is implemented by this document. Its first implementation,
+[#13650](https://github.com/kirodotdev/KiroCrew/pull/13650), closed unmerged;
+[#35334](https://github.com/kirodotdev/KiroCrew/pull/35334) shipped Removal 1 as an opt-in setting on chenmingwei23's recorded
+decision (checked at `0c5d8bd5f3`).
 
 - Author: drafted by the agent working #13403; the acceptance decision is a
   maintainer's, not the author's.

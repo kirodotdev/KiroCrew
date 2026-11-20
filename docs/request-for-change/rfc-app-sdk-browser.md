@@ -4,9 +4,9 @@ status: draft
 author: chenmingwei23
 created: 2026-11-17
 last-audited: 2026-11-20
-audited-at: c157748343
+audited-at: 0c5d8bd5f3
 doc-pr:
-implementation-prs: []
+implementation-prs: [39018, 39020, 39022]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,9 +14,12 @@ superseded-by: []
 
 # RFC: App SDK Browser
 
-- Status: draft. Nothing in this document is built. Each step in the Migration
-  plan lands as its own pull request after a maintainer signs the design, and
-  each of those pull requests carries its own App Kit doc update.
+- Status: draft. No maintainer sign-off is recorded: bolichen97's post-merge
+  comment on #38322 calls itself design input, not a sign-off. Steps 1a, 1b and 1c
+  are nevertheless on main behind the default-off `app_browser_sdk` Feature
+  Preview ([#39018](https://github.com/kirodotdev/KiroCrew/pull/39018), [#39022](https://github.com/kirodotdev/KiroCrew/pull/39022), [#39020](https://github.com/kirodotdev/KiroCrew/pull/39020): `apps/browser_sdk.py`,
+  `apps/browser_page_port.py`, `app-sdk/BrowserView.tsx`); steps 2 and 3 are not
+  (checked at `0c5d8bd5f3`). Each step carries its own App Kit doc update.
 - Related: `rfc-app-agent-tools-third-party-grant.md` (accepted; owns the
   third-party tool path this document depends on and does not redo),
   `rfc-app-sdk-crew-webview.md` and `rfc-app-session-controls.md` (precedents
