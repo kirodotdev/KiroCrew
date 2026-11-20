@@ -19,6 +19,7 @@ import notificationsReducer from '../store/notificationsSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import { store as appStore, type RootState } from '../store'
 import { BUSY_SEND_MODE_LS_KEY } from '../components/BusySendButton'
+import AppConfirmHost from '../components/AppConfirmHost'
 
 interface VirtuosoMockProps {
   data?: unknown[]
@@ -155,6 +156,7 @@ async function renderWith(slot: Slot) {
         <Provider store={store}>
           <ThemeProvider>
             <MemoryRouter><ChatPage /></MemoryRouter>
+            <AppConfirmHost />
           </ThemeProvider>
         </Provider>
       </QueryClientProvider>,
@@ -607,8 +609,13 @@ describe('Conductor mode on ChatPage', () => {
     chatSlotAgent.mockClear()
     const store = await renderWith({ messages: [{ role: 'user', content: 'hello' }] })
     fireEvent.click(screen.getByTestId('crew-mode-switch'))
-    // Gone the moment it is pressed: there is no way back.
-    expect(screen.queryByTestId('crew-mode-switch')).toBeNull()
+    // There is no way back, so it asks first; nothing is sent until confirmed.
+    const dialog = await screen.findByRole('dialog', { name: 'Turn on conductor mode for this chat?' })
+    expect(dialog).toHaveTextContent("Conductor mode can't be turned off for this chat.")
+    expect(chatSlotAgent).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Turn on conductor mode' }))
+    // Gone once confirmed, before the switch lands.
+    await waitFor(() => expect(screen.queryByTestId('crew-mode-switch')).toBeNull())
     await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'kirocrew-conductor', 'template'))
     await waitFor(() => expect(store.getState().dashboard.slots[0].agent).toBe('kirocrew-conductor'))
     await waitFor(() => expect(store.getState().chat.activityOpen).toBe(true))
@@ -619,10 +626,23 @@ describe('Conductor mode on ChatPage', () => {
     expect(screen.queryByTestId('crew-workers-none')).toBeNull()
   })
 
+  it('leaves the chat unchanged when the mid-chat confirm is cancelled', async () => {
+    chatSlotAgent.mockClear()
+    const store = await renderWith({ messages: [{ role: 'user', content: 'hello' }] })
+    fireEvent.click(screen.getByTestId('crew-mode-switch'))
+    const dialog = await screen.findByRole('dialog', { name: 'Turn on conductor mode for this chat?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(chatSlotAgent).not.toHaveBeenCalled()
+    expect(screen.getByTestId('crew-mode-switch')).toBeInTheDocument()
+    expect(store.getState().dashboard.slots[0].agent).toBe('default')
+  })
+
   it('leaves the chat a plain chat and puts the panel back when the mid-chat switch is refused', async () => {
     chatSlotAgent.mockImplementationOnce(async () => { throw new Error('refused') })
     const store = await renderWith({ messages: [{ role: 'user', content: 'hello' }] })
     fireEvent.click(screen.getByTestId('crew-mode-switch'))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Turn on conductor mode' }))
     await waitFor(() => expect(screen.getByTestId('crew-mode-switch')).toBeInTheDocument())
     expect(store.getState().dashboard.slots[0].agent).toBe('default')
     expect(store.getState().chat.activityOpen).toBe(false)
