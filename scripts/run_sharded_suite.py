@@ -222,7 +222,13 @@ def combine_coverage(out: Path, indexes: list[int], target: Path) -> int:
     """
     command = [sys.executable, "-m", "coverage", "combine", f"--data-file={target}"]
     command += [str(path) for index in sorted(indexes) for path in coverage_files(out, index)]
-    return subprocess.run(command, cwd=ROOT, check=False).returncode
+    try:
+        return subprocess.run(
+            command, cwd=ROOT, check=False, timeout=COMBINE_TIMEOUT_SECS
+        ).returncode
+    except subprocess.TimeoutExpired:
+        print(f"  red: coverage combine was still running after {COMBINE_TIMEOUT_SECS:.0f}s")
+        return PART_TIMED_OUT
 
 
 def part_command(
@@ -280,8 +286,15 @@ HEARTBEAT_SECS = 60.0
 #: per-test timeout in the suite is 300 s.
 STALL_SECS = 360.0
 
+#: Seconds ``coverage combine`` gets for one run's parts; it runs after the run's own
+#: deadline has been met, so nothing else bounds it. 48 parts of a CI shard combine in
+#: a few seconds.
+COMBINE_TIMEOUT_SECS = 300.0
+
 #: The clock every bound and the stall check read.
 _now = time.monotonic
+#: The pause between two looks at a part that has not ended.
+_pause = time.sleep
 
 
 class Interrupted(Exception):
@@ -346,28 +359,47 @@ class Parts:
             self.overran.add(child)
             _signal_group(child, getattr(signal, "SIGKILL", signal.SIGTERM))
 
+    def bound(self, started: float) -> float | None:
+        """The ``_now()`` reading at which a part armed at *started* is killed, if any:
+        the earlier of its own ``timeout`` and the run's ``deadline``."""
+        bounds = [self.deadline, None if self.timeout is None else started + self.timeout]
+        return min((bound for bound in bounds if bound is not None), default=None)
+
+    def _ended(self, child: subprocess.Popen) -> bool:
+        """Whether the part has exited. Never blocks."""
+        if platform_compat.IS_POSIX and hasattr(os, "waitid"):
+            # Not reaped here: ``_reap`` needs the zombie to keep the group id ours.
+            flags = os.WEXITED | os.WNOWAIT | os.WNOHANG
+            return os.waitid(os.P_PID, child.pid, flags) is not None
+        with self.lock:
+            # ``poll`` reaps, so the part leaves ``live`` under the same lock.
+            if child.poll() is None:
+                return False
+            self.live.discard(child)
+            return True
+
     def wait(self, child: subprocess.Popen, started: float | None = None) -> int:
         """The part's exit status; on Linux, once nothing it started is left running.
 
-        A part still running ``timeout`` seconds after *started* (a ``_now()`` reading
-        its caller took before launching it; this call when omitted), or at the run's
-        ``deadline`` if that comes first, has its group killed and is recorded in
-        ``overran``.
+        A part still running at ``bound(started)`` has its group killed and is recorded
+        in ``overran``. *started* is a ``_now()`` reading its caller took before
+        launching it; this call when omitted.
         """
-        started = _now() if started is None else started
-        bounds = [self.deadline, None if self.timeout is None else started + self.timeout]
-        deadline = min((bound for bound in bounds if bound is not None), default=None)
+        bound = self.bound(_now() if started is None else started)
+        if bound is not None:
+            while not self._ended(child):
+                if _now() >= bound:
+                    self._kill_overrun(child)
+                    break
+                _pause(PART_POLL_SECS)
+        return self._reap(child)
+
+    def _reap(self, child: subprocess.Popen) -> int:
+        """Block until the part has exited and return its status, reaped under the lock."""
         if platform_compat.IS_POSIX and hasattr(os, "waitid"):
             # Exited but not reaped: the zombie keeps the group id ours while a test's
             # leftover server or worker is killed.
-            flags = os.WEXITED | os.WNOWAIT
-            if deadline is not None:
-                while os.waitid(os.P_PID, child.pid, flags | os.WNOHANG) is None:
-                    if _now() >= deadline:
-                        self._kill_overrun(child)
-                        break
-                    time.sleep(PART_POLL_SECS)
-            os.waitid(os.P_PID, child.pid, flags)
+            os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
             with self.lock:
                 _signal_group(child, signal.SIGKILL)
                 rc = child.wait()
@@ -383,10 +415,7 @@ class Parts:
                 if rc is not None:
                     self.live.discard(child)
                     return rc
-            if deadline is not None and _now() >= deadline:
-                self._kill_overrun(child)
-                deadline = None
-            time.sleep(PART_POLL_SECS)
+            _pause(PART_POLL_SECS)
 
     def halt(self) -> None:
         """Start no further part."""
