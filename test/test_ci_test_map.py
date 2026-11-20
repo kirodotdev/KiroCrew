@@ -214,6 +214,52 @@ def test_guard_tier_is_the_leaf_scope_corpus_gates() -> None:
 
     tier = ctm.guard_tier(ROOT)
     assert tier and tier == corpus_gates(ROOT)
+    assert ctm.tier_lines(tier, None) == sorted(tier)
+
+
+def _guard_tier_tree(root: Path, *gates: str) -> list[str]:
+    """A tree whose *gates* read the test tree and whose one leaf does not: its argv."""
+    test_dir = root / "test"
+    test_dir.mkdir()
+    for name in gates:
+        # Formatted, so this module's own text does not read as a test-tree join.
+        text = "FILES = ROOT / {!r}\n".format("test")
+        (test_dir / name).write_text(text, encoding="utf-8")
+    (test_dir / "test_leaf.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+    return ["--root", str(root), "guard-tier"]
+
+
+def test_guard_tier_prints_posix_paths_in_code_point_order(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `B` sorts before `a` by code point and after it when case is folded.
+    argv = _guard_tier_tree(tmp_path, "test_a.py", "test_B.py", "test_gate.py")
+    assert ctm.tracked_tests(tmp_path) is None
+    assert ctm.main(argv) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "test/test_B.py",
+        "test/test_a.py",
+        "test/test_gate.py",
+    ]
+
+
+def test_guard_tier_leaves_out_a_test_file_git_does_not_track(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = _guard_tier_tree(tmp_path, "test_gate.py", "test_scratch.py")
+    index = ctm.parse_ls_files(b"test/test_gate.py\0test/test_leaf.py\0")
+    assert index == {"test/test_gate.py", "test/test_leaf.py"}
+    monkeypatch.setattr(ctm, "tracked_tests", lambda root: index)
+    assert ctm.main(argv) == 0
+    assert capsys.readouterr().out.splitlines() == ["test/test_gate.py"]
+
+
+def test_guard_tier_never_prints_an_empty_tier(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert ctm.main(_guard_tier_tree(tmp_path)) == 2
+    printed = capsys.readouterr()
+    assert printed.out == "" and "guard tier is empty" in printed.err
 
 
 def test_shadow_judge_counts_a_missed_failing_file() -> None:
