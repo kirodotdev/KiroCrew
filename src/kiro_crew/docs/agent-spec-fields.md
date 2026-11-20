@@ -191,7 +191,7 @@ underneath.
 | `claude` | `claude_code.py` | `mcpServers` [1]; `model`, `availableModels`, `permissions.defaultMode`, in `settings.local.json` [2] | `tools` → the array's allowlist [3]; `disabledTools` → `permissions.deny` rules (`mcp__<server>__<tool>`, each name written as Claude Code writes it, any character outside `[A-Za-z0-9_-]` as `_`), so a narrowed server stays MOUNTED | `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel; `toolsSettings` — no channel [11] |
 | `codex` | `codex.py` | `mcpServers`, narrowed three ways [4]; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, except Crew's control plane [7] | `availableModels` — harness-owns-the-vocabulary; `permissions.defaultMode` — fixed-by-governance (`mode=read-only`); `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel; `toolsSettings` — no channel [11] |
 | `opencode` | `opencode.py` | `mcpServers`, no transport filter; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → a `deny` rule in the seeded `permission` config, server kept mounted; withheld whole only when a lower config source outranks the rule [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` fixed at `ask` and read back off the harness's own resolved config |
-| `mimocode` | `mimocode.py` (its own projection, the same rules as `opencode`) | as `opencode` | as `opencode`, except `hooks` | as `opencode`, with the config seeded through `MIMOCODE_CONFIG_CONTENT` and read back from `mimo debug config`; `hooks` — withheld, because some of the harness's own tools never ask, so a hook fired from the permission request would miss them |
+| `mimocode` | `mimocode.py` (its own projection, the same rules as `opencode`) | as `opencode` | as `opencode`, except `hooks` | as `opencode`, with the config seeded through `MIMOCODE_CONFIG_CONTENT` and read back from `mimo debug config`; `hooks` — withheld, because some of the harness's own tools never ask, so a hook fired from the permission request would miss them; `resources` and `toolsSettings` — withheld |
 | `goose` | `goose.py` | `mcpServers`, the one channel measured as a round trip rather than as an accepted element; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` carried as `GOOSE_MODE` in the child's environment |
 | `copilot` | `copilot.py` | `mcpServers` (with stdio also carried in its launch file); the harness-advertised model choice | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7] | `permissions.defaultMode` → fixed by `allow_all=off`; `prompt`, `resources`, `autoApprove` and `hooks` withheld |
 | `antigravity` | `antigravity.py` | `mcpServers` through the session array; `model` and `thinking_level` config options | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7] | `permissions.defaultMode` → fixed by `mode=default`; `prompt`, `resources`, `autoApprove` withheld; `hooks` — no channel: Crew's turn loop fires every event but `preToolUse`, because file reads run without a permission request; `toolsSettings` — no channel [11] |
@@ -247,7 +247,8 @@ a permission request, so no refusal could make `tools: []` hold
 (`ACP_BACKENDS_UNASKED_NATIVE_TOOLS`, subtracted from
 `ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`). A call that asks is judged like any other, so an
 agent spec relying on `tools: []` on mimocode is not enforced; the pool does not run
-on it.
+on it. `antigravity` is subtracted the same way: under the `default` mode Crew writes,
+its file reads run without a permission request.
 
 The knowledge and research pool spawns zero-tool agents and does not rely on the
 native ban alone. On kiro-cli, `--agent` resolves against the project checkout
@@ -364,8 +365,8 @@ disk, so there the injection is refused as before.
    `subagent.availableAgents`, which Crew's spawn gate reads from the parent's
    spec on every backend (the `toolsSettings` row). Every mirror says so:
    `no-channel` on `claude`, `codex`, `opencode`, `goose`, `strands` and
-   `antigravity`, naming those tiers as the channel, and `withheld` on `copilot`
-   and `deepseek`. A new
+   `antigravity`, naming those tiers as the channel, and `withheld` on `copilot`,
+   `deepseek` and `mimocode`. A new
    chat session whose spec sets it gets one notice naming what goes unapplied:
    `toolsSettings` whole, or each entry other than a declared
    `subagent.availableAgents` and, on `claude`, the allowlist keys its gate applies
@@ -435,8 +436,9 @@ so Crew's own turn loop fires the field (`ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS`). 
 which is what keeps a gap from reading as a decision.
 
 `providers/mirrors/identity.py` is shared by the mirrors that carry identity ON
-an element: `codex.py` and `opencode.py` call it directly, and `goose.py`,
-`copilot.py` and `antigravity.py` reach it through `opencode_projection`.
+an element: `codex.py`, `opencode.py` and `mimocode.py` call it directly, and
+`goose.py`, `copilot.py`, `antigravity.py`, `deepseek.py` and `strands.py` reach it
+through opencode's `place_single_binary_array`.
 `claude_code.py` does not use it at all,
 because a claude MCP child inherits the adapter's process env and needs no
 element-level carry. `control_plane_identity_env` is that carried env, and
@@ -468,7 +470,7 @@ is the part worth knowing before you switch:
 - **A per-tool restriction can cost the whole server on `goose`, `deepseek`,
   `codex`, `copilot`, `strands` and `antigravity`.**
   `per_tool_deny` on the projection record says which of three forms you get
-  BEFORE a session runs. `settings-file` on `claude` and `opencode` keeps the
+  BEFORE a session runs. `settings-file` on `claude`, `opencode` and `mimocode` keeps the
   server mounted and the harness refuses the tool; on `opencode`, a lower config
   source that already names the tool can outrank Crew's rule, and that server is
   withheld. `whole-server` on `goose`, `deepseek`, `copilot`, `strands` and
