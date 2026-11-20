@@ -256,6 +256,15 @@ def _failed_or_stopped() -> bool:
         return _active is not None and bool(_active.error or _active.stopped)
 
 
+def memory_startup_failed_or_stopped() -> bool:
+    """Whether this process's memory startup recorded a failure or was stopped.
+
+    For a waiter on the published task, which may never finish once the backstop
+    has failed the fence.
+    """
+    return _failed_or_stopped()
+
+
 def memory_startup_preparing() -> bool:
     """Is this process's memory startup still preparing? Never raises.
 

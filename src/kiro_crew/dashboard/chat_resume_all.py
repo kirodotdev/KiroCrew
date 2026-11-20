@@ -351,6 +351,11 @@ async def _resume_candidates(
 #: is preparing it but has not published it on the state yet.
 _MEMORY_TASK_POLL_SECONDS = 0.1
 
+#: How often a candidate waiting on the published task re-reads the memory fence:
+#: the backstop fails the fence but cannot cancel the worker thread, so the task
+#: itself may never finish (the single-turn wait does the same).
+_MEMORY_FENCE_RECHECK_SECONDS = 1.0
+
 
 async def _memory_preparation_settled(state: DashboardState) -> None:
     """Return once the gateway's memory preparation has ended.
@@ -361,23 +366,25 @@ async def _memory_preparation_settled(state: DashboardState) -> None:
     published yet, the candidate waits for the task to appear, as a restored
     send does (``slot_queue_repository``); a turn started then would be refused
     by the memory barrier. A failed or cancelled preparation counts as ended:
-    the turn refuses on its own then, as it does for any send.
+    the turn refuses on its own then, as it does for any send. So does a
+    preparation whose fence the backstop failed while the task stays pending.
     """
-    from kiro_crew.memory_startup import memory_startup_preparing
+    from kiro_crew.memory_startup import memory_startup_failed_or_stopped, memory_startup_preparing
 
     while getattr(state, "memory_startup_task", None) is None and memory_startup_preparing():
         await asyncio.sleep(_MEMORY_TASK_POLL_SECONDS)
     task = getattr(state, "memory_startup_task", None)
     if task is None or task.done():
         return
-    try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        if not task.done():
-            raise
-    except Exception:
+    while not task.done():
+        await asyncio.wait({task}, timeout=_MEMORY_FENCE_RECHECK_SECONDS)
+        # The backstop fails the fence but cannot cancel the worker thread, so a
+        # wedged task never finishes: a recorded failure ends the wait as well.
+        if memory_startup_failed_or_stopped():
+            return
+    if not task.cancelled():
         # A failed preparation has ended too; the turn then refuses on its own.
-        pass
+        task.exception()
 
 
 def _claims(request: web.Request) -> dict[str, Any]:
