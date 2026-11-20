@@ -118,8 +118,8 @@ user. On main it has three routes, and none of them is supported:
 - A list of operation names. Each name is 1 to 64 ASCII characters, the first an
   upper-case letter and the rest letters or digits. The parser checks each
   character in turn. It uses no pattern match.
-- The parser drops any other entry and keeps each name once, in manifest order.
-  It never widens or rewrites a name.
+- The parser drops any other entry and keeps each name once, in manifest order,
+  at most 64 names. It never widens or rewrites a name.
 - No wildcard, no prefix form and no service name. The service is fixed by the
   gateway (section 4).
 
@@ -131,14 +131,17 @@ operation name. It joins `STAGED_GRANT_FAMILIES` (`apps/manager_records.py`)
 through `point_grant_families()`, so no install, update or approval path needs
 new code for the widening rule:
 
-- **Install.** The install screen lists each declared operation under the
-  heading "Kiro operations this app calls as you". The install consent approves
-  the list shown, as it does for `permissions.api`.
+- **Install approves none.** The App Store catalog and the trust prompt list
+  the declared names before install, so the owner sees them first. An install
+  or a first registration still approves no operation: the family is one of
+  `_OWNER_APPROVED_FAMILIES` (`apps/manager_records.py`), with `bots`,
+  `browserSites` and `browser`, and its approved set starts empty. The owner
+  approves each name on the app's page.
 - **Update.** `_approved_grants_after_manifest_change` keeps only names that
   the new manifest still declares. A new name is held back. The app stays
   enabled, and its approved names keep working.
-- **Approval.** The owner approves held-back names on the app detail page,
-  through `enable_app(grants_consent=...)`, like any staged family.
+- **Approval.** The owner approves names, new or held back, on the app's
+  page, through `enable_app(grants_consent=...)`, like any staged family.
 - **Older records.** `explicit_only=True` means a stored set written before
   this family existed approves no operation. An app that declared the key
   early never reached the owner's eyes, so it gets nothing until approved.
@@ -247,14 +250,16 @@ A refusal at any step sends nothing to the BFF.
 
 ### 5. Bodies
 
-- **Request.** A JSON object, at most 1 MiB, nested at most 32 levels. JSON
-  maps onto CBOR maps, arrays, text, integers, floats, booleans and null.
+- **Request.** A JSON object, at most 1 MiB, nested at most 32 levels. A larger
+  or deeper input gets 413 `body_too_large` (section 7). JSON maps onto CBOR
+  maps, arrays, text, integers, floats, booleans and null.
 - **Response.** At most 8 MiB of CBOR, checked on `Content-Length` and again on
   the bytes read. The gateway decodes it to JSON: a byte string becomes base64
   text, and a timestamp becomes ISO-8601 text.
 - **Codec.** The gateway already has an RPC v2 CBOR codec for the Kiro Space
   client (`cbor_encode` and `cbor_decode` in `apps/market_client.py`). The
-  build moves it to one shared module that both use. It adds no dependency.
+  build moves it to one shared module, `apps/rpc_cbor.py`, that both use. It
+  adds no dependency.
 
 ### 6. Chat tools
 
@@ -382,7 +387,7 @@ Each phase is one PR.
 
 | Phase | Change | Exit criteria |
 |---|---|---|
-| 1 | `permissions.kiroOperations`, the `kiroOperations` family, `app_kiro_operations`, the route, `ctx.kiro_call`, the shared CBOR codec, the region table, the install and detail-page lists, logs and audit. Spec updates in `app-kit-platform.md`, `api-reference.md` and `manifest-reference.md`. App Kit seam level +1. | Against a fake BFF: an approved operation returns its output, and the fake saw the vault's token and identity headers. An undeclared name gets 404, a held-back name 403, and neither reaches the fake. An update that adds a name keeps the old names working and holds the new one. A record written before the family approves nothing. Removing a name from the manifest needs no approval and refuses it at once. Another app's token, a non-owner session and an internal-secret caller get 403; the owner's dashboard request reaches only the app's approved names. An `eu-central-1` profile reaches only the EU origin, and an unknown region gets 503 with no request sent. A 401 from the fake renews once and retries once. A 9th concurrent call gets 429. Bodies over 1 MiB and replies over 8 MiB are refused. The planted token appears in no log, error body or audit row. |
+| 1 | `permissions.kiroOperations`, the `kiroOperations` family, `app_kiro_operations`, the route, `ctx.kiro_call`, the shared CBOR codec, the region table, the catalog, trust-prompt and app-page lists, logs and audit. Spec updates in `app-kit-platform.md`, `api-reference.md` and `manifest-reference.md`. App Kit seam level +1. | Against a fake BFF: an approved operation returns its output, and the fake saw the vault's token and identity headers. An undeclared name gets 404, a held-back name 403, and neither reaches the fake. An update that adds a name keeps the old names working and holds the new one. A fresh install approves no name, and a record written before the family approves nothing. Removing a name from the manifest needs no approval and refuses it at once. Another app's token, a non-owner session and an internal-secret caller get 403; the owner's dashboard request reaches only the app's approved names. An `eu-central-1` profile reaches only the EU origin, and an unknown region gets 503 with no request sent. A 401 from the fake renews once and retries once. A 9th concurrent call gets 429. Bodies over 1 MiB or nested over 32 levels get 413, and replies over 8 MiB are refused. The planted token appears in no log, error body or audit row. |
 | 2 | Docs: a section in `docs/app-kit/api-reference.md` showing an `agentTools` handler that calls `ctx.kiro_call`. | It lands after phase 1 of the agentTools RFC, and it shows the four approvals of section 6. |
 
 ## Backward compatibility
@@ -398,9 +403,11 @@ Each phase is one PR.
 - **What the app holds.** Only operation outputs. The token stays in the
   gateway, so the app cannot replay it against another operation, another
   Kiro API or another host.
-- **What the owner approved.** The exact names, shown at install and on each
-  widening update. A token-holding app would have every operation the token
-  allows. This seam narrows that to the approved names.
+- **What the owner approved.** The exact names, each one ticked on the app's
+  page. Installing an app approves none, so a third-party app cannot act as
+  the user against the Kiro BFF just by being installed. A token-holding app
+  would have every operation the token allows. This seam narrows that to the
+  names the owner ticked.
 - **Residual: the operation itself.** An approved write operation can change
   the user's data in that Kiro feature, as the user. The owner approves that by
   name. The gateway cannot judge what an operation does, and the name is the
@@ -467,10 +474,12 @@ also names the app whose grant applies, which an owner caller needs.
 
 ## Open questions
 
-1. Is the install-time approval right, or must the owner approve operations in
-   a separate step after install, as the agentTools RFC chose for tools? This
-   draft approves at install, because the list is short, readable and shown on
-   the install screen, and the app does nothing without it.
+1. Does the install approve the operations, or does the owner approve them in
+   a separate step? Closed: a separate step. Installing approves none, and the
+   owner approves each name on the app's page, as for the `bots`, `browser`
+   and `browserSites` families and as the agentTools RFC chose for tools. The
+   catalog and the trust prompt show the names before install. Section 2
+   follows this answer, and #39731 builds it.
 2. Should a later revision carry CBOR byte strings and timestamps in the input,
    for example as `{"$bytes": "<base64>"}`? No known operation needs them yet,
    so this draft leaves them out.
