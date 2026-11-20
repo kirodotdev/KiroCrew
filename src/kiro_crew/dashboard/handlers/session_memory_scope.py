@@ -383,4 +383,22 @@ async def api_spawn_session_memory(request: web.Request) -> web.Response:
         workers = []
     if workers:
         view["workers"] = workers
+        if not _growth_wake_on():
+            view["growth_wake"] = "off"
     return web.json_response(view)
+
+
+def _growth_wake_on() -> bool:
+    """Whether the worker growth wake has readings: the watchdog's RSS check is on.
+
+    rfc-resource-control.md §4.3: the wake reads that check's sizes, so with
+    ``session.watchdog_rss_max_mb = 0`` it is silent, and the conductor is told so
+    rather than reading the silence as health. Unreadable config answers on.
+    """
+    try:
+        from kiro_crew.config import live
+
+        snap = live.snapshot()
+    except Exception:  # noqa: BLE001 - the view must answer without config
+        return True
+    return snap is None or bool(getattr(snap.session, "watchdog_rss_max_mb", 1))

@@ -249,7 +249,19 @@ patrol is woken once, with the reading:
 A patrol held because every open item waits on a person is released by a
 posture change too, so the wake still reaches the conductor.
 The same posture again wakes nobody, and `ample` wakes nobody until a worse
-posture was seen. For a conductor, `resource_status` also lists each worker
+posture was seen. While it stays `tight`, one more wake comes each time free
+memory falls another 1 GB, or the worst temp root another 2 points of free space,
+below the reading at the last posture wake (under `critical`, 0.5 GB and 1 point);
+a recovery wakes nobody and becomes the new reference:
+`[work-ledger wake] host posture still tight and worse (memory 2.9 GB free, was 4.0 GB at the last wake)`.
+These share the posture's hourly wake budget, so a value that flaps cannot keep
+waking it. A worker bound to an open item also wakes it when its process tree
+first holds a quarter of host memory (again only after it drops below a fifth),
+or, while the host is `tight` or `critical`, grows 2 GB since the last wake about it:
+`[work-ledger wake] worker it_1a2b3c4d grew to 16.2 GB (27% of RAM; +3.1 GB since the last wake)`.
+That wake is charged to the item's own budget. It reads the sizes the session
+watchdog already measures, so it is off when `session.watchdog_rss_max_mb` is 0,
+and `resource_status` then says so. For a conductor, `resource_status` also lists each worker
 bound to an open item on its own board, by item id: its memory, process count,
 largest test run, whether a turn is running, and the free space of its working
 volume. No other session is shown.
