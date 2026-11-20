@@ -3,9 +3,9 @@ title: One observation layer, one controller
 status: draft
 author: chenmingwei23
 created: 2026-09-08
-last-audited: 2026-10-06
-audited-at: 9348a25a34
-doc-pr:
+last-audited: 2026-11-20
+audited-at: fc89562d69
+doc-pr: 9339
 implementation-prs: [5185, 5186, 5305, 8919]
 tracking-issues: []
 supersedes: []
@@ -19,7 +19,8 @@ expose named `MonitorObservation` entries, per-condition coalescing, and bounded
 provider/turn/token accounting, but `monitor_start` still runs the separate
 `irq.poll` path while `monitor_watch` uses the structured controller. The single
 observation stack, out-of-session batching, and unified dashboard surface
-described below are not complete.
+described below are not complete (checked at `fc89562d69`:
+`autonudge_service/gate.py` still calls `irq.poll`).
 
 Premise note: the PR watch runs in the gateway. There is
 no `babysit/scripts/pr_watch.py` cron script

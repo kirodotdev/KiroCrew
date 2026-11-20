@@ -3,10 +3,10 @@ title: Crew-owned OAuth for Connections -- the gateway runs OAuth and holds the 
 status: draft
 author: zejiangg, with kirocrew agent session
 created: 2026-11-04
-last-audited: 2026-11-04
-audited-at: 4055dcd61e
-doc-pr: null
-implementation-prs: []
+last-audited: 2026-11-20
+audited-at: fc89562d69
+doc-pr: 29517
+implementation-prs: [29543, 32204, 32216, 32221, 33039, 33077, 33597, 33799, 33882, 34213, 34811, 35692, 36303]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Crew-owned OAuth for Connections
 
-- Status: draft. Proposed for team review; the team has not decided. Nothing is built, and this document changes no code.
+- Status: draft. Proposed for team review; the status has not been moved by a maintainer. Code has since shipped behind the `crew_oauth` feature preview (`src/kiro_crew/connections/crew_oauth.py`, `crew_oauth_proxy.py`, `crew_oauth_dcr.py`; #29543, #33039, #33077, #33597, #33799, #33882, #34213, #34811, #35692 and others in `implementation-prs`), and the amendments below record owner rulings. This document itself changes no code. Checked at `fc89562d69`.
 - Would amend [mcp-oauth-ownership.md](../architecture/design-notes/mcp-oauth-ownership.md) (the rule "Kiro Crew never reads or holds the credential") and the invariant in [connections.md](../system-specs/modules/connections.md). It picks up the "OAuth custody under the Agent SDK" option left open in [rfc-crew-agent-sdk-boundary.md](rfc-crew-agent-sdk-boundary.md).
 - Measured at Kiro Crew `origin/main` `4055dcd61e` (first written at `aff16f9886`; every cited Crew file and line was re-checked at `4055dcd61e`) and KAS `kiro-team/kiro-agent` `main` `d05183bc8d`.
 
