@@ -42,7 +42,7 @@ from kiro_crew.apps.point_grants import explicit_only_grant_families, point_gran
 from kiro_crew.apps.routes_kiro import register_kiro_call_routes
 from kiro_crew.apps.rpc_cbor import cbor_decode, cbor_encode
 from kiro_crew.auth.provider import NotAuthenticated
-from kiro_crew.testing.synthetic_credentials import synth
+from kiro_crew.testing.synthetic_credentials import github_classic, synth
 
 APP = "widgets"
 OPS = ["GetWidget", "ListWidgets"]
@@ -704,3 +704,77 @@ def test_a_body_nested_past_the_parser_is_too_large_not_a_crash() -> None:
     with pytest.raises(kiro_calls.KiroCallError) as err:
         kiro_calls.parse_json_body(b"[" * 200_000)
     assert (err.value.status, err.value.code) == (413, "body_too_large")
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("approved")
+async def test_a_secret_the_cut_would_split_is_still_redacted(bff: tuple[FakeBff, str]) -> None:
+    fake, origin = bff
+    secret = github_classic(seed=9)
+    fake.replies = [(500, {"__type": "Boom", "message": "x" * 270 + " " + secret}, {})]
+    with pytest.raises(kiro_calls.KiroCallError) as err:
+        await kiro_calls.call_kiro_operation(
+            APP, "GetWidget", {}, caller="hook", upstream=_upstream(origin, FakeProvider())
+        )
+    text = json.dumps(err.value.body())
+    assert secret[:20] not in text
+
+
+def _enable_request(user: str, grants: dict[str, list[str]]) -> Any:
+    from aiohttp.test_utils import make_mocked_request
+
+    app = web.Application()
+    app["state"] = SimpleNamespace(owner_id=OWNER)
+    req = make_mocked_request("POST", f"/api/apps/{APP}/enable", app=app, match_info={"name": APP})
+    req["app"] = ""
+    req["user"] = user
+    return req, {"grantsConsent": grants}
+
+
+@pytest.mark.parametrize(
+    ("user", "grants", "refused"),
+    [
+        ("U_TEAMMATE", {"kiroOperations": ["DeleteWidget"]}, True),
+        ("U_TEAMMATE", {"api": ["/api/x"], "kiroOperations": []}, False),
+        (OWNER, {"kiroOperations": ["DeleteWidget"]}, False),
+    ],
+)
+def test_only_the_host_owner_may_approve_kiro_operations(
+    user: str, grants: dict[str, list[str]], refused: bool
+) -> None:
+    from kiro_crew.apps.routes_kiro import kiro_consent_refusal
+
+    req, body = _enable_request(user, grants)
+    resp = kiro_consent_refusal(req, body["grantsConsent"])
+    assert (resp is not None) is refused
+    if resp is not None:
+        assert resp.status == 403 and json.loads(resp.body)["code"] == "owner_only"
+
+
+@pytest.mark.asyncio
+async def test_the_enable_route_refuses_a_teammates_kiro_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json as _json
+
+    from kiro_crew.apps import routes as routes_facade
+
+    async def passes(_request: Any, _operation: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers._shared.require_owner_dashboard_request", passes
+    )
+    monkeypatch.setattr(routes_facade, "get_app", lambda _n: {"name": APP, "manifest": {}})
+    called: list[Any] = []
+    monkeypatch.setattr(routes_facade, "enable_app", lambda *a, **k: called.append(a))
+    req, body = _enable_request("U_TEAMMATE", {"kiroOperations": ["DeleteWidget"]})
+
+    async def read_json() -> Any:
+        return body
+
+    req.json = read_json  # type: ignore[method-assign]
+    monkeypatch.setattr(type(req), "can_read_body", property(lambda _self: True))
+    resp = await routes_facade.handle_enable_app(req)
+    assert resp.status == 403 and _json.loads(resp.body)["code"] == "owner_only"
+    assert called == []

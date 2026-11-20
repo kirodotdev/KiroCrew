@@ -282,7 +282,7 @@ def jsonable(value: Any) -> Any:
 
 def _short(text: Any, sent: tuple[str, ...]) -> str:
     """Upstream text cut short, with every credential this call sent and any known secret removed."""
-    from kiro_crew.security.text_redaction import redact  # noqa: PLC0415
+    from kiro_crew.security.text_redaction import redact_and_truncate  # noqa: PLC0415
 
     if not isinstance(text, str):
         return ""
@@ -290,7 +290,8 @@ def _short(text: Any, sent: tuple[str, ...]) -> str:
     for value in sent:
         if value:
             text = text.replace(value, "[REDACTED]")
-    return redact(text[:MAX_ERROR_MESSAGE])
+    # Redacted before the cut, so a secret the cut would split is still recognized.
+    return redact_and_truncate(text, MAX_ERROR_MESSAGE)
 
 
 # ---------------------------------------------------------------------------

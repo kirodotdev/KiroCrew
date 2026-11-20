@@ -10305,9 +10305,12 @@ set, registered explicit-only in `point_grants` and listed in
 `manager_records._OWNER_APPROVED_FAMILIES`: an install or first registration approves none.
 The trust prompt lists the names (`trust-kiro-operations`; the catalog discloses them
 before install through `official_catalog._disclosed_permissions_manifest`), an update that
-adds a name holds it while the old names keep working, and the owner approves each name
-on the app's page (`kiroOperationsGrant` on the app row, `staged-kiro-operations`; the
-Permissions card lists every declared name and marks the held-back ones, `kiro-operations`),
+adds a name holds it while the old names keep working, and the host owner approves each
+name on the app's page. A Shared Crew teammate passes the dashboard's owner gate but may
+not approve these, since the calls run with the host owner's sign-in
+(`routes_kiro.kiro_consent_refusal`, called from `POST /api/apps/{name}/enable`: 403
+`owner_only`). The page shows them through `kiroOperationsGrant` on the app row
+(`staged-kiro-operations`; the Permissions card lists every declared name and marks the held-back ones, `kiro-operations`),
 and a dropped name needs nothing. A set stored before this family existed approves none.
 `kiro_operations.app_kiro_operations(app)` is the one reader: read fresh on every call,
 empty unless the app is enabled, `third_party_ceiling_closed` admits it, and the live
@@ -10368,8 +10371,9 @@ cannot fix), is 502 `kiro_operation_failed`; a timeout 504 and a network error 5
 reply too large or not RPC v2 CBOR 502 `kiro_bad_reply`.
 
 **The token stays in the gateway.** It is in no answer, error body, log line, audit row
-or process environment. The upstream's error message is cut to 300 characters, every
-token this call sent is replaced, and the credential redactor runs over the rest. One log
+or process environment. Every token this call sent is replaced in the upstream's error
+message, the credential redactor runs over the whole text, and only then is it cut to 300
+characters (`redact_and_truncate`), so a secret the cut would split is still recognized. One log
 line per call names the app, operation, status, duration and input size; one SEL row
 (`kiro_call`) names the caller kind, the app, the operation and the grant entry.
 

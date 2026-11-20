@@ -37,11 +37,36 @@ def kiro_caller(request: web.Request, name: str) -> str | None:
         return None
     if request.get("app") == name and bool(request.get("auth_token")):
         return "backend"
+    return "owner" if _is_host_owner(request) else None
+
+
+def _is_host_owner(request: web.Request) -> bool:
     from kiro_crew.dashboard.handlers.source_providers import (  # noqa: PLC0415
         is_host_owner_dashboard_request,
     )
 
-    return "owner" if is_host_owner_dashboard_request(request) else None
+    return is_host_owner_dashboard_request(request)
+
+
+def kiro_consent_refusal(
+    request: web.Request, grants_consent: dict[str, list[str]] | None
+) -> web.Response | None:
+    """The refusal when anyone but the host owner approves Kiro operations; else None.
+
+    The calls run with the host owner's Kiro sign-in, so a Shared Crew teammate, who
+    passes the dashboard's owner gate, may not choose them (``POST .../enable``).
+    """
+    if not grants_consent or not grants_consent.get("kiroOperations"):
+        return None
+    if _is_host_owner(request):
+        return None
+    return web.json_response(
+        {
+            "error": "Only the owner can approve Kiro operations: they run with the owner's Kiro sign-in.",
+            "code": "owner_only",
+        },
+        status=403,
+    )
 
 
 def _kiro_error(exc: KiroCallError) -> web.Response:
@@ -90,4 +115,4 @@ def register_kiro_call_routes(app: web.Application) -> None:
     app.router.add_post("/api/apps/{name}/kiro/{operation}", handle_kiro_call)
 
 
-__all__ = ["handle_kiro_call", "kiro_caller", "register_kiro_call_routes"]
+__all__ = ["handle_kiro_call", "kiro_caller", "kiro_consent_refusal", "register_kiro_call_routes"]

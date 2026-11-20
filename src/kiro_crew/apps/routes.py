@@ -426,10 +426,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.apps.routes_kiro import (  # noqa: F401
         _KIRO_READ_CHUNK,
+        _is_host_owner,
         _kiro_error,
         _read_kiro_body,
         handle_kiro_call,
         kiro_caller,
+        kiro_consent_refusal,
     )
     from kiro_crew.apps.routes_lifecycle import (  # noqa: F401
         _announce_app_ui_changed,
