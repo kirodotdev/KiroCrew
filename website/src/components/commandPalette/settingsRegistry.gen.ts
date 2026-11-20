@@ -463,6 +463,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "The App Secret shown next to the App ID on the same Credentials page."
   },
   {
+    "id": "channels.file-sessions-in-a-different-folder-slack",
+    "label": "File sessions in a different folder (Slack)",
+    "labelKey": "pages.settings.slackPanel.session_folder_custom",
+    "labelSuffix": "Slack",
+    "hint": "While Slack conversations are listed, new ones go into a “Slack” folder. Turn this on to file them in a folder you name instead.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
+  },
+  {
     "id": "channels.file-sessions-in-a-folder-discord",
     "label": "File sessions in a folder (Discord)",
     "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
@@ -496,18 +509,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "channel": "imessage"
-    }
-  },
-  {
-    "id": "channels.file-sessions-in-a-folder-slack",
-    "label": "File sessions in a folder (Slack)",
-    "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
-    "labelSuffix": "Slack",
-    "tab": "channels",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "channel": "slack"
     }
   },
   {
@@ -862,7 +863,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "labelKey": "pages.settings.slackPanel.show_in_session_list",
     "labelSuffix": "Slack",
     "description": "Lists conversations that start in Slack with your other sessions.",
-    "hint": "Turn this off to leave conversations that start in Slack out of the session list. They keep working in Slack, stay in History and search, and come back when you turn this on again. The conversation you have open, and one waiting on your approval or answer, stay listed. Sessions you start in the dashboard and connect to Slack, and Slack code channel sessions with their helper agents, are always listed.",
+    "hint": "Off by default, so conversations that start in Slack stay out of the session list; they keep working in Slack and stay in History and search. Turn this on to list them: new ones go into a “Slack” folder unless you pick a different folder below. Slack code channels and sessions you start in the dashboard are always listed.",
     "tab": "channels",
     "type": "toggle",
     "occurrence": 1,

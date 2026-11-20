@@ -181,7 +181,7 @@ jobs, apps, sub-agents or another channel, incognito and temporary sessions, and
 sessions that already existed when the setting was turned on are left alone. A
 session connected this way behaves exactly like one connected by hand: pause
 replies to Slack, unlink it from Slack, or reply in the thread as usual. It stays where it is in the
-sidebar: the **File sessions in a folder** setting below applies only to
+sidebar: the **File sessions in a different folder** setting below applies only to
 conversations that start in Slack. If Slack is slow when the first message is
 sent, the thread still opens and picks up from the next message; if Slack cannot
 be reached, the session simply stays unconnected, and you can connect it from the
@@ -191,11 +191,17 @@ Off by default. Applies to the next new session with no restart.
 
 ## Slack conversations in the session list
 
-Conversations that start in Slack (threads, DMs and channel mentions) appear in
-the dashboard's session list next to your other sessions, so you can read or
-continue one from either side. Turn off **Show Slack conversations in the session
-list** at `/settings/channels/slack` (`slack.show_in_session_list`) to keep them
-out of that list. This setting changes the list only:
+Conversations that start in Slack (threads, DMs and channel mentions) stay out of
+the dashboard's session list by default. Turn on **Show Slack conversations in the
+session list** at `/settings/channels/slack` (`slack.show_in_session_list`) to list
+them next to your other sessions, so you can read or continue one from either side.
+While they are listed and **File sessions in a different folder** is off, new ones go into a
+top-level **Slack** folder, created the first time one arrives (and again if you
+delete it). A folder you name under **File sessions in a different folder** is used instead. If
+two top-level folders are named **Slack**, or the folder cannot be created, new
+conversations stay unfiled. Conversations already in the sidebar keep their place.
+
+The setting changes the list only:
 
 - The conversations keep working in Slack exactly as before.
 - They stay in History and search. Open one from there, from a notification or
@@ -203,12 +209,17 @@ out of that list. This setting changes the list only:
   session.
 - One waiting on your approval or answer keeps its row until you answer, and
   hidden conversations add nothing to unread counts.
-- Nothing is closed, archived or deleted. Turn the setting back on and they are
-  listed again, including conversations that started while it was off.
+- Nothing is closed, archived or deleted. Turn the setting on and they are
+  listed, including conversations that started while it was off.
 - Sessions you start in the dashboard and connect to Slack, and Slack code
-  channel sessions with their helper agents, are always listed.
+  channel sessions with their helper agents, are always listed and are never
+  filed in the **Slack** folder.
 
-On by default. Applies when saved, with no restart. The separate
+Off by default. Before this default, Slack conversations were listed; if the
+setting was never saved, they leave the list after the upgrade. Saving the Slack
+settings page on an earlier release stored it as on, so those installs keep
+listing them, and new ones go into the **Slack** folder. Turn it on or off here
+to choose. Applies when saved, with no restart. The separate
 `dashboard.surface_channel_sessions` setting stops every messaging channel's
 conversations from being added to the session list at the next restart; this
 one is for Slack only and takes effect at once.

@@ -341,7 +341,9 @@ class SlackConfig:
         metadata=_meta(
             "Session Folder",
             "Optional sidebar folder for sessions that start on this channel. "
-            "Empty (the default) leaves them unfiled; any other value is the "
+            "Empty (the default) files them in a 'Slack' folder, created on "
+            "first use, while Show Slack Conversations In The Session List is "
+            "on, and leaves them unfiled while it is off; any other value is the "
             "folder name, created when these settings are saved and marked with "
             "the channel's brand mark. A configured folder that no longer exists "
             "leaves conversations unfiled until the next save recreates it.",
@@ -349,19 +351,20 @@ class SlackConfig:
         ),
     )
     show_in_session_list: bool = field(
-        default=True,
+        default=False,
         metadata=_meta(
             "Show Slack Conversations In The Session List",
             "List conversations that start in Slack (threads, DMs, channel "
-            "mentions) in the dashboard's session list. Off removes them from "
-            "the list only: they keep working in Slack, stay in History and "
-            "search, still raise approvals and notifications, and come back "
-            "when this is turned on again; nothing is closed or deleted. The "
-            "conversation open in the dashboard, and one waiting on an approval "
-            "or an answer, keep their rows. Sessions started "
-            "in the dashboard and linked to Slack, and Slack code channel "
-            "sessions with their helper agents, are always listed. On by "
-            "default; no restart.",
+            "mentions) in the dashboard's session list. Off (the default) "
+            "keeps them out of the list only: they keep working in Slack, stay "
+            "in History and search, and still raise approvals and "
+            "notifications; nothing is closed or deleted. The conversation "
+            "open in the dashboard, and one waiting on an approval or an "
+            "answer, keep their rows. On, and with no Session Folder set, new "
+            "ones are filed in a 'Slack' folder, created on first use. "
+            "Sessions started in the dashboard and linked to Slack, and Slack "
+            "code channel sessions with their helper agents, are always listed "
+            "and stay in their own folders. No restart.",
             tags=["slack"],
         ),
     )

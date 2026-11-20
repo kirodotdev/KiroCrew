@@ -62,7 +62,7 @@ type Draft = {
   session_folder: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions: boolean
-  /** List conversations that start in Slack in the session list (on by default). */
+  /** List conversations that start in Slack in the session list (off by default). */
   show_in_session_list: boolean
   /** Slack Code: the registered switches and the code-channel defaults. */
   code: SlackCodeDraft
@@ -80,8 +80,8 @@ function draftFrom(c: SlackConfigData): Draft {
     session_folder_on: !!c.session_folder,
     session_folder: c.session_folder ?? '',
     auto_link_sessions: !!c.auto_link_sessions,
-    // Absent (an older gateway) reads as on, the gateway's own default.
-    show_in_session_list: c.show_in_session_list !== false,
+    // Only a real `true` reads as on: absent is off, the gateway's own default.
+    show_in_session_list: c.show_in_session_list === true,
     code: slackCodeDraftFrom(c),
   }
 }
@@ -695,7 +695,8 @@ export function SlackPanel() {
             />
           </div>
           {/* Whether conversations that start in Slack are listed in the session
-              list. On by default; off leaves them out of the list only. */}
+              list. Off by default, which leaves them out of the list only; on,
+              with no folder set below, files new ones in a "Slack" folder. */}
           <div className="border-t border-border mt-3 pt-3">
             <SettingsToggle
               label={i18nT('pages.settings.slackPanel.show_in_session_list')}
@@ -707,12 +708,13 @@ export function SlackPanel() {
               configKey="slack.show_in_session_list"
             />
           </div>
-          {/* Optional per-channel session filing. Off by default: Slack
-              conversations stay unfiled in the sidebar, as before. */}
+          {/* A folder of the person's choosing. Off, listed Slack conversations
+              go into the zero-config "Slack" folder (`slack_session_list.py`),
+              so the switch reads as "a different folder", not "file at all". */}
           <div className="border-t border-border mt-3 pt-3">
             <SettingsToggle
-              label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
-              hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
+              label={i18nT('pages.settings.slackPanel.session_folder_custom')}
+              hint={i18nT('pages.settings.slackPanel.session_folder_custom_desc')}
               checked={draft.session_folder_on}
               onChange={v => upd({ session_folder_on: v })}
               disabled={ro}
