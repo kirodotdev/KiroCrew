@@ -38,6 +38,9 @@ _LATER = 2 * sc._UNOWNED_GRACE_SECONDS
 #: An owner pid that almost surely names no process.
 _DEAD_OWNER = 2**22 - 1
 
+#: The resume under test, taken before any test patches the name through the facade.
+_RESUME_CRON_CHILD = cron_script_child_env._resume_cron_child
+
 #: A member pid and two child pids; none can name a real process.
 _MEMBER, _CHILD, _FROZEN = unallocatable_pids(3)
 
@@ -179,13 +182,13 @@ def test_a_suspended_child_is_resumed_on_windows_and_never_elsewhere(monkeypatch
     child = SimpleNamespace(pid=_CHILD)
     monkeypatch.setattr(cron_script_child_env.platform_compat, "IS_WINDOWS", False)
     monkeypatch.setattr(cron_script_child_env.platform_compat, "resume_process_main_thread", resume)
-    assert cron_script_child_env._resume_cron_child(child) is True  # type: ignore[arg-type]
+    assert _RESUME_CRON_CHILD(child) is True  # type: ignore[arg-type]
     assert resumed == []
 
     monkeypatch.setattr(cron_script_child_env.platform_compat, "IS_WINDOWS", True)
-    assert cron_script_child_env._resume_cron_child(child) is True  # type: ignore[arg-type]
+    assert _RESUME_CRON_CHILD(child) is True  # type: ignore[arg-type]
     frozen = SimpleNamespace(pid=_FROZEN)
-    assert cron_script_child_env._resume_cron_child(frozen) is False  # type: ignore[arg-type]
+    assert _RESUME_CRON_CHILD(frozen) is False  # type: ignore[arg-type]
     assert resumed == [_CHILD, _FROZEN]
 
 
