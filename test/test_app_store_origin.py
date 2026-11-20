@@ -184,17 +184,6 @@ def test_an_uninstalled_store_app_drops_out(tmp_path, labels):
     assert fu.app_public_id("weather-app") == "private"
 
 
-def test_app_label_is_unchanged_for_the_same_apps(tmp_path, labels):
-    """``kirocrew.app.task.completed`` keeps sending exactly what it sent before."""
-    _install(tmp_path, "weather-app", registry_id="")
-    labels()
-    assert fu.app_public_id("weather-app") == "weather-app"
-    assert fu.app_label("weather-app") == "private"
-    assert fu.app_label("auto-improvement") == "private"
-    assert fu.app_label("papyrus") == "papyrus"
-    assert fu.app_label(None) == "private"
-
-
 def test_a_failed_refresh_keeps_the_last_set(monkeypatch):
     monkeypatch.setattr(fu, "_public_app_ids", frozenset({"weather-app"}))
 
@@ -303,7 +292,6 @@ async def test_install_from_registry_end_to_end(
     assert installed_counts == [(expected, "store")]
     labels()
     assert fu.app_public_id("weather-app") == expected
-    assert fu.app_label("weather-app") == "private"
 
 
 @pytest.mark.asyncio
