@@ -48,6 +48,73 @@ CHECKED_KEY = "policy_checked"
 RESPLIT_KEY = "held_every_call_rechecked"
 
 
+#: The ``migrated.json`` key listing every Bot whose file was read once for the bare
+#: ``ask`` rules an every-call hold wrote (:func:`_carries_hold_asks`).
+ASKS_KEY = "held_asks_rechecked"
+
+
+def _is_bare_ask(rule: Any) -> bool:
+    """Whether *rule* is ``{"capability": c, "effect": "ask"}`` with *c* a held-limit capability."""
+    from kiro_crew.mate_held_rules import _ASKABLE
+
+    return (
+        isinstance(rule, dict)
+        and set(rule) == {"capability", "effect"}
+        and rule.get("effect") == "ask"
+        and rule.get("capability") in _ASKABLE
+    )
+
+
+def _carries_hold_asks(mate_file: Any) -> bool:
+    """Whether *mate_file* still holds what an every-call hold wrote: a bare ask on every capability.
+
+    That hold wrote one for each capability (``mate_held_rules.split_policy``). A file
+    whose owner pruned them lacks part of the set, so its asks are the
+    owner's choice and stay.
+    """
+    from kiro_crew.mate_held_rules import _ASKABLE
+
+    perms = mate_file.get("permissions") if isinstance(mate_file, dict) else None
+    rules = perms.get("rules") if isinstance(perms, dict) else None
+    if not isinstance(rules, list):
+        return False
+    return set(_ASKABLE) <= {r["capability"] for r in rules if _is_bare_ask(r)}
+
+
+def _file_carries_hold_asks(name: str) -> bool:
+    """:func:`_carries_hold_asks` for Bot *name*'s file; False when it cannot be read."""
+    try:
+        doc = json.loads((paths_mod.mate_agents_dir() / f"{name}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return _carries_hold_asks(doc)
+
+
+def _without_hold_asks(mate_file: dict[str, Any], old: dict[str, Any]) -> dict[str, Any]:
+    """*mate_file* without the bare ``ask`` rules an every-call hold wrote into it.
+
+    An ``ask`` outranks an ``allow``, the user's own ``~/.kiro/settings`` rules
+    included, so those asks made every call ask. They are removed only while the
+    file carries the whole set the hold wrote (:func:`_carries_hold_asks`); a rule
+    the old agent itself states is kept, and the carry writes back each ask still
+    needed.
+    """
+    if not _carries_hold_asks(mate_file):
+        return mate_file
+    perms = mate_file["permissions"]
+    old_perms = old.get("permissions")
+    old_rules = old_perms.get("rules") if isinstance(old_perms, dict) else None
+    own = old_rules if isinstance(old_rules, list) else []
+    rules = perms["rules"]
+    kept = [r for r in rules if not (_is_bare_ask(r) and r not in own)]
+    out = dict(mate_file)
+    if kept or set(perms) - {"rules"}:
+        out["permissions"] = {**perms, "rules": kept}
+    else:
+        out.pop("permissions")
+    return out
+
+
 def _every_call_held(data: dict[str, Any]) -> set[str]:
     """The Bots whose recorded hold covers every call (``mate_held_rules.ANY``)."""
     from kiro_crew.mate_held_rules import ANY, HELD_KEY
@@ -155,7 +222,10 @@ def _rewrite(
         return False
     # On a recheck the hold is derived again from the old agent, never assumed
     # empty: a limit beside the bundle that cannot be carried is still held.
-    fixed, held = carry_restrictions(cfg, base, name, old, mate_file)
+    # The asks that hold wrote are dropped too, and the carry writes back each one
+    # the new hold still needs.
+    start = _without_hold_asks(mate_file, old) if recheck else mate_file
+    fixed, held = carry_restrictions(cfg, base, name, old, start)
     # Keep every recorded hold until the file carries its limits.
     if recheck:
         with ledger_lock():
@@ -198,7 +268,12 @@ def restore_dropped_policy(cfg: KiroCrewConfig | None = None) -> list[str]:
         # A Bot held on every call is read once more (``RESPLIT_KEY``), even when checked.
         # Only a checked Bot: an unchecked one still owes its first repair, which
         # writes every carriable deny into its file before anything is marked done.
-        recheck = (_every_call_held(data) - rechecked) & done
+        asks_done = set(_strings(data.get(ASKS_KEY)))
+        # A Bot an every-call recheck already passed, whose file still carries the
+        # hold's asks, is read once more: that recheck dropped the hold and kept them.
+        # Only such a Bot: the asks of one never held on every call are its owner's.
+        asks_due = {n for n in (rechecked - asks_done) & done if _file_carries_hold_asks(n)}
+        recheck = ((_every_call_held(data) - rechecked) | asks_due) & done
         owed = {
             name: entry["from"]
             for name, entry in (threads.items() if isinstance(threads, dict) else ())
@@ -234,8 +309,11 @@ def restore_dropped_policy(cfg: KiroCrewConfig | None = None) -> list[str]:
         done.add(name)
         if name in recheck:
             rechecked.add(name)
-    if not done - set(_strings(data.get(CHECKED_KEY))) and not rechecked - set(
-        _strings(data.get(RESPLIT_KEY))
+            asks_done.add(name)
+    if (
+        not done - set(_strings(data.get(CHECKED_KEY)))
+        and not rechecked - set(_strings(data.get(RESPLIT_KEY)))
+        and not asks_done - set(_strings(data.get(ASKS_KEY)))
     ):
         return repaired
     try:
@@ -243,6 +321,7 @@ def restore_dropped_policy(cfg: KiroCrewConfig | None = None) -> list[str]:
             data = _read_ledger()
             data[CHECKED_KEY] = sorted(done | set(_strings(data.get(CHECKED_KEY))))
             data[RESPLIT_KEY] = sorted(rechecked | set(_strings(data.get(RESPLIT_KEY))))
+            data[ASKS_KEY] = sorted(asks_done | set(_strings(data.get(ASKS_KEY))))
             _write_ledger(data)
     except Exception:  # noqa: BLE001 - a repaired file keeps its rules; a re-check is a no-op
         logger.warning("crewmate policy repair: not recorded in the ledger", exc_info=True)
