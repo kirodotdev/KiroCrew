@@ -1386,7 +1386,7 @@ migration that rewrites or drops the stranded tags first.
 ### Dashboard packages (`kind="dashboard"`)
 
 A `dashboard` artifact holds one Bot's layout package — `bound_to`,
-`model`, `view` and `theme` — canonicalised by
+`model`, `view`, `theme` and, optionally, `widgets` (see *Widgets* below) — canonicalised by
 `kiro_crew.artifact_store.dashboard_package` on every write. A missing `theme`,
 or a `theme` with no `tokens`, is stored as `{"tokens": {}}`, because an MCP
 client can drop an empty object before it arrives; so `dashboard_save` (its MCP
@@ -1732,6 +1732,27 @@ The kind is in `ALLOWED_KINDS` and deliberately NOT in
 `USER_SELECTABLE_KINDS`, and [Kind inference](#kind-inference) never returns it:
 a caller passes it explicitly or does not get it. Hand-flipping a prose document
 to this kind would store content no reader can parse.
+
+**Widgets: an optional sixth key.** A package may carry `widgets`, a list of
+phone home-screen widgets validated by `kiro_crew.artifact_store.dashboard_widgets`
+after `model`, so every binding is checked against the canonical `model.types`.
+An absent key or an empty list stores no `widgets` key, so such a package keeps
+the bytes and the layout fingerprint it had before the key existed. Limits: at
+most 4 widgets of 1 to 6 blocks (`title`, `metric`, `list`, `progress`,
+`sparkline`, `status`); an `id` matching `[a-z][a-z0-9-]{0,31}`, unique, and
+never `status`, which is reserved for the gateway's default widget; titles and
+labels of 1 to 40 characters, a unit of 0 to 8; `sizes` a non-empty subset of
+`small`, `medium`, `large`; `tap.open` only `bot`; at most 8 tones, list
+`max_items` 1 to 5, sparkline `max_points` 2 to 48; numbers finite, integers
+within 2**53; and at most 16 KiB of stored widgets JSON. A block binds only a
+declared field of a type its block accepts, the refusal naming the field, and
+never a field read from a tree-keyed fold (`TREE_PROJECTION_NAMES`, today
+`worktree`), refused `widget_tree_fold`, because the widget read path reads slot
+folds and the agentic projection only. Every widget refusal is passed through
+`redact_via_context` before it is raised, since it quotes what the author wrote.
+`widgets` is layout: `_layout_fingerprint` hashes it when present, so a
+widgets-only edit is a new version, and `revert_package` brings the target
+version's widgets back with the rest of its layout.
 
 ### Canvases (`kind="canvas"`)
 
