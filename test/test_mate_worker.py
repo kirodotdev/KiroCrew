@@ -357,6 +357,60 @@ class TestMateFileForMember:
         other = mate_worker.resolve_worker_spec(dict(base), "")["permissions"]["rules"]
         assert fetch in other
 
+    def test_an_enabled_apps_server_launches_as_the_gateway_registers_it_now(
+        self, monkeypatch, tmp_path
+    ):
+        """The file keeps WHICH app servers it has; an upgrade must not strand their launch line."""
+        self._home(monkeypatch, tmp_path)
+        from kiro_crew import agent
+        from kiro_crew.apps import bridges
+        from kiro_crew.config import paths
+
+        stale = {"command": "/old/slot/bin/python3", "args": ["-m", "srv"], "env": {"A": "old"}}
+        user = {"command": "/home/u/.local/bin/uvx", "args": ["user-mcp"]}
+        mate = _mate(
+            prompt="",
+            allowedTools=[],
+            mcpServers={
+                "acme:srv": {**stale, "disabledTools": ["wipe"]},
+                "acme:off": dict(stale),
+                "mine": dict(user),
+                # The user's ``scope-pkg`` holds the alias an app's ``@scope/pkg`` is
+                # keyed by, so the app's own server is mounted as ``scope-pkg-2``.
+                "scope-pkg": dict(user),
+                "scope-pkg-2": dict(stale),
+            },
+        )
+        (paths.mate_agents_dir() / "pixel.json").write_text(json.dumps(mate), encoding="utf-8")
+        live = {"command": "/new/slot/bin/python3", "args": ["-m", "srv"], "env": {"A": "new"}}
+        monkeypatch.setattr(
+            agent,
+            "_app_owned_mcp_keys",
+            lambda: {"acme:srv": True, "acme:off": False, "scope-pkg": True},
+        )
+        monkeypatch.setattr(
+            bridges,
+            "registered_app_mcp_servers",
+            lambda: {
+                "acme:srv": {**live, "autoApprove": ["wipe", "read"]},
+                "acme:off": dict(live),
+                "mine": {"command": "uvx", "args": ["other"]},
+                "scope-pkg": {"command": "uvx", "args": ["other"]},
+                "scope-pkg-2": dict(live),
+            },
+        )
+        monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member_id: "pixel")
+
+        servers = mate_worker.resolve_worker_spec(dict(BASE), "pixel")["mcpServers"]
+
+        # The live entry's approvals stay behind; the file's own tool limit stays.
+        assert servers["acme:srv"] == {**live, "disabledTools": ["wipe"]}
+        assert servers["acme:off"] == stale
+        assert servers["mine"] == user
+        # An alias names a collision family, not one server: both keep the file's line.
+        assert servers["scope-pkg"] == user
+        assert servers["scope-pkg-2"] == stale
+
     def test_an_unreadable_crewmate_file_refuses_the_worker(self, monkeypatch, tmp_path):
         self._home(monkeypatch, tmp_path)
         from kiro_crew.config import paths

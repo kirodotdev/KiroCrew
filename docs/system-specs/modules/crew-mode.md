@@ -4662,6 +4662,24 @@ parts:
   (`mate_worker_kit`) writes a template's selectors for such a server into the
   file the same way and lists them in its preview. A file that copies the base
   adds nothing.
+  **An enabled app's server launches as the gateway registers it now:** for a
+  server the file adds that an installed, enabled app declares
+  (`mcp_sources._app_owned_mcp_keys`) and the agent config lists now
+  (`bridges.registered_app_mcp_servers`, the entry an add copies), the worker takes
+  that entry and keeps only the file's own `autoApprove`, `disabled` and
+  `disabledTools` (`mate_worker._use_registered_app_launch_lines`), so an upgrade
+  that replaces the app's install leaves no worker on a deleted path. A launch
+  line set by hand in the file for such a server is not used. Every other server
+  the file adds (the user's own, a registry install, one copied from an old agent,
+  a disabled app's, an HTTP app server whose backend is down, an app server whose
+  declared name has a `/`, because the alias it is mounted under can be another
+  server's) keeps the launch line the file recorded, and the file is never
+  rewritten. One residue: a server the user routes through the shared MCP broker
+  gets its stub from the file's own line (`mate_overlays`), so while that line's
+  old target still exists the stub starts it; once the target is gone, no stub is
+  made and the worker starts the registered entry, except for a server whose env
+  names a `secret://` reference: it stays wrapped
+  (`rewriter_env._must_stay_wrapped`), so it does not start.
   **A whole-server switch-off is a restriction, not an addition:** a file entry
   for a server the base declares that reads as muted (`mcp_cleanup.mcp_entry_is_muted`:
   any `disabled` but absent or `false`) is carried by name
