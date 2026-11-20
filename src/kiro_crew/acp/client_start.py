@@ -132,6 +132,7 @@ from kiro_crew.sandbox import (
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.team_ids import apply_slack_team_env
+from kiro_crew.startup_deadline import cancel_outcome
 
 if TYPE_CHECKING:
     from kiro_crew.acp.client import AcpClient
@@ -1433,12 +1434,11 @@ async def ensure_ready(self: AcpClient) -> None:
                         ) from exc
                     raise
     except asyncio.CancelledError as exc:
-        # Stop, a closed chat or a reset ended the start: not a startup failure.
-        # A cancel raised while a failure is handled (its cleanup, its
-        # classification, the retry backoff) carries that failure as its
-        # context and keeps the failure's label.
-        if not isinstance(exc.__context__, Exception):
-            _startup_outcome = "cancelled"
+        # Stop, a closed chat or a reset is "cancelled", a caller's expired
+        # startup_deadline is "timeout", and a cancel raised while a failure is
+        # handled (its cleanup, its classification, the retry backoff) keeps
+        # the failure's label.
+        _startup_outcome = cancel_outcome(exc) or _startup_outcome
         raise
     finally:
         try:
