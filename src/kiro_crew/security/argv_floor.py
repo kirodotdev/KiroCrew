@@ -376,4 +376,5 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.security.vocabulary import (  # noqa: F401
         _KILL_BY_NAME_PROGRAMS,
         _SELF_NAME_RE,
+        _WINDOWS_KILL_BY_NAME_PROGRAMS,
     )
