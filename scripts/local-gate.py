@@ -28,8 +28,9 @@ Contract
   tests that textually reference a changed file, and -- when the OTHER surface
   changed -- the cross-surface set ``ci-surface-tests.py`` computes for CI.
   A surface with nothing related is skipped and says so.
-- The frontend runner never fetches a package (``npx --no-install``). With
-  ``website/node_modules`` missing, a diff that touched no frontend file skips
+- The frontend runner starts the lockfile's own vitest
+  (``node ./node_modules/vitest/vitest.mjs`` from ``website/``), so it never fetches a
+  package or runs a global one. With that vitest not installed, a diff that touched no frontend file skips
   the frontend set with a note (CI still runs it); a frontend diff fails
   closed: exit 2, run nothing, and say to run ``npm ci``.
 - There is NO automatic path to a full suite. Not for a meta change, not for a
@@ -43,7 +44,7 @@ Contract
   working tree as git sees it (HEAD plus staged, unstaged and untracked edits; ignored
   files are outside it), and a proof is keyed by that tree, the argv, the cwd, a digest
   of the whole command environment and the tools behind the argv: this interpreter and
-  every package installed in it, and for npm and npx also the node they resolve to and
+  every package installed in it, and for node, npm and npx also the node they resolve to and
   the lockfile npm wrote for ``node_modules``. Only a pass is recorded, only when the
   tree did not change while the command ran, and a proof is ignored once it is
   unreadable, mismatched, over an hour old or dated in the future. A command whose tools
@@ -99,6 +100,7 @@ from run_scoped_tests import (  # noqa: E402  (path set immediately above)
     argv_batches,
     backend_argv,
     frontend_argv,
+    VITEST_ENTRY,
     pytest_worker_env,
     related_targets,
 )
@@ -110,8 +112,8 @@ _META_PREFIXES = (".github/", "scripts/")
 # Evidence media ci.yml excludes from EVERY bucket (#8027): temp-screenshots/**
 # is never packaged or imported. A path here sets NO flag.
 _IGNORED_PREFIXES = ("temp-screenshots/",)
-_NODE_LAUNCHERS = frozenset({"npm", "npx"})
-_NO_NODE_MODULES = "website/node_modules is missing; run `npm ci` in website/"
+_NODE_LAUNCHERS = frozenset({"node", "npm", "npx"})
+_NO_NODE_MODULES = "website/node_modules has no vitest; run `npm ci` in website/"
 # How long a passing proof stays reusable. Files .gitignore hides that no package list or
 # lockfile names (a built dist, a hand edit under node_modules) are outside the identity,
 # so the bound caps how stale one of those can be behind a reused pass.
@@ -229,7 +231,7 @@ def _add_related(plan: Plan, surface: str, paths: list[str], surface_changed: bo
         _add_batches(plan, "backend (related)", argv_batches(backend_argv, targets), _REPO_ROOT)
         return
     try:
-        # `frontend_argv` resolves npx to an absolute launcher itself, so
+        # `frontend_argv` resolves node to an absolute launcher itself, so
         # `_resolve_command` sees a non-launcher argv[0] and leaves it alone.
         batches = argv_batches(frontend_argv, targets)
     except LauncherMissing as exc:
@@ -240,7 +242,8 @@ def _add_related(plan: Plan, surface: str, paths: list[str], surface_changed: bo
         plan.skipped.append(surface)
         return
     if not frontend_dependencies_installed():
-        # Node is here but the website's packages are not (a fresh worktree).
+        # Node is here but the website's vitest is not (a fresh worktree, or a
+        # partial install).
         # A diff that never touched the frontend still has CI's cross-surface
         # specs selected; skipping them here loses nothing CI does not run.
         # A frontend diff left untested locally would be a silent pass.
@@ -256,8 +259,8 @@ def _add_related(plan: Plan, surface: str, paths: list[str], surface_changed: bo
 
 
 def frontend_dependencies_installed() -> bool:
-    """True when ``npm ci`` has populated ``website/node_modules``."""
-    return (_REPO_ROOT / "website" / "node_modules").is_dir()
+    """True when ``npm ci`` installed the vitest entry point the frontend runner starts."""
+    return (_REPO_ROOT / "website" / VITEST_ENTRY).is_file()
 
 
 def _add_batches(plan: Plan, label: str, batches: list[list[str]], cwd: Path) -> None:
@@ -353,7 +356,7 @@ def tool_versions(cmd: list[str], cwd: Path, env: dict[str, str]) -> dict[str, s
     """What will run ``cmd``, named: a path alone does not say which version sits behind it.
 
     This interpreter and every package installed in it (pytest and its plugins) always.
-    For npm and npx also the launcher, the node that ``env`` and ``cwd`` resolve to (a version
+    For node, npm and npx also the launcher, the node that ``env`` and ``cwd`` resolve to (a version
     manager's shim picks one per directory) and the lockfile npm wrote for ``node_modules``
     (vitest and the rest). None when any of it cannot be read, and then nothing is reused.
     """
