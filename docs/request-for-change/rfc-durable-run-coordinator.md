@@ -4,9 +4,9 @@ status: superseded
 revision: v1
 author: Kyle Seaman, with Codex
 created: 2026-08-22
-last-audited: 2026-10-06
-audited-at: 9348a25a34
-doc-pr:
+last-audited: 2026-11-20
+audited-at: fc89562d69
+doc-pr: 5276
 implementation-prs: []
 tracking-issues: []
 supersedes: []
@@ -17,15 +17,16 @@ superseded-by: [rfc-overload-resilience.md]
 - Status: superseded by
   [`rfc-overload-resilience.md`](rfc-overload-resilience.md) (its §13 decision
   Q1). The `runs` / `commands` / `outbox` store proposed below ships as tables of
-  `$KIROCREW_HOME/tasks/tasks.db` (`src/kiro_crew/taskq/`), with the outbox as
-  `task_events(kind="deliver")`; the in-memory manager and run folders described
+  `$KIROCREW_HOME/tasks/tasks.db` (`src/kiro_crew/taskq/`), with the outbox
+  decided as `task_events(kind="deliver")`, a kind the store vocabulary names
+  (`taskq/model.py`) but no writer on main appends (checked at `fc89562d69`); the in-memory manager and run folders described
   here are imported into it by `taskq.migrate.import_legacy` on first boot. No
   `RunCoordinator` port was built — this document is kept as the intent behind
   that store. The owning spec is
   [`../system-specs/modules/taskq.md`](../system-specs/modules/taskq.md).
 - Author: Kyle Seaman, with Codex
 - Created: 2026-08-22
-- Audited against: `c4f253891`
+- Audited against: `fc89562d69`
 - Related: `docs/system-specs/modules/subagent.md`,
   `docs/system-specs/modules/session.md`, and
   `docs/request-for-change/rfc-orchestrator-chat-sessions.md`
