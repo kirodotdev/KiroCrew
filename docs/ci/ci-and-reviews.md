@@ -694,9 +694,16 @@ A second identical failure counts as evidence, not bad luck.
 
 ### Code ownership
 
-`.github/CODEOWNERS` assigns every repository path to
+`.github/CODEOWNERS` assigns repository paths to
 `@kirodotdev/kirocrew-pr-review` and `@KiroCrewCaptain` (the maintainers'
-automation account) through a single wildcard rule naming both, so an approval from either satisfies the ruleset's code owner review. GitHub reads that
+automation account) through a wildcard rule naming both, so an approval from either satisfies the ruleset's code owner review.
+Later rules with no owners leave the prose docs unowned (`docs/**/*.md`,
+`src/kiro_crew/docs/**/*.md`, `website/docs/**/*.md`, the root `README.md` and
+`CONTRIBUTING.md`), so a PR that changes only those needs no code owner review. Two
+directories are owned again by both: `docs/request-for-change/` (RFCs) and
+`docs/decisions/` (decision records), because they record product decisions. The
+last matching rule wins. Agent instructions (`AGENTS.md`, `skills/`,
+`.github/review-prompts/`, `.kiro/`) and `CHANGELOG.md` stay owned. GitHub reads that
 file to request reviews; the file
 itself establishes no approval count and enforces no branch protection, so a tier, a
 required number of reviewers, or a designated-maintainer requirement cannot be
