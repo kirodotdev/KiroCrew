@@ -513,7 +513,7 @@ rather than reporting a silent success. These are human debug/diagnostic twins o
 | `kirocrew computer call TOOL k=v …` | Run ONE computer-use tool through the same gated chokepoint the agent uses |
 | `kirocrew computer call --calls '[…]'` | Run a JSON array of calls in a SINGLE process, so `element_index` values stay resolvable |
 
-## Connected Computers (feature preview, Linux only)
+## Connected Computers (feature preview; Windows has no sandbox)
 
 Share a folder on this computer with a remote gateway. Off unless
 `dashboard.feature_previews.connected_computers` is on. Some commands run on

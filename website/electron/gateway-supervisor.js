@@ -384,7 +384,9 @@ function createGatewaySupervisor({
     },
     getInstances: () => instancesFromStore(store),
     onState: (state) => onConnectedComputersState(state),
-    supported: processObj.platform === "linux",
+    // Linux and macOS fence shared work in an OS sandbox; Windows shares with
+    // none (the consent dialog says so). Any other system runs no host.
+    supported: ["linux", "darwin", "win32"].includes(processObj.platform),
     revokeSavedOnStart: () => revokeSavedConnectedComputers(),
     log: glog,
     setTimeoutFn,

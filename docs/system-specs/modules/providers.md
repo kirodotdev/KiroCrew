@@ -656,16 +656,43 @@ only: a datagram pair (`SOCK_DGRAM`, or `SOCK_RAW`, which the kernel makes one)
 answers `EPERM`, because `sendto` with an explicit address on it reaches an
 unconnected abstract datagram listener. A filesystem unix socket inside the root is refused
 too, since seccomp cannot read the address. A processor with no table
-(`seccomp.TABLES`: x86_64, aarch64) has no plan. Sharing is Linux-only for now:
-macOS and Windows have no plan and refuse with that reason
-(`confinement.plan_for_this_machine`).
+(`seccomp.TABLES`: x86_64, aarch64) has no plan.
+
+macOS (`confinement_macos.MacPlan`, `macos-seatbelt`) runs every child under
+`sandbox-exec -p` with a `(deny default)` profile: reads of the system runtime,
+Homebrew, the developer tools, the Python install and the tool-server files;
+reads and writes under the resolved root and scratch; stat-only access to their
+parent folders; IP networking; the Mach services in `MACOS_MACH_SERVICES` only
+(no LaunchServices, Apple Events, preferences, keychain or pasteboard); and unix
+sockets only under the root, the scratch and the name resolver. The read-only
+runtime and tool paths are denied writes after the root is allowed them, since
+Seatbelt is last-match-wins. `sandbox-exec` and the in-fence launcher
+(`confinement_exec.py`, `python -I -S`) start with the bare base environment; the
+child's environment is written to an unlinked owner-only file in the scratch,
+handed over as an inherited descriptor, read inside the fence, and the launcher
+then `execvpe`s the child, so no `DYLD_` value runs before the fence and no value
+sits in an argv. A folder name holding a line break or NUL is refused.
+
+Windows (`WindowsUnconfinedPlan`, `windows-none`) has no OS sandbox, by the
+owner's decision: the child runs as the user, in the root, with an environment
+built from nothing (system names, homes and temp folders pointed at the scratch,
+the local gateway's credentials withheld), and the workspace tool server still
+refuses paths outside the root (`Workspace.resolve`) and runs commands through
+`cmd.exe` from the system folder (`--shell cmd`). A command it runs, and an
+exposed local MCP server, can read and change any file the user can. The consent
+describe (gateway route and desktop host) carries `confinement: {plan, fenced}`
+from `describe_confinement`, and the native dialog's first question says so in
+plain words when `fenced` is false. Any other system has no plan and refuses
+with `UNSUPPORTED_OS_REASON` (`confinement.plan_for_this_machine`).
 
 `self_test` runs once per grant per controller, before its first connector
 start, and refuses the computer unless the standalone `confinement_probe.py`
 entry point, run once unconfined (the control) and once confined, answers as a
 fence does against witnesses created for that check: a file, a folder and a
-unix socket outside the root (an abstract one), a symlink in the root pointing
-out, a loopback TCP listener, and the session keyring (a read-only `keyctl(KEYCTL_GET_KEYRING_ID)`, number from `confinement.keyctl_number`).
+unix socket outside the root (an abstract one on Linux, a socket file on
+macOS), a symlink in the root pointing out, a loopback TCP listener, on macOS an
+excluded Mach service (`MACOS_MACH_WITNESS`, `com.apple.cfprefsd.daemon`), and
+on Linux the session keyring (a read-only `keyctl(KEYCTL_GET_KEYRING_ID)`, number from `confinement.keyctl_number`).
 The control must reach every non-link witness, except the keyring, which a host whose own
 seccomp refuses `keyctl` (a container's) cannot reach and so has none to protect.
 Both runs refuse the symlink witness through no-follow opens: it checks probe I/O
@@ -795,14 +822,20 @@ and the install key, are AES-GCM sealed under a 32-byte data key the OS keeps
 a sealed value moved to another field or grant does not open. The document
 records only the key's id. The OS store is the Linux Secret Service
 (`secret-tool`, resolved from fixed system folders with
-`trusted_system_bin_quiet`, never `PATH`, the key on stdin); one item per data home
+`trusted_system_bin_quiet`, never `PATH`, the key on stdin), the macOS login
+Keychain (`/usr/bin/security`, the key sent on stdin to `security -i`; exit 44 is
+"no item", any other failure unavailable; a save is proved by reading it back),
+or on Windows the key sealed by DPAPI for this user (`CryptProtectData`,
+`CRYPTPROTECT_UI_FORBIDDEN`, entropy bound to the data home's account) in
+`connected-computers-key.dpapi`, written atomically with an owner-only DACL;
+one item per data home
 (`account_for`). Key initialization holds `connected-computers-key.lock` in that
 same data home through the OS save and vault key-id write. Each caller opens its
 own descriptor through `platform_compat`, excluding both sibling threads and
 other processes, and re-reads both stores under the lock before making a key.
 The lock is separate from the vault's write lock, which the key-id write takes.
 Every save is read back. No tool, no session bus, a locked or
-silent keyring (30 s), any other platform (macOS and Windows included) is
+silent keyring (30 s), any other platform is
 `ProtectionUnavailable`: a consent is refused before any SSH enrollment (redeem
 answers 503 `protection_unavailable`, the desktop host's share the same), a renewal
 is not stored, and a connector does not start. Nothing falls back to plaintext.
@@ -975,8 +1008,10 @@ controller's first reconcile. stdin EOF (the app quit or died) stops every
 connector, releases the lock and keeps every grant (exit 0). A first line that
 is not `hello`, or a line past the stream limit, exits 2 and is not respawned.
 The app respawns any other exit after 5 s, at most 5 times in a row, and ends
-its stdin and then sends SIGTERM 8 s later on quit. macOS and Windows run no
-host: the CLI refuses there and the menu stays hidden. Pinned by
+its stdin and then sends SIGTERM 8 s later on quit. Linux, macOS and Windows run
+the host (on Windows its stdin is read on a thread, since the app's pipe cannot
+be read by the event loop); any other system runs none: the CLI refuses there
+and the menu stays hidden. Pinned by
 `test_connected_computers_desktop_host.py`,
 `website/electron/test/connected-computers-host.test.js` and
 `connected-computers-desktop.test.js`.
@@ -1072,8 +1107,9 @@ person's own MCP server whose name starts `connected-computer-` loses auto-appro
 (mcp.md), and with it off that server keeps the answer it had before. In the chat's trust
 mode a connected computer's tools run without asking, as every tool does in that mode; the
 sensitive-path and denied-command floors still judge `@workspace` calls as the built-ins
-they replace (governance.md § Path matcher). Sharing is Linux-only for now: native
-confinement is authored for Linux; macOS and Windows refuse with a plain reason (B06).
+they replace (governance.md § Path matcher). Linux and macOS confine every child
+natively; Windows has no OS sandbox by owner decision and says so at consent; any
+other system refuses with a plain reason (B06).
 
 With Session Environments or the connected-computers preview off, a chat placed
 on a connected computer runs on this server as before. The developer-flag early

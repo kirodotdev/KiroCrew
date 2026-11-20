@@ -227,10 +227,12 @@ all sharing** (or `kirocrew connected-computer off`) ends every one, even offlin
 None of these deletes files. One crew is shared once: sharing it again through
 another connection replaces the earlier share.
 
-Sharing works on Linux only for now: commands run fenced into the shared folder
-with `bwrap` (bubblewrap). macOS and Windows are not supported yet and say so. A
-computer whose fence fails its check at connect is shown as unavailable and runs
-nothing.
+Sharing works on Linux, macOS and Windows. On Linux commands run fenced into the
+shared folder with `bwrap` (bubblewrap), and on macOS with the system sandbox
+(`sandbox-exec`). Windows has no sandbox for shared work: the file tools stay in
+the shared folder, but commands the crew runs can read and change any file your
+account can, and the sharing dialog says so before you choose. A computer whose
+fence fails its check at connect is shown as unavailable and runs nothing.
 
 On the crew, the computer shows under **Settings → Session Environments** and in
 a chat's environment menu. A chat that picked it stays on it: when the computer

@@ -43,11 +43,13 @@ when sharing is turned on again.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import secrets
 import sys
+import threading
 import time
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Final, Optional
@@ -305,6 +307,7 @@ class DesktopHost:
     async def _op_describe(self, rid: int, msg: dict[str, Any]) -> dict[str, Any]:
         from kiro_crew.connected_computers import local_mcp
         from kiro_crew.connected_computers import share as share_mod
+        from kiro_crew.connected_computers.confinement import describe_confinement
         from kiro_crew.connected_computers.local_routes import CONSENT_TTL_SECS
 
         instance = self._named(msg)
@@ -332,6 +335,8 @@ class DesktopHost:
             "consent": consent,
             "instance": {"id": instance.id, "name": instance.name, "ssh_host": instance.ssh_host},
             "mcp": local_mcp.exposable(servers),
+            # The dialog says plainly when commands are not fenced to the folder.
+            "confinement": describe_confinement(),
         }
 
     async def _op_share(self, rid: int, msg: dict[str, Any]) -> dict[str, Any]:
@@ -522,11 +527,40 @@ class _LineTooLong(Exception):
     pass
 
 
+def _feed_from_thread(fd: int, reader: asyncio.StreamReader) -> threading.Thread:
+    """Feed ``reader`` from ``fd`` on a daemon thread; end of file ends the reader.
+
+    Windows: the app's pipe is not an overlapped handle, so the event loop
+    cannot read it; a blocking read on a thread can.
+    """
+    loop = asyncio.get_running_loop()
+
+    def pump() -> None:
+        try:
+            while True:
+                data = os.read(fd, 65536)
+                if not data:
+                    break
+                loop.call_soon_threadsafe(reader.feed_data, data)
+        except OSError:
+            pass
+        finally:
+            with contextlib.suppress(RuntimeError):  # the loop already closed
+                loop.call_soon_threadsafe(reader.feed_eof)
+
+    thread = threading.Thread(target=pump, name="desktop-host-stdin", daemon=True)
+    thread.start()
+    return thread
+
+
 async def _stdio() -> "tuple[asyncio.StreamReader, Writer]":
     """The app's pipe; stray prints from anything else go to stderr, not to it."""
     loop = asyncio.get_running_loop()
     reader = asyncio.StreamReader(limit=MAX_LINE_BYTES * 2)
-    await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
+    if sys.platform == "win32":
+        _feed_from_thread(sys.stdin.fileno(), reader)
+    else:
+        await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
     # A buffered writer writes every byte (a raw one may write part of a reply).
     out = os.fdopen(os.dup(sys.stdout.fileno()), "wb")
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
@@ -543,10 +577,13 @@ async def _stdio() -> "tuple[asyncio.StreamReader, Writer]":
 
 def run_desktop_host() -> int:
     """``kirocrew connected-computer desktop-host``: serve the app on stdio."""
-    from kiro_crew.connected_computers.confinement import UNSUPPORTED_OS_REASON
+    from kiro_crew.connected_computers.confinement import (
+        UNSUPPORTED_OS_REASON,
+        sharing_supported,
+    )
 
-    if not sys.platform.startswith("linux"):
-        # macOS and Windows alike: there is no confinement plan to share under.
+    if not sharing_supported():
+        # A system with no plan at all: nothing to share under.
         print(UNSUPPORTED_OS_REASON, file=sys.stderr)
         return EXIT_DISABLED
 

@@ -511,6 +511,9 @@ class Connector:
         if family == protocol.KIND_WORKSPACE:
             tools = tools_dir()
             argv = [sys.executable, "-I", "-u", os.path.join(tools, "workspace_tools.py")]
+            if sys.platform == "win32":
+                # Windows has no /bin/sh: commands run through cmd.exe.
+                argv += ["--shell", "cmd"]
             return [*argv, "--root", self.grant.root], {}, [tools]
         for exposed in self.grant.mcp:
             if exposed.name == name:

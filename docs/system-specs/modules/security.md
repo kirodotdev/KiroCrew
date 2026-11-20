@@ -4084,11 +4084,21 @@ feature does not widen or change:
   uses `bwrap` with new user, PID, IPC and UTS namespaces and a seccomp filter
   (`seccomp.py`) that refuses AF_UNIX sockets (abstract X11 and session-bus
   sockets), io_uring, and `keyctl`/`add_key`/`request_key` (the user's session
-  keyring). Sharing is Linux-only for now: macOS, Windows and any processor
-  without a seccomp table refuse; nothing falls back to an unconfined run.
+  keyring). macOS uses `sandbox-exec` with a deny-default Seatbelt profile
+  (`confinement_macos.py`): only listed Mach services, unix sockets only under the
+  root and scratch, read-only runtime paths denied writes after the root is
+  allowed them; the child's environment reaches it on an inherited descriptor
+  read inside the fence (`confinement_exec.py`), so no `DYLD_` value runs before
+  it. Windows has no OS sandbox, by the owner's decision (`windows-none`): the
+  child runs as the user with an environment built from nothing and the workspace
+  tool server's own root check, the consent dialog says commands can reach files
+  outside the folder, and the self-test claims no fence. A processor without a
+  seccomp table and any other system refuse; Linux and macOS never fall back to
+  an unconfined run.
 - **Proved before each connect** (`self_test`): one probe runs unconfined and then
-  confined against fresh witnesses outside the root; any witness the confined run
-  reaches fails the connect.
+  confined against fresh witnesses outside the root (on macOS also an excluded
+  Mach service); any witness the confined run reaches fails the connect. A plan
+  marked unfenced (Windows) is not probed and is logged as unconfined.
 - **Consent is native only**: a desktop dialog and folder picker; no CLI verb, page
   or agent tool can share a folder. Both native approval paths bind the connection
   coordinates at consent creation and refuse a different target at redemption.

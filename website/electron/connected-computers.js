@@ -51,28 +51,37 @@ async function cancel(deps, consent) {
   return { ok: false, error: "cancelled" };
 }
 
+const FENCED_DETAIL =
+  "It can read, write and run commands only inside the folder you choose next. " +
+  "You can turn this off at any time.";
+// Windows has no sandbox for shared work (owner decision): say what that means.
+const UNFENCED_DETAIL =
+  "This computer has no sandbox for shared work. Commands the crew runs can read " +
+  "and change any file your account can, not only the folder you choose next. " +
+  "Share only with a crew you trust. You can turn this off at any time.";
+
 /**
  * The native questions one share asks, in order: confirm the crew, pick the
  * folder in the OS picker, then one yes/no per offerable local tool server
  * (default No). Resolves `{root, mcp}`, or null when any step was cancelled.
- * The crew name and the tool list come from the caller's trusted source (this
- * computer's gateway or host), never from a page.
+ * The crew name, the tool list and the fence come from the caller's trusted
+ * source (this computer's gateway or host), never from a page. `confinement`
+ * is the describe's `{plan, fenced}`: when `fenced` is false (Windows) the
+ * first question says plainly that commands are not kept to the folder.
  */
-async function askNative(crewName, servers, deps) {
+async function askNative(crewName, servers, deps, confinement) {
   const { dialog, window: parent } = deps;
   const show = (fn, opts) => (parent ? fn(parent, opts) : fn(opts));
+  const unfenced = Boolean(confinement) && confinement.fenced === false;
 
   const first = await show(dialog.showMessageBox.bind(dialog), {
-    type: "question",
+    type: unfenced ? "warning" : "question",
     buttons: ["Choose folder…", "Cancel"],
-    defaultId: 0,
+    defaultId: unfenced ? 1 : 0,
     cancelId: 1,
     noLink: true,
     message: "Let a Remote Crew work on this computer?",
-    detail:
-      `Crew: ${crewName}\n\n` +
-      "It can read, write and run commands only inside the folder you choose next. " +
-      "You can turn this off at any time.",
+    detail: `Crew: ${crewName}\n\n` + (unfenced ? UNFENCED_DETAIL : FENCED_DETAIL),
   });
   if (!first || first.response !== 0) return null;
 
@@ -130,7 +139,7 @@ async function confirmConsent(consent, deps) {
   if (described.status !== 200 || !info || !info.instance || typeof info.instance.name !== "string") {
     return { ok: false, error: errorCode(described, "no_consent") };
   }
-  const asked = await askNative(info.instance.name, info.mcp, deps);
+  const asked = await askNative(info.instance.name, info.mcp, deps, info.confinement);
   if (!asked) return cancel(deps, consent);
   const { root, mcp } = asked;
 
@@ -147,6 +156,8 @@ module.exports = {
   CANCEL_PATH,
   CONSENT_RE,
   MAX_MCP_PROMPTS,
+  FENCED_DETAIL,
+  UNFENCED_DETAIL,
   confirmConsent,
   askNative,
 };

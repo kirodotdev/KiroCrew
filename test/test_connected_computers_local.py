@@ -692,6 +692,9 @@ async def test_b02_describe_shows_the_native_dialog_the_minted_crew_without_usin
     body = await resp.json()
     assert isinstance(body["instance"]["name"], str) and body["instance"]["id"]
     assert isinstance(body["mcp"], list)
+    from kiro_crew.connected_computers.confinement import describe_confinement
+
+    assert body["confinement"] == describe_confinement()
     # Describing does not spend the consent: cancel still finds it once.
     again = await client.post(
         local_routes.DESCRIBE_PATH, json={"consent": consent}, headers={"X-Test-Internal": "1"}

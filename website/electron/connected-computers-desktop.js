@@ -164,7 +164,12 @@ function createDesktopSharing({
       }
       return { ok: false, code };
     }
-    const asked = await askNative(described.instance.name, described.mcp, { dialog, window: getWindow() });
+    const asked = await askNative(
+      described.instance.name,
+      described.mcp,
+      { dialog, window: getWindow() },
+      described.confinement,
+    );
     if (!asked) return { ok: false, code: "cancelled" };
     const reply = await host.request(
       "share",
