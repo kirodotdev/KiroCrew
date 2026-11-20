@@ -741,6 +741,17 @@ describe('TailnetMobileCard — terminal steps', () => {
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
   })
 
+  it('sends a device awaiting approval to the admin console, not to a new sign-in', async () => {
+    await mount(data({ step: 'approve_device' }))
+
+    expect(screen.getByText('Waiting for device approval')).toBeInTheDocument()
+    expect(screen.queryByText('Sign in to Tailscale')).toBeNull()
+    expect(screen.getByRole('link', { name: 'Open Tailscale machines' })).toHaveAttribute(
+      'href',
+      'https://login.tailscale.com/admin/machines',
+    )
+  })
+
   it('requires tailnet HTTPS consent before offering one-click setup', async () => {
     await mount(data({ step: 'enable_https' }))
 

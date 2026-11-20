@@ -416,11 +416,15 @@ def tailnet_origin() -> str | None:
 
 
 #: ``BackendState`` values that mean the daemon is running but this machine is
-#: not signed in to a tailnet. Upstream's own enum (``ipn.State``); only the
-#: not-signed-in half is listed because that is the one an operator fixes by
-#: signing in, and treating an unknown future value as "signed in" would send
-#: them to the wrong remedy.
+#: not on a tailnet yet. Upstream's own enum (``ipn.State``); only the
+#: not-on-a-tailnet half is listed because treating an unknown future value as
+#: "signed in" would send the operator to the wrong remedy.
 _BACKEND_STATES_NEEDING_LOGIN = frozenset({"NeedsLogin", "NoState", "NeedsMachineAuth"})
+
+#: Signed in, but the tailnet requires device approval and an admin has not
+#: approved this machine yet. Another sign-in cannot help, so the probe marks it
+#: with ``needs_approval`` and the card names the admin console instead.
+_BACKEND_STATE_NEEDS_APPROVAL = "NeedsMachineAuth"
 
 
 @dataclass(frozen=True)
@@ -440,6 +444,8 @@ class DaemonProbe:
     * ``stopped=True`` — the daemon answers but Tailscale is stopped
       (``BackendState "Stopped"``, e.g. after ``tailscale down``); bring it up.
     * ``logged_in=False`` — signed out; sign in.
+    * ``logged_in=False`` with ``needs_approval`` set — signed in, waiting for
+      an admin to approve this device; approve it in the admin console.
     * all true but ``name=""`` — signed in, but MagicDNS is off for the tailnet.
     * ``https_enabled=False`` — the tailnet has not granted certificate
       provisioning for this machine's MagicDNS name yet.
@@ -482,6 +488,10 @@ class DaemonProbe:
     #: report any unmet requirement. ``False`` is reserved for an explicit
     #: ``CertDomains`` list that does not contain this host.
     https_enabled: bool | None = None
+    #: ``BackendState "NeedsMachineAuth"``: signed in, but the tailnet requires
+    #: device approval and this machine is not approved yet. ``logged_in`` stays
+    #: ``False`` because nothing on the tailnet is usable until then.
+    needs_approval: bool = False
 
 
 def _count_peers(status: dict) -> tuple[int, int]:
@@ -551,6 +561,18 @@ def probe_daemon() -> DaemonProbe:
     logged_in = not (
         isinstance(backend_state, str) and backend_state in _BACKEND_STATES_NEEDING_LOGIN
     )
+    if backend_state == _BACKEND_STATE_NEEDS_APPROVAL:
+        return DaemonProbe(
+            name="",
+            installed=True,
+            reachable=True,
+            logged_in=False,
+            detail=(
+                "This machine is signed in to Tailscale and is waiting for an admin "
+                "to approve it in the Tailscale admin console."
+            ),
+            needs_approval=True,
+        )
     if not logged_in:
         return DaemonProbe(
             name="",

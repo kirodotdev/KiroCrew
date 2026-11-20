@@ -2922,6 +2922,7 @@ specified compatibility change.
   stays denied even if its manifest declares the route prefix.
   Invoked actions are critical-audited before spawn and terminal outcomes are
   best-effort audited.
+- **Phone-access setup steps**: `handlers/tailnet_mobile._derive_step` turns `tailnet.probe_daemon()`'s `DaemonProbe` into the next step the card shows (`GET /api/tailnet/mobile`). After `start_daemon` (`BackendState "Stopped"`), a probe with `needs_approval` (`BackendState "NeedsMachineAuth"`: signed in, waiting for an admin to approve the device) derives `approve_device`, ahead of `sign_in` (`NeedsLogin`, `NoState`), because another sign-in cannot clear it; the card links to the Tailscale machines page instead of offering a sign-in link. The probe keeps `logged_in=False` there, and `POST /api/tailnet/mobile/qr` refuses `approve_device` with the same `no_name` refusal as the other no-usable-name steps (`test/test_tailnet_needs_approval.py`).
 - Static assets bypass the token check by path: the prefixes in `token_auth._BYPASS_PREFIXES` (among them the build's `/assets/`, `/fonts/` and `/vendor/`, and `/static/`) and the exact paths in `_BYPASS_EXACT`.
 
 ### Chat runner composition (`chat_runner.py` + `chat_turn/`)
