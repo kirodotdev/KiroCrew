@@ -1759,6 +1759,14 @@ jobs:
           WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
           [ "$WORKERS" -ge 1 ] || WORKERS=1
           echo "pytest workers: $WORKERS"
+          # Python 3.14 stops recursion in C code (json, pickle, the compiler) by
+          # the stack that is left, not by a fixed count, so how deep a JSON
+          # document may nest follows this limit: about 8,000 levels per MiB.
+          # At 2 MiB that is the 16,000 levels Python 3.12 allows at any stack
+          # size. On a larger stack the nesting-bomb tests build documents
+          # several times deeper, and one process then holds gigabytes.
+          echo "stack limit: $(ulimit -s) kB, capped at 2048 kB"
+          ulimit -s 2048
           # Host memory in use (MemTotal - MemAvailable), sampled every 5s; the
           # "Report peak memory" step prints the high-water mark.
           (
