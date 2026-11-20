@@ -1107,7 +1107,9 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   read once inside that call however many floors ask. Marked today: the shell tokenizer
   (`shell_normalizer._shell_tokens`, which hands every caller its own list), the program
   basename, the operand normalizer and the self-program test of a token, the quote-aware
-  line-continuation fold, and the Python lexer the inline-payload reader walks
+  line-continuation fold, the credential-mint verb read of one assignment suffix
+  (`shell_normalizer._mint_verb_in_text`, so the frames of a command whose substitutions
+  never close share their suffixes), and the Python lexer the inline-payload reader walks
   (`inline_payload._lex`, read to its end once per view). Only a PURE reader may be marked:
   its answer is decided by its one argument and module constants, never by the
   filesystem, the clock or configuration, which is what makes one read and many reads the
