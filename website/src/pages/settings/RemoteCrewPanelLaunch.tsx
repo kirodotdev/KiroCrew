@@ -514,13 +514,28 @@ function ProvisionElapsed({ job, className }: { job: LaunchJob; className: strin
   )
 }
 
-export function SettingUpRow({ job, onCancel, cancelling }: { job: LaunchJob; onCancel: (id: string) => void; cancelling: boolean }) {
+export function SettingUpRow({
+  job, onCancel, cancelling, onRestartSignin, restartingSignin, onFetchSignin, fetchingSignin, signinNotice,
+}: {
+  job: LaunchJob
+  onCancel: (id: string) => void
+  cancelling: boolean
+  onRestartSignin: (id: string) => void
+  restartingSignin: boolean
+  onFetchSignin: (id: string) => void
+  fetchingSignin: boolean
+  signinNotice: SigninNotice | null
+}) {
   const total = job.steps.length || 4
   const current = Math.min(total, job.steps.filter(s => s.state === 'done').length + 1)
   const [open, setOpen] = useState(false)
   const name = i18nT('pages.settings.remoteCrewPanel.cloud_crew_name', { tag: job.tag })
   const nameId = useId()
   const stepsId = useId()
+  // The launch is waiting on the reader, not on the machine. The code box sits
+  // outside the disclosure: a reader who comes back to My Crews must see the
+  // code without first guessing that a "Setting up" pill hides it.
+  const waitingOnYou = job.status === 'awaiting_signin'
   return (
     <div className="py-2.5 border-b border-border last:border-b-0" data-testid="setting-up-row">
       <div className="flex items-start gap-3 min-w-0 pl-[1.875rem]">
@@ -537,9 +552,12 @@ export function SettingUpRow({ job, onCancel, cancelling }: { job: LaunchJob; on
               aria-controls={stepsId}
               aria-describedby={nameId}
               onClick={() => setOpen(v => !v)}
-              className="inline-flex items-center gap-1 rounded-full bg-accent-subtle text-accent font-semibold px-2 py-px focus-ring"
+              className={`inline-flex items-center gap-1 rounded-full font-semibold px-2 py-px focus-ring ${waitingOnYou ? 'bg-warn-subtle text-warn-text' : 'bg-accent-subtle text-accent'}`}
+              data-testid="setting-up-status"
             >
-              {i18nT('pages.settings.remoteCrewPanel.setting_up_progress', { current, total })}
+              {waitingOnYou
+                ? <><KeyRound size={12} aria-hidden /> {i18nT('pages.settings.remoteCrewPanel.awaiting_sign_in_progress', { current, total })}</>
+                : i18nT('pages.settings.remoteCrewPanel.setting_up_progress', { current, total })}
               <ChevronDown size={12} aria-hidden className={`transition-transform ${open ? 'rotate-180' : ''}`} />
             </button>
             {/* The built-in lane makes an EC2 crew reached over SSM; another lane's
@@ -555,6 +573,25 @@ export function SettingUpRow({ job, onCancel, cancelling }: { job: LaunchJob; on
           {job.steps.some(isRunningProvision) && <ProvisionElapsed job={job} className="text-[11px] text-muted mt-0.5" />}
         </div>
       </div>
+      {waitingOnYou && (
+        <div className="ml-[4.25rem]">
+          {/* Announced once per code: the text changes only when a new code
+              arrives, and a polite region speaks only on a change. */}
+          <span role="status" className="sr-only" data-testid="setting-up-signin-announce">
+            {job.signin ? i18nT('pages.settings.remoteCrewPanel.sign_in_code_announce', { name, code: job.signin.code }) : ''}
+          </span>
+          <SigninPromptBlock
+            job={job}
+            onRestart={onRestartSignin}
+            restarting={restartingSignin}
+            onFetch={onFetchSignin}
+            fetching={fetchingSignin}
+            notice={signinNotice}
+            compact
+            crewName={name}
+          />
+        </div>
+      )}
       {open && (
         <div id={stepsId} className="mt-2 ml-[4.25rem] text-[12px]">
           <div className="text-[13px] text-text-strong font-medium mb-1.5">
@@ -563,7 +600,11 @@ export function SettingUpRow({ job, onCancel, cancelling }: { job: LaunchJob; on
           <ol className="m-0 p-0 list-none space-y-1">
             {job.steps.map(step => (
               <li key={step.key} className="flex items-center gap-2">
-                {step.state === 'done'
+                {waitingOnYou && step.key === 'signin' && step.state !== 'done' && step.state !== 'failed'
+                  // The reader's turn, not the machine's: a spinner here said
+                  // there was nothing to do.
+                  ? <KeyRound size={13} className="text-warn shrink-0" data-testid="setting-up-step-waiting-signin" />
+                  : step.state === 'done'
                   ? <CheckCircle size={13} className="text-ok shrink-0" />
                   : step.state === 'failed'
                     ? <AlertTriangle size={13} className="text-danger shrink-0" />

@@ -1123,7 +1123,12 @@ A launch still creating its machine is a **Setting up** row. Its status (for
 example "Setting up · 2 of 4") is a disclosure button that opens the launch
 steps, "Keeps running if you leave this page." and the Cancel that removes the
 crew. While the provision step runs, a line under the status shows the time
-since Launch (cloud.md).
+since Launch (cloud.md). While the launch is `awaiting_signin` the status reads "Waiting for you
+to sign in · 3 of 4" with the key mark, the sign-in step shows the key instead
+of a spinner, and the row shows the same sign-in box as the setup card
+(`SigninPromptBlock`: code, Copy, Open sign-in page) outside the disclosure, so
+the code is visible without opening the row or the Add Crew modal. A polite
+status region announces the code once when it arrives.
 
 Every configured row carries separate source and transport badges from the
 instance record. `connection_method="ssm"` shows **SSM**; every other transport

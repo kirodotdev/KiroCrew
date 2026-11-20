@@ -1469,9 +1469,24 @@ export function RemoteCrewPanel() {
               {/* A sign-in retry is also in progress, but its crew is already a
                   row below (the connect step ran); a second "Setting up" row
                   would read as a second instance being created — and billed. */}
-              {launchRows.map(job => (
-                <SettingUpRow key={job.id} job={job} cancelling={cancelMutation.isPending && cancelMutation.variables === job.id} onCancel={id => cancelMutation.mutate(id)} />
-              ))}
+              {launchRows.map(listed => {
+                // The polled copy outranks the list's snapshot, as for a crew
+                // row: the sign-in code must show the moment the gateway has it.
+                const job = launchStatusQuery.data?.id === listed.id ? launchStatusQuery.data : listed
+                return (
+                  <SettingUpRow
+                    key={job.id}
+                    job={job}
+                    cancelling={cancelMutation.isPending && cancelMutation.variables === job.id}
+                    onCancel={id => cancelMutation.mutate(id)}
+                    onRestartSignin={id => signinRestartMutation.mutate(id)}
+                    restartingSignin={signinRestartMutation.isPending && signinRestartMutation.variables === job.id}
+                    onFetchSignin={id => signinMutation.mutate(id)}
+                    fetchingSignin={signinMutation.isPending && signinMutation.variables === job.id}
+                    signinNotice={signinNotice && signinNotice.jobId === job.id ? signinNotice : null}
+                  />
+                )
+              })}
               {inProgress.length === 0 && instances.length === 0 && (
                 <div className="text-[13px] text-muted py-1">{i18nT('pages.settings.remoteCrewPanel.no_crews')}</div>
               )}

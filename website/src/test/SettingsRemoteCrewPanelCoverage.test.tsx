@@ -848,7 +848,8 @@ describe('RemoteCrewPanel — launching', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await openSetupTab(u)
 
-    await u.click(await screen.findByRole('button', { name: /Show the sign-in code/ }))
+    // The setup card's button: the My Crews row behind the modal offers it too.
+    await u.click(await within(await screen.findByRole('dialog')).findByRole('button', { name: /Show the sign-in code/ }))
     await waitFor(() => expect(api.cloudLaunchSignin).toHaveBeenCalledWith('j-run'))
   })
 
@@ -862,8 +863,9 @@ describe('RemoteCrewPanel — launching', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await openSetupTab(u)
 
-    await u.click(await screen.findByRole('button', { name: /Show the sign-in code/ }))
-    expect(await screen.findByText(/no pending sign-in/, undefined, { timeout: 5_000 })).toBeInTheDocument()
+    // The setup card's button: the My Crews row behind the modal offers it too.
+    await u.click(await within(await screen.findByRole('dialog')).findByRole('button', { name: /Show the sign-in code/ }))
+    expect(await within(screen.getByRole('dialog')).findByText(/no pending sign-in/, undefined, { timeout: 5_000 })).toBeInTheDocument()
   })
 
   it('shows a failed launch with its step detail and no dead Cancel', async () => {
