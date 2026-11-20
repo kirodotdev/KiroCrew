@@ -20,6 +20,7 @@ import pytest
 
 from kiro_crew.apps import sel_client
 from kiro_crew.apps.sel_client import SelClient, SelClientError
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 _APP = "loop-app"
 
@@ -126,16 +127,20 @@ def test_concurrent_writers_share_one_token_and_none_sends_an_empty_one(route) -
 
     def _worker(i: int) -> None:
         try:
-            barrier.wait()
+            barrier.wait(FALLBACK_TIMEOUT_SECS)
             _write(client, f"x.n{i}")
         except BaseException as exc:  # noqa: BLE001 - reported by the assert below
             errors.append(exc)
 
-    threads = [threading.Thread(target=_worker, args=(i,)) for i in range(count)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    threads = [threading.Thread(target=_worker, args=(i,), daemon=True) for i in range(count)]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(FALLBACK_TIMEOUT_SECS)
+            assert not thread.is_alive(), "a writer did not finish"
+    finally:
+        barrier.abort()  # a worker that could not start must not leave the rest waiting
 
     assert errors == []
     assert route.mints == 1

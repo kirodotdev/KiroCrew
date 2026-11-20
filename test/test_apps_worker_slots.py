@@ -589,7 +589,7 @@ async def test_a_cancel_during_the_held_audit_leaves_no_reservation(_env):
 
     assert worker_slots._registry.pending == {}
     assert worker_slots._registry.leases == {}
-    again = await acquire_worker_slot(state, "demo", "job", project="/w", timeout=0.05)
+    again = await acquire_worker_slot(state, "demo", "job", project="/w")
     assert list(worker_slots._registry.leases) == ["dashboard:job"]
     await again.release()
 
