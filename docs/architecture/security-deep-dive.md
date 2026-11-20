@@ -846,7 +846,16 @@ network egress control by default*, above, scoped to the capture browser), or a
 userland forward proxy that validates the socket after connect. Choosing the
 mechanism is a per-platform infrastructure decision (macOS vs Linux vs CI, the
 privilege model, and fail-open vs fail-closed when the layer is unavailable), so
-it is tracked as a design item on #17748 rather than shipped here.
+it is tracked as a design item on #17748 rather than shipped here. The design's
+scope covers the socket that `ws.connectToServer()` opens as well as HTTP
+subresources, so a filter that hooks only the HTTP route layer does not meet it.
+Windows capture hosts run the same handler (`app.json` declares Windows;
+`render.mjs` looks for Chrome or Edge there), and the network namespace has no
+Windows equivalent. The proposed Windows default is the userland forward proxy,
+which needs no administrator rights; a Windows Filtering Platform rule scoped to
+the capture browser is the alternative. Where no filter is available a Windows
+capture must refuse with an error naming the missing filter, never capture
+unfiltered ([#38548](https://github.com/kirodotdev/KiroCrew/issues/38548)).
 
 **A sandboxed command's detached descendants are not bound to its lifetime.** The Linux
 launcher unshares only the user and mount namespaces. It deliberately adds no
