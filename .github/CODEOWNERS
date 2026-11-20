@@ -14,3 +14,13 @@
 # is a co-owner so its approval satisfies "Require review from Code Owners".
 
 *                                   @kirodotdev/kirocrew-pr-review @KiroCrewCaptain
+
+# Prose docs have no code owner, so a PR that only changes them needs no
+# Code Owner review (CI checks still apply). Agent instructions (AGENTS.md,
+# skills/, .github/review-prompts/, .kiro/) and CHANGELOG.md stay owned.
+# The last matching pattern wins; a pattern with no owners leaves files unowned.
+docs/**/*.md
+src/kiro_crew/docs/**/*.md
+website/docs/**/*.md
+/README.md
+/CONTRIBUTING.md
