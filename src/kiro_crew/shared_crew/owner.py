@@ -279,15 +279,18 @@ def is_owner_principal(principal: Principal, owner_id: str = "") -> bool:
     return principal.id in owner_principal_ids(owner_id)
 
 
-def viewer_ids(viewer: Principal, owner_id: str = "") -> frozenset[str]:
-    """The other principal ids that name *viewer* themself.
+def writes_as_ids(caller: Principal, owner_id: str = "") -> frozenset[str]:
+    """Every principal id *caller* writes as: the one answer to "is this row theirs?".
 
     The owner is one person under every id in :func:`owner_principal_ids`; any
-    other viewer has only their own id.
+    other caller, an Unknown or app (system) one included, has only their own
+    id, so an Unknown caller never speaks for the owner. The edit rule
+    (``edit_rule``), the mode route's ``viewer_ids`` and the session list's
+    ``mine`` all read it.
     """
-    if is_owner_principal(viewer, owner_id):
-        return owner_principal_ids(owner_id)
-    return frozenset()
+    if is_owner_principal(caller, owner_id):
+        return owner_principal_ids(owner_id) | {caller.id}
+    return frozenset({caller.id})
 
 
 def reset_for_tests() -> None:
@@ -318,6 +321,6 @@ __all__ = [
     "set_owner_subject",
     "set_tailnet_display_name",
     "set_tailnet_host_name",
-    "viewer_ids",
     "warm_login_email",
+    "writes_as_ids",
 ]

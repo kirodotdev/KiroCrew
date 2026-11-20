@@ -111,6 +111,15 @@ async def test_the_people_read_lists_the_teammate_as_the_viewer(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_the_mode_names_a_relayed_teammate_for_the_edit_rule(tmp_path) -> None:
+    async with TestClient(TestServer(_relay_app(tmp_path, CrewKind.TEAM))) as client:
+        resp = await client.get(routes_identity.MODE_PATH, headers=_stamped(client, ANA))
+        body = await resp.json()
+    assert body["edit_rule"] == {"preview": True, "is_owner": False, "relay_teammate": True}
+    assert body["viewer_ids"] == [principal_id_for("kiro", "kiro-relay", ANA)]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("path", READS)
 async def test_relay_headers_without_the_handover_are_not_a_relay_teammate(
     tmp_path, path: str

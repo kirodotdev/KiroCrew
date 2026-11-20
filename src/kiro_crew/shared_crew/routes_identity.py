@@ -152,7 +152,7 @@ async def api_shared_crew_sessions(request: web.Request) -> web.Response:
             query,
             viewer,
             exclude=_machine_only,
-            viewer_ids=owner_label.viewer_ids(viewer, _owner_id(state)),
+            viewer_ids=owner_label.writes_as_ids(viewer, _owner_id(state)),
             local_owner_ids=owner_label.local_owner_principal_ids(_owner_id(state)),
         )
     except ContractError as exc:
@@ -262,16 +262,23 @@ async def api_shared_crew_mode(request: web.Request) -> web.Response:
     state = request.app.get("state")
     viewer = viewer_principal(request)
     relay_team = _relay_team_crew(request)
-    # Single flight, as for People above; the relay state is part of the answer's key.
+    from kiro_crew.shared_crew.edit_rule import edit_rule_view
+
+    # Read from the request here, so the shared build below never sees the request.
+    edit_rule = edit_rule_view(request)
+    # Single flight, as for People above; the relay state and the edit rule are
+    # part of the answer's key.
     answer = await shared_board(
         "shared_crew.mode",
-        repr((id(state), viewer, relay_team)),
-        lambda: _build_mode(state, viewer, relay_team),
+        repr((id(state), viewer, relay_team, sorted(edit_rule.items()))),
+        lambda: _build_mode(state, viewer, relay_team, edit_rule),
     )
     return web.Response(body=answer.body, content_type="application/json")
 
 
-async def _build_mode(state: Any, viewer: Principal, relay_team: bool) -> BoardAnswer:
+async def _build_mode(
+    state: Any, viewer: Principal, relay_team: bool, edit_rule: dict[str, bool]
+) -> BoardAnswer:
     """One build of the mode answer; takes the gateway state, never the request."""
     from kiro_crew.gateway_identity import gateway_id
     from kiro_crew.shared_crew.access import setup_paths_dict
@@ -291,6 +298,7 @@ async def _build_mode(state: Any, viewer: Principal, relay_team: bool) -> BoardA
         owner_label=owner_label.owner_name(),
         relay_team=relay_team,
     )
+    body["edit_rule"] = edit_rule
     return BoardAnswer(200, json.dumps(body).encode())
 
 

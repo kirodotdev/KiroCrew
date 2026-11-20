@@ -358,11 +358,11 @@ def _relayed_owner(owner_subject: str = "local-app"):
     return relay_principal(caller, owner_subject)
 
 
-def test_is_owner_principal_and_viewer_ids_name_the_relayed_owner() -> None:
+def test_is_owner_principal_and_writes_as_ids_name_the_relayed_owner() -> None:
     relayed = _relayed_owner()
     assert relayed.provenance is Provenance.KIRO_RELAY
     assert owner.is_owner_principal(relayed)
-    assert owner.viewer_ids(relayed) == owner.owner_principal_ids()
+    assert owner.writes_as_ids(relayed) == owner.owner_principal_ids()
 
 
 def test_the_mine_filter_finds_the_owners_machine_sessions_for_the_relayed_owner() -> None:
@@ -371,7 +371,7 @@ def test_the_mine_filter_finds_the_owners_machine_sessions_for_the_relayed_owner
     relayed = _relayed_owner()
     machine = local_operator_principal("local-app")
     mine = SessionQuery.from_query({"creator": "mine"})
-    assert mine.matches(machine, relayed, viewer_ids=owner.viewer_ids(relayed))
+    assert mine.matches(machine, relayed, viewer_ids=owner.writes_as_ids(relayed))
     folded = SessionQuery.from_query({"creator": machine.id})
     assert folded.matches(machine, relayed, local_owner_ids=owner.local_owner_principal_ids())
 

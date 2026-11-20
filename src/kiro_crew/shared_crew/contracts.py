@@ -237,8 +237,11 @@ class Principal:
 def principal_or_unknown(raw: object) -> Principal:
     """Decode a stored principal; absent or unreadable data is Unknown.
 
-    For DISPLAY of historical records only. Authorization never reads a stored
-    principal, so a damaged record can only lose its label, never gain access.
+    For DISPLAY of historical records, and for one decision that can only
+    refuse: ``edit_rule`` reads a message's stored author to refuse an edit or
+    rewind by anyone else. Every outcome there is one this build allowed before
+    the rule, so no stored principal ever grants access; a damaged record can
+    only lose its label (and, for an edit, reads as the owner's).
     """
     if raw is None:
         return Principal.unknown()
