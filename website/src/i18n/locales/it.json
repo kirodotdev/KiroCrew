@@ -10896,6 +10896,10 @@
       "chip_hint_busy": "Disponibile dopo la risposta.",
       "switching_on": "Attivazione di Conductor mode…",
       "switching_off": "Disattivazione di Conductor mode…",
+      "midchat_confirm_title": "Attivare Conductor mode per questa chat?",
+      "midchat_confirm_body": "Conductor mode non si può disattivare per questa chat.",
+      "midchat_confirm_action": "Attiva Conductor mode",
+      "midchat_confirm_dont_show": "Non mostrare più questo avviso",
       "title": "Conductor mode",
       "tagline_lead": "Tu fissi l'obiettivo.",
       "tagline_strong": "La tua squadra fa il lavoro.",
@@ -23423,6 +23427,7 @@
   "utils": {
     "agentSwitchFeedback": {
       "turn_in_flight": "Un turno è in corso — riprova quando sarà terminato.",
+      "crew_mode_locked": "Il passaggio a {{agent}} è stato bloccato perché Conductor mode non si può disattivare per questa chat.",
       "model_deferred": "{{model}} subentra dal tuo prossimo messaggio. Questa risposta si conclude con il modello con cui è iniziata.",
       "member_needs_new_chat": "{{name}} ha una memoria propria, quindi può solo avviare una nuova chat. Questa chat mantiene l'agente attuale.",
       "open_session": "Apri sessione",

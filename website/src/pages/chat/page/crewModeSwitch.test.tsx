@@ -16,6 +16,8 @@ import { closeActivityPanel, openActivityPanel } from '../../../store/chatSlice'
 
 const mobile = vi.hoisted(() => ({ value: false }))
 vi.mock('../../../hooks/useIsMobile', () => ({ useIsMobile: () => mobile.value }))
+const askAppConfirm = vi.hoisted(() => vi.fn<(opts: { title: string; body?: unknown; confirmLabel: string; primary?: boolean }) => Promise<boolean>>())
+vi.mock('../../../lib/appConfirm', () => ({ askAppConfirm }))
 vi.mock('../../../hooks/usePanelTabs', async importOriginal => ({ ...await importOriginal<object>(), dropPanelViews: vi.fn() }))
 
 const plain = (key: string, agent = 'default'): ChatSlot => ({ key, agent, agent_kind: 'template', memory_mode: 'persistent', origin: 'user' } as unknown as ChatSlot)
@@ -302,5 +304,50 @@ describe("useCrewModeSwitch the welcome page's Board button", () => {
     const { store, openView } = press()
     expect(store.getState().chat.activityOpen).toBe(true)
     expect(openView).toHaveBeenCalledWith('workers')
+  })
+})
+
+describe('useCrewModeSwitch turning conductor mode on in a chat that has messages', () => {
+  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); askAppConfirm.mockReset(); localStorage.clear() })
+  afterEach(() => setCrewModeCatalog(undefined, undefined))
+
+  const render = (hasUserMessage: boolean) => {
+    const switchAgent = vi.fn(async (_agent: string, _kind?: 'member' | 'template') => true)
+    const store = createTestStore()
+    const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>
+    const hook = renderHook(
+      () => useCrewModeSwitch({ currentSlot: plain('a'), defaultAgent: 'default', hasUserMessage, switchAgent, openView: () => {}, autoOpenBoard: false }),
+      { wrapper },
+    )
+    return { hook, switchAgent }
+  }
+
+  it('asks first in a chat that has a user message', async () => {
+    askAppConfirm.mockResolvedValue(true)
+    const { hook, switchAgent } = render(true)
+    await act(async () => { hook.result.current.turnOnCrewMode() })
+    expect(askAppConfirm).toHaveBeenCalledTimes(1)
+    const opts = askAppConfirm.mock.calls[0][0]
+    expect(opts.title).toBe('Turn on conductor mode for this chat?')
+    expect(opts.confirmLabel).toBe('Turn on conductor mode')
+    // The ordinary primary action, not a destructive one.
+    expect(opts).toMatchObject({ primary: true })
+    expect(switchAgent).toHaveBeenCalledWith('kirocrew-conductor', 'template')
+  })
+
+  it('leaves the chat unchanged on Cancel', async () => {
+    askAppConfirm.mockResolvedValue(false)
+    const { hook, switchAgent } = render(true)
+    await act(async () => { hook.result.current.turnOnCrewMode() })
+    expect(askAppConfirm).toHaveBeenCalledTimes(1)
+    expect(switchAgent).not.toHaveBeenCalled()
+    expect(hook.result.current.crewModeSwitching).toBeNull()
+  })
+
+  it('switches at once in a chat with no message yet: it can still be turned off', async () => {
+    const { hook, switchAgent } = render(false)
+    await act(async () => { hook.result.current.turnOnCrewMode() })
+    expect(askAppConfirm).not.toHaveBeenCalled()
+    expect(switchAgent).toHaveBeenCalledWith('kirocrew-conductor', 'template')
   })
 })

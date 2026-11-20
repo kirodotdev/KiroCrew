@@ -208,6 +208,33 @@ function Flow({ still }: { still: boolean }) {
   )
 }
 
+/** The slogan, as one sentence: a lead and its strong half. */
+function Tagline({ className }: { className?: string }) {
+  const lead = i18nT('components.crewMode.tagline_lead')
+  return (
+    <p className={cn('m-0', className)}>
+      {/* A sentence ending in a full-width stop (Chinese, Japanese) already
+          carries its own space; a second one reads as a gap. */}
+      {lead}{/[。！？]$/.test(lead) ? '' : ' '}
+      <strong className="font-semibold text-text-strong">{i18nT('components.crewMode.tagline_strong')}</strong>
+    </p>
+  )
+}
+
+/** What conductor mode is, in the welcome page's own words and pictures: the
+ *  slogan and the five-step flow, on their final frame. For a surface that must
+ *  explain the mode before the person turns it on (the mid-chat confirm). */
+export function CrewModeIntro() {
+  return (
+    <div data-testid="crew-mode-intro" className="@container/crewwelcome flex flex-col items-center gap-3 text-center">
+      <Tagline className="text-[15px] text-text" />
+      <div className="w-full rounded-3xl bg-aim-subtle/15 px-1 py-2">
+        <Flow still />
+      </div>
+    </div>
+  )
+}
+
 /** The welcome page an empty chat shows once Crew Mode is on.
  *
  *  Pictures, not prose: the mode's own hero (big solid type, the Kiro ghost on an
@@ -236,7 +263,6 @@ export default function CrewModeWelcome({ onOpenTaskBoard, chatKey }: {
   chatKey?: string
 }) {
   const still = useSettled(useReducedMotion() ?? false, chatKey)
-  const lead = i18nT('components.crewMode.tagline_lead')
   const short = '[@media(max-height:480px)]:hidden'
   // Tight room: the same short-screen query, or a chat column narrower than 18rem.
   const tight = cn(short, '@max-[18rem]/crewwelcome:hidden')
@@ -291,15 +317,9 @@ export default function CrewModeWelcome({ onOpenTaskBoard, chatKey }: {
         >
           {i18nT('components.crewMode.title')}
         </motion.h2>
-        <motion.p
-          className={`m-0 text-[15px] @[34rem]/crewwelcome:text-lg text-text ${short}`}
-          {...enter(still, 0.25, { opacity: 0, y: 8 }, { opacity: 1, y: 0 })}
-        >
-          {/* A sentence ending in a full-width stop (Chinese, Japanese) already
-              carries its own space; a second one reads as a gap. */}
-          {lead}{/[。！？]$/.test(lead) ? '' : ' '}
-          <strong className="font-semibold text-text-strong">{i18nT('components.crewMode.tagline_strong')}</strong>
-        </motion.p>
+        <motion.div {...enter(still, 0.25, { opacity: 0, y: 8 }, { opacity: 1, y: 0 })} className={short}>
+          <Tagline className="text-[15px] @[34rem]/crewwelcome:text-lg text-text" />
+        </motion.div>
       </div>
 
       {/* No frame: a soft wash under the flow, so it reads as part of the hero. */}

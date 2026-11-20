@@ -636,7 +636,10 @@ catalog (`GET /api/agents/catalog`) carries `crew_mode_agent` and `conductor_age
 client reads them instead of naming a conductor itself.
 Turning conductor mode on is an ordinary
 `POST /api/chat/slots/{slot}/agent` naming the configured conductor in the `template`
-namespace; the agent picker is the way in.
+namespace; the agent picker is the way in. The dashboard asks before it turns
+conductor mode on in a chat that has a user message, since that switch cannot be
+undone, and shows a `409 crew_mode_locked` refusal as a plain notice (see
+[learn-cron-dashboard](learn-cron-dashboard.md), Chat).
 Which agent conducts is read where it is used: `crew_mode.crew_mode_agent()` asks
 the live config watcher's snapshot (primed from the boot config, refreshed on each
 edit of the file), and the agent catalog and the agent switch remember the
