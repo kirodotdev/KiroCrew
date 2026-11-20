@@ -170,8 +170,16 @@ def project_subagent_targets(
     forward_ssh_auth_sock: bool = False,
     scope_muted: frozenset[str] | None = None,
     folder_gated_out: set[str] | None = None,
+    refused_out: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """The entries to append to *parent*'s batch, and the notice for what is left out.
+
+    *refused_out* gains each named target Crew found and refused to register
+    (:data:`_DENIED_WHEN_REFUSED`). Leaving it out of the batch does not stop the
+    engine: its on-disk loader keeps a profile that carries a ``permissions``
+    block (AIM-installed specs carry one beside their kiro-cli keys), and runs
+    it inside this turn without the target's own hooks or gate-only limits. The
+    caller denies those names on *parent*'s entry (:func:`deny_refused_targets`).
 
     Nothing when *parent*'s entry does not mount the sub-agent tool. When its spec
     declares no ``availableAgents`` the engine's own roster answers, as before, and
@@ -233,9 +241,53 @@ def project_subagent_targets(
             projected = _UNUSABLE
         if isinstance(projected, str):
             missed[name] = projected
+            if refused_out is not None and _denied_when_refused(projected):
+                refused_out.add(name)
         else:
             entries.append(projected)
-    return entries, "\n\n".join(n for n in (*notices, _notice(parent, missed, overflow)) if n)
+    notice = _notice(parent, missed, overflow, names[MAX_SUBAGENT_TARGETS:])
+    return entries, "\n\n".join(n for n in (*notices, notice) if n)
+
+
+#: The refusals that leave a spec the engine's own loader may still run. A name
+#: Crew found no spec for, or a pattern, names no file; a reserved name is already
+#: denied by the parent's ``subagent`` rule.
+_NOT_DENIED_WHEN_REFUSED = frozenset({_NOT_FOUND, _NO_MATCH, _RESERVED})
+
+
+def _denied_when_refused(reason: str) -> bool:
+    """Whether a target refused for *reason* is denied to the sub-agent tool."""
+    return reason not in _NOT_DENIED_WHEN_REFUSED
+
+
+def deny_refused_targets(
+    custom_agents: list[dict[str, Any]], parent: str, names: Iterable[str]
+) -> list[dict[str, Any]]:
+    """*custom_agents* with *names* denied to *parent*'s sub-agent tool.
+
+    A deny only narrows, so it needs no pass through the governance ceiling, and
+    KAS resolves the most restrictive matching rule, so it holds against the
+    ``availableAgents`` exclude that names the same agent.
+    """
+    denied = sorted(set(names))
+    if not denied:
+        return custom_agents
+    rule = {"capability": "subagent", "match": denied, "effect": "deny"}
+    out: list[dict[str, Any]] = []
+    for entry in custom_agents:
+        if isinstance(entry, dict) and entry.get("id") == parent:
+            held = entry.get("permissions")
+            block = dict(held) if isinstance(held, dict) else {}
+            block["rules"] = [*(block.get("rules") or []), rule]
+            entry = {**entry, "permissions": block}
+            logger.info(
+                "sub-agent tool of %r denied %d refused target(s): %s",
+                parent,
+                len(denied),
+                ", ".join(denied),
+            )
+        out.append(entry)
+    return out
 
 
 def _target_names(
@@ -719,16 +771,19 @@ def _without_servers(entry: dict[str, Any], names: list[str]) -> dict[str, Any]:
     return out
 
 
-def _notice(parent: str, missed: dict[str, str], overflow: int) -> str:
+def _notice(parent: str, missed: dict[str, str], overflow: int, untried: Iterable[str] = ()) -> str:
     """The session-start line naming the targets the sub-agent tool cannot reach."""
     parts = [f"{name} ({reason})" for name, reason in missed.items()]
     if overflow:
+        named = ", ".join(untried)
         parts.append(
-            f"{overflow} more agents (only the first {MAX_SUBAGENT_TARGETS} it names are tried)"
+            f"{overflow} more agents{f' ({named})' if named else ''}"
+            f" (only the first {MAX_SUBAGENT_TARGETS} it names are tried)"
         )
     if not parts:
         return ""
     return (
         f"ℹ In this chat, agent {parent} cannot hand work to {'; '.join(parts)}. "
-        "Choose that agent for a chat of its own to use it."
+        "Choose that agent for a chat of its own, or start it with spawn_run, which "
+        "runs it with its own limits and hooks."
     )

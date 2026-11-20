@@ -71,7 +71,11 @@ from kiro_crew.acp.kas_settings_mcp import (
 from kiro_crew.acp.kas_spec_carry import use_aws_notice
 from kiro_crew.acp.kas_start_agent import START_AGENT_ID, with_start_agent
 from kiro_crew.acp.kas_steering import inheritance_off_notice, with_kas_steering
-from kiro_crew.acp.kas_subagent_targets import _excluding_switched_off, project_subagent_targets
+from kiro_crew.acp.kas_subagent_targets import (
+    _excluding_switched_off,
+    deny_refused_targets,
+    project_subagent_targets,
+)
 from kiro_crew.acp.kas_tool_limits import (
     kas_globs,
     unmatched_disabled_globs,
@@ -1552,6 +1556,7 @@ class KasHarness(MembershipHarness):
             # A stub withdrawn above is off the session-level array, so a target
             # that enables that server keeps its own declaration of it.
             gated: set[str] = set()
+            refused: set[str] = set()
             targets, targets_notice = project_subagent_targets(
                 agent,
                 spec,
@@ -1565,8 +1570,11 @@ class KasHarness(MembershipHarness):
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
                 scope_muted=scope_muted,
                 folder_gated_out=gated,
+                refused_out=refused,
             )
-            custom_agents = [*custom_agents, *targets]
+            # A refused target the engine could still load from disk is denied, so
+            # the refusal the notice names holds.
+            custom_agents = [*deny_refused_targets(custom_agents, agent, refused), *targets]
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
             # launcher lookup, which probes the filesystem and PATH.
