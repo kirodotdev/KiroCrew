@@ -396,6 +396,21 @@ def test_a_pull_that_changes_or_adds_a_hook_is_asked_again_then_runs_after_yes(l
     assert consent.crew_choice(checkout) == consent.STALE
 
 
+def test_the_hooks_that_fire_are_the_ones_the_consent_was_checked_against(layout, monkeypatch):
+    # A rewrite right after the check must not fire hooks nobody agreed to.
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    real_scan = consent._scan
+
+    def scan_then_rewrite(folder):
+        found = real_scan(folder)
+        _write_spec(checkout, _OTHER)
+        return found
+
+    monkeypatch.setattr(consent, "_scan", scan_then_rewrite)
+    assert _hooks(checkout) == {"hooks": _HOOKS}
+
+
 def test_an_edit_outside_hooks_does_not_ask_again(layout):
     _home, _user, checkout = layout
     consent.set_choice(checkout, True)
@@ -455,7 +470,7 @@ def test_an_unreadable_hook_scan_keeps_hooks_off(layout, monkeypatch):
     def broken(_folder):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(consent, "hooks_fingerprint", broken)
+    monkeypatch.setattr(consent, "_scan", broken)
     assert consent.hooks_enabled(checkout) == (False, consent.SOURCE_CREW)
 
 
