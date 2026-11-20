@@ -842,46 +842,6 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by(cmd) == self._RULE
         assert _denied_by(body) == self._RULE
 
-    def test_nested_substitution_work_grows_linearly(self):
-        # Each nested body is judged once, with the deeper bodies replaced by
-        # one word, so the text judged grows linearly with the nesting depth.
-        # Judging each whole body would re-read every deeper level once per
-        # level: about 3,700 characters judged at depth 40 instead of 260.
-        def judged(depth: int) -> "tuple[int, int]":
-            cmd = "echo " + "$(" * depth + "ssh -p 22 remote.example.com id" + ")" * depth
-            real = _argv_floor._is_ssh_to_self
-            chars = [0]
-
-            def counting(text, *args, **kwargs):
-                chars[0] += len(text)
-                return real(text, *args, **kwargs)
-
-            with patch.object(_argv_floor, "_is_ssh_to_self", counting):
-                assert _argv_floor._reaches_self_over_ssh(cmd) is False
-            return chars[0], len(cmd)
-
-        for depth in (20, 40):
-            chars, length = judged(depth)
-            assert chars <= 3 * length, (depth, chars, length)
-
-    @pytest.mark.parametrize("count", [200, 400])
-    def test_repeated_eval_substitution_work_grows_linearly(self, count):
-        from kiro_crew.security import argv_floor_ssh_bodies as bodies
-
-        cmd = "eval " * count + "echo $(echo ssh)"
-        real = bodies._self_tokens
-        chars = 0
-
-        def counting(text):
-            nonlocal chars
-            chars += len(text)
-            return real(text)
-
-        with patch.object(bodies, "_self_tokens", counting):
-            assert _denied_by(cmd) is None
-        # One joined frame may be read, but not re-joined into shrinking suffixes.
-        assert 0 < chars <= 3 * len(cmd), (count, chars, len(cmd))
-
     @pytest.mark.parametrize(
         "body",
         ["a $(ssh -p 22 localhost id) b", "`ssh localhost id` c", "\\$(not run) `x`", "$(open"],

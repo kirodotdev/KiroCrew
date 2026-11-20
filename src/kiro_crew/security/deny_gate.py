@@ -699,16 +699,23 @@ def _self_protection_floor_hit(
             # tar's ``L`` takes a value and ``l`` does not.  So does the ssh one: a
             # wrapper's option words keep their case there (``sudo -H`` is not
             # ``sudo -h``).
-            hit = (
-                predicate(lower, raw_text=raw_text)
-                if predicate
-                in (
-                    _argv._is_credential_mint,
-                    _argv._reaches_self_over_ssh,
-                    _argv._is_git_tar_to_self,
+            if predicate is _argv._reaches_self_over_ssh:
+                # Fail closed on an exception EXACTLY as the rm floor does for
+                # ``_rm_wipe_targets_nested``: the ssh-self reading hand-folds and
+                # descends a script, so a crash in that must DENY a command that could
+                # name an ssh verb, not propagate out of ``is_denied`` and skip the
+                # floor. The fail-closed belt is no belt if the fold raises.
+                try:
+                    hit = predicate(lower, raw_text=raw_text)
+                except Exception as exc:  # noqa: BLE001 - incl. RecursionError
+                    logger.warning("ssh-self floor could not read the command: %r", exc)
+                    hit = not _argv._cannot_name_ssh_verb(lower)
+            else:
+                hit = (
+                    predicate(lower, raw_text=raw_text)
+                    if predicate in (_argv._is_credential_mint, _argv._is_git_tar_to_self)
+                    else predicate(lower)
                 )
-                else predicate(lower)
-            )
             if hit:
                 return reentered[0] if reentered else (rule_id, pattern)
     finally:

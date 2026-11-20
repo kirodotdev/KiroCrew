@@ -1,0 +1,41 @@
++627
+The ssh-to-self floor now descends into the payload of a shell that runs a
+script and judges it, so a self-ssh on a later line of a bare or nested
+multi-line `bash -c '...'` / `sh -c` / `$SHELL -c` / `env -S` body, or on a line
+a `;` `&` `|` separator hides from the line read, is refused, not just the first
+command. _folded_scanner_reaches_self descends into every executed-script payload
+_nested_shell_payloads reports and hands each nested command to _is_ssh_to_self
+at the floor's own DNS posture, so a pending dotted host inside a script frame
+fails closed. Each frame's own line continuations are folded first (bash removes
+them before it runs a script), so a verb split across one is read whole.
+
+The nested script at three or more levels is reached WITHOUT changing what any
+other caller sees, by giving _shell_tokens one mode flag instead of a second
+tokenizer. Its DEFAULT drops every empty-quote pair unconditionally
+(_EMPTY_QUOTE_RE), exactly as the base ref does, so the deny-matching view and the
+rm / git floors keep the canonical command SHAPE: `eval 'sh -c ...rm ''-rf /...'`
+still renders `rm -rf /` for the rm -rf /.* rule, and argv_rules is byte-identical
+to base. preserve_structure=True runs an escape-aware collapse instead, used by
+exactly one caller -- the ssh-self descent, via _self_tokens and
+normalize_shell_command -- so it reaches a self-ssh buried three or more `bash -c`
+levels deep without the default elision truncating the payload it reads.
+_drop_empty_quote_pairs (before tokenizing) and _drop_token_empty_pairs (on each
+dequoted token) fold a respelled verb (`s\"\"sh` -> ssh, `rm\"\"` -> rm, `rm'""'`
+-> rm) but leave a nested script's structural closing quotes (an escaped pair
+beside another quote) intact. Both match each MAXIMAL run of pairs once with no
+trailing look-around and decide drop/keep from the run's neighbours in a callback,
+so the structure-preserving scan is linear, not the O(n^2) an earlier
+`(?:"")+(?=\w)` form cost on a long run of pairs. _shell_tokens keys its own
+per-call memo on the `(cmd, preserve_structure)` pair, so its two modes cache
+apart while once_per_call stays the single-argument base reader every other floor
+marks. _live_substitutions also recognises unquoted `<(` / `>(` process
+substitutions, including the opener reached past a `\`-newline line continuation
+bash removes before it parses.
+
+Belt by construction: origin/main's own argv_floor_ssh_bodies substitution reading
+(_substitution_reaches_self) is left byte-for-byte unedited and runs as one leg of
+_reaches_self_over_ssh, beside the folding, script-descending scanner
+(_folded_scanner_reaches_self). The gate refuses if EITHER leg refuses, so the fold
+the scanner does to the command SHAPE can never lose a self-ssh origin/main already
+refuses. There is no separate snapshot module: the belt is the base function left
+un-forked, and the scanner leg is the bulk of the new lines here.
