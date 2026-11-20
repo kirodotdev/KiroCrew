@@ -129,12 +129,12 @@ def test_only_project_creates_and_updates_are_routed(item) -> None:
         ("off", "off"),
         ("shadow", "shadow"),
         ("enforce", "enforce"),
-        ("ENFORCE", "off"),
-        (None, "off"),
-        (1, "off"),
+        ("ENFORCE", "enforce"),
+        (None, "enforce"),
+        (1, "enforce"),
     ],
 )
-def test_the_setting_defaults_to_off(raw, mode) -> None:
+def test_the_setting_defaults_to_enforce(raw, mode) -> None:
     data = {} if raw is None else {"kind_routing": raw}
     assert _build_memory_config(data).kind_routing == mode
 
@@ -349,18 +349,6 @@ def test_v1_log_takes_the_publication_hold(tmp_path, monkeypatch) -> None:
         assert _events(store, "work_state") == []
     finally:
         store.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mode, named", [("shadow", False), ("off", False), ("enforce", True)])
-async def test_the_key_naming_rule_is_asked_only_under_enforce(monkeypatch, mode, named) -> None:
-    from test_consolidation_semantic_cap import _prompt_for
-
-    monkeypatch.setattr(mkr, "configured_kind_routing_mode", lambda: mode)
-    prompt, _ = await _prompt_for([], include_history=False)
-    assert ('"kind": "fact" | "event" | "state"' in prompt) is named
-    assert ("Will this still be true in a month?" in prompt) is named
-    assert ("Name keys by topic, never by the number of" in prompt) is named
 
 
 # the member store
@@ -813,34 +801,22 @@ def test_capture_on_an_unreadable_store_hands_the_routing_back() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("include_history", [False, True], ids=["prefs-only", "history"])
-async def test_the_off_and_shadow_prompts_carry_no_kind_text(monkeypatch, include_history) -> None:
+async def test_every_mode_asks_offs_prompt_with_no_kind_text(monkeypatch, include_history) -> None:
     from test_consolidation_semantic_cap import _prompt_for
 
     prompts = {}
-    for mode in ("off", "shadow"):
+    for mode in ("off", "shadow", "enforce"):
         monkeypatch.setattr(mkr, "configured_kind_routing_mode", lambda m=mode: m)
         prompts[mode], _ = await _prompt_for([], include_history=include_history)
     assert prompts["shadow"] == prompts["off"], "shadow asks off's prompt, byte for byte"
-    for phrase in ('"kind"', "Tag every item with kind", "pending action"):
+    assert prompts["enforce"] == prompts["off"], "enforce asks off's prompt, byte for byte"
+    for phrase in (
+        '"kind"',
+        "Tag every item with kind",
+        "pending action",
+        "Name keys by topic, never by the number of",
+    ):
         assert phrase not in prompts["off"]
-
-
-@pytest.mark.asyncio
-async def test_the_enforce_prompt_is_off_plus_the_tag_the_key_rule_and_the_kind_rules(
-    monkeypatch,
-) -> None:
-    from test_consolidation_semantic_cap import _prompt_for
-
-    prompts = {}
-    for mode in ("shadow", "enforce"):
-        monkeypatch.setattr(mkr, "configured_kind_routing_mode", lambda m=mode: m)
-        prompts[mode], _ = await _prompt_for([], include_history=False)
-    key_naming = (
-        "Name keys by topic, never by the number of a code change, ticket, issue or round. "
-    )
-    field = '"kind": "fact" | "event" | "state", '
-    stripped = prompts["enforce"].replace(field, "", 1)
-    assert stripped.replace(key_naming + mkr.ENFORCE_KIND_RULES, "", 1) == prompts["shadow"]
 
 
 def test_shadow_labels_with_the_rules_enforce_drops_by() -> None:
@@ -1010,6 +986,75 @@ async def test_a_failed_label_call_logs_nothing_and_writes_as_off(
     finally:
         off.close()
         shadow.close()
+
+
+async def _labels_unlike_the_tags(prompt: str) -> dict:
+    """Labels that disagree with every tag the answer carries, by routed index."""
+    return {"kinds": {"0": "state", "1": "event", "2": "fact", "3": "state"}}
+
+
+@pytest.mark.asyncio
+async def test_enforce_drops_exactly_what_shadow_logged_as_state(tmp_path, monkeypatch) -> None:
+    label = _labels_unlike_the_tags
+    shadow_prompts, shadow = await _run_pass(tmp_path / "s", monkeypatch, "shadow", label=label)
+    enforce_prompts, enforce = await _run_pass(tmp_path / "e", monkeypatch, "enforce", label=label)
+    try:
+        assert enforce_prompts == shadow_prompts, "one consolidation prompt, one label prompt"
+        day = "2026-10-01"
+        samples = _kind_log(shadow)[mkr.SAMPLES_PREFIX + day]
+        logged = {s["key"] for s in samples if s["kind"] == "state"}
+        assert logged == {"project.app.auth_design", "project.app.untagged"}
+        assert {key for key, _ in _events(enforce, "work_state")} == logged
+        assert set(_facts(shadow)) - set(_facts(enforce)) == logged
+        assert "project.app.ci_status" in _facts(enforce), "the model's own tag never decides"
+        counts = _kind_log(enforce)[mkr.COUNTS_PREFIX + day]
+        assert counts == {"enforce": _kind_log(shadow)[mkr.COUNTS_PREFIX + day]["shadow"]}
+    finally:
+        shadow.close()
+        enforce.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "label", [_raises, _not_dispatched, _unusable, _times_out], ids=lambda f: f.__name__
+)
+async def test_a_failed_label_call_under_enforce_writes_as_off(
+    tmp_path, monkeypatch, label
+) -> None:
+    _, off = await _run_pass(tmp_path / "off", monkeypatch, "off")
+    _, enforce = await _run_pass(tmp_path / "enforce", monkeypatch, "enforce", label=label)
+    try:
+        assert (_facts(enforce), _episodes(enforce)) == (_facts(off), _episodes(off))
+        assert _events(enforce, "work_state") == []
+    finally:
+        off.close()
+        enforce.close()
+
+
+@pytest.mark.asyncio
+async def test_enforce_labels_stamp_routed_items_only_and_leave_the_answer_alone() -> None:
+    answer = _answer()
+    before = json.loads(json.dumps(answer))
+    prompts: list[str] = []
+
+    async def ask(prompt: str) -> dict:
+        prompts.append(prompt)
+        return {"kinds": {"0": "state", "2": "bogus"}}
+
+    out = await mkr.label_enforce_kinds(answer, answer, ask)
+    assert answer == before, "the model's answer is not mutated"
+    assert prompts == [mkr.label_prompt(mkr.route_semantic_by_kind(answer, "shadow").decisions)]
+    assert [item.get("kind") for item in out["semantic"]] == [
+        "state",
+        "fact",
+        "fact",
+        "fact",
+        "state",  # pref.* is never routed: its own tag stays and is never read
+        "event",
+    ]
+    assert [d.key for d in mkr.route_semantic_by_kind(out, "enforce").refused] == [
+        "project.app.auth_design"
+    ]
 
 
 @pytest.mark.asyncio

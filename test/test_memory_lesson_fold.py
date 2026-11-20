@@ -170,6 +170,23 @@ class TestTheModes:
         assert receipts[injection_receipts.LESSONS] == {"ids": [other, newer], "omitted": 0}
         assert receipts[STAGE]["pairs"] == [[newer, older]]
 
+    def test_enforce_leaves_out_exactly_what_shadow_logged(self, store):
+        _put(store, "Run the linter before every commit", _vec(0.0))
+        _put(store, "Lint before you commit", _vec(0.1))
+        _put(store, "Write tests first", _vec(1.5))
+        _put(store, "Always write the tests first", _vec(1.55))
+        _, off_receipts = _block(store, "off")
+        _, shadow_receipts = _block(store, "shadow")
+        _, receipts = _block(store, "enforce")
+        logged = shadow_receipts[STAGE]
+        assert len(logged["would_drop"]) == 2
+        shown = off_receipts[injection_receipts.LESSONS]["ids"]
+        expected = [key for key in shown if key not in logged["would_drop"]]
+        assert receipts[injection_receipts.LESSONS]["ids"] == expected
+        assert {k: v for k, v in receipts[STAGE].items() if k != "mode"} == {
+            k: v for k, v in logged.items() if k != "mode"
+        }
+
     def test_enforce_without_a_copy_is_todays_block(self, store):
         _put(store, "Run the linter before every commit", _vec(0.0))
         _put(store, "Write tests first", _vec(1.5))
@@ -425,21 +442,22 @@ class TestLeaders:
 
 class TestTheFlag:
     @pytest.mark.parametrize("raw", [None, "", "ENFORCE", "on", 1, True, ["enforce"]])
-    def test_an_unknown_value_reads_as_off(self, raw):
-        assert lesson_fold_mode_from(raw) == "off"
-        assert _build_memory_config({"lesson_fold": raw}).lesson_fold == "off"
+    def test_an_unknown_value_reads_as_the_default_enforce(self, raw):
+        assert lesson_fold_mode_from(raw) == "enforce"
+        assert _build_memory_config({"lesson_fold": raw}).lesson_fold == "enforce"
 
     @pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
     def test_a_known_value_is_kept(self, mode):
         assert _build_memory_config({"lesson_fold": mode}).lesson_fold == mode
 
-    def test_the_default_is_off(self):
-        assert MemoryConfig().lesson_fold == "off"
+    def test_the_default_is_enforce(self):
+        assert MemoryConfig().lesson_fold == "enforce"
+        assert _build_memory_config({}).lesson_fold == "enforce"
 
-    def test_an_unknown_value_renders_todays_block(self, store):
+    def test_an_unknown_value_renders_the_default_enforce_block(self, store):
         _put(store, "Run the linter before every commit", _vec(0.0))
         _put(store, "Lint before you commit", _vec(0.1))
-        assert _block(store, "sideways") == _block(store, "off")
+        assert _block(store, "sideways") == _block(store, "enforce")
 
     def test_explicit_recall_never_folds(self, store):
         _put(store, "Run the linter before every commit", _vec(0.0))

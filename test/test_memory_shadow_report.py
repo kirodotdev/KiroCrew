@@ -410,12 +410,16 @@ def test_meta_prefixes_match_the_owning_modules() -> None:
 
 
 def test_missing_sources_print_no_data(home: Path, capsys) -> None:
+    default_on = {"kind_routing", "lesson_fold", "rule_authority_order"}
     out = _run(capsys)
     for stage in msr.STAGE_NAMES:
         line = next(row for row in out.splitlines() if row.startswith(stage + " "))
-        assert line.endswith("off (no data)")
+        assert line.endswith("wait (no data)" if stage in default_on else "off (no data)")
     data = json.loads(_run(capsys, json=True))
-    assert all(c["data"] is False and c["status"] == "off" for c in data["stages"])
+    assert all(c["data"] is False for c in data["stages"])
+    assert {c["stage"]: c["status"] for c in data["stages"]} == {
+        stage: ("waiting" if stage in default_on else "off") for stage in msr.STAGE_NAMES
+    }
 
 
 def test_unreadable_sources_are_no_data(home: Path, capsys) -> None:
