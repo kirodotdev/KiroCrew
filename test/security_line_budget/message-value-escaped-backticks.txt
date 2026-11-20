@@ -1,0 +1,7 @@
++14
+The payload walk reads a double-quoted `gh`/`git` message value whose only
+backslashes escape a backtick (`--body "run \`x\`"`) as literal, the way it already
+reads a single-quoted one (`_only_single_quoted_openers(escaped_backticks=True)`,
+`_is_message_flag_command`). Read quote-blind, each escaped backtick opened a span to
+the end of the text, so the walk read every suffix of the body as a frame and the
+self-subcommand floors cost grew with the square of the body.
