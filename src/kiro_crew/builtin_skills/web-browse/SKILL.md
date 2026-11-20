@@ -20,8 +20,7 @@ Other ops: `snapshot` (the page as an outline with element refs), `read`
 (the page's text, the whole page and not only the screen;
 a long page names the `offset` to read next), then
 `click` / `type` / `paste` / `press_key` / `hover` / `drag` / `scroll` /
-`select_option` / `wait_for` / `back` / `console` / `screenshot` / `tabs` /
-`dialog` / `reflex`, and `ask` for a step only the user may do. Call `snapshot`
+`select_option` / `wait_for` / `back` / `console` / `screenshot` / `tabs`. Call `snapshot`
 first to get refs before a `click` or `type`. To read a page's content, use
 `read`, not a scroll and a screenshot per screen. An unselected tab or a
 closed section (`details`) is left out, so click the tab or open the section
@@ -69,11 +68,9 @@ has **no** fallback: say that browsing is disabled by policy.
 ## Passwords, CAPTCHAs, 2FA: the user takes over
 
 `type` refuses a password field (`password_field`), and the live view masks
-one. When a page needs a sign-in, a CAPTCHA, a one-time code or a final
-irreversible click, use the `ask` op (kinds `credentials`, `text`, `otp`,
-`human_check`, `confirm`; the tool's description lists its args): the user
-answers on the live card. Otherwise say so in one line and ask the user to
-**take over**: they click the live card, do the step, and hand the browser back. While they hold it, your next op waits until they
+one. When a page needs a sign-in, a CAPTCHA or a one-time code, say so in one
+line and ask the user to **take over**: they click the live card, do the step,
+and hand the browser back. While they hold it, your next op waits until they
 hand back (up to 10 minutes) and then runs; `snapshot` and carry on. The
 **browser-auth** skill has the details.
 

@@ -51,9 +51,11 @@ things:
 
 - **the row is there** — the lane is offered and configured. Note its
   `confirm_before_launch` string exactly as written; you need it verbatim to launch.
-- **no `microvm` row, but `aws_ec2` is there** — the `microvm` block in
-  `cloud.json` is absent or incomplete. Walk the operator through the
-  configuration below.
+- **no `microvm` row, but `aws_ec2` is there** — this is the expected answer today.
+  The lane is withheld until its guest half lands, and it is also what an
+  incomplete block looks like. Do not try to tell the two apart by guessing: report
+  that the lane is not available yet, and only walk through the configuration below
+  if the operator asks for it knowing it will not launch.
 - **the request fails** — this is not a lane problem. Report it as it is.
 
 ## The operator has to write the config; you cannot
@@ -73,9 +75,8 @@ Say this, filling in nothing you have to guess:
 > every crew that uses them, and the lane never creates any of them — a resource
 > whose loss is unrecoverable is created deliberately, not as a side effect of a
 > launch. The template ships with Kiro Crew as `kirocrew-microvm-base.yaml`; deploy
-> it with `aws cloudformation deploy` and keep its outputs: `LaneKmsKeyArn`,
-> `RecipeBucketName`, `ImageBuildRoleArn` and `HybridActivationRoleArn`, plus the
-> optional `ExecutionRoleArn`.
+> it with `aws cloudformation deploy` and keep four outputs: `LaneKmsKeyArn`,
+> `RecipeBucketName`, `ImageBuildRoleArn` and `HybridActivationRoleArn`.
 >
 > **2. Put the crew's model credential in Secrets Manager.** A crew refuses to
 > serve without one, so this is a prerequisite and not a later step. Its value is
@@ -89,7 +90,7 @@ Say this, filling in nothing you have to guess:
 > its wall. Give the operator the exact path they will paste back; never pass a
 > credential value through a command line, a log or a config file.
 >
-> **3. Add this block to `~/.kiro/crew/cloud.json`**, filling in the seven values:
+> **3. Add this block to `~/.kiro/crew/cloud.json`**, filling in the six values:
 >
 > ```json
 > {
@@ -99,16 +100,10 @@ Say this, filling in nothing you have to guess:
 >     "recipe_bucket": "<RecipeBucketName>",
 >     "bundle_dir": "<the directory packaging.build produced>",
 >     "kms_key_id": "<LaneKmsKeyArn>",
->     "activation_role_arn": "<HybridActivationRoleArn>",
->     "identity_secret_ref": "<the Secrets Manager path from step 2>"
+>     "activation_role_arn": "<HybridActivationRoleArn>"
 >   }
 > }
 > ```
->
-> Two optional fields are worth adding: `execution_role_arn` (the stack's
-> `ExecutionRoleArn` output, the role the VM runs as) and `log_group` (a
-> CloudWatch log group for the guest's output; without it a launch that fails
-> before the guest registers leaves no trace).
 >
 > `bundle_dir` is the crew bundle `packaging.build` produced -- the SAME artifact the
 > Fargate lane builds its crew layer from. It is required on the build path and
@@ -122,9 +117,8 @@ judged on every request, so a correct edit shows up immediately with no restart,
 and an incomplete one still shows no `microvm` row. If the row is still absent
 after they say they saved it, the block is incomplete; the most common cause is a
 missing `activation_role_arn`, which the lane requires because the AWS call that
-enrolls the crew refuses to run without a role; the next most common are a missing
-`identity_secret_ref` and a missing `bundle_dir`, which a block that will build an
-image also requires.
+enrolls the crew refuses to run without a role; the next most common is a missing
+`bundle_dir`, which a block that will build an image also requires.
 
 **The recipe is the Fargate lane's recipe, not a second one.** If asked what goes
 in the zip: `Dockerfile.crew` read from disk, plus the bundle's own files at the

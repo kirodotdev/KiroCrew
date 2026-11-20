@@ -142,9 +142,8 @@ agent to, every cycle:
 
 ## Operating invariants
 
-Inherited verbatim from the generated `<anchor>/LOOP.md` §"Operating
-invariants" (written by `self-nudge-loop/scaffold.sh`). See that file. The short
-list:
+Inherited verbatim from `self-nudge-loop/LOOP.md §"Operating invariants"`.
+See that file. The short list:
 
 - If the armed nudge has gone stale, revise it with `monitor_update` rather than
   re-arming, which loses the cycle count
@@ -195,5 +194,13 @@ The agent never creates the user's STOP sentinel itself. It calls
 independent. When in doubt: keep going, find another angle, create a new card,
 and tick.
 
-`scaffold.sh` takes `--project`, `--anchor-dir`, `--goal` and `--force`
-(overwrite existing files); there are no other flags.
+## Extension points (future)
+
+- `--seed-backlog <file>` — pre-populate the board from a newline-delimited
+  list of card titles
+- `--agent <name>` — write an `agent:` hint to GOAL.md so loops launched from
+  chat pick up a specialist
+- `--discovery <source>` — multi-select: grep, taskei, tod-failures
+
+Out of scope for v1. Ship the tiny version, iterate when you hit a real
+missing feature.

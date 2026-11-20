@@ -39,7 +39,7 @@
     {
       "feature": "Configuration Reference",
       "title": "Configuration Reference",
-      "summary": "Everything Kiro Crew remembers about how it should behave lives in one JSON file, `~/.kiro/crew/config.json`, created automatically on the first `kirocrew gateway` run. Most keys are also editable from the dashboard's Settings pages.",
+      "summary": "Everything Kiro Crew remembers about how it should behave lives in one JSON file, `~/.kiro/crew/config.json`, created automatically on the first `kirocrew gateway` run.",
       "doc": "configuration.md",
       "mtime": 1794246564.0
     },

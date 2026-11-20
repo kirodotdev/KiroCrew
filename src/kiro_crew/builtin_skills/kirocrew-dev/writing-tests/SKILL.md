@@ -624,8 +624,8 @@ naming the shape; the contract line holds the detail and its numbers. The helper
 - [ ] Every thread, task, child process, socket and connection it starts is stopped in a
       `finally` or an `addCleanup`
 - [ ] Globals mutated through `monkeypatch`, never raw assignment — including `os.environ`
-      keys a REAL production startup path is known to write (`KIROCREW_TELEMETRY`,
-      `PATH`), restored in the shared helper that drives it
+      keys a REAL production startup path is known to write (`PLAYWRIGHT_MCP_OUTPUT_DIR`,
+      `KIROCREW_TELEMETRY`, `PATH`), restored in the shared helper that drives it
 - [ ] A variable the code under test WRITES and that is absent before the test goes
       through `forget_env_at_teardown(monkeypatch, name)` — `delenv(raising=False)` on an
       absent key records no undo, and a `delenv` AFTER the write puts the written value back
