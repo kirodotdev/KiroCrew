@@ -85,11 +85,26 @@ def _run_lines() -> list[str]:
 
 class TestWiring:
     @pytest.mark.parametrize("tool", TOOLS)
-    def test_each_tool_is_started_in_the_background_with_its_own_log(self, tool: str) -> None:
+    def test_each_tool_is_started_in_the_background_and_its_pid_kept(self, tool: str) -> None:
         lines = _run_lines()
-        start = f'{COMMANDS[tool]} > "$logs/{tool}.log" 2>&1 &'
+        start = f"timed {COMMANDS[tool]} &"
         assert start in lines, f"{tool} is not started as {start!r}"
         assert lines[lines.index(start) + 1] == f"{tool}_pid=$!"
+
+    def test_the_wrapper_returns_the_status_of_the_tool_it_ran(self) -> None:
+        # `timed` is what each PID above is: it must run the tool it was handed,
+        # into that tool's own log, and exit with that tool's status.
+        lines = _run_lines()
+        body = lines[lines.index("timed() {") + 1 : lines.index("}")]
+        assert body == [
+            "local tool=$1 status=0",
+            '"$@" > "$logs/$tool.log" 2>&1 &',
+            "local child=$!",
+            "trap 'kill \"$child\" 2>/dev/null' TERM",
+            'wait "$child" || status=$?',
+            'echo "$SECONDS" > "$logs/$tool.seconds"',
+            'exit "$status"',
+        ]
 
     @pytest.mark.parametrize("tool", TOOLS)
     def test_each_pid_is_waited_on_and_its_status_kept(self, tool: str) -> None:
@@ -100,8 +115,8 @@ class TestWiring:
 
     def test_both_tools_start_before_either_is_waited_on(self) -> None:
         lines = _run_lines()
-        last_start = max(i for i, line in enumerate(lines) if line.endswith("2>&1 &"))
-        first_wait = min(i for i, line in enumerate(lines) if line.startswith("wait "))
+        last_start = max(i for i, line in enumerate(lines) if line.startswith("timed "))
+        first_wait = min(i for i, line in enumerate(lines) if re.match(r'wait "\$\w+_pid"', line))
         assert last_start < first_wait
 
     def test_every_wait_names_a_pid(self) -> None:
@@ -109,7 +124,7 @@ class TestWiring:
         waits = [line for line in _run_lines() if re.match(r"wait\b", line)]
         assert waits
         for line in waits:
-            assert re.match(r'wait "\$\w+_pid" \|\| \w+_status=\$\?$', line), line
+            assert re.match(r'wait "\$\w+" \|\| \w*status=\$\?$', line), line
 
     def test_logs_live_under_runner_temp(self) -> None:
         assert 'logs="$RUNNER_TEMP/backend-lint"' in _run_lines()
@@ -193,11 +208,11 @@ def _run(tmp_path: Path, **tools: tuple[str, int]) -> "subprocess.CompletedProce
     )
 
 
-def _group(stdout: str, tool: str) -> str:
-    """The lines printed between ``::group::<tool>`` and its ``::endgroup::``."""
-    opened = f"::group::{tool}\n"
-    assert stdout.count(opened) == 1, stdout
-    body = stdout.split(opened, 1)[1]
+def _group(stdout: str, tool: str, title: str = r"finished \d+s into the step") -> str:
+    """The lines printed between ``::group::<tool> (<title>)`` and its ``::endgroup::``."""
+    opened = re.findall(rf"^::group::{tool} \({title}\)\n", stdout, re.MULTILINE)
+    assert len(opened) == 1, stdout
+    body = stdout.split(opened[0], 1)[1]
     assert "::endgroup::\n" in body, stdout
     return body.split("::endgroup::\n", 1)[0]
 
@@ -208,7 +223,7 @@ def _errors(stdout: str) -> list[str]:
 
 def _assert_both_reported(result: "subprocess.CompletedProcess[str]") -> None:
     out = result.stdout
-    assert out.index("::group::flake8\n") < out.index("::group::mypy\n"), _proc_log(result)
+    assert out.index("::group::flake8 ") < out.index("::group::mypy "), _proc_log(result)
     for tool, other in (("flake8", "mypy"), ("mypy", "flake8")):
         body = _group(out, tool)
         # stdout and stderr both land in the tool's own group, and only there.
@@ -307,7 +322,7 @@ class TestBehaviour:
         log = f"rc={proc.returncode}\nstdout={stdout!r}\nstderr={stderr!r}"
         assert proc.returncode == 1, log
         assert "flake8 says: line on stdout\n" in _group(stdout, "flake8"), log
-        assert "mypy says: about to hang\n" in _group(stdout, "mypy"), log
+        assert "mypy says: about to hang\n" in _group(stdout, "mypy", "did not finish"), log
         errors = _errors(stdout)
         assert len(errors) == 1 and "interrupted before flake8 and mypy" in errors[0], log
         hung = int((stub / "mypy.pid").read_text(encoding="utf-8"))

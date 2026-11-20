@@ -1080,10 +1080,11 @@ jobs:
       # for SIGKILL from the kernel's OOM killer) fails the step by name like
       # any other non-zero exit. Output goes to one file per tool and is
       # printed after both have finished, flake8 first, each under its own
-      # group; two writers on one log would interleave their lines. If the
-      # step is interrupted first (job timeout, cancellation), whatever each
-      # tool had written is printed before it exits, so a hang is not a blank
-      # log.
+      # group; two writers on one log would interleave their lines. The group
+      # title carries how long after the step's start the tool finished: the
+      # step's duration is only the slower of the two. If the step is
+      # interrupted first (job timeout, cancellation), whatever each tool had
+      # written is printed before it exits, so a hang is not a blank log.
       #
       # flake8 keeps its default of one worker per core and mypy is one
       # process, so the pair is one process over the core count.
@@ -1092,17 +1093,35 @@ jobs:
           logs="$RUNNER_TEMP/backend-lint"
           mkdir -p "$logs"
 
+          # Runs in a background subshell, one per tool: output to the tool's
+          # own file, the second it finished beside it, and the tool's exit
+          # status as the subshell's. TERM is passed on to the tool.
+          timed() {
+            local tool=$1 status=0
+            "$@" > "$logs/$tool.log" 2>&1 &
+            local child=$!
+            trap 'kill "$child" 2>/dev/null' TERM
+            wait "$child" || status=$?
+            echo "$SECONDS" > "$logs/$tool.seconds"
+            exit "$status"
+          }
+
           report() {
+            local tool
             for tool in flake8 mypy; do
-              echo "::group::$tool"
+              if [ -s "$logs/$tool.seconds" ]; then
+                echo "::group::$tool (finished $(cat "$logs/$tool.seconds")s into the step)"
+              else
+                echo "::group::$tool (did not finish)"
+              fi
               cat "$logs/$tool.log"
               echo "::endgroup::"
             done
           }
 
-          flake8 src/kiro_crew test conftest.py xdist_budget.py > "$logs/flake8.log" 2>&1 &
+          timed flake8 src/kiro_crew test conftest.py xdist_budget.py &
           flake8_pid=$!
-          mypy src/kiro_crew/ > "$logs/mypy.log" 2>&1 &
+          timed mypy src/kiro_crew/ &
           mypy_pid=$!
 
           # The tools are stopped last: `kill` is non-zero when one has already
