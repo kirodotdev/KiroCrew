@@ -119,11 +119,19 @@ from .shell_normalizer import (
 # TEXT inside a single argv token.  The substitution forms are substring
 # matches ("$(hostname -f)" still hits); the variable forms are exact or
 # dot-suffixed ("$hostname", "$hostname.example") so an unrelated variable
-# like "$hostname_backup" is NOT read as this host.
+# like "$hostname_backup" is NOT read as this host.  The variable forms
+# include the Windows spellings of the same name: PowerShell's
+# "$env:COMPUTERNAME" (bare and braced) and cmd's "%COMPUTERNAME%".
 _HOSTNAME_SUBSTITUTION_HINTS: tuple[str, ...] = ("$(hostname", "`hostname")
 
 
-_HOSTNAME_VARIABLE_FORMS: tuple[str, ...] = ("$hostname", "${hostname}")
+_HOSTNAME_VARIABLE_FORMS: tuple[str, ...] = (
+    "$hostname",
+    "${hostname}",
+    "$env:computername",
+    "${env:computername}",
+    "%computername%",
+)
 
 
 # A FLAT command substitution -- no nested substitution characters in the
@@ -510,9 +518,11 @@ def _operand_targets_self(
     for hint in _HOSTNAME_SUBSTITUTION_HINTS:
         if hint in t:
             return True
-    for var in _HOSTNAME_VARIABLE_FORMS:
-        if t == var or t.startswith(var + ".") or t.startswith(var + ":"):
-            return True
+    # ``user@$env:computername``: the host is the part after the last ``@``.
+    for spelling in {t, t.rsplit("@", 1)[-1]}:
+        for var in _HOSTNAME_VARIABLE_FORMS:
+            if spelling == var or spelling.startswith((var + ".", var + ":")):
+                return True
     # An expansion's embedded default is the destination when the variable is
     # unset — check every ``${…:-word}``-style word (recursion terminates:
     # the word is strictly shorter than the operand).  Kept alongside the
