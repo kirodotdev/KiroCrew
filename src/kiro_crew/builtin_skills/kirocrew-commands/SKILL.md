@@ -148,8 +148,9 @@ Override with `PORT=` in `~/.kiro/crew/pods/<name>.env`.
 | Command | Description |
 |---------|-------------|
 | `kirocrew chat` | Interactive chat (REPL mode) |
-| `kirocrew chat -m "message"` | Single message (non-interactive) |
-| `kirocrew chat --model MODEL_ID` | Use a specific model (default `auto`; any id the model picker lists) |
+| `kirocrew chat -m "message"` | Single message (non-interactive); `-m -` reads it from a piped stdin (up to 1 MiB) |
+| `kirocrew chat --model MODEL_ID` | Use a specific model (default from config; `kirocrew models` lists the names) |
+| `kirocrew chat --headless -m "task"` | Run one unattended task on this data home's running gateway and exit with a result code; never reads the terminal. `--message-file PATH` reads the seed from a file, `--mode conductor`, `--approval-mode trust`, `--until-done` (with `--idle-grace SECS`, default 900), `--cwd DIR`, `--timeout SECS` (exit 4), `--budget CREDITS` (exit 5), `--json`. A request for a person ends the run (exit 3) |
 
 When `kirocrew chat` asks to run a tool, answer `y` to allow that call once or
 `n` to deny it, the same keys `kiro-cli chat` uses. `o` denies it and lets you
