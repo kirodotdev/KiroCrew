@@ -283,6 +283,14 @@ def register_bench_parser(sub: argparse._SubParsersAction) -> None:
         default=None,
         help="Path to a golden-set JSON (default: the packaged session_golden_v1.json)",
     )
+    sr.add_argument(
+        "--meaning",
+        action="store_true",
+        help=(
+            "Also embed the set with this host's in-process model and score the "
+            "vector leg, the routed rows and partial coverage, with the leg's cost"
+        ),
+    )
 
 
 def bench_cmd(args: argparse.Namespace) -> int:
@@ -715,5 +723,5 @@ def _session_recall(args: argparse.Namespace) -> int:
     )
 
     golden = SessionGoldenSet.from_json(args.golden or default_session_golden_set_path())
-    print(format_session_report(run_session_recall(golden)))
+    print(format_session_report(run_session_recall(golden, meaning=args.meaning)))
     return 0

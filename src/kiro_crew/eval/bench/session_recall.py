@@ -51,6 +51,19 @@ NO_ANSWER_CLASS = "no_answer"
 #: 1 is the row a person reads first; 10 is the rows ``search_chat_history`` shows.
 DEFAULT_SESSION_K_VALUES: tuple[int, ...] = (1, 3, 10)
 
+#: The default ranking every surface ran before the meaning leg, and the one this
+#: harness has always scored.
+KEYWORD_RANKER = "keyword"
+#: The meaning leg's own ranking of every session, and the routed result rows.
+VECTOR_RANKER, ROUTED_RANKER = "vector", "routed"
+#: Shares of sessions embedded that the routed ranking is also scored at (RFC
+#: ``rfc-session-semantic-search`` 8.3), the newest first, as a first build reaches them.
+#: Each is scored twice, keyword rows first and meaning rows first, which is the
+#: choice ``SEMANTIC_MIN_COVERAGE`` makes.
+MEANING_COVERAGE_SHARES: tuple[float, ...] = (0.5, 0.75, 0.9)
+#: The prefixes of those rankers' names, before ``@<share>``.
+KEYWORD_FIRST, MEANING_FIRST = "keyword-first", "meaning-first"
+
 #: A hand-authored golden set has no business approaching this.
 _GOLDEN_MAX_BYTES = 4 * 1024 * 1024
 
@@ -270,11 +283,25 @@ class SessionRecallReport:
     session_count: int
     k_values: tuple[int, ...]
     results: list[SessionQueryResult] = field(default_factory=list)
+    #: With ``meaning=True``, the results of every other ranker by name: the vector
+    #: leg, the routed rows, and the routed rows at each partial coverage share.
+    rankers: dict[str, list[SessionQueryResult]] = field(default_factory=dict)
+    #: With ``meaning=True``, what the leg cost on this set (see :func:`_measure_leg`).
+    resources: dict[str, float] = field(default_factory=dict)
 
     def _require_k(self, k: int) -> None:
         if k not in self.k_values:
             # A cut-off that was never computed would read as a 0.0 score.
             raise ValueError(f"k={k} was not computed; computed: {list(self.k_values)}")
+
+    def _ranked(self, ranker: str) -> list[SessionQueryResult]:
+        if ranker == KEYWORD_RANKER:
+            return self.results
+        if ranker not in self.rankers:
+            raise ValueError(
+                f"ranker {ranker!r} was not run; run: {[KEYWORD_RANKER, *self.rankers]}"
+            )
+        return self.rankers[ranker]
 
     def _means(self, results: Sequence[SessionQueryResult], k: int) -> dict[str, float]:
         n = len(results)
@@ -284,17 +311,19 @@ class SessionRecallReport:
             "n": float(n),
         }
 
-    def answerable(self, k: int) -> dict[str, float]:
+    def answerable(self, k: int, ranker: str = KEYWORD_RANKER) -> dict[str, float]:
         """Means over every query that has an answer."""
         self._require_k(k)
-        return self._means([r for r in self.results if r.query_class != NO_ANSWER_CLASS], k)
+        results = self._ranked(ranker)
+        return self._means([r for r in results if r.query_class != NO_ANSWER_CLASS], k)
 
-    def by_class(self, k: int) -> dict[str, dict[str, float]]:
+    def by_class(self, k: int, ranker: str = KEYWORD_RANKER) -> dict[str, dict[str, float]]:
         """Means per answerable class; a no-answer class reports how many returned rows."""
         self._require_k(k)
+        results = self._ranked(ranker)
         out: dict[str, dict[str, float]] = {}
         for query_class in SESSION_QUERY_CLASSES:
-            members = [r for r in self.results if r.query_class == query_class]
+            members = [r for r in results if r.query_class == query_class]
             if not members:
                 continue
             if query_class == NO_ANSWER_CLASS:
@@ -345,14 +374,135 @@ def _dictionary_segmenter() -> Iterator[str]:
         history_search.register_cjk_segmenter(previous)
 
 
+def _scored(query: GoldenQuery, ranked: Sequence[str], k_values: tuple[int, ...]):
+    gold = list(query.gold_session_ids)
+    ranked = tuple(ranked)
+    return SessionQueryResult(
+        query_id=query.id,
+        query_class=query.query_class,
+        ranked_session_ids=ranked,
+        recall_any={k: recall_any_at_k(ranked, gold, k) for k in k_values},
+        mrr={k: mrr_at_k(ranked, gold, k) for k in k_values},
+    )
+
+
+@contextmanager
+def _meaning_leg(log, golden_ids: Sequence[str]) -> Iterator[tuple]:
+    """Chunk and embed every session with the in-process model; yield the leg and its space.
+
+    Refuses when this host has no in-process model: a leg that cannot answer
+    scores as the keyword ranking, which is not what the run was asked to show.
+    ``session.semantic_search`` is held on for the run and put back on exit.
+    """
+    from kiro_crew import embeddings
+    from kiro_crew import history_vectors_fill as fill
+    from kiro_crew import history_vectors_index as chunking
+    from kiro_crew import history_vectors_search as meaning
+
+    tokenizer = chunking.load_tokenizer()
+    embedder = meaning.local_embedder()
+    if tokenizer is None or embedder is None:
+        raise SessionGoldenSetError(
+            "the meaning rankers need the in-process embedding model on this host; "
+            "run without --meaning, or install the model first"
+        )
+    signature = embeddings.embedding_space_signature(embedder.model_id, embedder.dim)
+    # A bulk embed answers None while the model loads; an interactive one waits for it.
+    if embedder.embed("warm", priority=embeddings.PRIORITY_INTERACTIVE) is None:
+        raise SessionGoldenSetError("the in-process embedding model did not load")
+    store = log._catalog_projection.vector_store
+    previous = meaning._SEMANTIC_SEARCH_OVERRIDE
+    meaning._SEMANTIC_SEARCH_OVERRIDE = True
+    try:
+        started = time.process_time()
+        # Every fixture session directly: the live chunk pass waits out a quiet period
+        # after each write, which a session dated ``age_days: 0`` is still inside.
+        for session in golden_ids:
+            outcome = chunking.chunk_session(log, store, session, tokenizer)
+            if outcome != chunking.INDEXED:
+                raise SessionGoldenSetError(f"session {session!r} could not be chunked ({outcome})")
+        while fill.fill_batch(log, store)["filled"]:
+            pass
+        fill_cpu = time.process_time() - started
+        embedded = len(store.embedded_keys(signature))
+        if embedded != len(golden_ids):
+            raise SessionGoldenSetError(
+                f"embedded {embedded} of {len(golden_ids)} sessions; the meaning rankers "
+                "would score a partial index"
+            )
+        yield log._catalog_projection.vector_leg, embedder, signature, fill_cpu
+    finally:
+        meaning._SEMANTIC_SEARCH_OVERRIDE = previous
+        log._catalog_projection.vector_leg.release()
+        store.close()
+
+
+def _measure_leg(leg, embedder, signature: str, fill_cpu: float, query_costs) -> dict[str, float]:
+    """The leg's cost on this set, for the phase 4 resource ceilings (RFC 10).
+
+    ``matrix_bytes`` is the resident float32 matrix; ``load_peak_bytes`` the most
+    the matrix load allocated at once, as ``tracemalloc`` sees it (numpy reports to
+    it); ``fill_cpu_ms_per_chunk`` the process CPU the chunk pass and the fill took
+    per chunk; and the query figures the median wall and CPU time of one vector
+    ranking, the query embedding included.
+    """
+    import statistics
+    import tracemalloc
+
+    leg.release()
+    tracemalloc.start()
+    try:
+        matrix = leg.current_matrix(signature, embedder.dim)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    chunks = len(matrix.rows) if matrix is not None else 0
+    matrix_bytes = float(matrix.array.nbytes) if matrix is not None else 0.0
+    return {
+        "chunks": float(chunks),
+        "dim": float(embedder.dim),
+        "matrix_bytes": matrix_bytes,
+        "bytes_per_chunk": matrix_bytes / chunks if chunks else 0.0,
+        "load_peak_bytes": float(peak),
+        "fill_cpu_ms_per_chunk": 1000.0 * fill_cpu / chunks if chunks else 0.0,
+        "query_wall_ms_median": 1000.0 * statistics.median(wall for wall, _cpu in query_costs),
+        "query_cpu_ms_median": 1000.0 * statistics.median(cpu for _wall, cpu in query_costs),
+    }
+
+
+def _routed_at(log, query: str, keyword: list[dict], hits, metas, coverage: float) -> list[str]:
+    """The routed order of *hits* from a partial index, read as *coverage* (RFC 8.3).
+
+    The same :func:`~kiro_crew.history_vectors_search.route` the search runs, fed the
+    vector leg's hits for the embedded sessions alone: a *coverage* below
+    ``SEMANTIC_MIN_COVERAGE`` puts the keyword rows first, and 1.0 the meaning rows.
+    """
+    from kiro_crew import history_vectors_search as meaning
+
+    top_folded = log._folded_content(keyword[0]["key"])[1] if keyword else None
+    literal = meaning.is_literal(query, top_folded)
+    routed = meaning.route(keyword, hits, metas, literal=literal, coverage=coverage)
+    return [row.meta["key"] for row in routed]
+
+
 def run_session_recall(
-    golden: SessionGoldenSet, *, k_values: Sequence[int] = DEFAULT_SESSION_K_VALUES
+    golden: SessionGoldenSet,
+    *,
+    k_values: Sequence[int] = DEFAULT_SESSION_K_VALUES,
+    meaning: bool = False,
 ) -> SessionRecallReport:
     """Score *golden* against ``search_sessions`` and return the report.
 
     The transcripts live in a private temp directory removed on exit, so no live
     session is read. Not for a process that searches sessions on another thread:
-    the Chinese segmenter is swapped process-wide while the run holds it.
+    the Chinese segmenter is swapped process-wide while the run holds it, and with
+    *meaning* so is ``session.semantic_search``.
+
+    With *meaning*, every session is also chunked and embedded with this host's
+    in-process model, and the report adds the vector leg's ranking, the routed rows
+    the search returns, both orders of the routed rows at each of
+    ``MEANING_COVERAGE_SHARES`` (keyword rows first, and meaning rows first), and
+    the leg's cost (``resources``).
     """
     golden.validate()
     k_values = tuple(sorted({int(k) for k in k_values}))
@@ -373,30 +523,82 @@ def run_session_recall(
             k_values=k_values,
         )
         try:
+            keyword_rows = {}
             for query in golden.queries:
-                rows = log.search_sessions(query.query, limit=k_values[-1])
+                # Every keyword row, as the search's own fusion sees them; the scores
+                # cut the ranking to k themselves.
+                rows = log.search_sessions(
+                    query.query, limit=max(k_values[-1], len(golden.sessions)), by_meaning=False
+                )
                 searched = getattr(rows, "searched", None)
                 if searched != len(golden.sessions):
                     raise SessionGoldenSetError(
                         f"search read {searched} of {len(golden.sessions)} sessions; raise "
                         "session.search_scan_window to at least the set's size"
                     )
-                ranked = tuple(row["key"] for row in rows)
-                gold = list(query.gold_session_ids)
-                report.results.append(
-                    SessionQueryResult(
-                        query_id=query.id,
-                        query_class=query.query_class,
-                        ranked_session_ids=ranked,
-                        recall_any={k: recall_any_at_k(ranked, gold, k) for k in k_values},
-                        mrr={k: mrr_at_k(ranked, gold, k) for k in k_values},
-                    )
-                )
+                keyword_rows[query.id] = list(rows)
+                report.results.append(_scored(query, [row["key"] for row in rows], k_values))
+            if meaning:
+                _run_meaning(log, golden, keyword_rows, report)
         finally:
             # Closed before the directory is removed: an open SQLite handle
             # makes the removal fail on Windows.
             log._catalog_projection.search_index.close()
         return report
+
+
+def _run_meaning(log, golden: SessionGoldenSet, keyword_rows, report) -> None:
+    k_values = report.k_values
+    metas = {meta["key"]: meta for meta in log.list_sessions()}
+    newest = sorted(golden.sessions, key=lambda session: session.age_days)
+    shares = {
+        share: {session.id for session in newest[: max(1, round(share * len(newest)))]}
+        for share in MEANING_COVERAGE_SHARES
+    }
+    names = [VECTOR_RANKER, ROUTED_RANKER]
+    names += [
+        _share_name(order, share) for share in shares for order in (KEYWORD_FIRST, MEANING_FIRST)
+    ]
+    report.rankers = {name: [] for name in names}
+    costs = []
+    with _meaning_leg(log, [session.id for session in golden.sessions]) as (
+        leg,
+        embedder,
+        signature,
+        fill_cpu,
+    ):
+        modified = {key: meta.get("modified", 0.0) for key, meta in metas.items()}
+        for query in golden.queries:
+            wall, cpu = time.perf_counter(), time.process_time()
+            hits = leg.rank(query.query, modified, embedder, signature) or []
+            costs.append((time.perf_counter() - wall, time.process_time() - cpu))
+            vector = [hit.key for hit in hits]
+            report.rankers[VECTOR_RANKER].append(_scored(query, vector, k_values))
+            routed = log.search_sessions(query.query, limit=k_values[-1])
+            keys = [row["key"] for row in routed]
+            report.rankers[ROUTED_RANKER].append(_scored(query, keys, k_values))
+            for share, embedded in shares.items():
+                partial = (
+                    leg.rank(
+                        query.query,
+                        {key: value for key, value in modified.items() if key in embedded},
+                        embedder,
+                        signature,
+                    )
+                    or []
+                )
+                for name, coverage in ((KEYWORD_FIRST, 0.0), (MEANING_FIRST, 1.0)):
+                    order = _routed_at(
+                        log, query.query, keyword_rows[query.id], partial, metas, coverage
+                    )
+                    report.rankers[_share_name(name, share)].append(
+                        _scored(query, order[: k_values[-1]], k_values)
+                    )
+        report.resources = _measure_leg(leg, embedder, signature, fill_cpu, costs)
+
+
+def _share_name(order: str, share: float) -> str:
+    return f"{order}@{share:.2f}"
 
 
 def format_session_report(report: SessionRecallReport, *, k: int = 10) -> str:
@@ -432,4 +634,54 @@ def format_session_report(report: SessionRecallReport, *, k: int = 10) -> str:
         f"  {'all answerable':<30} n={int(whole['n']):<3} R@{first}={whole_first:.3f} "
         f"R@{k}={whole['recall_any']:.3f} MRR@{k}={whole['mrr']:.3f}"
     )
+    if report.rankers:
+        lines += _format_meaning(report, k)
     return "\n".join(lines)
+
+
+def _format_meaning(report: SessionRecallReport, k: int) -> list[str]:
+    first = report.k_values[0]
+    rankers = (KEYWORD_RANKER, VECTOR_RANKER, ROUTED_RANKER)
+    lines = ["", f"MEANING, R@{first} BY CLASS ({' / '.join(rankers)}):"]
+    per = {ranker: report.by_class(first, ranker) for ranker in rankers}
+    for query_class, m in per[KEYWORD_RANKER].items():
+        if query_class == NO_ANSWER_CLASS:
+            with_rows = " / ".join(
+                str(int(per[r][query_class]["queries_with_rows"])) for r in rankers
+            )
+            lines.append(f"  {query_class:<30} n={int(m['n']):<3} queries with rows: {with_rows}")
+            continue
+        scores = " / ".join(f"{per[r][query_class]['recall_any']:.3f}" for r in rankers)
+        lines.append(f"  {query_class:<30} n={int(m['n']):<3} {scores}")
+    scores = " / ".join(f"{report.answerable(first, r)['recall_any']:.3f}" for r in rankers)
+    lines.append(f"  {'all answerable':<30} {'':<5} {scores}")
+    lines += [
+        "",
+        f"PARTIAL COVERAGE, newest first (R@{first}, R@{k}; keyword first | meaning first):",
+    ]
+    for share in sorted({n.partition("@")[2] for n in report.rankers if "@" in n}):
+        cells = []
+        for order in (KEYWORD_FIRST, MEANING_FIRST):
+            name = f"{order}@{share}"
+            cells.append(
+                f"R@{first}={report.answerable(first, name)['recall_any']:.3f} "
+                f"R@{k}={report.answerable(k, name)['recall_any']:.3f}"
+            )
+        lines.append(f"  coverage {share}  {cells[0]} | {cells[1]}")
+    lines.append(
+        f"  coverage 1.00  R@{first}={report.answerable(first, ROUTED_RANKER)['recall_any']:.3f} "
+        f"R@{k}={report.answerable(k, ROUTED_RANKER)['recall_any']:.3f} (routed)"
+    )
+    res = report.resources
+    if res:
+        lines += [
+            "",
+            "RESOURCES:",
+            f"  chunks: {int(res['chunks'])} at dim {int(res['dim'])}; matrix "
+            f"{res['matrix_bytes'] / 1024:.1f} KiB ({res['bytes_per_chunk']:.0f} bytes per "
+            f"chunk); load peak {res['load_peak_bytes'] / 1024:.1f} KiB",
+            f"  fill: {res['fill_cpu_ms_per_chunk']:.1f} ms CPU per chunk; query: "
+            f"{res['query_wall_ms_median']:.1f} ms wall, {res['query_cpu_ms_median']:.1f} ms CPU "
+            "(median)",
+        ]
+    return lines
