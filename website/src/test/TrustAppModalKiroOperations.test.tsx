@@ -16,7 +16,7 @@ vi.mock('../i18n/t', () => ({
 import TrustAppModal, { type TrustAppTarget } from '../components/appstore/TrustAppModal'
 import { trustGrants } from '../components/appstore/trustGrants'
 import { stagedGrantsOf } from '../pages/appDetailPageStagedGrants'
-import { KiroOperationsBox } from '../pages/AppDetailGrantBoxes'
+import { KiroOperationsBox, StagedCodeList } from '../pages/AppDetailGrantBoxes'
 import type { AppInfo } from '../pages/appDetailPageTypes'
 
 const K = 'components.appstore.trustAppModal'
@@ -46,6 +46,12 @@ describe('Kiro operations at the trust gate', () => {
     expect(box.getByText(`${K}.kiro_operations_note`)).toBeTruthy()
   })
 
+  it('lets a long name break in the trust prompt', () => {
+    const long = 'G' + 'x'.repeat(63)
+    const dialog = renderModal({ ...BASE, ...trustGrants({ kiroOperations: [long] }) })
+    expect(within(dialog.getByTestId('trust-kiro-operations')).getByText(long).className).toContain('break-all')
+  })
+
   it('shows no box for an app that declares none', () => {
     const dialog = renderModal({ ...BASE, ...trustGrants({}) })
     expect(dialog.queryByTestId('trust-kiro-operations')).toBeNull()
@@ -58,6 +64,14 @@ describe('Kiro operations in the permissions card', () => {
     const box = within(screen.getByTestId('kiro-operations'))
     expect(box.getByTestId('kiro-operation-GetWidget').textContent).toBe('GetWidget')
     expect(box.getByTestId('kiro-operation-ListWidgets').textContent).toContain('pages.appDetailPage.grant_not_approved')
+  })
+
+  it('lets a 64-character name break instead of being clipped on a narrow screen', () => {
+    const long = 'G' + 'x'.repeat(63)
+    render(<KiroOperationsBox grant={{ approved: [long], staged: [] }} />)
+    expect(screen.getByTestId(`kiro-operation-${long}`).className).toContain('break-all')
+    render(<StagedCodeList label="held" entries={[long]} testId="staged-long" />)
+    expect(within(screen.getByTestId('staged-long')).getByText(long).className).toContain('break-all')
   })
 
   it('renders nothing when the app declares none', () => {

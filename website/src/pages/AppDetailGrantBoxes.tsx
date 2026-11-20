@@ -240,7 +240,7 @@ export function StagedCodeList({ label, entries, testId }: { label: string; entr
       <div className="text-[13px]">{label}</div>
       <div className="flex flex-wrap gap-1 mt-1" data-testid={testId}>
         {entries.map(o => (
-          <code key={o} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{o}</code>
+          <code key={o} className="max-w-full break-all bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{o}</code>
         ))}
       </div>
     </div>
@@ -255,11 +255,11 @@ export function KiroOperationsBox({ grant }: { grant?: { approved: string[]; sta
     <div className="rounded-md border border-border px-2.5 py-2" data-testid="kiro-operations">
       <div className="flex items-start gap-2 text-text">
         <KeyRound size={13} className="mt-[2px] shrink-0 text-muted" />
-        <div className="flex flex-col gap-1">
+        <div className="flex min-w-0 flex-col gap-1">
           <span>{i18nT('pages.appDetailPage.kiro_operations_card_heading')}</span>
           <div className="flex flex-wrap gap-1">
             {names.map(op => (
-              <code key={op} data-testid={`kiro-operation-${op}`} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">
+              <code key={op} data-testid={`kiro-operation-${op}`} className="max-w-full break-all bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">
                 {op}{grant?.staged.includes(op) && <span className="ml-1 text-warn">· {i18nT('pages.appDetailPage.grant_not_approved')}</span>}
               </code>
             ))}

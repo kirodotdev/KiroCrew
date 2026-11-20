@@ -949,7 +949,7 @@ export default function TrustAppModal({
               </div>
               <div className="flex flex-wrap gap-1">
                 {kiroOperations.map(op => (
-                  <code key={op} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{op}</code>
+                  <code key={op} className="max-w-full break-all bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{op}</code>
                 ))}
               </div>
               <p className="text-muted leading-relaxed">{i18nT('components.appstore.trustAppModal.kiro_operations_note')}</p>
