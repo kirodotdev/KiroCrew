@@ -164,10 +164,14 @@ class TestManifest:
 
 
 class TestWhereDeclarationsAreRead:
-    def test_the_shipped_built_ins_declare_exactly_the_notes_state_directory(self, monkeypatch):
-        """Notes keeps its token, registry and settings in a masked directory of its own."""
+    def test_the_shipped_built_ins_declare_exactly_these_masked_directories(self, monkeypatch):
+        """Notes keeps its token, registry and settings, and Ops Mission Control its provider
+        tokens, in a masked directory of their own."""
         monkeypatch.setattr(credential_masks, "_builtin_manifests", _SHIPPED_MANIFESTS)
-        assert credential_masks.declared_masks(installed=False) == {"md-notebook": ("state/",)}
+        assert credential_masks.declared_masks(installed=False) == {
+            "md-notebook": ("state/",),
+            "ops-mission-control": ("secrets/",),
+        }
 
     def test_an_installed_app_declares_leaves_under_its_own_data_dir(self, home):
         _install(home, "demo", ["secrets.json", "keys/a.pem"])
