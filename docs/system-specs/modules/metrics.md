@@ -3155,6 +3155,7 @@ Shared attributes (`metrics/usage_attrs.py`):
 | `kirocrew.app.installed` | counter | `app`: `app_public_id`, a shipped built-in's `app.json` name, the name of an app whose install record says it came from the public store (`apps/store_origin.py`, read at install, so a later delist keeps it), else `private`; `entity_version`: `app_public_version`, the app's version when it is `N.N.N` (at most four digits each), `other` for any other version, `private` when `app` is; `via`: `store` / `default` / `other` | the first successful `install_from_registry` of an app, after its provenance is written; `via=default` from the default-apps pass. An update is not counted |
 | `kirocrew.app.updated` | counter | `app`, `entity_version` (the new version) and `via`, as on `kirocrew.app.installed` | a successful `install_from_registry` over an installed app, after its provenance is written (`store_origin.count_install`) |
 | `kirocrew.app.uninstalled` | counter | `app` and `entity_version` (the removed version), read before the install record is removed; `keep_data`: `true` / `false` | `uninstall_app` once it commits; a `retired_builtin` cleanup is Crew's own removal and is not counted |
+| `kirocrew.app.session_started` | counter | `app` and `entity_version` of the provider's `owning_app`, as on `kirocrew.app.installed`; `kind`: the session's `session_kind` (9 values) | `record_session_started`, right after it counts `kirocrew.session.started`, when the provider's trusted `owning_app` (the caller's slot app) is set; a failure here leaves `session.started` counted |
 | `kirocrew.channel.message.received` | counter | `channel`, `admitted`, `automation` | `run_channel_turn`, once admission decides |
 | `kirocrew.ui.control.clicked` | counter | `control` (8 values) | `POST /api/telemetry/ui-control`, owner only, from the dashboard's option chips, question card and follow-up card |
 | `kirocrew.tips.feedback` | counter | `action`: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`; `source`: `curated` / `catalog` / `generated` / `other`; `feature`: a curated tip's id when the tip ships in `data/tips_curated.json` or is listed in the edition pool's `TipsPool.metric_tip_ids`, else the tip's doc when it is in `TIP_DOC_ALLOWLIST`, else `other` | `POST /api/tips/feedback`, after the tips state is saved (`tips_metrics.record_tip_feedback_metric`) |
@@ -3164,7 +3165,7 @@ Shared attributes (`metrics/usage_attrs.py`):
 Recording is an in-memory add after the measured action commits, and a recording
 failure never changes that action's result.
 
-The attributes above are what the emit sites pass. The three `kirocrew.app.*` lifecycle
+The attributes above are what the emit sites pass. The four `kirocrew.app.*` lifecycle and session
 rows and the last three rows are the behavioral metrics (`BEHAVIORAL_METRICS` in `metrics/behavioral_metrics.py`, a
 subset of `PRODUCT_METRICS`). On the live provider `MetricsRecorder` creates them on
 a second meter with scope `kiro.crew` (every other metric uses `kiro_crew`) and

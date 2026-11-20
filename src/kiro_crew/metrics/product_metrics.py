@@ -101,6 +101,8 @@ _FEATURES = frozenset(
         "kirocrew.app.installed",
         "kirocrew.app.updated",
         "kirocrew.app.uninstalled",
+        # Entity / entity_version as above; kind is the session_kind.
+        "kirocrew.app.session_started",
         "kirocrew.channel.message.received",
         "kirocrew.ui.control.clicked",
     }

@@ -370,6 +370,18 @@ async def record_session_started(
         )
     except Exception:
         logger.debug("session started counter failed", exc_info=True)
+        return
+    # The app this session runs under, counted only once session.started is, so
+    # it never counts more. ``owning_app`` is the trusted slot app session
+    # allocation set; the recorder swallows its own failures.
+    owning_app = getattr(provider, "owning_app", "")
+    if isinstance(owning_app, str) and owning_app:
+        try:
+            from kiro_crew.metrics.feature_usage import record_app_session_started
+
+            record_app_session_started(owning_app, kind)
+        except Exception:
+            logger.debug("app session started counter failed", exc_info=True)
 
 
 def started_trigger_of(session_key: str) -> str | None:
