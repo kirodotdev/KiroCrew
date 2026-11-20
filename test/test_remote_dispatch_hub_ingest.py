@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -445,6 +446,51 @@ def test_a_remote_slot_missing_from_a_good_list_reads_closed(recorded, peer):
         assert work_ledger.remote_liveness(
             CONDUCTOR, work_ledger.read_work_item(CONDUCTOR, item_id)
         ) == (False, True)
+
+    asyncio.run(go())
+
+
+def _stale_in_an_hour(item: work_ledger.WorkItem) -> bool:
+    running, closed = work_ledger.remote_liveness(CONDUCTOR, item)
+    later = datetime.now(timezone.utc) + timedelta(hours=1)
+    return work_ledger.is_stale(item, worker_running=running, worker_closed=closed, now=later)
+
+
+def test_a_running_remote_worker_on_a_crew_gone_down_goes_stale(recorded, peer):
+    async def go() -> None:
+        item_id = await _remote_item(peer)
+        peer.slots = [{"key": PEER_SLOT, "running": True, "pending_approval": False}]
+        peer.report("progress", "building", "2026-10-29T10:00:00+00:00")
+        await _read(peer)
+        item = work_ledger.read_work_item(CONDUCTOR, item_id)
+        assert work_ledger.remote_liveness(CONDUCTOR, item) == (True, False)
+        assert _stale_in_an_hour(item) is False
+        peer.state = "disconnected"
+        await _read(peer)
+        # The record keeps the last answer, but a down crew's "running" counts for nothing.
+        assert work_ledger.read_remote_state(CONDUCTOR, item_id).running is True
+        assert work_ledger.remote_liveness(CONDUCTOR, item) == (False, False)
+        assert _stale_in_an_hour(item) is True
+
+    asyncio.run(go())
+
+
+def test_a_running_remote_worker_whose_last_pull_is_old_reads_not_running(recorded, peer):
+    async def go() -> None:
+        item_id = await _remote_item(peer)
+        peer.slots = [{"key": PEER_SLOT, "running": True, "pending_approval": False}]
+        peer.report("progress", "building", "2026-10-29T10:00:00+00:00")
+        await _read(peer)
+        item = work_ledger.read_work_item(CONDUCTOR, item_id)
+        record = work_ledger.read_remote_state(CONDUCTOR, item_id)
+        old = datetime.now(timezone.utc) - timedelta(
+            seconds=work_ledger.REMOTE_PULL_FRESH_SECS + 60
+        )
+        record.ingested_at = old.isoformat()
+        work_ledger.write_remote_state(CONDUCTOR, item_id, record)
+        # Still "connected" on record, but no pull has reached it within the bound.
+        assert work_ledger.remote_liveness(CONDUCTOR, item) == (False, False)
+        assert _stale_in_an_hour(item) is True
 
     asyncio.run(go())
 

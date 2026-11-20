@@ -23,12 +23,23 @@ When a pass runs (all must hold):
 gateway reads on its next memory repair visit: it skips gates 1 and 2 only, and
 still needs 3 and 4.
 
-One run reads at most :data:`ROWS_PER_RUN` rows past the watermark, in batches of
-:data:`BATCH_ROWS`, and stops at the next batch boundary once a chat turn starts
-or :data:`RUN_SECONDS` have passed. The watermark is the last ``(updated_at, key)``
-read, so the first run over an existing store walks the backlog one capped run a
-night and resumes where it stopped. A row without a vector is compared by text
-only and counted; the gateway's backfill sweep already embeds it at bulk priority.
+The watermark is the last ``(updated_at, key)`` read. A run reads at most
+:data:`ROWS_PER_RUN` rows past it, so a backlog takes several runs and a caught-up
+store reads only the rows written since. Rows go in batches of :data:`BATCH_ROWS`,
+and a run stops at the next batch boundary once a chat turn starts or
+:data:`RUN_SECONDS` have passed. Only the model step spends tokens, and it stays
+under :data:`MODEL_INPUT_TOKENS` a run whatever the row budget: after the first
+batch, a pair that does not fit the tokens left stops the run before its batch, so
+the next run asks about it instead of passing it by. A row without a vector is
+compared by text only and counted; the gateway's backfill sweep already embeds it
+at bulk priority.
+
+When the approval list is full (:data:`PROPOSALS_CAP` entries or the byte cap),
+nothing is dropped: the watermark stops before the batch of the first proposal
+that did not fit, so that batch is read again once the list has room, and a run
+that starts with a full list reads no rows at all (``stopped="list_full"``). A
+single proposal over the byte cap on its own can never fit, so it is refused
+(``too_large``) instead.
 
 Candidates, by code:
 
@@ -80,7 +91,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, Iterable, Mapping, Sequence
 
 from kiro_crew import memory_kind_routing as _kind_log
 from kiro_crew import memory_lesson_dedup as _dedup
@@ -108,7 +119,11 @@ MODE_PROPOSE: Final = "propose"
 MIN_HOURS_BETWEEN_RUNS: Final = 24
 MIN_NEW_LESSONS: Final = 20
 MIN_NEW_SESSIONS: Final = 5
-ROWS_PER_RUN: Final = 200
+#: Rows past the watermark one run reads. Row scanning spends no model tokens
+#: (candidates come from stored vectors), so this is sized to walk a 17k-row backlog
+#: in about a week against about 200 new rows a day; once caught up a run reads only
+#: the rows written since. The model step has its own cap.
+ROWS_PER_RUN: Final = 2_500
 BATCH_ROWS: Final = 50
 RUN_SECONDS: Final = 600.0
 MODEL_INPUT_TOKENS: Final = 20_000
@@ -140,6 +155,7 @@ REFUSE_NEW_WORDS: Final = "new_content_word"
 REFUSE_CLAIMED: Final = "row_in_another_proposal"
 REFUSE_OUTSIDE_GROUP: Final = "outside_model_group"
 REFUSE_EMPTY: Final = "empty_merge"
+REFUSE_TOO_LARGE: Final = "too_large"
 
 _META_PREFIX: Final = "memory_dream:"
 STATE_KEY: Final = _META_PREFIX + "state"
@@ -625,8 +641,13 @@ def persist(
     cursor: tuple[str, str],
     completed: bool,
     now: datetime,
+    marks: Sequence[tuple[int, tuple[str, str]]] = (),
 ) -> list[dict]:
     """Gate *candidates* against the store as it is now, and record the run.
+
+    *marks* holds, per batch, the index of its first candidate and the watermark
+    before it. When the list fills, the watermark goes back to the mark of the first
+    candidate that did not fit and the rest are left for a later run to find again.
 
     Writes ``memory_meta`` only, in one transaction under the store lock. Returns the
     proposals added to the approval list.
@@ -641,18 +662,25 @@ def persist(
             claimed = proposed_keys(listed)
             live = _live_rows(db, (k for p in candidates for k in p.keys))
             room = PROPOSALS_CAP - len(listed)
-            for proposal in candidates:
+            for index, proposal in enumerate(candidates):
                 reason = gate(proposal, read=read, live=live, claimed=claimed)
                 if reason is not None:
                     receipt.refuse(proposal, reason)
                     continue
-                if room <= 0:
-                    receipt.list_full += 1
-                    continue
                 entry = proposal.entry(receipt.run)
-                if len(json.dumps(listed + added + [entry])) > _kind_log.SAMPLE_BYTES_CAP:
-                    receipt.list_full += 1
+                if len(json.dumps([entry])) > _kind_log.SAMPLE_BYTES_CAP:
+                    # It would not fit an empty list either, so waiting cannot help.
+                    receipt.refuse(proposal, REFUSE_TOO_LARGE)
                     continue
+                if room <= 0 or (
+                    len(json.dumps(listed + added + [entry])) > _kind_log.SAMPLE_BYTES_CAP
+                ):
+                    # Nothing is dropped: the batch this candidate came from is read
+                    # again once a person has made room in the list.
+                    receipt.list_full += len(candidates) - index
+                    receipt.stopped, completed = "list_full", False
+                    cursor = next((c for at, c in reversed(marks) if at <= index), cursor)
+                    break
                 added.append(entry)
                 room -= 1
                 claimed.update(proposal.keys)
@@ -730,11 +758,18 @@ async def run_store(
     receipt = Receipt(
         run=uuid.uuid4().hex[:12], store=store_name, trigger=trigger, started_at=now().isoformat()
     )
-    cursor, claimed = await offload(_start_state, store)
-    snap: Snapshot = await offload(read_snapshot, store, cursor, ROWS_PER_RUN)
+    cursor, claimed, listed = await offload(_start_state, store)
     candidates: list[Proposal] = []
+    marks: list[tuple[int, tuple[str, str]]] = []
+    if listed >= PROPOSALS_CAP:
+        # A full list reads nothing: every candidate found now would have to wait.
+        receipt.stopped = "list_full"
+        await offload(_persist_now, store, receipt, [], set(), cursor, False, now, marks)
+        return receipt
+    snap: Snapshot = await offload(read_snapshot, store, cursor, ROWS_PER_RUN)
     completed = True
     for start in range(0, len(snap.batch), BATCH_ROWS):
+        marks.append((len(candidates), cursor))
         if should_stop():
             receipt.stopped, completed = "chat", False
             break
@@ -754,9 +789,15 @@ async def run_store(
                 interrupted = "chat" if left > 0 else "time"
                 break
             tokens_left = MODEL_INPUT_TOKENS - receipt.model_tokens
-            merged = await _ask_model(pair, merge, tokens_left, left, receipt)
+            # The first batch always finishes, so every run moves the watermark.
+            merged = await _ask_model(
+                pair, merge, tokens_left, left, receipt, can_stop=receipt.batches > 0
+            )
             if merged is _TIMED_OUT:
                 interrupted = "time"
+                break
+            if merged is _SPENT:
+                interrupted = "budget"
                 break
             if isinstance(merged, str):
                 keys = [pair.keep.key, pair.other.key]
@@ -775,23 +816,36 @@ async def run_store(
             1 for r in batch if r.is_lesson and unit_vector(r.blob, snap.dim) is None
         )
         cursor = (batch[-1].updated_at, batch[-1].key)
-    await offload(_persist_now, store, receipt, candidates, snap.read_ids, cursor, completed, now)
+    await offload(
+        _persist_now, store, receipt, candidates, snap.read_ids, cursor, completed, now, marks
+    )
     return receipt
 
 
 _TIMED_OUT: Final = object()
+_SPENT: Final = object()
 
 
 async def _ask_model(
-    pair: Pair, merge: MergeFn | None, tokens_left: int, left: float, receipt: Receipt
+    pair: Pair,
+    merge: MergeFn | None,
+    tokens_left: int,
+    left: float,
+    receipt: Receipt,
+    *,
+    can_stop: bool,
 ) -> object:
-    """The merged sentence for *pair*, ``None`` when there is none, or :data:`_TIMED_OUT`."""
+    """The merged sentence for *pair*, ``None`` when there is none, :data:`_TIMED_OUT`,
+    or :data:`_SPENT` when it does not fit the tokens left and *can_stop*."""
     prompt = merge_prompt(_rule_text(pair.keep), _rule_text(pair.other))
     cost = prompt_tokens(prompt)
+    if merge is not None and can_stop and tokens_left < cost <= MODEL_INPUT_TOKENS:
+        return _SPENT
     if merge is None or cost > tokens_left:
-        # shortcut: a pair skipped here is passed by the watermark and comes back
-        # only when one of its rows changes; keep a retry list if the counted skips
-        # stay high.
+        # shortcut: a pair skipped here (no model wired, one prompt over the whole
+        # budget, or the first batch out of budget) is passed by the watermark and
+        # comes back only when one of its rows changes; keep a retry list if the
+        # counted skips stay high.
         receipt.budget_skipped += 1
         return None
     receipt.model_calls += 1
@@ -828,10 +882,11 @@ def _tier_proposals(rows: Iterable[Row], snap: Snapshot) -> list[Proposal]:
     return out
 
 
-def _start_state(store: "VectorMemoryStore") -> tuple[tuple[str, str], set[str]]:
-    """The watermark, and every row already in an open proposal."""
+def _start_state(store: "VectorMemoryStore") -> tuple[tuple[str, str], set[str], int]:
+    """The watermark, every row in an open proposal, and the list's length."""
     with store._db_lock:
-        return cursor_of(read_state(store.db)), proposed_keys(read_proposals(store.db))
+        listed = read_proposals(store.db)
+        return cursor_of(read_state(store.db)), proposed_keys(listed), len(listed)
 
 
 def _persist_now(
@@ -842,8 +897,18 @@ def _persist_now(
     cursor: tuple[str, str],
     completed: bool,
     now: Callable[[], datetime],
+    marks: Sequence[tuple[int, tuple[str, str]]],
 ) -> list[dict]:
-    return persist(store, receipt, candidates, read, cursor=cursor, completed=completed, now=now())
+    return persist(
+        store,
+        receipt,
+        candidates,
+        read,
+        cursor=cursor,
+        completed=completed,
+        now=now(),
+        marks=marks,
+    )
 
 
 # ── Host lock, manual request, idle ─────────────────────────────────────────

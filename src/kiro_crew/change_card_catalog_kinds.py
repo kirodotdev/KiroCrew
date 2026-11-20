@@ -274,7 +274,10 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "computer_use.max_tree_nodes",
         "computer_use.screenshot_max_px",
         # A list, so no card reaches it (see ``skills.extra_paths``). Loopback
-        # ``host:port`` entries only, for the Preview tab, which no agent drives.
+        # ``host:port`` entries for the Preview tab, and also the only loopback
+        # addresses the agent's ``browser`` tool may open, so adding one widens
+        # what an agent may reach: if cards ever carry list values this moves to a
+        # widening class.
         "dashboard.browser_local_origins",
         # Which surface the quick-search shortcut opens; both show only what the
         # dashboard already shows this person.

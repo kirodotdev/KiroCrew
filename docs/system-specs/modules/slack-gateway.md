@@ -223,7 +223,12 @@ answer. A help gap's fallback notice names the run it was read from
 A capture at the runner's bound is unknown too. Every caller runs the verdict off
 any event loop (a worker thread or a sync CLI entry). An unknown probe on a Kiro CLI pick logs a WARNING
 (`KAS_CLI_FLOOR_KIRO_UNKNOWN_NOTICE`) naming why: no trusted kiro-cli, an
-`acp --help` that did not run, or a v3 start that did not finish. For a Kiro CLI pick, `kirocrew doctor`'s `engine:`
+`acp --help` that did not run, or a v3 start that did not finish. The floor task then
+asks again after each `kas_floor_wait.KIRO_PICK_VERDICT_RETRY_SECS` delay (1, 5 and
+15 minutes) while the pick is still stored and `kiro_cli_pick_verdict_open` holds (no
+v3 confirmed, KAS selectable), reconciling the live config after each ask, so a busy
+host's timed-out probe moves the pick once kiro-cli answers, without a restart. Before the
+first wait it releases the spawn gate, so no spawn waits for these asks. For a Kiro CLI pick, `kirocrew doctor`'s `engine:`
 row reads that same `kas_engine_verdict` and `kas_engine_start_verdict`, never its
 own probe, and says which
 engine the pick runs on by the floor's own rule: KAS only when v3

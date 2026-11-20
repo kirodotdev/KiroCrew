@@ -1585,6 +1585,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         load_cron_folders,
         lookup_cron_folder_id,
     )
+    from kiro_crew.cron_history import (  # noqa: F401
+        keep_ends,
+    )
     from kiro_crew.cron_service.model import (  # noqa: F401
         _ALERT_AFTER_DEFAULT,
         _AUTO_PAUSE_MAX,

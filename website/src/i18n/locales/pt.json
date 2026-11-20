@@ -20137,7 +20137,7 @@
         "max_fps_desc": "60 é o máximo que esta máquina transmite. Nada é enviado enquanto o cartão está fora da tela.",
         "fps_value": "{{fps}} fps",
         "origins_label": "Endereços locais que a aba Pré-visualização pode abrir",
-        "origins_desc": "Apenas para pré-visualizar seu próprio servidor de desenvolvimento. O Kiro nunca controla esta aba.",
+        "origins_desc": "Para pré-visualizar seu próprio servidor de desenvolvimento. O navegador do Kiro também pode abrir estes endereços, mas o Kiro nunca controla esta aba.",
         "origins_empty": "Nenhum ainda",
         "add_origin": "Adicionar endereço",
         "remove_origin": "Remover {{origin}}",

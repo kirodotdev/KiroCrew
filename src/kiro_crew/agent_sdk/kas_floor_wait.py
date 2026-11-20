@@ -40,6 +40,12 @@ from kiro_crew.kiro_cli import _KAS_HELP_PROBE_TIMEOUT_SECS
 #: The longest a spawn waits for the verdict, measured from the arm time.
 KAS_FLOOR_WAIT_SECS: float = float(_KAS_HELP_PROBE_TIMEOUT_SECS)
 
+#: How long the gateway waits before each new ask about a stored Kiro CLI pick
+#: whose verdict is still unknown (a probe that timed out on a busy host, a run the
+#: sandbox launcher ended). Spawns never wait for these asks: the first verdict
+#: releases them, and a later confirmation moves new sessions onto KAS.
+KIRO_PICK_VERDICT_RETRY_SECS: tuple[float, ...] = (60.0, 300.0, 900.0)
+
 #: The armed verdict, its loop-time deadline and main / member early-release signals.
 _armed: (
     tuple[asyncio.Future[Any], float, asyncio.Future[None] | None, asyncio.Future[None] | None]

@@ -578,6 +578,99 @@ action is not waited for. Neither job can pass, skip or report success without
 the action having run.
 `test/test_gh_rate_limit_wait.py` runs the command and both jobs' steps.
 
+### Scheduled workflows: the red-cause census
+
+A red check should mean the pull request's own change broke something.
+`ci-red-census.yml` keeps the three numbers for that goal readable: the share of
+red PR pushes with a job red from a broken main, the share of red jobs caused
+by the API rate limit, and backend shard reds from flaky tests or
+infrastructure per day. It has two jobs, both on a standard hosted runner and
+both with `read` permissions only; it opens no issue and posts no comment.
+
+- **`day`, every night at 07:17 UTC**: runs
+  `scripts/ci_red_cause_census.py --last-days 1`, which gives every red job of
+  yesterday (UTC) one cause, writes the day's summary and the script's call
+  counts to the job summary, and uploads `red-jobs.csv`, `ci-pushes.csv`,
+  `summary.md`, `summary.json` and the printed output as the artifact
+  `ci-red-census-day`, kept 90 days.
+- **`week`, on Sunday after that night's read**: runs
+  `scripts/ci_red_census_week.py`, which takes the day its own run has just
+  read with `actions/download-artifact` and the six days before it from the
+  stored artifacts, adds them up, writes the week's summary to the job summary and
+  uploads the same four files as `ci-red-census-week`, kept 90 days. It reads
+  no run, so it spends no GraphQL point.
+
+A dispatch takes `day` (a UTC day to read in place of yesterday) and `week`
+(also add up the seven days ending there).
+
+**Why a day a night.** GitHub lists a workflow's runs newest first, with no
+date filter in GraphQL, so reading a window pages through every run created
+since. Read the next morning, a weekday costs its own runs: about 3,000 points
+and 25 minutes. Read at the end of the week, the same seven days are about
+21,000 points in one sitting, which either takes most of a bucket or keeps a
+runner asleep between hours. REST can filter runs by date, but it draws on the
+shared 15,000 requests an hour the section above is about, returns at most
+1,000 runs a search, and carries no count of a run's red jobs.
+
+**The budget.** The census reads by GraphQL with the job's `GITHUB_TOKEN`. That
+token has a GraphQL primary limit of its own, apart from the REST one: 15,000
+points an hour per repository for a repository of a GitHub Enterprise Cloud
+account, 1,000 otherwise
+([GitHub's GraphQL rate limits](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#primary-rate-limit)).
+Every workflow of the repository shares it.
+
+| Flag | Value | What it bounds |
+|---|---|---|
+| `--max-points` | 4,800 | The most one run spends: a third of the bucket, less 200 points for the calls already sent when the census stops (one for each worker, about 30 points at most). A weekday is about 3,000, and a day up to about three days back still fits |
+| `--reserve-points` | 7,700 | It stops before a call that would start with less: half the bucket, and the same 200 points for the calls already sent |
+| `--gh-timeout-seconds` | 900 | One `gh` call: the 600 seconds the `gh` wrapper may sleep inside it on a spent limit, and 300 for the call itself. The wrapper charges a sleep before it starts, so a call ended mid-sleep would have spent the wait budget and read nothing |
+
+A step before the census reads the bucket's size from `/rate_limit`, which
+costs nothing, and fails the job when it is under 10,500 points (the reserve
+and a weekday). The census never waits for a bucket: a job that sleeps holds a
+runner. A `schedule` event carries no inputs and no `repository` object, so
+an empty `day` means yesterday and the default branch falls back to
+`github.ref_name`; a test evaluates every step's `env:` under both events.
+
+**The hour.** Counted by the hour on one weekday, runs created were under 2,500
+an hour only from 05:00 to 09:00 UTC and fewest at 07:00. Seven hours after
+midnight also lets a job re-run to green that night count as flaky. The minute
+is off the top of the hour, when GitHub delays scheduled runs most.
+
+**Exit codes.** Both scripts exit 0 when everything asked for was read and 3
+when it was not: a census the budget ended early, or a week with a day missing
+or partial. On 3 the job stays green with a warning. The week's summary says in
+its first line how many of the seven days it covers, names each day that is
+missing or partial, says what to do about it, and divides its per-day number by
+the days it has. Any other exit fails the job, and
+`scheduled-failure-watch.yml` files it.
+
+**Filling a day in.** GitHub may delay or drop a scheduled run, and nothing
+re-reads a missed night by itself. Run the workflow by hand with `day` set to
+the missing day (up to about three days back fits one run's budget), then once
+more with `week` ticked and `day` set to the last day of that week.
+
+**What adding days up does and does not do.** A run belongs to the day it was
+created, so no run is in two days. A push that was red on two days is one red
+push (rows are added up by head SHA), and a push `CI` ran for on two days is
+one push (each day keeps its pushes in `ci-pushes.csv`, not a count). A job
+re-run to green after its day was read stays under the cause it had then. The
+Actions token cannot read a job log here, so the numbers are from annotations
+alone and `log_unread` says how many red jobs that affects.
+
+**Untrusted input.** A job's name is whatever a pull request's workflow called
+it: names reach the CSV only, with control characters replaced, never a job
+summary. Any run, a pull request's included, can upload an artifact named like
+a day's, so `week` opens only artifacts of this workflow's own scheduled or
+dispatched runs on the default branch of this repository, reads the day from
+the window in the artifact's own `summary.json`, and treats a file that is not
+what the census writes as a missing day.
+
+`test/test_ci_red_census_workflow.py` pins the triggers, the permissions, the
+budget against the bucket, each deadline against the wait inside it and each
+step's handling of every exit code; `test/test_ci_red_census_week.py` holds the
+sum to what one census of all seven days gives.
+
 ### A red that is not your diff: external, or self-inflicted?
 
 Before re-running, read the failing step's `##[error]` line and match it here.

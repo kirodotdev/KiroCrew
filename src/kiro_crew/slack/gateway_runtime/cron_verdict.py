@@ -74,6 +74,8 @@ class _GateTally:
     # How many refused and how many unresolved calls are kept by name: the
     # number ``refusal_summary`` names. The counts stay exact past it.
     _NAMED_CALLS = 3
+    # How much of a long title ``refusal_summary`` keeps beside a long rule.
+    _TITLE_FLOOR = 40
 
     def __init__(self) -> None:
         # How many calls the security gate blocked.
@@ -113,10 +115,12 @@ class _GateTally:
         reason line only: it is the rule; later lines are operator notes and
         diagnostics.
         """
+        from kiro_crew.cron_history import keep_ends
+
         if len(calls) < self._NAMED_CALLS:
             rule = (reason or "").strip().split("\n", 1)[0].strip()
             cap = _CRON_FAILURE_DETAIL_CAP
-            calls.append((display_safe(title)[:cap], display_safe(rule)[:cap]))
+            calls.append((keep_ends(display_safe(title), cap), display_safe(rule)[:cap]))
 
     def _empty_reply_text(self, count: str) -> str:
         """The empty-reply shape this tally names, with *count* in the count slot.
@@ -218,28 +222,39 @@ class _GateTally:
         no call was approved (``none_approved``) names its unresolved calls
         the same way, with "not approved" for a rejected or timed-out approval,
         which records no reason.
+
+        Each named call gets an equal share of the cap. A title too long for
+        its share keeps its start and its end around a cut, and gives way
+        before its rule does: a long chained command would otherwise push the
+        rule past the cap, and the refused segment of a chain is often its
+        last one.
         """
+        from kiro_crew.cron_history import keep_ends
 
-        def _named(title: str, rule: str) -> str:
+        def _named(title: str, rule: str, width: int) -> str:
             name = title or "<untitled tool>"
-            return f"{name} ({rule})" if rule else name
+            if not rule:
+                return keep_ends(name, width)
+            kept_rule = keep_ends(rule, width - len(" ()") - min(len(name), self._TITLE_FLOOR))
+            return f"{keep_ends(name, width - len(' ()') - len(kept_rule))} ({kept_rule})"
 
-        def _more(kept: list[tuple[str, str]], count: int) -> str:
-            return f", and {count - len(kept)} more" if count > len(kept) else ""
+        def _summary(head: str, calls: list[tuple[str, str]], count: int) -> str:
+            more = f", and {count - len(calls)} more" if count > len(calls) else ""
+            room = _CRON_FAILURE_DETAIL_CAP - len(head) - len(more)
+            share = (room - len(", ") * (len(calls) - 1)) // max(len(calls), 1)
+            named = ", ".join(_named(t, r, share) for t, r in calls)
+            return (head + named)[: _CRON_FAILURE_DETAIL_CAP - len(more)] + more
 
         if self.none_approved:
-            named = ", ".join(_named(t, r or "not approved") for t, r in self.unresolved_calls)
-            more = _more(self.unresolved_calls, self.unresolved)
             head = f"none of {self.unresolved} tool call(s) ran, all refused or not approved: "
-            return (head + named)[: _CRON_FAILURE_DETAIL_CAP - len(more)] + more
-        named = ", ".join(_named(t, r) for t, r in self.refused_calls)
-        more = _more(self.refused_calls, self.refused)
+            calls = [(t, r or "not approved") for t, r in self.unresolved_calls]
+            return _summary(head, calls, self.unresolved)
         if self.all_blocked:
             head = f"all {self.refused} tool call(s) blocked by the security gate: "
         else:
             total = self.approved + self.unresolved + self.refused
             head = f"{self.refused} of {total} tool call(s) blocked by the security gate: "
-        return (head + named)[: _CRON_FAILURE_DETAIL_CAP - len(more)] + more
+        return _summary(head, self.refused_calls, self.refused)
 
 
 def _annotate_partial_block(result_text: str, tally: _GateTally) -> str:

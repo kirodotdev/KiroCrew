@@ -20137,7 +20137,7 @@
         "max_fps_desc": "60 è il massimo che questa macchina trasmette. Non viene inviato nulla finché la scheda è fuori schermo.",
         "fps_value": "{{fps}} fps",
         "origins_label": "Indirizzi locali che la scheda Anteprima può aprire",
-        "origins_desc": "Solo per vedere in anteprima il tuo server di sviluppo. Kiro non guida mai questa scheda.",
+        "origins_desc": "Per vedere in anteprima il tuo server di sviluppo. Anche il browser di Kiro può aprire questi indirizzi, ma Kiro non guida mai questa scheda.",
         "origins_empty": "Nessuno ancora",
         "add_origin": "Aggiungi indirizzo",
         "remove_origin": "Rimuovi {{origin}}",

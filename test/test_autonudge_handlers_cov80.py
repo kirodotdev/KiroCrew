@@ -1838,7 +1838,7 @@ async def test_session_monitor_read_reports_armed_autonudge_loop(
     loop = _loop(slot_key="chat-1-111")
     loop.cycle_count = 4
     loop.last_fire_ts = 123.0
-    loop.message = "keep driving PR 42"  # agent-controlled: must NOT be echoed
+    loop.message = "keep driving PR 42"
     _svc(monkeypatch, _FakeSvc([loop]))
 
     payload = _body(await h.api_session_monitor_get(_authed_session_monitor_request()))
@@ -1854,9 +1854,30 @@ async def test_session_monitor_read_reports_armed_autonudge_loop(
     assert reading["idle_secs"] == 300
     assert reading["cycle_count"] == 4
     assert reading["last_fire_ts"] == 123.0
-    # The free-text instruction is not surfaced by this presence reading.
-    assert "message" not in reading
-    assert "keep driving PR 42" not in json.dumps(payload)
+    # The current instruction is read back so a monitor_update can be confirmed.
+    assert reading["message"] == "keep driving PR 42"
+    assert reading["watch"] is None
+
+
+@pytest.mark.asyncio
+async def test_session_monitor_read_names_a_gated_loops_watched_subject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gated loop reports the pull request it now watches, after a retarget too."""
+    loop = _monitor_loop(slot_key="chat-1-111")
+    loop.gate = True
+    loop.message = "watch https://github.com/acme/widgets/pull/7"
+    _svc(monkeypatch, _FakeSvc([loop]))
+
+    reading = _body(await h.api_session_monitor_get(_authed_session_monitor_request()))[
+        "autonudge_loop"
+    ]
+
+    assert reading["message"] == "watch https://github.com/acme/widgets/pull/7"
+    assert reading["watch"] == {
+        "kind": "github_pull_request",
+        "target": "https://github.com/acme/widgets/pull/7",
+    }
 
 
 @pytest.mark.asyncio
