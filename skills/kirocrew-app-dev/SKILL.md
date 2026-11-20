@@ -535,7 +535,8 @@ users actually decide.
 Disable removes every cron job the app owns (`created_by="app:<name>"`),
 whether or not the manifest declares `permissions.cron`: `_cleanup_app_crons`
 in `src/kiro_crew/apps/hooks_integration.py` is keyed off the running cron
-service, not the grant. When the
+service, not the grant (#13788, which closed
+[issue #10997](https://github.com/kirodotdev/KiroCrew/issues/10997)). When the
 cron store is busy or unreadable, disable reports `cron_cleanup: failed ...`
 in its result instead of raising, so read the result rather than assuming.
 
