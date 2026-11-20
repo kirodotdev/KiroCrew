@@ -61,6 +61,12 @@ STATUS_UNAVAILABLE = "unavailable"
 #: Most profile names offered in the picker.
 _CHOICES_MAX = 100
 
+#: Seconds the read may spend on the health probe. The dashboard stops waiting on
+#: this read after 10 s and then says the gateway did not answer, so a sign-in that
+#: is slow to resolve (a ``credential_process`` waiting on a login) must come back
+#: well inside that as ``unavailable``. The probe's own default is 15 s.
+_STATUS_BUDGET_SECS = 6.0
+
 
 def _project_path(raw: object) -> str | None:
     """*raw* as a normalized absolute directory path, or ``None`` when unusable."""
@@ -128,24 +134,38 @@ async def _profile_status(profile: str) -> str:
     provides through the ``aws_account_policy`` seam (the aws-control app's). With
     none, the probe runs in the default region and a failed probe is reported as
     ``unavailable``, because nothing can say the sign-in is an SSO one that expired.
+
+    The whole check runs inside :data:`_STATUS_BUDGET_SECS`; past it the answer is
+    ``unavailable``. The probe gets the budget too, so its CLI child is ended at it.
     """
     from kiro_crew import aws_consent
     from kiro_crew.apps import seams
     from kiro_crew.deploy import profiles as deploy_profiles
 
     policy = seams.aws_account_policy()
-    try:
+
+    async def _check() -> str:
         region = await policy.configured_region(profile) if policy is not None else ""
         identity = await aws_consent.probe_identity(
-            profile, region or deploy_profiles.DEFAULT_REGION
+            profile, region or deploy_profiles.DEFAULT_REGION, timeout=_STATUS_BUDGET_SECS
         )
         if identity.ok:
             return STATUS_OK
         sso = await policy.is_sso_profile(profile) if policy is not None else False
+        return STATUS_EXPIRED if sso else STATUS_UNAVAILABLE
+
+    try:
+        return await asyncio.wait_for(_check(), timeout=_STATUS_BUDGET_SECS)
+    except asyncio.TimeoutError:
+        logger.info(
+            "project profile: the health check for %s took over %.0f s; reporting unavailable",
+            profile,
+            _STATUS_BUDGET_SECS,
+        )
+        return STATUS_UNAVAILABLE
     except Exception:
         logger.debug("project profile: health probe failed", exc_info=True)
         return STATUS_UNAVAILABLE
-    return STATUS_EXPIRED if sso else STATUS_UNAVAILABLE
 
 
 async def api_aws_project_profile_get(request: web.Request) -> web.Response:
