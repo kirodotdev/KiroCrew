@@ -443,6 +443,10 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         "scripts/ci_main_red_skip.py",
         # Chooses WHICH tests to run for the changed surface; not itself a gate.
         "scripts/ci-surface-tests.py",
+        # Runs one Linux backend shard of the FULL suite as single-process pytest
+        # parts. The full suite is CI's job; the floor runs the tests related to
+        # the diff through local-gate.py, and this runner scans nothing itself.
+        "scripts/run_sharded_suite.py",
         # Linux-only E2E orchestration, not a static scan: boots isolated
         # gateways and browsers after CI provisions its namespace capability.
         # Keep real E2E proof in CI, not in the repeated local scan floor.

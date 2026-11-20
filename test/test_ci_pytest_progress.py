@@ -403,9 +403,45 @@ class TestCIProgress(unittest.TestCase):
         )
         self.assertIsNotNone(dump_after, "the Linux shards carry no faulthandler dump")
         self.assertGreater(int(dump_after.group(1)), 0)
-        self.assertEqual(command.count('-n "$WORKERS"'), 4)
         self.assertNotIn("-n auto", command)
-        self.assertEqual(command.count("-p scripts.ci_file_shards"), 3)
+        # One logical line per invocation. The reduced and leaf arms are pytest
+        # itself with the job's worker count; the full suite is the last one and
+        # goes through scripts/run_sharded_suite.py, which runs single-process
+        # pytest parts with the same arguments, a memory-sized count at a time.
+        lines = [" ".join(line.split()) for line in command.replace("\\\n", " ").splitlines()]
+        runs = [line for line in lines if re.match(r"(python -m )?pytest ", line)]
+        sharded = [line for line in lines if "scripts/run_sharded_suite.py" in line]
+        self.assertTrue(runs)
+        for line in runs:
+            self.assertIn('-n "$WORKERS"', line)
+            self.assertIn('"${PROGRESS[@]}"', line)
+            self.assertIn("--timeout=120", line)
+            self.assertIn("--no-cov", line)
+        (full_run,) = sharded
+        self.assertEqual(full_run, lines[-1])
+        self.assertTrue(full_run.startswith("python scripts/run_sharded_suite.py "))
+        options, pytest_args = full_run.split(" -- ", 1)
+        self.assertIn('--jobs "$JOBS"', options)
+        self.assertIn('--shards "$PARTS"', options)
+        # The count is derived from the runner's memory and capped at its cores.
+        self.assertRegex(command, r"JOBS=\$\(\( \$\(nproc\) < by_mem \? \$\(nproc\) : by_mem \)\)")
+        self.assertRegex(command, r"PARTS=\$\(\( JOBS \* \d+ \)\)")
+        self.assertNotIn("--workers", options)
+        self.assertNotIn(" -n ", full_run)
+        # Every part's log reaches the job log, and a hung part ends the step
+        # inside the job's own budget instead of with it.
+        self.assertIn("--print-logs", options)
+        bound = re.search(r"--part-timeout (\d+)", options)
+        self.assertIsNotNone(bound, "a hung part would run until the job is cancelled")
+        self.assertLess(int(bound.group(1)), 60 * 60)
+        self.assertIn('"${PROGRESS[@]}"', pytest_args)
+        self.assertIn("--timeout=120", pytest_args)
+        self.assertIn('-m "not ipv6_required and not real_venv"', pytest_args)
+        # The parts' coverage is combined into the file the staging step requires.
+        self.assertIn("--coverage-file .coverage", options)
+        stage = next(s for s in job["steps"] if s.get("name") == "Stage shard coverage data")
+        self.assertIn("test -f .coverage ||", stage["run"])
+        self.assertNotIn("always()", str(stage.get("if")))
         self.assertIn("--cov=kiro_crew --cov=sage_lib", command)
         self.assertIn("--cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging", command)
         self.assertIn("--cov=src/kiro_crew/apps/builtins/code_review_sage/tests", command)

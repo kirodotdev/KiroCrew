@@ -234,7 +234,12 @@ def test_workflow_routes_every_scope_without_changing_local_defaults(jobs):
     assert config["tool:pytest"]["testpaths"] == "test src/kiro_crew/apps/builtins"
     for name, expected_count in (("backend-test", 4), ("backend-test-windows", 4)):
         body = _step(jobs, name, "Run tests")["run"].replace("\\\n", " ")
-        commands = re.findall(r"^\s*(?:python -m )?pytest .+$", body, re.MULTILINE)
+        # pytest itself, or the runner that passes its arguments to every part.
+        commands = re.findall(
+            r"^\s*(?:(?:python -m )?pytest|python scripts/run_sharded_suite\.py) .+$",
+            body,
+            re.MULTILINE,
+        )
         assert len(commands) == expected_count
         # Every backend shard must deselect both ipv6_required and real_venv
         # tests; real_venv tests run only in the dedicated wheel-engine-real-venv

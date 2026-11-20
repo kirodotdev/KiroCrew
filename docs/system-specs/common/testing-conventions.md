@@ -5081,7 +5081,10 @@ single-process pytest runs, at most `--jobs` at a time, each loading
 rather than a one-liner. Sharding at the collect report, not by naming files, keeps
 pytest's own `collect_ignore` rules. And every file that names the same literal
 `xdist_group` (`subprocess_spawn`, `mcp_gateway`, `serial`) is pinned to one part, so those
-tests still run one at a time. A group name built at runtime (the `tree_scan_*` names in
+tests still run one at a time. `--outer-shards N --outer-shard K --outer-pins FILE` runs
+only the files CI file shard K of N owns, which is how the Linux `backend-test` job runs
+its shard; `--coverage-file` combines the parts' coverage into one data file,
+`--part-timeout` bounds a part, and `--print-logs` copies each part's log to stdout. A group name built at runtime (the `tree_scan_*` names in
 `test_facade_shared_checks.py` and `test_bindings_shared_checks.py`) is not seen; those
 groups only share a memoised scan, so a split costs memory, not correctness. Measured on one r7i.8xlarge (32 cores, 247 GiB), same tree, the
 baseline `-m "not ipv6_required and not real_venv" --timeout=120 -p no:cacheprovider`
@@ -7085,7 +7088,8 @@ using `scripts.ci_file_shards`. Ownership is SHA-256 of the root-relative POSIX
 path, not a duration or test-count balance. Other shards skip the file before
 import, while discovery patterns and platform ignores remain pytest's own.
 
-The Linux full-suite run adds `--file-shard-pins scripts/ci_file_shard_pins.txt`:
+The Linux full-suite run reads the pin file `scripts/ci_file_shard_pins.txt`
+(`--outer-pins`, through `scripts/run_sharded_suite.py`):
 every file with a measured weight gets a fixed shard, placed so the eight shards'
 summed test seconds come out even, and a file with no weight keeps its hash
 owner. A pin only changes which shard owns a file, so a new or renamed file is
@@ -7107,6 +7111,21 @@ in `ci.yml` reads that file as its list of heavy files (`WINDOWS_LEAF_MAX_PINNED
 listing every file there would send any leaf diff of five or more files to the
 full suite. macOS, release and the reduced and leaf scopes keep pure hash
 ownership.
+
+Inside a Linux full-suite shard the files are split once more.
+`scripts/run_sharded_suite.py --outer-shards 8 --outer-shard <N>` runs the shard
+as `6 x $JOBS` parts, single-process pytest runs of which `$JOBS` run at a
+time, so a process collects only the files it runs instead of the whole shard.
+`$JOBS` is one per 1 GiB after 2 GiB for the host, capped at the core count.
+The parts are a path-hash split and uneven in test time; there are six per
+process so that a free process takes the next part and the processes end close
+together, and no more than six because every part pays its own start-up. The files of one literal `xdist_group` stay in one part; a
+`tree_scan_*` group that spans files is pinned the same way, and most name a
+single file and need no pin. To reproduce a shard, run the script with the same
+`--outer-*` options; to reproduce one part, run pytest with `-p
+scripts.ci_file_shards --file-shards <parts> --file-shard <i>` and the
+`group-pins.txt` and `outer-shard-files.txt` the script wrote under `--out`
+(`--file-shard-pins=`, `--file-shard-targets=`).
 
 Before the Linux and Windows full-suite test step, `scripts/ci_rewrite_prewarm.py`
 writes pytest's assertion-rewrite pyc for the shard's test files (same hash and

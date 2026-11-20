@@ -831,9 +831,20 @@ class TestFileShards(unittest.TestCase):
             self.assertNotIn("TARGETS[@]", reduced)
             # Pins are measured on the full suite and apply to it alone; the
             # leaf and reduced invocations keep pure hash ownership.
-            self.assertEqual(command.count("--file-shard-pins"), 1)
-            full = command.rsplit("exit 0", 1)[1]
-            self.assertIn(f"--file-shard-pins scripts/{pins}", full)
+            head, full = command.rsplit("exit 0", 1)
+            self.assertNotIn("--file-shard-pins", head)
+            self.assertNotIn("--outer-pins", head)
+            if name == "backend-test":
+                # The Linux full suite runs this shard as parts: the script gets
+                # the shard and its pin file, and loads the plugin in each part.
+                self.assertIn("python scripts/run_sharded_suite.py", full)
+                self.assertIn(
+                    '--outer-shards "$SHARD_COUNT" --outer-shard ${{ matrix.group }}', full
+                )
+                self.assertIn(f"--outer-pins scripts/{pins}", full)
+                self.assertNotIn("--file-shard", full)
+            else:
+                self.assertIn(f"--file-shard-pins scripts/{pins}", full)
             run_env = next(s for s in job["steps"] if s.get("name", "").startswith("Run tests"))[
                 "env"
             ]

@@ -372,7 +372,13 @@ def test_workflow_prewarms_only_the_full_suite_right_before_the_tests():
             '--file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} '
             f"--file-shard-pins {pins}"
         )
-        assert f"--file-shard-pins {pins}" in run_tests["run"]
+        # The Linux test step names the same split to scripts/run_sharded_suite.py.
+        if name == "backend-test":
+            shard = '--outer-shards "$SHARD_COUNT" --outer-shard ${{ matrix.group }}'
+            assert shard in run_tests["run"]
+            assert f"--outer-pins {pins}" in run_tests["run"]
+        else:
+            assert f"--file-shard-pins {pins}" in run_tests["run"]
         # A cache-root override in either step would send the two to different trees.
         for variable in ("XDG_CACHE_HOME", "PYTHONPYCACHEPREFIX", "PYTHONDONTWRITEBYTECODE"):
             assert variable not in step.get("env", {})

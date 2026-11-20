@@ -9,8 +9,12 @@ import threading
 from pathlib import Path
 
 import pytest
+from defusedxml.ElementTree import parse
 
 from scripts import run_sharded_suite as runner
+from scripts.ci_file_shards import file_shard, hash_shard, read_targets
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_the_plan_fits_the_parts_in_the_memory_budget() -> None:
@@ -54,8 +58,21 @@ def test_junit_counts_read_failures_and_errors(tmp_path: Path) -> None:
     assert runner.junit_counts(tmp_path / "missing.xml") == (0, 0)
 
 
+def _junit(out: Path, index: int, tests: int = 1) -> None:
+    """The JUnit file a part that ran *tests* tests leaves."""
+    (out / f"junit-{index}.xml").write_text(
+        f'<testsuites><testsuite tests="{tests}" failures="0" errors="0"/></testsuites>',
+        encoding="utf-8",
+    )
+
+
 def _run_with(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, codes: dict[int, int]) -> int:
-    monkeypatch.setattr(runner, "run_part", lambda index, *_args: (index, codes.get(index, 0), 0.0))
+    def part(index, *_args):
+        if codes.get(index, 0) == 0:
+            _junit(tmp_path, index)
+        return index, codes.get(index, 0), 0.0
+
+    monkeypatch.setattr(runner, "run_part", part)
     # The real tree's groups are not what these tests are about; keep them off disk.
     monkeypatch.setattr(runner, "group_pins", lambda _root, _shards: {})
     return runner.main(["--jobs", "2", "--shards", str(len(codes)), "--out", str(tmp_path)])
@@ -67,8 +84,9 @@ def test_a_relative_out_is_resolved_before_the_parts_change_directory(
     """Every part runs from the repository root, so a relative pin path would miss."""
     seen: list[tuple[Path, Path]] = []
 
-    def part(index, _shards, _workers, out, _extra, pins, _parts=None):
+    def part(index, _shards, _workers, out, _extra, pins, *_rest):
         seen.append((out, pins))
+        _junit(out, index)
         return index, 0, 0.0
 
     monkeypatch.setattr(runner, "run_part", part)
@@ -97,7 +115,345 @@ def test_one_red_part_makes_the_run_red(monkeypatch, tmp_path: Path, capsys) -> 
     assert "red: part 2 (exit 1)" in capsys.readouterr().out
 
 
+def test_a_part_that_exits_zero_without_a_result_is_red(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    """Exit 0 alone is not a verdict: the part must have counted a test."""
+    monkeypatch.setattr(runner, "run_part", lambda index, *_args: (index, 0, 0.0))
+    monkeypatch.setattr(runner, "group_pins", lambda _root, _shards: {})
+    _junit(tmp_path, 1)
+
+    assert runner.main(["--jobs", "2", "--shards", "2", "--out", str(tmp_path)]) == 1
+
+    out = capsys.readouterr().out
+    assert f"red: part 2 (exit {runner.PART_NO_RESULT}" in out
+    assert "red: part 1" not in out
+
+
+#: A stand-in part: ``argv[1]`` is what it does, ``argv[2]`` the JUnit file it may write.
+_PART = """\
+import os, signal, sys, threading
+action, junit = sys.argv[1], sys.argv[2]
+if action == "crash":
+    os.kill(os.getpid(), signal.SIGKILL)
+if action == "hang":
+    threading.Event().wait()
+if action in ("pass", "pass-with-coverage"):
+    with open(junit, "w", encoding="utf-8") as stream:
+        stream.write('<testsuites><testsuite tests="2" failures="0" errors="0"/></testsuites>')
+if action == "pass-with-coverage":
+    from coverage import CoverageData
+    data = CoverageData(basename=os.environ["COVERAGE_FILE"])
+    data.add_lines({sys.argv[3]: [int(sys.argv[4])]})
+    data.write()
+sys.exit(5 if action == "empty" else 0)
+"""
+
+
+def _stand_in_parts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, actions: dict[int, list[str]]
+) -> None:
+    """Make part ``i`` a real child process that does ``actions[i]``."""
+    script = tmp_path / "part.py"
+    script.write_text(_PART, encoding="utf-8")
+
+    def command(index, _shards, _workers, out, *_rest):
+        action, *more = actions[index]
+        return [sys.executable, str(script), action, str(out / f"junit-{index}.xml"), *more]
+
+    monkeypatch.setattr(runner, "part_command", command)
+    monkeypatch.setattr(runner, "group_pins", lambda _root, _shards: {})
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGKILL"), reason="a part killed by a signal is POSIX")
+@pytest.mark.timeout(60)
+def test_a_part_that_dies_makes_the_run_red_and_the_other_parts_still_finish(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    _stand_in_parts(monkeypatch, tmp_path, {1: ["crash"], 2: ["pass"], 3: ["empty"]})
+
+    rc = runner.main(["--jobs", "1", "--shards", "3", "--out", str(tmp_path / "o")])
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert f"red: part 1 (exit {-signal.SIGKILL})" in out
+    assert "part 2/3: exit 0, 2 tests" in out
+    assert f"part 3/3: exit {runner.NO_TESTS_COLLECTED}" in out and "red: part 3" not in out
+
+
+@pytest.mark.timeout(60)
+def test_a_part_that_outlives_its_bound_is_killed_and_reported_red(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    """The hanging part never exits by itself, so only the bound can end this run."""
+    _stand_in_parts(monkeypatch, tmp_path, {1: ["hang"], 2: ["pass"]})
+
+    rc = runner.main(
+        ["--jobs", "2", "--shards", "2", "--part-timeout", "0.5", "--out", str(tmp_path / "o")]
+    )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert f"red: part 1 (exit {runner.PART_TIMED_OUT}: ran past --part-timeout" in out
+    assert "red: part 2" not in out
+
+
+@pytest.mark.parametrize("waitid", [True, False], ids=["waitid", "no-waitid"])
+@pytest.mark.timeout(60)
+def test_a_bounded_wait_kills_the_part_on_every_platform(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, waitid: bool
+) -> None:
+    if not waitid:
+        monkeypatch.delattr(runner.os, "waitid", raising=False)
+    bounded = runner.Parts(timeout=0.5)  # flake-ok: the part blocks until killed
+    with open(tmp_path / "log", "wb") as log:
+        part = bounded.launch(
+            [sys.executable, "-c", "import threading; threading.Event().wait()"], log
+        )
+
+    assert bounded.wait(part) != 0
+    assert part in bounded.overran and not bounded.live
+
+
+def test_an_unbounded_wait_records_no_overrun(tmp_path: Path, parts: runner.Parts) -> None:
+    with open(tmp_path / "log", "wb") as log:
+        part = parts.launch([sys.executable, "-c", "pass"], log)
+
+    assert parts.wait(part) == 0
+    assert not parts.overran
+
+
+@pytest.mark.timeout(120)
+def test_each_part_writes_its_own_coverage_and_the_run_combines_them(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from coverage import CoverageData
+
+    source = tmp_path / "measured.py"
+    source.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+    actions = {
+        1: ["pass-with-coverage", str(source), "1"],
+        2: ["pass-with-coverage", str(source), "3"],
+        3: ["empty"],
+    }
+    _stand_in_parts(monkeypatch, tmp_path, actions)
+    target = tmp_path / "combined" / ".coverage"
+    target.parent.mkdir()
+    out = tmp_path / "o"
+
+    rc = runner.main(
+        ["--jobs", "3", "--shards", "3", "--out", str(out), "--coverage-file", str(target)]
+    )
+
+    assert rc == 0
+    combined = CoverageData(basename=str(target))
+    combined.read()
+    (measured,) = combined.measured_files()
+    assert sorted(combined.lines(measured)) == [1, 3]
+    assert [path.name for path in target.parent.iterdir()] == [".coverage"]
+
+
+@pytest.mark.timeout(120)
+def test_a_part_that_ran_tests_without_coverage_data_is_red_and_nothing_is_combined(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "measured.py"
+    source.write_text("a = 1\n", encoding="utf-8")
+    _stand_in_parts(
+        monkeypatch, tmp_path, {1: ["pass-with-coverage", str(source), "1"], 2: ["pass"]}
+    )
+    target = tmp_path / ".coverage"
+    target.write_text("left by an earlier run", encoding="utf-8")
+    stale = runner.coverage_dir(tmp_path / "o", 2)
+    stale.mkdir(parents=True)
+    (stale / ".coverage").write_text("left by an earlier run", encoding="utf-8")
+
+    rc = runner.main(
+        ["--jobs", "2", "--shards", "2", "--out", str(tmp_path / "o")]
+        + ["--coverage-file", str(target)]
+    )
+
+    assert rc == 1
+    assert "red: part 2 ran tests but left no coverage data" in capsys.readouterr().out
+    assert not target.exists()
+
+
+@pytest.mark.timeout(120)
+def test_a_red_part_leaves_no_combined_coverage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "measured.py"
+    source.write_text("a = 1\n", encoding="utf-8")
+    _stand_in_parts(
+        monkeypatch, tmp_path, {1: ["pass-with-coverage", str(source), "1"], 2: ["fail"]}
+    )
+    target = tmp_path / ".coverage"
+
+    rc = runner.main(
+        ["--jobs", "2", "--shards", "2", "--out", str(tmp_path / "o")]
+        + ["--coverage-file", str(target)]
+    )
+
+    assert rc == 1
+    assert not target.exists()
+
+
+def test_print_logs_copies_every_parts_log_to_stdout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capfdbinary
+) -> None:
+    def part(index, _shards, _workers, out, *_rest):
+        (out / f"shard-{index}.log").write_bytes(f"output of part {index}\n".encode())
+        _junit(out, index)
+        return index, 0, 0.0
+
+    monkeypatch.setattr(runner, "run_part", part)
+    monkeypatch.setattr(runner, "group_pins", lambda _root, _shards: {})
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+
+    rc = runner.main(["--jobs", "1", "--shards", "2", "--print-logs", "--out", str(tmp_path)])
+    shown = capfdbinary.readouterr().out.decode()
+
+    assert rc == 0
+    for index in (1, 2):
+        assert f"::group::part {index}/2 log\noutput of part {index}\n::endgroup::" in shown
+
+
+def test_the_outer_shards_own_every_file_exactly_once_and_honour_the_pins(
+    tmp_path: Path,
+) -> None:
+    names = [f"test/test_{i}.py" for i in range(40)] + ["pkg/x/tests/data.yaml", "test/conftest.py"]
+    root = _tree(tmp_path, dict.fromkeys(names, ""))
+    moved = next(name for name in names if hash_shard(name, 4) != 2)
+    pins = tmp_path / "pins.txt"
+    pins.write_text(f"# shards: 4\n2 {moved}\n", encoding="utf-8")
+
+    owned = {index: runner.outer_shard_files(root, 4, index, pins) for index in range(1, 5)}
+
+    assert sorted(name for files in owned.values() for name in files) == sorted(names)
+    assert moved in owned[2]
+    for index, files in owned.items():
+        for name in files:
+            assert file_shard(root / name, root, 4, {moved: 2}) == index
+
+
+def test_the_targets_file_is_what_ci_file_shards_reads(tmp_path: Path) -> None:
+    root = _tree(tmp_path, {"test/test_a.py": "", "test/sub/test_b.py": ""})
+
+    path = runner.write_targets(["test/test_a.py", "test/sub/test_b.py"], tmp_path / "t.txt")
+
+    assert read_targets(path, root) == {root / "test/test_a.py", root / "test/sub/test_b.py"}
+
+
+def test_a_part_of_an_outer_shard_is_narrowed_to_that_shards_files(tmp_path: Path) -> None:
+    targets = tmp_path / "t.txt"
+
+    command = runner.part_command(1, 4, 0, tmp_path, ["-q"], tmp_path / "p.txt", targets)
+
+    assert f"--file-shard-targets={targets}" in command
+    assert command[-1] == "-q"
+    assert not any(
+        word.startswith("--file-shard-targets")
+        for word in runner.part_command(1, 4, 0, tmp_path, ["-q"], tmp_path / "p.txt")
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--outer-shards", "8"],
+        ["--outer-shard", "1"],
+        ["--outer-shards", "8", "--outer-shard", "9"],
+        ["--outer-pins", "pins.txt"],
+        ["--part-timeout", "0"],
+    ],
+    ids=["no-index", "no-count", "index-out-of-range", "pins-alone", "zero-timeout"],
+)
+def test_a_half_named_outer_shard_or_a_zero_bound_is_refused(argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as refused:
+        runner.main(["--jobs", "1", "--shards", "1", *argv])
+
+    assert refused.value.code == 2
+
+
+def _ran(out: Path) -> set[str]:
+    """``file::test`` of every test case in the parts' JUnit files."""
+    cases = set()
+    for path in out.glob("junit-*.xml"):
+        for case in parse(path).getroot().iter("testcase"):
+            cases.add(f"{case.get('classname')}::{case.get('name')}")
+    return cases
+
+
+@pytest.mark.timeout(300)
+def test_an_outer_shard_runs_as_parts_that_cover_exactly_its_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    """Real pytest parts: the outer shard's tests run once each, and their coverage is one file."""
+    from coverage import CoverageData
+
+    first, second = (
+        next(
+            f"test/test_part_{i}.py"
+            for i in range(200)
+            if hash_shard(f"test/test_part_{i}.py", 2) == part
+        )
+        for part in (1, 2)
+    )
+    root = _tree(
+        tmp_path / "tree",
+        {
+            "logic.py": "def choose(value):\n    if value:\n        return 'yes'\n    return 'no'\n",
+            first: "from logic import choose\ndef test_yes(): assert choose(1) == 'yes'\n",
+            second: "from logic import choose\ndef test_no(): assert choose(0) == 'no'\n",
+            "test/test_elsewhere.py": "raise RuntimeError('owned by the other outer shard')\n",
+        },
+    )
+    (root / "setup.cfg").write_text(
+        "[tool:pytest]\ntestpaths = test\npythonpath = .\n", encoding="utf-8"
+    )
+    pins = tmp_path / "outer-pins.txt"
+    pins.write_text(
+        f"# shards: 2\n1 {first}\n1 {second}\n2 test/test_elsewhere.py\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(runner, "ROOT", root)
+    # The parts are nested pytest runs: they own their plugins and coverage data.
+    for name in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "COV_CORE_SOURCE", "COV_CORE_DATAFILE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("COVERAGE_PROCESS_START", raising=False)
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    monkeypatch.setenv("PYTHONPATH", str(REPO_ROOT))
+    target = tmp_path / "combined" / ".coverage"
+    target.parent.mkdir()
+    argv = ["--jobs", "2", "--shards", "2", "--part-timeout", "240"]
+    argv += ["--outer-shards", "2", "--outer-shard", "1", "--outer-pins", str(pins)]
+    argv += ["--coverage-file", str(target), "--out"]
+    plugins = ["-p", "xdist.plugin", "-p", "pytest_cov.plugin", "-p", "no:cacheprovider"]
+    pytest_args = ["--", *plugins, "--cov=logic", "--cov-report="]
+
+    rc = runner.main([*argv, str(tmp_path / "green"), *pytest_args])
+
+    assert rc == 0, capsys.readouterr().out
+    assert {case.rsplit(".", 1)[-1] for case in _ran(tmp_path / "green")} == {
+        f"{Path(first).stem}::test_yes",
+        f"{Path(second).stem}::test_no",
+    }
+    for index in (1, 2):
+        assert runner.junit_counts(tmp_path / "green" / f"junit-{index}.xml") == (1, 0)
+    combined = CoverageData(basename=str(target))
+    combined.read()
+    (measured,) = combined.measured_files()
+    assert sorted(combined.lines(measured)) == [1, 2, 3, 4]
+
+    (root / second).write_text("def test_no(): assert False\n", encoding="utf-8")
+
+    assert runner.main([*argv, str(tmp_path / "red"), *pytest_args]) == 1
+    assert "red: part 2 (exit 1)" in capsys.readouterr().out
+    assert not target.exists()
+
+
 def _tree(root: Path, files: dict[str, str]) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
     (root / "setup.cfg").write_text("[tool:pytest]\ntestpaths = test pkg\n", encoding="utf-8")
     for name, text in files.items():
         (root / name).parent.mkdir(parents=True, exist_ok=True)

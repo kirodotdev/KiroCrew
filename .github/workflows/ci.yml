@@ -1399,11 +1399,13 @@ jobs:
           CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
         run: python3 scripts/ci_main_red_skip.py summary
 
-      # Experiment (#39368): each xdist worker collects the whole shard and
-      # rewrites the asserts of every test file, because a fresh runner has no
-      # cached pyc. This writes those pycs once, one process per core, without
-      # importing a test module, conftest or kiro_crew, into the cache root the
-      # rootdir conftest points pytest at. Full suite only: it is the arm that
+      # Experiment (#39368): a fresh runner has no cached pyc, so collection
+      # rewrites the asserts of every test file it imports. This writes those
+      # pycs first, one process per core, without importing a test module,
+      # conftest or kiro_crew, into the cache root the rootdir conftest points
+      # pytest at. The test step's processes each collect their own files once,
+      # so this moves that rewrite ahead of them and onto every core.
+      # Full suite only: it is the arm that
       # takes --file-shard-pins. Same shell as the test step, so the same user
       # and home, which is what the cache root is derived from. Best effort:
       # the script exits 0 whatever happens, and a file it did not cache is
@@ -1424,11 +1426,18 @@ jobs:
         # imports it. Discovery and platform ignores remain pytest's own; files
         # are never promoted to explicit arguments just to partition the suite.
         # Hash assignment is stable, not duration-balanced. Every file's tests
-        # and parameters stay together; xdist still uses loadgroup within a job.
+        # and parameters stay together; the reduced and leaf runs use xdist with
+        # loadgroup within a job.
         # The full-suite run (not the reduced or leaf ones) also reads
         # scripts/ci_file_shard_pins.txt, which gives every measured file a fixed
         # shard so the shards' test time comes out even; the slowest shard sets
         # this job's time. scripts/ci_file_shard_pins.py --every-file regenerates it.
+        #
+        # The full-suite run is not one `pytest -n`: every xdist worker collects
+        # the whole shard before it runs a test (123-234 s a worker, six workers,
+        # run 44620769265). scripts/run_sharded_suite.py splits this shard's files
+        # again into parts, by the same plugin, and runs them as single-process
+        # pytest runs, so each process collects only the files it runs.
         #
         # Coverage runs on every shard: since the floor moved to >= 3.12 the
         # matrix has a single Python, so there is no --no-cov lane left. Each
@@ -1563,9 +1572,34 @@ jobs:
               --file-shard-targets="$TARGETS_FILE"
             exit 0
           fi
-          python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required and not real_venv" \
-            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
-            --file-shard-pins scripts/ci_file_shard_pins.txt \
+          # Full suite: $JOBS processes at a time over $PARTS parts. A process
+          # that collects one part holds less than a worker that collects the
+          # whole shard: on shard 1, six of them peaked at 3.5 GiB resident
+          # together where six xdist workers peaked at 9.1 GiB (a 32-core
+          # development host, summed over each process tree), about 0.6 GiB a
+          # process. So one process per 1 GiB after 2 GiB for the host, capped
+          # at the core count: 8 on the fleet runner, 4 on a 4-core hosted one.
+          # Six parts a process: the parts' test time is uneven (hash split) and
+          # a free process takes the next one, which evens it out, while every
+          # part pays its own start-up. Each part writes its own JUnit file, log and
+          # coverage data under --out, and its progress records beside the other
+          # parts' (one file per process, named by pid and a UUID). The script
+          # exits non-zero when any part fails, dies, exits 0 with no test
+          # counted, or runs past --part-timeout (well inside this job's budget, so
+          # a hung part is named in the log instead of the job being cancelled);
+          # only when every part passed does it combine their coverage into the
+          # one .coverage that "Stage shard coverage data" requires.
+          by_mem=$(( (mem_mib - 2048) / 1024 ))
+          JOBS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
+          [ "$JOBS" -ge 1 ] || JOBS=1
+          PARTS=$(( JOBS * 6 ))
+          echo "pytest processes: $JOBS at a time, $PARTS parts"
+          python scripts/run_sharded_suite.py --jobs "$JOBS" --shards "$PARTS" \
+            --outer-shards "$SHARD_COUNT" --outer-shard ${{ matrix.group }} \
+            --outer-pins scripts/ci_file_shard_pins.txt \
+            --out "$RUNNER_TEMP/sharded-suite" --print-logs --part-timeout 3000 \
+            --coverage-file .coverage \
+            -- ${PROGRESS[@]+"${PROGRESS[@]}"} -q --timeout=120 -m "not ipv6_required and not real_venv" \
             --cov=kiro_crew --cov=sage_lib \
             --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
             --cov=src/kiro_crew/apps/builtins/code_review_sage/tests \
