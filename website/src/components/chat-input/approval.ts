@@ -355,6 +355,10 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   // is composed here: no description, no heading beyond that label.
   const approvalDescription = sanitizeLlmOutput(typeof approvalMeta?.tool_purpose === 'string' ? approvalMeta.tool_purpose : '') || approvalPurpose
   const approvalTitle = pickToolLabel({ simplified, purpose: approvalDescription, rawLabel: approvalLabel, uiLang })
+  /** With simplified names off, the heading is the tool label, so the agent's
+   *  description, when it says something else, is a second line under it (as
+   *  the bar's details line showed it before). Display only. */
+  const approvalPurposeLine = !simplified && approvalDescription.trim() && approvalDescription.trim() !== approvalTitle.trim() ? approvalDescription : ''
   /** The MCP server the tool belongs to, from the gateway's trusted identity. */
   const approvalMcpServer = typeof approvalMeta?.mcp_server === 'string' ? approvalMeta.mcp_server : ''
   /** The tool's own name, from the same identity, else the gateway's title.
@@ -567,7 +571,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalBrowserTrustClass, approvalAlwaysAllowRef, approvalAlwaysAllowRefusal,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
-    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalTitle, approvalMcpServer, approvalToolName, approvalRaisedBy, showGhost, showInChat, handleApprovalAction,
+    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalTitle, approvalPurposeLine, approvalMcpServer, approvalToolName, approvalRaisedBy, showGhost, showInChat, handleApprovalAction,
     approvalActionsRef,
   }
 }
