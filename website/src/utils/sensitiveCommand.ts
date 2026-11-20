@@ -90,7 +90,8 @@ const WIN_SEPARATORS = new Set([';', '|', '&', '(', '{'])
 const CREDENTIAL_DIRS = new Set(['.aws', '.ssh', '.gnupg', 'gcloud'])
 const CREDENTIAL_FILES = ['credentials', 'id_rsa', 'id_ed25519', 'private.key']
 const SECRET_WORDS = ['secret', 'key', 'token', 'pass', 'cred', 'aws']
-const SECRET_ENV_READS = ['$env:aws_secret', '$env:aws_session', '$env:github_token', '$env:npm_token']
+/** A regex, not string literals: the i18n literal gate reads `'$env:…'` as copy. */
+const SECRET_ENV_READ = /\$env:(aws_secret|aws_session|github_token|npm_token)/
 const ARG_WRAPPERS = new Set(['"', "'", ')', '}'])
 
 /** Lines of `code`, with a backtick-continued line joined to the next. */
@@ -153,11 +154,18 @@ function commandAfterAssignment(words: string[]): string[] {
   return words
 }
 
-/** Arguments up to the first redirection (`>`, `>>`, `2>`): a redirect target
- *  is written, not read, so `type nul > .env` reads nothing. */
-function untilRedirect(args: string[]): string[] {
-  const at = args.findIndex(a => a.startsWith('>') || a.startsWith('2>') || a.startsWith('1>'))
-  return at === -1 ? args : args.slice(0, at)
+/** Arguments without each redirection (`>`, `>>`, `2>`) and its target: a
+ *  redirect target is written, not read, so `type nul > .env` reads nothing,
+ *  while `type >dump.txt .env` still reads `.env`. */
+function withoutRedirects(args: string[]): string[] {
+  const out: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const op = /^[12]?>>?/.exec(args[i])
+    if (!op) { out.push(args[i]); continue }
+    // `> file`: the target is the next word; `>file`: it is joined.
+    if (op[0] === args[i]) i++
+  }
+  return out
 }
 
 /** The value an argument names: itself, the part after `:` of a colon-joined
@@ -176,7 +184,7 @@ function windowsShellReason(code: string): ReasonId | null {
   let upload = false
   for (const line of logicalLines(code)) {
     const words = lineWords(line)
-    if (words.some(w => SECRET_ENV_READS.some(v => w.includes(v)))) envSingle = true
+    if (words.some(w => SECRET_ENV_READ.test(w))) envSingle = true
     let start = 0
     for (let i = 0; i <= words.length; i++) {
       if (i < words.length && !WIN_SEPARATORS.has(words[i])) continue
@@ -185,7 +193,7 @@ function windowsShellReason(code: string): ReasonId | null {
       const called = commandAfterAssignment(command)
       if (called.length === 0) continue
       const [name, ...rest] = called
-      const args = untilRedirect(rest)
+      const args = withoutRedirects(rest)
       if (WIN_READERS.has(name) && args.some(a => namesCredential(argumentValue(a)))) return 'credential_files'
       if (WIN_ENV_LISTERS.has(name) && args.some(a => bare(a).startsWith('env:'))) {
         const pipe = words.indexOf('|', i)
@@ -194,6 +202,7 @@ function windowsShellReason(code: string): ReasonId | null {
       if (WIN_WEB_SENDERS.has(name)) {
         const at = args.indexOf('-infile')
         if (at !== -1 && at + 1 < args.length && !WIN_SEPARATORS.has(args[at + 1])) upload = true
+        if (args.some(a => a.startsWith('-infile:') && a.length > '-infile:'.length)) upload = true
       }
     }
   }
