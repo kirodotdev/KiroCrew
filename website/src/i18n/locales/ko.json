@@ -10584,6 +10584,7 @@
       "flow_needs_you": "내 결정 필요",
       "eyebrow": "Conductor mode",
       "composer_chip_label": "이 채팅은 Conductor mode로 실행됩니다",
+      "composer_chip_label_worker": "Conductor mode · 워커",
       "back_to_main_chat": "메인 채팅으로 돌아가기",
       "parent_row_hint": "이 채팅의 크루 멤버를 보는 중",
       "steer_too_long": "{{name}}에게 보내는 메시지는 최대 {{max}}자까지입니다. 줄여서 보내세요.",

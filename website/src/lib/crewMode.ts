@@ -202,6 +202,22 @@ export function runsCrewMode(agent: string | null | undefined, kind: string | nu
   return conductors.has(agent) || (!!stamp && stamp === agent)
 }
 
+/** Whether the composer shows `slot` as a conductor mode chat (the bolt, no agent
+ *  picker): it runs Crew Mode (`runsCrewMode`) and the gateway has not said it is
+ *  outside every crew. The gateway stamps `crew_mode_root` on every row it lists,
+ *  `false` on a session that is no root, and `crew_root` on a root's crew
+ *  members; a row that carries no stamp yet (a switch's own answer, before the
+ *  next slot frame) keeps the conductor's look. So a chat another session opened
+ *  on a conductor outside any crew (a Bot's or a plain chat's `session_create`),
+ *  stamped not-a-root and no crew member, keeps its agent picker: the gateway
+ *  does not lock its agent and nests nothing under it (#39260). */
+export function showsAsCrewMode(slot: {
+  agent?: string; agent_kind?: string; crew_mode_agent?: string; crew_mode_root?: boolean; crew_root?: string | null
+} | null | undefined): boolean {
+  if (!slot || !runsCrewMode(slot.agent, slot.agent_kind, slot.crew_mode_agent)) return false
+  return slot.crew_mode_root !== false || !!crewRootOf(slot)
+}
+
 /** Whether `name` is the default agent: the switch is offered only there. The
  *  literal `kirocrew` counts only while no default agent is configured; with
  *  one configured, a chat on the `kirocrew` template is that template. */

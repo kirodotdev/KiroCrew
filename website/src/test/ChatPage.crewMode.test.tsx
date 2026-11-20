@@ -14,7 +14,7 @@ import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import chatReducer, { appendMessage } from '../store/chatSlice'
-import dashboardReducer from '../store/dashboardSlice'
+import dashboardReducer, { updateSlot } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import { store as appStore, type RootState } from '../store'
@@ -125,7 +125,7 @@ function makeStore({ messages, mode = '', agent = 'default', agentKind = '', ori
       dashboard: {
         status: null,
         ...(connected ? { connected: true } : {}),
-        slots: slotKeys.map(key => ({ key, messages: key === 'slot-a' ? messages.length : 0, running: key === 'slot-a' && listedRunning, mode: key === 'slot-a' ? mode : '', agent: key === 'slot-a' ? agent : 'default', agent_kind: key === 'slot-a' ? agentKind : '', origin: key === 'slot-a' ? origin : 'user', memory_mode: key === 'slot-a' ? memoryMode : 'persistent', ...(key === 'slot-a' && createdBy ? { created_by: createdBy } : {}), ...(key === 'slot-a' && instanceId ? { instance_id: instanceId } : {}), ...(key === 'slot-a' && crewRoot ? { crew_root: crewRoot, title: 'Worker B' } : {}), ...(key === 'slot-a' && crewModeRootStamp ? { crew_mode_root: true } : {}), ...(key === 'root-1' ? { title: 'Sample goal', crew_mode_root: true } : {}), pending_approval: key === 'slot-a' && pendingApproval, waiting_for_input: false, last_activity_ts: undefined })),
+        slots: slotKeys.map(key => ({ key, messages: key === 'slot-a' ? messages.length : 0, running: key === 'slot-a' && listedRunning, mode: key === 'slot-a' ? mode : '', agent: key === 'slot-a' ? agent : 'default', agent_kind: key === 'slot-a' ? agentKind : '', origin: key === 'slot-a' ? origin : 'user', memory_mode: key === 'slot-a' ? memoryMode : 'persistent', ...(key === 'slot-a' && createdBy ? { created_by: createdBy } : {}), ...(key === 'slot-a' && instanceId ? { instance_id: instanceId } : {}), ...(key === 'slot-a' && crewRoot ? { crew_root: crewRoot, title: 'Worker B' } : {}), ...(key === 'slot-a' && crewModeRootStamp !== undefined ? { crew_mode_root: crewModeRootStamp } : {}), ...(key === 'root-1' ? { title: 'Sample goal', crew_mode_root: true } : {}), pending_approval: key === 'slot-a' && pendingApproval, waiting_for_input: false, last_activity_ts: undefined })),
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
@@ -254,7 +254,7 @@ describe('Conductor mode on ChatPage', () => {
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('root-1'))
   })
 
-  it("a worker's composer is the conductor's normal composer: no frame, header, hint or agent label", async () => {
+  it("a worker's composer is the conductor's normal composer: no frame, header, hint or agent picker", async () => {
     await renderWith({ messages: [{ role: 'user', content: 'do part 2' }], agent: 'kirocrew-worker', agentKind: 'template', createdBy: 'root-1', crewRoot: 'root-1', slotKeys: ['slot-a', 'root-1'] })
     const wrap = screen.getByTestId('crew-steer-composer')
     expect(wrap.className).toBe('')
@@ -266,12 +266,34 @@ describe('Conductor mode on ChatPage', () => {
     const ph = within(wrap).getByRole('textbox').getAttribute('placeholder') ?? ''
     expect(ph).not.toMatch(/^Steer/)
     expect(ph).toMatch(/^Message |press Resume/)
-    // The conductor's footer: the Crew Mode mark, never a switch, and no agent picker.
+    // The footer: one bolt, never a switch, no visible text, and no agent picker.
+    // Its name and tip say it is a Worker of a conductor mode crew.
     const mark = within(wrap).getByTestId('crew-mode-composer-chip')
     expect(mark.tagName).toBe('BUTTON')
+    expect(mark.textContent).toBe('')
     expect(mark).not.toHaveAttribute('aria-pressed')
+    expect(mark).toHaveAttribute('aria-label', 'Conductor mode · Worker')
+    fireEvent.focus(mark)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Conductor mode · Worker')
     expect(within(wrap).queryByRole('button', { name: /^Agent: / })).toBeNull()
     expect(within(wrap).queryByText('kirocrew-worker')).toBeNull()
+  })
+
+  it('a crew member that runs a conductor (a sub-conductor) keeps the conductor bolt and its name', async () => {
+    await renderWith({ messages: [{ role: 'user', content: 'own part 2' }], agent: 'kirocrew-conductor', agentKind: 'template', createdBy: 'root-1', crewRoot: 'root-1', slotKeys: ['slot-a', 'root-1'] })
+    const wrap = screen.getByTestId('crew-steer-composer')
+    const mark = within(wrap).getByTestId('crew-mode-composer-chip')
+    expect(mark).toHaveAttribute('aria-label', 'This chat runs in conductor mode')
+    expect(mark.textContent).toBe('')
+    expect(within(wrap).queryByRole('button', { name: /^Agent: / })).toBeNull()
+  })
+
+  it('keeps the agent picker on a conductor chat that another session opened outside any crew (#39260)', async () => {
+    // A Bot's or a plain chat's session_create onto the conductor: the gateway
+    // neither locks this chat's agent nor nests the sessions it opens.
+    await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template', createdBy: 'slot-parent', crewModeRootStamp: false })
+    expect(screen.queryByTestId('crew-mode-composer-chip')).toBeNull()
+    expect(screen.getByRole('button', { name: /^Agent: kirocrew-conductor/ })).toBeInTheDocument()
   })
 
   it('V1: a worker opened from Workers while Split View is on leaves the split and shows the worker', async () => {
@@ -631,6 +653,32 @@ describe('Conductor mode on ChatPage', () => {
     // The Board shows the conductor mode panel before the gateway's root stamp reaches the row.
     expect(await screen.findByTestId('conductor-mode-crew-panel', {}, { timeout: 5000 })).toBeInTheDocument()
     expect(screen.queryByTestId('crew-workers-none')).toBeNull()
+  })
+
+  it('keeps the bolt and no picker once a mid-chat switch lands on a row the gateway stamped not-a-root', async () => {
+    chatSlotAgent.mockClear()
+    // Every listed row carries the stamp; a plain chat's is `false`.
+    const store = await renderWith({ messages: [{ role: 'user', content: 'hello' }], crewModeRootStamp: false })
+    fireEvent.click(screen.getByTestId('crew-mode-switch'))
+    await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'kirocrew-conductor', 'template'))
+    await waitFor(() => expect(store.getState().dashboard.slots[0].agent).toBe('kirocrew-conductor'))
+    // No new slot frame: the switch's own answer must not leave the stale `false` behind.
+    expect(store.getState().dashboard.slots[0].crew_mode_root).toBeUndefined()
+    expect(screen.getByTestId('crew-mode-composer-chip')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Agent: / })).toBeNull()
+  })
+
+  it('keeps the root stamp a slot frame already wrote before the switch answer lands', async () => {
+    chatSlotAgent.mockClear()
+    let land: (v: { agent: string; workspace: string }) => void = () => {}
+    chatSlotAgent.mockImplementationOnce(() => new Promise(r => { land = r }))
+    const store = await renderWith({ messages: [{ role: 'user', content: 'hello' }], crewModeRootStamp: false })
+    fireEvent.click(screen.getByTestId('crew-mode-switch'))
+    await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'kirocrew-conductor', 'template'))
+    // The gateway pushes the slot frame before it answers the request.
+    act(() => { store.dispatch(updateSlot({ key: 'slot-a', agent: 'kirocrew-conductor', agent_kind: 'template', crew_mode_root: true })) })
+    await act(async () => { land({ agent: 'kirocrew-conductor', workspace: 'default' }) })
+    expect(store.getState().dashboard.slots[0].crew_mode_root).toBe(true)
   })
 
   it('leaves the chat a plain chat and puts the panel back when the mid-chat switch is refused', async () => {

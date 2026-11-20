@@ -10584,6 +10584,7 @@
       "flow_needs_you": "要判断",
       "eyebrow": "Conductor mode",
       "composer_chip_label": "このチャットは Conductor mode で動いています",
+      "composer_chip_label_worker": "Conductor mode · ワーカー",
       "back_to_main_chat": "メインチャットに戻る",
       "parent_row_hint": "このチャットのクルーメンバーを表示中",
       "steer_too_long": "{{name}} へのメッセージは {{max}} 文字までです。短くしてから送信してください。",

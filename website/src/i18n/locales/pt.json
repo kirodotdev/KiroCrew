@@ -11070,6 +11070,7 @@
       "flow_needs_you": "Precisa de você",
       "eyebrow": "Conductor mode",
       "composer_chip_label": "Este chat funciona no Conductor mode",
+      "composer_chip_label_worker": "Conductor mode · Worker",
       "back_to_main_chat": "Voltar ao chat principal",
       "parent_row_hint": "Mostrando um dos membros da equipe",
       "steer_too_long": "Uma mensagem para {{name}} pode ter no máximo {{max}} caracteres. Encurte-a para enviar.",

@@ -160,15 +160,17 @@ export function ConductorModeTitleMark() {
 }
 
 /** The composer's read-only Conductor mode mark: one lightning bolt whose
- *  accessible name and tip state the chat's mode and offer no action. Before
- *  the first message the composer shows the labelled, pressed `CrewModeChip`
- *  instead, which is the control that turns the mode off. */
-export function CrewModeComposerChip() {
+ *  accessible name and tip state the chat's mode and offer no action. On a
+ *  worker (a crew member that is not itself a conductor) they also name its
+ *  role, `Conductor mode · Worker`, so the bolt does not read as a conductor of
+ *  its own. Before the first message the composer shows the labelled, pressed
+ *  `CrewModeChip` instead, which is the control that turns the mode off. */
+export function CrewModeComposerChip({ worker = false }: { worker?: boolean } = {}) {
   const reduceMotion = useReducedMotion()
   const fade = { initial: reduceMotion ? { opacity: 0 } : false, animate: { opacity: 1 }, transition: { duration: 0.2 } } as const
   return (
     <ReadOnlyBoltMark
-      label={i18nT('components.crewMode.composer_chip_label')}
+      label={i18nT(worker ? 'components.crewMode.composer_chip_label_worker' : 'components.crewMode.composer_chip_label')}
       testId="crew-mode-composer-chip"
       size={16}
       className="inline-grid h-7 w-7 place-items-center"
