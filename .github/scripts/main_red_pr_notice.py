@@ -96,7 +96,11 @@ def fix_line(timeline_rows: list[dict[str, Any]] | None, repo: str, issue_number
     """
     if timeline_rows is None:
         return "Fix in progress: unknown."
-    line = watch.fix_line(watch.fix_prs(timeline_rows, repo), issue_number)
+    try:
+        prs = watch.fix_prs(timeline_rows, repo, issue_number)
+    except Exception:  # the reference grammar could not be loaded
+        return "Fix in progress: unknown."
+    line = watch.fix_line(prs, issue_number)
     return watch.clean(line.replace("@", ""), 300)
 
 

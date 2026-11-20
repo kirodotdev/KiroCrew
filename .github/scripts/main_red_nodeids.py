@@ -33,10 +33,10 @@ break out of the issue body.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -71,7 +71,6 @@ STATE_MARKER = "main-red-state"
 MESSAGE_CHARS = 80
 MAX_NODEIDS = 100
 MAX_LISTED = 50
-MAX_FIX_PRS = 3
 MAX_ONCE_SHOWN = 5
 STALE = 10
 
@@ -87,7 +86,6 @@ _SHA = re.compile(r"[0-9a-f]{1,12}")
 _URL = re.compile(r"https://github\.com/[A-Za-z0-9_./-]{1,200}")
 STATE_OPEN = "<!-- " + STATE_MARKER + " "
 STATE_CLOSE = " -->"
-_LOGIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}(\[bot\])?$")
 
 
 def clean(text: str, limit: int) -> str:
@@ -306,6 +304,20 @@ def is_watcher_author(author: Any) -> bool:
     return login == "github-actions" and author.get("is_bot") is True
 
 
+def _fix_line_module() -> Any:
+    path = Path(__file__).resolve().with_name("main_red_fix_line.py")
+    spec = importlib.util.spec_from_file_location("main_red_fix_line", str(path))
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_fix = _fix_line_module()
+fix_prs, fix_line = _fix.fix_prs, _fix.fix_line
+
+
 def pick_issue(issues: list[dict[str, Any]]) -> dict[str, Any] | None:
     """The oldest open issue this watcher filed: its author, title prefix and record.
 
@@ -319,50 +331,6 @@ def pick_issue(issues: list[dict[str, Any]]) -> dict[str, Any] | None:
         and parse_state(str(issue.get("body") or "")) is not None
     ]
     return min(ours, key=lambda item: int(item["number"])) if ours else None
-
-
-def fix_prs(rows: list[dict[str, Any]], repo: str) -> list[dict[str, str]]:
-    """Open pull requests of ``repo`` that cross-reference the issue, oldest first."""
-    prefix = f"https://github.com/{repo}/pull/"
-    out: list[dict[str, str]] = []
-    for row in rows:
-        url = str(row.get("url") or "")
-        login = str(row.get("author") or "")
-        if row.get("state") != "open" or not url.startswith(prefix) or not _LOGIN.match(login):
-            continue
-        number = url[len(prefix) :]
-        if number.isdigit() and url not in {p["url"] for p in out}:
-            out.append(
-                {
-                    "url": url,
-                    "number": number,
-                    "author": login,
-                    "created": str(row.get("created") or ""),
-                }
-            )
-    return sorted(out, key=lambda pr: pr["created"])[:MAX_FIX_PRS]
-
-
-def _opened(stamp: str) -> str:
-    try:
-        return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%MZ")
-    except ValueError:
-        return "at an unknown time"
-
-
-def fix_line(prs: list[dict[str, str]], issue_number: int | None) -> str:
-    """The one line the watch rewrites on every main run."""
-    if not prs:
-        ref = f"#{issue_number}" if issue_number else "#<this issue>"
-        return (
-            "Fix in progress: none yet. Anyone may open a fix PR "
-            f"(put `Fixes {ref}` in its body)."
-        )
-    parts = []
-    for pr in prs:
-        who = pr["author"] if pr["author"].endswith("[bot]") else "@" + pr["author"]
-        parts.append(f"#{pr['number']} ({who}, opened {_opened(pr['created'])})")
-    return "Fix in progress: " + "; ".join(parts)
 
 
 def title_for(failures: dict[str, str]) -> str:
@@ -386,7 +354,7 @@ def runner_os(job_names: list[str]) -> str | None:
 
 def render_body(
     state: dict[str, Any],
-    prs: list[dict[str, str]],
+    prs: list[dict[str, str]] | None,
     issue_number: int | None = None,
     runner: str | None = None,
 ) -> str:
@@ -525,7 +493,12 @@ def cmd_render(args: argparse.Namespace) -> int:
     if state is None:
         print("An older run finished after a newer red one; nothing to update.")
         return STALE
-    prs = fix_prs(read_json_values(_read_text(args.timeline)), args.repo)
+    prs: list[dict[str, str]] | None
+    try:
+        prs = fix_prs(read_json_values(_read_text(args.timeline)), args.repo, args.issue_number)
+    except Exception as exc:  # the issue is still written; its fix line says unknown
+        print(f"::warning::The fix line could not be built ({clean(str(exc), 200)}).")
+        prs = None
     Path(args.out_title).write_text(title_for(failures), encoding="utf-8")
     body = render_body(state, prs, args.issue_number, runner_os(_red_job_names(args)))
     Path(args.out_body).write_text(body, encoding="utf-8")
