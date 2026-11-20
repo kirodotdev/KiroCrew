@@ -384,6 +384,17 @@ def build_context(
     def _frames() -> Any:
         return frame_ops(hub, session_key, caller_key=caller_key)
 
+    url_allowed = committed_url_allowed if not sites else _site_gate(sites)
+
+    def _nav_guard() -> Any:
+        # Read at the op, after the tab bind: the session's pinned relay when its
+        # op is isolated, else the daemon's. A missing relay or tab makes the guard
+        # refuse the navigation (fail closed), never skip the gate.
+        from kiro_crew.browser_harness.nav_guard import NavigationGuard
+
+        relay = hub.bound_relay(session_key) or getattr(supervisor, "relay", None)
+        return NavigationGuard(relay, hub.target_of(session_key), url_allowed)
+
     return harness_ops.OpContext(
         helper=helper,
         step=_step,
@@ -392,7 +403,8 @@ def build_context(
         screenshot_dir=harness_ops.screenshot_dir(config_dir()),
         staging_dir=config_dir() / IPC_LEAF / "shots",
         sleep=asyncio.sleep,
-        url_allowed=committed_url_allowed if not sites else _site_gate(sites),
+        url_allowed=url_allowed,
+        nav_guard=_nav_guard,
         loop=_loop,
         mark=_mark,
         record=_record,
