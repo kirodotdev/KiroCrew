@@ -171,7 +171,10 @@ def _open_link_at_members(base: Path, name: str, stack: ExitStack) -> int:
                 "refusing to use the member folder: the link at members cannot be resolved"
             ) from exc
         stack.callback(os.close, fd)
-        if _is_data_home_or_above(fd, base_fd) or _is_inside_data_home(fd, base_fd):
+        # The same walk both ways: the target is the data home or above it, or (the
+        # arguments swapped) the data home is the target or above it, so the target is
+        # inside the data home. The `members` folder itself is the link, never a target.
+        if _is_data_home_or_above(fd, base_fd) or _is_data_home_or_above(base_fd, fd):
             # The slug folders are made inside the folder ``members`` names: the data
             # home, a folder above it, or another folder of the data home (trust, SEL)
             # would put them beside the stores kept there.
@@ -182,29 +185,6 @@ def _open_link_at_members(base: Path, name: str, stack: ExitStack) -> int:
         return fd
     finally:
         os.close(base_fd)
-
-
-def _is_inside_data_home(fd: int, base_fd: int) -> bool:
-    """Whether the folder *fd* is below the data home *base_fd*, by identity.
-
-    The folders above *fd* are read with ``stat`` on ``..`` chained from *fd*, as
-    :func:`_is_data_home_or_above` does, so no name is used. The chain ends at the root.
-    The folder ``members`` itself is never a target here (it is the link), so every folder
-    of the data home is refused; a folder outside it, the normal relocation, is allowed.
-    """
-    home = os.fstat(base_fd)
-    rel = ".."
-    seen = os.fstat(fd)
-    seen_key = (seen.st_dev, seen.st_ino)
-    while True:
-        above = os.stat(rel, dir_fd=fd)
-        key = (above.st_dev, above.st_ino)
-        if key == (home.st_dev, home.st_ino):
-            return True
-        if key == seen_key:
-            return False
-        seen_key = key
-        rel = f"{rel}/.."
 
 
 def _is_data_home_or_above(fd: int, base_fd: int) -> bool:
