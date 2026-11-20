@@ -33,6 +33,7 @@ shadow = ledger.shadow
 
 ROOT = Path(__file__).resolve().parents[1]
 DAY = "2026-11-18T00:00:00Z"
+LATER = "2026-11-18T01:00:00Z"
 VERDICT: dict[str, Any] = {
     "schema": 1,
     "base": "b" * 40,
@@ -48,6 +49,18 @@ VERDICT: dict[str, Any] = {
     "would_skip": ["test/test_a.py", "test/test_c.py"],
     "would_run_share": 0.5,
 }
+SKIP: dict[str, Any] = {
+    "kind": "skip",
+    "run": 1,
+    "attempt": 1,
+    "source": "1:pr-7",
+    "fork": False,
+    "pr": 7,
+    "head": "a" * 40,
+    "date": DAY,
+    "reason": "x",
+}
+OLD_RUN = {**{k: v for k, v in SKIP.items() if k not in ("source", "reason")}, "kind": "run"}
 FULL: dict[str, Any] = {
     **VERDICT,
     "verdict": "full",
@@ -82,6 +95,7 @@ class FakeGh:
         self.issues: list[dict[str, Any]] = []
         self.calls: list[str] = []
         self.page_size = 100
+        self.overlap = 0
 
     def add(
         self,
@@ -90,6 +104,8 @@ class FakeGh:
         attempts: list[list[dict[str, Any]]],
         verdict: dict[str, Any] | None = VERDICT,
         date: str = DAY,
+        branch: str | None = None,
+        fork: bool = False,
     ) -> dict[str, Any]:
         run = {
             "id": run_id,
@@ -97,8 +113,9 @@ class FakeGh:
             "head_sha": "a" * 40,
             "created_at": date,
             "pull_requests": [{"number": pr}] if pr else [],
-            "head_repository": {"full_name": "someone/KiroCrew"},
-            "head_branch": "topic",
+            "repository": {"id": 1},
+            "head_repository": {"id": 2 if fork else 1},
+            "head_branch": branch or f"pr-{pr}",
         }
         self.runs.insert(0, run)
         self.set_attempts(run_id, attempts)
@@ -115,7 +132,7 @@ class FakeGh:
 
     def _page(self, url: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         found = re.search(r"[?&]page=(\d+)", url)
-        start = (int(found.group(1)) - 1) * self.page_size if found else 0
+        start = (int(found.group(1)) - 1) * (self.page_size - self.overlap) if found else 0
         return items[start : start + self.page_size]
 
     def gh_json(self, args: list[str], root: Path) -> Any:
@@ -296,10 +313,12 @@ def test_a_rerun_that_lists_only_the_rerun_shard_keeps_the_other_shards_first_re
     assert rows(tmp_path, "skip") == []
 
 
-def _watcher_issue(number: int, nodeid: str, login: str = "github-actions[bot]") -> dict[str, Any]:
+def _watcher_issue(
+    number: int, nodeid: str, login: str = "github-actions[bot]", first_run: int = 1
+) -> dict[str, Any]:
     watch = shadow.watch_module()
     url = "https://github.com/kirodotdev/KiroCrew/actions/runs/5"
-    state = {"first_sha": "abc123", "first_run_id": 5, "first_url": url, "streak": 1}
+    state = {"first_sha": "abc123", "first_run_id": first_run, "first_url": url, "streak": 1}
     state.update({"last_sha": "abc123", "last_run_id": 5, "last_url": url})
     state["failures"] = {nodeid: "assert 1 == 2"}
     return {
@@ -331,6 +350,46 @@ def test_main_red_is_what_the_watchers_own_issue_names_and_nothing_a_person_wrot
     gh.issues = []
     assert run_main(tmp_path) == 0
     assert "test/test_a.py | G | main_red |" in summary(tmp_path)
+
+
+def test_main_red_does_not_reach_back_before_main_went_red(gh: FakeGh, tmp_path: Path) -> None:
+    failed_run(gh, 4, 7, ["test/test_a.py"])
+    failed_run(gh, 6, 7, ["test/test_a.py"], date=LATER)
+    gh.issues = [_watcher_issue(40, "test/test_a.py::test_one", first_run=5)]
+
+    assert run_main(tmp_path) == 0
+
+    assert {row["run"]: row["main_red"] for row in rows(tmp_path, "failure")} == {4: False, 6: True}
+
+
+def test_a_pr_that_merged_between_two_passes_is_still_one_pr(gh: FakeGh, tmp_path: Path) -> None:
+    failed_run(gh, 1, 7, ["test/test_a.py"])
+    assert run_main(tmp_path) == 0
+    # A merged PR: GitHub lists none on the run of its later push.
+    failed_run(gh, 2, None, ["test/test_a.py"], branch="pr-7", date=LATER)
+
+    assert run_main(tmp_path) == 0
+
+    assert [(row["pr"], row["source"]) for row in rows(tmp_path, "failure")] == [
+        (7, "1:pr-7"),
+        (None, "1:pr-7"),
+    ]
+    marked = ledger.classify(ledger.current(rows(tmp_path), None), 3.0)
+    assert [(row["shared"], row["diff_caused"]) for row in marked] == [(False, True)] * 2
+    assert rates(tmp_path)["tiers"]["G"]["rate"] == 0.5
+    text = summary(tmp_path)
+    assert "Misses caused by the diff: 2." in text and "Misses not caused by it: 0." in text
+    assert "| #7 | aaaaaaaaaaaa | 1 |" in text and "| 1:pr-7 | aaaaaaaaaaaa | 2 |" in text
+
+
+def test_a_run_whose_head_repository_is_gone_is_excluded(gh: FakeGh, tmp_path: Path) -> None:
+    failed_run(gh, 1, None, ["test/test_a.py"], branch="topic", fork=True)
+    gh.runs[0]["head_repository"] = None
+
+    assert run_main(tmp_path) == 0
+
+    assert [(row["kind"], row["reason"]) for row in rows(tmp_path)] == [("skip", ledger.NO_SOURCE)]
+    assert [call for call in gh.calls if "/jobs" in call] == []
 
 
 def test_a_failing_file_with_no_tier_withholds_the_rates(gh: FakeGh, tmp_path: Path) -> None:
@@ -378,7 +437,7 @@ def test_a_run_that_does_not_prove_what_it_ran_is_excluded_and_adds_no_trial(
 
 
 def test_a_tier_with_no_trial_is_never_proposed_as_skippable() -> None:
-    run = {"kind": "run", "run": 1, "verdict": "select", "tiers": {"G": 0}}
+    run = {"kind": "run", "run": 1, "fork": False, "verdict": "select", "tiers": {"G": 0}}
     assert ledger.fit([run], [])["G"]["rate"] == 1.0
     assert ledger.fit([run], [])["G"]["upper95"] == 1.0
 
@@ -387,9 +446,21 @@ def test_the_upper_bound_is_wilsons_and_is_rounded_up() -> None:
     assert ledger.wilson_upper(0, 0) == 1.0
     assert ledger.wilson_upper(0, 100) == pytest.approx(0.0369935, abs=1e-6)
     assert ledger.wilson_upper(5, 5) == 1.0
-    run = {"kind": "run", "run": 1, "verdict": "select", "tiers": {"G": 100}}
+    run = {"kind": "run", "run": 1, "fork": False, "verdict": "select", "tiers": {"G": 100}}
     bound = ledger.fit([run], [])["G"]["upper95"]
     assert bound >= ledger.wilson_upper(0, 100) and bound - ledger.wilson_upper(0, 100) < 1e-8
+
+
+def test_the_proposed_bound_never_rounds_down() -> None:
+    run = {"kind": "run", "run": 1, "fork": False, "verdict": "select", "tiers": {"G": 47328}}
+    failure = {"tier": "G", "diff_caused": True}
+    exact = ledger.wilson_upper(8, 47328)
+
+    bound = ledger.fit([run], [failure] * 8)["G"]["upper95"]
+
+    # Rounding to the nearest would give 0.00033354, below the bound itself.
+    assert round(exact, 8) < exact
+    assert bound == 0.00033355
 
 
 def test_the_full_suite_step_is_the_one_ci_gates_on_scope() -> None:
@@ -458,6 +529,17 @@ def test_passes_read_past_the_first_page_until_every_run_is_recorded(
     assert rates(tmp_path)["tiers"]["G"]["rate"] == 0.0
 
 
+def test_a_run_listed_on_two_pages_is_recorded_once(gh: FakeGh, tmp_path: Path) -> None:
+    gh.page_size, gh.overlap = 2, 1
+    for run_id in range(1, 5):
+        gh.add(run_id, run_id, [[job(run_id * 10, 1)]])
+
+    assert run_main(tmp_path) == 0
+
+    assert [row["run"] for row in rows(tmp_path, "run")] == [4, 3, 2, 1]
+    assert len([call for call in gh.calls if "/attempts/1/jobs?per_page=100&page=1" in call]) == 4
+
+
 def test_backend_jobs_reads_every_page_of_an_attempt(gh: FakeGh) -> None:
     gh.page_size = 2
     gh.jobs[(1, 1)] = [job(n, n) for n in range(1, 6)]
@@ -476,14 +558,18 @@ def test_since_narrows_the_listing(gh: FakeGh, tmp_path: Path) -> None:
 
 
 def test_a_fork_run_is_keyed_on_its_head_repository_and_branch(gh: FakeGh, tmp_path: Path) -> None:
-    failed_run(gh, 1, None, ["test/test_a.py"])
-    failed_run(gh, 2, None, ["test/test_a.py"], date="2026-11-18T01:00:00Z")
+    failed_run(gh, 1, None, ["test/test_a.py"], branch="topic", fork=True)
+    failed_run(gh, 2, None, ["test/test_a.py"], branch="topic", fork=True, date=LATER)
 
     assert run_main(tmp_path) == 0
 
     # Two pushes of one fork PR are one PR: its failure is not shared with itself.
-    assert {row["pr"] for row in rows(tmp_path, "failure")} == {"someone/KiroCrew:topic"}
-    assert "Misses caused by the diff: 2." in summary(tmp_path)
+    assert {row["source"] for row in rows(tmp_path, "failure")} == {"2:topic"}
+    text = summary(tmp_path)
+    assert "Misses caused by the diff: 2." in text
+    # Its verdict is the fork's own, so the files it lists are not trials.
+    assert "Fork runs, which add failures but no trials: 2." in text
+    assert "| G | 0 | 2 | 0 | 1.00000000 | 1.00000000 |" in text
 
 
 # -- verdict artifacts ----------------------------------------------------------
@@ -565,10 +651,11 @@ def test_an_oversized_or_invalid_verdict_excludes_the_run_before_any_job_is_read
         "not json",
         "[]",
         '{"kind": "run"}',
-        json.dumps({"kind": "skip", "run": 1, "attempt": 1, "pr": 7, "head": "x", "date": DAY}),
-        json.dumps(
-            {"kind": "skip", "run": 1, "attempt": 1, "pr": 7, "head": "a" * 40, "date": "soon"}
-        ),
+        json.dumps({**SKIP, "head": "x"}),
+        json.dumps({**SKIP, "date": "soon"}),
+        json.dumps({**SKIP, "fork": "no"}),
+        # A row keyed on `pr` alone, with no `source`: nothing it could be joined on.
+        json.dumps({**OLD_RUN, "verdict": "select", "tiers": {}}),
     ],
 )
 def test_a_ledger_line_of_the_wrong_shape_stops_the_pass_before_it_appends(
@@ -600,10 +687,9 @@ def test_an_unreadable_main_red_issue_records_nothing(
 
 def test_no_summary_cell_can_carry_markup(gh: FakeGh, tmp_path: Path) -> None:
     assert ledger.cell("a|b`c<d>\n[e](f)@g") == "a?b?c?d???e??f??g"
-    failed_run(gh, 1, None, ["test/test_a.py"])
-    gh.runs[0]["head_branch"] = "x|`<b>@team\n| y"
+    failed_run(gh, 1, None, ["test/test_a.py"], branch="x|`<b>@team\n| y")
 
     assert run_main(tmp_path) == 0
 
     line = next(text for text in summary(tmp_path).splitlines() if "test/test_a.py" in text)
-    assert line == "| someone/KiroCrew:x???b??team?? y | aaaaaaaaaaaa | 1 | test/test_a.py | G |"
+    assert line == "| 1:x???b??team?? y | aaaaaaaaaaaa | 1 | test/test_a.py | G |"

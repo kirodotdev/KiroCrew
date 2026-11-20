@@ -20,19 +20,34 @@ Ledger rows, one JSON object per line, keyed on run id and attempt. A pass
 appends only what the ledger does not hold; a rerun appends a fresh observation
 of the whole run, and the report reads each run's newest attempt only:
 
-    {"kind": "run", "run", "attempt", "pr", "head", "date", "verdict", "tiers": {tier: files}}
-    {"kind": "failure", <the same six>, "file", "tier", "miss", "rerun_green", "main_red"}
-    {"kind": "skip", <the same six>, "reason"}
+    {"kind": "run", "run", "attempt", "source", "fork", "pr", "head", "date",
+     "verdict", "tiers": {tier: files}}
+    {"kind": "failure", <the same seven>, "file", "tier", "miss", "rerun_green", "main_red"}
+    {"kind": "skip", <the same seven>, "reason"}
+
+Rows are joined and deduplicated only on values every later pass reads the same:
+the run id and attempt, the run's creation `date`, and `source`, which is `<head
+repository id>:<head branch>` as the run recorded them. A run keeps both after
+its PR merges and after the branch is deleted or the repository renamed. `pr` is
+the number GitHub lists only while the PR is open; it is kept for the summary
+and never compared. Two PRs opened one after the other from one branch share a
+`source`, so a failure they have in common is not marked `shared`: that keeps a
+rate up, never down. A run whose head repository no longer exists has no
+`source` and is excluded.
 
 A failure is not caused by the diff when the shard that failed it ended green on
 a rerun (`rerun_green`), the watcher's open main-red issue named its file when
-the row was recorded (`main_red`), or the same file failed on another PR within
+the row was recorded and the run is no older than the first red run on main
+(`main_red`), or the same file failed under another `source` within
 `--window-days` (`shared`, decided over the ledger at report time). Those rows
-stay in the ledger and are reported apart.
+stay in the ledger and are reported apart. An issue that closed before the pass
+ran clears nothing, so its failures count as caused by the diff.
 
 Each tier's rate is its diff-caused failing files over the files `select`
 verdicts placed in it, with the upper bound of the two-sided 95% Wilson
 interval. A test file the Linux suite never collects still counts as a trial. A
+fork's run adds its failures but no trial: its verdict is written by code the
+fork controls, and the files a verdict lists are the trials. A
 failing file a `select` verdict gave no tier cannot be fitted: the summary lists
 it first, no rates are written, and the exit code is 1.
 
@@ -68,9 +83,9 @@ MAX_VERDICT_BYTES = 8 * 1024 * 1024
 # GitHub lists at most 1,000 runs for one query; `--since` narrows the query.
 MAX_RUN_PAGES = 10
 Z95 = 1.959964
-KEYS = ("run", "attempt", "pr", "head", "date")
 NO_VERDICT = "no verdict artifact"
 BAD_VERDICT = "invalid verdict"
+NO_SOURCE = "its head repository no longer exists"
 
 _TIER = re.compile(r"[A-Za-z0-9_-]{1,20}")
 _FILE = re.compile(r"[A-Za-z0-9_./-]{1,300}\.py")
@@ -221,8 +236,12 @@ def read_run(
     return failing
 
 
-def main_red_files(root: Path) -> set[str]:
-    """The test files the watcher's open main-red issue names, read with the watcher's parser."""
+def main_red_files(root: Path) -> tuple[int, set[str]]:
+    """`(first red run on main, the test files named)` from the watcher's open main-red issue.
+
+    Read with the watcher's own `pick_issue` and `parse_state`. With no such issue
+    the set is empty.
+    """
     issues = shadow._gh_json(
         ["api", f"repos/{shadow.REPO}/issues?state=open&labels={red_skip.LABEL}&per_page=100"],
         root,
@@ -230,21 +249,22 @@ def main_red_files(root: Path) -> set[str]:
     watch = shadow.watch_module()
     issue = watch.pick_issue(red_skip.as_watcher_rows(issues if isinstance(issues, list) else []))
     state = watch.parse_state(str(issue.get("body") or "")) if issue else None
-    return set(shadow.failing_test_files(state["failures"])) if state else set()
+    if not state:
+        return 0, set()
+    return int(state["first_run_id"]), set(shadow.failing_test_files(state["failures"]))
 
 
 def run_key(run: Row) -> Row:
-    """The fields every row of one run attempt carries.
-
-    A fork's run lists no pull request, so its `pr` is `<head repository>:<branch>`,
-    which is the same for every push of that PR.
-    """
+    """The fields every row of one run attempt carries; `source` is None with no head repository."""
+    head = run.get("head_repository") or {}
     prs = run.get("pull_requests") or []
-    fork = f"{(run.get('head_repository') or {}).get('full_name')}:{run.get('head_branch')}"
+    known = _is_int(head.get("id"))
     return {
         "run": run["id"],
         "attempt": int(run.get("run_attempt") or 1),
-        "pr": prs[0]["number"] if prs else cell(fork),
+        "source": f"{head['id']}:{run.get('head_branch')}" if known else None,
+        "fork": head.get("id") != (run.get("repository") or {}).get("id"),
+        "pr": prs[0]["number"] if prs else None,
         "head": run["head_sha"],
         "date": run["created_at"],
     }
@@ -288,13 +308,15 @@ def examine(
     verdict = parse_verdict(text)
     if verdict is None:
         return None, BAD_VERDICT
+    if run_key(run)["source"] is None:
+        return None, NO_SOURCE
     return verdict, read_run(run, root, parse)
 
 
 def collect(args: argparse.Namespace, recorded: dict[int, int], root: Path) -> list[Row]:
     """Rows for up to `--limit` run attempts the ledger does not hold, newest run first."""
     parse = shadow._nodeid_parser()
-    main_red = main_red_files(root)
+    red_since, red_files = main_red_files(root)
     rows: list[Row] = []
     taken = 0
     for run in list_runs(root, args.since):
@@ -314,7 +336,8 @@ def collect(args: argparse.Namespace, recorded: dict[int, int], root: Path) -> l
         if isinstance(seen, str) or verdict is None:
             rows.append({"kind": "skip", **key, "reason": seen})
         else:
-            rows += run_rows(key, verdict, seen, main_red)
+            named = red_files if key["run"] >= red_since else set()
+            rows += run_rows(key, verdict, seen, named)
     return rows
 
 
@@ -330,7 +353,12 @@ def valid_row(row: object) -> bool:
     """Whether one parsed ledger line has the shape this script writes."""
     if not isinstance(row, dict) or not _is_int(row.get("run")) or not _is_int(row.get("attempt")):
         return False
-    if not (_is_int(row.get("pr")) or isinstance(row.get("pr"), str)):
+    kind, source = row.get("kind"), row.get("source")
+    if not (isinstance(source, str) or (source is None and kind == "skip")):
+        return False
+    if not (row.get("pr") is None or _is_int(row.get("pr"))) or not isinstance(
+        row.get("fork"), bool
+    ):
         return False
     if not isinstance(row.get("head"), str) or not _SHA.fullmatch(row["head"]):
         return False
@@ -339,7 +367,6 @@ def valid_row(row: object) -> bool:
             return False
     except ValueError:
         return False
-    kind = row.get("kind")
     if kind == "skip":
         return isinstance(row.get("reason"), str)
     if kind == "run":
@@ -412,7 +439,7 @@ def classify(rows: list[Row], window_days: float) -> list[Row]:
         if row["kind"] != "failure" or row["run"] not in select:
             continue
         shared = any(
-            other["pr"] != row["pr"]
+            other["source"] != row["source"]
             and abs((_when(other) - _when(row)).total_seconds()) <= window_days * 86400
             for other in by_file[row["file"]]
         )
@@ -444,7 +471,7 @@ def fit(rows: list[Row], failures: list[Row]) -> dict[str, Row]:
     for row in rows:
         if row["kind"] == "run" and row["verdict"] == "select":
             for tier, count in row["tiers"].items():
-                entry(tier)["trials"] += count
+                entry(tier)["trials"] += 0 if row["fork"] else count
     for row in failures:
         if row["tier"] is not None:
             entry(row["tier"])["failures" if row["diff_caused"] else "other"] += 1
@@ -471,7 +498,7 @@ def _table(head: list[str], body: list[list[object]]) -> list[str]:
 
 
 def _where(row: Row) -> list[object]:
-    pr = f"#{row['pr']}" if _is_int(row["pr"]) else row["pr"]
+    pr = f"#{row['pr']}" if _is_int(row["pr"]) else row["source"]
     return [pr, row["head"][:12], row["run"], row["file"]]
 
 
@@ -483,7 +510,8 @@ def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> st
     skipped = Counter(row["reason"] for row in rows if row["kind"] == "skip")
     lines = [
         f"Runs fitted: {len(fitted)} with a `select` verdict; {len(runs) - len(fitted)} more "
-        f"had a `full` verdict. Days of data: {span:.1f}.",
+        f"had a `full` verdict. Days of data: {span:.1f}. "
+        f"Fork runs, which add failures but no trials: {sum(row['fork'] for row in fitted)}.",
         f"Runs excluded: {sum(skipped.values())}"
         + "".join(f"; {cell(reason)}: {n}" for reason, n in sorted(skipped.items()))
         + ".",
