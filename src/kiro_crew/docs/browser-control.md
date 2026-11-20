@@ -189,14 +189,16 @@ then shows "Fast mode: N moves · rate", a bar for how much of its step or time
 budget it has used, and, when it stops, why. Take over stops it at the next
 move. Its many steps fold to the last few in the step list.
 
-**Settings → Browser → Live view in chat** turns the view off, caps the frame
-rate, picks a quality, and controls the password mask (on by default).
+**Settings → Browser → Show the live view in chat** turns the view off; under
+**More**, **Quality** and **Max frame rate** set the picture. Password boxes are
+always masked in the live view: `browser.live.mask_passwords` has no control on
+the page and stays on unless set with `kirocrew config set`.
 
 ## Preview tab
 
 The side panel keeps one browser surface of its own: the **Preview** tab, for a
 local dev server the agent started for you. It opens only the origins listed
-under **Local preview origins**, and the agent does not drive it; an outside URL
+under **Local addresses the Preview tab can open** (Settings → Browser → More), and the agent does not drive it; an outside URL
 there answers "Open this in your Chrome, or ask Kiro". That list is also the only
 way the agent's `browser` tool may open a loopback address, so an origin listed for
 the tab is open to the agent's browser too. Once the chat has browsed,
@@ -206,14 +208,12 @@ chat.
 
 ## Settings → Browser
 
-| Section | What it holds |
+| Part | What it holds |
 |---|---|
-| Browser in use | which browser is connected, its state, the fallback order, Test, Disconnect |
-| Engine | the browser engine version; Kiro's Chromium version, Redownload |
-| Privacy | no usage data leaves the machine and no cloud browser is used (not configurable) |
-| Live view in chat | show the live view, quality, maximum frame rate, mask password fields |
-| Local preview | the Preview tab's origins |
-| Advanced | pick a browser by hand: automatic, your Chrome, Kiro's Chromium, headless |
+| Status card | which browser is connected and its state, Test, Disconnect |
+| Main rows | **Which browser** (Automatic, Your Chrome, Kiro's Chromium), **Browser isolation** (shared, or isolated per chat), **Show the live view in chat**, and **Use <provider> sign-in** when your edition has a sign-in provider |
+| **More** (collapsed) | **Quality**, **Max frame rate**, **Local addresses the Preview tab can open**, **Sign-in sites** (with a sign-in provider), **Engine** (versions, Download or Redownload), **Run with no window** |
+| Footer | nothing is uploaded; usage data and the cloud browser are off (not configurable) |
 
 The first visit walks through three steps (install the engine, connect your
 Chrome, try it); **Skip** uses Kiro's own Chromium instead.
