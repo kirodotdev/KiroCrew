@@ -1368,7 +1368,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Resource Critical Threshold (GB)",
-      "help": "Available memory (GB) at or below which the [RESOURCES] context line escalates to 'critically low' and advises against starting heavy work at all. Should be <= resource_pressure_gb. 0 disables the critical tier. When the container's memory limit is at or under it, the gateway logs one start-up warning naming the settings to lower.",
+      "help": "Available memory (GB) at or below which the [RESOURCES] context line escalates to 'critically low' and advises against starting heavy work at all. Should be <= resource_pressure_gb. It also arms the host memory guard, which on Linux stops the largest Crew tool or test tree at critical memory, or at tight memory with PSI full avg10 >= 10. 0 disables the critical tier and turns the memory guard off. When the container's memory limit is at or under it, the gateway logs one start-up warning naming the settings to lower.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 2.0
@@ -1382,7 +1382,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Posture Admission Gate",
-      "help": "While available memory is at or below resource_critical_gb, defer scheduled cron firings to the next tick, and TaskRunner steps and workflow ctx.agent() calls by admit_wait_secs, until memory frees. Background helper turns (titles, labels, summaries, history consolidation) are skipped while it lasts. Subagent spawns are not gated on this posture; they wait on spawn_min_memory_gb instead. Manually triggered cron runs and direct chat turns are never gated; an unreadable probe admits (fail-open). Set false to make the critical posture advisory-only.",
+      "help": "While available memory is at or below resource_critical_gb, defer scheduled cron firings to the next tick, and TaskRunner steps and workflow ctx.agent() calls by admit_wait_secs, until memory frees. Background helper turns (titles, labels, summaries, history consolidation) are skipped while it lasts. Subagent spawns are not gated on this posture; they wait on spawn_min_memory_gb instead. Manually triggered cron runs and direct chat turns are never gated; an unreadable probe admits (fail-open). Set false to make the critical posture advisory-only for these deferrals; it does not stop the host memory guard (see resource_critical_gb).",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true

@@ -1570,6 +1570,11 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         "dashboard/handlers/work_ledger.py",
         "dashboard/handlers/work_ledger_caller.py",
         "dashboard/handlers/work_ledger_conductor.py",
+        # The host memory guard's ``question`` report (rfc-host-memory-guard.md
+        # §4.4). The gateway is the writer and no request reaches it: the worker
+        # is the session whose tree the guard stopped, and its item comes from that
+        # worker's own binding, read here.
+        "dashboard/memory_guard_report.py",
         "dashboard/handlers/work_ledger_handback.py",
         "dashboard/handlers/work_ledger_read.py",
         "dashboard/handlers/work_ledger_recording.py",
