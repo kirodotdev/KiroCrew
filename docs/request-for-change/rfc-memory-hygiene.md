@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Keep semantic memory small enough for consolidation to dedupe against
 
-- Status: draft (no acceptance recorded, so the First Principles lane does not read parts 2 to 4 as decided). Part 1, as amended on 2026-10-26, is on main from [#24511](https://github.com/kirodotdev/KiroCrew/pull/24511): `memory.kind_routing` (default off) and the `SemanticRejectCode.WORK_STATE` refusal. Parts 2 to 4 are not built: `_bounded_semantic_table` still keeps the newest rows, and no daily sweep or fact restore exists.
+- Status: draft (no acceptance recorded, so the First Principles lane does not read parts 2 to 4 as decided). Part 1, as amended on 2026-10-26, is on main from [#24511](https://github.com/kirodotdev/KiroCrew/pull/24511): `memory.kind_routing` and the `SemanticRejectCode.WORK_STATE` refusal; since 2026-11-20 `memory.kind_routing` defaults to `enforce` by the owner's decision on early shadow data, with `off` as the rollback. Parts 2 to 4 are not built: `_bounded_semantic_table` still keeps the newest rows, and no daily sweep or fact restore exists.
 - Author: iamwhatever
 - Created: 2026-10-22
 - Tracks [#16354](https://github.com/kirodotdev/KiroCrew/issues/16354) and answers its "Direction to decide".
@@ -119,8 +119,11 @@ regex. The prompt asks for a `kind` on each semantic item (`fact`, `event` or
 the same two write paths. It answers question 1 below with "refuse" for now: a
 `state` item is refused under a new audited `SemanticRejectCode`, and an `event`
 is still written as a fact. Rewriting an `event` as a dated episodic record is
-deferred to a follow-up that reads the shadow samples first. It ships `off` by default. `shadow` (write as
-today, log what routing would do, inside fixed caps) and `enforce` are opt-in. The spec's
+deferred to a follow-up that reads the shadow samples first. It shipped `off` by default, with `shadow`
+(write as today, log what routing would do, inside fixed caps) and `enforce` opt-in.
+Since 2026-11-20 the default is `enforce`, and the consolidation prompt asks no `kind`
+under any mode: `enforce` asks the separate label call `shadow` measured (rules version 4)
+before the writes, so it drops what the shadow log counted. The spec's
 Consolidation Integration section holds the detail.
 
 ### 2. Pick the table by relevance (the hybrid in #16354)

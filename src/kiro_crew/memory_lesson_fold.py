@@ -5,10 +5,10 @@ or spacing, or a rewording whose stored vector sits at cosine 0.95 or more. Each
 copy takes room in the capped rule block, so a copy can push a different rule out.
 ``memory.lesson_fold`` picks the mode:
 
-* ``off`` (default) -- nothing is read; the block is today's, byte for byte.
-* ``shadow`` -- the block is today's; the injection receipt records each
+* ``off`` -- nothing is read; every copy stays in the block.
+* ``shadow`` -- the block is ``off``'s; the injection receipt records each
   ``(leader, folded)`` id pair the fold would apply.
-* ``enforce`` -- each folded row is left out of the block before the budget is
+* ``enforce`` (default) -- each folded row is left out of the block before the budget is
   applied, and the block says how many were folded and that ``learn_list`` shows
   all. A folded row is not a budget omission and is not counted as one.
 

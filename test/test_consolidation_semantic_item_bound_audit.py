@@ -106,7 +106,9 @@ async def test_no_audit_when_writes_are_off_or_the_lease_is_lost(
         c, _item(_SMALL_KEY, _SMALL), _item(_LARGE_KEY, _LARGE), while_thinking=while_thinking
     )
 
-    assert len(prompts) == 1, "the pass reached the model, so the refusal was screened"
+    # Kind routing's enforce label call, when the default makes one, is not the pass's turn.
+    turns = [p for p in prompts if not p.startswith("Label stored memory items.")]
+    assert len(turns) == 1, "the pass reached the model, so the refusal was screened"
     assert outcome is _CONSOLIDATION_REFUSED
     assert _audited(store) == []
     assert store.get_rejection_stats().get(_CODE) is None

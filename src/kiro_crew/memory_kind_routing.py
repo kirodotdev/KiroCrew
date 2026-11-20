@@ -1,8 +1,9 @@
-"""Route consolidation's ``project.*`` writes by the ``kind`` the model tagged them with.
+"""Route consolidation's ``project.*`` writes by the ``kind`` a label call gave them.
 
-Under ``enforce`` the consolidation prompt asks the model to tag each semantic item
-with a ``kind``; under ``shadow`` a separate small call labels the items after they
-are written (see below):
+The consolidation prompt never asks for a ``kind``. Under ``shadow`` and
+``enforce`` one separate small call (:func:`label_prompt`) labels the routed items
+under :data:`ENFORCE_KIND_RULES`: ``shadow`` after they are written, ``enforce``
+before, so the two decide every item the same way (see below):
 
 * ``fact`` -- still true in a month, and not looked up somewhere else.
 * ``event`` -- something that happened, worth a dated record.
@@ -24,8 +25,7 @@ this code at all.
 
 ``memory.kind_routing`` picks the mode:
 
-* ``off`` (default) -- the prompt does not ask for a tag, any tag is ignored and
-  nothing is logged.
+* ``off`` -- no label call, any tag is ignored and nothing is logged.
 * ``shadow`` (opt-in) -- the consolidation prompt and every write are ``off``'s,
   byte for byte. Once the pass has written, one more model call (:func:`label_shadow_kinds`)
   is handed only the routed items' keys and values, never the transcript, and labels
@@ -33,9 +33,13 @@ this code at all.
   input tokens and :data:`LABEL_TIMEOUT_SECS`. Its answer only feeds the log of what
   ``enforce`` would have done; a call that fails, times out or is throttled logs
   nothing for that pass and changes nothing written.
-* ``enforce`` -- a ``state`` item is not written and is audited under
+* ``enforce`` (default) -- the consolidation prompt is ``off``'s too. Before the
+  writes, the same label call (:func:`label_enforce_kinds`) labels the routed
+  items; a ``state`` item is not written and is audited under
   ``SemanticRejectCode.WORK_STATE``; a ``fact`` and an ``event`` are written as
-  facts, as before, and an ``event`` is still counted and sampled as one.
+  facts, as before, and an ``event`` is still counted as one. An item the call
+  leaves unlabelled, or a call that fails, times out or is throttled, writes
+  as ``off`` would.
   Nothing already stored is changed. Turning an ``event`` into a dated episode
   is left to a follow-up that reads the shadow samples first.
 
@@ -160,22 +164,11 @@ MIXED_ITEM_RULE: Final = (
     'it still reads true with every work-item number removed; otherwise tag the item "state". '
 )
 
-#: The ``kind`` rules ``enforce`` asks. ``shadow``'s label call asks the same
-#: string, so the log measures what ``enforce`` drops.
+#: The ``kind`` rules the label call asks, under ``shadow`` and ``enforce`` alike,
+#: so the shadow log measures what ``enforce`` drops.
 ENFORCE_KIND_RULES: Final = (
     _KIND_RULES_HEAD + WIDER_STATE_RULES + MIXED_ITEM_RULE + _KIND_RULES_TAIL
 )
-
-
-def kind_rules_for(mode: str) -> str:
-    """The consolidation prompt's ``kind`` rules under *mode*; only ``enforce`` asks any.
-
-    ``shadow`` asks the same rules in the separate label call instead
-    (:func:`label_prompt`), so its consolidation prompt is ``off``'s.
-    """
-    if kind_routing_mode_from(mode) == MODE_ENFORCE:
-        return ENFORCE_KIND_RULES
-    return ""
 
 
 #: A key suffix that marks one more copy of a topic rather than a topic of its own.
@@ -324,8 +317,10 @@ def route_consolidation_by_kind(result: dict, log: logging.Logger) -> KindRoutin
         counts: dict[str, int] = {}
         for decision in routing.decisions:
             counts[decision.kind] = counts.get(decision.kind, 0) + 1
+        # INFO only when enforce kept an item out: enforce is the default, and a
+        # line on every pass that refused nothing is noise.
         log.log(
-            logging.INFO if routing.mode == MODE_ENFORCE else logging.DEBUG,
+            logging.INFO if routing.refused else logging.DEBUG,
             "Consolidation kind routing (%s): %s",
             routing.mode,
             ", ".join(f"{count} {kind}" for kind, count in sorted(counts.items())),
@@ -381,45 +376,96 @@ def label_prompt_tokens(prompt: str) -> int:
     return len(prompt) // 3 + 1
 
 
+def labels_by_index(answer: object, count: int) -> list[str | None] | None:
+    """The kind the label *answer* gives each of *count* items, by index.
+
+    An index the answer gives no known kind is ``None``; ``None`` for an answer
+    that is not ``{"kinds": {...}}``. The one reading of a label answer, so
+    ``shadow`` and ``enforce`` cannot disagree on it.
+    """
+    kinds = answer.get("kinds") if isinstance(answer, dict) else None
+    if not isinstance(kinds, dict):
+        return None
+    labels: list[str | None] = []
+    for index in range(count):
+        raw = kinds.get(str(index))
+        kind = raw.strip().lower() if isinstance(raw, str) else ""
+        labels.append(kind if kind in KINDS else None)
+    return labels
+
+
 def apply_labels(routing: KindRouting, answer: object) -> KindRouting | None:
     """*routing* with each decision's kind taken from the label *answer*, by index.
 
     A decision whose index the answer gives no known kind is left out, so the log
     holds only labelled items; ``None`` when nothing was labelled.
     """
-    kinds = answer.get("kinds") if isinstance(answer, dict) else None
-    if not isinstance(kinds, dict):
+    labels = labels_by_index(answer, len(routing.decisions))
+    if labels is None:
         return None
-    labelled = []
-    for index, decision in enumerate(routing.decisions):
-        raw = kinds.get(str(index))
-        kind = raw.strip().lower() if isinstance(raw, str) else ""
-        if kind in KINDS:
-            labelled.append(decision._replace(kind=kind))
+    labelled = [
+        decision._replace(kind=kind)
+        for decision, kind in zip(routing.decisions, labels)
+        if kind is not None
+    ]
     return routing._replace(decisions=tuple(labelled)) if labelled else None
+
+
+async def _ask_labels(decisions: Sequence[KindDecision], ask: LabelCall) -> object:
+    """The label call's answer for *decisions*, or ``None`` when it was not sent or failed.
+
+    One call to *ask*, within :data:`LABEL_INPUT_TOKENS` and
+    :data:`LABEL_TIMEOUT_SECS`. Never raises on a failed, slow or throttled call.
+    """
+    prompt = label_prompt(decisions)
+    if label_prompt_tokens(prompt) > LABEL_INPUT_TOKENS:
+        logger.info("Kind label prompt is over its token bound; not labelled")
+        return None
+    try:
+        return await asyncio.wait_for(ask(prompt), timeout=LABEL_TIMEOUT_SECS)
+    except Exception:
+        logger.info("Kind label call failed; not labelled", exc_info=True)
+        return None
 
 
 async def label_shadow_kinds(routing: KindRouting, ask: LabelCall) -> KindRouting | None:
     """The shadow log's routing for an already-written pass, or ``None`` to log nothing.
 
     *routing* is :func:`route_semantic_by_kind` under ``shadow`` on the fenced
-    answer, with :func:`capture_prior` read before the writes. One call to *ask*,
-    within :data:`LABEL_INPUT_TOKENS` and :data:`LABEL_TIMEOUT_SECS`. Never raises
-    on a failed, slow or throttled call: the pass's writes are already made, and
-    a log is not worth failing them.
+    answer, with :func:`capture_prior` read before the writes. Never raises: the
+    pass's writes are already made, and a log is not worth failing them.
     """
     if routing.mode != MODE_SHADOW or not routing.decisions:
         return None
-    prompt = label_prompt(routing.decisions)
-    if label_prompt_tokens(prompt) > LABEL_INPUT_TOKENS:
-        logger.info("Shadow kind label prompt is over its token bound; not logged")
-        return None
-    try:
-        answer = await asyncio.wait_for(ask(prompt), timeout=LABEL_TIMEOUT_SECS)
-    except Exception:
-        logger.info("Shadow kind label call failed; not logged", exc_info=True)
-        return None
-    return apply_labels(routing, answer)
+    return apply_labels(routing, await _ask_labels(routing.decisions, ask))
+
+
+async def label_enforce_kinds(result: dict, fenced: dict, ask: LabelCall) -> dict:
+    """*result* with each routed item's ``kind`` set by the label call, before any write.
+
+    *fenced* is ``_withhold_unseen_deletes`` on *result*; it keeps *result*'s own
+    item objects, and its routed items are the ones :func:`route_semantic_by_kind`
+    decides, in the order the label call numbers them, so this labels exactly what
+    ``shadow`` would. Each routed item is replaced by a copy carrying the label, or
+    ``fact`` when the call gave it none or failed, so a tag the model added on its
+    own is never what decides. Never raises.
+    """
+    items = fenced.get("semantic")
+    if not isinstance(items, list):
+        return result
+    routed = [item for item in items[:_MAX_SEMANTIC_PER_CONSOLIDATION] if is_routed(item)]
+    if not routed:
+        return result
+    decisions = [KindDecision(item["key"], KIND_FACT, item["value"]) for item in routed]
+    labels = labels_by_index(await _ask_labels(decisions, ask), len(routed))
+    stamped = {
+        id(item): {**item, "kind": (labels[index] if labels else None) or KIND_FACT}
+        for index, item in enumerate(routed)
+    }
+    return {
+        **result,
+        "semantic": [stamped.get(id(item), item) for item in result.get("semantic") or ()],
+    }
 
 
 async def log_shadow_kinds(

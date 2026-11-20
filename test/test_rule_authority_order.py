@@ -133,6 +133,18 @@ class TestTheModes:
             "would_drop": [],
         }
 
+    def test_enforce_shows_exactly_the_ids_shadow_logged(self, store):
+        _seed(store)
+        _, off_receipts = _block(store, "off")
+        _, shadow_receipts = _block(store, "shadow")
+        _, receipts = _block(store, "enforce")
+        logged = shadow_receipts[STAGE]
+        assert logged["would_add"] and logged["would_drop"]
+        shown = set(off_receipts[injection_receipts.LESSONS]["ids"])
+        expected = (shown - set(logged["would_drop"])) | set(logged["would_add"])
+        assert set(receipts[injection_receipts.LESSONS]["ids"]) == expected
+        assert receipts[STAGE]["policy"] == logged["policy"]
+
     def test_enforce_keeps_request_relevance_inside_a_level(self, store):
         taught = [_rule("TAUGHTA"), "quokka deploy guard " + _rule("TAUGHTB")]
         for text in taught:
@@ -161,20 +173,21 @@ class TestTheModes:
 
 class TestTheFlag:
     @pytest.mark.parametrize("raw", [None, "", "ENFORCE", "on", 1, True, ["enforce"]])
-    def test_an_unknown_value_reads_as_off(self, raw):
-        assert rule_authority_order_mode_from(raw) == "off"
-        assert _build_memory_config({"rule_authority_order": raw}).rule_authority_order == "off"
+    def test_an_unknown_value_reads_as_the_default_enforce(self, raw):
+        assert rule_authority_order_mode_from(raw) == "enforce"
+        assert _build_memory_config({"rule_authority_order": raw}).rule_authority_order == "enforce"
 
     @pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
     def test_a_known_value_is_kept(self, mode):
         assert _build_memory_config({"rule_authority_order": mode}).rule_authority_order == mode
 
-    def test_the_default_is_off(self):
-        assert MemoryConfig().rule_authority_order == "off"
+    def test_the_default_is_enforce(self):
+        assert MemoryConfig().rule_authority_order == "enforce"
+        assert _build_memory_config({}).rule_authority_order == "enforce"
 
-    def test_an_unknown_value_renders_todays_block(self, store):
+    def test_an_unknown_value_renders_the_default_enforce_block(self, store):
         _seed(store)
-        assert _block(store, "sideways") == _block(store, "off")
+        assert _block(store, "sideways") == _block(store, "enforce")
 
     def test_a_recall_child_gets_the_mode(self):
         args = lessons_args(None, "q", 0, None, None, True, 0, 0, 0, "shadow")

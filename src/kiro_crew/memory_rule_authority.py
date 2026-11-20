@@ -10,10 +10,10 @@ Every lesson row gets an authority level from data it already carries:
 
 ``memory.rule_authority_order`` picks the mode:
 
-* ``off`` (default) -- the rule block is today's, byte for byte.
-* ``shadow`` -- the block is today's; the injection receipt records the rule ids
+* ``off`` -- the rule block keeps the relevance order.
+* ``shadow`` -- the block is ``off``'s; the injection receipt records the rule ids
   the authority order would add to it and drop from it.
-* ``enforce`` -- the block lists L1, then L2, then L3. Inside a level the
+* ``enforce`` (default) -- the block lists L1, then L2, then L3. Inside a level the
   shipped order holds: authored ``always`` rules before untagged rows, each by
   request relevance. The cap, the omission line and the findings block are
   unchanged.
