@@ -239,6 +239,7 @@
       "minimize-to-tray.js",
       "wsl-detection.js",
       "mochi-session-token.js",
+      "link-token-age.js",
       "app-local-files.js",
       "app-window-gateways.js",
       "app-window-host.js",

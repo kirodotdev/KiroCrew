@@ -88,3 +88,26 @@ test("gateway arm asks again after an empty answer", async () => {
   assert.deepStrictEqual(await arm.armedRecord(), { version: "", armedAt: null });
   assert.strictEqual(calls, 2);
 });
+
+test("gateway arm re-resolves a link token before the gateway's 300 s window refuses it", async (t) => {
+  let clock = 1_000_000;
+  t.mock.method(Date, "now", () => clock);
+  let mints = 0;
+  const seen = [];
+  const arm = createGatewayArm({
+    backendUrl: "http://127.0.0.1:1",
+    fetchGatewayAuth: async () => {
+      mints += 1;
+      return { value: `tok${mints}` };
+    },
+    fetchImpl: okFetch(seen),
+  });
+  // The 30 s arm poll, for six minutes: no request may carry a token past 240 s.
+  for (let i = 0; i < 12; i += 1) {
+    await arm.armedRecord();
+    clock += 30_000;
+  }
+  assert.strictEqual(mints, 2, "one re-mint inside six minutes, none per poll");
+  assert.ok(seen.slice(0, 8).every((u) => u.endsWith("token=tok1")));
+  assert.ok(seen.slice(8).every((u) => u.endsWith("token=tok2")), "the 240 s poll carries a fresh token");
+});
