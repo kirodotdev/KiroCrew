@@ -106,6 +106,7 @@ __all__ = [
     "KAS_VERSION_OVERRIDE_ENV",
     "bundle_spawn_argv",
     "engine_install_snapshot",
+    "ensure_engine_at_startup",
     "engine_spec_permissions_supported",
     "host_unsupported_reason",
     "install_pinned_engine",
@@ -381,6 +382,13 @@ def install_pinned_engine(
     from kiro_crew.acp.kas_engine_install import install_pinned_engine as _install
 
     return _install(base_url, caller=caller, on_progress=on_progress)
+
+
+def ensure_engine_at_startup() -> None:
+    """Install this release's pinned engine at gateway start when no root has it."""
+    from kiro_crew.acp.kas_engine_startup import ensure_engine_at_startup as _ensure
+
+    _ensure()
 
 
 def installed_engine_label() -> str | None:

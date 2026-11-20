@@ -1640,6 +1640,12 @@ if [ "${BUNDLE_KAS:-1}" = "1" ]; then
     stage_kas_bundle "$ELECTRON_DIR/backend-dist/kirocrew-backend" "$ELECTRON_DIR/backend-dist/kas" "$KAS_SYSTEM" "$KAS_MACHINE"
   fi
 else
+  # Engine guarantee (#39623): CI never builds a desktop artifact without its
+  # engine, so no release can ship one. A local build may still opt out.
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    echo "ERROR: BUNDLE_KAS=0 is refused in CI: every desktop artifact must carry the pinned KAS engine" >&2
+    exit 1
+  fi
   log "BUNDLE_KAS=0: app ships without a bundled KAS engine"
 fi
 

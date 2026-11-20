@@ -321,7 +321,9 @@ default (off) on every platform while the route is in shadow testing, and the
 relay route runs on the kiro-cli the user installed. Nothing in the build,
 the installer or the shell flips the switch; that stays the user's own step. `BUNDLE_KAS=0 make desktop` opts a build out (the payload is ~55 MB
 compressed, ~370 MB extracted per architecture); the switch then needs
-`kirocrew kas install` first, exactly as a pip install does. `KAS_BUNDLE_URL`
+`kirocrew kas install` first, exactly as a pure-wheel pip install does. CI refuses
+`BUNDLE_KAS=0` (`GITHUB_ACTIONS=true`), so no released artifact ships without the
+engine (the engine guarantee, #39623); the opt-out is for local builds. `KAS_BUNDLE_URL`
 names another manifest host (a mirror serving the same bytes; the pin refuses
 anything else).
 

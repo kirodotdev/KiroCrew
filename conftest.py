@@ -410,6 +410,7 @@ from conftest_floor_services import (  # noqa: E402,F401 -- bound for pytest and
     _SERVICE_MANAGERS,
     _block_host_service_mutation,
     _fail_on_refused_real_reclaim_write,
+    _no_engine_install_at_gateway_start,
     _no_real_cgroup_reclaim_write,
     _no_systemd_user_session,
     _refusal_reason,

@@ -566,7 +566,7 @@ process. Releases before this split reported every count from 4 up as `4+`.
 | `kirocrew.chat_runtime_share.turn_started` | `tenants`, `delay` (`le_1s` … `gt_60s`, prompt written to first event), `shared` (`true` / `false`: whether the process was placed by sharing; every unshared turn, preview off included, reads `false`), `harness` |
 | `kirocrew.chat_runtime_share.turn_ended` | `tenants`, `outcome` (the `kirocrew.turn.completed` outcome set), `harness` |
 | `kirocrew.chat_runtime_share.kas_queued` | `tenants` |
-| `kirocrew.kas.engine_install` | `outcome` (`installed` / `failed` / `host_unsupported`), `caller` (`spawn` / `dashboard` / `other`) |
+| `kirocrew.kas.engine_install` | `outcome` (`installed` / `failed` / `host_unsupported`), `caller` (`spawn` / `dashboard` / `startup` / `other`) |
 
 None carries a tip id, a video id, a timestamp or tip text. `recommended_by` is
 computed on the machine from a 14-day local record and only the label is sent;

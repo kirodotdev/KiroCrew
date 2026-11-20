@@ -7,6 +7,7 @@ name: Build Wheel (reusable)
 #
 # Uploads artifact "cli-wheel" containing dist/* (wheel + sdist). The wheel
 # is what publish-cli.yml ships; the sdist rides along for GitHub Releases.
+# The platform wheels built from it come from build-platform-wheels.yml.
 
 on:
   workflow_call:
