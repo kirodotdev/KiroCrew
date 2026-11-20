@@ -3,10 +3,10 @@ title: Keep semantic memory small enough for consolidation to dedupe against
 status: draft
 author: iamwhatever
 created: 2026-10-22
-last-audited: 2026-10-22
-audited-at: e844065dea
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: null
-implementation-prs: []
+implementation-prs: [24511]
 tracking-issues: [16354]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Keep semantic memory small enough for consolidation to dedupe against
 
-- Status: draft
+- Status: draft (no acceptance recorded, so the First Principles lane does not read parts 2 to 4 as decided). Part 1, as amended on 2026-10-26, is on main from [#24511](https://github.com/kirodotdev/KiroCrew/pull/24511): `memory.kind_routing` (default off) and the `SemanticRejectCode.WORK_STATE` refusal. Parts 2 to 4 are not built: `_bounded_semantic_table` still keeps the newest rows, and no daily sweep or fact restore exists.
 - Author: iamwhatever
 - Created: 2026-10-22
 - Tracks [#16354](https://github.com/kirodotdev/KiroCrew/issues/16354) and answers its "Direction to decide".

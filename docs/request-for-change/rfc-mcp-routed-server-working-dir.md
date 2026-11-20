@@ -3,8 +3,8 @@ title: "MCP gateway: routed servers and the session working directory"
 status: partial
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-12
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: [36277]
 tracking-issues: [36209]
