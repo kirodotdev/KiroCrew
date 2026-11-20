@@ -30,9 +30,6 @@ pytestmark = pytest.mark.xdist_group(name="ci_guard_tier_membership")
 
 ROOT = Path(__file__).resolve().parents[1]
 
-#: Each git child below is a few milliseconds of work on a three-file repository.
-GIT_SECS = FALLBACK_TIMEOUT_SECS / 2
-
 # Assembled, so no line of this file is itself a not-a-member line.
 MARK = "# guard-tier: " + "not a member -- "
 # Formatted, so this module's own text does not read as a test-tree join.
@@ -166,7 +163,7 @@ def _git(repo: Path, *args: str) -> str:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        timeout=GIT_SECS,
+        timeout=FALLBACK_TIMEOUT_SECS,
     )
     return done.stdout.strip()
 
