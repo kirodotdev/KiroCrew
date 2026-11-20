@@ -657,7 +657,7 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     # the slot, so the answer says nothing about a slot it cannot reach.
     if await rerun_signs_in_via_kiro_cli(state.sessions, slot, reuses_live=True):
         # The session this turn runs on names its harness; the KAS engine bundle
-        # is served by Crew's own sign-in and needs no kiro-cli.
+        # and a Crew-owned relay are served by Crew's own sign-in, not kiro-cli's.
         harness_turn, turn_session = turn_gate_target(state, slot.key)
         blocked = await reject_if_kiro_unverified(
             request, harness_turn=harness_turn, session_key=turn_session
