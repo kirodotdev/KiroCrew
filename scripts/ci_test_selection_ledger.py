@@ -46,8 +46,19 @@ ran clears nothing, so its failures count as caused by the diff.
 Each tier's rate is its diff-caused failing files over the files `select`
 verdicts placed in it, with the upper bound of the two-sided 95% Wilson
 interval. A test file the Linux suite never collects still counts as a trial. A
-fork's run adds its failures but no trial: its verdict is written by code the
-fork controls, and the files a verdict lists are the trials. A
+
+Trust: what a run from another repository (a fork) says is never evidence. Its
+verdict and its logs are written by code the fork controls, so its rows are
+recorded and its misses are listed, but the fit, the `shared` evidence, the days
+of data and the withheld-rates check read same-repository rows only. No fork row
+can change a number this script proposes. A same-repository run is trusted as
+far as its author, who can already push to the repository. The main-red issue is
+trusted only when the watcher wrote it.
+
+Every row is checked with `valid_row` before it is written, the same check a
+later pass applies when it reads the ledger; a run whose rows fail it is
+recorded as excluded. The ledger is replaced through a temporary file, so an
+interrupted pass leaves the old ledger whole. A
 failing file a `select` verdict gave no tier cannot be fitted: the summary lists
 it first, no rates are written, and the exit code is 1.
 
@@ -60,6 +71,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -86,11 +98,13 @@ Z95 = 1.959964
 NO_VERDICT = "no verdict artifact"
 BAD_VERDICT = "invalid verdict"
 NO_SOURCE = "its head repository no longer exists"
+BAD_ROW = "its rows would not read back from the ledger"
 
 _TIER = re.compile(r"[A-Za-z0-9_-]{1,20}")
 _FILE = re.compile(r"[A-Za-z0-9_./-]{1,300}\.py")
 _SHA = re.compile(r"[0-9a-f]{40}")
 _DAY = re.compile(r"\d{4}-\d\d-\d\d")
+_STAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 _ARTIFACT = re.compile(r"[A-Za-z0-9_.-]{1,100}")
 _NOT_CELL = re.compile(r"[^A-Za-z0-9 _./:#-]")
 
@@ -254,19 +268,27 @@ def main_red_files(root: Path) -> tuple[int, set[str]]:
     return int(state["first_run_id"]), set(shadow.failing_test_files(state["failures"]))
 
 
+def _dict(value: object) -> Row:
+    return value if isinstance(value, dict) else {}
+
+
 def run_key(run: Row) -> Row:
-    """The fields every row of one run attempt carries; `source` is None with no head repository."""
-    head = run.get("head_repository") or {}
-    prs = run.get("pull_requests") or []
-    known = _is_int(head.get("id"))
+    """The fields every row of one run attempt carries, as GitHub gave them.
+
+    `source` is None with no head repository. Nothing here is checked: `collect`
+    passes the result through `valid_row` before it uses it.
+    """
+    head = _dict(run.get("head_repository"))
+    prs = run.get("pull_requests")
+    number = _dict(prs[0]).get("number") if isinstance(prs, list) and prs else None
     return {
-        "run": run["id"],
-        "attempt": int(run.get("run_attempt") or 1),
-        "source": f"{head['id']}:{run.get('head_branch')}" if known else None,
-        "fork": head.get("id") != (run.get("repository") or {}).get("id"),
-        "pr": prs[0]["number"] if prs else None,
-        "head": run["head_sha"],
-        "date": run["created_at"],
+        "run": run.get("id"),
+        "attempt": run.get("run_attempt", 1),
+        "source": f"{head['id']}:{run.get('head_branch')}" if _is_int(head.get("id")) else None,
+        "fork": head.get("id") != _dict(run.get("repository")).get("id"),
+        "pr": number if _is_int(number) else None,
+        "head": run.get("head_sha"),
+        "date": run.get("created_at"),
     }
 
 
@@ -314,7 +336,11 @@ def examine(
 
 
 def collect(args: argparse.Namespace, recorded: dict[int, int], root: Path) -> list[Row]:
-    """Rows for up to `--limit` run attempts the ledger does not hold, newest run first."""
+    """Rows for up to `--limit` run attempts the ledger does not hold, newest run first.
+
+    Every row returned passes `valid_row`, so the ledger never holds a line a
+    later pass refuses.
+    """
     parse = shadow._nodeid_parser()
     red_since, red_files = main_red_files(root)
     rows: list[Row] = []
@@ -322,7 +348,11 @@ def collect(args: argparse.Namespace, recorded: dict[int, int], root: Path) -> l
     for run in list_runs(root, args.since):
         if taken >= args.limit:
             break
-        key = run_key(run)
+        key = run_key(_dict(run))
+        excluded = {"kind": "skip", **key, "reason": BAD_ROW}
+        if not valid_row(excluded):
+            print(f"run {cell(key['run'])}: its listing is unusable; not recorded", file=sys.stderr)
+            continue
         if key["attempt"] <= recorded.get(key["run"], 0):
             continue
         verdict, seen = examine(run, args, root, parse)
@@ -334,11 +364,25 @@ def collect(args: argparse.Namespace, recorded: dict[int, int], root: Path) -> l
         recorded[key["run"]] = key["attempt"]
         taken += 1
         if isinstance(seen, str) or verdict is None:
-            rows.append({"kind": "skip", **key, "reason": seen})
+            fresh = [{**excluded, "reason": seen}]
         else:
             named = red_files if key["run"] >= red_since else set()
-            rows += run_rows(key, verdict, seen, named)
+            fresh = run_rows(key, verdict, seen, named)
+        rows += fresh if all(valid_row(row) for row in fresh) else [excluded]
     return rows
+
+
+def append_rows(path: Path, rows: list[Row]) -> None:
+    """Add `rows` to the ledger by replacing it, so no reader ever sees a half-written line."""
+    if not rows:
+        return
+    old = path.read_bytes() if path.is_file() else b""
+    if old and not old.endswith(b"\n"):
+        old += b"\n"
+    text = "".join(json.dumps(row, allow_nan=False) + "\n" for row in rows)
+    partial = path.with_name(path.name + ".partial")
+    partial.write_bytes(old + text.encode("utf-8"))
+    os.replace(partial, path)
 
 
 def _when(row: Row) -> datetime:
@@ -353,6 +397,8 @@ def valid_row(row: object) -> bool:
     """Whether one parsed ledger line has the shape this script writes."""
     if not isinstance(row, dict) or not _is_int(row.get("run")) or not _is_int(row.get("attempt")):
         return False
+    if row["attempt"] < 1:
+        return False
     kind, source = row.get("kind"), row.get("source")
     if not (isinstance(source, str) or (source is None and kind == "skip")):
         return False
@@ -362,9 +408,10 @@ def valid_row(row: object) -> bool:
         return False
     if not isinstance(row.get("head"), str) or not _SHA.fullmatch(row["head"]):
         return False
+    if not isinstance(row.get("date"), str) or not _STAMP.fullmatch(row["date"]):
+        return False
     try:
-        if _when(row).tzinfo is None:
-            return False
+        _when(row)
     except ValueError:
         return False
     if kind == "skip":
@@ -426,13 +473,13 @@ def current(rows: list[Row], since: str | None) -> list[Row]:
 def classify(rows: list[Row], window_days: float) -> list[Row]:
     """The failure rows of `select` runs, each with `shared` and `diff_caused` set.
 
-    A failure under a `full` verdict has no tier to fit, but it still shows that
-    its file fails on that PR too.
+    Only a same-repository failure is evidence that a file fails elsewhere; under
+    a `full` verdict it has no tier to fit, but it is evidence all the same.
     """
     select = {row["run"] for row in rows if row["kind"] == "run" and row["verdict"] == "select"}
     by_file: dict[str, list[Row]] = {}
     for row in rows:
-        if row["kind"] == "failure":
+        if row["kind"] == "failure" and not row["fork"]:
             by_file.setdefault(row["file"], []).append(row)
     out = []
     for row in rows:
@@ -441,11 +488,16 @@ def classify(rows: list[Row], window_days: float) -> list[Row]:
         shared = any(
             other["source"] != row["source"]
             and abs((_when(other) - _when(row)).total_seconds()) <= window_days * 86400
-            for other in by_file[row["file"]]
+            for other in by_file.get(row["file"], ())
         )
         caused = not (shared or row["rerun_green"] or row["main_red"])
         out.append({**row, "shared": shared, "diff_caused": caused})
     return out
+
+
+def untiered(failures: list[Row]) -> list[Row]:
+    """Same-repository failing files a `select` verdict gave no tier: they cannot be fitted."""
+    return [row for row in failures if row["tier"] is None and not row["fork"]]
 
 
 def wilson_upper(failures: int, trials: int) -> float:
@@ -459,7 +511,7 @@ def wilson_upper(failures: int, trials: int) -> float:
 
 
 def fit(rows: list[Row], failures: list[Row]) -> dict[str, Row]:
-    """Per tier: files held, diff-caused and other failures, the rate and its upper bound.
+    """Per tier, from same-repository runs: files held, failures, the rate and its upper bound.
 
     The bound is rounded up, so rounding never makes a tier look safer than the data.
     """
@@ -469,11 +521,11 @@ def fit(rows: list[Row], failures: list[Row]) -> dict[str, Row]:
         return tiers.setdefault(tier, {"trials": 0, "failures": 0, "other": 0})
 
     for row in rows:
-        if row["kind"] == "run" and row["verdict"] == "select":
+        if row["kind"] == "run" and row["verdict"] == "select" and not row["fork"]:
             for tier, count in row["tiers"].items():
-                entry(tier)["trials"] += 0 if row["fork"] else count
+                entry(tier)["trials"] += count
     for row in failures:
-        if row["tier"] is not None:
+        if row["tier"] is not None and not row["fork"]:
             entry(row["tier"])["failures" if row["diff_caused"] else "other"] += 1
     for counts in tiers.values():
         measured = counts["trials"] > 0
@@ -504,26 +556,27 @@ def _where(row: Row) -> list[object]:
 
 def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> str:
     runs = [row for row in rows if row["kind"] == "run"]
-    fitted = [row for row in runs if row["verdict"] == "select"]
+    select = [row for row in runs if row["verdict"] == "select"]
+    fitted = [row for row in select if not row["fork"]]
     days = [_when(row) for row in fitted]
     span = (max(days) - min(days)).total_seconds() / 86400 if days else 0.0
     skipped = Counter(row["reason"] for row in rows if row["kind"] == "skip")
     lines = [
-        f"Runs fitted: {len(fitted)} with a `select` verdict; {len(runs) - len(fitted)} more "
+        f"Runs fitted: {len(fitted)} with a `select` verdict; {len(runs) - len(select)} more "
         f"had a `full` verdict. Days of data: {span:.1f}. "
-        f"Fork runs, which add failures but no trials: {sum(row['fork'] for row in fitted)}.",
+        f"Fork runs, reported but not fitted: {len(select) - len(fitted)}.",
         f"Runs excluded: {sum(skipped.values())}"
         + "".join(f"; {cell(reason)}: {n}" for reason, n in sorted(skipped.items()))
         + ".",
         "",
     ]
-    untiered = [row for row in failures if row["tier"] is None]
-    if untiered:
+    unfitted = untiered(failures)
+    if unfitted:
         lines += [
-            f"**Failing files a `select` verdict gave no tier: {len(untiered)}. "
+            f"**Failing files a `select` verdict gave no tier: {len(unfitted)}. "
             "No rates are proposed while the ledger holds one.**",
             "",
-            *_table(["PR", "Head", "Run", "File"], [_where(row) for row in untiered]),
+            *_table(["PR", "Head", "Run", "File"], [_where(row) for row in unfitted]),
             "",
         ]
     lines += _table(
@@ -533,13 +586,15 @@ def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> st
             for t, c in tiers.items()
         ],
     )
-    for title, caused in (("Misses caused by the diff", True), ("Misses not caused by it", False)):
-        picked = [row for row in failures if row["miss"] and row["diff_caused"] is caused]
+    misses = [row for row in failures if row["miss"]]
+    groups = [
+        ("Misses caused by the diff", [r for r in misses if r["diff_caused"] and not r["fork"]]),
+        ("Misses not caused by it", [r for r in misses if not r["diff_caused"] and not r["fork"]]),
+        ("Misses on fork runs, reported and not fitted", [r for r in misses if r["fork"]]),
+    ]
+    for title, picked in groups:
         lines += ["", f"{title}: {len(picked)}."]
-        if picked and caused:
-            body = [[*_where(row), row["tier"]] for row in picked]
-            lines += ["", *_table(["PR", "Head", "Run", "File", "Tier"], body)]
-        elif picked:
+        if picked:
             body = [
                 [
                     *_where(row),
@@ -548,7 +603,7 @@ def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> st
                 ]
                 for row in picked
             ]
-            lines += ["", *_table(["PR", "Head", "Run", "File", "Tier", "Why"], body)]
+            lines += ["", *_table(["PR", "Head", "Run", "File", "Tier", "Not diff-caused"], body)]
     return "\n".join(lines)
 
 
@@ -583,8 +638,7 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, subprocess.CalledProcessError) as error:
         print(f"nothing recorded: {error}", file=sys.stderr)
         return 2
-    with open(ledger_path, "a", encoding="utf-8") as handle:
-        handle.writelines(json.dumps(row) + "\n" for row in new)
+    append_rows(ledger_path, new)
     rows = current(ledger + new, args.since)
     failures = classify(rows, args.window_days)
     tiers = fit(rows, failures)
@@ -592,7 +646,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.summary_out:
         Path(args.summary_out).write_text(text + "\n", encoding="utf-8")
     print(text)
-    if any(row["tier"] is None for row in failures):
+    if untiered(failures):
         print("no rates written: a failing file has no tier", file=sys.stderr)
         return 1
     Path(args.rates_out).write_text(

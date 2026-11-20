@@ -12,8 +12,10 @@ Pinned:
   pass or a fail adds trials; any other run is recorded as excluded.
 * LEDGER -- a second pass adds no row, a rerun supersedes, an unreadable run is
   tried again, and a listing longer than one page is read to its end.
-* DATA -- a verdict or ledger line of the wrong shape is refused, and no cell of
-  the summary can carry markup.
+* DATA -- a verdict or ledger line of the wrong shape is refused, every row the
+  script writes reads back, and no cell of the summary can carry markup.
+* TRUST -- no row of a fork run changes a number the script proposes or how a
+  same-repository failure is classified.
 """
 
 from __future__ import annotations
@@ -406,6 +408,59 @@ def test_a_failing_file_with_no_tier_withholds_the_rates(gh: FakeGh, tmp_path: P
     assert rates(tmp_path) == {"schema": 1, "tiers": {}}
 
 
+# -- TRUST --------------------------------------------------------------------
+
+
+def _same_repo_view(tmp_path: Path) -> tuple[Any, Any, Any]:
+    marked = ledger.classify(ledger.current(rows(tmp_path), None), 3.0)
+    own = [row for row in marked if not row["fork"]]
+    text = summary(tmp_path)
+    table = [line for line in text.splitlines() if line.startswith(("| A ", "| B ", "| G "))]
+    return rates(tmp_path), own, (table, text.split("Fork runs")[0])
+
+
+def test_no_fork_row_changes_a_fitted_number_or_a_same_repository_classification(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    failed_run(gh, 1, 7, ["test/test_a.py"])
+    gh.add(2, 8, [[job(21, 1), job(22, 2)]], date=LATER)
+    assert run_main(tmp_path) == 0
+    before = _same_repo_view(tmp_path)
+    assert before[0]["tiers"]["G"]["rate"] == 0.25
+
+    # A fork fails the same file inside the window: it would make PR 7's miss "shared".
+    failed_run(gh, 3, None, ["test/test_a.py"], branch="topic", fork=True, date=LATER)
+    # A fork's verdict lists a thousand files in tier G: they would be trials.
+    padded = {**VERDICT, "tiers": {"G": [f"test/test_pad_{n}.py" for n in range(1000)]}}
+    gh.add(4, None, [[job(41, 1)]], verdict=padded, branch="pad", fork=True)
+    # A fork's verdict gives its failing file no tier: it would withhold the rates.
+    bare = {**VERDICT, "tiers": {"A": []}, "would_skip": []}
+    failed_run(gh, 5, None, ["test/test_c.py"], verdict=bare, branch="bare", fork=True)
+    # A fork run a week on: it would stretch the days of data.
+    gh.add(6, None, [[job(61, 1)]], branch="late", fork=True, date="2026-11-25T00:00:00Z")
+
+    assert run_main(tmp_path) == 0
+
+    assert _same_repo_view(tmp_path) == before
+    assert len(rows(tmp_path, "run")) == 6
+    text = summary(tmp_path)
+    assert "Fork runs, reported but not fitted: 4." in text
+    assert "Misses on fork runs, reported and not fitted: 1." in text
+    assert "| 2:topic | aaaaaaaaaaaa | 3 | test/test_a.py | G | shared |" in text
+
+
+def test_a_same_repository_failure_is_evidence_against_a_fork_row_only_one_way(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    failed_run(gh, 1, 7, ["test/test_a.py"])
+    failed_run(gh, 2, None, ["test/test_a.py"], branch="topic", fork=True, date=LATER)
+
+    assert run_main(tmp_path) == 0
+
+    marked = ledger.classify(ledger.current(rows(tmp_path), None), 3.0)
+    assert {row["run"]: row["shared"] for row in marked} == {1: False, 2: True}
+
+
 # -- OBSERVE ------------------------------------------------------------------
 
 
@@ -453,7 +508,7 @@ def test_the_upper_bound_is_wilsons_and_is_rounded_up() -> None:
 
 def test_the_proposed_bound_never_rounds_down() -> None:
     run = {"kind": "run", "run": 1, "fork": False, "verdict": "select", "tiers": {"G": 47328}}
-    failure = {"tier": "G", "diff_caused": True}
+    failure = {"tier": "G", "fork": False, "diff_caused": True}
     exact = ledger.wilson_upper(8, 47328)
 
     bound = ledger.fit([run], [failure] * 8)["G"]["upper95"]
@@ -565,11 +620,13 @@ def test_a_fork_run_is_keyed_on_its_head_repository_and_branch(gh: FakeGh, tmp_p
 
     # Two pushes of one fork PR are one PR: its failure is not shared with itself.
     assert {row["source"] for row in rows(tmp_path, "failure")} == {"2:topic"}
+    marked = ledger.classify(ledger.current(rows(tmp_path), None), 3.0)
+    assert [(row["shared"], row["diff_caused"]) for row in marked] == [(False, True)] * 2
     text = summary(tmp_path)
-    assert "Misses caused by the diff: 2." in text
-    # Its verdict is the fork's own, so the files it lists are not trials.
-    assert "Fork runs, which add failures but no trials: 2." in text
-    assert "| G | 0 | 2 | 0 | 1.00000000 | 1.00000000 |" in text
+    assert "Fork runs, reported but not fitted: 2." in text
+    assert "Misses on fork runs, reported and not fitted: 2." in text
+    assert "Misses caused by the diff: 0." in text
+    assert rates(tmp_path) == {"schema": 1, "tiers": {}}
 
 
 # -- verdict artifacts ----------------------------------------------------------
@@ -670,6 +727,93 @@ def test_a_ledger_line_of_the_wrong_shape_stops_the_pass_before_it_appends(
     assert not (tmp_path / "rates.json").exists()
 
 
+LONG = "test/" + "a" * 250 + ".py"
+HOSTILE_RUNS: dict[str, dict[str, Any]] = {
+    "a-plain-run": {},
+    "branch-with-slashes": {"head_branch": "feature/a/b"},
+    "branch-not-ascii": {"head_branch": "ветка-枝-\U0001f33f"},
+    "branch-255-characters": {"head_branch": "b" * 255},
+    "branch-with-a-lone-surrogate": {"head_branch": "x\ud800y"},
+    "branch-with-markup-and-newlines": {"head_branch": '"|`\n\r\t\x00 --> </td>'},
+    "no-branch": {"head_branch": None},
+    "no-head-repository": {"head_repository": None},
+    "head-repository-id-is-text": {"head_repository": {"id": "1"}},
+    "head-repository-id-is-a-float": {"head_repository": {"id": float("nan")}},
+    "no-base-repository": {"repository": None},
+    "pull-request-number-is-text": {"pull_requests": [{"number": "7"}]},
+    "pull-requests-is-not-a-list": {"pull_requests": {"number": 7}},
+    "attempt-is-text": {"run_attempt": "1"},
+    "attempt-is-zero": {"run_attempt": 0},
+    "attempt-is-missing": {"run_attempt": None},
+    "run-id-is-text": {"id": "1"},
+    "run-id-is-a-float": {"id": 1.5},
+    "head-sha-is-short": {"head_sha": "abc"},
+    "head-sha-is-missing": {"head_sha": None},
+    "date-has-fractions": {"created_at": "2026-11-18T00:00:00.123Z"},
+    "date-has-an-offset": {"created_at": "2026-11-18T00:00:00+00:00"},
+    "date-is-not-a-day": {"created_at": "2026-13-41T00:00:00Z"},
+    "date-is-missing": {"created_at": None},
+}
+HOSTILE_LOGS = {
+    "a-plain-failure": ["test/test_a.py"],
+    "a-path-the-parser-cuts-short": [LONG],
+    "a-cut-path-beside-a-real-one": ["test/test_a.py", LONG],
+    "a-path-that-climbs": ["../../etc/x.py"],
+}
+
+
+@pytest.mark.parametrize("change", list(HOSTILE_RUNS.values()), ids=list(HOSTILE_RUNS))
+@pytest.mark.parametrize("failing", list(HOSTILE_LOGS.values()), ids=list(HOSTILE_LOGS))
+def test_every_row_the_writer_emits_reads_back(
+    gh: FakeGh, tmp_path: Path, change: dict[str, Any], failing: list[str]
+) -> None:
+    failed_run(gh, 1, 7, failing)
+    gh.runs[0].update(change)
+    gh.add(2, 8, [[job(21, 1)]])
+
+    first = run_main(tmp_path)
+
+    # Whatever GitHub or a log said, the ledger written is one the next pass accepts.
+    assert first in (0, 1)
+    written = ledger.read_ledger(tmp_path / "ledger.jsonl")
+    assert all(ledger.valid_row(row) for row in written)
+    assert written == rows(tmp_path) and 2 in {row["run"] for row in written}
+    assert run_main(tmp_path) == first
+    assert ledger.read_ledger(tmp_path / "ledger.jsonl") == written
+
+
+def test_a_failing_path_the_log_parser_cut_short_excludes_the_run(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    failed_run(gh, 1, 7, ["test/test_a.py", LONG])
+
+    assert run_main(tmp_path) == 0
+
+    assert [(row["kind"], row["reason"]) for row in rows(tmp_path)] == [("skip", ledger.BAD_ROW)]
+    assert "Runs excluded: 1; its rows would not read back from the ledger: 1." in summary(tmp_path)
+    assert run_main(tmp_path) == 0
+
+
+def test_the_ledger_is_replaced_whole_and_an_unfinished_last_line_is_closed(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    path = tmp_path / "ledger.jsonl"
+    path.write_text(json.dumps(SKIP), encoding="utf-8")
+    gh.add(2, 8, [[job(21, 1)]])
+
+    assert run_main(tmp_path) == 0
+
+    assert [row["run"] for row in ledger.read_ledger(path)] == [1, 2]
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith("ledger")) == [
+        "ledger.jsonl"
+    ]
+    ledger.append_rows(path, [])
+    assert [row["run"] for row in ledger.read_ledger(path)] == [1, 2]
+    with pytest.raises(ValueError):
+        ledger.append_rows(path, [{**SKIP, "run": float("inf")}])
+    assert [row["run"] for row in ledger.read_ledger(path)] == [1, 2]
+
+
 def test_an_unreadable_main_red_issue_records_nothing(
     gh: FakeGh, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -692,4 +836,4 @@ def test_no_summary_cell_can_carry_markup(gh: FakeGh, tmp_path: Path) -> None:
     assert run_main(tmp_path) == 0
 
     line = next(text for text in summary(tmp_path).splitlines() if "test/test_a.py" in text)
-    assert line == "| 1:x???b??team?? y | aaaaaaaaaaaa | 1 | test/test_a.py | G |"
+    assert line == "| 1:x???b??team?? y | aaaaaaaaaaaa | 1 | test/test_a.py | G |  |"
