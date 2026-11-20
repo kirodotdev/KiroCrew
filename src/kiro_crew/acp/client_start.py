@@ -1281,8 +1281,8 @@ async def ensure_ready(self: AcpClient) -> None:
 
     # Telemetry (kirocrew.session.startup.duration): time the cold-start work
     # below (spawn + session init) and emit in the finally so every exit path
-    # — success, auth-required, error — is measured. The warm fast-path above
-    # is intentionally NOT measured (no startup work). Best-effort: a
+    # — success, auth-required, error, cancel — is measured. The warm fast-path
+    # above is intentionally NOT measured (no startup work). Best-effort: a
     # telemetry failure must never affect session startup.
     _startup_t0 = time.monotonic()
     _startup_spawned = False
@@ -1432,6 +1432,14 @@ async def ensure_ready(self: AcpClient) -> None:
                             "ACP session startup failed", _throttled
                         ) from exc
                     raise
+    except asyncio.CancelledError as exc:
+        # Stop, a closed chat or a reset ended the start: not a startup failure.
+        # A cancel raised while a failure is handled (its cleanup, its
+        # classification, the retry backoff) carries that failure as its
+        # context and keeps the failure's label.
+        if not isinstance(exc.__context__, Exception):
+            _startup_outcome = "cancelled"
+        raise
     finally:
         try:
             # circular import: importing get_recorder at module top would

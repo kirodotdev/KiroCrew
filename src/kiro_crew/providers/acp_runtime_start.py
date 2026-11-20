@@ -293,6 +293,12 @@ async def _start_kiro_runtime(self: AcpProvider) -> None:
     except AcpAuthRequired:
         outcome = "auth_required"
         raise
+    except asyncio.CancelledError as exc:
+        # Stop, a closed chat or a reset ended the start: not a startup failure.
+        # A cancel raised while a failure is handled keeps "error".
+        if not isinstance(exc.__context__, Exception):
+            outcome = "cancelled"
+        raise
     finally:
         # A remote start's stage ends with the start, so a Stop never leaves one stale.
         from kiro_crew.session_environment import clear_start_stage
