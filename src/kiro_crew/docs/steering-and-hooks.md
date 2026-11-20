@@ -225,8 +225,8 @@ agent to act on.
 
 ### The six Kiro Agent triggers
 
-A Kiro Agent session has eleven triggers where the gateway has five. The other
-six can be authored and saved here, and a saved one reads back unchanged.
+A Kiro Agent session has triggers the gateway has no event for. Six of them can
+be authored and saved here, and a saved one reads back unchanged.
 
 **No event fires any of them.** The gateway has no lifecycle moment for the six,
 so nothing fires one on its own, and no other reader exists. Authoring one records
