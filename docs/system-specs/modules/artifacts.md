@@ -2707,29 +2707,17 @@ box for a retry; a post refused after the composer closed shows a banner quoting
 the passage. Kinds that cannot anchor a comment (`json`, `svg`, images) get Copy
 only on a selection.
 
-## Roadmap
+## Not built
 
-In scope for the foundation:
+- **Live refresh bindings**: no cron, script or MCP-tool source rewrites an
+  artifact's `current.html` on a schedule; `meta.json` has no binding field.
+- **Embeddings or full-text search** of artifact bodies, and **install from a
+  URL or a community widget store**.
 
-- ✅ data layer + CLI + MCP tools + HTTP + library page + standalone page
-- ✅ "Save as artifact" affordance on rendered widgets
-- ✅ widgets are artifacts **by default** — auto-registered unpinned on emission,
-  listed in the in-session Artifacts tab, retention-swept while unstarred
-- ✅ system prompt context note documenting the iterate flow
-
-Out of scope (separate tasks):
-
-- **Whiteboard layout** — saved arrangements of (artifact_id, x, y, w, h) —
-  tracked as follow-on work.
-- **Live refresh bindings** — cron / Python script / MCP-tool source types
-  that auto-rewrite `current.html` on a schedule — tracked as follow-on work.
-  The hook will be a new `meta.json.refresh_binding` field consumed by a
-  refresh service.
-- **Right-panel inline render** — clicking an `<a>` to an artifact in chat
-  opens the artifact in a side panel rather than the standalone page —
-  related follow-on work.
-- **Cross-user sharing**, **embeddings/full-text search**, **install from
-  URL/community widget store** — future expansions.
+A whiteboard is the `canvas` kind ([Canvases](#canvases-kindcanvas)), and a
+plain click on an `/artifacts/<slug>` link in chat opens the artifact in the
+chat side panel (`ArtifactPanel`, through `MarkdownRenderer`'s
+`onArtifactOpen`); a modified click keeps the link's own navigation.
 
 ## WebApp Artifacts (`kind="webapp"`)
 
