@@ -318,6 +318,11 @@ Each planned restart (`_restart_gateway` and the Slack `/kirocrew restart`) call
 slots carrying a turn-in-flight marker to `<data home>/resume-after-restart.json`
 (off-loop, 5 s bound, a failure logged); with no running chat it removes an
 earlier file instead, so a record never outlives the restart that wrote it.
+The gateway's graceful shutdown (`_shutdown`, run by a stop from outside such as
+`systemctl restart` or an update script) records the same way as its first awaited
+step, before the memory stop can fail a turn in flight. With no running chat it keeps
+an earlier file: a stop during boot must not delete the last restart's record
+before that boot takes it.
 The next dashboard boot, once ready, reads and deletes that file before acting,
 so it tries once and never loops. A file older than 30 minutes belongs to a
 restart that never ran and resumes nothing. Otherwise the boot resumes only those chats through

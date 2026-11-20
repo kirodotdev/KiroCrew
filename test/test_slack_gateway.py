@@ -814,6 +814,51 @@ class TestShutdown:
         assert order.index("autonudge-durable") < order.index("sessions-close")
 
     @pytest.mark.asyncio
+    async def test_shutdown_records_the_chats_it_cuts_before_memory_or_sessions_stop(
+        self, monkeypatch
+    ):
+        """A stop from outside resumes the chats it cut on the next boot, as a planned restart does."""
+        from kiro_crew.dashboard import restart_resume
+
+        order: list[str] = []
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.dashboard_state._slots = {
+            "cut": SimpleNamespace(_turn_in_flight_generation=2),
+            "idle": SimpleNamespace(_turn_in_flight_generation=0),
+        }
+        orch._memory_startup = MagicMock()
+        orch._memory_startup.stop.side_effect = lambda: order.append("memory-stop")
+        orch.sessions = _mock_sessions()
+        orch.sessions.close_all = AsyncMock(side_effect=lambda *_a, **_k: order.append("close"))
+        monkeypatch.setattr(
+            restart_resume, "write_intent", lambda names: order.append(f"record {names}")
+        )
+
+        await orch._shutdown()
+
+        assert order[0] == "record ['cut']", order
+        assert {"memory-stop", "close"} <= set(order), order
+
+    @pytest.mark.asyncio
+    async def test_a_shutdown_with_no_running_chat_keeps_the_last_restarts_record(
+        self, tmp_path, monkeypatch
+    ):
+        """A stop during boot must not delete a record that boot has not taken yet."""
+        from kiro_crew.dashboard import restart_resume
+
+        path = tmp_path / "resume-intent.json"
+        monkeypatch.setattr(restart_resume, "intent_path", lambda: path)
+        restart_resume.write_intent(["cut-by-the-last-restart"])
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.dashboard_state._slots = {"idle": SimpleNamespace(_turn_in_flight_generation=0)}
+
+        await orch._shutdown()
+
+        assert restart_resume.take_intent() == frozenset({"cut-by-the-last-restart"})
+
+    @pytest.mark.asyncio
     async def test_shutdown_keeps_autonudge_published_through_dashboard_cleanup(
         self, tmp_path, monkeypatch
     ):
