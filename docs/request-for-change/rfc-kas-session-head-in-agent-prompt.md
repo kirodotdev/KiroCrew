@@ -1,12 +1,12 @@
 ---
 title: The session-stable head of a new chat rides in the KAS agent prompt, so the prompt cache hits across chats
-status: accepted
+status: implemented
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-13
-last-audited: 2026-11-13
-audited-at: 911bde870d
-doc-pr: null
-implementation-prs: []
+last-audited: 2026-11-19
+audited-at: fc89562d69
+doc-pr: 36964
+implementation-prs: [37108]
 tracking-issues: [36928]
 supersedes: []
 superseded-by: []
@@ -14,10 +14,10 @@ superseded-by: []
 
 # RFC: The session-stable head rides in the KAS agent prompt
 
-Status: accepted. The repository owner asked for this in the conductor chat on
-2026-11-13 and merges this document; it takes effect when it merges. Nothing is
-built by this document and it changes no code. The implementation is a separate
-pull request that rebases onto the base that carries this file. Every code
+Status: implemented. The repository owner asked for this in the conductor chat on
+2026-11-13; this document merged in #36964 and the implementation shipped in
+#37108 (`session_head.py`, read by `acp/harness/kas.py` and
+`context_assembly/turn_message.py`). Every code
 reference below was read at `911bde870d`.
 
 This document lands on its own because it changes what the default agent's
