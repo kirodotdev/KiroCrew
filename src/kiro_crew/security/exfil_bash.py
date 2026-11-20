@@ -250,7 +250,8 @@ _NC_FILE_REDIRECT_PATTERN = next(
 def _nc_redirect_line_allows(command: str) -> bool:
     """A line naming nc whose every input redirect feeds a pipeline without nc.
 
-    Reads the shared reader's commands and fails closed: quoting, an escape, a
+    Reads the shared reader's commands and fails closed: quoting, an escape (a
+    cmd ``^`` too, which the deny gate folds away to find a hidden nc), a
     comment, a variable or substitution, a glob, a group or subshell, a heredoc or
     here-string, a compound command, ``exec`` or ``alias`` (which can hand a
     later redirect to nc), non-ASCII or a control character keeps the deny. A word
@@ -259,7 +260,7 @@ def _nc_redirect_line_allows(command: str) -> bool:
     the line can make a later command run nc. Then a pipeline that holds such a
     word must be one command with no input redirect (any redirect word with ``<``)."""
     # shortcut: refuses any quoted or expanded line, upgrade only if a real line needs it.
-    if any(ch in command for ch in "\\#'\"$`(){}*?[") or "<<" in command:
+    if any(ch in command for ch in "\\#'\"$`^(){}*?[") or "<<" in command:
         return False
     if not command.isascii() or any(ch < " " and ch not in "\t\n" for ch in command):
         return False
