@@ -126,8 +126,11 @@ def _read_as_the_backend(home: Path, hidden: tuple[str, ...]) -> dict:
     return {Path(k): v for k, v in report.items()}
 
 
-@pytest.mark.xfail(strict=True, reason="evidence run on the base")
-def test_a_backend_started_before_the_gateway_writes_cannot_read_the_credential(home):
+def test_probe_boot_spawn_records_the_observed_credential_readability(home):
+    """Base evidence probe: records the observed value, asserts no security property.
+
+    The head draft holds the real assertion.
+    """
     # What apps/backend.py computes for a boot spawn: nothing is on disk yet.
     assert not (home / "run").exists()
     hidden = getattr(sandbox, "app_backend_secret_mask_targets", lambda: ())()
@@ -139,7 +142,7 @@ def test_a_backend_started_before_the_gateway_writes_cannot_read_the_credential(
         f"REALMACHINE-38182 boot spawn: credential_readable={any(readable)} "
         f"files_readable={sum(readable)}/{len(readable)}"
     )
-    assert not any(readable), "credential_readable=True"
+    assert len(readable) == 4 and all(v in {True, False} for v in readable)
 
 
 def test_a_backend_spawned_with_no_names_does_read_it(home):
