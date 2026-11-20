@@ -29,7 +29,8 @@ Four families make up the floor:
 
 Each family lives in an owner module beside this one, and this module is the
 import path of every name they define: ``argv_floor_git`` holds release
-detection, ``argv_floor_self`` the subcommand floors and the credential-mint
+detection, ``argv_floor_pager`` the pager a ``git grep`` would run,
+``argv_floor_self`` the subcommand floors and the credential-mint
 predicates, ``argv_floor_ssh`` the ssh self-target floor, ``argv_floor_ssh_gate`` the
 gate that decides whether a line can run an ssh verb, ``argv_floor_ssh_bodies`` that
 floor's reading of substitution bodies, and
@@ -73,6 +74,7 @@ logger = logging.getLogger(__name__)
 # in the owner modules below, and a write through this module (a patch) reaches every
 # module holding the name (:mod:`kiro_crew._facade_mirror`). Owners never import this
 # module. New work goes to the owner of its family:
+#   ``argv_floor_pager`` -- the pager a ``git grep`` would run, for the self-kill floor
 #   ``argv_floor_self`` -- the product's own subcommand floors and the credential-mint
 #   predicates
 #   ``argv_floor_hosts`` -- the names and addresses the ssh floor counts as this host
@@ -82,6 +84,7 @@ logger = logging.getLogger(__name__)
 #   ``argv_floor_git`` -- release detection and the protected-branch push target
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
+    "kiro_crew.security.argv_floor_pager",
     "kiro_crew.security.argv_floor_self",
     "kiro_crew.security.argv_floor_hosts",
     "kiro_crew.security.argv_floor_ssh_gate",
@@ -181,6 +184,55 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _unverifiable_hosts_file,
         _warm_hosts_file_cache,
         warm_own_host_names,
+    )
+    from kiro_crew.security.argv_floor_pager import (  # noqa: F401
+        _CONDITIONAL_SEPARATORS,
+        _DOUBLE_QUOTE_ESCAPES,
+        _EXPANSION_BUDGET,
+        _GIT_FALSE,
+        _GIT_GLOBAL_EXIT_OPTIONS,
+        _GIT_GLOBAL_VALUE_OPTIONS,
+        _GIT_GREP_OPEN_RIVALS,
+        _GIT_GREP_VALUE_LONG,
+        _GIT_GREP_VALUE_SHORT,
+        _GIT_TRUE,
+        _HUGE,
+        _MAX_ALTERNATIVES,
+        _MAX_NUMBER_DIGITS,
+        _MAX_WORLDS,
+        _PAGER_OVER_BUDGET,
+        _PLAIN_CHARS,
+        _TOTAL_EXPANSION_BUDGET,
+        _array_may_reach_pager,
+        _array_refs,
+        _assignment_parts,
+        _bash_index,
+        _compound_element,
+        _config_env_setting,
+        _env_config_settings,
+        _Expansion,
+        _find_exec_spans,
+        _git_config_value,
+        _git_count,
+        _git_grep_invocation_pagers,
+        _git_grep_pager_commands,
+        _grep_arg_pager,
+        _grep_subcommand,
+        _grep_words_may_reach_pager,
+        _is_assignment,
+        _is_literal,
+        _is_plain,
+        _may_carry_pager_option,
+        _may_reach_pager,
+        _name_end,
+        _scan_expansion,
+        _scan_grep_args,
+        _shell_reads_stdin,
+        _shell_word,
+        _TextState,
+        _unquoted_probe,
+        _World,
+        _worlds,
     )
     from kiro_crew.security.argv_floor_self import (  # noqa: F401
         _DEV_MODE_CONFIRM_FLAG,
@@ -286,6 +338,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.atomic_write import on_event_loop as _event_loop_running  # noqa: F401
     from kiro_crew.security import argv_rules as _argv_rules  # noqa: F401
+    from kiro_crew.security import shell_commands as _shell_commands  # noqa: F401
     from kiro_crew.security import shell_normalizer as _shell_normalizer  # noqa: F401
     from kiro_crew.security.denied_rules import (  # noqa: F401
         _GIT_PUBLISH_UNGATED,
@@ -308,6 +361,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _decoded_b64_literal_sources,
         _has_self_importing_inline_program,
     )
+    from kiro_crew.security.paths import MAX_SCANNABLE_COMMAND_CHARS  # noqa: F401
     from kiro_crew.security.shell_commands import (  # noqa: F401
         _double_quoted_substitution_bodies,
         _heredoc_body_substitutions,
