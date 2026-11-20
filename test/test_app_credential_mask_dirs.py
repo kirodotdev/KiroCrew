@@ -468,3 +468,41 @@ class TestInTheNamespaceSandbox:
         report = _report(agent.stdout)
         assert report["marker"] == "1"
         assert report["first"] == [] and report["after"] == [], report
+
+    @pytest.mark.xfail(strict=True, reason="evidence run on the base")
+    def test_a_strict_probe_of_manifest_text_cannot_read_the_gateway_secret(
+        self, home, monkeypatch
+    ):
+        """A ``detectInstalled`` probe runs manifest text in the strict tier.
+
+        Synthetic fixture files only: the probe answers by exit status (0 when the file
+        has content) and nothing is printed from them.
+        """
+        import asyncio
+        import warnings
+
+        from kiro_crew.apps.registry_pipeline import catalog
+
+        (home / "run").mkdir(exist_ok=True)
+        secrets = (home / ".local_secret", home / "run" / "gateway-8765.secret")
+        control = home / "run" / "fixture-not-a-secret.txt"
+        for path in (*secrets, control):
+            path.write_text("synthetic-fixture-bytes", encoding="utf-8")
+        monkeypatch.setattr(catalog, "app_execution_denied", lambda *a, **k: None)
+
+        def _entry(name: str, *paths: Path) -> dict:
+            return {"name": name, "detectInstalled": " || ".join(f'[ -s "{p}" ]' for p in paths)}
+
+        detected = asyncio.run(
+            catalog._detect_installed_probe(
+                [_entry("fixture-secret", *secrets), _entry("fixture-control", control)], {}
+            )
+        )
+        secret_readable = "fixture-secret" in detected
+        control_readable = "fixture-control" in detected
+        warnings.warn(
+            f"REALMACHINE-38758 strict probe: secret_readable={secret_readable} "
+            f"control_readable={control_readable}"
+        )
+        assert control_readable, "the fixture home is not visible to the probe at all"
+        assert not secret_readable, f"secret_readable={secret_readable}"
