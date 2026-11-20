@@ -354,6 +354,9 @@
     "pullRequestPanel": {
       "not_declared": "Diese App kann keine Pull Requests anzeigen – ihre Berechtigungen deklarieren {{path}} nicht."
     },
+    "fileTree": {
+      "not_declared": "Diese App kann die Projektdateien nicht anzeigen – ihre Berechtigungen deklarieren {{path}} nicht."
+    },
     "projectPicker": {
       "not_declared": "Diese App kann die Projektauswahl nicht anzeigen, denn ihre Berechtigungen deklarieren {{path}} nicht."
     },

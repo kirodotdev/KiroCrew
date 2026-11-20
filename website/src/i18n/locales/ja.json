@@ -339,6 +339,9 @@
     "pullRequestPanel": {
       "not_declared": "このアプリはプルリクエストを表示できません。権限に {{path}} が宣言されていません。"
     },
+    "fileTree": {
+      "not_declared": "このアプリはプロジェクトのファイルを表示できません。権限に {{path}} が宣言されていません。"
+    },
     "projectPicker": {
       "not_declared": "このアプリはプロジェクトピッカーを表示できません。権限に {{path}} が宣言されていません。"
     },

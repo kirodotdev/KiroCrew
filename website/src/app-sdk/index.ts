@@ -651,6 +651,10 @@ export { default as DiffView } from './DiffView'
 export type { AppDiffViewProps } from './DiffView'
 export { default as SessionChanges } from './SessionChanges'
 export type { AppSessionChangesProps } from './SessionChanges'
+// The dashboard's project file tree. An external app's tree reaches only the
+// project reads its `permissions.api` declares (see ./FileTree).
+export { default as FileTree } from './FileTree'
+export type { AppFileTreeProps } from './FileTree'
 // Issue lists from GitHub, GitLab, Jira and Linear behind the app's declared
 // `/api/source/issues` (see ./issues/useIssues).
 export { useIssues, IssueList, IssueCard } from './issues'

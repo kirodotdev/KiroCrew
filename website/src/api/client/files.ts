@@ -58,6 +58,23 @@ export interface ProjectTreePayload {
   nestedRepoDirectories?: string[]
 }
 
+/** The `/api/project/tree` request for one level of project `path`, or of its folder `dir`.
+ *  Shared with the App SDK's file tree (`app-sdk/FileTree.tsx`), so an app's tree asks for
+ *  exactly what the dashboard's does. */
+export function projectTreeUrl(path: string, dir?: string): string {
+  return '/api/project/tree?shallow=1&path=' + encodeURIComponent(path)
+    + (dir ? '&dir=' + encodeURIComponent(dir) : '') + (showHiddenFiles() ? '&hidden=1' : '')
+}
+
+/** A shallow read's unread folders (`lazyDirectories`) folded into `nestedRepoDirectories`, the
+ *  set the tree already lists on open with no state row, so opening a folder fetches just that
+ *  folder and a large workspace never walks whole. */
+export function foldLazyDirectories(body: ProjectTreePayload & { lazyDirectories?: string[] }): ProjectTreePayload {
+  const lazy = body?.lazyDirectories
+  if (!Array.isArray(lazy) || lazy.length === 0) return body
+  return { ...body, nestedRepoDirectories: [...new Set([...(body.nestedRepoDirectories ?? []), ...lazy])].sort() }
+}
+
 /** One file a chat session edited: absolute path, latest change time (ISO),
  *  and whether it is still on disk. */
 export interface SessionFile {
@@ -232,13 +249,9 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     // the set the tree already lists on open with no state row, so opening a
     // folder fetches just that folder and a large workspace never walks whole.
     projectTree: (path: string, dir?: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/tree', s =>
-      fetch('/api/project/tree?shallow=1&path=' + encodeURIComponent(path) + (dir ? '&dir=' + encodeURIComponent(dir) : '') + (showHiddenFiles() ? '&hidden=1' : ''), { signal: s })
+      fetch(projectTreeUrl(path, dir), { signal: s })
         .then(j)
-        .then((body: ProjectTreePayload & { lazyDirectories?: string[] }) => {
-          const lazy = body?.lazyDirectories
-          if (!Array.isArray(lazy) || lazy.length === 0) return body
-          return { ...body, nestedRepoDirectories: [...new Set([...(body.nestedRepoDirectories ?? []), ...lazy])].sort() }
-        })) as Promise<ProjectTreePayload>,
+        .then(foldLazyDirectories)) as Promise<ProjectTreePayload>,
     /** The files this chat session edited, newest first (`GET /api/project/session-files`). */
     sessionFiles: (slot: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/session-files', s =>
       fetch('/api/project/session-files?slot=' + encodeURIComponent(slot), { signal: s }).then(j)) as Promise<SessionFilesPayload>,

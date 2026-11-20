@@ -339,6 +339,9 @@
     "pullRequestPanel": {
       "not_declared": "此应用无法显示拉取请求：其权限未声明 {{path}}。"
     },
+    "fileTree": {
+      "not_declared": "此应用无法显示项目文件：其权限未声明 {{path}}。"
+    },
     "projectPicker": {
       "not_declared": "此应用无法显示项目选择器：其权限未声明 {{path}}。"
     },
