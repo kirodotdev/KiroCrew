@@ -1,12 +1,12 @@
 ---
 title: Sandboxed callers reach the gateway through a connection-bound capability
-status: draft
+status: partial
 author: bolichen97
 created: 2026-11-05
-last-audited: 2026-11-05
-audited-at: ccf5db72ff
-doc-pr:
-implementation-prs: []
+last-audited: 2026-11-19
+audited-at: fc89562d69
+doc-pr: 30788
+implementation-prs: [31016]
 tracking-issues: [9175, 11988, 13862]
 supersedes: []
 superseded-by: []
@@ -14,8 +14,9 @@ superseded-by: []
 
 # RFC: Sandboxed callers reach the gateway through a connection-bound capability
 
-- Status: draft. Phase 1 is in flight before acceptance, on the repository
-  owner's request (section 10); nothing else is built. It proposes how to take the
+- Status: partial. Phase 1 (section 10) is on main from
+  [#31016](https://github.com/kirodotdev/KiroCrew/pull/31016), built before acceptance on the repository
+  owner's request: `dashboard/agent_ipc.py` and `acp/ipc_pickup.py`; nothing else is built. It proposes how to take the
   gateway's privileged local IPC out of the agent sandbox's reach without
   breaking the Kiro Crew MCP servers that run inside that sandbox and call the
   gateway on every tool call. Claims about main were checked at `ccf5db72ff`.
