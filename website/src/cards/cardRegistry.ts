@@ -77,7 +77,7 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
   },
   'crewmate.check_ins': {
     icon: AlarmClock, label: () => i18nT('components.changeCards.kind_crewmate_check_ins'),
-    primary: () => i18nT('components.changeCards.primary_crewmate_check_ins'), Body: OneCrewmateBody,
+    primary: checkInsPrimary, Body: OneCrewmateBody,
   },
   'crewmate.dashboard_page': {
     icon: LayoutDashboard, label: () => i18nT('components.changeCards.kind_crewmate_dashboard_page'),
@@ -140,6 +140,22 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
 }
 
 /** A kind the dashboard does not know renders nothing actionable. */
+/** The switches a check-ins card sets; the rest of its params are timing. */
+const CHECK_IN_SWITCHES = ['daily', 'weekly', 'monthly', 'heartbeat'] as const
+
+/**
+ * A check-ins card's primary names what the press does: one that only turns
+ * switches on says "Turn on", one that only turns them off says "Turn off", and
+ * a mix or a timing-only change says "Save", so a Heartbeat On -> Off card is
+ * never confirmed with "Turn on these check-ins".
+ */
+function checkInsPrimary(card?: Card): string {
+  const set = CHECK_IN_SWITCHES.map(k => card?.params?.[k]).filter((v): v is boolean => typeof v === 'boolean')
+  if (!card || (set.length > 0 && set.every(v => v))) return i18nT('components.changeCards.primary_crewmate_check_ins')
+  if (set.length > 0 && set.every(v => !v)) return i18nT('components.changeCards.primary_crewmate_check_ins_off')
+  return i18nT('components.changeCards.primary_crewmate_check_ins_save')
+}
+
 export function specFor(kind: string): CardKindSpec | null {
   return Object.prototype.hasOwnProperty.call(CARD_REGISTRY, kind) ? CARD_REGISTRY[kind as CardKind] : null
 }

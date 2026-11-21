@@ -11556,6 +11556,8 @@
       "kind_crewmate_dashboard_page": "Page du tableau de bord",
       "primary_crewmate_dashboard_page": "Oui, crée ma page",
       "primary_crewmate_check_ins": "Activer ces points réguliers",
+      "primary_crewmate_check_ins_off": "Désactiver ces points réguliers",
+      "primary_crewmate_check_ins_save": "Enregistrer ces points réguliers",
       "field_key_results": "Jalons",
       "decline_crewmate_import": "Ne pas importer",
       "note_crewmate_import": "Rien ne s'exécute à l'import : il cherche seul des informations et demande avant de faire quoi que ce soit d'autre, les tâches planifiées arrivent désactivées et les compétences attendent que tu fasses confiance au dossier de travail du Bot. Ensuite, Annuler sur cette carte le supprime.",

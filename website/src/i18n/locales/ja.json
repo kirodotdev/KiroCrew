@@ -11038,6 +11038,8 @@
       "kind_crewmate_dashboard_page": "ダッシュボードページ",
       "primary_crewmate_dashboard_page": "はい、ページを作って",
       "primary_crewmate_check_ins": "この定期チェックをオンにする",
+      "primary_crewmate_check_ins_off": "この定期チェックをオフにする",
+      "primary_crewmate_check_ins_save": "この定期チェックを保存する",
       "field_key_results": "マイルストーン",
       "decline_crewmate_import": "インポートしない",
       "note_crewmate_import": "インポートしても何も実行されません。調べものは自分で行い、それ以外は何をする前にも確認し、予定されたジョブはオフのまま届き、スキルはこの Bot のワークスペースフォルダーを信頼するまで待機します。押した後は、このカードの「元に戻す」で削除できます。",
