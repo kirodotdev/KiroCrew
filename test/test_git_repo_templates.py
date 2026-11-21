@@ -249,10 +249,10 @@ def test_every_git_the_helper_starts_runs_with_auto_maintenance_off(
         envs.append(kwargs["env"])
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
-    monkeypatch.setattr(templates, "_CHECKED", set())
-    monkeypatch.setattr(templates.subprocess, "run", record)
-    copy_repo(world.template, tmp_path / "copy")
-    monkeypatch.undo()
+    with monkeypatch.context() as patch:
+        patch.setattr(templates, "_CHECKED", set())
+        patch.setattr(templates.subprocess, "run", record)
+        copy_repo(world.template, tmp_path / "copy")
     assert len(envs) == len(WORKTREES) + 2, "one check per working tree: work, feat, shared, local"
     for env in envs:
         assert git_maintenance_off_entries(env) == {}, "the env leaves auto maintenance on"
@@ -357,10 +357,10 @@ def test_a_hidden_git_file_is_rewritten_in_place(
                 raise PermissionError(13, "Permission denied", os.fspath(file))
         return real_open(file, mode, *args, **kwargs)
 
-    monkeypatch.setattr(builtins, "open", no_creating_open)
-    monkeypatch.setattr(io, "open", no_creating_open)
-    copy_repo(world.template, dest)
-    monkeypatch.undo()
+    with monkeypatch.context() as patch:
+        patch.setattr(builtins, "open", no_creating_open)
+        patch.setattr(io, "open", no_creating_open)
+        copy_repo(world.template, dest)
     assert f"gitdir: {(dest / 'work').as_posix()}/.git/worktrees/feat" in (
         dest / "feat" / ".git"
     ).read_text(encoding="utf-8")
