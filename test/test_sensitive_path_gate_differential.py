@@ -13,7 +13,9 @@ with gate calls: the home moves, an override root appears or is repointed, a pro
 folder becomes a link, the app-declared rows and the static list change, the resolver
 stalls, faults or fails, the clock moves. The script runs twice from a rebuilt world,
 once with the reference pieces below in place of the three new ones and once without,
-and every answer must be equal, refusal text included.
+and every answer must be equal, refusal text included. The world never changes while a
+gate call is running; the one answer that depends on that is pinned by itself, in
+``test_roots_repointed_inside_a_decision_take_effect_at_the_next_decision``.
 
 The reference is that plainest form: ``_RootsNotKept`` makes every list resolve the
 roots again, and the two ``_scan_*`` functions compare a candidate against every member.
@@ -66,9 +68,6 @@ def _scan_holds(dir_cf: str, targets: set[str]) -> bool:
 
 class _RootsNotKept:
     """A decision's roots holder that holds nothing, so every list resolves them."""
-
-    def __init__(self, *, inline: bool) -> None:
-        self.inline = inline
 
     roots = property(lambda self: None, lambda self, value: None)
 
@@ -515,16 +514,25 @@ def _run_script(
     return world
 
 
-#: The reference run of each script, which is the same every time it is made.
-_REFERENCE_RUNS: dict[int, _World] = {}
+class _Worlds:
+    """The folder every world of this module is built in, and the reference runs made there.
+
+    A run spells its paths under the folder, so a reference run is only comparable with
+    a run made in the same folder: the two live and are rebuilt together.
+    """
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+        self.reference_runs: dict[int, _World] = {}
 
 
-def _differences(world_dir: Path, seed: int, replaced: dict[str, Any]) -> list[str]:
+def _differences(worlds: _Worlds, seed: int, replaced: dict[str, Any]) -> list[str]:
     """Where the gate with *replaced* in it answers differently from the reference."""
-    reference = _REFERENCE_RUNS.get(seed)
+    reference = worlds.reference_runs.get(seed)
     if reference is None:
-        reference = _REFERENCE_RUNS[seed] = _run_script(world_dir, seed, _reference())
-    subject = _run_script(world_dir, seed, replaced)
+        reference = _run_script(worlds.folder, seed, _reference())
+        worlds.reference_runs[seed] = reference
+    subject = _run_script(worlds.folder, seed, replaced)
     assert subject.asked == reference.asked, "the two runs did not ask the same questions"
     return [
         f"seed {seed} call {i}: {asked}\n  reference: {was!r}\n  now:       {now!r}"
@@ -536,17 +544,22 @@ def _differences(world_dir: Path, seed: int, replaced: dict[str, Any]) -> list[s
 
 
 @pytest.fixture(scope="module")
-def world_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+def worlds(tmp_path_factory: pytest.TempPathFactory) -> _Worlds:
     """One folder for every world of this module, so each script spells the same paths."""
-    return tmp_path_factory.mktemp("gate-worlds")
+    return _Worlds(tmp_path_factory.mktemp("gate-worlds"))
+
+
+@pytest.fixture
+def world_dir(worlds: _Worlds) -> Path:
+    return worlds.folder
 
 
 # --------------------------------------------------------------------------- the proof
 
 
 @pytest.mark.parametrize("seed", SEEDS)
-def test_every_gate_answers_as_the_reference_does(world_dir: Path, seed: int) -> None:
-    differences = _differences(world_dir, seed, {})
+def test_every_gate_answers_as_the_reference_does(worlds: _Worlds, seed: int) -> None:
+    differences = _differences(worlds, seed, {})
     assert not differences, "\n".join(differences[:5])
 
 
@@ -667,20 +680,144 @@ def test_a_decision_resolves_its_roots_once(world_dir: Path) -> None:
     assert all(without[name] > 1 for name in without), without
 
 
+def test_an_inline_rebuild_leaves_the_roots_it_resolved_under_its_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The decision's other lists are keyed on the roots the set was BUILT from.
+
+    An inline rebuild resolves the roots again once it holds its lock, since another
+    worker's slow rebuild may have run in between. The holder takes that answer, so the
+    lists that follow in the same decision are not keyed on the roots from before the
+    wait.
+    """
+    before = paths._ResolvedRoots(
+        home=str(tmp_path / "before"),
+        logical_home=str(tmp_path / "before"),
+        crew_home=None,
+        kiro_home=None,
+        adapter_roots=(),
+        os_home=None,
+    )
+    under_lock = before._replace(home=str(tmp_path / "under-lock"))
+    answers = [before, under_lock]
+    monkeypatch.setattr(paths, "_home_targets_cache", {})
+    monkeypatch.setattr(paths, "_home_targets_pin_state", {})
+    monkeypatch.setattr(paths, "time", SimpleNamespace(monotonic=lambda: 100.0))
+    monkeypatch.setattr(
+        paths, "_resolve_root_anchors", lambda home: answers.pop(0) if answers else under_lock
+    )
+    monkeypatch.setattr(
+        paths, "_home_dir_targets_uncached", lambda home_dirs, roots=None: {roots.home}
+    )
+    decision = paths._DecisionRoots()
+    assert paths._home_dir_targets(["one"], inline=True, decision=decision) == {under_lock.home}
+    assert decision.roots is under_lock
+    assert paths._home_dir_targets(["two"], inline=True, decision=decision) == {under_lock.home}
+
+
+def _answers_around_a_repoint(world_dir: Path, replaced: dict[str, Any]) -> dict[str, Any]:
+    """Ask about four paths while the roots move between two lists of the decision.
+
+    The app-mask listing is taken after the static list is matched and before the app
+    rows are, so a lister that moves ``$HOME`` from home ``a`` to home ``b`` and
+    ``KIROCREW_HOME`` from root ``r0`` to root ``r1`` moves them at exactly that
+    point. Each path is asked once in such a decision (``during``) and once more in
+    the decision that follows it (``after``).
+    """
+    answers: dict[str, Any] = {}
+    root = world_dir / "world"
+    with pytest.MonkeyPatch.context() as patch:
+        world = _World(root, 0, patch)
+        crew_row = world.made_up[0]
+        world.mask_rows = paths._AppMaskRows(tuple(sorted([crew_row, "made-up-top"])), ())
+        home_a, home_b = world.homes
+        root_0, root_1 = world.root_dirs
+        armed: list[bool] = []
+
+        def listing() -> Any:
+            if armed:
+                armed.clear()
+                world._set_home(home_b)
+                patch.setenv("KIROCREW_HOME", root_1)
+            return world.mask_rows
+
+        patch.setattr(paths, "_path_resolve_clock", world.clock)
+        patch.setattr(paths, "_app_rows_clock", world.clock)
+        patch.setattr(paths, "time", SimpleNamespace(monotonic=world.clock))
+        patch.setattr(paths, "path_resolve_executor", lambda: _InlinePool())
+        patch.setattr(paths, "_resolved_spellings", world.resolver.spellings)
+        patch.setattr(paths, "_realpaths_or_none", world.resolver.realpaths)
+        patch.setattr(paths, "_list_app_credential_mask_rows", listing)
+        for name, value in replaced.items():
+            patch.setattr(paths, name, value)
+        leaf = crew_row.rsplit("/", 1)[1]
+        asked = {
+            "under the first home": os.path.join(home_a, "made-up-top", "x"),
+            "under the second home": os.path.join(home_b, "made-up-top", "x"),
+            "under the first override root": os.path.join(root_0, leaf, "x"),
+            "under the second override root": os.path.join(root_1, leaf, "x"),
+        }
+        try:
+            for name, path in asked.items():
+                _reset_gate_state()
+                world._set_home(home_a)
+                patch.setenv("KIROCREW_HOME", root_0)
+                armed.append(True)
+                during = security.sensitive_path_refusal(path) is not None
+                assert not armed, "the listing was not taken inside the decision"
+                after = security.sensitive_path_refusal(path) is not None
+                answers[name] = {"during": during, "after": after}
+        finally:
+            _reset_gate_state()
+            patch.chdir(world_dir)
+            shutil.rmtree(root, ignore_errors=True)
+    return answers
+
+
+def test_roots_repointed_inside_a_decision_take_effect_at_the_next_decision(
+    world_dir: Path,
+) -> None:
+    """The one answer that depends on WHEN in a decision the roots are resolved.
+
+    A decision is one view of the roots: every list of it is matched against the roots
+    its first list resolved, so a path under the roots as they stood when the decision
+    began is refused and a path under the roots they were moved to is not. Nothing is
+    kept for the decision after it, which answers by the new roots alone.
+    """
+    assert _answers_around_a_repoint(world_dir, {}) == {
+        "under the first home": {"during": True, "after": False},
+        "under the second home": {"during": False, "after": True},
+        "under the first override root": {"during": True, "after": False},
+        "under the second override root": {"during": False, "after": True},
+    }
+
+
+def test_roots_resolved_for_each_list_answer_a_repoint_inside_the_decision_the_other_way(
+    world_dir: Path,
+) -> None:
+    """The same questions with the roots resolved again for every list.
+
+    The lists after the repoint see the new roots, so the two ``during`` answers swap:
+    neither form refuses both paths, and the decisions that follow agree. This is the
+    whole difference between the two forms, and it needs the roots to move while one
+    decision is running.
+    """
+    assert _answers_around_a_repoint(world_dir, {"_DecisionRoots": _RootsNotKept}) == {
+        "under the first home": {"during": False, "after": False},
+        "under the second home": {"during": True, "after": True},
+        "under the first override root": {"during": False, "after": False},
+        "under the second override root": {"during": True, "after": True},
+    }
+
+
 # --------------------------------------------------------------------------- deviations
 
 
 def _roots_kept_across_decisions() -> dict[str, Any]:
-    kept: dict[bool, Any] = {}
+    kept: list[Any] = [None]
 
     class Kept:
-        def __init__(self, *, inline: bool) -> None:
-            self.inline = inline
-
-        roots = property(
-            lambda self: kept.get(self.inline),
-            lambda self, value: kept.__setitem__(self.inline, value),
-        )
+        roots = property(lambda self: kept[0], lambda self, value: kept.__setitem__(0, value))
 
     return {"_DecisionRoots": Kept}
 
@@ -798,15 +935,15 @@ def test_the_member_comparison_reports_a_wrong_lookup(name: str) -> None:
 
 
 @pytest.mark.parametrize("deviation", sorted(DEVIATIONS))
-def test_the_comparison_reports_a_deviation(world_dir: Path, deviation: str) -> None:
+def test_the_comparison_reports_a_deviation(worlds: _Worlds, deviation: str) -> None:
     for seed in SEEDS:
-        if _differences(world_dir, seed, DEVIATIONS[deviation]()):
+        if _differences(worlds, seed, DEVIATIONS[deviation]()):
             return
     pytest.fail(f"no script told the gate with this deviation from the reference: {deviation}")
 
 
 def test_the_comparison_reports_folders_kept_from_another_set(
-    world_dir: Path, monkeypatch: pytest.MonkeyPatch
+    worlds: _Worlds, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _folders_above_kept_from_the_first_set(monkeypatch)
-    assert any(_differences(world_dir, seed, {}) for seed in SEEDS)
+    assert any(_differences(worlds, seed, {}) for seed in SEEDS)

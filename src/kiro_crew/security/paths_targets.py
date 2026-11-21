@@ -1094,14 +1094,14 @@ class _DecisionRoots:
     else, so nothing outlives the decision: the next decision resolves afresh, and a
     repointed ``$HOME`` or override root re-keys the target cache. Only an answer
     is kept. A resolution that raises (a stall, a pool fault) leaves this empty, the
-    gate refuses, and a later lookup in the same decision asks again. *inline* is the
-    lookup's own flag: a lookup made the other way does not read or fill this.
+    gate refuses, and a later lookup in the same decision asks again. Every lookup of
+    one decision is made the same way, inline or bounded, because the gate passes its
+    own flag to each.
     """
 
-    __slots__ = ("inline", "roots")
+    __slots__ = ("roots",)
 
-    def __init__(self, *, inline: bool) -> None:
-        self.inline = inline
+    def __init__(self) -> None:
         self.roots: _ResolvedRoots | None = None
 
 
@@ -1140,13 +1140,12 @@ def _home_dir_targets(
     # reads file one root's targets under the other root's key — a fail-OPEN
     # TOCTOU, pinned by the regression test
     # test_roots_are_resolved_once_for_key_and_build.
-    held = decision if decision is not None and decision.inline is inline else None
-    roots = held.roots if held is not None else None
+    roots = decision.roots if decision is not None else None
     if inline:
         if roots is None:
             roots = _resolve_root_anchors(str(Path.home()))
-            if held is not None:
-                held.roots = roots
+            if decision is not None:
+                decision.roots = roots
         cached = _home_targets_cache.get((tuple(home_dirs),) + roots)
         if cached is not None and time.monotonic() < cached[0]:
             return cached[1]
@@ -1154,13 +1153,13 @@ def _home_dir_targets(
             # Resolve after acquiring: a queued worker must not reuse anchors
             # captured before another worker's potentially slow rebuild.
             roots = _resolve_root_anchors(str(Path.home()))
-            if held is not None:
-                held.roots = roots
+            if decision is not None:
+                decision.roots = roots
             return _cached_home_dir_targets(home_dirs, roots, inline=True)
     if roots is None:
         roots = _resolved_root_key()
-        if held is not None:
-            held.roots = roots
+        if decision is not None:
+            decision.roots = roots
     return _cached_home_dir_targets(home_dirs, roots, inline=False)
 
 

@@ -310,7 +310,7 @@ def _matches_gate_rows(
     if not path_str:
         return False
     if decision is None:
-        decision = _DecisionRoots(inline=pre_resolved)
+        decision = _DecisionRoots()
     try:
         candidates = _candidate_forms(path_str, base_dir, pre_resolved=pre_resolved)
     except PathResolutionStalled:
@@ -527,7 +527,7 @@ def sensitive_path_refusal(path_str: str, base_dir: str | None = None) -> str | 
 def sensitive_write_path_refusal(path_str: str, base_dir: str | None = None) -> str | None:
     """:func:`is_sensitive_write_path` as reason-or-``None``: same decision, a stall
     still refuses, worded as the stall :func:`sensitive_path_refusal` words it."""
-    decision = _DecisionRoots(inline=False)
+    decision = _DecisionRoots()
     try:
         matched = _matches_gate_rows(
             path_str,
@@ -609,7 +609,7 @@ def path_contains_sensitive(
     """
     if not dir_str:
         return False
-    decision = _DecisionRoots(inline=pre_resolved)
+    decision = _DecisionRoots()
     try:
         target_sets = [
             _home_dir_targets(_SENSITIVE_HOME_DIRS, inline=pre_resolved, decision=decision)
