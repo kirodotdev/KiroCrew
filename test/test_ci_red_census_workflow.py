@@ -36,7 +36,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -573,30 +572,67 @@ def test_any_other_exit_fails_the_job_and_says_so(tmp_path: Path, step: str, sta
     assert "REST calls: 1" in written
 
 
-def _run_budget(
-    tmp_path: Path, limit: Any, remaining: Any, gh_exit: int = 0
-) -> tuple[subprocess.CompletedProcess[str], dict[str, str], str]:
-    """Run the budget step: the real sizing script, with ``gh`` stubbed to report a
-    bucket of ``limit`` points with ``remaining`` left.
+def _load_budget() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "ci_red_census_budget_for_workflow_test", ROOT / "scripts" / "ci_red_census_budget.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    Returns the finished step, the outputs it set and the job summary.
+
+def _size_in_process(
+    tmp_path: Path, limit: Any, remaining: Any, gh_exit: int, capsys: pytest.CaptureFixture[str]
+) -> tuple[list[str], int, str, str]:
+    """What the sizing script does for a bucket of ``limit`` points with ``remaining``
+    left, called in this process with the flags the workflow step passes it.
+
+    Returns those flags, the exit status, what it printed and what it wrote to
+    ``GITHUB_OUTPUT``.
+    """
+    flags = [
+        "--needs-points",
+        str(_flag(BUDGET_STEP, "--needs-points")),
+        "--workers",
+        str(_flag(BUDGET_STEP, "--workers")),
+    ]
+    reply = json.dumps({"resources": {"graphql": {"limit": limit, "remaining": remaining}}})
+    outputs = tmp_path / "sized-outputs.txt"
+    capsys.readouterr()
+    status = _load_budget().main(
+        flags, run=lambda argv: (gh_exit, reply), environ={"GITHUB_OUTPUT": str(outputs)}
+    )
+    printed = capsys.readouterr().out
+    wrote = outputs.read_text(encoding="utf-8") if outputs.exists() else ""
+    return flags, int(status), printed, wrote
+
+
+def _run_budget_step(
+    tmp_path: Path, status: int, printed: str, wrote: str
+) -> tuple[subprocess.CompletedProcess[str], str, dict[str, str], str]:
+    """Run the budget step with ``python3`` stubbed to do what the sizing script did:
+    print ``printed``, add ``wrote`` to ``GITHUB_OUTPUT`` and exit ``status``.
+
+    Returns the finished step, the stub's arguments, the step's outputs and the
+    job summary.
     """
     stubs = tmp_path / "stubs"
     stubs.mkdir()
-    reply = json.dumps({"resources": {"graphql": {"limit": limit, "remaining": remaining}}})
-    (tmp_path / "rate_limit.json").write_text(reply, encoding="utf-8", newline="\n")
-    stub = stubs / "gh"
+    argv_log = tmp_path / "python3.argv"
+    (tmp_path / "printed.txt").write_text(printed, encoding="utf-8", newline="\n")
+    (tmp_path / "wrote.txt").write_text(wrote, encoding="utf-8", newline="\n")
+    stub = stubs / "python3"
     stub.write_text(
-        f'#!/usr/bin/env bash\ncat "{tmp_path / "rate_limit.json"}"\nexit {gh_exit}\n',
+        "#!/usr/bin/env bash\n"
+        f'printf \'%s\' "$*" > "{argv_log}"\n'
+        f'cat "{tmp_path / "printed.txt"}"\n'
+        f'cat "{tmp_path / "wrote.txt"}" >> "$GITHUB_OUTPUT"\n'
+        f"exit {status}\n",
         encoding="utf-8",
         newline="\n",
     )
     stub.chmod(0o755)
-    python = stubs / "python3"
-    python.write_text(f'#!/usr/bin/env bash\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
-    python.chmod(0o755)
-    (tmp_path / "scripts").mkdir()
-    shutil.copy(ROOT / "scripts" / "ci_red_census_budget.py", tmp_path / "scripts")
     outputs = tmp_path / "outputs.txt"
     job_summary = tmp_path / "job-summary.md"
     env = dict(os.environ)
@@ -616,19 +652,30 @@ def _run_budget(
         encoding="utf-8",
         check=False,
     )
+    argv = argv_log.read_text(encoding="utf-8") if argv_log.exists() else ""
     lines = outputs.read_text(encoding="utf-8").splitlines() if outputs.exists() else []
     given = dict(line.split("=", 1) for line in lines)
     written = job_summary.read_text(encoding="utf-8") if job_summary.exists() else ""
-    return done, given, written
+    return done, argv, given, written
 
 
 @posix_bash
-def test_the_bucket_this_repository_has_runs_a_weekday(tmp_path: Path) -> None:
+def test_the_bucket_this_repository_has_runs_a_weekday(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """The first scheduled run read 10,000 points an hour with 9,353 left."""
-    done, given, written = _run_budget(tmp_path, BUCKET_POINTS, BUCKET_LEFT)
+    flags, status, printed, wrote = _size_in_process(
+        tmp_path, BUCKET_POINTS, BUCKET_LEFT, 0, capsys
+    )
+    assert status == 0, printed
+
+    done, argv, given, written = _run_budget_step(tmp_path, status, printed, wrote)
 
     assert done.returncode == 0, done.stdout + done.stderr
     assert "::error::" not in done.stdout
+    # The step starts the sizing script with the flags it was sized with here.
+    assert argv.split() == ["scripts/ci_red_census_budget.py", *flags]
+    assert written == printed
     assert f"{BUCKET_POINTS} points an hour, {BUCKET_LEFT} left" in written
     reserve, most = int(given["reserve"]), int(given["most"])
     assert most >= WEEKDAY_POINTS and BUCKET_LEFT - reserve >= WEEKDAY_POINTS
@@ -658,14 +705,30 @@ def test_the_bucket_this_repository_has_runs_a_weekday(tmp_path: Path) -> None:
     ],
 )
 def test_a_bucket_that_does_not_hold_the_read_starts_no_census(
-    tmp_path: Path, limit: Any, remaining: Any, gh_exit: int
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], limit: Any, remaining: Any, gh_exit: int
 ) -> None:
-    done, given, written = _run_budget(tmp_path, limit, remaining, gh_exit)
+    _flags, status, printed, wrote = _size_in_process(tmp_path, limit, remaining, gh_exit, capsys)
+    assert status == 1 and wrote == ""
+
+    done, _argv, given, written = _run_budget_step(tmp_path, status, printed, wrote)
 
     assert done.returncode == 1
     assert given == {}, "a refused budget hands the census nothing"
     assert "::error::" in done.stdout
     assert "Refused:" in written and "Nothing was read." in written
+
+
+def test_no_census_test_starts_an_interpreter_of_its_own() -> None:
+    """A step test runs bash with ``python3`` and ``gh`` stubbed, and a script's own
+    logic is called in process: several real interpreters cold-started side by
+    side on the workers have stalled a shard."""
+    launch = "sys." + "executable"
+    for name in (
+        "test_ci_red_census_workflow.py",
+        "test_ci_red_census_budget.py",
+        "test_ci_red_census_week.py",
+    ):
+        assert launch not in (ROOT / "test" / name).read_text(encoding="utf-8"), name
 
 
 @posix_bash
