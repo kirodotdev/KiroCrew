@@ -5209,16 +5209,30 @@ the agent's spec mounts on `toolSearch.neverDefer` for a spec that grants
 | `kirocrew-worker`, `kirocrew-mate-worker` | `work_brief`, `work_report`, `mcp_server_wait` | 1,200 |
 | `kirocrew-pipeline-conductor`, `kirocrew-security-conductor` | `work_dispatch`, `session_create`, `session_send`, `session_read_message`, `session_close`, `work_ledger_read`, `work_ledger_record`, `accept_eval`, `monitor_start`, `wait`, `mcp_server_wait` | 7,700 |
 | `kirocrew-conductor`, `kirocrew-ledger-conductor`, `kirocrew-team-lead` | the eleven above and `work_brief` | 7,850 |
-| a custom agent (`CUSTOM_AGENT_JOB_TOOLS`) | `mcp_server_wait` | none: one tool of 63 tokens |
+| a custom agent (`CUSTOM_AGENT_JOB_TOOLS`) | `spawn_run`, `spawn_sub_agents`, `spawn_status`, `mcp_server_wait` | 3,350 (`CUSTOM_AGENT_JOB_TOOL_BUDGET`) |
 
-A custom agent grants no loader, so every MCP tool it can call is on
-`neverDefer`, except the tools of the Kiro Crew servers Crew itself added to it
-(`acp/default_crew_servers.crew_added_servers`: the managed entry, byte for byte).
-Those are left behind KAS's loader, as on the default agent, so Crew's own tool
-specs (about 137 K characters, measured on an agent with no server of its own) no
-longer ride in each of its requests; its
-`CUSTOM_AGENT_JOB_TOOLS` and any added-server tool its author named one by one stay
-direct (`custom_agent_never_defer_ids`).
+The tools of the Kiro Crew servers Crew itself added to a custom agent
+(`acp/default_crew_servers.crew_added_servers`: the managed entry, byte for byte)
+are left behind KAS's loader, as on the default agent, so Crew's own tool specs
+(about 137 K characters, measured on an agent with no server of its own) no longer
+ride in each of its requests. Its `CUSTOM_AGENT_JOB_TOOLS` the spec mounts stay
+direct whether or not the spec grants the loader: a spec that grants none keeps
+every other MCP tool it can call direct too, and any added-server tool its author
+named one by one (`custom_agent_never_defer_ids`); a spec that grants it, which
+`"*"` and `@builtin` do, is sent those job tools alone
+(`job_tool_ids(..., custom=True)`). The sub-agent tools are on that row because a
+custom agent's prompt cannot send it to a tool it does not know it has: behind the
+loader they were missing from the tool list the model reads, and a custom agent
+asked to start a sub-agent reached for something else. A spec that excludes one of
+them still cannot call it (`excludedTools` is applied by KAS before it partitions),
+and a spec whose `tools` does not reach `kirocrew-core` gains none: one that names
+Crew's tools one by one (`@kirocrew-core/memory_recall`) keeps exactly those, while
+one that lists only built-ins (`fs_read`, `execute_bash`) is given `@kirocrew-core`
+whole by Crew and so gains the row. Either way the list decides only what is listed
+up front; what the session may call is unchanged. The process
+sharing preview carries one limit: a loader-granting custom agent whose chat joins
+a process another agent founded runs on that founder's list
+(`acp/chat_runtime_sharing.agent_pins_tool_surface`).
 
 `mcp_server_wait` is in every row because every shipped agent's turn can be told a
 server is still starting (the `[MCP SERVERS]` block), and a load in front of the
@@ -5275,9 +5289,11 @@ at most five seconds, as the start did before
 The rules the table is held to (`test/test_job_tools.py`):
 
 - **A row is the tools the agent's own prompt makes its procedure**, not the tools
-  it might use. Anything else is one `tool_search` away. The one addition is the
+  it might use. Anything else is one `tool_search` away. The additions are the
   default agent's most used small tools above, chosen from measured use, never
-  from guesses.
+  from guesses, and the custom-agent row, whose prompt is unknown: it holds the
+  sub-agent tools, because an agent cannot be told a procedure for a tool it
+  does not see.
 - **A row fits its budget.** Its tools ride in every request of that agent. The
   budgets live in `test/test_job_tools.py` (`JOB_TOOL_BUDGETS`), beside the test
   that enforces them, because nothing at run time reads one. They are counted the
@@ -5291,8 +5307,10 @@ The rules the table is held to (`test/test_job_tools.py`):
 - **The set is fixed per agent**, never per session, so the tool definitions an
   agent's requests open with are the same in every session of it and the cached
   prefix stays valid.
-- **An agent with no row is untouched**: an operator's own agent, an app's agent
-  and a crew member's template put on the wire what they did before. The table is
+- **An agent with no row is untouched**, except a custom agent Crew added its own
+  servers to, which takes the custom-agent row above: an app's agent, a crew
+  member's template and a shipped agent with no row put on the wire what they did
+  before. The table is
   keyed by agent name, so this is about the name: a spec an operator saved under a
   shipped name (their own `kirocrew-worker.json`, say) takes that name's row, for
   the row's tools the spec itself mounts and for nothing else it mounts.

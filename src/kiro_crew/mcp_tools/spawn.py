@@ -966,10 +966,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CORE,
         _MAX_ROSTER_NAMES,
         _SPAWN,
+        _TOOLLESS_MARK,
         _agent_roster_hint,
         _parent_allowlist_filter,
         _parent_template_for_roster,
+        _roster_with_tools_first,
         _subagent_reader,
+        _toolless_agent_names,
         schemas,
     )
     from kiro_crew.mcp_tools.spawn_parts.session_memory import (  # noqa: F401
@@ -993,7 +996,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still served here
     from kiro_crew import subagent_standalone  # noqa: F401
-    from kiro_crew.agent_discovery import list_agents  # noqa: F401
+    from kiro_crew.agent_discovery import (  # noqa: F401
+        SCOPE_GLOBAL,
+        _kiro_agents_dir,
+        _read_agent_spec,
+        list_agents,
+        spec_is_toolless,
+    )
     from kiro_crew.constants import (  # noqa: F401
         DEFAULT_SUBAGENT_MAX_TURNS,
         LEAKED_TOOL_CALL_NOTE,

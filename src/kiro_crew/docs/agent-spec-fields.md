@@ -1123,7 +1123,7 @@ catalogue and loads one the first time it calls it, as on Crew's default agent,
 so they no longer ride in every request. Only an entry Crew added counts (the
 managed launch, byte for byte); a server your `mcpServers` declares is yours. A
 tool of an added server you name one by one, such as `@kirocrew-core/skill_search`,
-stays direct (a whole-server `@kirocrew-core` is deferred, whoever wrote it), and so does `mcp_server_wait`; every other tool your spec grants,
+stays direct (a whole-server `@kirocrew-core` is deferred, whoever wrote it), and so do `spawn_run`, `spawn_sub_agents`, `spawn_status` and `mcp_server_wait`, also when your `tools` is `"*"` or `@builtin` (which grant the loader), so the agent sees it can start sub-agents without loading a tool first; a tool your `excludedTools` names stays unavailable. Every other tool your spec grants,
 your own servers' included, stays as written. A backend that does not read
 KAS's `neverDefer` list sends them as before.
 Crew's own specs, Bot service agents, an app's agents (their

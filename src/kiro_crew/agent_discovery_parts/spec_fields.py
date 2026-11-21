@@ -127,6 +127,46 @@ def is_internal_agent_spec(info: object) -> bool:
     )
 
 
+def spec_is_toolless(spec: object) -> bool:
+    """True when *spec* mounts nothing: no tool, no grant, no MCP server, no hook.
+
+    All must hold: ``tools`` is an empty list; ``allowedTools`` is absent or an
+    empty list; ``mcpServers`` is absent or an empty object; ``hooks``,
+    ``permissions`` and ``toolsSettings`` are absent or empty; ``includePowers``
+    is absent or ``False`` (KAS reads an absent one as False); and
+    ``includeMcpJson`` is exactly ``False`` (kiro-cli defaults it to True and would
+    then start every server in the user-level ``mcp.json``). An empty ``tools``
+    alone is not enough: a server listed under ``mcpServers`` is still started, a
+    hook still runs a command, and either include flag widens what the turn can
+    reach (``acp.kas_agents`` forwards ``includePowers``, and the ``includeMcpJson``
+    opt-in decides which ``mcp.json`` servers KAS starts), in a turn that must run none.
+
+    Pure, so the spawn tools' roster can ask it in a tool server that has not loaded
+    the ACP layer; ``acp.client_mcp_array`` re-exports it under its old path.
+
+    Fails closed: a non-dict and any key of the wrong type answer False.
+    """
+    if not isinstance(spec, dict):
+        return False
+    tools = spec.get("tools")
+    if not (isinstance(tools, list) and not tools):
+        return False
+    if "allowedTools" in spec and not (
+        isinstance(spec["allowedTools"], list) and not spec["allowedTools"]
+    ):
+        return False
+    if "mcpServers" in spec and not (
+        isinstance(spec["mcpServers"], dict) and not spec["mcpServers"]
+    ):
+        return False
+    for key in ("hooks", "permissions", "toolsSettings"):
+        if key in spec and not (isinstance(spec[key], (dict, list)) and not spec[key]):
+            return False
+    if "includePowers" in spec and spec["includePowers"] is not False:
+        return False
+    return spec.get("includeMcpJson") is False
+
+
 SKILL_URI_PREFIX = "skill://"
 #: The Crew tool that loads a skill a bounded directory lists.
 _SKILL_SEARCH_TOOL = "@kirocrew-core/skill_search"
