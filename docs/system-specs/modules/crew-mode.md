@@ -4978,10 +4978,15 @@ definite matches. On a Bot's worker (`kirocrew-mate-worker`) the session-start
 notice (`spec_keys_notice`) says the worker refuses those commands unless they
 are read-only, instead of "no effect" or "runs without a refusal"; an ordinary
 session keeps the old wording.
+A named bundle (`policies`) beside the agent's `rules` is left behind and the
+rules are carried, as the upgrade path reads it: KAS refuses a block that names
+a bundle, and a bundle only expands into allow rules, so leaving it narrows.
 The add is refused,
 with a `detail` naming the field: `template_restrictions_uncarried` when one
 cannot be kept exactly (`uncarried_restrictions`, `toolsSettings.<tool>` for
-one tool's entry), and `template_policy_backend_unsupported` when the
+one tool's entry, `permissions (<why>)` with KAS's own reason for a block it
+would refuse whole, `kas_tool_view.permissions_block_refusal`), and
+`template_policy_backend_unsupported` when the
 Bot's worker backend (`mate_worker.crewmate_worker_backend`) is not KAS. An apply that changes the file's hooks, permissions or tool settings
 reloads the Bot's live workers onto it (`crewmate_worker_reload`, a busy
 one at its turn end), since a live KAS session keeps the batch it registered.
