@@ -19,6 +19,5 @@
 9 src/kiro_crew/apps/registry_pipeline/checkout.py
 1 src/kiro_crew/apps/registry_pipeline/recovery.py
 3 src/kiro_crew/cli_server.py
-2 src/kiro_crew/dashboard/chat_api/session_relaunch.py
 1 src/kiro_crew/dashboard/handlers/terminal.py
 1 src/kiro_crew/dashboard/server.py

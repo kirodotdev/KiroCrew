@@ -241,6 +241,7 @@ from kiro_crew.dashboard.chat_api.resume_window import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.session_relaunch import (  # noqa: F401
     _report_reload_respawn,
+    _resolve_project_dir,
     api_chat_slot_project,
     api_chat_slot_reload,
     api_chat_slot_workspace,
@@ -564,6 +565,11 @@ from kiro_crew.dashboard.default_session_folder import (  # noqa: F401
 from kiro_crew.dashboard.deny_override import (  # noqa: F401
     DENY_OVERRIDE_ACTIONS,
     is_deny_override_card,
+)
+from kiro_crew.dashboard.file_api.path_probe import (  # noqa: F401
+    _PathProbeBusy,
+    _probe_busy_response,
+    _run_path_probe,
 )
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _SLOT_SCOPED_TRUST_MODES,
