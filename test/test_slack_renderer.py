@@ -1709,10 +1709,10 @@ class TestPerCallToolOutcomeCards:
             ],
         )
         cards = [kw for m, kw in rec.calls if m == "append_task"]
-        # The call's card finalizes as "error" (Slack's non-✓ terminal status),
-        # naming the outcome — not a blanket "complete".
+        # The card closes "complete" with the outcome in its details: an "error"
+        # task turns Slack's whole plan header red ("Something went wrong").
         assert cards[0]["status"] == "in_progress"
-        assert cards[1]["status"] == "error"
+        assert cards[1]["status"] == "complete"
         assert cards[1]["details"] == "\nfailed"  # below the step's own details
 
     def test_succeeded_tool_result_keeps_complete(self):
@@ -1749,7 +1749,7 @@ class TestPerCallToolOutcomeCards:
                 ],
             )
             closed = [kw for m, kw in rec.calls if m == "append_task"][1]
-            assert closed["status"] == "error"
+            assert closed["status"] == "complete"
             assert closed["details"] == "\n" + status, status
 
     def test_no_result_event_keeps_complete(self):
@@ -1785,7 +1785,7 @@ class TestPerCallToolOutcomeCards:
         assert cards[0]["status"] == "in_progress"  # a opens
         assert cards[1]["status"] == "complete"  # a succeeded
         assert cards[2]["status"] == "in_progress"  # b opens
-        assert cards[3]["status"] == "error"  # b refused
+        assert cards[3]["status"] == "complete"  # b refused, outcome in details
         assert cards[3]["details"] == "\nrefused"
 
     def test_out_of_order_result_updates_an_already_closed_card(self):
@@ -1811,7 +1811,8 @@ class TestPerCallToolOutcomeCards:
         assert cards[1]["status"] == "complete"  # a closed when b opened
         assert cards[2]["status"] == "in_progress"  # b opens
         # a's late failure re-emits its card as error (same tool_1 task_id).
-        error_cards = [c for c in cards if c["status"] == "error"]
+        error_cards = [c for c in cards if c.get("details") == "\nfailed"]
         assert error_cards and error_cards[0]["details"] == "\nfailed"
         # b still closes complete.
         assert cards[-1]["status"] == "complete"
+        assert not [c for c in cards if c["status"] == "error"]

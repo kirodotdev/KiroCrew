@@ -1083,11 +1083,18 @@ class _AnswerStream:
             logger.debug("agent session resume after approval failed", exc_info=True)
 
     async def on_tool_rejected(self) -> None:
-        """Close the running tool's card as failed, or note the rejection inline."""
+        """Close the running tool's card as rejected, or note the rejection inline.
+
+        The card closes ``complete`` with ``rejected`` in its details, never
+        ``error``: one ``error`` task makes Slack title the whole plan
+        "Something went wrong" while the turn keeps running.
+        """
         if self.use_slack_stream and self.active_task_id:
             self.cancel_tool_timer()
             assert self.stream_ts is not None
-            await self.append_task(self.active_task_id, self.active_task_title, "error")
+            await self.append_task(
+                self.active_task_id, self.active_task_title, "complete", details="rejected"
+            )
             self.active_task_id = ""
         if not self.use_slack_stream:
             self.accumulated += "\n🚫 _Tool use rejected._"

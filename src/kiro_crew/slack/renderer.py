@@ -1059,7 +1059,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         """Send outcomes held for steps whose narration will not come."""
         deferred, self._deferred_outcomes = self._deferred_outcomes, {}
         for task_id, outcome in deferred.items():
-            title, status = self._task_state.get(task_id, ("", "error"))
+            title, status = self._task_state.get(task_id, ("", "complete"))
             await self._append_task(task_id, title, status, details=outcome)
 
     async def on_tool_result(self, tool_call_id: str, tool_status: str) -> None:
@@ -1086,7 +1086,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
             task_id, title = self._closed_task_ids[tool_call_id]
             self._tool_outcomes.pop(tool_call_id, None)
             await self._append_task(
-                task_id, title, "error", details=self._outcome(task_id, tool_status)
+                task_id, title, "complete", details=self._outcome(task_id, tool_status)
             )
 
     async def _finalize_active_task(self) -> None:
@@ -1114,14 +1114,15 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         if succeeded:
             await self._append_task(self._active_task_id, title, "complete")
         else:
-            # Slack's ``task_update`` status is one of error/pending/in_progress/
-            # complete — "error" is the non-✓ card. The detail carries the exact
-            # outcome string, so refused/cancelled read as themselves rather than
-            # as a failure.
+            # NEVER ``error`` here: with ``task_display_mode: "plan"`` Slack
+            # titles the whole plan "Something went wrong" (red) when any one
+            # task is ``error``, on a turn that is still running fine. The card
+            # closes ``complete`` and the detail carries the exact outcome
+            # string, so refused/cancelled read as themselves.
             await self._append_task(
                 self._active_task_id,
                 title,
-                "error",
+                "complete",
                 details=self._outcome(self._active_task_id, outcome),
             )
         if self._active_tool_call_id:
