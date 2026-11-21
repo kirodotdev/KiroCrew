@@ -940,6 +940,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Search all chats: the same redacted titles and excerpts on the same
         # dashboard history surface as history_reads.py.
         "dashboard/handlers/sessions_parts/message_search.py",
+        # Pure derivation: `meaning_snippet` redacts a meaning row's whole message
+        # before it cuts the excerpt, so a credential whose label falls outside the
+        # excerpt stays hidden. It returns the excerpt and emits nothing; the search
+        # surfaces that serve it (history_reads.py, mcp_tools/sessions.py, the
+        # channel pickers) redact it again and are the egress.
+        "history_vectors_search.py",
         "dashboard/handlers/sessions_parts/summaries.py",
         "dashboard/handlers/sessions_parts/tool_policy.py",
         "dashboard/handlers/sessions_parts/usage_scrape.py",

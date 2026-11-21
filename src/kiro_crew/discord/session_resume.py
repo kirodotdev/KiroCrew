@@ -129,7 +129,7 @@ def _picker_components(nonce: str, choices: tuple[SessionChoice, ...]) -> list[d
             {
                 "type": 2,
                 "style": 2,
-                "label": f"{index + 1}. {choice.title}"[:80],
+                "label": f"{index + 1}. {choice.label}"[:80],
                 "custom_id": f"s:{nonce}:{index}",
             }
         )

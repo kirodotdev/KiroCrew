@@ -1248,6 +1248,10 @@ async def api_instances_search_sessions(request: web.Request) -> web.Response:
                 if field in SESSION_SEARCH_TEXT_FIELDS:
                     value = redact(value)
                 out[field] = value
+        # RFC session semantic search 8.2: a peer's match kind is kept when it is
+        # one of the two kinds; a row without one reads as a text match.
+        if row.get("match") in ("text", "meaning"):
+            out["match"] = row["match"]
         for field in ("modified", "messages"):
             value = row.get(field)
             # bool is an int subclass and 1e309 is a float — but True/Infinity

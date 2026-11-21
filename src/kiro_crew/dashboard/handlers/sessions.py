@@ -262,6 +262,7 @@ if TYPE_CHECKING:
     from kiro_crew.history_search import SearchRows  # noqa: F401
     from kiro_crew.history_search import search_candidate_cap  # noqa: F401
     from kiro_crew.history_search import search_coverage  # noqa: F401
+    from kiro_crew.history_search import semantic_coverage  # noqa: F401
     from kiro_crew.kiro_cli import chat_agent_engines_at  # noqa: F401
     from kiro_crew.kiro_cli import pin_kiro_cli  # noqa: F401
     from kiro_crew.label_guard import PROSE_OPENERS  # noqa: F401
