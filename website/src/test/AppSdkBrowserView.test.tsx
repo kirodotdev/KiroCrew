@@ -47,7 +47,7 @@ import { useRef, type ReactNode } from 'react'
 import { Provider } from 'react-redux'
 import '../i18n/all'
 import { i18nT } from '../i18n/t'
-import { BrowserView } from '../app-sdk/index'
+import { BrowserView, type BrowserViewMark } from '../app-sdk/index'
 import { VIEW_KEEPALIVE_MS, coordsFor, useBrowserView } from '../app-sdk/browserViewHooks'
 import { useAutoSendIntake } from '../pages/chat/page/launchIntake'
 import { AppIdentityProvider } from '../app-sdk/identity'
@@ -1086,5 +1086,53 @@ describe('applyEvent ring eviction scope', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('BrowserView second view: parity with primary view', () => {
+  const VIEW6 = `${OWN}#viewparity`
+
+  it('a keepalive unknown_session reopens the view instead of showing an error', async () => {
+    // A dashboard that was offline while the view was idle-reaped will get
+    // unknown_session on the next heartbeat. The correct recovery is a silent
+    // reopen, not a stuck view_error card.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const open = vi.spyOn(api, 'browserLiveViewOpen').mockResolvedValue({ view_key: VIEW6, turn_id: 'v5' })
+      vi.spyOn(api, 'browserLiveViewClose').mockResolvedValue({ ok: true } as never)
+      // unknown_session: the view was silently reaped while the dashboard was offline.
+      const unknownErr = Object.assign(new Error('unknown_session'), { body: JSON.stringify({ code: 'unknown_session' }) })
+      vi.spyOn(api, 'browserLiveVisibility').mockRejectedValue(unknownErr)
+      act(() => { browserLiveStore.applyEvent(ev(VIEW6, { turn_id: 'v5' })); browserLiveStore.applyFrame(frame(VIEW6)) })
+      mount(OWN, <BrowserView slot={OWN} tabId="TB" aria-label="Tab B" />)
+      await act(async () => {})
+      expect(open).toHaveBeenCalledTimes(1)
+      await act(async () => { vi.advanceTimersByTime(VIEW_KEEPALIVE_MS) })
+      await act(async () => {})
+      // Must NOT show a view_error card: unknown_session is a silent reopen, not an error.
+      expect(view().dataset.state).not.toBe('view_error')
+      // Reopen fires exactly once (the keepaliveReopened guard prevents a loop).
+      expect(open).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('marks are drawn over the second view picture', async () => {
+    // browser-collab annotates comparison pages with marks. The second-view
+    // branch must pass them to its PictureBox just like the primary view does.
+    vi.spyOn(api, 'browserLiveViewOpen').mockResolvedValue({ view_key: VIEW6, turn_id: 'v6' })
+    vi.spyOn(api, 'browserLiveViewClose').mockResolvedValue({ ok: true } as never)
+    act(() => { browserLiveStore.applyEvent(ev(VIEW6, { turn_id: 'v6' })); browserLiveStore.applyFrame(frame(VIEW6)) })
+    const testMarks: BrowserViewMark[] = [
+      { x: 10, y: 20, label: 'A' },
+      { x: 50, y: 60, width: 30, height: 40 },
+    ]
+    mount(OWN, <BrowserView slot={OWN} tabId="TB" marks={testMarks} aria-label="Tab B" />)
+    await act(async () => {})
+    // The marks overlay must be present inside the second view's picture box.
+    const overlay = screen.getByTestId('app-browser-view-marks')
+    expect(overlay).toBeTruthy()
+    expect(overlay.children).toHaveLength(2)
   })
 })

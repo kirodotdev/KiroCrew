@@ -125,11 +125,11 @@ function BrowserViewActions({ steps }: { steps: readonly BrowserLiveStep[] }) {
   )
 }
 
-function Placeholder({ state, text, className }: { state: string; text: string; className?: string }) {
+function Placeholder({ state, text, className, testId = 'app-browser-view' }: { state: string; text: string; className?: string; testId?: string | false }) {
   return (
     <div
       className={`grid place-items-center rounded-md border border-border bg-card p-6 text-center text-[13px] text-muted ${className ?? ''}`}
-      data-testid="app-browser-view"
+      {...(testId ? { 'data-testid': testId } : {})}
       data-state={state}
       role="status"
     >
@@ -175,23 +175,26 @@ export default function BrowserView({
   // old turn and then "on" for the new one would send two writes the gateway may
   // take in either order; an "off" taken last stops the screencast under a view
   // that is on screen, and the store, having said "on", never says it again.
+  // For a second view (tabId), use the view key so the gateway's idle timer
+  // refreshes for the right session, not the parent slot.
+  const sessionKey = key ?? slot
   const visibleTurn = ok ? turnId : null
-  const reported = useRef<{ slot: string; turnId: string } | null>(null)
+  const reported = useRef<{ sessionKey: string; turnId: string } | null>(null)
   const documentVisible = useDocumentVisible()
   useEffect(() => {
     const was = reported.current
-    if (was && (was.slot !== slot || !visibleTurn)) {
-      browserLiveStore.setVisible(was.slot, instanceId, false, was.turnId)
+    if (was && (was.sessionKey !== sessionKey || !visibleTurn)) {
+      browserLiveStore.setVisible(was.sessionKey, instanceId, false, was.turnId)
       reported.current = null
     }
     if (!visibleTurn) return
-    browserLiveStore.setVisible(slot, instanceId, shown, visibleTurn)
-    reported.current = { slot, turnId: visibleTurn }
-  }, [slot, instanceId, visibleTurn, shown])
+    browserLiveStore.setVisible(sessionKey, instanceId, shown, visibleTurn)
+    reported.current = { sessionKey, turnId: visibleTurn }
+  }, [sessionKey, instanceId, visibleTurn, shown])
   useEffect(() => () => {
     const was = reported.current
     reported.current = null
-    if (was) browserLiveStore.setVisible(was.slot, instanceId, false, was.turnId)
+    if (was) browserLiveStore.setVisible(was.sessionKey, instanceId, false, was.turnId)
   }, [instanceId])
   // A second view: tell the gateway it is still looked at while on screen and the
   // browser tab is visible, so the view does not idle out from a reloaded page's
@@ -206,6 +209,9 @@ export default function BrowserView({
   const [keepaliveError, setKeepaliveError] = useState<{ key: string; message: string } | null>(null)
   const keepaliveErrorMsg = keepaliveError?.key === key ? keepaliveError.message : null
   const { reopen: reopenView } = second
+  // Track whether we already issued a reopen from a missed-done keepalive, so we
+  // do not loop: each reopen starts a new turn and a new key, clearing this flag.
+  const keepaliveReopened = useRef<string | null>(null)
   useEffect(() => {
     if (!ok || !tabId || !key || !shown) return
     const id = setInterval(() => {
@@ -213,12 +219,23 @@ export default function BrowserView({
         api.browserLiveVisibility(key, true).then(() => {
           setKeepaliveError(null)
         }).catch((e: unknown) => {
-          setKeepaliveError({ key, message: e instanceof Error ? e.message : String(e) })
+          // `unknown_session`: the gateway reaped the view while the dashboard was
+          // offline and we missed the `done` event.  Treat it as a silent expiry
+          // and reopen once while the view is on screen, so the person never sees
+          // a stuck error card.  Any other refusal (policy_denied, app_disabled…)
+          // is a real error that the person needs to act on.
+          const isUnknown = errorCode(e) === 'unknown_session'
+          if (isUnknown && shown && documentVisible && keepaliveReopened.current !== key) {
+            keepaliveReopened.current = key
+            reopenView()
+          } else if (!isUnknown) {
+            setKeepaliveError({ key, message: e instanceof Error ? e.message : String(e) })
+          }
         })
       }
     }, VIEW_KEEPALIVE_MS)
     return () => clearInterval(id)
-  }, [ok, tabId, key, shown])
+  }, [ok, tabId, key, shown, documentVisible, reopenView])
   // Once per ended turn: a reopened view starts a new turn, so a view that keeps
   // failing to open is not retried in a loop. Only reopen when the view is on
   // screen and the browser tab is visible: an off-screen view idle-reaped by its
@@ -338,7 +355,7 @@ export default function BrowserView({
     } else if (keepaliveErrorMsg) {
       inner = <ErrorNotice variant="inline" message={keepaliveErrorMsg} askAgent testId="app-browser-view-keepalive-error" />
     } else if (!key || !turn || !(live || holdLive)) {
-      inner = <Placeholder state="idle" text={i18nT('appSdk.browserView.waiting_for_frame')} />
+      inner = <Placeholder state="idle" text={i18nT('appSdk.browserView.waiting_for_frame')} testId={false} />
     } else {
       const viewHost = hostOf(url)
       const viewRatio = frame && frame.w > 0 && frame.h > 0 ? frame.w / frame.h : 16 / 10
@@ -366,7 +383,26 @@ export default function BrowserView({
                     aria-label={ariaLabel}
                   />
                 ) : (
-                  <Placeholder state="idle" text={i18nT('appSdk.browserView.waiting_for_frame')} />
+                  <Placeholder state="idle" text={i18nT('appSdk.browserView.waiting_for_frame')} testId={false} />
+                )}
+                {marks && marks.length > 0 && (
+                  <div className="pointer-events-none absolute inset-0" data-testid="app-browser-view-marks" aria-hidden="true">
+                    {marks.map((m, i) => (
+                      <div
+                        key={i}
+                        className={m.width !== undefined && m.height !== undefined
+                          ? 'absolute rounded-sm border-2 border-accent'
+                          : 'absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent'}
+                        style={{ left: m.x, top: m.y, ...(m.width !== undefined && m.height !== undefined ? { width: m.width, height: m.height } : {}) }}
+                      >
+                        {m.label && (
+                          <span className="absolute left-full top-0 ml-1 whitespace-nowrap rounded bg-accent px-1 text-[11px] text-accent-fg">
+                            {m.label}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             </PictureBox>
