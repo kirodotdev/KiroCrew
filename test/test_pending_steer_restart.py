@@ -205,7 +205,7 @@ async def test_a_prompt_the_held_steers_push_past_the_byte_budget_is_reported(
     tmp_path, monkeypatch, caplog
 ):
     """Large held steers spend the saved queue's byte budget ahead of the queue: a user
-    prompt that no longer fits is warned about and marked, as one the queue pushes is."""
+    prompt that does not fit is warned about and marked, as one the queue pushes is."""
     from kiro_crew.dashboard.session_control_parts.session_messaging import (
         MAX_SEND_MESSAGE_CHARS,
     )
