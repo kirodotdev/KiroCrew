@@ -45,7 +45,7 @@ from overload_fakes import (
 )
 
 import kiro_crew.subagent as subagent_mod
-from kiro_crew import taskq
+from kiro_crew import platform_compat, taskq
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.schema import requires_restart
 from kiro_crew.subagent import SubagentManager, _SharingPlan
@@ -55,6 +55,16 @@ from kiro_crew.subagent_wait_reasons import QUEUED_REASON_LOW_MEMORY, QUEUED_WAI
 from kiro_crew.testing.wait import await_until
 
 pytestmark = [pytest.mark.timeout(60), pytest.mark.usefixtures("healthy_host_memory")]
+
+
+@pytest.fixture(autouse=True)
+def _settled_rows_owe_nothing(_floor_monkeypatch):
+    """These waits assume a settled row stops owing its price.
+
+    Off macOS: there a settled row keeps owing its price (start_pricing._owes_price_once_settled).
+    """
+    _floor_monkeypatch.setattr(platform_compat, "IS_MACOS", False)
+
 
 _A = "dash:lane-a"
 _B = "dash:lane-b"

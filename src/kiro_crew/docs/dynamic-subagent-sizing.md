@@ -369,12 +369,11 @@ limit waits even while physical memory is free.
 - Stdlib only — no new dependencies. Memory/CPU are read per platform:
   Linux reads `/proc/meminfo`, `/proc/<pid>/stat`, and cgroup limits; macOS
   reads *available* memory in-process via the Mach `host_statistics64` syscall
-  through `ctypes`/`libSystem` (free + inactive + speculative + purgeable
-  pages × page size) — no subprocess, so it is safe on the gateway event loop
-  and passes the spawn-audit guard. The spawn floor reads a tighter sum of the
-  same counters (free + purgeable + inactive file-backed pages, the figure
-  behind `platform_compat.host_available_mib`), so it does not count memory a
-  new process cannot take without swapping; Windows reads available memory via
+  through `ctypes`/`libSystem` (free + active + inactive pages × page size:
+  everything not wired and not compressed, the kernel's own figure that
+  `memory_pressure` reports) — no subprocess, so it is safe on the gateway
+  event loop and passes the spawn-audit guard. The spawn floor reads the same
+  figure; Windows reads available memory via
   `GlobalMemoryStatusEx` (through `platform_compat.host_available_mib`) and has
   no cgroup clamp.
 - On a platform with no probe yet, or with no usable memory bound, the memory reader

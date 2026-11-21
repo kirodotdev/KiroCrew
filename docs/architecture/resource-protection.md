@@ -627,15 +627,15 @@ locator forward.
 
 > **Two compositions of one Mach struct, on purpose.** `subagent._macos_vm_reclaimable_pages`
 > and `platform_compat.host_available_mib` both read `host_statistics64`, and they sum its
-> page counters differently. The budget's version is tighter — it does not re-add
-> `speculative_count` (which `free_count` already contains) and it bounds `inactive_count`
-> by `external_page_count`. The spawn memory floor reads the tighter version on macOS
-> (`subagent._host_available_gb`): the floor promises what stays free after a
-> start, and the looser sum read about 3.5 GiB above what a new process could take. The
-> sub-agent version is knowingly looser and stays that way for the TaskRunner's
-> memory-sized auto value, the auto cap's disabled-floor fallback and the memory posture,
-> numbers that are documented and that operators tune against. Do not "unify" those; only
-> the Mach call itself is shared.
+> page counters differently. The sub-agent version is the kernel's own available figure
+> (free + active + inactive: everything not wired and not compressed, what
+> `memory_pressure` reports). The spawn floor, the memory posture, the TaskRunner's
+> memory-sized auto value and the auto cap's disabled-floor fallback all read it, because
+> macOS compresses or swaps idle app pages on demand and its pressure level is the real
+> shortage signal. The budget's version is tighter (free + purgeable +
+> `min(inactive, external_page_count)`) and stays that way for the test-worker budget,
+> where a run must not push the host into swap. Do not "unify" those; only the Mach call
+> itself is shared.
 
 pytest-xdist resolves `-n auto` to the CPU count and never looks at memory, so on a
 many-core host a full-suite run inside an agent turn spawns one worker per core at roughly

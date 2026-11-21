@@ -17,8 +17,9 @@ import logging
 import math
 import os
 import threading
+import weakref
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB, DEFAULT_SUBAGENT_COST_GB
@@ -52,6 +53,34 @@ MEMORY_CAUSE_READ_UNANSWERED = "host_read_unanswered"
 _memory_check_cause = threading.local()
 
 
+#: Every live ``SubagentManager``, which registers itself when it is built. Host
+#: memory sizing asks each what its settled runtimes still hold outside the
+#: free-memory reading (:func:`_settled_runtime_hold_total_gb`). Weak, so a
+#: manager that is dropped leaves the set without being unregistered. Empty in
+#: a process with no manager, such as the stdio tool server.
+_MEMORY_PRICE_HOLDERS: "weakref.WeakSet[Any]" = weakref.WeakSet()
+
+
+def _settled_runtime_hold_total_gb(cost_gb: float) -> float:
+    """What our settled runtimes and shared sessions hold outside the reading, over every manager.
+
+    0.0 except on macOS, where the figure (free + active + inactive pages)
+    counts a running runtime's resident pages as available, so the reading does
+    not drop as our runtimes start (``SubagentManager.settled_runtime_hold_gb``).
+    A manager whose rows cannot be read adds nothing: sizing must never fail on
+    this term.
+    """
+    if not platform_compat.IS_MACOS:
+        return 0.0
+    total = 0.0
+    for holder in list(_MEMORY_PRICE_HOLDERS):
+        try:
+            total += max(0.0, float(holder.settled_runtime_hold_gb(cost_gb)))
+        except Exception:
+            logger.debug("settled runtime hold unreadable", exc_info=True)
+    return total
+
+
 def pop_memory_check_cause() -> str:
     """Return this thread's last memory-check cause ("" for none) and clear it."""
     cause = getattr(_memory_check_cause, "value", "")
@@ -77,10 +106,17 @@ def check_memory_available(
     ``platform_compat._linux_available_mib`` reads the same file the same
     way. The ``path`` keyword is keyword-only and exists for tests only;
     production callers always take the constant.
-    Native macOS/Windows readers handle the production path on those hosts:
-    on both, the floor compares against ``platform_compat.host_available_mib``
-    through ``_host_available_gb`` (see it for why macOS does not use the
-    looser sum the auto cap and the posture read).
+    Native macOS/Windows readers handle the production path on those hosts.
+    On macOS the floor reads the kernel's own available figure
+    (``_macos_available_memory_gb``, the one ``memory_pressure`` reports). That
+    figure does not drop as our runtimes start, so the gate's reserve keeps
+    each running dedicated runtime's and shared session's price in the bar
+    (``min_gb``). The
+    kernel pressure hold adds a check only for root starts while one of this
+    gateway's dedicated runtimes runs; other starts and TaskRunner sizing see
+    only this figure. On Windows it
+    compares against ``platform_compat.host_available_mib`` through
+    ``_host_available_gb``.
     Linux production reads also respect cgroup headroom. An explicit test path
     always exercises the file reader. With no readable host memory or finite
     cgroup limit, returns (True, -1.0). ``measured_only`` leaves out a cgroup
@@ -88,7 +124,9 @@ def check_memory_available(
     (see :func:`_container_cgroup_available_gb`).
     """
     if path == "/proc/meminfo" and not platform_compat.IS_LINUX:
-        if platform_compat.IS_MACOS or platform_compat.IS_WINDOWS:
+        if platform_compat.IS_MACOS:
+            avail = _macos_available_memory_gb()
+        elif platform_compat.IS_WINDOWS:
             avail = _host_available_gb()
         else:
             avail = -1.0
@@ -211,8 +249,8 @@ def _available_memory_gb(*, measured_only: bool = False) -> float:
         • Linux  — ``/proc/meminfo`` ``MemAvailable`` (via ``check_memory_available``),
                    then clamped by cgroup headroom so the tighter of a
                    container's limit and the agents slice's ceiling binds.
-        • macOS  — reclaimable memory via Mach ``host_statistics64`` (ctypes,
-                   in-process, no subprocess); see ``_macos_available_memory_gb``.
+        • macOS  — the kernel's available figure via Mach ``host_statistics64``
+                   (ctypes, in-process, no subprocess); see ``_macos_available_memory_gb``.
                    No cgroups.
         • Windows — ``GlobalMemoryStatusEx`` through
                    ``platform_compat.host_available_mib``. No cgroups.
@@ -256,23 +294,11 @@ def _host_available_gb() -> float:
     unreadable, never zero memory" contract are defined, and a second reader
     would have to restate both to stay correct.
 
-    Readers:
-
-    * Windows, everywhere: without it the cap loses its memory term on Windows
-      entirely and falls open to ``_LEGACY_DEFAULT_MAX``, so a host with tens of
-      GB free is held to the same three concurrent sub-agents as an
-      unmeasurable one.
-    * macOS, the spawn floor only (``check_memory_available``). There the shim
-      counts free plus purgeable pages plus ``min(inactive,
-      external_page_count)``. The floor promises that
-      ``agent.spawn_min_memory_gb`` stays free AFTER a start, so it reads what a
-      new process can really take. The looser ``_macos_available_memory_gb``
-      adds speculative pages a second time (``free_count`` already holds them)
-      and counts dirty anonymous inactive pages as free; on a loaded Apple
-      silicon host it reads about 3.5 GiB above this figure, so a floor compared
-      against it admits starts with less headroom than the operator set. The
-      auto cap's memory-sized fallback, the TaskRunner's memory-sized auto value
-      and the memory posture keep reading ``_macos_available_memory_gb``.
+    Reader: Windows, everywhere. Without it the cap loses its memory term on
+    Windows entirely and falls open to ``_LEGACY_DEFAULT_MAX``, so a host with
+    tens of GB free is held to the same three concurrent sub-agents as an
+    unmeasurable one. macOS does not read it: every macOS figure here is
+    ``_macos_available_memory_gb``.
     """
     available_mib = platform_compat.host_available_mib()
     if available_mib <= 0:
@@ -281,39 +307,43 @@ def _host_available_gb() -> float:
 
 
 def _macos_vm_reclaimable_pages() -> Optional[int]:
-    """Reclaimable memory in **pages** via Mach ``host_statistics64``, or ``None``.
+    """The kernel's available memory in **pages** via Mach ``host_statistics64``, or ``None``.
 
-    macOS-only; validated live against ``vm_stat`` on Apple silicon (matches
-    within live-fluctuation noise). The Mach call itself lives in
-    ``platform_compat.macos_vm_statistics``, so the kernel struct is declared in
-    one place; what stays here is this caller's own composition of it.
+    The Mach call itself lives in ``platform_compat.macos_vm_statistics``, so
+    the kernel struct is declared in one place; what stays here is the sum.
 
-    Reclaimable ≈ ``free + inactive + speculative + purgeable`` page classes:
-    memory that can back a new allocation without swapping (the closest analogue
-    to Linux ``MemAvailable``). Wired/active/compressed pages are excluded.
+    Available = ``free_count + active_count + inactive_count``: every page that
+    is neither wired nor held by the compressor. That is the macOS kernel's own
+    figure (xnu ``VM_CHECK_MEMORYSTATUS`` on macOS passes
+    ``AVAILABLE_NON_COMPRESSED_MEMORY``, active + inactive + free + speculative),
+    which ``memory_pressure`` prints as "System-wide memory free percentage" and
+    which drives the pressure level Activity Monitor shows. macOS compresses or
+    swaps idle app pages on demand, so counting only free and cache pages reads
+    a healthy Mac as nearly full. ``free_count`` already holds
+    ``speculative_count``, so speculative is not added again.
+
     Returns ``None`` on any failure (non-macOS, ``libSystem`` absent, non-zero
-    ``kern_return_t``) so the caller falls back to the legacy default.
+    ``kern_return_t``) so the caller falls back to the legacy default. It feeds
+    the spawn floor, the memory posture, the TaskRunner's memory-sized auto
+    value and the auto cap's disabled-floor fallback.
 
-    This sum is knowingly looser than ``platform_compat.host_available_mib``,
-    which bounds ``inactive`` by ``external_page_count`` and does not re-add
-    ``speculative`` (``free_count`` already contains it). The spawn floor does
-    not read it: it reads the tight figure (``_host_available_gb``).
-    This sum feeds the TaskRunner's memory-sized auto value, the auto
-    cap's disabled-floor fallback (``compute_memory_sized_parallel_cap``) and
-    the memory posture, figures that are documented and that operators tune
-    against.
+    A running runtime's resident pages are active or inactive, so this figure
+    does not drop as our own runtimes start. The spawn floor therefore keeps
+    charging each running dedicated runtime and shared session of ours its own
+    start price after it settles (``_owes_price_once_settled``), and the
+    memory-sized counts take what those settled rows hold off it (``_settled_runtime_hold_total_gb``).
     """
     probe = platform_compat.macos_vm_statistics()
     if probe is None:
         return None
     stats, _filled = probe
-    return stats.free_count + stats.inactive_count + stats.speculative_count + stats.purgeable_count
+    return int(stats.free_count) + int(stats.active_count) + int(stats.inactive_count)
 
 
 def _macos_available_memory_gb() -> float:
     """macOS available-memory probe (GB), or ``-1.0`` on failure.
 
-    Combines the in-process Mach reclaimable-page count
+    Combines the in-process Mach available-page count
     (``_macos_vm_reclaimable_pages``) with the page size from ``os.sysconf``.
     macOS has no ``/proc/meminfo`` and ``os.sysconf`` exposes only *total*
     physical pages (no ``SC_AVPHYS_PAGES``), so the Mach VM statistics are the
@@ -735,11 +765,20 @@ def _host_mem_term(cfg: KiroCrewConfig, *, settled: bool = False) -> int | None:
     a start at. A run's builds and test suites are not in it, so one 132 GB
     whole-run sample does not hold that count at its floor; growth after start
     is left to the buffer, as the floor leaves it.
+
+    On macOS ``avail`` is the kernel figure less what our settled runtimes and
+    shared sessions hold (:func:`_settled_runtime_hold_total_gb`): that figure counts
+    their resident pages as available, so without it a count sized while our
+    runtimes run would count their memory a second time as free. Linux and
+    Windows readings already drop with resident memory.
     """
     agent = cfg.agent
     avail_gb = _available_memory_gb()
     if avail_gb <= 0:
         return None
+    # On macOS the reading does not drop as our runtimes start, so what our
+    # settled runtimes hold comes off it here, as the floor's reserve charges it.
+    avail_gb = max(0.0, avail_gb - _settled_runtime_hold_total_gb(agent.subagent_cost_gb))
     buf = 1.0 - agent.subagent_mem_buffer_pct / 100.0
     if settled:
         from kiro_crew.subagent_cost import SETTLED_SAMPLE_MAX_AGE_SECS

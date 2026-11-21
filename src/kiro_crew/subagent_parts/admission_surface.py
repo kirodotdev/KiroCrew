@@ -8,7 +8,7 @@ attribute of the same name in :mod:`kiro_crew.subagent_parts.manager`.
 
 Manager fields read: ``_admission``, ``_admitting_waiting``, ``_agents``,
 ``_batch_owner``, ``_batch_progress_ts``, ``_batch_submitted``, ``_floor_deferred_ids``,
-``_floor_waits``, ``_held_approval_modes``, ``_max_concurrent``, ``_memory_mode_for_session``, ``_monitor``,
+``_floor_waits``, ``_held_approval_modes``, ``_learned_settled_gb``, ``_max_concurrent``, ``_memory_mode_for_session``, ``_monitor``,
 ``_run_events``, ``_session_start_concurrency``, ``_session_start_configured``,
 ``_sessions``, ``_startup_reservations``.
 
@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         _host_memory_reading_off_loop,
         _inherited_member_agent,
         _redact,
+        _settled_runtime_hold_gb,
         _validate_agent,
         _validate_app_agent_ownership,
         asyncio,
@@ -261,6 +262,19 @@ def running_agents_for(self: SubagentManager, parent_key: str) -> list[dict]:
 
 def task_memory_rows(self: SubagentManager) -> list[dict[str, object]]:
     return self._monitor.task_memory_rows_impl()
+
+
+def settled_runtime_hold_gb(self: SubagentManager, cost_gb: float) -> float:
+    """What this manager's settled runtimes hold outside the free-memory reading (GiB).
+
+    0.0 except on macOS (:func:`_settled_runtime_hold_gb`). Host memory sizing
+    (``_host_mem_term``) subtracts it, so the TaskRunner's memory-sized value
+    and the auto cap with the floor at 0 count our runtimes as the floor does.
+    Reads no config and takes no lock, so any thread may call it.
+    """
+    return _settled_runtime_hold_gb(
+        list(self._agents.values()), cost_gb=cost_gb, settled_gb=self._learned_settled_gb
+    )
 
 
 def spawn(

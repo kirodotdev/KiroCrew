@@ -36,6 +36,7 @@ from admission_gate_helpers import (  # noqa: F401 -- the autouse fixture regist
 )
 from overload_fakes import wait_taskq_open
 
+from kiro_crew import platform_compat
 from kiro_crew import resource_status as rs
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS
@@ -438,7 +439,7 @@ class TestSpawnAdmissionGate(_TestSpawnAdmissionGateHarness):
         ],
     )
     def test_the_pending_start_is_priced_at_its_dedicated_projection(
-        self, configured, expected_min_gb
+        self, monkeypatch, configured, expected_min_gb
     ) -> None:
         """A start costs what a runtime settles at, not what a run grew to.
 
@@ -452,6 +453,8 @@ class TestSpawnAdmissionGate(_TestSpawnAdmissionGateHarness):
         """
         from kiro_crew.subagent import SubagentInfo
 
+        # Off macOS: there a settled row keeps owing its price (start_pricing._owes_price_once_settled).
+        monkeypatch.setattr(platform_compat, "IS_MACOS", False)
         mgr = self._mgr()
         mgr._agents["heavy"] = SubagentInfo(
             id="heavy", task="w", peak_rss_gb=7.5, last_rss_gb=1.0, _rss_samples=2, _pid=4242

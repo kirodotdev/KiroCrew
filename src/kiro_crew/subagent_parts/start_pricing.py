@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         check_memory_available,
         learned_settled_for,
         math,
+        platform_compat,
         pop_memory_check_cause,
         session_mcp_roster_gb,
     )
@@ -209,7 +210,9 @@ _host_read_in_flight: "asyncio.Future[tuple[float, str]] | None" = None
 
 
 def _row_settled(info: SubagentInfo, now: float) -> bool:
-    """Whether *info*'s memory is already inside the free-memory reading.
+    """Whether *info* has settled: its memory is inside the free-memory reading
+    wherever that reading drops with resident memory (Linux, Windows; macOS is
+    the exception :func:`_owes_price_once_settled` handles).
 
     Two sweeps measured it, or (where nothing can measure it) its current
     process's own session answered ``_SETTLE_AFTER_SECS`` ago, on the monotonic
@@ -222,6 +225,64 @@ def _row_settled(info: SubagentInfo, now: float) -> bool:
         answered is not None
         and info._first_stream_generation == info._rss_generation
         and now - answered >= _SETTLE_AFTER_SECS
+    )
+
+
+def _owes_price_once_settled(info: SubagentInfo) -> bool:
+    """Whether *info* keeps owing its admitted price after it settles.
+
+    True on macOS for a dedicated runtime or a confirmed shared session. The
+    macOS figure is free + active + inactive pages, so resident memory does not
+    lower it. Shared sessions, including nested ones, launch their own MCP
+    servers and keep their discounted price, never the parent's runtime price.
+    A nested shared start still enters at the floor itself; once admitted its
+    own price is reserved for later starts. On Linux and Windows the reading
+    drops with resident memory, so a settled row owes nothing there.
+    """
+    return bool(platform_compat.IS_MACOS) and (
+        info._session_sharing or _holds_dedicated_runtime(info)
+    )
+
+
+def _row_start_price_gb(
+    info: SubagentInfo, cost_gb: float, settled_gb: Mapping[str, float] | None
+) -> float:
+    """What a live row is charged: its admitted price, else its bucket's dedicated
+    projection when it is not bound to a shared runtime, else nothing."""
+    price = info._start_price_gb
+    if price is None and not info._session_sharing:
+        price = _dedicated_start_price_gb(
+            cost_gb,
+            settled_gb,
+            _cost_bucket(info.agent, info.execution_context, remote=bool(info._remote_workspace)),
+        )
+    return max(0.0, price or 0.0)
+
+
+def _settled_runtime_hold_gb(
+    agents: Iterable[SubagentInfo],
+    *,
+    cost_gb: float,
+    settled_gb: Mapping[str, float] | None = None,
+    now: float | None = None,
+) -> float:
+    """What our settled rows still hold outside the free-memory reading (GiB).
+
+    The sum of :func:`_row_start_price_gb` over the live rows that have settled
+    (:func:`_row_settled`) and still owe their price
+    (:func:`_owes_price_once_settled`): 0.0 except on macOS. The admission
+    reserve charges the same rows (:func:`_startup_memory_reserve_gb`); host
+    memory sizing subtracts it through ``SubagentManager.settled_runtime_hold_gb``.
+    """
+    clock = time.monotonic() if now is None else now
+    cost = max(0.0, cost_gb)
+    return sum(
+        _row_start_price_gb(info, cost, settled_gb)
+        for info in agents
+        if not info.done
+        and not info.queued
+        and _row_settled(info, clock)
+        and _owes_price_once_settled(info)
     )
 
 
@@ -295,7 +356,9 @@ def _startup_memory_reserve_gb(
     (:func:`_shared_start_price_gb`) for a start predicted to share, the
     dedicated projection otherwise) in full until it settles
     (:func:`_row_settled`); a settled row owes nothing, since its memory is
-    already inside the free-memory reading. No credit is taken for the RSS a
+    already inside the free-memory reading, except on macOS, where dedicated
+    runtimes and shared sessions keep owing their own prices for as long as they run
+    (:func:`_owes_price_once_settled`). No credit is taken for the RSS a
     warming row already shows: the sweep reads summed VmRSS, which counts a
     tree's shared pages once per process and so runs ~1.5x the PSS the prices
     are in, and a shared row's reading is a share of a runtime others use. A
@@ -314,18 +377,9 @@ def _startup_memory_reserve_gb(
     claimed = [max(0.0, price) for price in claim_prices][:unregistered]
     gaps = 0.0
     for info in live:
-        if _row_settled(info, clock):
+        if _row_settled(info, clock) and not _owes_price_once_settled(info):
             continue
-        price = info._start_price_gb
-        if price is None and not info._session_sharing:
-            price = _dedicated_start_price_gb(
-                cost,
-                settled_gb,
-                _cost_bucket(
-                    info.agent, info.execution_context, remote=bool(info._remote_workspace)
-                ),
-            )
-        gaps += max(0.0, price or 0.0)
+        gaps += _row_start_price_gb(info, cost, settled_gb)
     next_start = cost if next_start_gb is None else max(0.0, next_start_gb)
     return next_start + sum(claimed) + cost * (unregistered - len(claimed)) + gaps
 
