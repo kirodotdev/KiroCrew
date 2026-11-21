@@ -269,7 +269,7 @@ Detection, not prevention. For a resume that writes, the window is the gap betwe
 file's stat and its rename. For a resume that only reads, it is the gap between the
 re-read that precedes its session and that session's files moving, plus however long
 the map write takes to become visible in the file this reads — bounded by
-`SessionMap._FLUSH_DEBOUNCE_SECS`. Either way what lands in that gap lands in the
+`session_map._FLUSH_DEBOUNCE_SECS`. Either way what lands in that gap lands in the
 trash — fully restorable, with destruction still needing a second explicit `empty`.
 
 ## What is reclaimable
@@ -357,8 +357,8 @@ still refuses, and `live` only chooses which reason is shown.
 
 The split between the two read endpoints is a cost boundary, not a taste.
 
-A row needs a title, which `list_sessions()` takes from the transcript's first
-metadata line, cached on mtime. A session that never got a title falls back to a
+A row needs a title, which `list_sessions_indexed()` answers from the listing
+index built over each transcript's first metadata line. A session that never got a title falls back to a
 **bounded re-read** — up to the first 21 lines, looking for the first user message —
 also cached on mtime. So a list costs roughly one `readline()` per titled session
 and a short bounded scan per untitled one. A detail needs the first message,
@@ -406,7 +406,7 @@ session's space both unreclaimable *and* invisible; the fix is that uids stop be
 display text, not that rows disappear.
 
 `dashboard/handlers/session_storage.py` is registered in `_REDACTION_SINKS`
-(`security_posture_sinks_gateway.py`). The registry is a ratchet — adding a redactor call without
+(through `_GATEWAY_SINKS` in `security_posture_sinks_gateway.py`). The registry is a ratchet — adding a redactor call without
 registering the module fails
 `test_every_redactor_call_site_is_a_registered_sink_or_allowlisted`.
 `TestTranscriptContentIsRedacted` covers both surfaces, and

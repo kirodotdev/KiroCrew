@@ -150,6 +150,99 @@
           "503": {"$ref": "#/components/responses/Error"}
         }
       }
+    },
+    "/v1/crew/owner/approvals": {
+      "get": {
+        "operationId": "get_v1_crew_owner_approvals",
+        "summary": "Tool approvals in one state, oldest first; the pending ones when no state is named",
+        "x-crew-tier": "owner",
+        "parameters": [
+          {"$ref": "#/components/parameters/CrewApiVersion"},
+          {"$ref": "#/components/parameters/RequestId"},
+          {"name": "state", "in": "query", "required": false, "schema": {"$ref": "#/components/schemas/ApprovalState"}},
+          {"name": "conversation", "in": "query", "required": false, "schema": {"type": "string"}},
+          {"name": "client_id", "in": "query", "required": false, "schema": {"type": "string"}},
+          {"name": "after", "in": "query", "required": false, "schema": {"type": "string", "pattern": "^apr_"}},
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}
+        ],
+        "responses": {
+          "200": {
+            "description": "The approvals",
+            "headers": {
+              "X-Request-Id": {"$ref": "#/components/headers/X-Request-Id"},
+              "Crew-API-Version": {"$ref": "#/components/headers/Crew-API-Version"}
+            },
+            "content": {
+              "application/json": {"schema": {"$ref": "#/components/schemas/OwnerApprovalList"}}
+            }
+          },
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/v1/crew/owner/approvals/{approval_id}": {
+      "get": {
+        "operationId": "get_v1_crew_owner_approvals_approval_id",
+        "summary": "One tool approval, in whatever state it is",
+        "x-crew-tier": "owner",
+        "parameters": [
+          {"$ref": "#/components/parameters/CrewApiVersion"},
+          {"$ref": "#/components/parameters/RequestId"},
+          {"name": "approval_id", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^apr_"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "The approval",
+            "headers": {
+              "X-Request-Id": {"$ref": "#/components/headers/X-Request-Id"},
+              "Crew-API-Version": {"$ref": "#/components/headers/Crew-API-Version"}
+            },
+            "content": {
+              "application/json": {"schema": {"$ref": "#/components/schemas/OwnerApproval"}}
+            }
+          },
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/v1/crew/owner/approvals/{approval_id}/decision": {
+      "post": {
+        "operationId": "post_v1_crew_owner_approvals_approval_id_decision",
+        "summary": "Answer one pending tool approval; the first answer wins",
+        "x-crew-tier": "owner",
+        "parameters": [
+          {"$ref": "#/components/parameters/CrewApiVersion"},
+          {"$ref": "#/components/parameters/RequestId"},
+          {"name": "approval_id", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^apr_"}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/OwnerApprovalDecision"}}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The approval after the decision",
+            "headers": {
+              "X-Request-Id": {"$ref": "#/components/headers/X-Request-Id"},
+              "Crew-API-Version": {"$ref": "#/components/headers/Crew-API-Version"}
+            },
+            "content": {
+              "application/json": {"schema": {"$ref": "#/components/schemas/OwnerApproval"}}
+            }
+          },
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"}
+        }
+      }
     }
   },
   "components": {
@@ -248,6 +341,55 @@
             "description": "Only with approve: the scopes to give, a subset of requested_scopes. Left out: all of them."
           }
         }
+      },
+      "ApprovalState": {"enum": ["pending", "allowed", "denied", "expired"]},
+      "OwnerApproval": {
+        "type": "object",
+        "required": ["id", "object", "namespace", "conversation", "state", "created_at"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^apr_[0-9a-f]{32}$", "description": "Given by the gateway the first time an Owner route sees the request; held in memory for this gateway process only. After a restart an old id is 404"},
+          "object": {"const": "approval"},
+          "namespace": {"const": "default", "description": "Stored on every record; one fixed value today"},
+          "conversation": {"type": ["string", "null"], "description": "The session the request was raised in; null for a request with no session, such as a cron job's"},
+          "client_id": {"type": ["string", "null"], "description": "The app that owns that session; null for the owner's own"},
+          "tool": {"type": "string", "maxLength": 200},
+          "reason": {"type": "string", "maxLength": 500, "description": "Redacted and cut short"},
+          "arguments": {
+            "type": "object",
+            "required": ["input"],
+            "properties": {"input": {"type": "string", "maxLength": 2000, "description": "The tool call's input as the approval card shows it: redacted and cut short"}}
+          },
+          "state": {"$ref": "#/components/schemas/ApprovalState"},
+          "created_at": {"type": "integer", "description": "When the gateway gave the id"},
+          "decided_at": {"type": ["integer", "null"]},
+          "expired_reason": {"enum": ["timeout", null], "description": "Only with state expired. Nobody answered, the turn was cancelled, or the request stopped waiting"},
+          "decided_by": {
+            "type": ["object", "null"],
+            "description": "Who answered through this API. Null while pending and for an ending made elsewhere (the dashboard, a Stop)",
+            "properties": {
+              "kind": {"type": "string"},
+              "principal": {"type": "string"},
+              "via": {"type": "string"}
+            }
+          }
+        }
+      },
+      "OwnerApprovalList": {
+        "type": "object",
+        "required": ["object", "data", "has_more"],
+        "properties": {
+          "object": {"const": "list"},
+          "data": {"type": "array", "items": {"$ref": "#/components/schemas/OwnerApproval"}},
+          "first_id": {"type": ["string", "null"]},
+          "last_id": {"type": ["string", "null"]},
+          "has_more": {"type": "boolean"}
+        }
+      },
+      "OwnerApprovalDecision": {
+        "type": "object",
+        "required": ["decision"],
+        "additionalProperties": false,
+        "properties": {"decision": {"enum": ["allow", "deny"]}}
       },
       "BotRoster": {
         "type": "object",

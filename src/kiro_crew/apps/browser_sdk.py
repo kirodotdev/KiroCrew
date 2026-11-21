@@ -19,9 +19,10 @@ All of it sits behind the ``app_browser_sdk`` feature preview (:data:`PREVIEW_NA
 default off. With the preview off ``ctx.browser`` is absent and an approved verb has
 no effect; the manifest still installs and the trust prompt says the feature is off.
 
-This module holds only the grant family, the preview check and the empty
-``ctx.browser`` (:class:`BrowserSDK`). The page operations come in step 1b of the RFC,
-through the one gateway function every browser operation shares.
+This module holds the grant family, the preview check and ``ctx.browser``
+(:class:`BrowserSDK`), whose ``page(slot)`` hands out a
+:class:`~kiro_crew.apps.browser_page_port.PagePort`: every page operation goes through
+the one gateway function the Bot's ``browser`` tool uses too.
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from typing import Any
+
+from kiro_crew.apps.browser_page_port import PagePort, owns_slot
 
 logger = logging.getLogger(__name__)
 
@@ -143,26 +146,85 @@ def browser_grant_row(name: str, manifest: Any) -> dict[str, Any]:
     return {"browserGrant": {"approved": approved, "staged": staged, "preview": preview_on()}}
 
 
+class BrowserRefused(PermissionError):
+    """``ctx.browser.page(slot)`` was refused; ``code`` says why (``not_your_slot``, ``no_state``)."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def verb_refusal(app: str, verb: str) -> tuple[str, str] | None:
+    """``(code, error)`` when *app* may not use *verb* now, else ``None``. Blocking.
+
+    Read fresh at each call: the preview first (``preview_off``), then
+    :func:`app_browser_verbs`, which also holds every verb back while the app is off.
+    """
+    if not preview_on():
+        return (
+            "preview_off",
+            "the owner has not turned on App browser access (Settings > Developer > "
+            "Feature previews)",
+        )
+    if verb not in app_browser_verbs(app):
+        return (
+            "permission_denied",
+            f"browser {verb!r} is not approved for {app!r}, or the app is turned off",
+        )
+    return None
+
+
 class BrowserSDK:
     """``ctx.browser``: an app's access to the browser tabs of its own slots.
 
     Built when the manifest declares ``permissions.browser``
     (``context.build_app_context``), and handed out as ``ctx.browser`` only while the
     ``app_browser_sdk`` preview is on (``AppContext.browser``). The verbs are
-    re-read at each call, so an approval, a revoke or the preview turned off takes
-    effect without a restart. The page operations belong to step 1b of
-    ``rfc-app-sdk-browser.md``.
+    re-read at each call, so an approval, a revoke, the preview turned off or the app
+    turned off takes effect without a restart, on a port already handed out too.
     """
 
-    def __init__(self, app_name: str) -> None:
+    def __init__(self, app_name: str, *, http_app: Any = None) -> None:
+        """*http_app* is the gateway's Application, read for the dashboard state when a
+        :meth:`page` call is not handed one (as ``ChatSlotSDK`` does)."""
         self._app = app_name
+        self._http_app = http_app
 
     def verbs(self) -> tuple[str, ...]:
         """The verbs this app holds now: declared, approved, and the preview on."""
         return app_browser_verbs(self._app)
 
+    def _audit_denied(self, code: str) -> None:
+        """The audit row a refused ``page`` writes, as the app, like every ``PagePort`` refusal."""
+        from kiro_crew.dashboard.handlers import browser_ops  # noqa: PLC0415
 
-def browser_sdk_for(app_name: str, permissions: Mapping[str, Any]) -> BrowserSDK | None:
+        caller: Any = browser_ops.GatewayCaller(f"app:{self._app}")
+        browser_ops._audit(caller, "denied", code)
+
+    def page(self, slot: str, *, state: Any = None) -> PagePort:
+        """The page of *slot*, one of this app's own live chat slots.
+
+        *state* is the dashboard state a route gets as ``request.app["state"]``;
+        without it, the one on the gateway's Application. :class:`BrowserRefused`
+        when *slot* is not this app's (key prefix AND stamp) or no state is at hand.
+        The port checks the slot and the verb again at every call.
+        """
+        if state is None:
+            getter = getattr(self._http_app, "get", None)
+            state = getter("state") if callable(getter) else None
+        if state is None:
+            self._audit_denied("no_state")
+            raise BrowserRefused("no_state", "no dashboard state to find the slot in")
+        if not owns_slot(state, self._app, slot):
+            self._audit_denied("not_your_slot")
+            raise BrowserRefused("not_your_slot", f"{slot!r} is not one of {self._app!r}'s slots")
+        app = self._app
+        return PagePort(app, slot, state=state, verb_gate=lambda verb: verb_refusal(app, verb))
+
+
+def browser_sdk_for(
+    app_name: str, permissions: Mapping[str, Any], *, http_app: Any = None
+) -> BrowserSDK | None:
     """The SDK to keep on *app_name*'s context, or ``None`` when *permissions* has no ``browser``.
 
     It does not read the preview: ``AppContext.browser`` does, at each access, so a
@@ -170,11 +232,12 @@ def browser_sdk_for(app_name: str, permissions: Mapping[str, Any]) -> BrowserSDK
     """
     if GRANT_FAMILY not in permissions:
         return None
-    return BrowserSDK(app_name)
+    return BrowserSDK(app_name, http_app=http_app)
 
 
 __all__ = [
     "BROWSER_GRANT_FAMILIES",
+    "BrowserRefused",
     "BrowserSDK",
     "GRANT_FAMILY",
     "PREVIEW_NAME",

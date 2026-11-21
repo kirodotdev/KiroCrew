@@ -172,6 +172,12 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   // never be promoted into grant authority by a frontend fallback.
   const approvalTrustCommandGrantable = approvalMeta?.trust_command_grantable === '1'
   const approvalTrustBaseGrantable = approvalMeta?.trust_base_grantable === '1'
+  /** Set when the command-scoped grant is a browser SITE grant: `full_command`
+   *  is then a host, and this says whether the grant covers reading its pages
+   *  (`read`) or acting on them too (`act`). Server word only. */
+  const browserTrustClass = approvalMeta?.browser_trust_class
+  const approvalBrowserTrustClass: '' | 'read' | 'act' = browserTrustClass === 'read' || browserTrustClass === 'act'
+    ? browserTrustClass : ''
   /** Server proof that the SESSION-wide grant ("trust all tools") can be
    *  recorded for this card. Read separately from the command-scoped bit above
    *  because the session grant names no command: it auto-approves whatever this
@@ -450,7 +456,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError, showApprovalStatus,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTakesReason, approvalMid,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
-    approvalAlwaysAllowRef, approvalAlwaysAllowRefusal,
+    approvalBrowserTrustClass, approvalAlwaysAllowRef, approvalAlwaysAllowRefusal,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction,
     approvalActionsRef,

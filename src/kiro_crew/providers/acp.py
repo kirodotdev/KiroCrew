@@ -585,6 +585,13 @@ class AcpProvider(LLMProvider):
         return notice if isinstance(notice, str) else ""
 
     @property
+    def engine_fallback_notice(self) -> str:
+        """The notice that this chat runs on kiro-cli because the build default's
+        first move to Kiro Crew's engine failed, else ``""``. Recorded at the start."""
+        notice = getattr(self._client, "kas_engine_fallback_notice", "")
+        return notice if isinstance(notice, str) else ""
+
+    @property
     def kiro_cli_model_notice(self) -> str:
         """The notice naming kiro-cli's ``chat.defaultModel`` when this KAS session did
         not start on it, else ``""``. Recorded at the cold start."""

@@ -22,6 +22,7 @@ import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { clearCachedModels } from '../../providers/adapters/acp'
 import { KiroAccountStatusLine } from './KiroAccountStatusLine'
+import { KasBundleCard, KasEngineDeepLink } from './KasBundleCard'
 import { OrchestratorMemoryDeepLink, OrchestratorMemoryToggle } from './OrchestratorMemoryToggle'
 import { StrandsSetupCard } from './StrandsSetupCard'
 import { MCP_SERVERS_HREF } from '../connections/connectionsLinks'
@@ -34,6 +35,8 @@ const CONFIG_KEY = 'agent.acp_backend'
 
 /** Backend ids in the config vocabulary the schema, probe rows and PATCH share. */
 const KIRO = ACP_BACKEND_KIRO
+/** Kiro CLI's install guide: the same page as `OFFICIAL_INSTALL_DOCS_URL` (kiro_prerequisite_status.py). */
+const KIRO_CLI_INSTALL_DOCS_URL = 'https://kiro.dev/cli/'
 const CLAUDE = 'claude'
 const KAS = ACP_BACKEND_KAS
 const STRANDS = 'strands'
@@ -1254,7 +1257,7 @@ export function AgentBackendTab() {
       )
     if (row?.sandbox_refusal)
       return <p className="text-[13px] leading-relaxed text-text">{sandboxRefusalLine(value)}</p>
-    if (row?.installed === 'missing') return <AgentInstallDetail name={name} probe={row} />
+    if (row?.installed === 'missing') return <AgentInstallDetail name={name} probe={row} installGuideUrl={value === KIRO ? KIRO_CLI_INSTALL_DOCS_URL : undefined} />
     // A failed probe, so `ErrorNotice`.
     if (row?.installed === 'unknown')
       return (
@@ -1555,6 +1558,7 @@ export function AgentBackendTab() {
       {/* Rendered only under a router: the panel is also rendered bare, in tests
           and captures, where there is no URL to read. */}
       {inRouter && <OrchestratorMemoryDeepLink onOpen={() => highlightRow(KAS)} />}
+      {inRouter && <KasEngineDeepLink onOpen={() => highlightRow(KAS)} />}
       {/* A stored Kiro CLI pick that sessions run on KAS: kiro-cli now serves its
           v3 (KAS) engine, and the server resolves the pick there
           (`agent_sdk.backends.KIRO_SELECTION_BACKEND`). The list below already
@@ -1765,6 +1769,11 @@ export function AgentBackendTab() {
                         askAgent
                         onDismiss={() => setStripError(null)}
                       />
+                    )}
+                    {value === KAS && offered.includes(KAS) && (
+                      <ErrorBoundary scope="developer-kas-engine" fallback={null}>
+                        <KasBundleCard kiroPickRunsOnKas={kiroPickRunsOnKas} />
+                      </ErrorBoundary>
                     )}
                     {value === KAS && offered.includes(KAS) && <OrchestratorMemoryToggle />}
                     {/* Whether the Kiro sign-in this harness runs as is stored, and

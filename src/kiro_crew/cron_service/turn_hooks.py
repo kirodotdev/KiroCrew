@@ -127,6 +127,7 @@ class CronTurnHooks:
             harness_tool_id=str(getattr(event, "harness_tool_id", "") or ""),
             session_key=self._hooks.turn.session_key,
             acp_session_id=sid if isinstance(sid, str) and sid else None,
+            raw_tool_params=getattr(event, "raw_tool_params", None),
         )
 
     async def observe(self, event: Any) -> None:

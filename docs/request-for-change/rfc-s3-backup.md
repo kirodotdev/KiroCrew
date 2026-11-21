@@ -77,7 +77,7 @@ path in the repository wrote crew state to a remote store.
 ## Three problems
 
 **P1 — the bundle omits the conversations.** No component stages the transcript
-store `session_storage.py:7-10` documents (`<data home>/sessions/*.jsonl` +
+store the `session_storage.py` module docstring documents (`<data home>/sessions/*.jsonl` +
 `sessions/archive/`, resolver `_crew_sessions_dir` in `session_storage_parts/store_layout.py`; `<kiro home>/sessions/cli/<sid>.*`, resolver
 `config/paths.py` (`kiro_sessions_dir`)). `uploads/` is excluded outright on the dashboard path
 (`EXCLUDE_DIRS` in `portability_archive.py`) and absent from `CORE_FILES`; `artifacts/` is in neither.
@@ -103,8 +103,8 @@ scheduled.
 chokepoint), `create_private_bucket`:268 and `_harden_bucket`:215 (idempotent Block
 Public Access + `BucketOwnerEnforced` + SSE-AES256 + tags),
 `map_access_denied`:123, and `profiles.py` — a profile-*name* registry already
-consumed outside deploy (`handle_publish_providers`, `apps/routes_listing.py`), documented at `profiles.py:1` as
-names only, never keys. `boto3` is optional (`setup.cfg:110`, `voice` extra) and
+consumed outside deploy (`handle_publish_providers`, `apps/routes_listing.py`), documented in the `deploy/profiles.py` module docstring as
+names only, never keys. `boto3` is optional (`setup.cfg`, the `voice-aws` extra that `voice` pulls in) and
 neither deploy nor cloud uses it. Follow that: shell out, add no hard dependency.
 
 ## Goals
@@ -152,7 +152,7 @@ policies to the same hook when they arrive.
 **D2 — a self-contained `memory` component.** `CORE_FILES["memory"]` stages
 `memory.db` + `memory_index.db`, which is where lessons actually live — 121
 `lesson.*` rows in `semantic_memory` alongside 486 `project.*`, 23 `user.*` and 5
-`pref.*` on the measured install, despite `learn.py:6` naming a
+`pref.*` on the measured install, despite the `learn.py` module docstring naming a
 `<config_dir>/lessons.jsonl` that does not exist there. But the markdown half —
 `workspace/memory/preferences.md`, `projects.md`, `history/` — reaches a bundle only
 through the `workspace` component, which drags the entire workspace tree. Restoring

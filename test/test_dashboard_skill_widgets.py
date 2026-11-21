@@ -1,28 +1,31 @@
-"""The dashboard skill's widgets section: its example is a package the validator takes.
+"""The phone widgets guide: its example is a package the validator takes.
 
 An agent writes its first ``widgets`` block from that example, so the example is
-loaded straight out of SKILL.md and run through ``validate_package``; a validator
-change that would refuse it fails here instead of on an agent's first save.
+loaded straight out of ``widgets_preview.GUIDE`` and run through ``validate_package``;
+a validator change that would refuse it fails here instead of on an agent's first
+save. The guide reaches an agent only with the ``widgets`` preview on (in the
+``dashboard_save`` schema); off, see ``test_widgets_preview.py``.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 
-from kiro_crew import mcp_panel
+import pytest
+
+from kiro_crew import mcp_panel, widgets_preview
 from kiro_crew.artifact_store import dashboard_widgets as dw
 from kiro_crew.artifact_store.dashboard_package import DASHBOARD_KIND, validate_package
 
-SKILL = Path(__file__).resolve().parents[1] / "src/kiro_crew/builtin_skills/dashboard/SKILL.md"
+
+@pytest.fixture(autouse=True)
+def _preview_on(_floor_monkeypatch):
+    _floor_monkeypatch.setattr(widgets_preview, "widgets_enabled", lambda: True)
 
 
 def _section() -> str:
-    text = SKILL.read_text("utf-8")
-    start = text.index("## 8. Phone widgets")
-    end = text.find("\n## ", start + 1)
-    return text[start : end if end != -1 else len(text)]
+    return widgets_preview.GUIDE
 
 
 def _example() -> dict:
@@ -69,3 +72,6 @@ def test_the_save_tool_describes_widgets_as_optional():
     assert "owner only" in flat and "plain text" in flat and "pass [] to remove" in flat
     for kind in dw._BLOCKS:
         assert f"`{kind}`" in flat, kind
+    # The guide rides in the same description, so the agent that sees the argument
+    # also sees the example.
+    assert widgets_preview.GUIDE in prop["description"]

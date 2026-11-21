@@ -295,8 +295,8 @@ install` (or a `--unpinned` test install) wins over the copy the app was built
 with, the same precedence `KIROCREW_KIRO_BIN` has over the bundled kiro-cli.
 `kirocrew kas status` and `kirocrew doctor` say which one answered (`built into
 the app`), the status payload carries `installed.bundled`, and the Settings card
-names where each copy came from: "KAS engine … (included with the app)" for the
-app's copy, "KAS engine … (installed by you)" for the data home's.
+reads "Built-in engine … (included with the app)" for the
+app's copy, plain "Built-in engine …" for the data home's.
 
 The hand-off is asserted against a shipped app, not only the build's staging
 directory. The macOS smoke (`scripts/smoke-macos-install.sh`) checks the
@@ -316,12 +316,11 @@ smoke reads the shell's export off a real gateway child, so a build whose root
 electron-builder moved or dropped fails there rather than on an opted-in user's
 first prompt.
 
-Bundling the engine does not turn the route on: an undeclared
-`agent.kas_bundle` resolves from the build (`kas_bundle_build_default` in
-`config/loader_document.py`), on in a nightly-stamped build and off in insider,
-stable and source builds, where the relay route runs on the kiro-cli the user
-installed. Nothing in the installer or the shell flips the switch; outside
-nightly turning it on stays the user's own step. `BUNDLE_KAS=0 make desktop` opts a build out (the payload is ~55 MB
+Bundling the engine does not save `agent.kas_bundle`: unset, the packaged app
+prefers the built-in engine once Kiro Crew is signed in, and a host signed in
+only to kiro-cli keeps the relay until then (`acp/kas_build_default`). Nothing in
+the build, the installer or the shell saves the switch; the KAS row of Settings →
+Agent Harness is where the user chooses. `BUNDLE_KAS=0 make desktop` opts a build out (the payload is ~55 MB
 compressed, ~370 MB extracted per architecture); the switch then needs
 `kirocrew kas install` first, exactly as a pure-wheel pip install does. CI refuses
 `BUNDLE_KAS=0` (`GITHUB_ACTIONS=true`), so no released artifact ships without the

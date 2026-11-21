@@ -45,10 +45,11 @@ async def _view(request: web.Request) -> dict[str, Any]:
     # Why a requested relay refuses to start, so the card never asks for a restart.
     problem = await asyncio.to_thread(setting.start_problem) if requested and not locked else None
     guard = guard_mod.current_guard()
-    connected = False
+    connected = connecting = False
     if guard is not None:
         try:
             connected = await guard.connected()
+            connecting = not connected and await guard.connecting()
         except Exception:  # noqa: BLE001 - a status read must not fail the page
             logger.debug("Remote Control connection probe failed", exc_info=True)
     return {
@@ -59,6 +60,8 @@ async def _view(request: web.Request) -> dict[str, Any]:
         # that ended in error is not.
         "running": connected,
         **({"problem": problem} if problem else {}),
+        # Still starting (waiting for its first host token): it connects on its own.
+        "connecting": connecting,
         # Delivered by the Kiro relay: the card shows the state but no Turn off.
         "relayed": published_relay_caller(request) is not None,
     }

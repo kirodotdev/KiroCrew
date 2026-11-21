@@ -310,13 +310,13 @@ def test_a_too_long_folder_hook_is_named_in_the_overlong_notice(layout):
     # The firing path drops a folder agent's too-long hook, so the notice path must
     # read the same folder hooks to say so.
     _home, _user, checkout = layout
-    consent.set_choice(checkout, True)
     spec_path = checkout / ".kiro" / "agents" / "proj.json"
     long_cmd = "echo " + "x" * (spec_hooks._MAX_COMMAND_LEN + 1)
     spec_path.write_text(
         json.dumps({"name": "proj", "prompt": "p", "hooks": {"stop": [{"command": long_cmd}]}}),
         encoding="utf-8",
     )
+    consent.set_choice(checkout, True)  # after the edit: an "on" covers the hooks it saw
     assert spec_hooks.overlong_spec_hook_commands("proj") == []  # without the folder
     found = spec_hooks.overlong_spec_hook_commands("proj", kas_checkout=str(checkout))
     assert [h.length for h in found] == [len(long_cmd)]
@@ -347,10 +347,165 @@ def test_crew_turn_off_beats_kiro_cli_trust(layout):
     assert _hooks(checkout) == {}
 
 
+# -- an "on" is bound to the hooks it was given ----------------------------
+
+
+def _write_spec(checkout: Path, hooks: dict, name: str = "proj", **extra) -> None:
+    agents = checkout / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / f"{name}.json").write_text(
+        json.dumps({"name": name, "prompt": "p", "hooks": hooks, **extra}), encoding="utf-8"
+    )
+
+
+_OTHER = {"preToolUse": [{"matcher": "*", "command": "echo planted"}]}
+
+
+def test_unchanged_hooks_stay_on_without_asking(layout):
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    for _ in range(3):
+        assert consent.hooks_enabled(checkout) == (True, consent.SOURCE_CREW)
+    assert _hooks(checkout) == {"hooks": _HOOKS}
+    assert spec_hooks.kas_project_hooks_state("proj", str(checkout)).state == "on"
+
+
+def test_a_folder_recreated_at_the_same_path_with_other_hooks_is_asked_again(layout):
+    import shutil
+
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    shutil.rmtree(checkout)
+    checkout.mkdir()
+    _write_spec(checkout, _OTHER)
+    assert consent.crew_choice(checkout) == consent.STALE
+    assert consent.hooks_enabled(checkout) == (False, consent.SOURCE_CREW)
+    assert _hooks(checkout) == {}
+    found = spec_hooks.kas_project_hooks_state("proj", str(checkout))
+    assert (found.state, found.hooks) == ("off", (("PreToolUse", "echo planted"),))
+
+
+def test_a_pull_that_changes_or_adds_a_hook_is_asked_again_then_runs_after_yes(layout):
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    _write_spec(checkout, _OTHER)  # a pulled edit to the consented agent
+    assert consent.hooks_enabled(checkout) == (False, consent.SOURCE_CREW)
+    consent.set_choice(checkout, True)
+    assert _hooks(checkout) == {"hooks": _OTHER}
+    _write_spec(checkout, _HOOKS, name="helper")  # a new agent file with hooks
+    assert consent.crew_choice(checkout) == consent.STALE
+
+
+def test_the_hooks_that_fire_are_the_ones_the_consent_was_checked_against(layout, monkeypatch):
+    # A rewrite right after the check must not fire hooks nobody agreed to.
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    real_scan = consent._scan
+
+    def scan_then_rewrite(folder):
+        found = real_scan(folder)
+        _write_spec(checkout, _OTHER)
+        return found
+
+    monkeypatch.setattr(consent, "_scan", scan_then_rewrite)
+    assert _hooks(checkout) == {"hooks": _HOOKS}
+
+
+def test_an_unreadable_spec_under_a_yes_still_fails_closed(layout):
+    # A malformed edit changes the fingerprint, but it must raise (PreToolUse fails
+    # closed, a person's cron-tab turn re-projects), not read as plain "off".
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    (checkout / ".kiro" / "agents" / "proj.json").write_text("{not json", encoding="utf-8")
+    assert consent.crew_choice(checkout) == consent.STALE
+    with pytest.raises(ValueError):
+        consent.consented_project_hooks(str(checkout), "proj")
+    consent.set_choice(checkout, False)
+    assert consent.consented_project_hooks(str(checkout), "proj") is None
+
+
+def test_an_edit_outside_hooks_does_not_ask_again(layout):
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    _write_spec(checkout, _HOOKS, prompt="a new prompt", tools=["read"])
+    assert consent.hooks_enabled(checkout) == (True, consent.SOURCE_CREW)
+
+
+def test_kiro_cli_trust_does_not_cover_changed_hooks(layout):
+    home, _user, checkout = layout
+    _kiro_cli_trust(home, checkout, "workspaceTrusted: true\n")
+    consent.set_choice(checkout, True)
+    _write_spec(checkout, _OTHER)
+    assert consent.hooks_enabled(checkout) == (False, consent.SOURCE_CREW)
+    assert _hooks(checkout) == {}
+
+
+def test_a_legacy_on_adopts_the_current_hooks_once_without_asking(layout):
+    _home, _user, checkout = layout
+    key = consent.folder_key(checkout)
+    store = consent.project_hooks_consent_path()
+    store.write_text(json.dumps({"folders": {key: "on"}}), encoding="utf-8")
+    assert consent.hooks_enabled(checkout) == (True, consent.SOURCE_CREW)
+    saved = json.loads(store.read_text(encoding="utf-8"))
+    assert saved["hook_fingerprints"] == {key: consent.hooks_fingerprint(key)}
+    _write_spec(checkout, _OTHER)  # from now on it is bound like any other "on"
+    assert consent.crew_choice(checkout) == consent.STALE
+
+
+def test_a_legacy_on_whose_save_fails_still_runs(layout, monkeypatch):
+    _home, _user, checkout = layout
+    key = consent.folder_key(checkout)
+    consent.project_hooks_consent_path().write_text(
+        json.dumps({"folders": {key: "on"}}), encoding="utf-8"
+    )
+
+    def fail(_doc):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(consent, "_write", fail)
+    assert consent.crew_choice(checkout) == consent.ON
+
+
+def test_turning_off_drops_the_fingerprint_and_still_beats_kiro_cli(layout):
+    home, _user, checkout = layout
+    _kiro_cli_trust(home, checkout, "workspaceTrusted: true\n")
+    consent.set_choice(checkout, True)
+    consent.set_choice(checkout, False)
+    saved = json.loads(consent.project_hooks_consent_path().read_text(encoding="utf-8"))
+    assert saved["hook_fingerprints"] == {}
+    assert consent.hooks_enabled(checkout) == (False, consent.SOURCE_CREW)
+
+
+def test_an_unreadable_hook_scan_keeps_hooks_off(layout, monkeypatch):
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+
+    def broken(_folder):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(consent, "_scan", broken)
+    assert consent.hooks_enabled(checkout) == (False, consent.SOURCE_CREW)
+
+
+@pytest.mark.asyncio
+async def test_changed_hooks_read_back_as_off(layout):
+    from kiro_crew.dashboard.handlers.project_hooks_consent import api_project_hooks_consent_get
+
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    _write_spec(checkout, _OTHER)
+    req = _request()
+    req.query = {"folder": str(checkout)}
+    resp = await api_project_hooks_consent_get(req)
+    assert json.loads(resp.body) == {"state": "off", "enabled": False}
+
+
 @pytest.mark.parametrize(
     "text",
     [
         "{not json",
+        '{"hook_fingerprints": []}',
+        '{"hook_fingerprints": {"/x": "short"}}',
         "[]",
         '{"folders": []}',
         '{"folders": {"/x": "maybe"}}',

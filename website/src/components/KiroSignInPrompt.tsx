@@ -16,6 +16,11 @@ import { KiroSignInStrip } from './KiroSignInDialog'
  * guesses the route itself, so the kiro-cli relay, where kiro-cli's own login
  * starts the chat, never sees it.
  *
+ * It also shows when kiro-cli is signed in and Kiro Crew is not on a build that
+ * prefers Kiro Crew's own engine (`sign_in_moves_to_engine`): the chat runs on
+ * kiro-cli, and signing in once moves new chats to the built-in engine. kiro-cli's
+ * login is never copied.
+ *
  * One line and a Sign in button that opens the shared sign-in dialog
  * (`KiroSignInDialog`). It goes away the moment the stored sign-in reads as
  * authenticated.
@@ -34,7 +39,9 @@ export default function KiroSignInPrompt() {
     enabled: kas,
     retry: false,
   })
-  const needed = kas && bundleQuery.data?.chat_needs_sign_in === true
+  const blocking = kas && bundleQuery.data?.chat_needs_sign_in === true
+  const moves = kas && bundleQuery.data?.sign_in_moves_to_engine === true
+  const needed = blocking || moves
   // A sign-in that lands in the dialog re-reads this entry; a terminal one is
   // seen within a minute.
   const status = useKasLoginStatus({ enabled: needed, poll: 60_000 })
@@ -44,7 +51,8 @@ export default function KiroSignInPrompt() {
     // (ChatPage.statusStackLayering.test.tsx pins this wrapper's shape).
     <div className="px-4 mx-auto w-full relative z-[2]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
       <div className="mb-1.5" data-testid="kiro-sign-in-prompt">
-        <KiroSignInStrip title={i18nT('components.kiroSignInPrompt.title')} />
+        {/* One wording for both cases, so the user sees one sign-in, not two. */}
+        <KiroSignInStrip title={i18nT('components.kiroSignInPrompt.title_engine')} />
       </div>
     </div>
   )

@@ -1,9 +1,9 @@
 {
   "id": "S1-image-name-cap",
-  "version": 1,
+  "version": 2,
   "kind": "code",
   "tier": "simple",
-  "seed": "Work in the git repository at {repo}. Bug: when a chat image is copied into the attachments folder, `attach_names.safe_name` cuts a long name to its first 64 characters, so the stored copy can lose its image extension. A dashboard upload is named `<32 hex chars>_<original name>`, so a default macOS screenshot such as `Screenshot_2026-11-06_at_09.18.00.png` crosses the cap and its copy ends in `.18` instead of `.png`. The dashboard then no longer treats the file as an image. Fix it so an image name over the cap keeps its extension and stays within the cap. Names at or under the cap, and names that are not images, must give the same result as today. Keep the existing tests passing and add a test for the fix. Commit your change on trunk and push it to origin trunk.",
+  "seed": "Work in the git repository at {repo}. Bug: when a chat image is copied into the attachments folder, `attach_names.safe_name` cuts a long name to its first 64 characters, so the stored copy can lose its image extension. A dashboard upload is named `<32 hex chars>_<original name>`, so a default macOS screenshot such as `Screenshot_2026-11-06_at_09.18.00.png` crosses the cap and its copy ends in `.18` instead of `.png`. The dashboard then no longer treats the file as an image. Fix it so an image name over the cap keeps its extension and stays within the cap. Names at or under the cap, and names that are not images, must give the same result as today. Keep the existing tests passing and add a test for the fix. Commit your change on trunk.",
   "rounds": 1,
   "timeout_minutes": 20,
   "spend_cap": {"credits": 30, "usd": 3},

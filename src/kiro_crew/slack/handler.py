@@ -886,7 +886,8 @@ def _iter_cc_agent_names(cc_plugins_dir: Path | None = None) -> Iterator[str]:
             raw = safe_read_file_bytes(str(md_file))
             if raw is None:
                 continue
-            content = raw.decode("utf-8")
+            # utf-8-sig: an editor that saves "UTF-8 with BOM" puts U+FEFF before the fence.
+            content = raw.decode("utf-8-sig")
             if not content.startswith("---"):
                 continue
             frontmatter = content[3 : content.index("---", 3)]

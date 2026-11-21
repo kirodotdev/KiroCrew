@@ -487,6 +487,7 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
     """
     from kiro_crew import slack_manifest
     from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.dashboard.handlers._update_announce import https_url
     from kiro_crew.slack.features import manifest_features
 
     try:
@@ -522,5 +523,10 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
             "create_url": create_url,
             "command": command or slack_manifest.slash_command(alias),
             "features": [f for f in slack_manifest.FEATURES if f in features],
+            # The setup wizard's link to this organization's own guide: only a
+            # bounded https:// URL (the shared check), and the dashboard checks
+            # again before it renders one.
+            "org_guide_url": https_url(getattr(getattr(cfg, "slack", None), "setup_guide_url", ""))
+            or None,
         }
     )

@@ -767,6 +767,12 @@ describe('AgentImportFlow', () => {
     await screen.findByText('2 items already exist with different content.')
     const keepBoth = screen.getByRole('button', { name: 'Keep both' })
     expect(screen.getByRole('button', { name: 'Replace mine' })).toBeInTheDocument()
+    // The stock transparent Btn has no edge on the conflict note's warn tint until hovered.
+    for (const name of ['Keep both', 'Replace mine']) {
+      expect(screen.getByRole('button', { name })).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(screen.getByRole('button', { name })).not.toHaveClass('bg-transparent')
+      expect(screen.getByRole('button', { name })).not.toHaveClass('border-border')
+    }
 
     await userEvent.click(keepBoth)
 

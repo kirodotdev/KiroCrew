@@ -929,7 +929,8 @@ class KiroCrewConfig:
         # as undeclared and is exactly right: the document this call creates should
         # not contain the key at all.
         # ``agent.kas_bundle`` is stripped the same way: undeclared, it resolves
-        # through ``kas_bundle_build_default()`` (on in a nightly build only).
+        # to ``False`` and a packaged build prefers the engine per spawn
+        # (``acp.kas_build_default``); writing the ``False`` would turn that off.
         strip_undeclared_resolved_defaults(d)
         # Same rule for ``telemetry.enabled``: its absence is load-bearing too.
         # The default is on, and ``metrics.provider.outbound_consented`` reads a

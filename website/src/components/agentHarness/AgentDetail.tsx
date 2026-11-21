@@ -1,4 +1,4 @@
-import { ArrowRight, RefreshCw } from 'lucide-react'
+import { ArrowRight, ExternalLink, RefreshCw } from 'lucide-react'
 import { Trans } from 'react-i18next'
 
 import type { AcpBackendProbe } from '../../api/client'
@@ -29,8 +29,11 @@ const NODE_DOWNLOAD_URL = 'https://nodejs.org/en/download'
  * download page: npm ships with Node.js, so on a host without it the command
  * fails with "npm: command not found" and nothing else on the card says why.
  * A curl installer or an empty command needs no Node.js, so they get no line.
+ *
+ * `installGuideUrl` is for a harness with no one-liner (Kiro CLI): without it the
+ * card says "Install it" and gives the reader nothing to install it with.
  */
-export function AgentInstallDetail({ name, probe }: { name: string; probe: AcpBackendProbe }) {
+export function AgentInstallDetail({ name, probe, installGuideUrl }: { name: string; probe: AcpBackendProbe; installGuideUrl?: string }) {
   return (
     <>
       <p className="text-[13px] font-medium text-text">
@@ -71,6 +74,17 @@ export function AgentInstallDetail({ name, probe }: { name: string; probe: AcpBa
           })}
         </p>
       ) : null}
+      {!probe.install_command && installGuideUrl && (
+        <a
+          className="inline-flex items-center gap-1 text-[13px] text-accent hover:underline focus-ring self-start"
+          href={installGuideUrl}
+          rel="noopener noreferrer"
+          target="_blank"
+        >
+          {i18nT('components.kiroPrerequisiteGate.open_kiro_cli_setup')}
+          <ExternalLink size={12} aria-hidden />
+        </a>
+      )}
       <p className="text-[12px] leading-relaxed text-muted">
         {i18nT('components.kiroPrerequisiteGate.agent_install_then_check', { name })}
       </p>

@@ -23,8 +23,8 @@ callers import, and neither owner imports it.
 
 The `control_plane/` and `vendors/` subtrees are connector-campaign slices rather
 than this subsystem's OAuth-grant plumbing. Their current contracts include the
-[capability-manifest](connector-capability-manifest.md),
-[conformance](connector-conformance.md), [GitHub](connector-github.md),
+[capability-manifest](connector-capability-manifest.md) (which also holds the
+conformance owner map), [GitHub](connector-github.md),
 [Microsoft Graph](microsoft-graph-runtime.md), and [Zoom](connector-zoom.md)
 specs.
 
@@ -1651,9 +1651,12 @@ the same call `prepare` registers with), else `{"anyPort": ["http://127.0.0.1",
 "http://localhost"]}` (`registry.REDIRECT_HOSTS`), because then Kiro CLI or the
 KAS engine runs the sign-in on a loopback listener of its own and Crew does not
 choose its port. The card shows it under the prerequisite in
-the triangle beside Connect, as selectable text, and a refused sign-in whose
-code an admin's policy can cause (`access_denied`, `unauthorized_client`,
-`invalid_scope`) links the guide.
+the triangle beside Connect, each value with its own copy button, together with
+a link to the guide; that bubble is a non-modal dialog the icon's Tab moves
+into, and its height is capped to the room beside the icon with scrolling
+inside. A refused sign-in whose code an admin's policy can cause
+(`access_denied`, `unauthorized_client`, `invalid_scope`) has its own line and
+links the guide; every other code reads as the generic `callback_refused` line.
 Moving between the loopback and the public redirect re-registers, by the
 redirect rule above. After a sign-in, KAS's own
 grant for that URL (deleted by name) and kiro-cli's files go when the census

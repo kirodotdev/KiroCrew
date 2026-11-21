@@ -290,17 +290,71 @@ def _public_tunnel_provider(cfg: "KiroCrewConfig") -> "TunnelProvider":
     The no-op :class:`DefaultTunnelProvider`, unless ``tunnel.relay_enabled`` turns
     on the Kiro relay client. A companion composes its own context and its own
     provider, so it never reaches this choice. The relay client is imported only
-    when the setting is on, so a process composing the defaults with the relay off,
-    a short-lived hook among them, never loads it.
+    when a tunnel starts or its status is read (:class:`LazyRelayTunnelProvider`),
+    so a process composing the defaults, a short-lived hook among them, never
+    loads it.
     """
     from kiro_crew.edition_locks import relay_selected
 
     if not relay_selected(cfg):
         return DefaultTunnelProvider()
-    from kiro_crew.relay_client.provider import public_tunnel_provider
+    return LazyRelayTunnelProvider(cfg)
 
-    provider: "TunnelProvider" = public_tunnel_provider(cfg)
-    return provider
+
+class LazyRelayTunnelProvider:
+    """The Kiro relay client's provider, imported on its first ``start`` or status read.
+
+    The relay is on by default for a personal sign-in, and this root also backs
+    every short-lived process (a hook, an MCP server, a CLI command), which never
+    starts a tunnel. Until then it answers as the relay provider does with no
+    client: no status, no URL, ``disabled``.
+    """
+
+    #: Marks the Kiro relay's provider, as ``RelayTunnelProvider.kiro_relay`` does.
+    kiro_relay = True
+
+    def __init__(self, cfg: "KiroCrewConfig") -> None:
+        self._cfg = cfg
+        self._loaded: "TunnelProvider | None" = None
+        self._callbacks: dict[str, Any] = {}
+
+    def loaded(self) -> "TunnelProvider":
+        """The relay provider, built on first use."""
+        if self._loaded is None:
+            from kiro_crew.relay_client.provider import public_tunnel_provider
+
+            self._loaded = public_tunnel_provider(self._cfg)
+            if self._callbacks:
+                self._loaded.register_callbacks(**self._callbacks)
+        return self._loaded
+
+    async def start(self) -> None:
+        await self.loaded().start()
+
+    async def stop(self) -> None:
+        if self._loaded is not None:
+            await self._loaded.stop()
+
+    def public_url(self) -> str:
+        return self._loaded.public_url() if self._loaded is not None else ""
+
+    def enabled(self) -> bool:
+        # Built only once relay_selected said yes, which is what the provider's
+        # own settings answer (RelaySettings.from_config).
+        return True
+
+    def register_callbacks(self, **callbacks: Any) -> None:
+        self._callbacks = callbacks
+        if self._loaded is not None:
+            self._loaded.register_callbacks(**callbacks)
+
+    def status_snapshot(self) -> "dict[str, Any] | None":
+        return self.loaded().status_snapshot()
+
+    async def ensure_available(self, *, install: bool = True) -> str:
+        if self._loaded is None:
+            return "disabled"
+        return await self._loaded.ensure_available(install=install)
 
 
 def build_default_context(

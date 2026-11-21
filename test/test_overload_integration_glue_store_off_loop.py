@@ -417,7 +417,7 @@ class TestStoreOffLoop:
         # store's retry code, with the memory figures only as context.
         error = announced[0].error or ""
         assert error.startswith("spawn refused: the task store could not record"), error
-        assert "1.2 GB available" in error, error
+        assert "1.2 GB free" in error, error
         assert announced[0].error_code == admission_mod.TASK_STORE_UNAVAILABLE_CODE
         # Last, and through ``run`` above, so the only thing this can catch is
         # the defer sliding back onto the loop.

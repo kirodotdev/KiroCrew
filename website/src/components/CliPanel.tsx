@@ -22,6 +22,7 @@ import { copyToClipboard } from '../utils/clipboard'
 import { attachOsc52Copy, type Osc52CopyHandle } from '../lib/terminalOsc52'
 
 import { i18nT } from '../i18n/t'
+import { apiTransport } from '../api/apiTransport'
 /* ── Per-session xterm instance cache ──
  * Keyed by PTY session id. Instances persist across tab switches / chat
  * switches (so scrollback + cursor survive), and are only torn down when the
@@ -304,7 +305,7 @@ export function openTerminalSearch(sessionId: string): boolean {
 export function useDeleteTerminalSession() {
   return useMutation({
     mutationFn: async (sessionId: string) => {
-      const res = await fetch(`/api/terminal/sessions/${sessionId}`, { method: 'DELETE', keepalive: true })
+      const res = await apiTransport.request(`/api/terminal/sessions/${sessionId}`, { method: 'DELETE', keepalive: true })
       // 404 means the server has no such session any more: the PTY was already
       // reaped (idle sweep, gateway restart, a second close racing this one).
       // The shell is stopped, which is the outcome the user asked for, so this
@@ -670,7 +671,7 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
     // that gap. Fail closed: nothing is inserted unless redaction succeeds.
     let redacted: string
     try {
-      const res = await fetch('/api/terminal/redact', {
+      const res = await apiTransport.request('/api/terminal/redact', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: sel.text }),

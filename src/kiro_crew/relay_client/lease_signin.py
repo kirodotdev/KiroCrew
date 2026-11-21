@@ -10,8 +10,10 @@ writes a file or keeps a copy.
 
 Only an IAM Identity Center or external identity provider sign-in that names a
 Kiro profile can own a personal Crew, so anything else is refused here, before a
-request is sent, as :class:`LeaseSignInCannotHost`: the lease client holds quietly
-on that and checks again on a slow fixed step. Every other failure is a
+request is sent, as :class:`LeaseSignInCannotHost`: no sign-in
+(:class:`LeaseNotSignedIn`, said at INFO), one whose refresh is refused, one
+with no Kiro profile, Builder ID or social. The lease client holds quietly on that
+and checks again on a slow fixed step. Every other failure is a
 :class:`LeaseCredentialError`, which the lease client reads again on its backoff
 steps. Either way signing in again resumes hosting without a restart. No message carries a token, a refresh token or the profile ARN.
 
@@ -28,6 +30,7 @@ from typing import Any, Optional
 from kiro_crew.relay_client.lease import (
     TOKEN_TYPE_EXTERNAL_IDP,
     LeaseCredentialError,
+    LeaseNotSignedIn,
     LeaseSignInCannotHost,
 )
 
@@ -73,8 +76,11 @@ async def read_lease_sign_in(
         provider = _default_provider()
     try:
         token = await provider.current(rejected_access_token=rejected)
-    except (NotAuthenticated, IdentitySignedOut, RefreshRejected, RefreshBlocked):
-        raise LeaseCredentialError("the Crew is not signed in to Kiro") from None
+    except (NotAuthenticated, IdentitySignedOut):
+        raise LeaseNotSignedIn("the Crew is not signed in to Kiro") from None
+    except (RefreshRejected, RefreshBlocked):
+        # A sign-in whose refresh is refused or cannot start: only signing in again helps.
+        raise LeaseSignInCannotHost("the Crew is not signed in to Kiro") from None
     except Exception as exc:  # noqa: BLE001 - a transient refresh failure; type only
         raise LeaseCredentialError(
             f"the Kiro sign-in could not be refreshed ({type(exc).__name__})"
@@ -88,7 +94,7 @@ async def read_lease_sign_in(
     # The stored profile itself, never kas_profile_arn's fixed Builder ID value.
     profile_arn = token.profile_arn or ""
     if not profile_arn.strip():
-        raise LeaseCredentialError("the Crew's Kiro sign-in names no Kiro profile")
+        raise LeaseSignInCannotHost("the Crew's Kiro sign-in names no Kiro profile")
     bearer = (token.access_token or "").strip()
     if not bearer or not all(33 <= ord(ch) < 127 for ch in bearer):
         raise LeaseCredentialError("the Kiro sign-in's token must be one line of printable ASCII")

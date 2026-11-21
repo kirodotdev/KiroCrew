@@ -28,6 +28,8 @@
   // characters, so a snapshot past NODE_CAP nodes carries nothing it would show.
   var CONSOLE_TEXT_CAP = 2000;
   var NODE_CAP = 1500;
+  // The longest name `pick` sends; a longer one is withheld, never cut.
+  var PICK_TEXT_CAP = 2000;
   // `glance` bounds: elements looked at, entries per list, and the longest name or
   // message read. Text past its bound is left out, never cut, so a credential
   // reaches the gateway's redaction whole. The text bounds are four times the
@@ -414,6 +416,7 @@
     if (ae === "true") st.expanded = true;
     else if (ae === "false") st.expanded = false;
     if (inputType(el) === "password") st.password = true;
+    if (inputType(el) === "file") st.file = true;
     return st;
   }
 
@@ -1121,9 +1124,93 @@
       return { ok: true, selected: selected };
     },
 
+    // The `upload` op's target: a visible, enabled <input type=file>. With `node`
+    // the element itself, or null, for the helper to hand to DOM.setFileInputFiles;
+    // without it the verdict, so the gateway can say why it refused.
+    fileInput: function (ref, node) {
+      var el = lookup(ref);
+      var code = !el ? "ref_stale"
+        : inputType(el) !== "file" ? "not_file_input"
+        : disabledEl(el) ? "disabled"
+        : !visible(el) ? "not_visible" : "";
+      if (node) return code ? null : el;
+      return code ? { ok: false, code: code } : { ok: true, multiple: !!el.multiple };
+    },
+
     textPresent: function (text) {
       var b = document.body;
       return !!(b && (b.innerText || "").indexOf(text) !== -1);
+    },
+
+    // The element drawn at viewport point (x, y) of the top document, through open
+    // shadow roots (an iframe answers as itself), with a ref the other methods take,
+    // its box and its name. The name is its drawn text (`drawnText`: no form field,
+    // secret-named element, hidden or aria-hidden node, or script), else its own
+    // aria-label, title, alt or placeholder; never another element's text. A
+    // protected field, or a point inside one, answers `password_field` and no ref.
+    pick: function (x, y) {
+      var el = document.elementFromPoint(x, y), guard = 0;
+      while (el && el.shadowRoot && guard++ < 16) {
+        var inner = el.shadowRoot.elementFromPoint(x, y);
+        if (!inner || inner === el) break;
+        el = inner;
+      }
+      if (!el || el === document.documentElement) return { ok: false, code: "nothing_there" };
+      if (secretish(el) || insideSecretEditable(el)) return { ok: false, code: "password_field" };
+      var text = drawnText(el, 0).replace(/\s+/g, " ").trim();
+      var attrs = ["aria-label", "title", "alt", "placeholder"];
+      for (var i = 0; !text && i < attrs.length; i++) text = String(el.getAttribute(attrs[i]) || "").trim();
+      var r = el.getBoundingClientRect();
+      return {
+        ok: true,
+        ref: assignRef(el),
+        tag: (el.tagName || "").toLowerCase(),
+        // Over the cap it is withheld whole: a cut could leave half a credential the
+        // gateway's redaction does not recognise. The gateway cuts after redacting.
+        text: text.length > PICK_TEXT_CAP ? "" : text,
+        box: { x: r.left, y: r.top, w: r.width, h: r.height }
+      };
+    },
+
+    // Where each text is drawn, in top-document viewport px: a box per visible
+    // occurrence, every one in a text node, in the page and its open shadow roots,
+    // at most `cap` per text across all of them. It searches only text `read` would
+    // show: never a protected field, a form field or a script. Same-origin frames
+    // are not searched, and a text split across elements ("$1<b>.99</b>") is not found.
+    locate: function (texts, cap) {
+      var roots = [];
+      (function collect(root, depth) {
+        roots.push(root);
+        if (depth >= 8) return;
+        var all = root.querySelectorAll("*");
+        for (var i = 0; i < all.length; i++) if (all[i].shadowRoot) collect(all[i].shadowRoot, depth + 1);
+      })(document.body || document.documentElement, 0);
+      var found = [];
+      for (var t = 0; t < texts.length; t++) {
+        var want = texts[t], boxes = [];
+        for (var k = 0; k < roots.length && boxes.length < cap; k++) {
+          var walker = document.createTreeWalker(roots[k], NodeFilter.SHOW_TEXT);
+          for (var node = walker.nextNode(); node && boxes.length < cap; node = walker.nextNode()) {
+            var parent = node.parentElement, value = node.nodeValue || "";
+            // Drawn as text, as `read` judges it: a display:contents parent has no
+            // box of its own, so its text is measured, not its element.
+            // A shadow root's own text child has no parent element: only an
+            // element parent can be one of the excluded tags.
+            var searchable = textNodeShown(node) && !insideSecretEditable(node) &&
+              !(parent && parent.closest("script,style,noscript,template,input,textarea,select"));
+            for (var at = searchable ? value.indexOf(want) : -1; at !== -1 && boxes.length < cap;
+              at = value.indexOf(want, at + want.length)) {
+              var range = document.createRange();
+              range.setStart(node, at);
+              range.setEnd(node, at + want.length);
+              var b = range.getBoundingClientRect();
+              if (b.width > 0 || b.height > 0) boxes.push({ x: b.left, y: b.top, w: b.width, h: b.height });
+            }
+          }
+        }
+        found.push({ text: want, boxes: boxes });
+      }
+      return { ok: true, found: found };
     },
 
     // Navigation commit tracking: stamp the CURRENT document, then poll
@@ -1254,6 +1341,12 @@
       }
       walkRoot(document, 0);
       return n;
+    },
+
+    // Whether an agent selector is refused because it could probe a filled secret
+    // (`probeSelectorBlocked`): the gateway asks before a Harness helper runs one.
+    selectorBlocked: function (selector) {
+      return probeSelectorBlocked(selector);
     },
 
     // Visible elements matching a CSS selector, as {t, x, y} (short text and the

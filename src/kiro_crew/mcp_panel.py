@@ -342,7 +342,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "`field`, `tones` mapping values to ok/warn/bad/idle). "
                             "`field` names a field of this `model.types`; a widget "
                             "holds no HTML and no values, and the phone shows every "
-                            "string as plain text. The dashboard skill has an example."
+                            "string as plain text. An example and the block table "
+                            "follow."
                         ),
                     },
                 },
@@ -460,12 +461,16 @@ def _tool_definitions() -> list[dict[str, Any]]:
 
 
 def _list_tools() -> list[dict[str, Any]]:
-    """The tool surface, unconditionally.
+    """The tool surface, with one conditional part.
 
     Reaching this process at all means an agent spec referenced the set, so the
-    assignment already happened and there is nothing left to gate here.
+    assignment already happened and there is nothing left to gate here, except
+    ``widgets`` on ``dashboard_save``, advertised only while the ``widgets``
+    feature preview is on (``widgets_preview``).
     """
-    return _tool_definitions()
+    from kiro_crew.widgets_preview import widgets_enabled, with_widgets_schema
+
+    return with_widgets_schema(_tool_definitions(), widgets_enabled())
 
 
 def _strict_session_key() -> tuple[str, str]:
@@ -631,6 +636,13 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # stored widgets exactly as it did before widgets existed.
         widgets = args.get("widgets")
         if widgets is not None:
+            from kiro_crew.widgets_preview import mcp_refusal
+
+            # Behind the `widgets` feature preview: refused before the gateway is
+            # called, so nothing is saved.
+            refusal = mcp_refusal(args)
+            if refusal is not None:
+                return refusal
             if not isinstance(widgets, list):
                 return (
                     "Error: `widgets` must be a list of widgets -- leave it out to "

@@ -324,8 +324,9 @@ attached you get a **path**, not an image:
 
 ```
 Screenshot: /var/folders/.../kirocrew-computer-shots/shot-1769472013411.jpeg
-  (1280x604 jpeg, 24.2 KB) — read it with the fs_read tool only if the tree is
-  insufficient.
+  (1280x604 jpeg, 24.2 KB) — DOWNSCALED from the window size printed above, so
+  image pixels are not window coordinates. Take coordinates from an element's
+  own frame. Read the file with the fs_read tool only if the tree is insufficient.
 ```
 
 Read the file only when the outline cannot answer the question: a chart, rendered

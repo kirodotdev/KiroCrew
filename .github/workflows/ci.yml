@@ -1325,6 +1325,19 @@ jobs:
       - name: Check lockdown-before-publish (secret writers)
         run: python3 scripts/check_lockdown_before_publish.py
 
+      # The guard tier (`scripts/ci_test_map.py guard-tier`) is the floor under
+      # diff-based test selection, and a test file is in it because of its own
+      # text, so an edit can take one out unseen. This compares the tier of the
+      # merge commit with the tier of its first parent, the base: a file that
+      # joins is listed in the job summary, and a file that leaves while it
+      # still exists fails unless it carries a `# guard-tier: not a member`
+      # line. Both sides come from this pull request and its own base, so no
+      # other change can alter the verdict. Pull requests only: a push or a
+      # merge group has no single change to explain.
+      - name: Check guard-tier membership (gate)
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/ci_guard_tier_membership.py --summary "$GITHUB_STEP_SUMMARY"
+
   # The optional native credential pre-filter (native/kc_native) is used by
   # default wherever it is installed, and a wrong False from it would let a
   # credential skip redaction. Its equivalence suite skips itself when the
@@ -2067,7 +2080,13 @@ jobs:
         run: python scripts/ci_main_red_skip.py summary
 
       # Same experiment and contract as backend-test's prewarm step (#39368),
-      # with the Windows pin file and the test step's shell.
+      # with the Windows pin file and the test step's shell. --compile-product
+      # also compiles every module under src/ to the import cache under the same
+      # root, which is empty on a fresh runner: each worker would otherwise
+      # compile the ~3,900 product modules one shard's collection imports, all
+      # six the same ones at once. Windows only: measured on CI it shortened a
+      # Windows worker's collection by about 16% and did not change a Linux
+      # worker's, whose collection is dominated by the coverage tracer.
       - name: Prewarm assertion rewrites (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         if: ${{ steps.scope.outputs.reduced == 'false' }}
         shell: bash
@@ -2076,7 +2095,8 @@ jobs:
         run: |
           python -m scripts.ci_rewrite_prewarm \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
-            --file-shard-pins scripts/ci_file_shard_pins_windows.txt
+            --file-shard-pins scripts/ci_file_shard_pins_windows.txt \
+            --compile-product
 
       - name: Run tests (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         # bash (Git Bash on windows-latest), not pwsh: the invocation shares

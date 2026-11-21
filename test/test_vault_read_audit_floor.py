@@ -35,6 +35,6 @@ def test_each_test_starts_with_a_cold_read_audit_cache(
     assert read_audit._enabled() is True
     # The switch is now cached process-wide, as after a real vault read.
     assert read_audit._loaded is not None
-    read_audit._seen[("API_TOKEN", 9, "0", "test", "get")] = read_audit._Window(
+    read_audit._seen[(b"\0" * 32, "test", "get")] = read_audit._Window(
         last=0.0, absorbed=0, shown="API_TOKEN"
     )

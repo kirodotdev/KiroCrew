@@ -614,6 +614,10 @@ COMPOSER_SEND_META = "composer_send"
 #: ``nudge`` row instead of a ``user`` row, and the entry drains alone: merged,
 #: its text would be glued onto the human's own queued words in one row.
 AUTOMATION_STEER_META = "automation_steer"
+#: The wire mark (``queue_push`` meta and the slot-detail queue view) of a queue
+#: entry carrying :data:`AUTOMATION_STEER_META`, so the client never draws its
+#: card as the person's own words.
+AUTOMATION_STEER_WIRE_KEY = "automationSteer"
 
 
 def releases_past_subagent_hold(item: dict) -> bool:

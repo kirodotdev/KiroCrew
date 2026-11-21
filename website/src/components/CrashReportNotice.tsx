@@ -120,9 +120,10 @@ export default function CrashReportNotice() {
         </button>
       </div>
       <div className="mt-3 flex flex-col sm:flex-row gap-2 sm:pl-[30px]">
+        {/* The stock Btn is transparent, so on the warn tint it has no edge until hovered. */}
         <Btn
           onClick={() => { void revealCrashFolder() }}
-          className="w-full sm:w-auto justify-center"
+          className="w-full sm:w-auto justify-center border-border-strong bg-bg-elevated"
         >
           <FolderOpen size={14} /> {i18nT('components.crashNotice.show_diagnostics')}
         </Btn>
@@ -135,7 +136,7 @@ export default function CrashReportNotice() {
             reveals, and why neither action is styled as the primary one. */}
         <Btn
           onClick={() => setReportOpen(true)}
-          className="w-full sm:w-auto justify-center"
+          className="w-full sm:w-auto justify-center border-border-strong bg-bg-elevated"
         >
           <Bug size={14} /> {i18nT('components.crashNotice.report_issue')}
         </Btn>

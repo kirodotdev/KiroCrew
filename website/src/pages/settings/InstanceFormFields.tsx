@@ -563,7 +563,14 @@ export function InstanceFormFields({
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
       <label htmlFor={`${idPrefix}-name`} className="flex flex-col gap-1 text-[13px] text-muted">
         {i18nT('pages.settings.instancesPanel.name')}
-        <input id={`${idPrefix}-name`} aria-label={i18nT('pages.settings.instancesPanel.name')} className={inputCls} value={values.name} onChange={e => set('name', e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.remote_host_1')} />
+        <input id={`${idPrefix}-name`} aria-label={i18nT('pages.settings.instancesPanel.name')} className={inputCls} value={values.name} onChange={e => set('name', e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.remote_host_1')} required aria-required="true" aria-describedby={values.name.trim() ? undefined : `${idPrefix}-name-hint`} />
+        {/* The placeholder looks like a value, so an empty Name has to say it is
+            why the submit button stays disabled. */}
+        {!values.name.trim() && (
+          <span id={`${idPrefix}-name-hint`} className="text-[12px] text-muted leading-snug">
+            {i18nT('pages.settings.instancesPanel.name_required_hint')}
+          </span>
+        )}
       </label>
       {/* Not a <label>: SimpleSelect renders a button, so `htmlFor` would point
           at no form control. The caption text stays put and the accessible name

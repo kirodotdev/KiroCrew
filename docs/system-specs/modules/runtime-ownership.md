@@ -71,7 +71,8 @@ reads the name. New work goes to the owner of its responsibility:
 `RuntimeOwnership.acquire(key, session_key, spawn, cap=...)` returns an
 `Acquisition`. Placement prefers the runtime this session key last landed on while
 it is alive and has room, then any compatible runtime with room, then `spawn()`.
-Room means fewer than `cap` leases AND that no lease on that runtime is this
+Room means an entry not closed to joins (`RuntimeOwnership.close_to_joins`)
+with fewer than `cap` leases, AND that no lease on that runtime is this
 session key's own (`_Entry.admits`). A runtime lives while at least one lease is
 outstanding; the **last** release hands it back for teardown and every earlier
 release only drops a reference.
