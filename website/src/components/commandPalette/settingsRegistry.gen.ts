@@ -2648,6 +2648,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "agent.session_control"
   },
   {
+    "id": "developer.link-peeks",
+    "label": "Link peeks",
+    "labelKey": "pages.developer.featurePreviewsTab.link_peeks",
+    "description": "Rest on a file link in chat to see the lines it points at.",
+    "hint": "A chat link to a local file with a line reference shows about a dozen lines around that line when the pointer rests on it, with the full path beneath. Each first hover reads those lines on the gateway host, so this is off by default.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.mark-out-of-date-dashboard-fields",
     "label": "Mark out-of-date Dashboard fields",
     "labelKey": "pages.developer.featurePreviewsTab.dashboard_stale_fields",
