@@ -52,7 +52,7 @@ to a single driver behind it.
 Today there is a package named `kiro_crew.providers` that looks like this
 boundary and is not one. It re-exports ACP symbols rather than translating them,
 its "provider-agnostic" event type is the ACP event class under an alias
-(`src/kiro_crew/providers/base.py:30`), and most modules outside it import
+(the `LLMEvent` import in `src/kiro_crew/providers/base.py`), and most modules outside it import
 `kiro_crew.acp` directly rather than going through it. PR 1's baseline seeded the
 census at **58 files / 107 edges** across the two forbidden roots; the live split
 is printed by the gate on every run, and
@@ -92,7 +92,7 @@ split on every run.
 
 ### 2.1 The existing seam is an alias, not a translation
 
-`src/kiro_crew/providers/base.py:30`:
+`src/kiro_crew/providers/base.py`, the `LLMEvent` import:
 
 ```python
 from kiro_crew.acp.types import AcpEvent as LLMEvent  # noqa: F401
@@ -277,7 +277,7 @@ leaks no ACP module into `sys.modules`. `session_allocation.py` and
 (`Callable[..., LLMProvider]`) — a runtime use that deferral does not reach — and
 their comments now give that reason rather than the closed cycle.
 
-`acp/worker_pool.py:49`'s `try/except` around `register_protected_pid` /
+`acp/worker_pool.py`'s module-level `try/except` around `register_protected_pid` /
 `unregister_protected_pid` was never part of any cycle. The edge is one-way, the
 guard's own comment says it exists so the engine stays importable standalone, and
 it catches `Exception` rather than `ImportError` — so no exit criterion should be
@@ -313,7 +313,7 @@ foreign host this repository has ever carried, and its price is visible today as
 **permanently dormant conditional surface** in the public core.
 
 The registration seam is coherent: `ProviderRegistry.register_acp_backends` /
-`create_factory` (`platform/interfaces.py:66-90`), a documented no-op default
+`create_factory` (`platform/interfaces.py::ProviderRegistry`), a documented no-op default
 (`platform/defaults.py::DefaultProviderRegistry`), one wiring site (`platform/bootstrap.py::bootstrap_context`),
 and an explicit rule that the core never imports the companion. Everything below
 it is not — the *behaviour* the companion must supply is delivered through three
@@ -323,8 +323,8 @@ kinds of undeclared hole:
 |---|---|---|
 | `getattr`-by-name seams whose target the core never defines — `getattr(self, "_write_claude_local_settings", None)` (`AcpClient._write_claude_local_settings`) | 2 | Silent: no permission mode, and the context window collapses from 1M to 200K |
 | Methods returning a neutral value purely so a companion can override them — `_session_mcp_servers() -> []` (`AcpClient._session_mcp_servers`) is the type case | 6 | Silent: a CC session gets **zero MCP tools**, as the docstring itself states |
-| `ClaudeCodeProvider is not None and isinstance(...)` guards against a name hard-coded to `None` (`ClaudeCodeProvider` in `session_parts/provider_probes.py`, `subagent.py:131`) | 11 sites | Statically unreachable; nine `session.py` branches and two `subagent.py` branches are dead-but-maintained |
-| Defensive attribute probes across the provider boundary (`session_pid_tracking.py` (`_collect_active_pids`) probes `_proc` and `_active_proc`, `chat_runner.py:867`, `knowledge/llm_pool.py:325`) | 4 | Duck typing in place of a type |
+| `ClaudeCodeProvider is not None and isinstance(...)` guards against a name hard-coded to `None` (`ClaudeCodeProvider` in `session_parts/provider_probes.py`, `subagent.py`, the module-level `ClaudeCodeProvider = None`) | 11 sites | Statically unreachable; nine `session.py` branches and two `subagent.py` branches are dead-but-maintained |
+| Defensive attribute probes across the provider boundary (`session_pid_tracking.py` (`_collect_active_pids`) probes `_proc` and `_active_proc`, [`dashboard/chat_runner.py` `_pinned_model_withheld`](https://github.com/kirodotdev/KiroCrew/blob/18fa9b0825ad12510abce6612fdee07ea8449ee4/src/kiro_crew/dashboard/chat_runner.py#L867) and [`knowledge/llm_pool.py` `_apply_effort`](https://github.com/kirodotdev/KiroCrew/blob/18fa9b0825ad12510abce6612fdee07ea8449ee4/src/kiro_crew/knowledge/llm_pool.py#L325), both at 18fa9b0825) | 4 | Duck typing in place of a type |
 | Comment clusters naming the companion or a deleted module as the supplier of behaviour | 19 | The seam's real contract lives in prose |
 | Refusal / downgrade mechanisms, including the degrade log in `acp_backends.resolve_selected_backend()` and five capability non-memberships | 9 | — |
 | Live `_is_claude` branches inside `acp/` | 13 | — |
@@ -611,8 +611,8 @@ the meaning: the set records an *authorization* — that a `kiro-cli logout` may
 retire this backend's live child — not ownership of a store. A CC session must
 never be recycled on a Kiro logout, so the polarity matters. And
 `shares_process` was one boolean over two sets that the comment above
-`ACP_BACKENDS_ACP_RUNTIME` (`acp_backends.py`, formerly cited as
-`acp/types.py:177-181`) documents as a superset relation; it is split above.
+`ACP_BACKENDS_ACP_RUNTIME` (defined in `agent_sdk/backends_sessions.py` and re-exported by
+`acp_backends.py`; first cited here in `acp/types.py`) documents as a superset relation; it is split above.
 
 The last two rows are not session values and cannot become ones without a
 decision. `Routing` and the two dispatch tables are *mechanism* facts keyed on
@@ -627,8 +627,8 @@ a question asked in order to decide *how to build* that session.
 `ACP_BACKENDS_ACP_RUNTIME & selectable_backends()` per call, and its callers
 consult the result against the configured `agent.acp_backend` **string** to choose
 between the multiplexed-runtime path and the provider-backed `_Session` path
-serialized by `Semaphore(1)`. v3 cited three fixed line numbers here
-(`session.py:399-400`); `#6921` and later splits moved them, and
+serialized by `Semaphore(1)`. v3 cited three fixed line numbers in
+`session.py` here; `#6921` and later splits moved them, and
 some reads now sit in `session_allocation.py` / `session_pool.py`, so PR 3 must
 re-derive the call sites rather than work from that list. No value read off the session can answer it, because
 the session does not exist yet.
@@ -767,7 +767,7 @@ moves in.
 What that has to accomplish is the cycle `session_pid → acp.client → session →
 session_pid`, whose two live sites are `_kill_pid_tree` and `_kill_orphan_work_tree` (both a
 lazy `from kiro_crew.acp.client import _get_child_pids`). Deleting the
-`worker_pool.py:49` guard is a *consequence* of the move, not the proof it worked —
+`acp/worker_pool.py` `register_protected_pid` import guard is a *consequence* of the move, not the proof it worked —
 that edge is one-way and the guard exists for standalone importability (§2.4). The
 move must therefore place two pieces of shared surface: `_get_child_pids`, or a
 PID-enumeration primitive it can be replaced by, so `session_pid.py` retains no
@@ -968,7 +968,7 @@ first-class SDK members computed by the driver (§5.2), because they are read on
 permission path and losing them is not a deprecation — it is a security regression.
 Dropping `raw_tool_params` without them makes `shell_command` return `None` on
 `tool_call` events, every such shell call then hits the gate's deny-by-default
-(`_tier_unverifiable_shell`, the `unverifiable-shell` row of `hooks.GATE_TIERS`), and the `use_aws` regression `types.py:596-605` exists to prevent
+(`_tier_unverifiable_shell`, the `unverifiable-shell` row of `hooks.GATE_TIERS`), and the `use_aws` regression that the `AcpEvent.shell_command` docstring (`acp/types.py`) exists to prevent
 comes back.
 
 PR 5's waves delete the shims per file as each consumer moves, and PR 6's exit
@@ -1551,7 +1551,7 @@ does not handle fails too.
    strengthening, and §8.3 asserts it.
 2. **Deny-rule parity is host contract, not SDK.** The 137 built-in patterns are
    enforced at Crew's own PreToolUse gate and deliberately not delegated to the
-   provider (`security.py:50-58`). The boundary must not create the impression
+   provider (the `BUILTIN_DENIED_RULES` header comment in `security/denied_rules_catalog.py`). The boundary must not create the impression
    that a driver can take over command denial; §6 records the engine-class
    dependency instead.
 3. **An absent enforcement mode must not read as an enforced one.** §6.2's rule
@@ -1735,7 +1735,7 @@ reopens it.
    an argument for this decision — the ownership question is the whole argument,
    and the move still has to relocate `_get_child_pids` and place
    `_kill_pid_tree` + `_MANAGED_AGENT_MARKERS`, which both halves use.
-   The `acp/worker_pool.py:49` guard is still in place and PR 4 will delete it as
+   The `acp/worker_pool.py` `register_protected_pid` import guard is still in place and PR 4 will delete it as
    a consequence of the move, not as a proof of the cycle: it is a one-way
    standalone-importability fallback and it catches `Exception` rather than
    `ImportError`. That clarification was right in v3 and still is.

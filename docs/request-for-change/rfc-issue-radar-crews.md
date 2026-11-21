@@ -455,11 +455,11 @@ fixtures via `scripts/lib/issue-radar-crews-fixtures.mjs`.
 ## 12. Identity
 
 **Avatars are Kiro ghosts.** The 24×28 bitmap already exists
-(`hooks/sceneText.ts:145` `KIRO_GHOST_PIXELS`), as does an 8-entry outfit table
+(`KIRO_GHOST_PIXELS` in `hooks/sceneText.ts`), as does an 8-entry outfit table
 that differentiates ghosts by hat, glasses and cape rather than body colour
-(`scenes/GhostScene.tsx:36`), and a canvas renderer for it
-(`useSceneInteraction.tsx:20` `MiniGhost`). The outfit is selected by a djb2 hash
-of the avatar seed — the same technique `WateringHoleScene.tsx:92` already uses to
+(`OUTFITS` in `scenes/GhostScene.tsx`), and a canvas renderer for it
+(`MiniGhost` in `useSceneInteraction.tsx`). The outfit is selected by a djb2 hash
+of the avatar seed — the same technique `pickAnimal` in `WateringHoleScene.tsx` already uses to
 keep an agent's species stable.
 
 DiceBear `pixel-art` (`components/CrewAvatar.tsx`) is deliberately *not* reused:
