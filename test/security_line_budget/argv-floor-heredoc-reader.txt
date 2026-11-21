@@ -1,0 +1,6 @@
++61
+The argv rules floor reads each frame a third way with the shared reader's heredoc
+mode, so a `<<` in arithmetic is a shift and a heredoc on a later line is read. The
+reading merges nested body spans and looks each command up by bisect so cost stays
+linear, reads nothing from the line of a `<<` with no tag and no operand on, and reads only
+commands outside parens and backticks, where words may be arithmetic operands.

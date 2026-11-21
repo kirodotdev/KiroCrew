@@ -22,11 +22,13 @@ rows).
 
 from __future__ import annotations
 
+import bisect
 import re
 from collections.abc import Callable
 
 from ..trust_patterns import ENV_ASSIGNMENT_RE
 from . import rm_floor as _rm
+from . import shell_commands as _reader
 from . import shell_normalizer as _shell
 from .denied_rules import BUILTIN_DENIED_RULES
 
@@ -474,6 +476,63 @@ def _without_heredoc_bodies(text: str) -> str:
     return "\n".join(out)
 
 
+def _in_body(spans: "list[list[int]]", starts: "list[int]", at: int) -> bool:
+    """*at* lies in one of the merged, sorted body *spans* (*starts* their starts)."""
+    index = bisect.bisect_right(starts, at) - 1
+    return index >= 0 and at < spans[index][1]
+
+
+def _past_heredocs(text: str) -> "list[list[str]]":
+    """Argv of each command the shared reader finds reading past each heredoc.
+
+    The other readings stop at a ``<<`` or take one in ``$((1<<2))`` for a heredoc,
+    so a command after a heredoc operator on a later line was never read. In heredoc
+    mode the reader reads on, leaves each body out and reads a ``<<`` in a ``$((…))`` /
+    ``((…))`` span that closes on its line as a shift. A command read from a
+    substitution in a body is dropped: a body is data here, as in the other readings.
+    A ``<<`` followed by no tag and no operand (``cat <<;``) is a syntax error that
+    stops bash on its line, so no command from that line on is read here. This
+    reading only adds commands: it is read beside the others.
+    """
+    if "<<" not in text:
+        return []
+    commands = _reader.read_commands(text, heredocs=True)
+    spans: list[list[int]] = []  # a body nested in another body's substitution merges
+    for start, end in sorted((d.start, d.end) for c in commands for d in c.heredocs):
+        if spans and start <= spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], end)
+        else:
+            spans.append([start, end])
+    starts = [start for start, _ in spans]
+    cutoff = len(text)
+    for cmd in commands:
+        for word, _target in cmd.redirects:
+            at = word.raw.find("<<")
+            if at < 0 or "<<<" in word.raw or _in_body(spans, starts, word.start):
+                continue
+            tag, strip, quoted = _reader._heredoc_tag(text, word.start + at + 2)
+            rest = text[word.start + at + 2 + strip :].lstrip(" \t")
+            # ``<<''`` is a heredoc ending at an empty line; a shift's operand may start
+            # with ``(`` or sit on the next line, but never starts with these
+            if not tag and not quoted and rest[:1] in ("", ";", "|", "&", "<", ">", ")"):
+                cutoff = min(cutoff, text.rfind("\n", 0, word.start) + 1)
+    out, depth, in_backtick = [], 0, False
+    for cmd in commands:
+        argv = cmd.argv
+        top = not depth and not in_backtick
+        depth = max(depth + (cmd.separator == "(") - (cmd.separator == ")"), 0)
+        in_backtick ^= cmd.separator == "`"
+        # Inside parens the words may be arithmetic operands (``((x, chmod +6 /usr))``);
+        # a subshell or substitution is read by the walk as a frame of its own.
+        if not top or not argv or argv[0].start >= cutoff:
+            continue
+        if _in_body(spans, starts, argv[0].start):
+            continue
+        joined = " ".join(word.raw for word in argv)
+        out.append(_shell._shell_tokens(_shell._fold_line_continuations(joined)))
+    return out
+
+
 def _commands(command: str) -> "list[tuple[str, list[str]]]":
     """Every ``(program, args)`` in *command* and in each nested-shell payload in it.
 
@@ -483,14 +542,16 @@ def _commands(command: str) -> "list[tuple[str, list[str]]]":
     out = []
     values: set[str] = set()
     for source, tokens in _shell._shell_payload_walk(command):
-        # Two readings of each frame, each only adding commands: the shared reader
+        # Readings of each frame, each only adding commands: the shared reader
         # cuts at every live separator, glued ones included (``ls x& chmod ...``),
-        # and the walk's own tokens keep a heredoc body the reader stops before.
+        # and reads past each heredoc in heredoc mode; the walk's own tokens keep
+        # a heredoc body the reader stops before.
         # The reader's own argv, never re-cut, is a third reading: a dequoted
         # ``'#'`` or ``'a=b;'`` word is an argument there, not a comment or separator.
         readings = dict.fromkeys((source, _without_heredoc_bodies(source)))
         words_read = [list(words) for text in readings for words in _rm._command_tokens(text)]
-        found = [*words_read, *(s for w in words_read for s in _find_exec_argvs(w))]
+        found = [*words_read, *_past_heredocs(source)]
+        found += [s for w in found for s in _find_exec_argvs(w)]
         # The walk's flat tokens hold a heredoc body: read them as commands only
         # when a shell is the program here, so ``cat <<EOF`` data stays data.
         if any((_program_args(w) or ("",))[0] in _RUNS_C_VALUE for w in words_read):

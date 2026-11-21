@@ -59,6 +59,20 @@ def _refused(cmd: str) -> bool:
         f"printf '%s\\n' ';' {_CM} -R 777",
         f"cat <<'EOF' > notes.md\n{_CM} -R 777 dir\nEOF\nls",
         f"cat <<A <<B\n{_CM} 777 x\nA\n{_CO} root /etc/x\nB",
+        # A heredoc after a shift, or one bash reads after a span that does not close
+        # on its line, keeps its body data.
+        f"x=$((1<<2)); cat <<EOF\n{_CM} 600 /etc/shadow\nEOF",
+        f"n=$((cat <<'EOF'\n{_CM} 600 /etc/shadow\nEOF\n) | wc -l)",
+        # A ``bash -c`` after the operator does not read the body, and a ``<<`` with
+        # no tag is a syntax error: bash runs nothing.
+        f"x=$((1<<2))\ncat <<EOF; bash -c 'echo hi'\n{_CM} 600 /etc/shadow\nEOF",
+        f"0<<EOF bash -c true\n{_CM} 600 /etc/shadow\nEOF",
+        f"cat <<;{_CM} 600 /etc/shadow",
+        f"ash <<A\necho hi\nA\ncat <<'B' > notes.md\n{_CM} 600 /etc/shadow\nB",
+        f"x=$((1<<2))\nprintf 'echo hi\\n' <<'EOF' | bash\n{_CM} 777 example.sh\nEOF",
+        # Words after a shift inside arithmetic are operands, not a command.
+        f"usr=1; bin=1; {_CM}=0; ((1<<2, {_CM} +600 /usr/bin))",
+        f"x=$((1<<2))\ncat <<EOF; (({_CM} +600 /usr/bin))\nhello\nEOF",
     ],
 )
 def test_no_longer_refused(cmd):
@@ -128,6 +142,17 @@ def test_ssh_batchmode_is_not_refused(monkeypatch):
         f"cat <<'EOF'\nhello\nEOF\n{_CM} 777 report.txt",
         f"cat <<'EOF' && {_CM} 600 /etc/shadow\nhello\nEOF",
         f"bash -c 'cat <<EOF\nhi\nEOF\n{_CM} 600 /etc/shadow'",
+        # A ``<<`` in arithmetic is a shift, not a heredoc: the next line is read.
+        f"x=$((1<<2))\n{_CM} 600 /etc/shadow",
+        f"((1<<2))\n{_CM} 600 /etc/shadow",
+        f"x=$((1<<2))\ncat <<EOF; {_CM} 600 /etc/shadow\nhello\nEOF",
+        f"((1<<2))\ncat <<EOF && {_CM} 600 /etc/shadow\nhello\nEOF",
+        f"((1<<(2)))\ncat <<EOF; {_CM} 600 /etc/shadow\nhello\nEOF",
+        f"x=$((1<<(2)|1<<3))\ncat <<EOF; {_CM} 600 /etc/shadow\nhello\nEOF",
+        "cat <<EOF; ch\\\nmod 600 /etc/shadow\nhello\nEOF",
+        # A ``<<`` with no tag on a later line stops bash only there.
+        f"cat <<EOF; {_CM} 600 /etc/shadow\nhello\nEOF\ncat <<",
+        f"cat <<''; {_CM} 600 /etc/shadow\n\n",
         # Spellings only the reader decodes.
         "$'\\x63hmod' 600 /etc/shadow",
         "ch\\\nmod 600 /etc/shadow",

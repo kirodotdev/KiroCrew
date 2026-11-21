@@ -3951,7 +3951,19 @@ commands, and then decides on the program and its own arguments: `chmod`/`chown`
 a file operand at or under a system directory; `chmod` with mode `777`; `dd` with an
 `of=` raw-disk operand. A `--reference` word counts as the option only before `--`, and
 the command is also read with heredoc bodies cut out, so a command after a heredoc is
-read too. A command whose text cannot spell any enabled row's
+read too. It is read a third way with the shared reader's heredoc mode
+(`shell_commands.read_commands` with `heredocs=True`), which leaves each body out, reads
+the commands after a heredoc operator or its body, and reads a `<<` in a `$((…))` /
+`((…))` span that closes with `))` on its line as a shift, so a heredoc on a later line
+is read too (`x=$((1<<2))`, then `cat <<EOF; chmod …`). It reads no command from the
+line of a `<<` followed by no tag and no operand on (`cat <<;`, a syntax error that
+stops bash there; `<<''` is a heredoc, and a shift's operand may start with `(`), reads
+only commands outside parens and backticks (inside, words may be arithmetic operands,
+`((1<<2, chmod …))` runs no `chmod`, and the walk reads each substitution as a frame of
+its own), and
+its commands never decide whether the walk's flat tokens are read, so a body stays data
+unless the other readings find a shell there.
+A command whose text cannot spell any enabled row's
 program is not read at all.
 
 **Narrower on purpose.** An over-block stops ordinary work, so a rare miss is the
