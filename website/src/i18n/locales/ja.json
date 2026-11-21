@@ -10706,6 +10706,7 @@
       "conductor_mode_ms_waiting_pr": "PR #{{n}} を待機中",
       "conductor_mode_ms_waiting_no_reason": "一時停止中（理由の記載なし）",
       "conductor_mode_ms_done_fold": "{{n}} 件完了",
+      "conductor_mode_ms_dropped_fold": "{{n}} 件取り下げ",
       "conductor_mode_ms_pr": "· PR #{{n}}",
       "conductor_mode_run_working": "作業中",
       "conductor_mode_run_waiting": "あなたの対応待ち",

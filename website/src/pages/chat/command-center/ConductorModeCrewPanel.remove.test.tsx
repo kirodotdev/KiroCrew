@@ -59,7 +59,8 @@ describe('Conductor mode: hide a milestone that was not done', () => {
     const hide = within(withRemove[0]).getByTestId('conductor-mode-milestone-remove')
     // A visible word that says it only hides, not a bare trash icon read as a delete.
     expect(hide).toHaveTextContent('Hide')
-    expect(hide).toHaveAccessibleName('Hide "Old idea" from this list')
+    // The rejected row stays in the list; the abandoned one sits in the dropped fold below it.
+    expect(hide).toHaveAccessibleName('Hide "Port the gate" from this list')
     expect([DONE, DROPPED, REJECTED, OPEN].map(milestoneRemovable)).toEqual([false, true, true, false])
   })
 
@@ -102,7 +103,7 @@ describe('Conductor mode: hide a milestone that was not done', () => {
     localStorage.setItem(CONDUCTOR_MILESTONES_REMOVED_KEY, JSON.stringify({ 'root-1': ['it_a', 'it_d'], 'root-2': ['it_c'] }))
     renderPanel()
     await screen.findByText('Old idea')
-    expect(rowTitles()).toEqual(['Ship the fix', 'Old idea', 'Port the gate', 'Write docs'])
+    expect(rowTitles()).toEqual(['Ship the fix', 'Port the gate', 'Write docs', 'Old idea'])
     expect(screen.queryByTestId('conductor-mode-milestones-removed')).toBeNull()
   })
 

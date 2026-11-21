@@ -10706,6 +10706,7 @@
       "conductor_mode_ms_waiting_pr": "等待 PR #{{n}}",
       "conductor_mode_ms_waiting_no_reason": "已暂停，未说明原因",
       "conductor_mode_ms_done_fold": "{{n}} 项已完成",
+      "conductor_mode_ms_dropped_fold": "{{n}} 项已放弃",
       "conductor_mode_ms_pr": "· PR #{{n}}",
       "conductor_mode_run_working": "进行中",
       "conductor_mode_run_waiting": "等待你处理",
