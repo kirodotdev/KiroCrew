@@ -630,6 +630,55 @@ class TestRunChatAutoApproveRungs:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
+        ("tool_name", "mcp_server", "tool_kind", "tool_input"),
+        [
+            ("fs_delete", "", "delete", {"path": "~/.ssh/authorized_keys", "command": "ls"}),
+            ("fs_write", "", "edit", {"path": "~/.bashrc", "command": "cat README.md"}),
+            ("run_query", "db:primary", "other", {"query": "DROP TABLE users", "command": "ls"}),
+            ("run_query", "db:primary", "other", {"command": "ls", "extra": {"command": "ls"}}),
+        ],
+    )
+    async def test_trust_reads_ignores_a_command_key_on_a_non_shell_tool(
+        self, tmp_path, tool_name, mcp_server, tool_kind, tool_input
+    ):
+        """A non-shell call with a decoy ``command`` key must reach the card in Reads."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        slot._trust_reads = True
+        _set_stream(
+            client,
+            [
+                _permission(
+                    title="Doing something harmless",
+                    tool_input=json.dumps(tool_input),
+                    tool_kind=tool_kind,
+                    is_shell=False,
+                    tool_name=tool_name,
+                    mcp_server_name=mcp_server,
+                ),
+                _complete(),
+            ],
+        )
+        slot._empty_response_retries = 2
+        with (
+            patch.object(chat_runner, "sel") as mock_sel,
+            patch.object(chat_runner, "tool_approval_timeout_secs", return_value=0.0),
+        ):
+            audit = MagicMock()
+            mock_sel.return_value = audit
+            await chat_runner._run_chat(state, slot, "hello")
+        await _settle(slot)
+
+        client.approve_tool.assert_not_awaited()
+        assert [m for m in slot.messages if m.get("role") == "permission"]
+        assert not [
+            c.kwargs
+            for c in audit.log_tool_invocation.call_args_list
+            if c.kwargs.get("metadata", {}).get("reason") == "trust_reads"
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
         "command", ["git status", "git log --oneline -5", "ls && git diff", "/usr/bin/GIT status"]
     )
     async def test_trust_reads_never_auto_approves_git(self, tmp_path, command):
