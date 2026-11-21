@@ -901,7 +901,9 @@ the sharing rows and the gateway rewriter use; otherwise it is stdio.
   (`connections/mint_kas.py`; see the connections spec). The check parses
   `<data_home>/kas/mcp-grants/.vault/secrets.enc` for its plain-text entry NAMES
   only, looking for `kiro.mcp.<sha256(url.trim().toLowerCase() + "|")>.tokens`.
-  The key file is never opened and nothing is decrypted, so only a boolean
+  The vault also holds the engine's organization (identity provider) sign-in,
+  `kiro.mcp.idp.<sha256 hex>.session` (`acp/kas_secret_storage.py`), which no
+  server row's check reads. The key file is never opened and nothing is decrypted, so only a boolean
   leaves the module. Both stores are consulted whatever the configured backend,
   since the backend can differ per agent and per route. `_runtime_grant_present`
   combines them: kiro-cli `true` decides it without reading the vault (so no

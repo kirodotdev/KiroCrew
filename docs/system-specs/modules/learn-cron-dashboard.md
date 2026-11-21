@@ -7374,7 +7374,13 @@ A work-ledger wake steered into a running turn is that loop's cycle in the turn
 that carries it, for the same two streaks and with the same lack of authority.
 The steer records the loop's config generation beside its `{"cycle", "loop_id"}`
 automation meta (`session_deliver.WAKE_GENERATION`, held in
-`slot._steer_automation`, never on a row). A running turn whose
+`slot._steer_automation`, never on a row). Because the slot holds it there, the
+steer also tells the engine it came from automation, not the person
+(`chat_delivery.steer_origin_kwargs` passes `origin="automation"`, a resend
+from `steer_retract` too): `agent_sdk/steer_origin.steer_params` adds `origin`
+to kiro's `_session/steer` params only when it is not `user`, KAS then frames
+the text as from the host application, and every other steer transport ignores
+it. A running turn whose
 `steering_consumed` echo settles that steer adopts the wake as its `_wake_cycle`
 (the newest, last-sent one when one echo settles several), replacing a cycle it
 already carries (the steer names the slot's live loop at its current
