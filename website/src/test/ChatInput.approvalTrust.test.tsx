@@ -291,6 +291,48 @@ describe('ChatInput approval Trust menu and receipts', () => {
     }
   })
 
+  /** A browser call whose command grant is a site grant of *cls* (#39990's shape). */
+  function siteCard(cls: 'read' | 'act') {
+    const state = stateWithApproval()
+    const meta = state.chat!.messages[1].meta!
+    Object.assign(meta, { tool_input: '{"op":"click","args":{"ref":"e3"}}', tool_title: 'Drive browser', is_shell: '', is_read_only: '', full_command: 'www.example.com', browser_trust_class: cls })
+    delete meta.base_command
+    delete meta.trust_base_grantable
+    return state
+  }
+
+  // Ported from ApprovalActions (#39990): for a site grant the card sends what
+  // main sends at 06345d8ebb, option by option. The site row is the command
+  // tier for the host, with no lifetime: no Duration choice, no ttl_seconds.
+  it.each([
+    ['read', 'Trust reading pages on www.example.com for this session'],
+    ['act', 'Trust reading, clicking and typing on www.example.com for this session'],
+  ] as const)('a %s site grant is the command tier for the host, for the session only, as on main', async (cls, label) => {
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(siteCard(cls)) })
+    openTrust()
+    expect(screen.queryAllByRole('menuitemradio')).toHaveLength(0)
+    const rows = screen.getAllByRole('menuitem').map(b => b.textContent)
+    expect(rows).toEqual([label, 'Trust all tools for this session'])
+    clickTrustRow(label)
+    await waitFor(() => {
+      expect(api.approveChatSlot).toHaveBeenCalledWith(
+        'slot-1', 'trust_command', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123', pattern: 'www.example.com' }
+      )
+    })
+    expect(api.approveChatSlot).toHaveBeenCalledTimes(1)
+  })
+
+  it('on a site grant card, Trust all tools sends the session grant, as on main', async () => {
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(siteCard('act')) })
+    openTrust()
+    clickTrustRow('Trust all tools for this session')
+    await waitFor(() => {
+      expect(api.approveChatSlot).toHaveBeenCalledWith(
+        'slot-1', 'trust', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123' }
+      )
+    })
+  })
+
   it('wraps the card\'s command and tool name at spaces, never mid-word', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
     expect(screen.getByTestId('approval-command').className).toContain(COMMAND_WRAP)
