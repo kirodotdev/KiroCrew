@@ -30,6 +30,7 @@ from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 from kiro_crew.platform import PROFILE_STANDALONE, current_context, safe_context_call
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
+from kiro_crew.tips_exploratory import load_exploratory_tips
 from kiro_crew.tips_metrics import record_tip_feedback_metric, tip_metric_labels
 
 # Re-exported: callers import ``tips.CatalogEntry``, while the dataclass lives in
@@ -500,6 +501,10 @@ class TipsCache:
     # ``TipsPool.metric_tip_ids``); empty for the public pool, whose shipped ids
     # the counter already knows.
     metric_tip_ids: frozenset[str] = frozenset()
+    # The exploratory bank (kiro_crew.tips_exploratory), shown beside
+    # "Thinking..." and never in the tip card. Public pool only: an edition
+    # pool replaces every public tip, and these advertise public features.
+    exploratory: list[dict] = field(default_factory=list)  # type: ignore[type-arg]
     state: TipsState = field(default_factory=TipsState)
     # LoopBoundLock, not asyncio.Lock: the cache is stored on the
     # long-lived DashboardState, which outlives any single event loop.
@@ -772,6 +777,7 @@ async def get_tips_cache(state: DashboardState) -> TipsCache:
                 pool = await loop.run_in_executor(None, _resolve_pool)
                 catalog: list[CatalogEntry]
                 metric_tip_ids: frozenset[str] = frozenset()
+                exploratory: list[dict] = []  # type: ignore[type-arg]
                 if pool is not None:
                     # Full replacement: neither the bundled/scanned public
                     # catalog nor the bundled curated file is consulted, so no
@@ -801,6 +807,9 @@ async def get_tips_cache(state: DashboardState) -> TipsCache:
                         )
                         catalog = await loop.run_in_executor(None, _scan_docs_catalog)
                     curated = await loop.run_in_executor(None, _load_curated_tips)
+                    exploratory = [
+                        dict(t) for t in await loop.run_in_executor(None, load_exploratory_tips)
+                    ]
                 st = await loop.run_in_executor(None, _load_state)
                 if _reconcile_pool(st, pool_id):
                     # The reconciliation that matters already happened IN MEMORY,
@@ -822,6 +831,7 @@ async def get_tips_cache(state: DashboardState) -> TipsCache:
                 cache.catalog = catalog
                 cache.curated = curated
                 cache.metric_tip_ids = metric_tip_ids
+                cache.exploratory = exploratory
                 cache.state = st
                 if st.load_failed:
                     # Serve this request from defaults, but keep nothing: the
@@ -1468,6 +1478,31 @@ async def api_tips_all(request: web.Request) -> web.Response:
     return web.json_response({"tips": _redact_tips(cache.curated)})
 
 
+async def api_tips_exploratory(request: web.Request) -> web.Response:
+    """GET /api/tips/exploratory — the exploratory tips the thinking row may show.
+
+    Returns ``{"tips": [{id, body, requires}]}``: the active pool's exploratory
+    bank minus the tips this user dismissed. Empty when ``tips_enabled`` is off,
+    the user opted out of tips, the saved state could not be read, or an
+    edition pool is active (it has no exploratory bank). Read-only: showing a
+    tip is reported through ``/api/tips/feedback``.
+    """
+    loop = asyncio.get_running_loop()
+    cfg = await loop.run_in_executor(None, KiroCrewConfig.load)
+    if not cfg.dashboard.tips_enabled:
+        return web.json_response({"tips": []})
+    cache = await get_tips_cache(request.app["state"])
+    st = cache.state
+    if st.opted_out or st.load_failed:
+        return web.json_response({"tips": []})
+    tips = [
+        {"id": t["id"], "body": t["body"], "requires": t["requires"]}
+        for t in cache.exploratory
+        if _scoped(st, str(t["id"])) not in st.dismissed
+    ]
+    return web.json_response({"tips": tips})
+
+
 # Cap on the `id` a feedback call may name. Tip ids are catalog- or
 # curated-authored slugs; the bound exists so an unbounded client string is
 # never carried into the persisted dismissal state.
@@ -1489,6 +1524,9 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
     - optin: re-enable tips
 
     ack/snooze also update last_shown_ts (cadence gate resets).
+
+    An exploratory tip (``/api/tips/exploratory``) touches neither the cadence
+    nor the offered tip: ack/dismiss only add it to the dismissed list.
     """
     state: DashboardState = request.app["state"]
     cache = await get_tips_cache(state)
@@ -1544,7 +1582,18 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
         # Labelled BEFORE the action mutates state: "shown" and "ack" clear the
         # offered tip, which is one of the places the doc is read from.
         tip_source, tip_doc = tip_metric_labels(cache, st, tip_id)
-        if action == "shown":
+        # An exploratory dismissal that could not be saved is taken back out,
+        # so the route never serves state the file does not hold.
+        unsaved_dismissal: str | None = None
+        if tip_id and any(t.get("id") == tip_id for t in cache.exploratory):
+            # An exploratory tip lives on the thinking row, outside the tip
+            # card's cadence and offered slot: a dismissal (or ack) only adds
+            # it to the shared dismissed list, and every other action is a
+            # counter event alone, so it never delays or clears a card tip.
+            if action in ("ack", "dismiss") and _scoped(st, tip_id) not in st.dismissed:
+                unsaved_dismissal = _scoped(st, tip_id)
+                st.dismissed.append(unsaved_dismissal)
+        elif action == "shown":
             # Display-time signal: start cadence + release the offered slot, but
             # keep the tip eligible (NOT dismissed) for future re-selection.
             # Record the id -> doc mapping first: offered is cleared here and the
@@ -1618,6 +1667,11 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
             st.opted_out = False
 
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, _save_state, st)
+        try:
+            await loop.run_in_executor(None, _save_state, st)
+        except BaseException:
+            if unsaved_dismissal is not None:
+                st.dismissed.remove(unsaved_dismissal)
+            raise
     record_tip_feedback_metric(action, tip_source, tip_doc, tip_id, cache.metric_tip_ids)
     return web.json_response({"ok": True})

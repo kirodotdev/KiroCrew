@@ -11,6 +11,16 @@ Kiro Crew surfaces a compact feature tip above the chat composer while a turn is
 - At most one tip is offered at a time. The same offered tip is returned until feedback clears it.
 - Displaying, acknowledging, dismissing, or snoozing a tip starts the cadence gate; the default minimum gap is six hours. The client also applies a 20-minute local display gate unless a shorter configured cadence applies.
 
+## Tips beside Thinking
+
+While a turn runs, the "Thinking…" line can also show one short tip about a dashboard control, such as Split View, Side Chat, or the Command Bar. These tips come from their own hand-written list and never appear in the card above the composer.
+
+- One tip is picked at random when the turn starts and stays until the turn ends. It does not change mid-turn.
+- A tip shows only when its control works where you are: for example, the microphone tip needs a browser that can record, and the terminal tips need Terminal turned on.
+- They show in the full dashboard chat only, not on a phone, in an embedded or popped-out chat, or in a temporary session.
+- Hover the tip and click its X to dismiss it for good. The Feature Tips switch turns these off too.
+- Showing or dismissing one does not start the card's cadence gate.
+
 ## Controls
 
 | Action | Effect |

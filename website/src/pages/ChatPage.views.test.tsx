@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, fireEvent, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { forwardRef, type ReactNode } from 'react'
 
 const seen = vi.hoisted(() => ({
@@ -301,6 +302,11 @@ describe('ChatTitleOverlay', () => {
 })
 
 describe('ChatTranscriptView', () => {
+  // The footer's exploratory tip reads the tips queries (ThinkingTip.tsx).
+  const renderView = (ui: React.ReactElement) => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, enabled: false } } })
+    return render(ui, { wrapper: ({ children }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider> })
+  }
   const msg = (role: string, ts: string, meta?: Record<string, unknown>) => ({ role, content: role, ts, cls: '', ...(meta ? { meta } : {}) }) as never
   const row = (data: unknown, index: number) => ({ mounted: true, data, index, key: `k${index}` })
   const base = (items: unknown[], over: Partial<TranscriptProps> = {}): TranscriptProps => props<TranscriptProps>({
@@ -312,14 +318,14 @@ describe('ChatTranscriptView', () => {
   } as never)
 
   it('draws nothing for a permissions-only tool group', () => {
-    render(<ChatTranscriptView {...base([{ kind: 'group', startIdx: 0, msgs: [msg('permission', 'p1')] }])} />)
+    renderView(<ChatTranscriptView {...base([{ kind: 'group', startIdx: 0, msgs: [msg('permission', 'p1')] }])} />)
     expect(seen.toolGroups).toHaveLength(0)
   })
 
   it("names what the warm catch-up checks inside a reply bubble while the gateway prepares it, and nothing once it is done", async () => {
     const caption = 'Checking 2 PRs on GitHub for “Ship the fix”.'
     const slot = (preparing: boolean) => ({ key: 'crew-a', messages: 1, running: false, preparing, preparing_text: preparing ? caption : '', preparing_lang: preparing ? 'en' : '' }) as never
-    const { rerender } = render(<ChatTranscriptView {...base([], { currentSlot: slot(true) })} />)
+    const { rerender } = renderView(<ChatTranscriptView {...base([], { currentSlot: slot(true) })} />)
     expect((await screen.findByTestId('chat-preparing-catch-up', undefined, { timeout: LAZY_BUBBLE_TIMEOUT_MS })).querySelector('.message-bubble')).toHaveTextContent(caption)
     rerender(<ChatTranscriptView {...base([], { currentSlot: slot(false) })} />)
     await waitFor(() => expect(screen.queryByTestId('chat-preparing-catch-up')).toBeNull())
@@ -328,7 +334,7 @@ describe('ChatTranscriptView', () => {
   it("hands the welcome page the chat's agent greeting from the slot", () => {
     // An unstarted chat writes no row, so the greeting rides the slot summary.
     const slot = { key: 'slot-a', messages: 0, running: false, welcome_message: 'Drop a URL and I will draft slides.' } as never
-    render(<ChatTranscriptView {...base([], { isWelcomeState: true, crewModeOn: false, currentSlot: slot })} />)
+    renderView(<ChatTranscriptView {...base([], { isWelcomeState: true, crewModeOn: false, currentSlot: slot })} />)
     expect(seen.welcome?.agentWelcome).toBe('Drop a URL and I will draft slides.')
   })
 
@@ -338,7 +344,7 @@ describe('ChatTranscriptView', () => {
       { kind: 'group', startIdx: 0, msgs: [msg('tool', 't1'), msg('permission', 'p1', pending)] },
       { kind: 'group', startIdx: 2, msgs: [msg('tool', 't2')] },
     ])
-    render(<ChatTranscriptView {...p} />)
+    renderView(<ChatTranscriptView {...p} />)
     const [withId, noId] = seen.toolGroups
     expect(withId.pendingPermCount).toBe(1)
     expect(withId.count).toBe(1)
@@ -355,7 +361,7 @@ describe('ChatTranscriptView', () => {
   it('counts its chat shown only once the restore gate lifts', () => {
     const items = [{ kind: 'msg', idx: 0, msg: msg('assistant', 'a1') }]
     const gated = base(items, { activeSlot: 'cron-a', slotLoading: false, virt: { measureRef: () => undefined, restoreGate: true } as never })
-    const { rerender, unmount } = render(<ChatTranscriptView {...gated} />)
+    const { rerender, unmount } = renderView(<ChatTranscriptView {...gated} />)
     expect(transcriptShownFor('cron-a')).toBe(false)
     rerender(<ChatTranscriptView {...base(items, { activeSlot: 'cron-a', slotLoading: false })} />)
     expect(transcriptShownFor('cron-a')).toBe(true)

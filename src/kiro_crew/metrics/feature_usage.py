@@ -647,9 +647,10 @@ TIP_ACTION_VALUES: tuple[str, ...] = (
 )
 
 #: Where the tip came from: a hand-authored tip shipped in ``tips_curated.json``,
-#: a catalog tip built from a shipped doc, a tip the model wrote, or ``other``
-#: when the id matches none of them (an opt-out carries no tip id at all).
-TIP_SOURCE_VALUES: tuple[str, ...] = ("curated", "catalog", "generated", OTHER)
+#: a catalog tip built from a shipped doc, a tip the model wrote, a one-line tip
+#: shipped in ``tips_exploratory.json``, or ``other`` when the id matches none of
+#: them (an opt-out carries no tip id at all).
+TIP_SOURCE_VALUES: tuple[str, ...] = ("curated", "catalog", "generated", "exploratory", OTHER)
 
 
 @functools.lru_cache(maxsize=1)
@@ -669,18 +670,21 @@ def tip_feature_label(feature: object, edition_tip_ids: frozenset[str] = frozens
     """*feature* when it names a shipped tip or doc, else ``other``.
 
     Kept when it is a doc in ``TIP_DOC_ALLOWLIST`` (the shipped, user-facing
-    feature docs), the id of a tip shipped in ``tips_curated.json``, or one of
+    feature docs), the id of a tip shipped in ``tips_curated.json`` or
+    ``tips_exploratory.json``, or one of
     *edition_tip_ids*, the fixed ids an edition pool lists for its own curated
     tips (``TipsPool.metric_tip_ids``). All are lists a build ships, so a kept
     value names nothing the user wrote.
     """
     from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
+    from kiro_crew.tips_exploratory import exploratory_tip_ids
 
     if not isinstance(feature, str) or not feature:
         return OTHER
     if (
         feature in TIP_DOC_ALLOWLIST
         or feature in shipped_curated_tip_ids()
+        or feature in exploratory_tip_ids()
         or feature in edition_tip_ids
     ):
         return feature

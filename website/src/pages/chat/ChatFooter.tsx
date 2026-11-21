@@ -16,6 +16,8 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { useBrowserLiveInControl } from '../../hooks/useBrowserLive'
 import { PackLoaderImage } from './PackLoaderImage'
 import { TOOL_LOG_CAP } from './types'
+import { ThinkingTip, type ExploratoryTip } from './ThinkingTip'
+import ErrorNotice from '../../components/ErrorNotice'
 type StopState = 'idle' | 'soft_pending' | 'killing'
 
 /** One carousel beat — the cadence the .csb4 cross-fade was built around. */
@@ -375,7 +377,9 @@ function StallNotice({ since }: { since: number }) {
  *  (ChatEmbed) passes a window wider than its poll interval, because its tick
  *  only advances once per poll and a shorter window would flash the indicator
  *  between every two reads of a reply that is still arriving. */
-const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0, sendUnconfirmed = false, streamIdleMs = STREAM_IDLE_MS, statusLabel, browserSessionKey = null, activityKey, sentHere = false, waitingOnUser = false, toolsReturned = false }: {
+const noop = () => {}
+
+const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0, sendUnconfirmed = false, streamIdleMs = STREAM_IDLE_MS, statusLabel, browserSessionKey = null, activityKey, sentHere = false, waitingOnUser = false, toolsReturned = false, thinkingTip = null, onThinkingTipShown, onThinkingTipDismiss, thinkingTipError = null, thinkingTipLoadError = null }: {
   running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState; streamTick?: number; sendUnconfirmed?: boolean; streamIdleMs?: number
   /** `transcriptActivityKey(messages)` whenever the host's transcript is
    *  authoritative (loaded, no switch in flight), running or not; a host may
@@ -399,6 +403,15 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
    *  browser (BrowserLiveCard takeover) the line reads "Waiting for you to hand
    *  the browser back" instead of "Thinking…", because the agent is not. */
   browserSessionKey?: string | null
+  /** One exploratory tip shown after "Thinking…" (`ThinkingTip.tsx`). Only the
+   *  full dashboard chat passes it; every other host leaves the row as it was. */
+  thinkingTip?: ExploratoryTip | null
+  onThinkingTipShown?: () => void
+  onThinkingTipDismiss?: () => void
+  /** Why the last dismiss of `thinkingTip` did not save. */
+  thinkingTipError?: string | null
+  /** Why the exploratory tips could not be read this turn (no tip then). */
+  thinkingTipLoadError?: string | null
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const browserInControl = useBrowserLiveInControl(browserSessionKey)
@@ -445,31 +458,11 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
   // statement about the slot and still shows. The receipt or echo that finally
   // confirms the row clears the mark, and the indicator returns by itself.
   if (sendUnconfirmed && !regenerating && !stopping && state !== 'compacting' && stopState !== 'soft_pending' && stopState !== 'killing') return null
-  // width from CSS var --mc-content-width
-  return (
-    <div data-testid="chat-footer" className={`px-4 mx-auto w-full py-1${regenerating ? '' : ' animate-slide-up'}`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
-      {/* Vertical breathing room only. A horizontal pad here would stack on the
-          row wrapper's own `px-4` gutter and inset the indicator 14px right of
-          every message, tool and card row it sits under. */}
-      <div className="py-2.5">
-        {stopState === 'soft_pending' ? (
-          <motion.span
-            className="text-danger text-[13px] font-mono"
-            animate={{ opacity: [0.6, 1, 0.6] }}
-            transition={{ duration: 1.2, repeat: Infinity }}
-          >{i18nT('pages.chat.chatFooter.stopping')}</motion.span>
-        ) : stopState === 'killing' ? (
-          <span className="text-danger text-[13px] font-mono">{i18nT('pages.chat.chatFooter.killing')}</span>
-        ) : !regenerating && stopping ? (
-          <span className="text-muted text-[13px] font-mono animate-pulse">{i18nT('pages.chat.chatFooter.stopping')}</span>
-        ) : !regenerating && state === 'compacting' ? (
-          <span className="text-muted text-[13px] font-mono animate-pulse"><Hourglass className="lucide-inline" /> {i18nT('pages.chat.chatFooter.compacting')}</span>
-        ) : (
-          // The ghost poses animate; the "Thinking…" label sits beside them so a
-          // first-time (sighted) user reads what the row means instead of guessing
-          // at bare glyphs (#19377). `role=status` + aria-label keep a stable
-          // accessible name for assistive tech (the pose art is aria-hidden), so
-          // the label is now visible to everyone, not screen-reader-only (#13779).
+  // The ghost poses animate; the "Thinking…" label sits beside them (see the
+  // comment where it renders). Built here so the exploratory tip can sit after
+  // it without adding a wrapper to the row when there is no tip.
+  const showThinkingTip = !browserInControl && !statusLabel
+  const statusRow = (
           <div
             className="inline-flex items-center gap-2"
             role="status"
@@ -508,6 +501,45 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
               ? <span aria-hidden="true" className="text-muted text-[13px] font-mono tabular-nums">{statusLabel.label}</span>
               : <span aria-hidden="true" className="text-muted text-[13px] font-mono">{i18nT('pages.chat.chatFooter.thinking')}</span>}
           </div>
+  )
+  // width from CSS var --mc-content-width
+  return (
+    <div data-testid="chat-footer" className={`px-4 mx-auto w-full py-1${regenerating ? '' : ' animate-slide-up'}`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+      {/* Vertical breathing room only. A horizontal pad here would stack on the
+          row wrapper's own `px-4` gutter and inset the indicator 14px right of
+          every message, tool and card row it sits under. */}
+      <div className="py-2.5">
+        {stopState === 'soft_pending' ? (
+          <motion.span
+            className="text-danger text-[13px] font-mono"
+            animate={{ opacity: [0.6, 1, 0.6] }}
+            transition={{ duration: 1.2, repeat: Infinity }}
+          >{i18nT('pages.chat.chatFooter.stopping')}</motion.span>
+        ) : stopState === 'killing' ? (
+          <span className="text-danger text-[13px] font-mono">{i18nT('pages.chat.chatFooter.killing')}</span>
+        ) : !regenerating && stopping ? (
+          <span className="text-muted text-[13px] font-mono animate-pulse">{i18nT('pages.chat.chatFooter.stopping')}</span>
+        ) : !regenerating && state === 'compacting' ? (
+          <span className="text-muted text-[13px] font-mono animate-pulse"><Hourglass className="lucide-inline" /> {i18nT('pages.chat.chatFooter.compacting')}</span>
+        ) : (
+          // The ghost poses animate; the "Thinking…" label sits beside them so a
+          // first-time (sighted) user reads what the row means instead of guessing
+          // at bare glyphs (#19377). `role=status` + aria-label keep a stable
+          // accessible name for assistive tech (the pose art is aria-hidden), so
+          // the label is now visible to everyone, not screen-reader-only (#13779).
+          showThinkingTip && thinkingTip ? (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 max-w-full">
+              {statusRow}
+              <ThinkingTip tip={thinkingTip} onShown={onThinkingTipShown ?? noop} onDismiss={onThinkingTipDismiss ?? noop} dismissError={thinkingTipError} />
+            </div>
+          ) : showThinkingTip && thinkingTipLoadError ? (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 max-w-full">
+              {statusRow}
+              {/* No hand-off: this row sits above the chat composer, whose draft
+                  is unsaved local state the hand-off's navigation would discard. */}
+              <ErrorNotice variant="inline" impact="minor" message={thinkingTipLoadError} testId="thinking-tip-load-error" />
+            </div>
+          ) : statusRow
         )}
         {stallSince !== null && <StallNotice since={stallSince} />}
         {statusLabel && !stopping && stopState !== 'soft_pending' && stopState !== 'killing' && (
