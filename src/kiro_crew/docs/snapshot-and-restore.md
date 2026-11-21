@@ -141,7 +141,8 @@ Two consequences of a replace that carries `members`:
   `welcome_owed.json`, so it greets you on the restored machine as if it were new there.
 
 **A `members/` that is a link is not followed.** Kiro Crew supports keeping the Bot
-folders elsewhere through a link at `members/`. A snapshot records that link as skipped in
+folders in a folder outside the data home through a link at `members/`; a link that
+leads to the data home, a folder above it or a folder inside it is refused. A snapshot records that link as skipped in
 its `MANIFEST.json` and still writes the rest of the bundle; copy the folder the link names
 by hand. The bundle counts as incomplete: `--strict` exits 3, and `--keep` keeps the last
 bundle that still holds the Bot folders. A restore whose bundle carries no `members/` leaves the link alone, and a replace
