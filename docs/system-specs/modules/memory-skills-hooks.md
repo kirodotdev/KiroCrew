@@ -5984,8 +5984,9 @@ the very publisher it warns about. `skill_discover` additionally clamps those
 fields per entry (name 120, id 200, author 80, description 240) so one padded
 entry cannot crowd the other candidates out of the response.
 
-**The catalog snapshot — no turn waits for discovery.** `_iter` answers from one of
-three tiers, none of which walks the tree on the calling thread:
+**The catalog snapshot — discovery runs on a worker with bounded read waits.**
+`_iter` answers from one of three tiers, none of which walks the tree on the calling
+thread:
 
 1. this loader's in-memory list, inside `_ITER_CACHE_TTL_SECS`;
 2. the same list past that deadline. Expiry queues a re-walk on the
@@ -5996,7 +5997,10 @@ three tiers, none of which walks the tree on the calling thread:
 3. the stored enumeration for this root set (`skill_catalog` / `skill_catalog_scope`
    in `skill_search_index.sqlite3`). A restart lands here, and so does every
    short-lived loader — the unsigned MCP fallback in `mcp_tools/skills.py` builds one
-   per call — instead of walking.
+   per call. Stored rows have no walk-time root stamp, so the adopting read
+   queues a real walk and waits up to `_COLD_CATALOG_WAIT_SECS` (2 s). If the
+   walk outlasts that budget, the screened snapshot remains the fallback;
+   subsequent reads on the same unchanged tree do not pay the wait again.
 
 **A gateway makes the first read before its first session.** The first skill read of
 a process costs more than every later one, whatever the catalog holds. It reads each
@@ -6054,6 +6058,33 @@ leaves the lifetime and the out-of-band bound as they are; the build that follow
 re-walked list, so a change made before the send is in that turn's context. A turn
 that takes a session already started has a claim too short to hide a re-walk; the
 frame is what covers that chat.
+
+**An on-disk drop is seen by the next read, not after the TTL.** Agents install a
+skill by unpacking it straight into the skills dir and searching at once, so tiers 1
+and 2 first compare a cheap stamp of the unconfined roots (`_catalog_tree_stamp` over
+`skills_discovery._skill_roots_stamp`: the
+skills dir and every `extra_paths` entry) with the one taken BEFORE the walk that
+produced the served list (`_catalog_stamps`). An adopted snapshot has no such
+stamp and takes the same bounded re-walk, even when recently persisted: assigning
+it the current tree stamp would hide additions and removals made before adoption.
+The stamp is `(dev, ino, mtime, ctime)` of each root (followed, as the walk follows
+it) and of each top-level CONTAINER dir, one with
+no `SKILL.md` of its own (`pack/`; symlinked children are skipped): adding or
+removing a top-level skill dir moves its root, and adding `pack/new` moves `pack/`.
+ctime is in the key because `unzip` restores archive mtimes. Which children are
+containers is decided when the stamp is CAPTURED (one `scandir` plus one `lstat` per
+child, beside the walk), so a per-read check is one `stat` per root and per container,
+whatever the skill count. A mismatch is a known-changed tree: that read waits, at most
+`_COLD_CATALOG_WAIT_SECS`, on the worker's re-walk (looping past a walk that started
+before the change and so published the old stamp) and gets the new list. A walk that
+outlasts the budget serves the cached list and records the new stamp, so it charges
+one read, not every read until it publishes. An unchanged stamp keeps the
+stale-while-revalidate tiers exactly as above. A plain file written into a root also
+moves it and costs one re-walk; nothing in Crew writes files there. Not covered, and
+still converging on the TTL re-walk: an in-place `SKILL.md` edit (covering it would
+cost one `stat` per skill per read; Crew's own edit path invalidates), a change deeper
+than one container, and a trusted project's confined `.kiro/skills`, which must never
+be probed by path.
 
 The scope key is a digest of the skills root, the resolved `extra_paths` and the
 trusted project key (`_catalog_scope_id`), because two loaders can share a project
@@ -6134,7 +6165,9 @@ already goes through.
 filesystem watcher: an app-side mutation (`_invalidate_iter_cache`) is the immediate
 path, and so is an app's skill links changing (the app bridge calls
 `skill_live_loaders.invalidate_loaders_of`, which invalidates every open loader
-of that skills root; app-kit-platform.md section 5.2). Everything else converges within `_ITER_CACHE_TTL_SECS` /
+of that skills root; app-kit-platform.md section 5.2). So is a top-level change made
+straight on disk, through the root stamp (see *An on-disk drop is seen by the next
+read* above). Everything else converges within `_ITER_CACHE_TTL_SECS` /
 `_CATALOG_REVALIDATE_AFTER_SECS` through a full re-walk on the worker. A watcher plus
 per-file updates would buy a smaller refresh, not a faster turn — the whole walk is
 already off the request path — at the cost of a new dependency and a second source of
@@ -6309,8 +6342,10 @@ exclude). To keep it off the per-message filesystem/config hot path:
 - the discovered skill-file list is served from the **catalog snapshot** rather
   than a walk (`_iter`; see *The catalog snapshot* above). Expiry of
   `_ITER_CACHE_TTL_SECS` SCHEDULES a re-walk and keeps serving the previous list,
-  so no message is ever the one that pays for discovery; it is invalidated
-  immediately by `create_auto_skill`;
+  so TTL expiry alone never makes a message wait. Cold discovery, snapshot
+  adoption and a changed root stamp can each make a read wait up to
+  `_COLD_CATALOG_WAIT_SECS` (2 s) for the worker. `create_auto_skill` invalidates
+  immediately; a top-level change made straight on disk re-walks on the next read;
 - the walk that rebuilds it (`_iter_skill_files`, on a worker thread) asks the
   sensitive-path fence through `is_sensitive_resolved_path` against the
   `realpath` it has already computed for loop detection and containment, with
