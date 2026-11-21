@@ -90,6 +90,8 @@ export interface ThemeBranding {
   welcome?: string
   /** Desktop boot-splash art (`branding/splash.*`), handed to the shell by `reportThemeSplash`. */
   splash?: string
+  /** How the boot splash draws that art: its centre box (`contain`, the default) or the whole window. */
+  splashFit?: 'contain' | 'cover'
 }
 
 /** Closed enum of overlay placements (mirrors backend `_THEME_OVERLAY_POSITIONS`). */
@@ -1442,7 +1444,9 @@ function useThemeState(): ThemeContextValue {
       setBrandFavicon(appliedBranding.favicon)
       setBrandWelcome(appliedBranding.welcome)
       // A custom selection with no data yet keeps the shell's art, as it keeps the cache.
-      if (active || !colorTheme.startsWith('custom-')) reportThemeSplash(appliedBranding.splash, superseded)
+      if (active || !colorTheme.startsWith('custom-')) {
+        reportThemeSplash(appliedBranding.splash, active?.assets?.branding?.splashFit, superseded)
+      }
     } catch {
       // A branding-application throw must not skip the overrides settle below,
       // which is what clears the "Applying…" indicator — otherwise it wedges.
