@@ -1685,6 +1685,22 @@ is still stubbed, restarted so every stub is re-emitted with or without
 `--poolable`, and sessions are relinked. A write that bypasses that endpoint takes
 effect at the next gateway start.
 
+A per-server share (`POST /api/mcp-gateway/servers/stub`) applies the same way,
+with the configured set: the broker is stopped and started with it
+(`mcp_broker._apply_mcp_stub`), because a routed server's target lives in the
+daemon's environment from spawn (`daemon.launch.env_target_resolver`) and the
+overlays are written with it. The gateway keeps running. Chats attached to the old
+daemon get their in-flight routed calls failed with a retryable error after
+`DRAIN_SECS`. Stubs for retained targets reconnect (`stub.py`) unless they have
+requested resource subscriptions, which the new daemon cannot recover. Every
+broker restart resets open chats through `reset_sessions`, including additions
+and approved launches; removing a served target also resets them. Busy chats
+reset when their turn ends (`defer_busy=True`, `keep_busy=True`), and the response
+reports `sessions_reset`. This applies even when an `mcp.server` card leaves
+**Restart open chats to use it** unchecked. Starting the first broker only
+refreshes defaults; the card's checked option resets open chats so they pick up
+the new toolset.
+
 `response_spill_threshold_bytes` is read in the BROKER process
 (`gatewayd`), which runs no config watcher — `config.live.snapshot()` is always
 `None` there — so a per-use read of the live snapshot would be inert and the
@@ -3006,7 +3022,9 @@ server's args, env, url and headers) and refuses the proposal with `400
 invalid_text` naming the offending path, because the card shows the parameters
 and Apply sends them as written; the plan is never rewritten at publication. An
 ordinary server URL is not exfiltration-shaped and passes. Because of that, an
-`mcp.add_custom` card shows everything Apply sends: the full launch line
+`mcp.add_custom` card (no longer raised by an agent: `propose_change` refuses it
+with `use_request_server`, and `request_server` raises `mcp.server` instead) shows
+everything Apply sends: the full launch line
 (`shlex.join` of command and args, or the url; the row wraps), every env and
 header value (`KEY=value`, `Name: value`), and any other spec field, each passed
 through the credential redactor as a second line of defence. `list_change_kinds`, `find_setting`, `get_member_capabilities`, `diagnose_settings`, `propose_change` and `get_change_status` are exact

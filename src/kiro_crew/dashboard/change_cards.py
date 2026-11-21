@@ -1106,6 +1106,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew.change_card_mcp_server import (  # noqa: F401
+        KIND_MCP_SERVER,
+    )
     from kiro_crew.config.schema import (  # noqa: F401
         requires_restart,
     )
