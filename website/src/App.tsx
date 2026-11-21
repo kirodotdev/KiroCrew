@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, createContext, lazy, memo, Suspense, type ReactNode } from 'react'
+import { useEffect, useState, useCallback, useRef, createContext, lazy, memo, Suspense, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from './store'
 import { setUpdateProgress } from './store/dashboardSlice'
@@ -109,6 +109,8 @@ import { useAppShell } from './shell/appShell'
 import { ShellHeader } from './shell/topbar/shellHeader'
 import { hiddenChromeProps } from './shell/focus/focusChrome'
 import { RelayReconnectingView } from './shell/RelayReconnectingView'
+import { WaitGame } from './components/laundry/WaitGame'
+import { FOCUSABLE, useDialogFocusTrap } from './hooks/useDialogFocusTrap'
 import { ShellNavRail } from './shell/nav/navRail'
 import { NavItem, NavBadge } from './shell/nav/navRow'
 import { DockMatesTiles, useDockMates } from './shell/nav/matesDock'
@@ -203,6 +205,16 @@ const UPDATE_STEP_LABEL_KEY: Record<string, string> = {
   error: 'app.update_failed_2',
 }
 
+const NO_ESCAPE = () => {}
+/** Keys pressed inside the update overlay stay there: a page shortcut (Settings, a route) must not act on the
+ *  dashboard it covers. Escape passes, as in the update dialog. While the overlay holds no focus stop of its own
+ *  (mid-update, before any button or the game), Tab has nowhere inside to go, so it goes nowhere: the focus trap
+ *  only wraps between stops it can find. */
+function isolateOverlayKeys(e: ReactKeyboardEvent<HTMLElement>) {
+  if (e.key === 'Escape') return
+  e.stopPropagation()
+  if (e.key === 'Tab' && ![...e.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE)].some(el => el.tabIndex >= 0)) e.preventDefault()
+}
 const STEP_ORDER = ['pulling', 'syncing', 'building', 'installing', 'restarting']
 const STUCK_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
 
@@ -229,6 +241,11 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
   const isFailed = step === 'failed' || step === 'error'
   const [elapsed, setElapsed] = useState(0)
   const startRef = useRef(Date.now())
+  // A modal over the whole shell: Tab stays inside it, which matters once the
+  // restart wait offers the game's focus stops. It has no Escape: Cancel and
+  // Dismiss are its only ways out.
+  const overlayRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(overlayRef, NO_ESCAPE, { handleEscape: false })
 
   // Track elapsed time for stuck detection
   useEffect(() => {
@@ -259,8 +276,18 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
 
   return (
     // A relay Crew pane hides under it (lib/relayCrewPanes.ts).
-    <div data-relay-pane-overlay="" className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise p-safe">
-      <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the handler only stops keystrokes reaching page shortcuts behind the modal; it performs no action
+    <div
+      ref={overlayRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={i18nT('app.updating_kirocrew')}
+      tabIndex={-1}
+      onKeyDown={isolateOverlayKeys}
+      data-relay-pane-overlay=""
+      className="fixed inset-0 z-[100] flex overflow-y-auto bg-bg/80 backdrop-blur-xs animate-rise p-safe outline-hidden"
+    >
+      <div className="m-auto bg-card border border-border rounded-xl p-8 max-w-md w-[calc(100%-2rem)] shadow-xl text-center">
         {/* A terminal step is not in progress, so it does not pulse. */}
         <div className={`text-4xl mb-4 ${isFailed ? 'text-danger' : 'animate-pulse'}`} data-testid="update-overlay-step-icon">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
         <div className="text-lg font-bold text-text-strong mb-2">{i18nT('app.updating_kirocrew')}</div>
@@ -312,9 +339,12 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
           // leaving a frozen step list that reads as a hang. On reconnect the
           // restart latch (useWebSocket) reloads this tab, which is what
           // finally clears the overlay.
-          <div className="text-[13px] text-accent flex items-center justify-center gap-1.5" role="status" data-testid="update-reconnecting">
-            <RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('app.gateway_restarting_reconnecting')} ({elapsedStr})
-          </div>
+          <>
+            <div className="text-[13px] text-accent flex items-center justify-center gap-1.5" role="status" data-testid="update-reconnecting">
+              <RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('app.gateway_restarting_reconnecting')} ({elapsedStr})
+            </div>
+            <WaitGame surface="card" className="mt-4 h-[min(15rem,32dvh)]" />
+          </>
         ) : (
           <div className="text-[13px] text-muted">{i18nT('app.page_will_reconnect_when_ready')}</div>
         )}

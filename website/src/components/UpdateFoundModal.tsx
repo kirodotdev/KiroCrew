@@ -22,6 +22,7 @@ import { foldStableStamp } from '../utils/displayVersion'
 import { editionOwnsUpdatePrompts, type UpdateState } from '../hooks/useUpdateSubscription'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { reportForError } from '../utils/errorReport'
+import { WaitGame } from './laundry/WaitGame'
 
 /**
  * Proactive "update found" modal — the one interruption between an update
@@ -523,7 +524,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
           )}
         </div>
 
-        <div className="px-4 py-3 text-sm text-text">
+        <div className="min-h-0 overflow-y-auto px-4 py-3 text-sm text-text">
           <p>
             {/* One interpolated key, not fixed JSX fragments: the version slot
                 sits in locale-specific positions (sentence-medial in ja/ko,
@@ -615,6 +616,8 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
             testId="update-found-persist-error"
           />
           {restarting && <p className="mt-2 text-[12px] text-muted">{i18nT('components.updateFoundModal.updating_and_restarting')}</p>}
+          {/* The gateway is down until it comes back on the new version: something to do meanwhile. */}
+          {restarting && <WaitGame surface="card" className="mt-3 h-[min(15rem,32dvh)]" />}
           {candidate.affordance === 'restart' && !restarting && (
             <p data-testid="update-restart-ready-note" className="mt-2 text-[12px] text-muted">
               {gwArmedVersion && !gwRestartReady
@@ -756,7 +759,7 @@ function UpdateFoundDialog({ label, children }: { label: string; children: React
     <div
       ref={dialogRef}
       tabIndex={-1}
-      className="bg-card border border-border rounded-xl shadow-xl w-[460px] max-w-[90vw] flex flex-col overflow-hidden outline-hidden"
+      className="bg-card border border-border rounded-xl shadow-xl w-[460px] max-w-[90vw] max-h-[calc(100dvh-2rem)] flex flex-col overflow-hidden outline-hidden"
       role="dialog"
       aria-modal="true"
       aria-label={label}

@@ -351,11 +351,29 @@ describe('App — update progress overlay', () => {
     // The idle copy stands down: both lines together would say "waiting" and
     // "dialing" about the same moment.
     expect(screen.queryByText('Page will reconnect when ready…')).toBeNull()
+    // The overlay is a modal over the shell: focus is inside it, so Tab cannot walk onto the hidden dashboard.
+    const overlay = screen.getByRole('dialog', { name: 'Updating Kiro Crew…' })
+    expect(overlay.contains(document.activeElement)).toBe(true)
+    // Keys pressed inside it do not reach the page shortcuts behind it.
+    const pageKeys = vi.fn()
+    window.addEventListener('keydown', pageKeys)
+    act(() => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: ',', metaKey: true, bubbles: true, cancelable: true })) })
+    window.removeEventListener('keydown', pageKeys)
+    expect(pageKeys).not.toHaveBeenCalled()
+    // With no focus stop inside it yet, Tab stays put rather than walking onto the shell.
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    act(() => { document.activeElement!.dispatchEvent(tab) })
+    expect(tab.defaultPrevented).toBe(true)
+    // The restart wait offers the laundry game below its line (after 30 s, or on Space); the line stays.
+    act(() => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })) })
+    expect(screen.getByTestId('wait-game')).toBeInTheDocument()
+    expect(screen.getByTestId('update-reconnecting')).toBeInTheDocument()
 
     // Reconnected (the gateway is back, the reload latch takes it from here):
-    // the transient line yields back to the idle copy.
+    // the transient line yields back to the idle copy, and the game goes with it.
     await act(async () => { store.dispatch(sseConnected()) })
     expect(screen.queryByTestId('update-reconnecting')).toBeNull()
+    expect(screen.queryByTestId('wait-game')).toBeNull()
     expect(screen.getByText('Page will reconnect when ready…')).toBeInTheDocument()
   })
 
