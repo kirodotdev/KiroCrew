@@ -616,7 +616,7 @@ describe('ChatInput approval flow', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(browserCard('act')) })
     fireEvent.click(screen.getByText('Trust'))
     const rows = screen.getAllByRole('menuitem').map(b => b.textContent || '')
-    expect(rows[0]).toBe('Trust reading, clicking and typing on www.example.com for this session')
+    expect(rows[0]).toBe('Trust reading, clicking, typing and uploading on www.example.com for this session')
     // A site grant has one lifetime: no hour or midnight row for it.
     expect(rows.filter(r => r.endsWith(' on www.example.com for this session'))).toHaveLength(1)
     expect(rows).toContain('Trust all tools for this session')

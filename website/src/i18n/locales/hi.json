@@ -9889,7 +9889,7 @@
       "trust_all_base_today": "किसी भी <mono/> कमांड पर आधी रात तक भरोसा करो ({{time}})",
       "trust_all_tools": "इस सत्र के लिए सभी टूल पर भरोसा करें",
       "trust_all_tools_channel": "इस चैनल के सभी टूल पर भरोसा करें — रीस्टार्ट के बाद भी बना रहता है",
-      "trust_site_act_session": "<mono/> पर पढ़ने, क्लिक करने और टाइप करने पर इस सत्र के लिए भरोसा करो",
+      "trust_site_act_session": "<mono/> पर पढ़ने, क्लिक करने, टाइप करने और अपलोड करने पर इस सत्र के लिए भरोसा करो",
       "trust_site_read_session": "<mono/> के पेज पढ़ने पर इस सत्र के लिए भरोसा करो",
       "trust_this_command": "<mono/> पर भरोसा करो",
       "trust_this_command_channel": "<mono/> पर @{{role}} के लिए भरोसा करो — {{productName}} के रीस्टार्ट तक",

@@ -600,7 +600,13 @@ def safe_read_prefix(
         os.close(fd)
 
 
-def safe_copy_file_nolink(raw: str, dest_dir: str, *, links_only: bool = False) -> str | None:
+def safe_copy_file_nolink(
+    raw: str,
+    dest_dir: str,
+    *,
+    links_only: bool = False,
+    refuse: Callable[[str], bool] | None = None,
+) -> str | None:
     """Copy a file into *dest_dir* with the full descriptor-pinned validation
     chain; return the private copy's path, or None if the source is rejected.
 
@@ -630,6 +636,10 @@ def safe_copy_file_nolink(raw: str, dest_dir: str, *, links_only: bool = False) 
     *links_only* (Windows only) refuses only a reparse point that is a link, so a
     regular file carrying another tag (a cloud-files placeholder) opens: the read a
     person-chosen file such as an upload needs. A link or junction is still refused.
+
+    *refuse* is a caller's own extra fence, asked about the same OPENED real path as
+    the sensitive-path check, so a folder swapped for a link after the caller's
+    check cannot carry the copy past it.
     """
     path = validate_file_path(raw)
     if path is None:
@@ -648,7 +658,7 @@ def safe_copy_file_nolink(raw: str, dest_dir: str, *, links_only: bool = False) 
         fd_real = _fd_real_path(fd)
         if fd_real is None:
             return None  # cannot verify what was opened -> fail closed
-        if is_sensitive_path(fd_real):
+        if is_sensitive_path(fd_real) or (refuse is not None and refuse(fd_real)):
             return None
         tmp_fd, tmp_path = tempfile.mkstemp(
             prefix=".safe-copy-", suffix=os.path.splitext(fd_real)[1], dir=dest_dir

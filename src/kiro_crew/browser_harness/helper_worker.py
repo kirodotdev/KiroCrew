@@ -31,6 +31,7 @@ import gzip
 import json
 import re
 import sys
+import time
 import traceback
 import urllib.error
 import urllib.request
@@ -72,6 +73,8 @@ _ALLOWLIST: dict[str, tuple[str, tuple[str, ...]]] = {
     "closed_secret_count": ("_local_closed_secret_count", ()),
     "page_clock": ("_local_page_clock", ("state",)),
     "set_files": ("_local_set_files", ("expression", "files")),
+    "chooser_files": ("_local_chooser_files", ("x", "y", "files")),
+    "drop_files": ("_local_drop_files", ("x", "y", "files")),
 }
 
 #: The world :func:`_local_js_isolated` evaluates in: the top frame's own isolated
@@ -310,12 +313,7 @@ def _local_set_files(helpers: Any, expression: str, files: Any) -> dict[str, boo
     nothing is set (``{"ok": false}``). ``DOM.setFileInputFiles`` on that node fires
     the page's own ``input`` and ``change`` events.
     """
-    if not (
-        isinstance(files, list)
-        and 1 <= len(files) <= _MAX_FILES
-        and all(isinstance(f, str) and f for f in files)
-    ):
-        raise ValueError(f"set_files takes 1 to {_MAX_FILES} file paths")
+    _check_files(files, "set_files")
     out = helpers.cdp(
         "Runtime.evaluate",
         expression=expression,
@@ -338,9 +336,144 @@ def _local_set_files(helpers: Any, expression: str, files: Any) -> dict[str, boo
     return {"ok": True}
 
 
-#: Most paths one ``set_files`` takes; the gateway's ``upload`` (``UPLOAD_MAX_FILES``)
-#: is the same, kept equal by a test.
-_MAX_FILES = 10
+#: Most paths one helper call hands the browser; the gateway's ``upload``
+#: (``UPLOAD_MAX_TREE_FILES``) is the same, kept equal by a test.
+_MAX_FILES = 100
+#: How long a click is given to open a file chooser before ``no_chooser``.
+_CHOOSER_WAIT_S = 3.0
+_POLL_S = 0.05
+
+
+def _check_files(files: Any, who: str) -> None:
+    if not (
+        isinstance(files, list)
+        and 1 <= len(files) <= _MAX_FILES
+        and all(isinstance(f, str) and f for f in files)
+    ):
+        raise ValueError(f"{who} takes 1 to {_MAX_FILES} file paths")
+
+
+def _chooser_opened(helpers: Any) -> dict[str, Any]:
+    """The first ``Page.fileChooserOpened`` buffered since the last read, or ``{}``.
+
+    Harness's daemon keeps the page's events in one buffer that every read empties;
+    the gateway reads no other event from it, so the ones read past here are dropped.
+    """
+    for event in helpers.drain_events() or []:
+        if isinstance(event, dict) and event.get("method") == "Page.fileChooserOpened":
+            params = event.get("params")
+            return params if isinstance(params, dict) else {}
+    return {}
+
+
+def _own_frame(helpers: Any, frame_id: str) -> bool:
+    """Whether *frame_id* is this tab's top frame or a frame of the top frame's origin.
+
+    A chooser opened in a frame from another origin (the click landed on an iframe
+    inside the ref) would give a third party the files; a frame that runs in its own
+    process is not in this tree at all. The tree also names this tab's frames only,
+    so a chooser another tab opened never answers here.
+    """
+    tree = helpers.cdp("Page.getFrameTree").get("frameTree") or {}
+    top = tree.get("frame") or {}
+    origin = top.get("securityOrigin")
+    stack = [tree]
+    while stack:
+        node = stack.pop()
+        frame = node.get("frame") or {}
+        if frame.get("id") == frame_id:
+            return bool(origin) and frame.get("securityOrigin") == origin
+        stack.extend(node.get("childFrames") or [])
+    return False
+
+
+#: Element names that draw another document: a drop on one lands in that page.
+_FRAME_NODES = frozenset({"IFRAME", "FRAME", "OBJECT", "EMBED", "PORTAL", "FENCEDFRAME"})
+
+
+def _local_drop_files(helpers: Any, x: float, y: float, files: Any) -> dict[str, Any]:
+    """Drop *files* (gateway-staged paths) at ``(x, y)``, pressing nothing.
+
+    The browser is told a drag carrying those files entered, moved over and dropped
+    there, so a drop zone with no ``<input type=file>`` gets them in its ``drop``
+    event's ``dataTransfer`` (a staged folder arrives as a folder entry). A point
+    over a frame, or inside one, is ``frame_refused``: the drop would land in that
+    frame's page.
+    """
+    _check_files(files, "drop_files")
+    # One point for the check and the drop, so they cannot land a pixel apart.
+    x, y = int(x), int(y)
+    # The browser's own hit test, through every shadow root (a closed one too): the
+    # node must be in the tab's top frame and not itself an embedded document. It
+    # honours ``pointer-events: none`` as the drop does, so an overlay that lets the
+    # drop through to a frame below cannot stand in for it.
+    tree = helpers.cdp("Page.getFrameTree").get("frameTree") or {}
+    top = (tree.get("frame") or {}).get("id")
+    data = {"items": [], "files": files, "dragOperationsMask": 1}
+    for kind in ("dragEnter", "dragOver", "drop"):
+        # Again before each event: the page's own drag handlers run in between and
+        # can put a frame under the point.
+        if not top or not _drop_point_is_top(helpers, top, x, y):
+            if kind != "dragEnter":
+                helpers.cdp("Input.dispatchDragEvent", type="dragCancel", x=x, y=y, data=data)
+            return {"ok": False, "code": "frame_refused"}
+        helpers.cdp("Input.dispatchDragEvent", type=kind, x=x, y=y, data=data)
+    return {"ok": True}
+
+
+def _drop_point_is_top(helpers: Any, top: str, x: int, y: int) -> bool:
+    """Whether the node the browser hits at ``(x, y)`` is in frame *top* and not a frame."""
+    hit = helpers.cdp(
+        "DOM.getNodeForLocation",
+        x=x,
+        y=y,
+        includeUserAgentShadowDOM=True,
+        ignorePointerEventsNone=False,
+    )
+    node = hit.get("backendNodeId")
+    if hit.get("frameId") != top or not isinstance(node, int):
+        return False
+    described = helpers.cdp("DOM.describeNode", backendNodeId=node).get("node") or {}
+    return str(described.get("nodeName") or "").upper() not in _FRAME_NODES
+
+
+def _local_chooser_files(helpers: Any, x: float, y: float, files: Any) -> dict[str, Any]:
+    """Click at ``(x, y)`` and answer the file chooser it opens with *files*.
+
+    File-chooser interception is on only for this call: the chooser never shows
+    (on the person's own Chrome it would be a native dialog nobody answers), and the
+    browser names the input it was opened for, hidden or not even in the document,
+    which then gets the files. ``no_chooser`` when the click opened none within
+    :data:`_CHOOSER_WAIT_S`; ``not_multiple`` for several files on a single-file
+    chooser; nothing is set then.
+    """
+    _check_files(files, "chooser_files")
+    helpers.cdp("Page.setInterceptFileChooserDialog", enabled=True)
+    try:
+        helpers.drain_events()
+        helpers.click_at_xy(x, y)
+        opened: dict[str, Any] = {}
+        deadline = time.monotonic() + _CHOOSER_WAIT_S
+        while True:
+            opened = _chooser_opened(helpers)
+            if opened or time.monotonic() >= deadline:
+                break
+            time.sleep(_POLL_S)
+        node = opened.get("backendNodeId")
+        if not isinstance(node, int) or isinstance(node, bool):
+            return {"ok": False, "code": "no_chooser"}
+        mode = str(opened.get("mode") or "")
+        if not _own_frame(helpers, str(opened.get("frameId") or "")):
+            return {"ok": False, "code": "frame_refused"}
+        if len(files) > 1 and mode != "selectMultiple":
+            return {"ok": False, "code": "not_multiple", "mode": mode}
+        helpers.cdp("DOM.setFileInputFiles", files=files, backendNodeId=node)
+        return {"ok": True, "mode": mode}
+    finally:
+        try:
+            helpers.cdp("Page.setInterceptFileChooserDialog", enabled=False)
+        except Exception:  # noqa: BLE001 - the tab went away: nothing left to intercept
+            pass
 
 
 def _isolated_context(helpers: Any, who: str) -> int:
@@ -494,6 +627,8 @@ _LOCAL: dict[str, Callable[..., Any]] = {
     "_local_screenshot_clip": _local_screenshot_clip,
     "_local_js_isolated": _local_js_isolated,
     "_local_set_files": _local_set_files,
+    "_local_chooser_files": _local_chooser_files,
+    "_local_drop_files": _local_drop_files,
     "_local_frame_owner_count": _local_frame_owner_count,
     "_local_closed_secret_count": _local_closed_secret_count,
 }

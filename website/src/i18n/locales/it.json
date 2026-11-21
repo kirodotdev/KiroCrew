@@ -10125,7 +10125,7 @@
       "trust_all_base_today": "Fidati di qualsiasi comando <mono/> fino a mezzanotte ({{time}})",
       "trust_all_tools": "Considera attendibili tutti gli strumenti di questa sessione",
       "trust_all_tools_channel": "Considera attendibili tutti gli strumenti di questo canale — persiste dopo il riavvio",
-      "trust_site_act_session": "Fidati di leggere, fare clic e digitare su <mono/> per questa sessione",
+      "trust_site_act_session": "Fidati di leggere, fare clic, digitare e caricare file su <mono/> per questa sessione",
       "trust_site_read_session": "Fidati della lettura delle pagine di <mono/> per questa sessione",
       "trust_this_command": "Fidati di <mono/>",
       "trust_this_command_channel": "Fidati di <mono/> per @{{role}} — fino al riavvio di {{productName}}",
