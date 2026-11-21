@@ -109,7 +109,7 @@ class _Provider:
         for ev in events:
             yield ev
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.calls.append("steer")
         self.steered.append(message)
         return True
@@ -155,7 +155,7 @@ def _assert_steered_then_rejected(provider: _Provider, *fragments: str) -> str:
 
 
 def _recording_steer(client: _Provider, order: list[str]):
-    async def _steer(message: str) -> bool:
+    async def _steer(message: str, *, origin: str = "user") -> bool:
         order.append("steer")
         client.calls.append("steer")
         client.steered.append(message)
@@ -292,7 +292,7 @@ async def test_refine_backend_without_steer_only_rejects(refine_sel):
 async def test_refine_a_failing_steer_still_rejects(refine_sel):
     client = _Provider(request_id="r7")
 
-    async def _boom(message: str) -> bool:
+    async def _boom(message: str, *, origin: str = "user") -> bool:
         client.calls.append("steer")
         raise RuntimeError("pipe closed")
 

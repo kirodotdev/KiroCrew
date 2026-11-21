@@ -164,7 +164,7 @@ class ScriptedProvider:
     async def reject_tool(self, request_id: Any) -> None:
         self.rejected.append(request_id)
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.steered.append(message)
         return True
 

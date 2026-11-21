@@ -346,7 +346,7 @@ class TestTelegramMidTurn:
         provider = sess._gp
         sent_at_steer: list[list[str]] = []
 
-        async def _steer(text: str) -> bool:
+        async def _steer(text: str, *, origin: str = "user") -> bool:
             provider.steered.append(text)
             sent_at_steer.append([t for t, _ in cli.sent])
             if isinstance(steer_result, BaseException):
@@ -901,7 +901,7 @@ class TestMidTurnPrivacyTransaction:
         cli.send_message = _send
         cli.set_message_reaction = _react
 
-        async def _steer(text: str) -> Any:
+        async def _steer(text: str, *, origin: str = "user") -> Any:
             log.append(("steer", text))
             return steer_result
 
@@ -1123,7 +1123,7 @@ class TestMidTurnPrivacyTransaction:
                 self.live_calls += 1
                 return self.live_calls == 1
 
-            async def steer(self, text: str) -> bool:
+            async def steer(self, text: str, *, origin: str = "user") -> bool:
                 self.steered.append(text)
                 return True
 
@@ -1151,7 +1151,9 @@ class TestMidTurnPrivacyTransaction:
             def has_active_turn(self) -> bool:
                 return False
 
-            async def steer(self, text: str) -> bool:  # pragma: no cover - must not run
+            async def steer(
+                self, text: str, *, origin: str = "user"
+            ) -> bool:  # pragma: no cover - must not run
                 raise AssertionError("a dead turn was steered")
 
         d, _cli, sess = _dispatcher({7})

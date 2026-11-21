@@ -32,6 +32,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
 )
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_AGENT_STARTED_TURNS
+from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_USER
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.process_identity import record_live_children_after_turn
 from kiro_crew.providers.base import CancelOutcome, LLMEvent
@@ -502,7 +503,7 @@ async def cancel(self: AcpProvider, *, wait_ack_timeout: float = 0.0) -> CancelO
         return "timeout"
 
 
-async def steer(self: AcpProvider, message: str) -> bool:
+async def steer(self: AcpProvider, message: str, *, origin: str = STEER_ORIGIN_USER) -> bool:
     """Delegate a mid-turn steer to the inner client (kiro-cli
     ``_session/steer``). Fire-and-forget; returns False if not steerable.
 
@@ -513,7 +514,7 @@ async def steer(self: AcpProvider, message: str) -> bool:
     :attr:`steer_needs_loss_recovery`."""
     if self.steer_needs_loss_recovery:
         return False
-    return await self._client.steer(message)
+    return await self._client.steer(message, origin=origin)
 
 
 def _inline_turn_finished_cleanly(self: AcpProvider) -> bool:

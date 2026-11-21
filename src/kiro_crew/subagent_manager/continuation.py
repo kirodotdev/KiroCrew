@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         CONTEXT_GROUP_MEMORY,
         CONTEXT_GROUP_PROJECT,
         PROVIDER_LABEL_DEFAULT,
+        STEER_ORIGIN_AUTOMATION,
         Any,
         SubagentInfo,
         _redact,
@@ -948,7 +949,7 @@ class ContinuationCoordinator(ManagerComponent):
                 "steer — use mode='follow_up'"
             )
         try:
-            ok = await provider.steer(message)
+            ok = await provider.steer(message, origin=STEER_ORIGIN_AUTOMATION)
         except Exception as exc:  # pragma: no cover - provider-specific
             logger.warning("steer_run %s failed", agent_id, exc_info=True)
             return False, f"steer failed: {exc}"

@@ -468,7 +468,7 @@ def _steers(record: TurnRecord) -> list[str]:
 class _SteerNeverReturns(ScriptedProvider):
     """A provider whose steer write never completes (a backpressured stdin)."""
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.record("steer", message)
         await asyncio.Event().wait()
         return True

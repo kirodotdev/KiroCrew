@@ -21,6 +21,7 @@ import asyncio
 import logging
 from typing import Any
 
+from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_AUTOMATION
 from kiro_crew.constants import (
     DENY_CAUSE_APPROVAL_NO_BUDGET,
     DENY_CAUSE_APPROVAL_OVERSIZE,
@@ -344,6 +345,7 @@ async def steer_notice_into_refused_turn(
     notice: str,
     *,
     bound_secs: float = STEER_NOTICE_BOUND_SECS,
+    origin: str = STEER_ORIGIN_AUTOMATION,
 ) -> bool:
     """Send an already-built *notice* into the turn of a call being refused.
 
@@ -352,7 +354,8 @@ async def steer_notice_into_refused_turn(
     steers the person's typed reply this way. Same ordering contract -- await it
     while the ``session/request_permission`` is still unanswered -- and the same
     capability gate, ``supports_refusal_steer``. The caller owns redaction of
-    whatever it put in *notice*.
+    whatever it put in *notice*. *origin* says who wrote it: Crew's own notice
+    by default, ``STEER_ORIGIN_USER`` for text the person typed.
 
     True only when the provider accepted the write. No capability, an empty
     notice, a steer failure, or the bound expiring is False and swallowed at
@@ -362,7 +365,7 @@ async def steer_notice_into_refused_turn(
     if not notice or not getattr(provider, "supports_refusal_steer", False):
         return False
     try:
-        sent = await asyncio.wait_for(provider.steer(notice), timeout=bound_secs)
+        sent = await asyncio.wait_for(provider.steer(notice, origin=origin), timeout=bound_secs)
     except asyncio.CancelledError:
         raise
     except Exception:

@@ -295,7 +295,7 @@ async def test_a_steer_requeued_by_the_teardown_is_not_queued_a_second_time(tmp_
     caller = _slot(state, "chat-1")
     target = _busy(_peer_target(state, "chat-2", caller))
 
-    async def _teardown_requeues(msg):
+    async def _teardown_requeues(msg, *, origin: str = "user"):
         target._pending_steers.remove(msg)
         target._queue.append(
             {
@@ -335,7 +335,7 @@ async def test_the_queue_fallback_re_runs_the_gate_after_the_steer_rpc(tmp_path)
     caller = _slot(state, "chat-1")
     target = _busy(_peer_target(state, "chat-2", caller))
 
-    async def _link_then_fail(_msg):
+    async def _link_then_fail(_msg, *, origin: str = "user"):
         # The window this test is about: the target becomes channel-linked while
         # the steer RPC is suspended, and the RPC then fails to place the text.
         target.linked_session_key = "telegram:9001"
@@ -370,7 +370,7 @@ async def test_a_same_key_replacement_during_the_rpc_is_refused(tmp_path):
     caller = _slot(state, "chat-1")
     target = _busy(_peer_target(state, "chat-2", caller))
 
-    async def _replace_then_fail(_msg):
+    async def _replace_then_fail(_msg, *, origin: str = "user"):
         # Close and resume under the same name: `get_or_create_slot` mints a new
         # object, so `regated` and the captured `slot` differ while both keys read
         # "chat-2". The RPC then fails to place the text, taking the queue arm.
@@ -418,7 +418,7 @@ async def test_a_mirror_linked_during_the_rpc_stops_the_steered_turn(tmp_path, m
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.stop_slot_turn", _fake_stop)
 
-    async def _mirror_then_accept(_msg):
+    async def _mirror_then_accept(_msg, *, origin: str = "user"):
         # The window: an operator attaches an outbound mirror while the steer RPC is
         # suspended on stdin.drain(). The gate that admitted this send saw none.
         state.sessions.set_mirror_link(_key(target), "C0FFEE", "1758.0001")
@@ -594,7 +594,7 @@ async def test_the_send_records_its_admission_before_the_rpc_suspends(tmp_path, 
 
     seen: dict = {}
 
-    async def _inspect_then_accept(msg):
+    async def _inspect_then_accept(msg, *, origin: str = "user"):
         seen["recorded"] = target._steer_admissions.get(msg)
         seen["origin"] = target._steer_user_origin.get(msg)
         return True
@@ -730,7 +730,7 @@ async def test_a_changed_audience_withholds_the_cross_surface_reply(tmp_path, mo
 
     fence_during_rpc: list[int] = []
 
-    async def _mirror_then_accept(_msg):
+    async def _mirror_then_accept(_msg, *, origin: str = "user"):
         # Observed from inside the RPC: the fence is already up before the window
         # this test is about can open.
         fence_during_rpc.append(len(target._steer_audience_fences))

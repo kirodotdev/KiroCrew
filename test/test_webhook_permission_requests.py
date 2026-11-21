@@ -386,7 +386,7 @@ class _SteeringClient(_FakeClient):
         super().__init__()
         self.trace: list[tuple[str, object]] = []
 
-    async def steer(self, text: str) -> bool:
+    async def steer(self, text: str, *, origin: str = "user") -> bool:
         self.trace.append(("steer", text))
         return True
 

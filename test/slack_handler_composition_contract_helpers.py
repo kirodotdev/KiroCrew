@@ -183,7 +183,7 @@ class _Provider:
     async def reject_tool(self, request_id):
         self._log.add("provider.reject_tool", request_id=request_id)
 
-    async def steer(self, notice):
+    async def steer(self, notice, *, origin: str = "user"):
         self._log.add("provider.steer", notice=notice)
         return True
 

@@ -50,7 +50,7 @@ class _Provider:
     def has_active_turn(self) -> bool:
         return self._active
 
-    async def steer(self, text: str) -> bool:
+    async def steer(self, text: str, *, origin: str = "user") -> bool:
         self.steered.append(text)
         return self._steer_result
 

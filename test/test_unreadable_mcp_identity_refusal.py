@@ -299,7 +299,7 @@ class _SteeringProvider:
     def __init__(self) -> None:
         self.trace: list[tuple[str, Any]] = []
 
-    async def steer(self, notice: str) -> bool:
+    async def steer(self, notice: str, *, origin: str = "user") -> bool:
         self.trace.append(("steer", notice))
         return True
 

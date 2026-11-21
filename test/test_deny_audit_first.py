@@ -78,7 +78,7 @@ class _StalledRejectClient:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.calls.append("steer")
         return True
 
@@ -90,7 +90,7 @@ class _StalledRejectClient:
 class _StalledSteerClient(_StalledRejectClient):
     """The stall can hit the FIRST wire await of the path: the steer."""
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.calls.append("steer")
         await asyncio.Event().wait()
         return True
@@ -103,7 +103,7 @@ class _HealthyClient(_StalledRejectClient):
         super().__init__()
         self._order = order
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self._order.append("steer")
         return True
 

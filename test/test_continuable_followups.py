@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import kiro_crew.subagent as subagent_mod
+from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_AUTOMATION
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_persistence import (
     create_agent_folder,
@@ -92,7 +93,8 @@ class TestSteerStartupGrace:
             ok, detail = await mgr.steer_run("run1", "adjust course")
         assert ok is True
         assert detail == "ok"
-        provider.steer.assert_awaited_once_with("adjust course")
+        # A parent agent's text, not the user's: kiro is told it is automation.
+        provider.steer.assert_awaited_once_with("adjust course", origin=STEER_ORIGIN_AUTOMATION)
 
     @pytest.mark.asyncio
     async def test_steer_session_starting_after_timeout(self) -> None:
@@ -160,7 +162,7 @@ class TestSteerStartupGrace:
             ok, _ = await mgr.steer_run("run1", "msg")
         assert slept == [], f"no full-window wait expected, slept {slept}"
         assert ok is True
-        provider.steer.assert_awaited_once_with("msg")
+        provider.steer.assert_awaited_once_with("msg", origin=STEER_ORIGIN_AUTOMATION)
 
 
 # ── TTL registry rebuild from disk ──

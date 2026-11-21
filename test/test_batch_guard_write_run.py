@@ -104,7 +104,7 @@ def _handle(backend: str, monkeypatch):
     handle._batch_window.set_feeding(True)
     steered: list[str] = []
 
-    async def _steer(text):
+    async def _steer(text, *, origin="user"):
         steered.append(text)
         return True
 

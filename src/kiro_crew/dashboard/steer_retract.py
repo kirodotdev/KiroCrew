@@ -436,6 +436,7 @@ def _forget(slot: "_ChatSlot", message: str) -> None:
     ):
         held.pop(message, None)
     slot._steer_act_now.discard(message)
+    slot._steer_peer_origin.discard(message)
     slot._steer_possibly_delivered.discard(message)
 
 

@@ -242,7 +242,7 @@ async def test_dispatch_verb_rejected_even_on_trusted_channel(monkeypatch, tool)
     client = _make_client(events)
     steered: list[str] = []
 
-    async def _steer(notice):
+    async def _steer(notice, *, origin: str = "user"):
         steered.append(notice)
         return True
 

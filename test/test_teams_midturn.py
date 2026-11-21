@@ -92,7 +92,7 @@ class _Provider:
     def has_active_turn(self) -> bool:
         return True
 
-    async def steer(self, text: str) -> bool:
+    async def steer(self, text: str, *, origin: str = "user") -> bool:
         return False
 
     async def cancel(self, *, wait_ack_timeout: float = 0) -> None:
@@ -988,7 +988,7 @@ class TestOnlyAFileBlocksTheSteer:
         provider = _Provider()
         provider.steered: list[str] = []  # type: ignore[attr-defined]
 
-        async def _steer(text: str) -> bool:
+        async def _steer(text: str, *, origin: str = "user") -> bool:
             provider.steered.append(text)  # type: ignore[attr-defined]
             return True
 

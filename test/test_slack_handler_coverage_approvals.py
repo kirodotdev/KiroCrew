@@ -424,7 +424,7 @@ class _SteerRecordingProvider:
         self._steer_exc = steer_exc
         self.pending_during_steer: dict[str, object] = {}
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         # The decision must already be claimed when the steer runs: a pending
         # entry left registered here would let a concurrent Slack click answer
         # the same permission request a second time.
@@ -484,7 +484,7 @@ class TestApprovalTimeoutInbandNotice:
         monkeypatch.setattr(h, "_STEER_NOTICE_BOUND_SECS", 0.05)
         provider = _SteerRecordingProvider()
 
-        async def _hanging_steer(message: str) -> bool:
+        async def _hanging_steer(message: str, *, origin: str = "user") -> bool:
             provider.calls.append(("steer", message))
             # flake-ok: pre-existing park on an Event nothing sets, ended by the 0.05 s steer bound the test sets; moved verbatim and tracked for a de-flake pass
             await asyncio.Event().wait()
@@ -618,7 +618,7 @@ class TestApprovalTimeoutInbandNotice:
         provider = _SteerRecordingProvider()
         steer_parked = asyncio.Event()
 
-        async def _hanging_steer(message: str) -> bool:
+        async def _hanging_steer(message: str, *, origin: str = "user") -> bool:
             provider.calls.append(("steer", message))
             steer_parked.set()
             # flake-ok: pre-existing park on an Event nothing sets, ended by the cancel the test delivers; moved verbatim and tracked for a de-flake pass
