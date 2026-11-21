@@ -19,7 +19,7 @@ import type { ChatSlot } from '../../../types'
 import { dropPanelViews, panelStripOf, type ViewKind } from '../../../hooks/usePanelTabs'
 import { useAppDispatch, useAppSelector } from '../../../store'
 import { closeActivityPanel, hasSavedActivityOpen, openActivityPanel } from '../../../store/chatSlice'
-import { crewModeAgent, gatewayRunsCrewMode, isDefaultAgentName, memoryModeAllowsCrewMode, runsConductor, runsCrewMode } from '../../../lib/crewMode'
+import { crewModeAgent, gatewayRunsCrewMode, isDefaultAgentName, memoryModeAllowsCrewMode, runsConductor, showsAsCrewMode } from '../../../lib/crewMode'
 import { isRootSession } from '../command-center/model'
 import { useIsMobile } from '../../../hooks/useIsMobile'
 import { confirmCrewModeMidChat } from './crewModeMidChatConfirm'
@@ -65,8 +65,11 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
   // carries a conductor's name as that crewmate, not as a conductor. Whether the
   // chat IS in Crew Mode does not depend on the switch being offered: a chat
   // opened on a conductor that is itself the default agent still has the Crew
-  // Mode welcome, its task board, and no memory-mode chip.
-  const crewModeOn = plainChat && runsCrewMode(currentSlot?.agent, currentSlot?.agent_kind, currentSlot?.crew_mode_agent)
+  // Mode welcome, its task board, and no memory-mode chip. The same predicate
+  // that hides the agent picker (`showsAsCrewMode`): a chat another session
+  // opened on a conductor outside any crew is a plain chat to the gateway, so
+  // it shows no pressed chip or welcome beside the picker it keeps (#39260).
+  const crewModeOn = plainChat && showsAsCrewMode(currentSlot)
   const crewModeEligible = plainChat && !runsConductor(defaultAgent, 'template')
     && (crewModeOn || (currentSlot?.agent_kind !== 'member' && isDefaultAgentName(currentSlot?.agent ?? '', defaultAgent)))
   const taskBoardOffered = (crewModeEligible || crewModeOn) && isRootSession(currentSlot)
