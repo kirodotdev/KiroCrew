@@ -1087,4 +1087,12 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "call sent is replaced first (a bare token matches no secret pattern) and the "
         "credential scanner then runs over the text, cut to 300 characters.",
     ),
+    (
+        "Browser page text handed to an app",
+        "apps/browser_page_port.py",
+        "Every string `ctx.browser.page(slot)` returns to an app's backend: the page "
+        "outline, a tab's address and title, an op's result or error, the live view's "
+        "address and title and a picked element's name. Each passes the "
+        "exfiltration-URL and credential redactors whole before any cut to a length.",
+    ),
 )

@@ -803,6 +803,8 @@ class LiveStream:
         #: resized between the card's frame and the newest one is off until the card
         #: draws a frame of the new viewport, one frame period.
         self.device_width = 0.0
+        #: The viewport's CSS height from the same metadata (0 until a frame lands).
+        self.device_height = 0.0
         self.metrics = _Metrics()
         self.running = False
         self.visible = True
@@ -1222,11 +1224,13 @@ class LiveStream:
         """
         try:
             device_w = float(meta.get("deviceWidth") or 0)
+            device_h = float(meta.get("deviceHeight") or 0)
         except (TypeError, ValueError):
-            device_w = 0.0
+            device_w = device_h = 0.0
         if device_w > 0 and width > 0:
             self.scale = width / device_w
             self.device_width = device_w
+            self.device_height = device_h if device_h > 0 else 0.0
 
     async def _wait_card_ack(self, waiter: asyncio.Event) -> bool:
         """Wait for the card's ack, bounded by :data:`CARD_ACK_TIMEOUT_S` on the injected sleep."""

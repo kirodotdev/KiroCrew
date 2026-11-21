@@ -872,15 +872,17 @@ _TAB_MOVE_HINTS = {
 
 
 def _refused_for_tab_move(
-    hub: LiveHub, key: str, op: str, args: dict[str, Any]
+    hub: LiveHub, key: str, op: str, args: dict[str, Any], *, app: bool = False
 ) -> dict[str, Any] | None:
     """The refusal for a page-targeted op while a tab move is unreported, or ``None``.
 
     The ref or point the agent sent was read off the page it was on before a popup
     moved its tab, so it would land on an unrelated element. Ops that do not point
-    into the page (``navigate``, ``snapshot``, unscoped ``read``, ...) run.
+    into the page (``navigate``, ``snapshot``, unscoped ``read``, ...) run. The Bot
+    and the slot's *app* each have their own pending move, so each is told once and
+    telling one never lifts the other's refusal.
     """
-    pending = hub.pending_tab_move(key)
+    pending = hub.pending_app_tab_move(key) if app else hub.pending_tab_move(key)
     page_targeted = op in _PAGE_TARGETED_OPS or (op == "read" and args.get("ref") is not None)
     if not page_targeted or not pending:
         return None
@@ -895,16 +897,19 @@ def _refused_for_tab_move(
     )
 
 
-def _with_tab_move(hub: LiveHub, key: str, answer: Any) -> Any:
+def _with_tab_move(hub: LiveHub, key: str, answer: Any, *, take: bool = True) -> Any:
     """Report the unreported tab move on *answer*, success or refusal alike.
 
     Taking it clears it, so the agent is told exactly once. A non-answer (the
-    person holds the browser, or a claim cut the op short) leaves it pending.
+    person holds the browser, or a claim cut the op short) leaves it pending. With
+    *take* false (an app's op) the app's own pending move is reported and cleared,
+    and the Bot's stays pending, since its next ref would otherwise land on the page
+    it left; the Bot taking its own leaves the app's in place the same way.
     """
     if not isinstance(answer, dict) or answer.get("code") == DENIED_CODE:
         # A governance deny is shown as fixed text, so the move waits for the next answer.
         return answer
-    notice = hub.take_tab_move(key)
+    notice = hub.take_tab_move(key) if take else hub.take_app_tab_move(key)
     if not notice:
         return answer
     out = dict(answer)
@@ -1114,7 +1119,11 @@ async def run_browser_op(
     """
     # The audit identity every helper below reads (``_audit`` takes a request's shape).
     request: Any = caller if caller is not None else GatewayCaller("gateway")
-    if op not in harness_ops.OPS or not isinstance(args, dict):
+    # ``APP_OPS`` are an app's read ops: an in-gateway caller's only, never the route's.
+    known = op in harness_ops.OPS or (
+        op in harness_ops.APP_OPS and isinstance(request, GatewayCaller)
+    )
+    if not known or not isinstance(args, dict):
         return {"error": "unknown op", "code": "bad_op"}, 400
     # The shim asked (and audited) the same row before posting; this is the
     # gateway's own check, which a direct POST cannot skip and which fails closed.
@@ -1410,7 +1419,7 @@ async def _fenced_op(
         # A quick ask's text is its outcome alone (``mcp_tools.browser._ask_text``),
         # so the move would be cleared without being shown: it waits for the next op.
         return answer
-    return _with_tab_move(hub, key, answer)
+    return _with_tab_move(hub, key, answer, take=not isinstance(request, GatewayCaller))
 
 
 async def _run_fenced_op(
@@ -1489,7 +1498,7 @@ async def _bound_op(
     try:
         await asyncio.wait_for(_bind(), timeout=OP_TIMEOUT_S)
         bound = True
-        moved = _refused_for_tab_move(hub, key, op, args)
+        moved = _refused_for_tab_move(hub, key, op, args, app=isinstance(request, GatewayCaller))
         if hub.in_control(key):
             # A claim landed during the bind; the op has not touched the page yet.
             # Its host-grant note stays for the same call the shim re-posts.
@@ -1522,7 +1531,8 @@ async def _bound_op(
             _audit(request, "denied", browser_host_trust.SCOPE_CHANGED_CODE)
             result = off_host
         else:
-            max_ops, max_repeats = _run_limits()
+            # An app's op is not one of the chat's steps: ``browser.run`` counts the Bot's.
+            max_ops, max_repeats = (0, 0) if isinstance(request, GatewayCaller) else _run_limits()
             if max_ops or max_repeats:
                 sess = hub.get(key)
                 if sess is not None:

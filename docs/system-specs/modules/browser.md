@@ -1289,7 +1289,7 @@ internal-secret only) and renders the gateway's answer. It holds no state.
 The route's body is `dashboard/handlers/browser_ops.run_browser_op(session_key, op,
 args, *, state, caller)`, which answers `(body, http_status)`. The route only
 authenticates and validates the body, then calls it; an app's `PagePort`
-(`apps/browser_page_port.py`, not yet handed to any app) calls the same function with the slot's own
+(`apps/browser_page_port.py`, handed out by `ctx.browser.page(slot)`) calls the same function with the slot's own
 runtime key (`dashboard:<slot>`), so the Bot and an app share every gate from one
 copy, in this order: the `capabilities.browse` check for that key; the navigate gate
 on the address the op asks to open (`navigate`, and `tabs new` with a URL), which
