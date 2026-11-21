@@ -1020,6 +1020,15 @@ def test_the_free_text_provenance_fields_are_redacted():
     assert "0123456789abcdefghijklmnopqrstuvwxyz" not in source["workspace"]
 
 
+def test_a_spaced_windows_profile_project_path_is_redacted_whole():
+    """The shared pass stops at a space, so on ``D:\\Users\\Jane Doe\\...`` it
+    would keep ``Doe\\source\\repos\\app``. ``project`` is one path, so it goes whole."""
+    source = build_source_record(project="D:\\Users\\Jane Doe\\source\\repos\\app")
+    assert source["project"] == "[redacted-path]"
+    # A plain name that is not a path is still kept verbatim.
+    assert build_source_record(project="my-project")["project"] == "my-project"
+
+
 @pytest.mark.asyncio
 async def test_an_oversized_session_exports_rather_than_being_refused(monkeypatch):
     """Export is never blocked by size — no producer-side reject preflight.

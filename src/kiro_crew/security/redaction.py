@@ -534,10 +534,25 @@ REDACTION_UNAVAILABLE_TAG = "[REDACTED: redaction unavailable]"
 # carries a ``(?!/)`` guard so a one-letter URI scheme (``x://host``) is never
 # mistaken for a drive; longer schemes (``https:``) are already refused by the
 # ``(?<![A-Za-z])`` lookbehind on the drive letter itself.
+#
+# Windows also prints a host path in spellings with no drive-letter colon: the
+# Cygwin ``/cygdrive/c/...``, the MSYS / Git Bash ``/c/Users/...``, and a UNC
+# ``\\host\share\...`` (which covers ``\\wsl$\...``, ``\\wsl.localhost\...`` and
+# ``\\?\UNC\...``). Each branch keeps the same refuse-to-start-mid-token
+# lookbehind. The MSYS branch also needs one of the POSIX roots after the
+# letter, so ``/a/b`` in prose is left alone; the UNC branch needs a share name
+# after the host, so an escaped ``\\d+\\s`` (two backslashes in a row) is never
+# taken for a path.
+_POSIX_ROOTS = (
+    r"(?:local/home|home|Users|root|tmp|var|opt|usr|etc|private|mnt|srv|workspace|workplace)"
+)
 _LOCAL_PATH_RE = re.compile(
     r"(?:"
-    r"(?<![\w:/])/(?:local/home|home|Users|root|tmp|var|opt|usr|etc|private|mnt|srv|workspace|workplace)"
+    rf"(?<![\w:/])/{_POSIX_ROOTS}"
     r"|(?<![A-Za-z])[A-Za-z]:(?:\\|/(?!/))"
+    r"|(?<![\w:/])/cygdrive/[A-Za-z]/"
+    rf"|(?<![\w:/])/[A-Za-z]/{_POSIX_ROOTS}/"
+    r"|(?<![\w\\])\\\\[^\s\\/'\"<>|]+\\[^\s\\/'\"<>|]+"
     r")"
     r"[^\s'\"<>|]*"
 )

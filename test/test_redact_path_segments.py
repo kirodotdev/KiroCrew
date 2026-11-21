@@ -337,3 +337,26 @@ def test_forward_slash_windows_paths_redact_without_treating_uri_schemes_as_driv
     assert redaction_mod.redact_local_paths("https://api.github.com/repos/x")[0] == (
         "https://api.github.com/repos/x"
     )
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "/c/Users/{u}/src/x.json",  # MSYS / Git Bash
+        "/cygdrive/c/Users/{u}/src/x.json",  # Cygwin
+        "\\\\fileserver\\home$\\{u}\\src\\x.json",  # UNC home
+        "\\\\wsl$\\Ubuntu\\home\\{u}\\src\\x.json",
+        "\\\\wsl.localhost\\Ubuntu\\home\\{u}\\src",
+        "\\\\?\\UNC\\server\\share\\{u}\\x",
+    ],
+)
+def test_windows_spellings_without_a_drive_colon_redact(template: str) -> None:
+    """Windows prints a host path in spellings with no ``X:`` -- each
+    still names the login, so each is redacted whole, mid-sentence too."""
+    user = "somelogin"
+    red, notes = redaction_mod.redact_local_paths(f"open {template.format(u=user)} failed")
+    assert red == "open [redacted-path] failed"
+    assert notes
+    # Prose and escapes that only resemble those roots are left alone.
+    for text in ("see /a/b and /c/d", "and/or /c/ alone", "a/c/Users", "regex \\\\d+\\\\s"):
+        assert redaction_mod.redact_local_paths(text)[0] == text
