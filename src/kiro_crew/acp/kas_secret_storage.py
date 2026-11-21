@@ -21,10 +21,13 @@ What is stored, and where:
   ``kiro.mcp.<sha256 hex>.(client|kiro-path-client|tokens|verifier|discovery)``.
   The hash is the engine's own digest of the server URL, headers and OAuth
   config, so a changed server config reads as a different key and never inherits
-  a grant. Any other key, and a value over :data:`MAX_VALUE_CHARS`, is refused,
+  a grant. The engine's organization (identity provider) sign-in, set by an
+  ``identityProvider`` block in ``mcp.json``, is one more key,
+  ``kiro.mcp.idp.<sha256 hex>.session``, hashed from the issuer and client id.
+  Any other key, and a value over :data:`MAX_VALUE_CHARS`, is refused,
   so the engine cannot use Crew as a general key-value store.
 - ``client``, ``kiro-path-client`` (the client registration, under either kind)
-  and ``tokens`` persist, in a DEDICATED vault at
+  and ``tokens``, and the organization ``session``, persist, in a DEDICATED vault at
   ``<data_home>/kas/mcp-grants/.vault/``. It has its own key
   file and is neither the user Secrets vault (so it is not listed in Settings ->
   Secrets and cannot be granted to a cron) nor the Kiro sign-in vault (so a Kiro
@@ -92,6 +95,9 @@ _KEY_RE = re.compile(
     + "|".join(re.escape(kind) for kind in (*PERSISTED_KINDS, "verifier", "discovery"))
     + r")\Z"
 )
+#: The engine's organization sign-in key: ``kiro.mcp.idp.<sha256 hex>.session``.
+#: It holds that sign-in's tokens, so it persists like ``tokens``.
+_IDP_SESSION_RE = re.compile(r"\Akiro\.mcp\.idp\.[0-9a-f]{64}\.session\Z")
 #: Kinds that outlive the engine process. The rest stay in runtime memory.
 _PERSISTED_KINDS = frozenset(PERSISTED_KINDS)
 #: Largest value accepted, in characters. A client registration or token set is a
@@ -228,9 +234,14 @@ class SecretStorageServer:
         if not isinstance(params, dict):
             raise SecretStorageRefused("params must be an object")
         key = params.get("key")
-        if not isinstance(key, str) or (match := _KEY_RE.match(key)) is None:
+        if not isinstance(key, str):
             raise SecretStorageRefused("key is outside the MCP sign-in namespace")
-        persisted = match.group(1) in _PERSISTED_KINDS
+        if (match := _KEY_RE.match(key)) is not None:
+            persisted = match.group(1) in _PERSISTED_KINDS
+        elif _IDP_SESSION_RE.match(key) is not None:
+            persisted = True
+        else:
+            raise SecretStorageRefused("key is outside the MCP sign-in namespace")
 
         if persisted:
             async with self._locks.setdefault(key, asyncio.Lock()):
