@@ -5089,15 +5089,19 @@ measured an hour earlier is not a baseline.
    suite-wide win came from.
 2. **Function-scoped construction of an immutable, expensive thing.** Real `git`
    repos are the worst offender here: seeding one costs ~1–1.6s in subprocesses, paid
-   per test. Build it **once** in a `scope="session"` fixture and `shutil.copytree` it
-   per test. This is safe only if the template is never handed to a test: copy from
-   it rather than yielding it, so nothing one test does can reach another's. Re-point any
-   absolute path the tool recorded (e.g. `git remote set-url`) in the copy. On Windows
-   the copy also needs a `git reset --hard HEAD`: the copied files get fresh inode and
-   ctime values, git's index stat cache no longer matches, and the copy reads as having
-   "unstaged changes" -- `git rebase` refuses outright (MEASURED in `test_push_guard`
-   when its repo pair moved to a session template). Nothing in a template is
-   uncommitted, so the reset changes no content; it only re-stats the index.
+   per test. Build it **once** and copy it per test with `copy_repo` from
+   `test/git_repo_templates.py`: from a `scope="session"` fixture of your own, or through
+   the `repo_templates` fixture when the repo is built under the test's own git
+   environment (it keeps one template per builder, key and git identity). This is safe
+   only if the template is never handed to a test: copy from it rather than yielding it,
+   so nothing one test does can reach another's. Do not follow the copy with git:
+   `copy_repo` re-points every absolute path git recorded (a remote URL, a worktree's
+   pointers, `alternates`) at the copy and gives each copied index the copied files'
+   stat data, in process. Each of those cost a git spawn per test, about 0.26 s on the
+   Windows runner (`git remote set-url`, and the `git reset --hard HEAD` a copied
+   checkout needed because its files' new inode and ctime read as "unstaged changes").
+   The first copy of every template is checked with `git diff-files`, so a platform
+   where the in-process form does not hold fails the test.
 3. **A production timeout or poll the test never asserts on.** Fake fixtures are often
    small enough to trip a real retry heuristic, then pay its full budget every test.
    `monkeypatch` the interval to `0`: the branch still executes, only the waiting

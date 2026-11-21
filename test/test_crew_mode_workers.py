@@ -926,6 +926,7 @@ async def test_a_held_steer_is_reported_queued_persisted_and_shown(_open_gate, m
         running=False,
         _app="",
         _queue=queue,
+        durable_source=lambda: list(queue),
         _acp_client=None,
         queue_append=_append,
     )

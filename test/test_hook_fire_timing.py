@@ -226,3 +226,160 @@ async def test_a_slow_fire_cancelled_mid_hook_still_logs(clock, store, monkeypat
 
     (record,) = _slow_warnings(caplog)
     assert "gov_hook=2000ms" in record.getMessage()
+
+
+def _event_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and r.getMessage().startswith("Slow hook event")
+    ]
+
+
+def _add_guards(hook_store: ScriptHookStore, count: int) -> None:
+    for n in range(2, count + 2):
+        hook_store.create(
+            {"name": f"guard-{n}", "event": HOOK_EVENT_PRE_TOOL_USE, "command": "exit 0"}
+        )
+
+
+def _each_hook_takes(monkeypatch: pytest.MonkeyPatch, clock: _Clock, secs: float) -> None:
+    def slow(_session_key, _hook):
+        clock.now += secs
+        return None
+
+    monkeypatch.setattr("kiro_crew.hook_event_governance.hook_refusal", slow)
+
+
+@pytest.mark.asyncio
+async def test_hooks_each_under_the_threshold_log_one_event_warning(
+    clock, store, monkeypatch, caplog
+):
+    _add_guards(store, 2)
+    _each_hook_takes(monkeypatch, clock, 0.5)
+    caplog.set_level(logging.INFO)
+
+    results = await store.fire(HOOK_EVENT_PRE_TOOL_USE, tool_name="fs_write")
+
+    assert [r.exit_code for r in results] == [0, 0, 0]
+    assert _slow_warnings(caplog) == []
+    (record,) = _event_warnings(caplog)
+    message = record.getMessage()
+    assert f"Slow hook event: {HOOK_EVENT_PRE_TOOL_USE} took 1500ms; hooks=3: " in message
+    assert "guard=500ms, guard-2=500ms, guard-3=500ms; other=0ms" in message
+
+
+@pytest.mark.asyncio
+async def test_a_fast_event_logs_no_event_warning(clock, store, monkeypatch, caplog):
+    _add_guards(store, 2)
+    _each_hook_takes(monkeypatch, clock, 0.3)
+    caplog.set_level(logging.INFO)
+
+    await store.fire(HOOK_EVENT_PRE_TOOL_USE, tool_name="fs_write")
+
+    assert _event_warnings(caplog) == []
+    assert _slow_warnings(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_one_slow_hook_logs_both_the_hook_and_the_event_line(
+    clock, store, monkeypatch, caplog
+):
+    _each_hook_takes(monkeypatch, clock, _SLOW_SECS)
+    caplog.set_level(logging.INFO)
+
+    await store.fire(HOOK_EVENT_PRE_TOOL_USE, tool_name="fs_write")
+
+    (hook_line,) = _slow_warnings(caplog)
+    assert "gov_hook=2000ms" in hook_line.getMessage()
+    (event_line,) = _event_warnings(caplog)
+    assert "took 2000ms; hooks=1: guard=2000ms; other=0ms" in event_line.getMessage()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("secs_per_hook, warnings", [(0.5, 1), (0.4995, 0)])
+async def test_the_event_threshold_is_inclusive(
+    secs_per_hook, warnings, clock, store, monkeypatch, caplog
+):
+    _add_guards(store, 1)
+    _each_hook_takes(monkeypatch, clock, secs_per_hook)
+    caplog.set_level(logging.INFO)
+
+    await store.fire(HOOK_EVENT_PRE_TOOL_USE, tool_name="fs_write")
+
+    assert len(_event_warnings(caplog)) == warnings
+    assert _slow_warnings(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_a_slow_status_write_counts_as_time_outside_the_hooks(
+    clock, store, monkeypatch, caplog
+):
+    _slow_persist(monkeypatch, clock, store)
+    caplog.set_level(logging.INFO)
+
+    await store.fire(HOOK_EVENT_PRE_TOOL_USE, tool_name="fs_write")
+
+    (event_line,) = _event_warnings(caplog)
+    assert "took 2000ms; hooks=1: guard=0ms; other=2000ms" in event_line.getMessage()
+
+
+@pytest.mark.asyncio
+async def test_an_event_whose_hook_did_not_match_logs_no_event_line(
+    clock, tmp_path, monkeypatch, caplog
+):
+    import kiro_crew.hooks as hooks_mod
+    from kiro_crew.hooks import HOOK_EVENT_USER_PROMPT_SUBMIT
+
+    def slow_no_match(*_args):
+        clock.now += _SLOW_SECS
+        return False
+
+    monkeypatch.setattr(hooks_mod, "_context_matches", slow_no_match)
+    hook_store = ScriptHookStore(tmp_path)
+    hook_store.create(
+        {
+            "name": "prompt-guard",
+            "event": HOOK_EVENT_USER_PROMPT_SUBMIT,
+            "command": "exit 0",
+            "matcher": "never",
+        }
+    )
+    caplog.set_level(logging.INFO)
+
+    await hook_store.fire(HOOK_EVENT_USER_PROMPT_SUBMIT, "a prompt")
+
+    assert len(_slow_warnings(caplog)) == 1
+    assert _event_warnings(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_a_slow_event_cancelled_mid_hook_still_logs_the_event_line(
+    clock, store, monkeypatch, caplog
+):
+    import asyncio
+    import threading
+
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    release = threading.Event()
+
+    def slow(_session_key, _hook):
+        clock.now += _SLOW_SECS
+        loop.call_soon_threadsafe(started.set)
+        release.wait(30)
+        return None
+
+    monkeypatch.setattr("kiro_crew.hook_event_governance.hook_refusal", slow)
+    caplog.set_level(logging.INFO)
+    fire = asyncio.ensure_future(store.fire(HOOK_EVENT_PRE_TOOL_USE, tool_name="fs_write"))
+    try:
+        await asyncio.wait_for(started.wait(), 30)
+        fire.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await fire
+    finally:
+        release.set()
+
+    (event_line,) = _event_warnings(caplog)
+    assert "took 2000ms; hooks=1: guard=2000ms" in event_line.getMessage()

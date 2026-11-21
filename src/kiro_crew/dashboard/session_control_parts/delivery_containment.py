@@ -276,6 +276,14 @@ SEND_DISCARD_HARD_STOP = "hard_stop"
 SEND_DISCARD_HARD_STOP_STEER = "hard_stop_steer"
 
 
+SEND_DISCARD_UNCONFIRMED_STEER = "unconfirmed_steer"
+
+
+# A held peer steer that a later re-check refused, at a tool boundary or when its
+# turn ended and it was handed to the queue: it was never injected or queued.
+SEND_DISCARD_REFUSED_STEER = "refused_steer"
+
+
 # Sender-notice phrasing per discard cause, after "Message you sent to <target> ".
 # No discard changes a constraint, so the drain's containment wording would
 # describe nothing here.
@@ -284,10 +292,15 @@ _SEND_DISCARD_REASONS = {
     "session's queue. It was not delivered and will not run.",
     SEND_DISCARD_HARD_STOP: "was discarded before it ran: a hard stop of that session "
     "discarded its queue. It was not delivered and will not run.",
-    # The turn may already have read a steer, so this one does not say it never ran.
+    # The turn may already have read a steer, so these two do not say it never ran.
     SEND_DISCARD_HARD_STOP_STEER: "as a steer may not have run: a hard stop of that "
     "session ended the turn it was steered into before that turn finished, and it will "
     "not be queued to run later.",
+    SEND_DISCARD_UNCONFIRMED_STEER: "as a steer may not have run: the turn it was steered into "
+    "ended before that session's harness confirmed it, and it will not be queued to run "
+    "later.",
+    SEND_DISCARD_REFUSED_STEER: "was discarded before it ran: a re-check refused it while "
+    "it waited as a pending steer for that session. It was not delivered and will not run.",
 }
 
 # The bare cause for the rows the frontend words through the localized
@@ -296,6 +309,8 @@ _SEND_DISCARD_REASONS = {
 _SEND_DISCARD_FRAMED_REASONS = {
     SEND_DISCARD_QUEUE_CANCEL: "it was cancelled from that session's queue",
     SEND_DISCARD_HARD_STOP: "a hard stop of that session discarded its queue",
+    SEND_DISCARD_REFUSED_STEER: "a re-check refused it while it waited as a pending steer "
+    "for that session",
 }
 
 

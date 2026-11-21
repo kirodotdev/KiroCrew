@@ -1050,140 +1050,152 @@ class ScriptHookStore:
         # nothing to record, so it must not rewrite hooks.json: that rewrite ran
         # on EVERY tool call and turn, hook or not.
         touched = False
-        from kiro_crew.hook_fire_timing import CURRENT_FIRE_TIMING, HookFireTiming
+        from kiro_crew.hook_fire_timing import (
+            CURRENT_FIRE_TIMING,
+            EventFireTiming,
+            HookFireTiming,
+        )
 
-        for hook in [*self._hooks.values(), *extra_hooks]:
-            if not hook.enabled or hook.event != event:
-                continue
-            timing = HookFireTiming(hook.name or hook.id, event)
-            # Matcher filtering: for tool hooks, match tool name; for others, match context
-            if hook.matcher:
-                if event in (HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE):
-                    if extra_hooks_tool_names is not None and id(hook) in extra_ids:
-                        if hook.matcher != "*" and not any(
+        event_timing = EventFireTiming(event)
+        try:
+            for hook in [*self._hooks.values(), *extra_hooks]:
+                if not hook.enabled or hook.event != event:
+                    continue
+                timing = HookFireTiming(hook.name or hook.id, event)
+                # Matcher filtering: for tool hooks, match tool name; for others, match context
+                if hook.matcher:
+                    if event in (HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE):
+                        if extra_hooks_tool_names is not None and id(hook) in extra_ids:
+                            if hook.matcher != "*" and not any(
+                                _hook_tool_matches(hook.matcher, name)
+                                for name in extra_hooks_tool_names
+                            ):
+                                continue
+                        elif not any(
                             _hook_tool_matches(hook.matcher, name)
-                            for name in extra_hooks_tool_names
+                            for name in (tool_match_names or (tool_name,))
                         ):
                             continue
-                    elif not any(
-                        _hook_tool_matches(hook.matcher, name)
-                        for name in (tool_match_names or (tool_name,))
-                    ):
-                        continue
-                elif context:
-                    # Offload to a thread: regex mode spawns a bounded subprocess
-                    # (_bounded_pattern_search), which must not block the event loop.
-                    matched = await timing.hop(
-                        "matcher", _context_matches, hook.matcher, hook.matcher_mode, context
+                    elif context:
+                        # Offload to a thread: regex mode spawns a bounded subprocess
+                        # (_bounded_pattern_search), which must not block the event loop.
+                        matched = await timing.hop(
+                            "matcher", _context_matches, hook.matcher, hook.matcher_mode, context
+                        )
+                        if not matched:
+                            timing.warn_if_slow(logger)
+                            continue
+                touched = True
+                # A skills-only hook injects a skill-loading directive without a subprocess,
+                # only on UserPromptSubmit/AgentSpawn, where that text has a consumer.
+                if (
+                    hook.skills
+                    and not hook.command
+                    and event
+                    in (
+                        HOOK_EVENT_USER_PROMPT_SUBMIT,
+                        HOOK_EVENT_AGENT_SPAWN,
                     )
-                    if not matched:
+                ):
+                    # The same governance gates as a command hook, so omitting the command
+                    # cannot bypass a disabled capabilities.script_hooks.
+                    sk = parent_session_key or session_key or ""
+                    # Off the event loop, as in run_script_hook: the scope lookup can walk
+                    # the governance profile store.
+                    gov_denied = await timing.hop(
+                        "gov_capability", _script_hooks_capability_denied, sk
+                    )
+                    if not gov_denied:
+                        from kiro_crew.hook_event_governance import event_refusal
+
+                        gov_denied = await timing.hop("gov_event", event_refusal, sk, event)
+                    if not gov_denied:
+                        from kiro_crew.hook_event_governance import hook_refusal
+
+                        gov_denied = await timing.hop("gov_hook", hook_refusal, sk, hook)
+                    if gov_denied:
+                        hook.last_run = time.time()
+                        hook.last_status = "blocked"
+                        hook.last_error = f"Blocked by governance: {gov_denied}"
+                        hook.run_count += 1
+                        _audit_governance_hook_decision(
+                            sk, f"skills_only_hook:{hook.name or hook.id}", "denied", gov_denied
+                        )
+                        logger.info(
+                            "Hook %s (%s): skills-only blocked by governance: %s",
+                            hook.name,
+                            event,
+                            gov_denied,
+                        )
                         timing.warn_if_slow(logger)
+                        event_timing.add(timing)
                         continue
-            touched = True
-            # Skills-only hooks: inject skill-loading directive without subprocess.
-            # Only meaningful for UserPromptSubmit/AgentSpawn — on tool hooks or Stop
-            # the synthesized "Load skills:" text has no consumer.
-            if (
-                hook.skills
-                and not hook.command
-                and event
-                in (
-                    HOOK_EVENT_USER_PROMPT_SUBMIT,
-                    HOOK_EVENT_AGENT_SPAWN,
-                )
-            ):
-                # Governance: skills-only hooks must respect the same capability
-                # gate as command hooks — a disabled capabilities.script_hooks
-                # must not be bypassable by omitting the command field.
-                sk = parent_session_key or session_key or ""
-                # Off the loop, as in run_script_hook: the scope lookup can walk
-                # the governance profile store.
-                gov_denied = await timing.hop("gov_capability", _script_hooks_capability_denied, sk)
-                if not gov_denied:
-                    from kiro_crew.hook_event_governance import event_refusal
-
-                    gov_denied = await timing.hop("gov_event", event_refusal, sk, event)
-                if not gov_denied:
-                    from kiro_crew.hook_event_governance import hook_refusal
-
-                    gov_denied = await timing.hop("gov_hook", hook_refusal, sk, hook)
-                if gov_denied:
-                    hook.last_run = time.time()
-                    hook.last_status = "blocked"
-                    hook.last_error = f"Blocked by governance: {gov_denied}"
-                    hook.run_count += 1
+                    # Audit the allow decision before proceeding.
                     _audit_governance_hook_decision(
-                        sk, f"skills_only_hook:{hook.name or hook.id}", "denied", gov_denied
+                        sk,
+                        f"skills_only_hook:{hook.name or hook.id}",
+                        "allowed",
+                        "skills-only hook permitted",
                     )
+                    from kiro_crew.skill_package_key import split_package_key
+
+                    skills_directive = " ".join(
+                        f"${split_package_key(s.rpartition('/')[2])[1]}" for s in hook.skills
+                    )
+                    hook.last_run = time.time()
+                    hook.last_status = "ok"
+                    hook.last_error = ""
+                    hook.run_count += 1
+                    result = ScriptHookResult(
+                        hook_id=hook.id,
+                        hook_name=hook.name,
+                        event=hook.event,
+                        stdout=f"Load skills: {skills_directive}",
+                        exit_code=0,
+                        duration_ms=0,
+                    )
+                    results.append(result)
                     logger.info(
-                        "Hook %s (%s): skills-only blocked by governance: %s",
+                        "Hook %s (%s): skills-only injection (%d skills)",
                         hook.name,
                         event,
-                        gov_denied,
+                        len(hook.skills),
                     )
                     timing.warn_if_slow(logger)
+                    event_timing.add(timing)
                     continue
-                # Audit the allow decision before proceeding.
-                _audit_governance_hook_decision(
-                    sk,
-                    f"skills_only_hook:{hook.name or hook.id}",
-                    "allowed",
-                    "skills-only hook permitted",
-                )
-                from kiro_crew.skill_package_key import split_package_key
-
-                skills_directive = " ".join(
-                    f"${split_package_key(s.rpartition('/')[2])[1]}" for s in hook.skills
-                )
-                hook.last_run = time.time()
-                hook.last_status = "ok"
-                hook.last_error = ""
-                hook.run_count += 1
-                result = ScriptHookResult(
-                    hook_id=hook.id,
-                    hook_name=hook.name,
-                    event=hook.event,
-                    stdout=f"Load skills: {skills_directive}",
-                    exit_code=0,
-                    duration_ms=0,
-                )
+                timing_token = CURRENT_FIRE_TIMING.set(timing)
+                try:
+                    if id(hook) in extra_ids:
+                        payload = (
+                            spec_event if hook.spec_origin in ("user", "project") else extra_event
+                        )
+                        result = await run_script_hook(hook, context, payload, **extra_run)
+                        result.from_spec = bool(hook.spec_origin)
+                    else:
+                        result = await run_script_hook(hook, context, hook_event, **stored_run)
+                finally:
+                    CURRENT_FIRE_TIMING.reset(timing_token)
+                    # Also on cancellation: a turn torn down mid-fire is the slow case.
+                    timing.warn_if_slow(logger)
+                    event_timing.add(timing)
                 results.append(result)
                 logger.info(
-                    "Hook %s (%s): skills-only injection (%d skills)",
+                    "Hook %s (%s): %s in %dms (exit=%d)",
                     hook.name,
                     event,
-                    len(hook.skills),
+                    hook.last_status,
+                    result.duration_ms,
+                    result.exit_code,
                 )
-                timing.warn_if_slow(logger)
-                continue
-            timing_token = CURRENT_FIRE_TIMING.set(timing)
-            try:
-                if id(hook) in extra_ids:
-                    payload = spec_event if hook.spec_origin in ("user", "project") else extra_event
-                    result = await run_script_hook(hook, context, payload, **extra_run)
-                    result.from_spec = bool(hook.spec_origin)
-                else:
-                    result = await run_script_hook(hook, context, hook_event, **stored_run)
-            finally:
-                CURRENT_FIRE_TIMING.reset(timing_token)
-                # Also on cancellation: a turn torn down mid-fire is the slow case.
-                timing.warn_if_slow(logger)
-            results.append(result)
-            logger.info(
-                "Hook %s (%s): %s in %dms (exit=%d)",
-                hook.name,
-                event,
-                hook.last_status,
-                result.duration_ms,
-                result.exit_code,
-            )
-        # Snapshot INSIDE the worker under the mutex, not here: capturing on the
-        # loop and persisting later leaves the same interleaving window a
-        # concurrent CRUD mutation could fall into.
-        if touched and self._persists_fire_status:
-            persist_timing = HookFireTiming("hook status write", event)
-            await persist_timing.hop("persist", self._persist_current)
-            persist_timing.warn_if_slow(logger)
+            # Snapshot inside the worker under the mutex: a snapshot taken on the event
+            # loop leaves a window for a concurrent CRUD mutation before the write.
+            if touched and self._persists_fire_status:
+                persist_timing = HookFireTiming("hook status write", event)
+                await persist_timing.hop("persist", self._persist_current)
+                persist_timing.warn_if_slow(logger)
+        finally:
+            event_timing.warn_if_slow(logger)
         return results
 
     def _persist_current(self) -> None:

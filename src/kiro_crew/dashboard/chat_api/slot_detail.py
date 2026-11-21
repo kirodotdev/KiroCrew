@@ -1336,7 +1336,8 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     ]
     # Judged on the live entries, in the same tick as the copy: the copy drops
     # fields the durable writer weighs, so its verdict would differ from the write's.
-    queue_refused = refused_durable_ids(slot._queue)
+    # The held steers the writer saves ahead of the queue count too.
+    queue_refused = refused_durable_ids(slot.durable_source())
     from kiro_crew.dashboard.responsive_chat import written_queue_ids
 
     queue_written = written_queue_ids(slot)
