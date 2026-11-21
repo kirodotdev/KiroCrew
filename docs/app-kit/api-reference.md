@@ -1091,6 +1091,7 @@ keeps the tree as the dashboard has it.
 | `projectDir` | `string` | yes | The project directory listed; empty renders nothing |
 | `onOpenFile` | `(path: string) => void` | no | Called with a file's absolute path once each time the opened file changes (see below) |
 | `selectedPath` | `string \| null` | no | Absolute path of the file your page shows, echoed as the selection; a project file you set here becomes the opened file |
+| `searchQuery` | `string \| null` | no | Shows only the rows whose names match; empty shows all. Opening a match closes the filter and shows the file in place, as the Files rail does; a new query filters again |
 
 `onOpenFile` fires once per change of the opened file: the first file the user opens, then
 each different one. The opened file is the last one the tree reported, or a project file
@@ -1100,7 +1101,6 @@ Limits: setting `selectedPath` to `null` or to a file outside the project leaves
 row selected, as in the Files rail, so picking the file you just closed fires only after
 another file has been opened. A refresh that leaves exactly one file of a multi-selection
 (the others were deleted) reports that file as opened, as the Files rail does.
-| `searchQuery` | `string \| null` | no | Shows only the rows whose names match; empty shows all. Opening a match closes the filter and shows the file in place, as the Files rail does; a new query filters again |
 
 ## Host Sessions
 
