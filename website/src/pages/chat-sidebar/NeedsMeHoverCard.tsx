@@ -161,8 +161,15 @@ export default function NeedsMeHoverLayer({ rootRef }: { rootRef: RefObject<HTML
   useEffect(() => {
     if (!target) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !cardRef.current?.contains(document.activeElement)) close() }
+    // A press anywhere outside the card closes it, even with a draft (the draft is kept
+    // per row). A press on non-focusable space blurs to nothing, so `onBlur` never sees it.
+    const onDown = (e: PointerEvent) => { if (!(e.target instanceof Node && cardRef.current?.contains(e.target))) close() }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('pointerdown', onDown, true)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('pointerdown', onDown, true)
+    }
   }, [target, close])
 
   return (
