@@ -162,6 +162,23 @@ def _title_refresh_every() -> int:
         return 0
 
 
+def _title_refresh_enabled() -> bool:
+    """Read ``dashboard.title_refresh_enabled``; its default, True, on any failure.
+
+    Read per turn and OFF the event loop, like :func:`_title_refresh_every`.
+    """
+    try:
+        return bool(KiroCrewConfig.load().dashboard.title_refresh_enabled)
+    except Exception:
+        logger.debug("title_refresh_enabled lookup failed; refresh stays on")
+        return True
+
+
+def _title_refresh_settings() -> tuple[bool, int]:
+    """Both refresh settings, read in one hop off the event loop."""
+    return _title_refresh_enabled(), _title_refresh_every()
+
+
 # Extra refresh milestone for a title born LOW-SIGNAL (see
 # ``_is_low_signal_title``): a first message dominated by a pasted link or an
 # opaque ticket identifier gives the initial titler nothing but the link to
@@ -1493,7 +1510,8 @@ async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
     one-liner at the ``_TITLE_REFRESH_MILESTONES`` user-turn marks, or every
     ``dashboard.title_refresh_every_turns`` user turns when that cadence is
     set, and swaps the sidebar title when the model says the old one no
-    longer fits.
+    longer fits. With ``dashboard.title_refresh_enabled`` off, only the
+    low-signal early milestone still fires.
 
     Token discipline (the whole point of doing this in the background instead
     of exposing a title tool to every chat):
@@ -1526,7 +1544,7 @@ async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
     # queued follow-up that lands during it opens the NEXT turn, which this
     # refresh must not count.
     user_count = sum(1 for m in slot.messages if _counts_as_user_turn(slot, m))
-    every = await asyncio.to_thread(_title_refresh_every)
+    enabled, every = await asyncio.to_thread(_title_refresh_settings)
     # A manual rename or another turn's refresh may also have landed during the
     # hop, and either must stand this attempt down BEFORE it consumes the
     # milestone or spends the call.
@@ -1536,7 +1554,10 @@ async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
     # the early milestone: the first turn's transcript is the FIRST moment the
     # session's real topic is visible, and a one-message "investigate this
     # link" session never reaches the ordinary milestones at all.
-    milestones = _TITLE_REFRESH_MILESTONES
+    # With refresh turned off only that early milestone remains.
+    milestones = _TITLE_REFRESH_MILESTONES if enabled else ()
+    if not enabled:
+        every = 0
     if slot._title_low_signal:
         milestones = (_TITLE_EARLY_REFRESH_MILESTONE, *milestones)
     # NOTE deliberate under-spend: one attempt consumes EVERY milestone at or

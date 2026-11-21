@@ -1019,6 +1019,14 @@
       "hint": "In an empty message input, ↑ brings back a message you sent in this chat and ↓ moves forward again. Turn it off to keep ↑ and ↓ for moving the cursor."
     },
     {
+      "id": "chat.refresh-auto-titles",
+      "label": "Refresh auto titles",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.title_refresh_enabled",
+      "description": "Re-checks an auto-generated title as the chat goes on. Off keeps the title made from your first message. A title that is only a link, a ticket key or a cut-off first message is still fixed once, after the first turn.",
+      "configKey": "dashboard.title_refresh_enabled"
+    },
+    {
       "id": "chat.require-a-second-escape-to-stop-the-turn",
       "label": "Require a second Escape to stop the turn",
       "tab": "chat",

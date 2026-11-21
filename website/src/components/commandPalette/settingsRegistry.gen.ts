@@ -1774,6 +1774,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.refresh-auto-titles",
+    "label": "Refresh auto titles",
+    "labelKey": "pages.settings.chatPanel.title_refresh_enabled",
+    "description": "Re-checks an auto-generated title as the chat goes on. Off keeps the title made from your first message. A title that is only a link, a ticket key or a cut-off first message is still fixed once, after the first turn.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.title_refresh_enabled"
+  },
+  {
     "id": "chat.require-a-second-escape-to-stop-the-turn",
     "label": "Require a second Escape to stop the turn",
     "labelKey": "pages.settings.chatPanel.double_escape_to_stop",

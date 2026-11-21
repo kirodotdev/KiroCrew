@@ -1232,3 +1232,63 @@ class TestRefreshCadence:
         from kiro_crew.config.loader import _build_dashboard_config
 
         assert _build_dashboard_config(set(), {}).title_refresh_every_turns == 0
+
+
+# ── dashboard.title_refresh_enabled: turning refresh off ────────────────────
+class TestRefreshDisabled:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("every", [0, 4])
+    async def test_off_never_refreshes_an_ordinary_title(self, monkeypatch, every):
+        calls = _patch_generator(monkeypatch, "New Title")
+        monkeypatch.setattr(chat_title, "_title_refresh_enabled", lambda: False)
+        monkeypatch.setattr(chat_title, "_title_refresh_every", lambda: every)
+        slot = _titled_slot(0)
+        state = _fake_state()
+        for _ in _drive(slot, 30):
+            await maybe_refresh_title(state, slot)
+        assert calls == []
+        assert slot.title == "Initial auto title"
+        assert slot._title_refresh_mark == 0
+
+    @pytest.mark.asyncio
+    async def test_off_keeps_the_low_signal_early_refresh(self, monkeypatch):
+        calls = _patch_generator(monkeypatch, "KEEP-unused")
+        monkeypatch.setattr(chat_title, "_title_refresh_enabled", lambda: False)
+        monkeypatch.setattr(chat_title, "_title_refresh_every", lambda: 0)
+        slot = _titled_slot(0)
+        slot._title_low_signal = True
+        state = _fake_state()
+        fired_at: list[int] = []
+        for user_count in _drive(slot, 30):
+            before = len(calls)
+            await maybe_refresh_title(state, slot)
+            if len(calls) > before:
+                fired_at.append(user_count)
+        assert fired_at == [_TITLE_EARLY_REFRESH_MILESTONE]
+
+    @pytest.mark.asyncio
+    async def test_turning_it_back_on_refreshes_once_then_follows_the_schedule(self, monkeypatch):
+        calls = _patch_generator(monkeypatch, "KEEP-unused")
+        enabled = False
+        monkeypatch.setattr(chat_title, "_title_refresh_enabled", lambda: enabled)
+        monkeypatch.setattr(chat_title, "_title_refresh_every", lambda: 0)
+        slot = _titled_slot(0)
+        state = _fake_state()
+        fired_at: list[int] = []
+        for user_count in _drive(slot, 30):
+            if user_count == 10:
+                enabled = True
+            before = len(calls)
+            await maybe_refresh_title(state, slot)
+            if len(calls) > before:
+                fired_at.append(user_count)
+        assert fired_at == [10, 24]
+
+    def test_default_is_on(self):
+        from kiro_crew.config.loader import _build_dashboard_config
+
+        assert _build_dashboard_config(set(), {}).title_refresh_enabled is True
+        assert (
+            _build_dashboard_config(set(), {"title_refresh_enabled": False}).title_refresh_enabled
+            is False
+        )

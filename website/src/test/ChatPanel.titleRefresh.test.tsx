@@ -5,22 +5,28 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
 
 const LABEL = 'Auto-title refresh interval (turns)'
+const TOGGLE_LABEL = 'Refresh auto titles'
 const DEFAULT = 'Default'
 const PATH = 'dashboard.title_refresh_every_turns'
+const ENABLED_PATH = 'dashboard.title_refresh_enabled'
 
 // A stateful stand-in for the gateway: a save changes what the next GET returns,
 // so the refetch after a save shows what the real server would.
 const { server, patchConfigMock, kirocrewConfigMock } = vi.hoisted(() => {
-  const server = { value: undefined as number | undefined }
+  const server = { value: undefined as number | undefined, enabled: undefined as boolean | undefined }
   return {
     server,
-    patchConfigMock: vi.fn((_path: string, value: unknown) => {
-      server.value = value as number
+    patchConfigMock: vi.fn((path: string, value: unknown) => {
+      if (path === 'dashboard.title_refresh_enabled') server.enabled = value as boolean
+      else server.value = value as number
       return Promise.resolve({})
     }),
-    kirocrewConfigMock: vi.fn(() => Promise.resolve(
-      server.value === undefined ? {} : { dashboard: { title_refresh_every_turns: server.value } },
-    )),
+    kirocrewConfigMock: vi.fn(() => {
+      const dashboard: Record<string, unknown> = {}
+      if (server.value !== undefined) dashboard.title_refresh_every_turns = server.value
+      if (server.enabled !== undefined) dashboard.title_refresh_enabled = server.enabled
+      return Promise.resolve(Object.keys(dashboard).length ? { dashboard } : {})
+    }),
   }
 })
 
@@ -50,8 +56,9 @@ import { ChatPanel } from '../pages/settings/ChatPanel'
 import { Provider } from 'react-redux'
 import { createTestStore } from './helpers'
 
-function renderSessions(stored?: number) {
+function renderSessions(stored?: number, enabled?: boolean) {
   server.value = stored
+  server.enabled = enabled
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(<MemoryRouter initialEntries={['/settings?tab=chat&sub=sessions']}><Provider store={createTestStore()}><QueryClientProvider client={qc}><ChatPanel /></QueryClientProvider></Provider></MemoryRouter>)
 }
@@ -63,13 +70,26 @@ async function row(): Promise<HTMLElement> {
   return inc.closest(`[data-setting-key="${PATH}"]`) as HTMLElement
 }
 
-/** The row's text readout, like Message Font Size: a plain number, no input box.
- *  The box also holds invisible, aria-hidden copies of the widest values it must
- *  fit (`reserveWidthFor`), so the shown value is read with those stripped out. */
+function box(r: HTMLElement): HTMLInputElement {
+  return within(r).getByRole('spinbutton', { name: LABEL }) as HTMLInputElement
+}
+
+/** What the row's box shows: the typed value, or its placeholder when empty. */
 function readout(r: HTMLElement): string {
-  const box = (r.querySelector('span.cursor-default') as HTMLElement).cloneNode(true) as HTMLElement
-  box.querySelectorAll('[aria-hidden="true"]').forEach(el => el.remove())
-  return box.textContent ?? ''
+  const input = box(r)
+  return input.value === '' ? input.placeholder : input.value
+}
+
+function typeAndCommit(r: HTMLElement, text: string) {
+  const input = box(r)
+  fireEvent.change(input, { target: { value: text } })
+  fireEvent.keyDown(input, { key: 'Enter' })
+}
+
+async function toggle(): Promise<HTMLElement> {
+  const t = await screen.findByRole('switch', { name: TOGGLE_LABEL })
+  await waitFor(() => expect(t).not.toBeDisabled())
+  return t
 }
 
 describe('ChatPanel settings -- auto-title refresh cadence', () => {
@@ -108,12 +128,6 @@ describe('ChatPanel settings -- auto-title refresh cadence', () => {
     renderSessions(4)
     const r = await row()
     expect(within(r).getByRole('button', { name: 'Decrease' })).not.toBeDisabled()
-  })
-
-  it('renders a plain +/- stepper with no typed input box, like Message Font Size', async () => {
-    renderSessions(5)
-    await row()
-    expect(screen.queryByRole('spinbutton', { name: LABEL })).toBeNull()
   })
 
   it('steps up from Default straight to the minimum cadence', async () => {
@@ -170,5 +184,108 @@ describe('ChatPanel settings -- auto-title refresh cadence', () => {
     fireEvent.click(within(r).getByRole('button', { name: 'Increase' }))
     expect(await screen.findByText('Failed to save title refresh setting')).toBeInTheDocument()
     await waitFor(() => expect(readout(r)).toBe('8'))
+  })
+
+  it('saves a typed cadence on Enter', async () => {
+    renderSessions(0)
+    const r = await row()
+    typeAndCommit(r, '50')
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(PATH, 50))
+    await waitFor(() => expect(readout(r)).toBe('50'))
+  })
+
+  it('saves a typed cadence on blur', async () => {
+    renderSessions(5)
+    const r = await row()
+    const input = box(r)
+    fireEvent.change(input, { target: { value: '12' } })
+    fireEvent.blur(input)
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(PATH, 12))
+  })
+
+  it.each([
+    ['2', 4],
+    ['5000', 1000],
+    ['0', 0],
+  ])('clamps a typed %s the way the loader reads it, storing %d', async (typed, stored) => {
+    renderSessions(8)
+    const r = await row()
+    typeAndCommit(r, typed)
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(PATH, stored))
+  })
+
+  it('returns to Default when the box is emptied', async () => {
+    renderSessions(8)
+    const r = await row()
+    typeAndCommit(r, '')
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(PATH, 0))
+    await waitFor(() => expect(readout(r)).toBe(DEFAULT))
+  })
+
+  it('does not save an emptied box that already shows Default', async () => {
+    renderSessions(0)
+    const r = await row()
+    typeAndCommit(r, '')
+    await waitFor(() => expect(readout(r)).toBe(DEFAULT))
+    expect(patchConfigMock).not.toHaveBeenCalled()
+  })
+
+  it('reverts a half-typed entry such as "-" instead of treating it as an emptied box', async () => {
+    renderSessions(8)
+    const r = await row()
+    const input = box(r)
+    // jsdom never flags badInput; a browser does for "-", and reports its value as "".
+    Object.defineProperty(input, 'validity', { configurable: true, get: () => ({ badInput: true }) })
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.blur(input)
+    expect(readout(r)).toBe('8')
+    expect(patchConfigMock).not.toHaveBeenCalled()
+  })
+
+  it('reverts a typed value on Escape without saving', async () => {
+    renderSessions(8)
+    const r = await row()
+    const input = box(r)
+    fireEvent.change(input, { target: { value: '40' } })
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(readout(r)).toBe('8')
+    fireEvent.blur(input)
+    expect(patchConfigMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('ChatPanel settings -- turning auto-title refresh off', () => {
+  beforeEach(() => {
+    patchConfigMock.mockClear()
+    kirocrewConfigMock.mockClear()
+    localStorage.clear()
+  })
+
+  it('is on by default and shows the cadence row', async () => {
+    renderSessions()
+    expect(await toggle()).toBeChecked()
+    await row()
+  })
+
+  it('hides the cadence row while refresh is off', async () => {
+    renderSessions(10, false)
+    expect(await toggle()).not.toBeChecked()
+    expect(screen.queryByRole('spinbutton', { name: LABEL })).toBeNull()
+  })
+
+  it('stores false and hides the cadence row when switched off', async () => {
+    renderSessions(10)
+    await row()
+    fireEvent.click(await toggle())
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(ENABLED_PATH, false))
+    await waitFor(() => expect(screen.queryByRole('spinbutton', { name: LABEL })).toBeNull())
+    expect(server.value).toBe(10)
+  })
+
+  it('brings the stored cadence back when switched on again', async () => {
+    renderSessions(10, false)
+    fireEvent.click(await toggle())
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(ENABLED_PATH, true))
+    expect(readout(await row())).toBe('10')
   })
 })

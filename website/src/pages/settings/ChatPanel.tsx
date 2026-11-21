@@ -17,7 +17,7 @@ import { FieldHint, LinkPatternsEditor, type LinkPatternsDraft } from './ChatPan
 import {
   RESTORE_OPTIONS, restoreLabels, COMPACT_OPTIONS, compactLabels, ROLE_OPTIONS, roleLabels,
   TECH_OPTIONS, techLabels, SOFT_STOP_MIN, SOFT_STOP_MAX, SOFT_STOP_DEFAULT, TURN_LIMIT_MIN,
-  TURN_LIMIT_MAX, TURN_LIMIT_DEFAULT, TITLE_REFRESH_PATH, TITLE_REFRESH_MIN, TITLE_REFRESH_MAX,
+  TURN_LIMIT_MAX, TURN_LIMIT_DEFAULT, TITLE_REFRESH_PATH, TITLE_REFRESH_ENABLED_PATH, TITLE_REFRESH_MIN, TITLE_REFRESH_MAX,
   normalizeTitleRefresh, type CompletionKeepMode, COMPLETION_KEEP_OPTIONS, type VerbosityLevel,
   VERBOSITY_OPTIONS, MEMORY_MODE_OPTIONS, FOLDER_ROOT_EXAMPLE, memoryModeLabels, asMemoryMode,
   asVerbosity, completionKeepLabels, COMPLETION_KEEP_CHARS_MIN, COMPLETION_KEEP_CHARS_MAX,
@@ -195,6 +195,23 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   }
   /** What the title-refresh readout shows for 0, the built-in schedule. */
   const titleRefreshDefault = i18nT('pages.settings.chatPanel.title_refresh_default')
+  const titleRefreshEnabled = mcCfg?.dashboard?.title_refresh_enabled ?? true
+  const shownTitleRefreshEnabled = overlay.shown(TITLE_REFRESH_ENABLED_PATH, titleRefreshEnabled)
+  const titleRefreshEnabledMut = useMutation({
+    ...overlay.mutationOpts<boolean>({
+      queryKey: ['kirocrewConfig'],
+      mutationFn: (v: boolean) => api.patchConfig(TITLE_REFRESH_ENABLED_PATH, v),
+      path: () => TITLE_REFRESH_ENABLED_PATH,
+      displayValue: v => v,
+      applyToCache: (cached, v) => setConfigPathValue(cached as KirocrewConfigShape, TITLE_REFRESH_ENABLED_PATH, v),
+      onFailure: () => {
+        setPathSaveError(TITLE_REFRESH_ENABLED_PATH, i18nT('pages.settings.chatPanel.failed_to_save_title_refresh'))
+        setChatSaveFailTick(t => t + 1)
+      },
+      onSupersede: clearOwnPathError,
+    }),
+    scope: { id: TITLE_REFRESH_ENABLED_PATH },
+  })
 
   // "Other" reveals a free-text role. Typed locally and committed on blur /
   // Enter so a PATCH does not fire per keystroke; seeded from the server once
@@ -1200,22 +1217,37 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             <SettingsSelect label={i18nT('pages.settings.chatPanel.restore_window')} hint={i18nT('pages.settings.chatPanel.time_window_for_session_restoration')} value={String(dashCfg.restore_window_minutes)} options={RESTORE_OPTIONS} optionLabels={restoreLabels()} onChange={v => setDash({ restore_window_minutes: Number(v) })} disabled={dashDisabled} />
           )}
           <SettingsToggle label={i18nT('pages.settings.chatPanel.session_summaries')} description={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_in_the_right_pa')} hint={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_hint')} checked={summaryEnabled} onChange={v => summaryMut.mutate(v)} disabled={!mcQ.isSuccess || summaryMut.isPending} />
-          {/* 0 is the built-in schedule and reads as "Default", so + leaves it
-              for the minimum cadence, − at the minimum returns to it, and − at
-              Default is disabled: there is nothing below it. A plain +/− stepper
-              like Message Font Size, no typed input. */}
-          <SettingsStepper
-            label={i18nT('pages.settings.chatPanel.title_refresh_every_turns')}
-            description={i18nT('pages.settings.chatPanel.title_refresh_every_turns_desc')}
-            hint={i18nT('pages.settings.chatPanel.title_refresh_every_turns_hint')}
-            value={shownTitleRefresh === 0 ? titleRefreshDefault : shownTitleRefresh}
-            onIncrement={() => setTitleRefresh(shownTitleRefresh < TITLE_REFRESH_MIN ? TITLE_REFRESH_MIN : shownTitleRefresh + 1)}
-            onDecrement={() => setTitleRefresh(shownTitleRefresh <= TITLE_REFRESH_MIN ? 0 : shownTitleRefresh - 1)}
+          <SettingsToggle
+            label={i18nT('pages.settings.chatPanel.title_refresh_enabled')}
+            description={i18nT('pages.settings.chatPanel.title_refresh_enabled_desc')}
+            checked={shownTitleRefreshEnabled}
+            onChange={v => titleRefreshEnabledMut.mutate(v)}
             disabled={!mcQ.isSuccess}
-            decrementDisabled={shownTitleRefresh === 0}
-            reserveWidthFor={[titleRefreshDefault, TITLE_REFRESH_MAX]}
-            configKey="dashboard.title_refresh_every_turns"
+            configKey="dashboard.title_refresh_enabled"
           />
+          {/* 0 is the built-in schedule: the box shows "Default" for it, and
+              emptying the box returns to it. + leaves it for the minimum
+              cadence, − at the minimum returns to it, and − at Default is
+              disabled: there is nothing below it. */}
+          {shownTitleRefreshEnabled && (
+            <SettingsStepper
+              label={i18nT('pages.settings.chatPanel.title_refresh_every_turns')}
+              description={i18nT('pages.settings.chatPanel.title_refresh_every_turns_desc')}
+              hint={i18nT('pages.settings.chatPanel.title_refresh_every_turns_hint')}
+              value={shownTitleRefresh === 0 ? '' : shownTitleRefresh}
+              onIncrement={() => setTitleRefresh(shownTitleRefresh < TITLE_REFRESH_MIN ? TITLE_REFRESH_MIN : shownTitleRefresh + 1)}
+              onDecrement={() => setTitleRefresh(shownTitleRefresh <= TITLE_REFRESH_MIN ? 0 : shownTitleRefresh - 1)}
+              onSet={setTitleRefresh}
+              emptyValue={0}
+              placeholder={titleRefreshDefault}
+              min={0}
+              max={TITLE_REFRESH_MAX}
+              disabled={!mcQ.isSuccess}
+              decrementDisabled={shownTitleRefresh === 0}
+              reserveWidthFor={[titleRefreshDefault, TITLE_REFRESH_MAX]}
+              configKey="dashboard.title_refresh_every_turns"
+            />
+          )}
           <SettingsToggle label={i18nT('pages.settings.chatPanel.session_card_source_links')} hint={i18nT('pages.settings.chatPanel.session_card_source_links_desc')} checked={dashCfg.session_card_source_links} onChange={v => setDash({ session_card_source_links: v })} disabled={dashDisabled} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.session_title_lines')} hint={i18nT('pages.settings.chatPanel.session_title_lines_desc')} value={String(chatCfg.sessionTitleLines)} options={[...CARD_LINE_OPTIONS]} onChange={v => { const n = Number(v); if (isCardLineCount(n)) setChat('sessionTitleLines', n) }} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.session_preview_lines')} hint={i18nT('pages.settings.chatPanel.session_preview_lines_desc')} value={String(chatCfg.sessionPreviewLines)} options={[...CARD_LINE_OPTIONS]} onChange={v => { const n = Number(v); if (isCardLineCount(n)) setChat('sessionPreviewLines', n) }} />
