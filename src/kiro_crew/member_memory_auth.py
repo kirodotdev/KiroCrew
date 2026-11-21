@@ -233,9 +233,10 @@ class LocalOwnerProvenance:
 
     ``app`` names the app whose gateway-spawned backend owns the calling process,
     read from the backend registry; it is ``None`` for an ordinary host process
-    the registry does not know. ``app is not None`` means the app-backend leg
-    admitted the caller: the owner-token mint refuses such a caller outright and
-    records the name in its audit row.
+    the registry does not know. The mint stamps it into its audit record, so an
+    owner token minted by an app is attributed to that app. It is NOT a token
+    claim: an ``app``-scoped token is refused by the owner-dashboard check, so
+    carrying it in the token would withdraw the capability this admission grants.
     """
 
     app: str | None = None
@@ -247,10 +248,9 @@ def local_owner_bootstrap_provenance(request: Any) -> LocalOwnerProvenance | Non
     Admission is unchanged from the boolean gate: a kernel-identified peer with
     a readable process incarnation that is either an ordinary host process or a
     live backend this gateway spawned. The backend registry is consulted first
-    so that a spawned backend is named even where it also passes as a host
-    process (an unsandboxed backend shares the gateway's namespaces). The order
-    decides which leg names the caller; the mint then refuses every caller the
-    backend leg named, so a backend never receives a token.
+    so that a spawned backend is attributed by name even where it also passes as
+    a host process (an unsandboxed backend shares the gateway's namespaces); the
+    order changes what is RECORDED, never what is admitted.
     """
     try:
         pid = _request_peer_pid(request)
@@ -262,10 +262,7 @@ def local_owner_bootstrap_provenance(request: Any) -> LocalOwnerProvenance | Non
             # A registry that cannot answer names no app; the host leg below still
             # decides admission exactly as it does for a caller no backend owns.
             app = None
-        if app is not None:
-            # The registry owns this process, so the backend leg admits it even when
-            # the registry key is empty: truthiness would hand that caller to the host
-            # leg and an unnamed backend would pass as an ordinary host process.
+        if app:
             return LocalOwnerProvenance(app=str(app))
         if _verified_host_process(pid):
             return LocalOwnerProvenance()
