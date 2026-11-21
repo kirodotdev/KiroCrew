@@ -46,6 +46,7 @@ from security_path_resolve_bounded_helpers import (  # noqa: F401 -- the autouse
     _REAL_REBUILD_BUDGET,
     _REAL_WAIT_CAP,
     _fresh_resolver_state,
+    _shipped_budgets,
     _stall_like_a_child,
     _StalledResolver,
 )
@@ -58,9 +59,10 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.testing.wait import default_timeout, wait_until
 
 
-def test_symlink_alias_is_still_resolved_on_a_healthy_filesystem(tmp_path) -> None:
+def test_symlink_alias_is_still_resolved_on_a_healthy_filesystem(tmp_path, monkeypatch) -> None:
     # The whole point of the resolved forms is defeating a link bypass; bounding
     # the wait must not cost that on a filesystem that answers.
+    _shipped_budgets(monkeypatch)
     target = tmp_path / "real"
     target.mkdir()
     link = tmp_path / "alias"
@@ -147,7 +149,8 @@ def test_a_stall_is_refused_as_unverifiable_not_as_a_match(monkeypatch) -> None:
     assert security.is_sensitive_path(token) is True
 
 
-def test_a_match_and_a_benign_path_keep_their_answers(tmp_path) -> None:
+def test_a_match_and_a_benign_path_keep_their_answers(tmp_path, monkeypatch) -> None:
+    _shipped_budgets(monkeypatch)
     benign = tmp_path / "notes.md"
     benign.write_text("x")
     assert security.sensitive_path_refusal(str(benign)) is None
@@ -176,6 +179,7 @@ def test_a_matched_path_spelled_like_the_stall_wording_is_still_a_match(monkeypa
     # fixed PREFIX the path cannot reach, never by searching the text. A path
     # carrying the whole stall opening keeps the match wording and is not a stall.
     forged = f"/home/someone/{security.UNVERIFIABLE_PATH_PREFIX}/x"
+    _shipped_budgets(monkeypatch)
     monkeypatch.setattr(security.paths, "_path_in_home_dirs", lambda *a, **k: True)
     reason = security.sensitive_path_refusal(forged)
     assert reason == f"Blocked: access to sensitive path: {forged}"
@@ -231,13 +235,20 @@ def test_the_cooldown_is_scoped_to_the_stalled_prefix(monkeypatch, tmp_path) -> 
     # That needs the live resolver back, not the counting stand-in.
     monkeypatch.setattr(security.paths, "_resolve_on_calling_thread", real_resolve)
     monkeypatch.setattr(security, "_resolved_spellings", real_resolver)
+    _shipped_budgets(monkeypatch)
     target = tmp_path / "creds"
     target.write_text("k")
     link = tmp_path / "link"
     link.symlink_to(target)
     assert str(target) in security._candidate_forms(str(link))
 
-    # Past the cooldown the stalled prefix is tried again.
+    # Past the cooldown the stalled prefix is tried again. Back on the fixture's
+    # budget, which the stall double below waits out in full.
+    monkeypatch.setattr(
+        security,
+        "_PATH_RESOLVE_TIMEOUT_SECS",
+        0.2,  # flake-ok: the autouse fixture's own stall budget, put back for the double
+    )
     stalled2 = _StalledResolver()
     monkeypatch.setattr(security, "_resolved_spellings", stalled2)
     try:
@@ -540,6 +551,9 @@ def test_unc_paths_are_never_probed_on_windows(monkeypatch) -> None:
     # ``Get-Content \\\\server\\share\\...`` to stay allowed.  UNC tokens are
     # matched lexically and never handed to the resolver.
     monkeypatch.setattr(security, "_ON_WINDOWS", True)
+    # ``is_sensitive_path`` still resolves the real anchors ($HOME and the rest),
+    # which must finish for the token to keep its answer.
+    _shipped_budgets(monkeypatch)
     stalled = _StalledResolver()
     monkeypatch.setattr(security, "_resolved_spellings", stalled)
     try:

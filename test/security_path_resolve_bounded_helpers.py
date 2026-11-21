@@ -61,6 +61,30 @@ def _fresh_resolver_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     ex.shutdown_maintenance_executor()
 
 
+def _shipped_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give a REAL resolution the shipped budgets back, for a test that needs it to finish.
+
+    The fixture above scales the budgets to 0.2 s (0.5 s with grace) for the stall
+    doubles, which wait out whatever deadline they are given. A real resolution under
+    that deadline also starts a resolver child, because the fixture shuts the pool down
+    after every test, and on a loaded runner that start alone can miss it. The fixture
+    reads every miss as a filesystem block (and off Linux the child cannot be sampled at
+    all), so the miss is charged as a stall and a healthy path gets the stall refusal
+    instead of its own answer (#39127). Call this before the real resolution, after any
+    stall double in the same test has done its waiting.
+    """
+    monkeypatch.setattr(
+        security,
+        "_PATH_RESOLVE_TIMEOUT_SECS",
+        _REAL_CANDIDATE_BUDGET,  # flake-ok: the SHIPPED budget, not a short wait
+    )
+    monkeypatch.setattr(
+        security.paths,
+        "_PATH_RESOLVE_REBUILD_TIMEOUT_SECS",
+        _REAL_REBUILD_BUDGET,  # flake-ok: the SHIPPED rebuild budget, not a short wait
+    )
+
+
 def _stall_like_a_child() -> None:
     """What a wedged child looks like from the calling thread.
 
