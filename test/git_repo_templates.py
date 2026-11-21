@@ -380,11 +380,17 @@ def _restat_entries(data: bytearray, count: int, worktree: Path) -> None:
     if offset != end:
         raise ValueError("the entries and extensions do not end at the checksum")
     if any(data[end:]):  # all zero under index.skipHash
-        data[end:] = hashlib.sha1(data[:end], usedforsecurity=False).digest()
+        data[end:] = _git_sha1(data[:end])
 
 
 def _blob_id(content: bytes) -> bytes:
-    return hashlib.sha1(b"blob %d\0" % len(content) + content, usedforsecurity=False).digest()
+    return _git_sha1(b"blob %d\0" % len(content) + content)
+
+
+def _git_sha1(data: bytes | bytearray) -> bytes:
+    """The SHA-1 git's formats fix: a blob's object id and the index's trailing checksum."""
+    # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1 -- git's own object id and index checksum in a SHA-1 repository, compared with what git wrote; not a security digest
+    return hashlib.sha1(data, usedforsecurity=False).digest()
 
 
 def _check_first_copy(template: Path, dest: Path, worktrees: list[Path]) -> None:
