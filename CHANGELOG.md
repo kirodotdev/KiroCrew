@@ -2,6 +2,28 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [0.13.1] - 2026-11-20
+
+A hot patch for 0.13.0: Bots that 0.13.0 held on every call work unattended again, and split view panes, queued messages and Fresh start behave after a missed turn or a restart. Conductor mode asks before it locks a chat that already has messages, and update, MCP sign-in, cloud launch, app store and security fixes land with them.
+
+### Notable fixes
+
+**Bots.** A Bot whose permissions name a bundle beside their rules no longer sends every call to the approval card, and the ask rules that hold wrote into the Bot's file are removed when the file still carries the whole set. Fresh start in a Bot chat now works past a message held after a restart, and the sidebar's Sessions list draws no empty Bot row while none of that Bot's sessions is shown in it.
+
+**Chat, split view and queued messages.** A file opened from a split pane's reply or its diff Open button opens in the side panel and switches the panel to that pane's chat, except while the gateway is offline, when the chat stays in view. A split pane or Crew Members thread re-reads itself when the turn it missed ends, and a message queued behind a turn cancelled before it started runs instead of waiting. A queued message restored after a restart says on its card that it won't send on its own, and in a crewmate chat that card offers Send now, Edit and Cancel.
+
+**Conductor mode.** Turning on the conductor mode switch, right of the permission button, in a chat that already has messages asks you to confirm first, because it cannot be turned off for that chat, and the dialog has a Don't show this notice again box. Switching such a chat to another agent says why it was refused instead of showing the raw error.
+
+**Updates.** Choosing Remind me tomorrow or Skip this version in the update prompt stops an unattended build of that version at once, so it no longer uses memory and then installs the version you put off.
+
+**MCP servers.** The MCP Servers tab offers a sign-in for an OAuth server whose 401 carries no challenge, when the server publishes protected resource metadata that names that endpoint. A server the MCP gateway stopped at its 30 second start deadline gets 60 and then 120 seconds on its next tries, so a slow server can finish starting.
+
+**Cloud crews.** A cloud crew launch on an automatically picked subnet retries in another Availability Zone when EC2 has no capacity for the size, stops retrying when you cancel, and names the zones it tried in its final error. A packaged install on a machine without git confirms the release tag over HTTPS, so its cloud crew runs your release instead of the development build from main.
+
+**KAS, AWS profiles, apps and browser.** A stored Kiro CLI pick whose KAS check got no answer at startup is asked again after 1, 5 and 15 minutes instead of waiting for a restart, and the project AWS profile picker answers before the dashboard gives up, reporting a profile that waits on a login as unavailable. The App Store listing answers within 5 seconds while app.json fetches run, and the browser tool reinstalls its engine by itself when an update removes its interpreter, showing the install under Settings > Browser.
+
+**Security.** The shell safety checks no longer refuse a URL query that joins ids with "+" as a credential, or a read only search line such as grep piped to head as a file upload. A file upload refusal names the forms that pass, and a refusal that names an AWS credential variable carries guidance.
+
 ## [0.13.0] - 2026-11-16
 
 Conductor mode, previously called Ultra Mode, is now generally available: it is on in every standard build with nothing to turn on, a new chat's composer offers its switch, and its crews plan from the goal, correct their own workers mid-round and pause and resume as one. A session that needs you can now be answered from the sidebar or from your own Slack, Discord, Telegram, Webex or Feishu DM, chat gains reopen, fork, prompt optimizing, a preferred reply language and a Continue that waits out a usage limit, and the Files and Git panels lead with what the agent changed. Connections and their OAuth apps share one Settings page while MCP Servers gets its own Customize tab, Settings gains an Advanced page for every config key and an About page that holds the release notes and shows the next update before it arrives, Bots pick their own harness without a preview, on Linux a settings file edited outside Kiro Crew waits for your review, and Kiro Cloud Sessions, Kiro Crew's own sign-in for connections and worker chats on another harness arrive as previews.
