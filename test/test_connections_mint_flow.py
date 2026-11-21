@@ -15,7 +15,9 @@ import os
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 import connections_mint_helpers
 import pytest
@@ -681,6 +683,50 @@ async def test_a_server_that_never_challenges_is_granted_and_disposed(
     assert _state_only(mint.pending_mint_for("notion")) == {"state": "granted"}
     # Nothing to hold, so the process goes immediately.
     assert _FakeClient.instances[-1].shutdowns == 1
+
+
+@pytest.mark.asyncio
+async def test_a_server_that_never_reports_ends_as_a_timeout_not_a_grant(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # No stored grant, a live process, and a server that neither asks for sign-in
+    # nor reports ready or failed before the wait ends. Silence is not an open
+    # endpoint, so this must not be recorded as granted.
+    class _Silent(_FakeClient):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.requests = []
+
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _Silent)
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "failed",
+        "reason": "mint_timeouterror",
+    }
+
+
+@pytest.mark.parametrize("reported", [False, True])
+@pytest.mark.asyncio
+async def test_the_fake_declared_wait_drains_exactly_when_the_real_one_does(reported: bool):
+    # The fake stands in for AcpClient.wait_for_declared_mcp in every mint test,
+    # so it must drain under the same rule: only while a declared server is unreported.
+    from kiro_crew.acp import client_mcp_array
+
+    fake = _FakeClient()
+    if reported:
+        _started_without_challenge(fake)
+        await fake._drain_notifications()
+    real = SimpleNamespace(
+        _mcp_report=fake.report, _drain_notifications=mock.AsyncMock(return_value=None)
+    )
+    before = fake.drains
+
+    await fake.wait_for_declared_mcp(5.0)
+    await client_mcp_array.wait_for_declared_mcp(real, 5.0)
+
+    assert fake.drains - before == real._drain_notifications.await_count == (0 if reported else 1)
 
 
 @pytest.mark.asyncio

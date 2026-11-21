@@ -63,6 +63,9 @@ class _FakeClient:
         #: Frames the next read folds into the session report, as the real drain does.
         self.frames: list[JsonRpcMessage] = []
         self.report = McpSessionReport()
+        # The mint's one-server spec, as kiro-cli's client records it at spawn.
+        self.report.record_declared({"mcpServers": {"notion": {}}})
+        self.drains = 0
         _FakeClient.instances.append(self)
 
     async def ensure_ready(self) -> None:
@@ -81,6 +84,7 @@ class _FakeClient:
         return out
 
     async def _drain_notifications(self, **kwargs: Any) -> None:
+        self.drains += 1
         for frame in self.frames:
             self.report.record_frame(frame, owned=True)
         self.frames.clear()
@@ -89,9 +93,11 @@ class _FakeClient:
         return self.report
 
     async def wait_for_declared_mcp(self, timeout: float) -> tuple[str, ...]:
-        # The real method drains until the spec's servers report; the fake drains once.
-        await self._drain_notifications(duration=timeout, until_declared=True)
-        return ()
+        # The real method's rule: drain only while a declared server has not
+        # reported. The fake then drains once instead of until the deadline.
+        if self.report.declared_unreported() and timeout > 0:
+            await self._drain_notifications(duration=timeout, until_declared=True)
+        return self.report.declared_not_ready()
 
     def is_process_alive(self) -> bool:
         return self.alive
