@@ -11,6 +11,7 @@ import pytest
 from denied_commands_security_helpers import _own_address_probe_stays_local  # noqa: F401
 from denied_commands_security_helpers import _denied_by
 
+from kiro_crew.platform_compat import IS_WINDOWS
 from kiro_crew.security import argv_floor as _argv_floor
 
 pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
@@ -70,14 +71,27 @@ def test_the_spellings_refused_without_the_path_reading_stay_refused(cmd):
         # An argument is a file name, not a program path: only the word where a
         # command starts gets the path reading.
         r"git add tools\ssh.exe README.md",
-        # A separator inside a quoted argument starts no command.
-        r"git commit -m 'fix; C:\Windows\System32\OpenSSH\ssh.exe' -- localhost",
-        r'git commit -m "fix; C:\Windows\System32\OpenSSH\ssh.exe" -- localhost',
         r"tar -czf out.tgz src\s* *.*",
         r"git add src\s* README.md",
     ],
 )
 def test_a_backslash_path_that_does_not_connect_here_is_allowed(cmd):
+    assert _denied_by(cmd) is None
+
+
+@pytest.mark.skipif(
+    IS_WINDOWS,
+    reason="on Windows the program basename also splits on a backslash, so main's "
+    "splice reading already refuses these lines without the path reading",
+)
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        r"git commit -m 'fix; C:\Windows\System32\OpenSSH\ssh.exe' -- localhost",
+        r'git commit -m "fix; C:\Windows\System32\OpenSSH\ssh.exe" -- localhost',
+    ],
+)
+def test_a_separator_inside_a_quoted_argument_starts_no_command(cmd):
     assert _denied_by(cmd) is None
 
 
