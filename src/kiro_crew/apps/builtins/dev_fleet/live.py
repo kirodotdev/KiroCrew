@@ -771,9 +771,10 @@ async def _make_live_inner(
     existing worktree (``unknown_path`` / ``missing_path``); NOT inside a pod,
     fail-CLOSED on indeterminate pod status (``pod`` / ``pod_indeterminate``);
     not already live (``already_live``); the worktree has its own executable
-    ``.venv/bin/kirocrew`` (else Provision -> ``missing_venv`` when absent,
-    ``venv_not_executable`` when present but not +x) and a built SPA
-    ``dist/index.html`` (else Pull+Build -> ``missing_dist``).
+    entry point, ``live_target.target_bin`` (``.venv/bin/kirocrew``, or
+    ``.venv\\Scripts\\kirocrew.exe`` on Windows; else Provision ->
+    ``missing_venv`` when absent, ``venv_not_executable`` when present but not
+    +x) and a built SPA ``dist/index.html`` (else Pull+Build -> ``missing_dist``).
 
     A real cutover writes the pointer, then bounces the gateway through the
     service manager when there is one we can drive (DETACHED, so it survives our
@@ -1126,7 +1127,11 @@ async def _make_live_inner(
             ),
         }
 
-    kcbin = real / ".venv" / "bin" / "kirocrew"
+    # The SAME entry point the pointer write validates (``live_target.validate``
+    # stats ``target_bin``): a check here against any other file would refuse a
+    # worktree that write would accept, or promise one it would refuse.
+    kcbin = live_target.target_bin(real)
+    kcbin_label = str(kcbin.relative_to(real)) if real in kcbin.parents else str(kcbin)
     dist_index = real / "src" / "kiro_crew" / "static" / "dist" / "index.html"
 
     def _validate_artifacts_sync() -> tuple[str, str] | None:
@@ -1141,7 +1146,7 @@ async def _make_live_inner(
             return (
                 "missing_venv",
                 (
-                    f"{real.name} has no .venv/bin/kirocrew — Provision it first "
+                    f"{real.name} has no {kcbin_label} — Provision it first "
                     "(row menu \u2192 Provision) before making it live"
                 ),
             )
@@ -1154,7 +1159,7 @@ async def _make_live_inner(
             return (
                 "venv_not_executable",
                 (
-                    f"{real.name} has a non-executable .venv/bin/kirocrew — run "
+                    f"{real.name} has a non-executable {kcbin_label} — run "
                     "`chmod +x` on it or re-Provision the worktree before making "
                     "it live (a non-executable binary stops the live gateway but "
                     "cannot start the replacement, leaving no gateway running)"

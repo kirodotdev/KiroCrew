@@ -2093,8 +2093,8 @@ The `plan` object describes the cutover mechanism:
 | `already_live` | the target is already the live gateway |
 | `undo_changed` | the requested Undo path no longer equals the pointer's validated previous checkout (stale banner or newer cutover); refresh before retrying |
 | `undo_not_ready` | the requested inverse is still the running checkout, so the original cutover is only staged; use Cancel staged cutover instead |
-| `missing_venv` | the worktree has no `.venv/bin/kirocrew` (Provision it first) |
-| `venv_not_executable` | the worktree's `.venv/bin/kirocrew` exists but is **not executable** (`chmod +x` it or re-Provision) — a non-executable binary would stop the live gateway but could not start the replacement, leaving no gateway running |
+| `missing_venv` | the worktree has no `target_bin` entry point — `.venv/bin/kirocrew`, or `.venv\Scripts\kirocrew.exe` on Windows; the same file `live_target.validate` stats, and the error names it (Provision it first) |
+| `venv_not_executable` | the worktree's `target_bin` exists but is **not executable** (`chmod +x` it or re-Provision) — a non-executable binary would stop the live gateway but could not start the replacement, leaving no gateway running |
 | `missing_dist` | the worktree has no built `src/kiro_crew/static/dist/index.html` (Pull+Build first) — a cutover without a built dist serves a broken dashboard |
 | `unsafe_path` | the worktree path cannot be used as a live target (control characters, unresolvable, missing binary, no `src/kiro_crew` dir) |
 | `write_failed` | writing the pointer file failed — rolled back to prior state |
