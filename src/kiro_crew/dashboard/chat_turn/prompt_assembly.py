@@ -857,6 +857,22 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                     "thread_parent_text": _parent_text,
                     "include_channel_history": False,
                 }
+        # A reply typed in the linked thread names that thread on every turn, as
+        # a Slack-born turn does (``slack/handler_runtime/turn.py``), so the
+        # agent can read the thread with the Slack tools. Only for the thread the
+        # words came from; a dashboard-typed turn is not inside a Slack thread.
+        if (
+            not _thread_parent_kwargs
+            and _turn_runtime_source(turn) == "slack"
+            and slot._slack_linked
+            and slot._slack_thread_ts
+            and slot._slack_channel in turn._directive_source_channels
+        ):
+            _thread_parent_kwargs = {
+                "channel_id": slot._slack_channel,
+                "thread_ts": slot._slack_thread_ts,
+                "include_channel_history": False,
+            }
         # Use resolved kiro agent name (e.g. "kirocrew"), not the slot
         # name (e.g. "default"), so build_message's is_custom check
         # correctly identifies kirocrew sessions and enables skills.
