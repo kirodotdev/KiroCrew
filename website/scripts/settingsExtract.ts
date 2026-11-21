@@ -261,6 +261,7 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ReleasesPanel.tsx': 'about',
   'DesktopGatewayRestartRow.tsx': 'about',
   'SttSettings.tsx': 'voice',
+  'SttPointerHoldSettings.tsx': 'voice',
   // The `instances` tab mounts RemoteCrewPanel (SettingsPage.tsx), which also
   // renders InstancesPanel.tsx's AddInstanceForm — both files map to the same
   // tab so a primitive added to either lands on the right deep link.

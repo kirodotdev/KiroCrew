@@ -2347,6 +2347,20 @@
       "configKey": "stt.custom_model_sha256"
     },
     {
+      "id": "voice.hold-the-message-box-to-talk",
+      "label": "Hold the message box to talk",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.hold-the-message-box-to-talk",
+      "hint": "Turn this off and a press on the message box only places the cursor."
+    },
+    {
+      "id": "voice.hold-time",
+      "label": "Hold time",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.hold-time",
+      "hint": "How long the button stays down before dictation starts. Shorter starts sooner; longer keeps a slow click from starting it."
+    },
+    {
       "id": "voice.how-the-key-works",
       "label": "How the key works",
       "tab": "voice",
