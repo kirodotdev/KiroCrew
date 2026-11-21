@@ -1,0 +1,5 @@
++124
+`shell_commands.xargs_pipelines` and `xargs_handed_on`: each pipeline that feeds
+`xargs` is also read as a line of its own, from the words its first command hands on,
+so a command chained before it no longer changes what the xargs rebuild sees, and each
+such rebuild is made once per walk. Deny-only: no allow widened.

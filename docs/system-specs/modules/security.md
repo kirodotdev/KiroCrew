@@ -1154,6 +1154,32 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   views in `deny_gate.py` and to `shell_normalizer._shell_payload_walk` (the
   self-protection and git-publish floors), which add them to the frame's own payloads, so
   `sh -c 2>/dev/null '<script>'` hides no script and the frame's exemptions still apply.
+  `xargs_pipelines(text)` cuts out each pipeline for that walk, reading the text after the
+  shell's line-continuation fold (`es\` + newline + `ac` is `esac`): from its first word past
+  the reserved words that keep command position (`then`, `do`, `!`, `time`) to the list
+  separator that ends it inside its own group (a subshell, `$( … )`, a backtick body, a
+  `{ …; }` group, or a compound command: `for`, `select`, `while` or `until` to `done`,
+  `if` to `fi`, `case` to `esac`, its keywords read only where a command starts and not
+  past a `)` or backtick; a `(` where a `case` pattern starts, right after the header's
+  `in` or a branch's `;;`, opens a pattern, not a subshell), heredoc bodies read past and
+  a newline right after `|` read as the pipe it continues. Whether a cut pipeline feeds
+  `xargs` is read off its normalized words by the rebuild (`x''args` is `xargs`); one
+  that feeds none adds no frame. The walk
+  adds each cut pipeline's xargs
+  rebuild as a frame of its own, made at the pipeline's own first pipe from the words its
+  first command hands on as the line's own rebuild chain carries them
+  (`xargs_handed_on`: past each pipe nested in it only the arguments of the command its
+  `xargs` runs, and nothing past an `xargs` that runs no command), so the rebuild reads
+  the pipeline's own words
+  whatever runs before it on the line, and the line keeps its own rebuild chain too. No rebuild
+  is cut again (its tail is the rest of a line already cut), and a cut pipeline's
+  rebuild is rebuilt again only once per further pipe of that pipeline: following the
+  pipes of the groups nested inside it would walk every nested pipeline once per
+  enclosing cut, cubic in the nesting depth. Every enclosing `$( … )` frame cuts the
+  pipelines nested in it again, so each cut pipeline's rebuild is made once per walk, not
+  once per frame that holds it. An `eval` join inherits both limits from
+  its frame. A text reached more than one way is walked with the most work any parent
+  asks of it, so a cut never takes away a walk the same text gets elsewhere.
   The walk reads the caller's own command line with single quotes as literal
   (`_substitution_bodies(..., raw_source=True)`) only when that line is one simple
   `git commit`/`git tag` or `gh pr|issue create|edit|comment` command
