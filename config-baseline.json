@@ -13405,6 +13405,20 @@
       "defaultValue": ""
     },
     {
+      "path": "agents.*.worker_environment",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Worker Session Environment",
+      "help": "Session environment profile id the sessions this bot dispatches through session_create run on. Empty (the default) runs them on this machine. Only a Coder, Sprites or boxd profile, and only for a worker on the KAS harness the bot's workers run on; Kiro Cloud is never used, since it sends the worker no MCP servers to report back with. A profile that is gone, or session environments turned off, leaves the worker on this machine and the create's audit record names the dropped id. The bot's own chat is never moved by this setting.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "agents.*.max_workers",
       "kind": "core",
       "type": "integer",

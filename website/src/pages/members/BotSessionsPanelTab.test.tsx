@@ -15,9 +15,9 @@ vi.mock('../../components/ChatPane', async () => {
   const { useContext } = await import('react')
   const { RunInTerminalScope } = await import('../../components/runInTerminalScope')
   return {
-    default: function ChatPaneStub({ slotKey, focused, pushToTalk, onFocus }: { slotKey: string; focused?: boolean; pushToTalk?: boolean; onFocus?: () => void }) {
+    default: function ChatPaneStub({ slotKey, focused, pushToTalk, onFocus, environmentChipHidden }: { slotKey: string; focused?: boolean; pushToTalk?: boolean; onFocus?: () => void; environmentChipHidden?: boolean }) {
       const scope = useContext(RunInTerminalScope)
-      return <button type="button" data-testid="chat-pane-stub" data-chat-pane={focused ? 'focused' : ''} data-push-to-talk={pushToTalk ? '1' : '0'} data-scope={scope ?? ''} onFocus={onFocus}>{slotKey}</button>
+      return <button type="button" data-testid="chat-pane-stub" data-chat-pane={focused ? 'focused' : ''} data-push-to-talk={pushToTalk ? '1' : '0'} data-scope={scope ?? ''} data-environment-chip={environmentChipHidden ? 'hidden' : 'shown'} onFocus={onFocus}>{slotKey}</button>
     },
   }
 })
@@ -104,6 +104,13 @@ describe('BotSessionsPanelTab open session pane', () => {
     const pane = await screen.findByTestId('chat-pane-stub')
     expect(pane.getAttribute('data-scope')).toBeTruthy()
     expect(pane.getAttribute('data-scope')).not.toBe('page-scope')
+  })
+
+  // Where a bot's workers run is its Settings page's choice: nothing under a
+  // bot session's input picks an environment.
+  it('opens the session with no environment chip under its input', async () => {
+    mountLive()
+    expect(await screen.findByTestId('chat-pane-stub')).toHaveAttribute('data-environment-chip', 'hidden')
   })
 
   it('is the focused pane, with the dictation key, while focus is in it, and not after focus or a press elsewhere', async () => {

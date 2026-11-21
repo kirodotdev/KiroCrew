@@ -41,6 +41,10 @@ export interface ChatPaneProps {
    *  (border, rounded corners) would duplicate it. Split-view panes keep
    *  the chrome — there the bar IS the pane's identity. */
   frameless?: boolean
+  /** Draw no Session Environment chip under the input (its placement is still
+   *  read): a bot's session opened in the bot page's side panel, whose
+   *  environment the bot's Settings page decides. */
+  environmentChipHidden?: boolean
   /** Height, in px, of a host band that floats OVER the pane's top edge (the
    *  Members DM header, #18325): the scroller pads its rows below it, so at
    *  scroll top nothing hides under the band while the conversation still

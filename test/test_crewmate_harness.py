@@ -1117,6 +1117,34 @@ class TestReadPath:
         assert set(body["worker_harnesses"]) == {"kas", "claude"}
 
     @pytest.mark.asyncio
+    async def test_the_owner_readout_offers_the_workers_vm_profiles_on_kas(
+        self, seeded, monkeypatch
+    ):
+        """The Workers run on picker's choices: no Kiro Cloud, and none off KAS."""
+        from kiro_crew.dashboard.handlers import session_environments as envs
+
+        saved = [
+            {"id": "cdr", "name": "Coder box", "provider": "coder", "workdir": "/w"},
+            {"id": "cld", "name": "Cloud", "provider": "kiro_cloud", "workdir": ""},
+        ]
+        monkeypatch.setattr(envs, "_profiles", lambda: [dict(p) for p in saved])
+        async with TestClient(TestServer(_app())) as client:
+            on_kas = await (
+                await client.get("/api/agents/resolved-model", params={"agent": seeded})
+            ).json()
+            cfg = KiroCrewConfig.load()
+            cfg.agents[seeded].acp_backend = "claude"
+            cfg.save()
+            on_claude = await (
+                await client.get("/api/agents/resolved-model", params={"agent": seeded})
+            ).json()
+        assert on_kas["harness"] == "kas"
+        assert on_kas["worker_environments"] == [
+            {"id": "cdr", "name": "Coder box", "provider": "coder"}
+        ]
+        assert on_claude["worker_environments"] == []
+
+    @pytest.mark.asyncio
     async def test_a_kiro_pin_on_v3_reads_as_stored_and_runs_on_kas(self, seeded):
         from kiro_crew.agent_sdk import backends
 

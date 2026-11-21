@@ -408,6 +408,20 @@ class KiroCrewAgentConfig:
             "standard levels. An explicit effort on the call wins.",
         ),
     )
+    worker_environment: str = field(
+        default="",
+        metadata=_meta(
+            "Worker Session Environment",
+            "Session environment profile id the sessions this bot dispatches "
+            "through session_create run on. Empty (the default) runs them on this "
+            "machine. Only a Coder, Sprites or boxd profile, and only for a worker "
+            "on the KAS harness the bot's workers run on; Kiro Cloud is never used, "
+            "since it sends the worker no MCP servers to report back with. A profile "
+            "that is gone, or session environments turned off, leaves the worker on "
+            "this machine and the create's audit record names the dropped id. The "
+            "bot's own chat is never moved by this setting.",
+        ),
+    )
     max_workers: int = field(
         default=BOT_MAX_WORKERS_DEFAULT,
         metadata=_meta(

@@ -276,6 +276,10 @@ export interface ChatInputProps {
   /** Session Environment chip for this slot (`SessionEnvironmentChip`). It owns
    *  its own separated shelf group and renders nothing until profiles exist. */
   environmentSlot?: string | null
+  /** Draw no Session Environment chip for `environmentSlot`, while its placement
+   *  still gates the local project controls: a bot's own thread, whose workers'
+   *  environment is a choice on the bot's Settings page. */
+  environmentChipHidden?: boolean
   /** App-contributed composer actions (contributes.composerActions in app.json):
    *  rows in the "+" menu whose app offers text the composer inserts as visible
    *  text, refused when it holds anything the composer would resolve. */

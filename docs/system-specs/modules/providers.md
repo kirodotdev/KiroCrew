@@ -689,7 +689,9 @@ a status. A changed choice arms the slot's deferred reset; only a choice back to
 this machine prewarms. `session_environments.default_profile` binds a new owner
 dashboard chat (`apply_default_environment`, only while it has no choice and no
 messages; any failure leaves it local); scheduled jobs, channels and peer chats
-are untouched. A bound session bypasses the warm pool, whose children are local
+are untouched. A bot's `worker_environment` binds each worker it opens through
+`session_create` the same way (`apply_default_environment(profile=...)`; Coder,
+Sprites or boxd on KAS only; session-control.md). A bound session bypasses the warm pool, whose children are local
 engines (`kirocrew.session.pool.decision` outcome `bypass_remote_environment`).
 
 Preparing reserves a row in the Coder ownership registry before any compute

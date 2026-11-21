@@ -212,6 +212,7 @@ function ChatInput({
   onModelClick,
   onProjectClick,
   environmentSlot,
+  environmentChipHidden = false,
   sessionControls,
   composerActions,
   onSessionControlClick,
@@ -1817,12 +1818,12 @@ function ChatInput({
           // this the chip is silently invisible whenever no other pill happens
           // to be present — the control is declared, mounted and unreachable.
           !!sessionControls?.length || !!presence ||
-          !!environmentSlot) && (
+          (!!environmentSlot && !environmentChipHidden)) && (
         <div ref={shelfRef} data-testid="composer-context-shelf" className="glass-shelf pt-1 flex items-center gap-2 min-w-0" style={{ ['--glass-shelf-h' as string]: `${shelfHeight}px` }}>
           {/* Where the session's files and commands live. Its own separated
               group, like the app session controls below, so neither crowds the
               agent/project chip group past `max-two-buttons-per-row`. */}
-          {environmentSlot && (
+          {environmentSlot && !environmentChipHidden && (
             <SessionEnvironmentChip slot={environmentSlot} disabled={isRunning} compact={shelfCompact} />
           )}
           {/* App-contributed session controls live in their OWN group, not

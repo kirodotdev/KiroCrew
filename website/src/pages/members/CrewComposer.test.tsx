@@ -24,6 +24,7 @@ const CHROME: Partial<ChatInputProps> = {
   reasoningEffort: 'high', effortIsDefault: false, hasEffort: true,
   contextPct: 42, contextUsedTokens: 4200, contextWindowTokens: 10000,
   approvalMode: 'trust',
+  environmentSlot: 'dm-oncall',
 }
 
 describe('CrewComposer', () => {
@@ -70,5 +71,13 @@ describe('CrewComposer', () => {
 
   it('names every chrome prop the test passes, so a new chip cannot slip through untested', () => {
     expect([...SESSION_CHROME_PROPS].sort()).toEqual(Object.keys(CHROME).sort())
+  })
+
+  // Where a Bot's workers run is a choice on its Settings page: nothing is
+  // drawn under the Bot chat's input, so the "Run this chat on" chip never gets
+  // the slot it would read.
+  it('draws no session environment chip under the input', () => {
+    render(<CrewComposer value="" onChange={noop} onSend={noop} environmentSlot="dm-oncall" />)
+    expect(seen.props!).not.toHaveProperty('environmentSlot')
   })
 })
