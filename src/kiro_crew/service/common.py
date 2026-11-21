@@ -10,7 +10,7 @@ import stat
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 
 from kiro_crew.config import loader
 from kiro_crew.config.paths import CONFIG_DIR_NAME
@@ -138,6 +138,100 @@ def kirocrew_bin() -> str:
     if found:
         return through_stable_link(found)
     return through_stable_link(os.path.realpath(sys.argv[0]))
+
+
+def service_exec_path(bin_path: str) -> str:
+    """The program a service definition runs for *bin_path* (a
+    :func:`kirocrew_bin` result): the unit's ``ExecStart``, the launchd
+    launcher's ``exec`` target.
+
+    *bin_path* itself, except that a path in a Toolbox tool-version dir is named
+    through the Toolbox launcher (:func:`toolbox_launcher_for`), which runs
+    whatever version is current: Toolbox removes old version dirs on later
+    updates, and the service would then fail to start. ``KIROCREW_SERVICE_BIN``
+    is used as given at install. The service does not keep that variable, so a
+    later heal at gateway start (``macos._repoint_versioned_launcher``) still
+    replaces a target inside a managed-update version folder: the next update
+    removes that folder.
+
+    Only the program the manager starts moves. The launcher itself is a
+    dispatcher every Toolbox tool shares, so the AppArmor profile is never
+    attached to it: :func:`service_attach_path` names the file to attach to.
+
+    The launcher is used only when the version's own ``bin/<name>`` script, the
+    file it execs and the profile attaches to, is there too; otherwise
+    *bin_path* is kept, so the program started and the attach point never part.
+    """
+    if os.environ.get("KIROCREW_SERVICE_BIN", "").strip():
+        return bin_path
+    launcher = toolbox_launcher_for(bin_path)
+    if launcher is None or _toolbox_version_script(bin_path) is None:
+        return bin_path
+    return launcher
+
+
+def service_attach_path(bin_path: str) -> str:
+    """The file the service's path-attached AppArmor profile is attached to.
+
+    *bin_path* (a :func:`kirocrew_bin` result) when the service runs it
+    directly. When :func:`service_exec_path` starts the Toolbox launcher
+    instead, the launcher never execs *bin_path*: it execs the version's own
+    ``<version>/bin/<name>`` script, which then runs the interpreter. So that
+    script is the attach point; the kernel applies the profile at its
+    ``execve()``, and every exec under it inherits the profile while no other
+    profile attaches. :func:`kiro_crew.service.apparmor.service_attachment`
+    widens it to every version of this tool.
+    """
+    if service_exec_path(bin_path) == bin_path:
+        return bin_path
+    return _toolbox_version_script(bin_path) or bin_path
+
+
+def _toolbox_version_script(path: str) -> str | None:
+    """The version's own ``bin/<name>`` script for a *path* inside a Toolbox
+    tool-version dir, when it is an executable file, else ``None``."""
+    found = _toolbox_version_parts(path)
+    if found is None:
+        return None
+    version_root, name = found
+    script = PurePath(version_root, "bin", name)
+    try:
+        if os.path.isfile(script) and os.access(script, os.X_OK):
+            return str(script)
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _toolbox_version_parts(path: str) -> "tuple[PurePath, str] | None":
+    """``(<home>/.toolbox/tools/<tool>/<version>, <name>)`` for a *path* inside
+    a Toolbox tool-version dir, else ``None``. *path* is read as given."""
+    parts = PurePath(path).parts
+    for i in range(len(parts) - 4):
+        if parts[i : i + 2] == (".toolbox", "tools"):
+            return PurePath(*parts[: i + 4]), parts[-1]
+    return None
+
+
+def toolbox_launcher_for(path: str) -> str | None:
+    """The Toolbox launcher for *path* when it lies in a tool-version dir, else ``None``.
+
+    Toolbox installs each version under ``<home>/.toolbox/tools/<tool>/<version>/``
+    and puts one launcher per command in ``<home>/.toolbox/bin``. *path* is read
+    as given, not resolved, so the home spelling is kept. ``None`` also when that
+    launcher is not an executable file, so the caller keeps *path*.
+    """
+    found = _toolbox_version_parts(path)
+    if found is None:
+        return None
+    version_root, name = found
+    launcher = PurePath(*version_root.parts[:-3], "bin", name)
+    try:
+        if os.path.isfile(launcher) and os.access(launcher, os.X_OK):
+            return str(launcher)
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 def _running_install_bin() -> str | None:

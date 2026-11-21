@@ -3270,6 +3270,20 @@ persisted path; PATH and then `sys.argv[0]` remain the fallbacks.
 The macOS missing-launcher repair uses that override or the console script beside
 the running interpreter, with the same stable-link rewrite for the latter; it
 never consults PATH.
+The program a service definition starts (`service.common.service_exec_path`) is
+that resolver's answer, except that a path inside a Toolbox tool-version folder
+(`~/.toolbox/tools/<tool>/<version>/`) is named through the Toolbox launcher
+`~/.toolbox/bin/<name>` when that launcher is executable: a later update removes
+the version folder. The AppArmor profile is never attached to that launcher,
+which is one dispatcher every Toolbox tool shares: `service_attach_path` names
+the version's own `bin/<name>` script the launcher execs, and
+`apparmor.service_attachment` widens it to `tools/kirocrew/*/bin/kirocrew`, every
+version folder of this tool only, when that folder passes the takeover check.
+The SELinux context keeps the resolver's own path. On macOS, gateway start also rewrites a plain launcher that still execs a
+Toolbox version folder to the Toolbox launcher; a Dev Fleet cutover, a hand-edited
+launcher and a target outside a version folder are left alone. `kirocrew doctor`'s
+`service runs:` row names such a launcher as written rather than the dispatcher it
+resolves to.
 
 `kirocrew stop` is service-aware: if the service is active it calls
 the platform's stop instead of SIGTERM, so the manager does not

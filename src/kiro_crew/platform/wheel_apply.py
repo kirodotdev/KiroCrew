@@ -350,11 +350,12 @@ def userns_reattach_needed(version: str) -> bool:
         return False
     from kiro_crew.service import apparmor
     from kiro_crew.service import linux as service_linux
+    from kiro_crew.service.common import service_attach_path
 
     if not (apparmor.apparmor_is_active() and apparmor.userns_restricted()):
         return False
     attached = apparmor.service_profile_attachment(
-        service_linux.kirocrew_bin(), service_linux.UNIT_PATH
+        service_attach_path(service_linux.kirocrew_bin()), service_linux.UNIT_PATH
     )
     if attached is None:
         return False

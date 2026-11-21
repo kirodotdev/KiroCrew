@@ -291,10 +291,13 @@ def render_unit(*, user_scope: bool = False) -> str:
     # _home_for_user): under `sudo -H` the process HOME is /root while User= is
     # the sudo-selected human, and baking /root in would break service start.
     home = _home_for_user(user) if user else str(Path.home())
+    # Deferred: the facade serves every module-level name of this family.
+    from kiro_crew.service.common import service_exec_path
+
     # `--no-open` for the same reason as the launchd plist: a service starts on
     # boot and on every restart, and auto-opening a browser there is wrong. It is
     # simply less visible on a headless Linux box than on a desktop.
-    exec_start = f"{_sd_quote(bin_path)} gateway --no-open"
+    exec_start = f"{_sd_quote(service_exec_path(bin_path))} gateway --no-open"
     env_lines = f"Environment={_sd_quote(f'USER={user}')}\n" + "".join(
         f"Environment={_sd_quote(f'{key}={value}')}\n"
         for key, value in service_environment(home).items()

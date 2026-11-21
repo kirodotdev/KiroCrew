@@ -125,7 +125,7 @@ def _service_profile_applies(profile_path: Path, profile_name: str) -> bool:
     """
     return (
         cli_doctor.apparmor.service_profile_attachment(
-            cli_doctor.service_linux.kirocrew_bin(),
+            cli_doctor.service_linux.service_attach_path(cli_doctor.service_linux.kirocrew_bin()),
             cli_doctor.service_linux.UNIT_PATH,
             profile_path,
             profile_name,
@@ -213,9 +213,14 @@ def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
     # install path containing spaces or shell metacharacters must arrive as one
     # argument, not execute.
     try:
-        launcher = str(Path(cli_doctor.service_linux.kirocrew_bin()).resolve(strict=True))
+        attach = cli_doctor.service_linux.service_attach_path(
+            cli_doctor.service_linux.kirocrew_bin()
+        )
+        launcher = str(Path(attach).resolve(strict=True))
     except OSError:
-        launcher = cli_doctor.service_linux.kirocrew_bin()
+        launcher = cli_doctor.service_linux.service_attach_path(
+            cli_doctor.service_linux.kirocrew_bin()
+        )
     print(f"{render._INDENT}  {shlex.quote(launcher)} doctor")
     render._print_wrapped(
         "and read its Sandbox section: launched through the attached path, the "

@@ -61,6 +61,30 @@ class TestMacOSControlPaths:
         load_idx = next(i for i, c in enumerate(called) if c[:2] == ["launchctl", "bootstrap"])
         assert unload_idx < load_idx
 
+    def test_install_writes_a_launcher_that_runs_the_toolbox_launcher(self, tmp_path, monkeypatch):
+        """A Toolbox install's launcher must survive the update that removes its version dir."""
+        from kiro_crew.service import macos as svc_macos
+
+        plist_dir = tmp_path / "LaunchAgents"
+        log_dir = tmp_path / "Logs"
+        launcher = tmp_path / "live-gateway"
+        monkeypatch.setattr(svc_macos, "PLIST_DIR", plist_dir)
+        monkeypatch.setattr(svc_macos, "PLIST_PATH", plist_dir / f"{LAUNCHD_LABEL}.plist")
+        monkeypatch.setattr(svc_macos, "LOG_DIR", log_dir)
+        monkeypatch.setattr(svc_macos, "STDOUT_LOG", log_dir / "gateway.log")
+        monkeypatch.setattr(svc_macos, "STDERR_LOG", log_dir / "gateway.err")
+        monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", launcher)
+        monkeypatch.setattr(svc_macos, "_BOOTOUT_SETTLE_SECS", 0.0)
+        monkeypatch.delenv("KIROCREW_SERVICE_BIN", raising=False)
+        versioned, stable = TestEnsureLiveProgram._toolbox(tmp_path)
+        monkeypatch.setattr(svc_macos.sys, "executable", str(Path(versioned).parent / "python3"))
+
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("kiro_crew.service.macos.subprocess.run", return_value=ok):
+            svc_macos.install()
+
+        assert launcher.read_text() == svc_macos.render_live_program(stable)
+
     def test_uninstall_unloads_and_removes_plist(self, tmp_path, monkeypatch):
         from kiro_crew.service import macos as svc_macos
 
@@ -539,6 +563,111 @@ class TestEnsureLiveProgram:
 
         assert svc.ensure_live_program() is False
         assert "/wt/live" in launcher.read_text()
+
+    @classmethod
+    def _toolbox(cls, tmp_path, *, launcher=True):
+        """A Toolbox layout: one version dir and, optionally, the shared launcher."""
+        name = "kirocrew.exe" if os.name == "nt" else "kirocrew"
+        versioned = cls._exe(
+            tmp_path / "home" / ".toolbox" / "tools" / "kirocrew" / "1.2.3" / "bin" / name
+        )
+        stable = tmp_path / "home" / ".toolbox" / "bin" / name
+        if launcher:
+            cls._exe(stable)
+        return str(versioned), str(stable)
+
+    def test_restores_a_deleted_launcher_onto_the_toolbox_launcher(self, monkeypatch, tmp_path):
+        svc, launcher, _plist = self._agent(monkeypatch, tmp_path)
+        versioned, stable = self._toolbox(tmp_path)
+        monkeypatch.delenv("KIROCREW_SERVICE_BIN", raising=False)
+        monkeypatch.setattr(svc.sys, "executable", str(Path(versioned).parent / "python3"))
+
+        assert svc.ensure_live_program() is True
+
+        assert launcher.read_text() == svc.render_live_program(stable)
+
+    def test_repoints_a_plain_launcher_off_a_toolbox_version_dir(self, monkeypatch, tmp_path):
+        """A Toolbox update removes old version dirs; the agent must not name one."""
+        monkeypatch.delenv("KIROCREW_SERVICE_BIN", raising=False)
+        svc, launcher, plist = self._agent(monkeypatch, tmp_path)
+        versioned, stable = self._toolbox(tmp_path)
+        svc.write_live_program(svc.render_live_program(versioned), launcher)
+        before = plist.read_bytes()
+
+        assert svc.ensure_live_program() is True
+
+        assert launcher.read_text() == svc.render_live_program(stable)
+        assert os.access(launcher, os.X_OK)
+        assert plist.read_bytes() == before
+
+    def test_repoints_a_launcher_left_on_an_older_toolbox_version(self, monkeypatch, tmp_path):
+        """A newer gateway started by hand still heals a launcher on an old version dir."""
+        monkeypatch.delenv("KIROCREW_SERVICE_BIN", raising=False)
+        svc, launcher, _plist = self._agent(monkeypatch, tmp_path)
+        versioned, stable = self._toolbox(tmp_path)
+        newer = self._exe(Path(versioned).parents[2] / "1.2.4" / "bin" / Path(versioned).name)
+        monkeypatch.setattr(svc.sys, "executable", str(newer.parent / "python3"))
+        svc.write_live_program(svc.render_live_program(versioned), launcher)
+
+        assert svc.ensure_live_program() is True
+        assert launcher.read_text() == svc.render_live_program(stable)
+
+    def test_repoints_a_launcher_whose_version_folder_is_already_gone(self, monkeypatch, tmp_path):
+        """The update that broke the agent removed the folder; the heal must not need it."""
+        monkeypatch.delenv("KIROCREW_SERVICE_BIN", raising=False)
+        svc, launcher, _plist = self._agent(monkeypatch, tmp_path)
+        versioned, stable = self._toolbox(tmp_path)
+        svc.write_live_program(svc.render_live_program(versioned), launcher)
+        Path(versioned).unlink()
+
+        assert svc.ensure_live_program() is True
+        assert launcher.read_text() == svc.render_live_program(stable)
+
+    def test_never_repoints_a_launcher_outside_toolbox(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("KIROCREW_SERVICE_BIN", raising=False)
+        svc, launcher, _plist = self._agent(monkeypatch, tmp_path)
+        self._toolbox(tmp_path)
+        name = "kirocrew.exe" if os.name == "nt" else "kirocrew"
+        target = self._exe(tmp_path / "opt" / name)
+        contents = svc.render_live_program(str(target))
+        svc.write_live_program(contents, launcher)
+
+        assert svc.ensure_live_program() is False
+        assert launcher.read_text() == contents
+
+    def test_keeps_a_toolbox_version_launcher_when_the_service_bin_is_pinned(
+        self, monkeypatch, tmp_path
+    ):
+        svc, launcher, _plist = self._agent(monkeypatch, tmp_path)
+        versioned, _stable = self._toolbox(tmp_path)
+        contents = svc.render_live_program(versioned)
+        svc.write_live_program(contents, launcher)
+        monkeypatch.setenv("KIROCREW_SERVICE_BIN", versioned)
+
+        assert svc.ensure_live_program() is False
+        assert launcher.read_text(encoding="utf-8") == contents
+
+    def test_keeps_a_toolbox_version_launcher_when_toolbox_has_no_launcher(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.delenv("KIROCREW_SERVICE_BIN", raising=False)
+        svc, launcher, _plist = self._agent(monkeypatch, tmp_path)
+        versioned, _stable = self._toolbox(tmp_path, launcher=False)
+        svc.write_live_program(svc.render_live_program(versioned), launcher)
+
+        assert svc.ensure_live_program() is False
+        assert launcher.read_text() == svc.render_live_program(versioned)
+
+    def test_never_repoints_a_cutover_launcher(self, monkeypatch, tmp_path):
+        """A launcher with a working dir is a Dev Fleet cutover, whatever it execs."""
+        monkeypatch.delenv("KIROCREW_SERVICE_BIN", raising=False)
+        svc, launcher, _plist = self._agent(monkeypatch, tmp_path)
+        versioned, _stable = self._toolbox(tmp_path)
+        cutover = svc.render_live_program(versioned, working_dir="/wt/live")
+        svc.write_live_program(cutover, launcher)
+
+        assert svc.ensure_live_program() is False
+        assert launcher.read_text() == cutover
 
     def test_writes_nothing_when_no_agent_is_installed(self, monkeypatch, tmp_path):
         """No plist means no job whose launcher this would be — writing it is litter."""
