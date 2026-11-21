@@ -184,6 +184,7 @@ describe('row callbacks keep their identity across streamed frames', () => {
       showActionError: vi.fn(), handleFileOpen: vi.fn() as never, handleFolderOpen: vi.fn(), search: { isOpen: false } as never,
       tabsCtl: {} as never, sessionTitles: new Map(), selectSessionTab: vi.fn(), linkPreviewsOn: false, planTaskId: '',
       setSidebarPinned: vi.fn(), sidebarAutoHidden: { current: null }, sidebarWidth: 280, setRegenerating: vi.fn(),
+      showRefusedPress: vi.fn(),
     }
     const ref = { current: first }
     const { result, rerender } = renderHook((p: { messages: ChatMessage[] }) => useMessageActions({ ...base, ...p, messagesRef: latest(ref, p.messages) }), {
@@ -195,11 +196,15 @@ describe('row callbacks keep their identity across streamed frames', () => {
     act(() => { result.current.handleEditResend(2, 't3', 'edited') })
     expect(calls.rewindWithRollback).toHaveBeenCalledTimes(1)
     // The rollback restores the snapshot taken at press time: the newest frame's rows.
-    const rollback = calls.rewindWithRollback.mock.calls[0][3] as () => void
+    const rollback = calls.rewindWithRollback.mock.calls[0][3] as (e: unknown) => void
     const dispatch = base.dispatch as unknown as ReturnType<typeof vi.fn>
     dispatch.mockClear()
-    act(() => { rollback() })
+    // The server's refusal reaches the notice above the composer, not only the console.
+    const refusal = new Error('Kiro CLI setup or sign-in is required before starting a session.')
+    act(() => { rollback(refusal) })
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat/replaceMessages', payload: next }))
+    expect(base.setRegenerating).toHaveBeenLastCalledWith(false)
+    expect(base.showRefusedPress).toHaveBeenCalledWith('regenerate', refusal)
   })
 
   it('useMessageActions: a refused edit-and-resend answers false so the open editor keeps its draft', () => {

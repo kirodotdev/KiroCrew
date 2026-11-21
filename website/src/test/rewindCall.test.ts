@@ -45,6 +45,8 @@ describe('rewindWithRollback', () => {
     const rollback = vi.fn()
     await rewindWithRollback('slot-abc', 'ts-1', 'edited', rollback)
     expect(rollback).toHaveBeenCalledOnce()
+    // The caller gets the server's reason, so it can show it to the user.
+    expect(rollback).toHaveBeenCalledWith(expect.objectContaining({ message: 'slot is running' }))
     expect(warnSpy).toHaveBeenCalledWith('rewind failed', expect.any(Error))
   })
 
