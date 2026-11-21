@@ -397,7 +397,10 @@ the Web Speech queue, and its final `setVoicePlaying(false)` clears
 
 Configuration is stored under `voice_reply` in the Crew configuration file.
 `slack.handler.load_voice_reply_config()` (defined in `slack/handler_runtime/voice.py`)
-loads the live `_VoiceConfig`, which stays module state of `slack/handler.py`. A
+loads the live `_VoiceConfig`, which stays module state of `slack/handler.py`, at
+boot, and the live config watcher re-applies it on every change under `voice_reply`
+in config.json (`apply_voice_reply_change`, with config.local.json merged over it;
+an edit to config.local.json alone applies at restart; see [config](config.md)). A
 `PUT /api/voice/config` validates the whole patch first, then persists it as a
 locked delta read-modify-write (`run_config_write` → `update_config_locked`)
 that sets only the named keys inside `voice_reply`, so voice settings owned by
@@ -570,6 +573,11 @@ surface can show:
 `slack.handler` accepts `!voice` thread commands (`_bang_voice`,
 `slack/handler_runtime/commands.py`) for enabling and disabling a
 thread, toggling global replies, and choosing a voice, engine, speed, or pitch.
+`!voice global` toggles `voice_reply.enabled` in config.json under the config write
+lock first and changes the live flag only after the write lands; when
+config.local.json sets that key, the overlay's value stays live and the reply says
+so. `!voice off` clears the thread's own setting and does not silence a thread
+while `voice_reply.enabled` is `true`.
 Both Slack turn paths call `_reply_by_voice()` (`slack/handler_runtime/voice.py`)
 once the answer is out: the default transport path
 (`transport_dispatch.handle_message_transport()`, `messaging.use_transport`) and

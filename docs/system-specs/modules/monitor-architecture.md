@@ -802,7 +802,9 @@ fail safe:
 A pull-request watch normally reaches its end turn-free: a merge classifies to
 `SUCCESS`/`pull_request_merged` and `decide_monitor` returns `STOP_SUCCESS`, a
 close to `BLOCKED`/`pull_request_closed` and `STOP_BLOCKED`, and the owner is
-told only by the terminal bell notice (`_notify_nudge_expired`). The session that
+told only by the terminal notice (`_notify_nudge_expired`): a passive feed note
+with no bell for a merge, a note at the `system.monitor` channel's priority for a
+close (see [app-notifications](app-notifications.md)). The session that
 armed the watch gets no turn, even though the merge is often the event an agent
 is waiting for.
 
