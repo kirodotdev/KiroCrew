@@ -34,6 +34,7 @@ from dataclasses import asdict, dataclass, field
 from dataclasses import replace as dataclasses_replace  # noqa: F401 - owners read it
 from pathlib import Path
 from typing import Any, Literal, NamedTuple  # noqa: F401
+from urllib.parse import urlsplit  # noqa: F401 - read by the owners
 
 from kiro_crew import jsonl_util, pinned_fs, platform_compat, security, webhooks  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
@@ -250,7 +251,9 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     event_is_spawn_run,
     hook_gate_kwargs,
     identity_grant_covers_child,
+    is_fetch_url_text,
     mcp_identity_ref,
+    proven_fetch_url,
     set_builtin_app_agents,
     set_builtin_app_mcp_servers,
     set_builtin_app_names,

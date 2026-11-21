@@ -33,6 +33,7 @@ from kiro_crew.hooks import (
     _EDIT_TOOL_KIND,
     _normalize_tool_name,
     hook_gate_kwargs,
+    proven_fetch_url,
     title_is_trusted_mcp_identity,
     untruncated_shell_title,
 )
@@ -45,6 +46,9 @@ from kiro_crew.llm_helpers_parts.tool_input_denials import (
     _title_denial,
 )
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+from kiro_crew.platform.tool_paths import (
+    FETCH_PATH_FREE_FIELDS,
+)
 from kiro_crew.platform.tool_paths import WRITE_PLANE_KINDS as _WRITE_PLANE_KINDS
 from kiro_crew.platform.tool_paths import (
     command_shaped_strings,
@@ -624,8 +628,21 @@ async def _resolve_permission(
         )
         else None
     )
+    # A proven web fetch (``proven_fetch_url``) is split by KEY the same way: the
+    # string under its ``url``, and under a field a captured frame of that tool
+    # vets (``platform.tool_paths.FETCH_PATH_FREE_FIELDS``), is never opened as a
+    # file, so it skips the path tier alone and keeps the size ceiling and the bash
+    # and deny tiers. Every other argument, and a mapping or list under such a key,
+    # keeps the full scan; any frame outside that proof keeps today's scan.
+    _exempt_url = proven_fetch_url(event)
+    _fetch_keys = (
+        frozenset({"url"}) | FETCH_PATH_FREE_FIELDS.get(event.harness_tool_id, frozenset())
+        if _exempt_url and not getattr(event, "is_shell", False)
+        else frozenset()
+    )
     _scoped_truncated = False
     _body_strings: list[str] = []
+    _path_free_strings: list[str] = []
     if _edit_params is not None:
         _input_strings: list[str] = []
     elif _scoped_params is not None:
@@ -634,6 +651,11 @@ async def _resolve_permission(
         _input_strings = list(_scoped_strings)
     elif _mcp_body_keys and isinstance(event.raw_tool_params, dict):
         _rest_params, _body_strings = split_document_bodies(event.raw_tool_params, _mcp_body_keys)
+        _scoped_strings = command_shaped_strings(_rest_params, body_keys=frozenset())
+        _scoped_truncated = _scoped_strings.truncated
+        _input_strings = list(_scoped_strings)
+    elif _fetch_keys and isinstance(event.raw_tool_params, dict):
+        _rest_params, _path_free_strings = split_document_bodies(event.raw_tool_params, _fetch_keys)
         _scoped_strings = command_shaped_strings(_rest_params, body_keys=frozenset())
         _scoped_truncated = _scoped_strings.truncated
         _input_strings = list(_scoped_strings)
@@ -668,6 +690,7 @@ async def _resolve_permission(
             judged_title,
             _denied_regexes,
             exempt_command=_path_tier_exempt(event),
+            exempt_url=_exempt_url,
             identity_exempt=title_is_trusted_mcp_identity(
                 _normalize_tool_name(normalized),
                 getattr(event, "mcp_server_name", "") or "",
@@ -736,6 +759,12 @@ async def _resolve_permission(
                 if input_hit[0] == "oversize" and size_params is not None:
                     input_hit = _named_size_refusal(input_hit, size_params)
                 return (*input_hit, "always_deny_input")
+        if _path_free_strings:
+            fetch_hit = _first_tool_input_denial(
+                _path_free_strings, _denied_regexes, path_rule=False
+            )
+            if fetch_hit is not None:
+                return (*fetch_hit, "always_deny_input")
         if body_strings:
             # Every MCP document or message body, Kiro Crew's and a listed
             # third-party field alike: the size ceiling and the path tier only.

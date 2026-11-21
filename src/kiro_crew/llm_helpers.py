@@ -281,6 +281,8 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         fire_tool_hooks,
         get_global_hook_store,
         hook_gate_kwargs,
+        is_fetch_url_text,
+        proven_fetch_url,
         title_is_trusted_mcp_identity,
         unattended_turn,
         untruncated_shell_title,
@@ -298,6 +300,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         OUTCOME_REJECTED_TRANSPORT_FLOOR,
     )
     from kiro_crew.platform.context import redact_via_context  # noqa: F401
+    from kiro_crew.platform.tool_paths import (  # noqa: F401
+        FETCH_PATH_FREE_FIELDS,
+    )
     from kiro_crew.platform.tool_paths import WRITE_PLANE_KINDS as _WRITE_PLANE_KINDS  # noqa: F401
     from kiro_crew.platform.tool_paths import (  # noqa: F401
         command_shaped_strings,
