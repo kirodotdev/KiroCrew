@@ -972,6 +972,37 @@ async def test_a_steer_the_harness_took_as_its_turn_ended_is_not_run_again(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_a_shared_runtime_steer_injected_as_its_turn_ended_is_not_run_again(tmp_path):
+    """(ai2) As (ai), through a real codex session handle behind its provider."""
+    from test_codex_steering_request import _handle as _codex_handle
+    from test_codex_steering_request import _Runtime as _CodexRuntime
+
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+    from kiro_crew.dashboard import deferred_steer
+    from kiro_crew.testing.wait import async_wait_until, await_until
+
+    state = _make_state(tmp_path)
+    caller, target, _mock = _loss_recovery_target(state)
+    rt = _CodexRuntime()
+    handle = _codex_handle(rt)
+    target._acp_client = AcpSessionProvider(handle, rt, session_key="k")  # type: ignore[arg-type]
+    out = await _send(state, caller)
+    assert out.get("pending_steer") is True
+
+    flush = asyncio.ensure_future(deferred_steer.flush_at_boundary(state, target))
+    await async_wait_until(lambda: rt.requests, describe=lambda: f"requests={rt.requests!r}")
+    handle._turn_done.set()  # the terminal is read before the steering answer
+    await await_until(flush, what="the boundary flush")
+    rt.answer.set_result({"outcome": "injected"})
+    assert target._deferred_steer_delivered, "the delivered mark survives a late injected"
+
+    spawn = await _hand_off(state, target)
+
+    assert spawn.call_count == 0, "no second run from the queue"
+    assert not target._queue
+
+
+@pytest.mark.asyncio
 async def test_a_resend_of_an_unconfirmed_steer_is_still_the_same_steer(tmp_path):
     """(aj) An unconfirmed steer may have run: a re-send in the window must not run it again."""
     state = _make_state(tmp_path)
