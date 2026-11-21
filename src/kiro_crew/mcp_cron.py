@@ -87,6 +87,28 @@ from kiro_crew.validation import (
 logger = logging.getLogger("kiro_crew.mcp_cron")
 
 
+def _log_access_after_change(**fields: Any) -> None:
+    """Write the ``log_api_access`` row of a call that has ALREADY changed the store.
+
+    Past this point the job is created, updated, triggered or carries a pending
+    secret request, so an audit write that raises (``sel()`` cannot open the
+    security event log in a process the credential mask keeps from ``trust/``)
+    must not become the call's answer: the model would be told a call that took
+    effect failed and retry it -- a second job, a second run, a repeated update
+    or secret request. Log the lost row and let the
+    caller answer with what it did. Rows written BEFORE anything changes stay
+    unguarded on purpose: there, failing the call loses nothing.
+    """
+    try:
+        sel().log_api_access(**fields)
+    except Exception:
+        logger.warning(
+            "cron: could not write the %s audit row after the change was made",
+            fields.get("operation", "?"),
+            exc_info=True,
+        )
+
+
 def _never_fires_note(job: CronJob) -> str:
     """A ` Warning: ...` suffix for a saved job whose cron matches no date, else ``""``."""
     warning = never_fires_warning(job.schedule)
@@ -1049,7 +1071,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         except ValueError as e:
             return f"Error: {e}"
         sched_str = format_schedule(job.schedule, tz_name=job_zone_name(job))
-        sel().log_api_access(
+        _log_access_after_change(
             caller="mcp",
             operation="cron.create",
             outcome="allowed",
@@ -1205,7 +1227,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {e}"
         if not updated:
             return f"Error: job not found: {jid}"
-        sel().log_api_access(
+        _log_access_after_change(
             caller="mcp",
             operation="cron.update",
             outcome="allowed",
@@ -1331,7 +1353,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         port = resolve_serving_port()
         secret_path = config_dir() / ".local_secret"
         ok, msg = trigger_cron_job(jid, port, secret_path)
-        sel().log_api_access(
+        _log_access_after_change(
             caller="mcp",
             operation="cron.trigger",
             outcome="allowed" if ok else "error",
@@ -1417,7 +1439,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {exc}"
         except ValueError as exc:
             return f"Error: {redact(str(exc))}"
-        sel().log_api_access(
+        _log_access_after_change(
             caller="mcp",
             operation="cron.secret_request",
             outcome="allowed",
