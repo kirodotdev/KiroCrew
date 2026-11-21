@@ -3719,7 +3719,12 @@ auto-approves only when `command` is present and
 `security.readonly_bash.is_read_only_bash(command)` is True (deny-by-default: rejects
 output redirects, substitution, backgrounding, and variable-assigning
 expansions (`$[...]`, or any `=` after a `${`, which assign a variable every
-later segment sees); input redirects/comments are
+later segment sees), and a `${` expansion whose result is re-evaluated
+(`_runs_through_expansion`: indirection `${!`, a subscript `[` or an `@`
+transformation after the first `${`, a `:` there that is not `:-`/`:+`/`:?`
+(a substring offset is arithmetic), and the bash 5.3 command forms `${ ` and
+`${|`); plain `$VAR`/`${VAR}` and the default, alternate, length and strip forms
+still pass); input redirects/comments are
 refused for the position- or mode-sensitive verbs where a shell-elided word can
 change the verdict). Help/version syntax does not create read-only authority:
 the command must already match the explicit read-only command table, otherwise it
@@ -5197,7 +5202,13 @@ must equal the server-derived field on the still-pending approval. Missing,
 underivable, redaction-changing, or stale/mismatched patterns return a typed 400
 without resolving the approval and are SEL-audited. Exact-command grants escape
 fnmatch metacharacters before storage, so trusting the literal command
-`rm *.tmp` does not also trust `rm secret.tmp`. Base grants are also derived
+`rm *.tmp` does not also trust `rm secret.tmp`. The escape (`_escape_glob`,
+shared by the exact and base tiers) covers the whole string, a Windows drive or
+UNC prefix included, so the `?` of `\\?\C:\Tools\x.exe` stays literal; it is not
+`glob.escape`, which leaves that prefix unescaped on Windows. Matching uses
+`fnmatch.fnmatchcase` on lowered strings, the same case-insensitive language on
+every host: `fnmatch.fnmatch` would fold `/` into `\` on Windows, so a grant for
+`del /q foo` would approve `del \q foo`. Base grants are also derived
 server-side; assignment-prefixed bases such as `FOO=bar` are refused rather than
 becoming broad globs. Command parsing and matching live in the shared
 `trust_patterns.py` module so another approval surface consumes a command-shaped
