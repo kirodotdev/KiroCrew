@@ -319,6 +319,28 @@ describe('PrActionsBar — verdicts that need prose', () => {
     expect(screen.getByRole('button', { name: /^comment$/i })).toBeTruthy()
   })
 
+  it('offers only the verdicts the provider records', () => {
+    // GitLab has no "request changes" review and Azure DevOps records neither
+    // verdict: their clients refuse those verbs, so the buttons could only ever fail.
+    // Commenting works everywhere.
+    const cases = [
+      { ref: { ...REF, provider: 'gitlab', host: 'gitlab.com' }, approve: true, requestChanges: false },
+      { ref: { owner: 'org/proj', repo: 'r', provider: 'azure', host: 'dev.azure.com' }, approve: false, requestChanges: false },
+      { ref: REF, approve: true, requestChanges: true },
+    ]
+    for (const { ref, approve, requestChanges } of cases) {
+      const { unmount } = wrap(
+        <PrActionsBar repoRef={ref as never} pull={PULL} detail={REVIEWABLE as never} canWrite />,
+      )
+      const label = JSON.stringify(ref)
+      expect(Boolean(screen.queryByRole('button', { name: /^approve$/i })), label).toBe(approve)
+      expect(Boolean(screen.queryByRole('button', { name: /request changes/i })), label)
+        .toBe(requestChanges)
+      expect(screen.getByRole('button', { name: /^comment$/i }), label).toBeTruthy()
+      unmount()
+    }
+  })
+
   it('pins a verdict to the detail sha, never the list row', async () => {
     // The list row can be minutes old. The pin exists so the approval names the commit
     // the pane actually RENDERED, and the detail read is what supplies that.
@@ -475,6 +497,21 @@ describe('PrBulkBar', () => {
     // The other verbs are unaffected — they act on the PR, not on a revision.
     expect((screen.getByRole('button', { name: /^close$/i }) as HTMLButtonElement).disabled)
       .toBe(false)
+  })
+
+  it('offers no bulk approve on a provider that records no approve review', () => {
+    // Azure DevOps records no verdict, so every row would fail; GitLab does approve.
+    setCtx({
+      active: { owner: 'org/proj', repo: 'r', provider: 'azure', host: 'dev.azure.com' },
+      checkedPulls: new Set([7, 8]),
+    })
+    const { unmount } = wrap(<PrBulkBar />)
+    expect(screen.queryByRole('button', { name: /^approve$/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /^comment$/i })).toBeTruthy()
+    unmount()
+    setCtx({ active: { ...REF, provider: 'gitlab', host: 'gitlab.com' }, checkedPulls: new Set([7, 8]) })
+    wrap(<PrBulkBar />)
+    expect(screen.getByRole('button', { name: /^approve$/i })).toBeTruthy()
   })
 
   it('approves the sha each row carried WHEN TICKED, not the latest polled one', async () => {
