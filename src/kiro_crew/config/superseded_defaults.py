@@ -302,8 +302,8 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         changed_in="#6651",
         new_default_display="unset (automatic: 25s desktop / 90s managed service)",
     ),
-    # 0 means as many panes as crews registered. A stored 5 evicts the 6th crew,
-    # which at the pane looks like a connection flapping on tab switch.
+    # 0 means automatic, which now also resolves to 5 (the five most recently
+    # opened Crews, SSH and relay together), so a stored 5 behaves the same.
     #
     # REPORT-ONLY: plausible values are about 1..10, so an operator with five crews
     # who types 5 stores exactly the old default.
@@ -312,7 +312,7 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         old_default=5,
         new_default=0,
         changed_in="#7248",
-        new_default_display="0 (automatic: as many as are registered)",
+        new_default_display="0 (automatic: the 5 most recently opened)",
     ),
     # A stored False withdraws session control from every ordinary agent. Crew
     # members and the owner-tab Conductor keep a creator-fenced dispatch bypass

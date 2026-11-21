@@ -1484,6 +1484,22 @@ function createIpcRegistrar({
       return relayCrewOpener().open(endpointId, { parent, dashboard: parent._mcView, bounds });
     });
 
+    // The warm set's background load: the main window's dashboard only, and never
+    // handed off, so no other window can bring the main one forward with it.
+    ipcMain.handle("relay-crew:prewarm-pane", async (event, endpointId, rect, viewport) => {
+      if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
+      try {
+        await assertLocalDashboard(event, "relay-crew:prewarm-pane");
+        assertMainWindowDashboard(event, "relay-crew:prewarm-pane");
+      } catch {
+        return { ok: false, error: "UNAVAILABLE" };
+      }
+      const main = windows.getMainWindow();
+      const bounds = paneRect(main, rect, viewport);
+      if (!bounds) return { ok: false, error: "INVALID_BOUNDS" };
+      return relayCrewOpener().prewarm(endpointId, { parent: main, dashboard: main._mcView, bounds });
+    });
+
     // The calls that steer an open pane take it only from the dashboard view
     // that opened it. Synchronous, since bounds arrive on every resize. Answers
     // the pane's handle, or null and nothing changes.
