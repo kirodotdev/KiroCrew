@@ -86,7 +86,8 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
-import { RESUME_ALL_CONFIRM_ABOVE, RESUME_ALL_MAX_RUNNING, interruptedIdleSlots, resumeAllResultText } from '../pages/chat-sidebar/resumeAll'
+import { RESUME_ALL_BENIGN_SKIPS, RESUME_ALL_CONFIRM_ABOVE, RESUME_ALL_MAX_RUNNING, RESUME_ALL_NAMES_CLASS, RESUME_ALL_RESULT_MS, interruptedIdleSlots, resumeAllResultText, resumeAllSkipText, resumeAllSkips } from '../pages/chat-sidebar/resumeAll'
+import type { ResumeAllBenignSkipCode } from '../pages/chat-sidebar/resumeAll'
 import { MORE_BELOW_MASK } from '../components/ModelEffortDropdown'
 import { RESUME_ALL_DISMISSED_KEY } from '../lib/resumeAllDismissed'
 import { RESUME_ALL_DONE_EVENT } from '../lib/resumeAllEvent'
@@ -169,6 +170,21 @@ describe('resumeAllResultText', () => {
     expect(resumeAllResultText({ ok: true, total: 3, resumed: ['a'], skipped: [{ slot: 'b', code: 'slot_queue_pending' }], failed: [{ slot: 'c', error: 'RuntimeError' }] }))
       .toBe('Resumed 1 session · 2 not resumed')
     expect(resumeAllResultText({ ok: true, total: 0, resumed: [], skipped: [], failed: [] })).toBe('Nothing to resume')
+  })
+})
+
+describe('resumeAllSkips', () => {
+  it('keeps the benign skips in server order and leaves the owner-action ones to the problems notice', () => {
+    expect(resumeAllSkips({
+      ok: true, total: 3, resumed: [], failed: [],
+      skipped: [{ slot: 'a', code: 'slot_running' }, { slot: 'b', code: 'slot_approval_pending' }, { slot: 'c', code: 'turn_not_failed' }],
+    })).toEqual([{ slot: 'a', code: 'slot_running' }, { slot: 'c', code: 'turn_not_failed' }])
+  })
+
+  it('gives every benign skip code its own reason', () => {
+    const texts = [...RESUME_ALL_BENIGN_SKIPS].map(code => resumeAllSkipText(code as ResumeAllBenignSkipCode))
+    expect(texts.every(t => t.startsWith('Not resumed. '))).toBe(true)
+    expect(new Set(texts).size).toBe(RESUME_ALL_BENIGN_SKIPS.size)
   })
 })
 
@@ -446,6 +462,78 @@ describe('chat sidebar — Resume all interrupted sessions', () => {
     })
     await waitFor(() => expect(getByTestId('resume-all-text').textContent).toBe('Resumed 1 session · 1 not resumed'))
     expect(queryByTestId('resume-all-problems')).toBeNull()
+  })
+
+  it('names each session a benign skip left alone under the outcome line, with the reason', async () => {
+    resumeAll.mockResolvedValue({ ok: true, total: 4, run_id: 'run-s' })
+    const { getByTestId, queryByTestId } = renderSidebar([
+      slot('a', { interrupted: true, title: 'Parser refactor' }),
+      slot('b', { interrupted: true, title: 'Release notes' }),
+      slot('c', { interrupted: true, title: 'Upload test' }),
+      slot('d', { interrupted: true, title: 'Login page' }),
+    ])
+    await act(async () => { fireEvent.click(getByTestId('resume-all-button')) })
+    act(() => {
+      window.dispatchEvent(new CustomEvent(RESUME_ALL_DONE_EVENT, { detail: {
+        ok: true, run_id: 'run-s', total: 4, resumed: ['a'],
+        skipped: [{ slot: 'b', code: 'slot_queue_pending' }, { slot: 'c', code: 'session_start_repeat' }, { slot: 'gone', code: 'slot_not_found' }],
+        failed: [],
+      } }))
+    })
+    await waitFor(() => expect(getByTestId('resume-all-text').textContent).toBe('Resumed 1 session · 3 not resumed'))
+    const skipped = getByTestId('resume-all-skipped')
+    const lines = Array.from(skipped.querySelectorAll('li')).map(li => Array.from(li.children).map(el => el.textContent))
+    // A closed session is no longer in the payload, so its key stands in for its title.
+    expect(lines).toEqual([
+      ['Release notes', 'Not resumed. A queued message will send on its own.'],
+      ['gone', 'Not resumed. It was closed.'],
+    ])
+    // The owner-action skip is named in the problems notice, not twice.
+    expect(skipped.textContent).not.toContain('Upload test')
+    expect(getByTestId('resume-all-problems').textContent).toContain('Upload test:')
+    // The list sits inside the polite status row, in its own bounded box.
+    expect(getByTestId('resume-all-row').contains(skipped)).toBe(true)
+    expect(skipped.className).toContain(RESUME_ALL_NAMES_CLASS)
+    // The candidates list gives way to the outcome's list while the line shows.
+    expect(queryByTestId('resume-all-names')).toBeNull()
+  })
+
+  it('keeps a skip\'s reason under a session still interrupted after the outcome line clears', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    resumeAll.mockResolvedValue({ ok: true, total: 2, run_id: 'run-k' })
+    const rows = [slot('a', { interrupted: true, title: 'Parser refactor' }), slot('b', { interrupted: true, title: 'Release notes' })]
+    const { getByTestId, queryByTestId, setSlots } = renderSidebar(rows)
+    await act(async () => { fireEvent.click(getByTestId('resume-all-button')) })
+    act(() => {
+      window.dispatchEvent(new CustomEvent(RESUME_ALL_DONE_EVENT, { detail: {
+        ok: true, run_id: 'run-k', total: 2, resumed: [],
+        skipped: [{ slot: 'a', code: 'turn_not_failed' }, { slot: 'b', code: 'slot_subagents_running' }],
+        failed: [],
+      } }))
+    })
+    await waitFor(() => expect(getByTestId('resume-all-skipped')).toBeTruthy())
+    await act(async () => { vi.advanceTimersByTime(RESUME_ALL_RESULT_MS) })
+    await waitFor(() => expect(getByTestId('resume-all-text').textContent).toBe('2 interrupted sessions'))
+    expect(queryByTestId('resume-all-skipped')).toBeNull()
+    const reasons = () => Array.from(getByTestId('resume-all-names').querySelectorAll('li')).map(li => li.textContent)
+    expect(reasons()).toEqual([
+      'Parser refactorNot resumed. Its last turn had already ended.',
+      'Release notesNot resumed. Its sub-agents were still running.',
+    ])
+    // A push that shows the session running drops its reason, so a later
+    // interruption of it is not explained by this run.
+    act(() => setSlots([slot('a', { interrupted: true, title: 'Parser refactor' }), slot('b', { interrupted: true, running: true, title: 'Release notes' })]))
+    act(() => setSlots(rows))
+    await waitFor(() => expect(reasons()).toEqual(['Parser refactorNot resumed. Its last turn had already ended.', 'Release notes']))
+    // The next press starts clean.
+    resumeAll.mockResolvedValue({ ok: true, total: 2, run_id: 'run-k2' })
+    await act(async () => { fireEvent.click(getByTestId('resume-all-button')) })
+    act(() => {
+      window.dispatchEvent(new CustomEvent(RESUME_ALL_DONE_EVENT, { detail: { ok: true, run_id: 'run-k2', total: 2, resumed: [], skipped: [], failed: [{ slot: 'a', error: 'RuntimeError' }, { slot: 'b', error: 'RuntimeError' }] } }))
+    })
+    await act(async () => { vi.advanceTimersByTime(RESUME_ALL_RESULT_MS) })
+    await waitFor(() => expect(reasons()).toEqual(['Parser refactor', 'Release notes']))
+    vi.useRealTimers()
   })
 
   it('withholds the action while the dashboard is offline', async () => {
