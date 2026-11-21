@@ -71,6 +71,7 @@ from kiro_crew.discord.client_rest import (
     _classify_edit,
     _remember,
 )
+from kiro_crew.http_proxy import proxy_for_url as _proxy_for_url
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.identity import channel_outbound_permitted
 from kiro_crew.messaging.outbound_files import OutboundFile, upload_filename
@@ -329,6 +330,10 @@ class DiscordClient:
         """Launch the background Gateway connection loop."""
         self._closed = False
         self._task = asyncio.create_task(self._gateway_loop())
+
+    def _proxy_for(self, url: str) -> str | None:
+        """The forward proxy for *url*, or ``None`` when ``NO_PROXY`` lists its host."""
+        return _proxy_for_url(self._proxy, url)
 
     # Bound from client_rest: the REST request ladder.
     _ensure_session = _client_rest._ensure_session
@@ -758,7 +763,7 @@ class DiscordClient:
         session = await self._ensure_session()
         async with session.get(
             url,
-            proxy=self._proxy,
+            proxy=self._proxy_for(url),
             timeout=aiohttp.ClientTimeout(total=30),
             allow_redirects=False,
         ) as resp:
