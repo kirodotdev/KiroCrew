@@ -162,6 +162,7 @@ _STATUS_HANDLERS = [
     (("perf", "sample"), None, "perf_cmd", set()),
     (("bench", "list"), None, "bench_cmd", set()),
     (("desktop", "metrics"), None, "desktop_cmd", set()),
+    (("compliance", "report"), "kiro_crew.cli_compliance", "compliance_cmd", set()),
     (("snapshot",), "kiro_crew.snapshot", "snapshot_main", {"parsed"}),
     (("restore",), "kiro_crew.snapshot", "restore_main", {"parsed"}),
 ]
@@ -273,6 +274,14 @@ def test_doctor_runs_even_when_the_platform_cannot_compose(
     assert calls == [
         ((), {"platform_boot_error": failure, "bundle": True, "reconcile_memory": False})
     ]
+    assert "repair_legacy_member_stores" not in booted
+
+
+def test_the_read_only_compliance_report_skips_the_member_store_repair(
+    booted: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("kiro_crew.cli_compliance.compliance_cmd", lambda args: 0)
+    _run(monkeypatch, "compliance", "report")
     assert "repair_legacy_member_stores" not in booted
 
 
