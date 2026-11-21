@@ -79,7 +79,9 @@ from kiro_crew.acp.client import AcpError, AcpProcessDied
 from kiro_crew.agent_sdk import AgentTurnUsage
 from kiro_crew.agent_sdk.mcp_problems import (
     UNATTENDED_MCP_WAIT_SECS,
+    declared_mcp_not_ready_change,
     declared_mcp_not_ready_note,
+    declared_mcp_note_change,
     wait_for_declared_mcp,
 )
 from kiro_crew.agents_janitor import sweep_agents_dir
