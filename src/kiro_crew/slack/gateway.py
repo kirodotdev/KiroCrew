@@ -380,7 +380,7 @@ from kiro_crew.monitoring.models import (
     MonitorOutcome,
     monitor_state_public_dict,
 )
-from kiro_crew.notifications.bus import MONITOR_CHANNEL
+from kiro_crew.notifications.bus import MONITOR_CHANNEL, payload_from_legacy
 from kiro_crew.parent_turns import ledger_of, note_turn_landed, settle_turn
 from kiro_crew.platform import boot_platform
 from kiro_crew.platform.bootstrap import apply_kas_cli_floor
