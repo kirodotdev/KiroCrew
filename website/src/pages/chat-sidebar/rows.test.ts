@@ -510,6 +510,79 @@ describe('a pinned session is exempt from the property filters', () => {
   })
 })
 
+describe('a paused Pinned chip lets the other status chips narrow pinned rows', () => {
+  const idlePin = local('idlepin', { pinned: true, tags: ['t1'] })
+  const runningPin = local('runpin', { pinned: true })
+  const folderRow = local('filed')
+  const plain = local('plain', { tags: ['t2'] })
+  const pausedPinned = { active: new Set<SessionFilterKey>(['running', 'pinned']), paused: new Set<SessionFilterKey>(['pinned']) }
+  const build = (filters: InputOverrides['filters']) => buildSidebarRows(inputs([idlePin, runningPin, folderRow, plain], {
+    local: { pinned: new Set(['idlepin', 'runpin']), running: new Set(['runpin']), folderOf: { filed: 'F1' } }, filters,
+  }))
+
+  it('drops a pinned row no unpaused chip matches, keeps one that matches, and drops the band caption', () => {
+    const rows = build({ status: pausedPinned })
+    expect(keys(rows.filteredSlots)).toEqual(['runpin'])
+    expect(rows.pinnedExemptNarrowing).toBe(false)
+    expect(rows.revealBlockingFilters[2].hides(idlePin)).toBe(true)
+  })
+
+  it('keeps the exemption while the Pinned chip is active', () => {
+    const rows = build({ status: { active: new Set<SessionFilterKey>(['running', 'pinned']) } })
+    expect(keys(rows.filteredSlots)).toEqual(['idlepin', 'runpin'])
+    expect(rows.pinnedExemptNarrowing).toBe(true)
+  })
+
+  it('leaves the folder-pin exemption in place', () => {
+    const rows = build({ status: pausedPinned, folders: { pinnedSubtree: new Set(['F1']) } })
+    expect(keys(rows.filteredSlots)).toEqual(['runpin', 'filed'])
+  })
+
+  it('leaves the tag filter exemption in place', () => {
+    const rows = build({ tags: { resolved: new Set(['t2']), raw: new Set(['t2']) }, status: { active: new Set<SessionFilterKey>(['pinned']), paused: new Set<SessionFilterKey>(['pinned']) } })
+    expect(keys(rows.filteredSlots)).toEqual(['idlepin', 'runpin', 'plain'])
+  })
+
+  it('drops the band caption when a tag filter narrows beside a paused Pinned chip that hides a pin', () => {
+    const tagged = { tags: { resolved: new Set(['t1']), raw: new Set(['t1']) } }
+    const paused = build({ ...tagged, status: pausedPinned })
+    expect(keys(paused.filteredSlots)).toEqual(['runpin'])
+    expect(paused.pinnedExemptNarrowing).toBe(false)
+    const active = build({ ...tagged, status: { active: new Set<SessionFilterKey>(['running', 'pinned']) } })
+    expect(active.pinnedExemptNarrowing).toBe(true)
+  })
+
+  it('leaves the chips alone when the search drops a pinned row they still match, and keeps hiding one they reject', () => {
+    const c = clears()
+    const keeper = local('keeper')
+    const rows = buildSidebarRows(inputs([idlePin, runningPin, folderRow, plain, keeper], {
+      clears: c,
+      local: { pinned: new Set(['idlepin', 'runpin']), running: new Set(['runpin', 'keeper']) },
+      filters: { status: pausedPinned, search: { text: 'keeper' } },
+    }))
+    expect(keys(rows.filteredSlots)).toEqual(['keeper'])
+    const [, search, status] = rows.revealBlockingFilters
+    expect(status.hides(runningPin)).toBe(false)
+    expect(search.hides(runningPin)).toBe(true)
+    for (const d of rows.revealBlockingFilters) if (d.hides(runningPin)) d.clear(runningPin)
+    expect(c.search).toHaveBeenCalledTimes(1)
+    expect(c.status).not.toHaveBeenCalled()
+    expect(status.hides(idlePin)).toBe(true)
+  })
+
+  it('counts only the pinned rows still listed on the paused Pinned chip, and leaves every other count alone', () => {
+    const counts = (filters: InputOverrides['filters']) => build(filters).statusCounts
+    const active = counts({ status: { active: new Set<SessionFilterKey>(['running', 'pinned']) } })
+    expect(active.pinned).toBe(2)
+    expect(counts({ status: pausedPinned })).toEqual({ ...active, pinned: 1 })
+    expect(buildSidebarRows(inputs([idlePin, runningPin, folderRow, plain], {
+      local: { pinned: new Set(['idlepin', 'runpin']), running: new Set(['runpin']), folderOf: { idlepin: 'F1' } },
+      filters: { status: pausedPinned, folders: { pinnedSubtree: new Set(['F1']) } },
+    })).statusCounts.pinned).toBe(2)
+    expect(counts({ status: { active: new Set<SessionFilterKey>(['pinned']), paused: new Set<SessionFilterKey>(['pinned']) } }).pinned).toBe(2)
+  })
+})
+
 describe('the status hides', () => {
   const running = local('run', { title: 'alpha' })
   const pinnedRunning = local('pinrun', { pinned: true, title: 'beta' })

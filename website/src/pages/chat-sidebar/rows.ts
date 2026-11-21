@@ -624,6 +624,7 @@ function makeDimensions(
   searchRanks: ReadonlyMap<string, number> | null,
   folderOf: SidebarRows['folderOf'],
   clears: SidebarRowClears,
+  pinsFollowStatus: boolean,
 ): FilterDimension[] {
   const { tags, models, creators, search, status, folders: folderFilter } = filters
   // A paused filter keeps its chip but narrows nothing, so only the unpaused ones count.
@@ -644,11 +645,10 @@ function makeDimensions(
   // not pinned themselves (no band, no row glyph), so the exemption is the only
   // thing the two pins share. `folderOf` refuses a peer row, so a colliding peer
   // key cannot ride a local folder's pin into the list.
-  const inPinnedFolder = (slot: Slot): boolean => {
-    const folderId = folderOf(slot)
-    return !!folderId && folderFilter.pinnedSubtree.has(folderId)
-  }
+  const inPinnedFolder = makeInPinnedFolder(folderOf, folderFilter.pinnedSubtree)
   const pinnedBypass = (slot: Slot): boolean => matches.pinned(slot) || inPinnedFolder(slot)
+  // Paused Pinned withdraws only the row pin's status-chip exemption; tags and folder pins keep theirs.
+  const statusBypass = (slot: Slot): boolean => (!pinsFollowStatus && matches.pinned(slot)) || inPinnedFolder(slot)
   return [
     {
       // Tags. Unlike the folder filter this does NOT go inert while searching: it
@@ -696,15 +696,14 @@ function makeDimensions(
     },
     {
       // Status chips. Active chips OR together: a row passes when any active chip
-      // matches it. A pinned row passes whatever the chips say (see `pinnedBypass`).
-      // `hides` restates the exemption too: `excluded` is list membership, not this
-      // dimension's verdict, so a pinned row the SEARCH dropped would otherwise read as
-      // hidden by the chips and a reveal would clear them.
-      filtersRow: slot => activeStatus.length === 0 || pinnedBypass(slot) || activeStatus.some(key => matches[key](slot)),
+      // matches it. A pinned row passes unless the Pinned chip is paused (see `statusBypass`).
+      // `hides` also asks the chips' predicate, so a row only the search dropped never clears them.
+      filtersRow: slot => activeStatus.length === 0 || statusBypass(slot) || activeStatus.some(key => matches[key](slot)),
       narrows: () => activeStatus.length > 0,
-      exemptsPinned: true,
+      exemptsPinned: !pinsFollowStatus,
       isSearch: false,
-      hides: (slot, excluded) => activeStatus.length > 0 && !pinnedBypass(slot) && excluded(slot),
+      hides: (slot, excluded) => activeStatus.length > 0 && !statusBypass(slot) && excluded(slot)
+        && !activeStatus.some(key => matches[key](slot)),
       clear: () => clears.status(),
     },
     {
@@ -730,10 +729,8 @@ function makeDimensions(
       narrows: () => status.hidden.size > 0,
       exemptsPinned: false,
       isSearch: false,
-      // Unlike search and the include chips, a hide CAN answer for one row on its
-      // own: it hides exactly the rows its predicates match. Asking list membership
-      // instead would let a row the search dropped clear every hide on reveal, even
-      // hides that never matched it.
+      // A hide answers for the row itself; list membership would let a row the search
+      // dropped clear every hide on reveal.
       hides: slot => isRowStatusHidden(slot),
       clear: () => clears.hides(),
     },
@@ -764,6 +761,13 @@ function makeDimensions(
   ]
 }
 
+function makeInPinnedFolder(folderOf: SidebarRows['folderOf'], pinnedSubtree: ReadonlySet<string>): (slot: Slot) => boolean {
+  return slot => {
+    const folderId = folderOf(slot)
+    return !!folderId && pinnedSubtree.has(folderId)
+  }
+}
+
 /** The "Started by" line's two numbers: the rows every other dimension keeps,
  *  split by whether this filter shows them. */
 function countCreators(rows: Slot[], dimensions: FilterDimension[], creators: SidebarRowFilters['creators']): CreatorCounts {
@@ -783,10 +787,27 @@ function countCreators(rows: Slot[], dimensions: FilterDimension[], creators: Si
  *  locals made those two badges under-report by exactly the remote rows the filter goes
  *  on to show. `unread` and `pinned` are local-only predicates, so the wider collection
  *  cannot add a match to them. */
-function countStatus(rows: Slot[], matches: StatusMatches): Record<SessionFilterKey, number> {
+function countStatus(
+  rows: Slot[],
+  matches: StatusMatches,
+  status: SidebarRowFilters['status'],
+  pinsFollowStatus: boolean,
+  inPinnedFolder: (slot: Slot) => boolean,
+): Record<SessionFilterKey, number> {
+  const keys = Object.keys(matches) as SessionFilterKey[]
   const counts = {} as Record<SessionFilterKey, number>
-  for (const key of Object.keys(matches) as SessionFilterKey[]) counts[key] = rows.filter(matches[key]).length
+  for (const key of keys) counts[key] = rows.filter(matches[key]).length
+  // A paused Pinned chip counts only the pinned rows the other status chips still list.
+  if (pinsFollowStatus) {
+    const narrowing = keys.filter(key => status.active.has(key) && !status.paused.has(key))
+    counts.pinned = rows.filter(slot => matches.pinned(slot) && (inPinnedFolder(slot) || narrowing.some(key => matches[key](slot)))).length
+  }
   return counts
+}
+
+/** Paused Pinned while another status chip narrows: pinned rows then follow the chips. */
+export function pinnedFollowsStatus(status: Pick<SidebarRowFilters['status'], 'active' | 'paused'>): boolean {
+  return status.active.has('pinned') && status.paused.has('pinned') && [...status.active].some(key => !status.paused.has(key))
 }
 
 /** Peer rows are narrowed and ordered by exactly the same rules as local ones; only
@@ -935,6 +956,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
     makeLaneOrder(searchRanks, sortKey, pinned, pinnedRank, isPinned, manualRank))
   const statusMatches = reuse(prev?.statusMatches, [unread, running, recent, status.recentWindowMs, clock], () =>
     makeStatusMatches(unread, isRunning, recent, status.recentWindowMs, clock))
+  const pinsFollowStatus = pinnedFollowsStatus(status)
   const isRowStatusHidden = reuse(prev?.isRowStatusHidden, [status.hidden, statusMatches.value], () =>
     makeIsRowStatusHidden(status.hidden, statusMatches.value))
   const dimensions = reuse(prev?.dimensions, [
@@ -943,17 +965,19 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
     search.text, search.folderMatches, searchRanks,
     statusMatches.value, isRowStatusHidden.value, folderFilter.hiddenSubtree, folderFilter.pinnedSubtree, slotFolders,
     clears.tags, clears.models, clears.creators, clears.search, clears.status, clears.folder, clears.hides,
-  ], () => makeDimensions(filters, statusMatches.value, isRowStatusHidden.value, searchRanks, folderOf, clears))
+  ], () => makeDimensions(filters, statusMatches.value, isRowStatusHidden.value, searchRanks, folderOf, clears, pinsFollowStatus))
 
   // Before the filter pass, as the chip counts always were: both read the clock for a
   // peer row's recency, and this keeps the two reads in their order.
-  const statusCounts = reuse(prev?.statusCounts, [rows, statusMatches.value], () => countStatus(rows, statusMatches.value))
+  const statusCounts = reuse(prev?.statusCounts, [rows, statusMatches.value, status.active, status.paused, folderFilter.pinnedSubtree, slotFolders], () =>
+    countStatus(rows, statusMatches.value, status, pinsFollowStatus, makeInPinnedFolder(folderOf, folderFilter.pinnedSubtree)))
   const filteredSlots = reuse(prev?.filteredSlots, [rows, dimensions.value, laneOrder.value, frozen], () =>
     frozenList ?? filterRows(rows, dimensions.value, laneOrder.value))
   const creatorCounts = reuse(prev?.creatorCounts, [rows, dimensions.value, filters.creators.passes, filters.creators.active], () =>
     countCreators(rows, dimensions.value, filters.creators))
   const listNarrowed = dimensions.value.some(d => d.narrows !== null && d.narrows())
   const pinnedExemptNarrowing = dimensions.value.some(d => d.exemptsPinned && d.narrows !== null && d.narrows())
+    && !pinsFollowStatus
   const filtersNarrowing = dimensions.value.some(d => !d.isSearch && d.narrows !== null && d.narrows())
   const revealBlockingFilters = reuse(prev?.revealBlockingFilters, [dimensions.value, filteredSlots.value], () =>
     makeRevealRegistry(dimensions.value, filteredSlots.value))

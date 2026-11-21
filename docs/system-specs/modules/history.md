@@ -844,7 +844,9 @@ The active row follows the same rule: a peer row is active only while the crew
 window open over the pane names its own (crew, key) pair, and a local row only while
 no crew window is open. The tag and status dimensions exempt a pinned local row, so
 the pinned band stays on screen under them; the search and a folder hide still apply
-to it, and a peer row is never exempt.
+to it, and a peer row is never exempt. A paused Pinned chip withdraws the status
+dimension's row-pin exemption, so the other status chips narrow pinned rows too and
+no longer bring up the band caption; the tag exemption and the folder-pin exemption stay.
 Three reads outside the model still take the raw key: the conductor lane's collapsed
 needs-you aggregate (unread, sub-agent approvals), the pinned-section divider
 (`startsAutomaticSection` in `pinnedOrder.ts`) and the tree root's fresh/dormant
