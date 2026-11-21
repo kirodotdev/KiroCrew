@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         Any,
         GatewayOrchestrator,
         KiroCrewConfig,
+        SimpleNamespace,
         agent_scratch,
         apply_kas_cli_floor,
         beacon,
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
         ensure_agents_slice_limits,
         kiro_agents_dir,
         kiro_crew,
+        live,
         logger,
         read_effective_agent,
         session_work_dir,
@@ -49,6 +51,7 @@ if TYPE_CHECKING:
     # on the facade's namespace; declared here for the type checker only.
     _SLICE_LIMITS_TASK: asyncio.Task[None] | None
     _KAS_CLI_FLOOR_TASK: asyncio.Task[None] | None
+    _KAS_CLI_FLOOR_PICK_SUB: live.Subscription | None
     _AGENTS_JANITOR_TASK: asyncio.Task[None] | None
     _AGENT_SCRATCH_SWEEP_TASK: asyncio.Task[None] | None
     _KIRO_CLI_LOG_CAP_TASK: asyncio.Task[None] | None
@@ -229,7 +232,7 @@ def _start_kas_cli_floor(cfg: KiroCrewConfig) -> "asyncio.Task[None]":
     known or the stored pick changes. The first verdict releases the spawn
     gate, so no spawn waits for those asks; the task ends when they do.
     """
-    global _KAS_CLI_FLOOR_TASK
+    global _KAS_CLI_FLOOR_TASK, _KAS_CLI_FLOOR_PICK_SUB
     from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
     from kiro_crew.agent_sdk import kas_floor_wait
     from kiro_crew.agent_sdk.backends import kiro_cli_pick_verdict_open
@@ -294,6 +297,50 @@ def _start_kas_cli_floor(cfg: KiroCrewConfig) -> "asyncio.Task[None]":
     # non-bundle route here, and ``_kas_floor_gates_spawns`` (off the loop) releases
     # it at once unless a Bot may land on KAS.
     kas_floor_wait.arm_kas_floor_wait(task, main=kas_main or kiro_main, member=not bundle)
+
+    # A Kiro CLI pick saved while the gateway runs (Settings, ``kirocrew config set``,
+    # ``$EDITOR``) loads as the v2 launch while its verdict is open, and a boot with
+    # the pick stored runs the v3 start check first. So the check runs when the pick
+    # is saved, and a confirmed verdict reloads the live config: the pick reaches the
+    # backend the next boot would give it without waiting for that boot.
+    picks: set[asyncio.Task[None]] = set()
+
+    async def _ask_for_saved_pick(kas_bundle: bool) -> None:
+        try:
+            if not await asyncio.to_thread(_main_stored_as_kiro):
+                return
+            # Only the pick is at stake: the member roles had their floor at boot.
+            view: Any = SimpleNamespace(
+                agent=SimpleNamespace(
+                    acp_backend=ACP_BACKEND_KIRO, member_acp_backend="", kas_bundle=kas_bundle
+                )
+            )
+            await asyncio.to_thread(apply_kas_cli_floor, view, kiro_selected=True)
+            await _reconcile_live_config_with_kiro_verdict()
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "KAS kiro-cli floor check for a saved Kiro CLI pick failed; continuing",
+                exc_info=True,
+            )
+
+    def _on_backend_change(change: Any) -> None:
+        agent = getattr(change.new, "agent", None)
+        picked_kiro = getattr(agent, "acp_backend", None) == ACP_BACKEND_KIRO
+        if not picked_kiro or picks or not kiro_cli_pick_verdict_open():
+            return
+        pick = asyncio.create_task(
+            _ask_for_saved_pick(bool(getattr(agent, "kas_bundle", False))),
+            name="kas-cli-floor-saved-pick",
+        )
+        picks.add(pick)
+        pick.add_done_callback(picks.discard)
+
+    # A later floor (another gateway run in this process) owns the question.
+    if _KAS_CLI_FLOOR_PICK_SUB is not None:
+        _KAS_CLI_FLOOR_PICK_SUB.cancel()
+    _KAS_CLI_FLOOR_PICK_SUB = live.subscribe(
+        "agent.acp_backend", callback=_on_backend_change, name="kas-cli-floor.saved-pick"
+    )
     return _KAS_CLI_FLOOR_TASK
 
 

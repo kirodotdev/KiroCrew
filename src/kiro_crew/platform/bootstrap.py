@@ -708,21 +708,26 @@ def apply_kas_cli_floor(
     offers_kas, reason = kas_engine_verdict()
     start_unknown = False
     from_help = True
+    start_proven = False
     if offers_kas:
         # The help lists v3 even where kiro-cli then refuses to run it. The user's
         # own pick moves only on proof the engine runs here (one start per kiro-cli
         # install, kept in the data home); without a pick, a refusal already on
         # record for this kiro-cli is enough, and nothing is started for it.
         started, refusal = kas_engine_start_verdict(start=kiro_pick)
+        start_proven = started is True
         if kiro_pick or started is False:
             offers_kas, reason = started, refusal
             start_unknown = started is None
             from_help = False
     if offers_kas:
-        # Positive evidence only: from here a Kiro CLI pick moves to the KAS path
-        # (``KIRO_SELECTION_BACKEND``), including one the user makes later in this
-        # process, so the verdict is recorded whatever the boot backend was.
-        confirm_kiro_cli_offers_kas()
+        # From here a Kiro CLI pick moves to the KAS path (``KIRO_SELECTION_BACKEND``),
+        # including one the user makes later in this process. Recorded only on the
+        # proof a stored pick needs at boot, so a pick saved later loads as the next
+        # boot would load it; help alone leaves that pick's verdict open, for the
+        # gateway to ask when the pick is saved (``process_entry``).
+        if start_proven:
+            confirm_kiro_cli_offers_kas()
         if kiro_pick:
             agent.acp_backend = kiro_cli_pick_backend()
         return None

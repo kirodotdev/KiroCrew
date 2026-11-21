@@ -204,7 +204,15 @@ chosen KAS falls back before the first chat. A help probe that names v3 and a st
 config-watcher cycle (`_reconcile_live_config_with_kiro_verdict`) before the floor
 task ends, so `SessionManager` rebuilds its provider factory from a fresh load; a probe that ran without v3, or a start kiro-cli refused, logs a notice that the pick stays on
 kiro-cli's v2 engine and names `kiro-cli update`; an unknown probe or start, or the
-bundle route, leaves the pick on kiro-cli. The probe runs the binary a session spawn runs
+bundle route, leaves the pick on kiro-cli. Without a stored pick a help probe that
+names v3 confirms nothing unless a start verdict on record says the engine starts, so
+a Kiro CLI pick saved later in the process loads as the next boot would load it. The
+floor task's `agent.acp_backend` subscription asks for such a saved pick: while the
+pick's verdict is open (`kiro_cli_pick_verdict_open`) and the documents store the
+Kiro CLI pick, it runs the floor for the pick alone off-loop, then the same
+reconcile, so the pick moves onto KAS without a restart exactly when a boot with it
+stored would have moved it, and otherwise stays on the v2 launch it already runs.
+Sessions started before that verdict lands run the v2 launch. The probe runs the binary a session spawn runs
 (`agent_sdk.drivers.acp.kiro_cli_spawn_binary`, the same `_resolve_kiro_bin` with
 its `PATH` search and executable-trust check), so a kiro-cli reachable only through
 `PATH` is judged like any other. When that binary is the pinned install, the plain
