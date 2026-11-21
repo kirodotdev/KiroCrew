@@ -769,6 +769,12 @@ same way). Key details:
   the SDK is missing gets it installed in the background at gateway start and
   is then started (`feishu.gateway._schedule_sdk_install`), so updating from a
   bundled build keeps Feishu working.
+- **1Password SDK bundled where a wheel exists** — every backend attempts the
+  `[1password]` extra (`install_onepassword_extra` in
+  `packaging/desktop-onepassword.sh`), scoped `--only-binary onepassword-sdk`.
+  It is best-effort: a target with no wheel logs one line and ships without it,
+  and Settings > Secrets then says 1Password cannot be connected on this system.
+  The extra's marker skips Windows arm64 and Python 3.14+.
 - **Dashboard bundled** — the SPA is staged into
   `lib/python3.12/site-packages/kiro_crew/static/dist/` inside the bundle.
 - **Pruned** — `__pycache__`, test dirs, and unused stdlib (tkinter, idlelib,

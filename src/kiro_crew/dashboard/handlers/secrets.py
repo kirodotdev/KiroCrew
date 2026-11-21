@@ -41,7 +41,9 @@ from kiro_crew.dashboard.source_providers.gerrit import (
     host_credential_name as gerrit_host_credential_name,
 )
 from kiro_crew.platform_compat import is_link_or_junction
-from kiro_crew.secrets import SecretVault, items
+from kiro_crew.secrets import SecretVault
+from kiro_crew.secrets import backend as secret_backends
+from kiro_crew.secrets import items
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,25 @@ _MANAGED_KIND_CONNECTIONS_CLIENT_SECRET = "connections_client_secret"
 # client secret entered on Settings, the tokens entry minted by the flow). Listed only when stored, so a cleanup labels them by owner rather than
 # reading them as stray user secrets.
 _MANAGED_KIND_WAKATIME_OAUTH = "wakatime_oauth"
+
+
+def _backend_connection_owned(name: str) -> web.Response | None:
+    """Refuse a generic vault write to a stored password-manager connection.
+
+    Such an entry holds a provider token; only the backend connect and
+    disconnect routes change it, so the generic routes neither list nor
+    touch it.
+    """
+    if not secret_backends.is_connection_item(name):
+        return None
+    return web.json_response(
+        {
+            "error": "this entry holds a password manager connection; connect or "
+            "disconnect it under Settings → Secrets → Password managers",
+            "code": "managed_by_backend",
+        },
+        status=409,
+    )
 
 
 def _connections_client_secret_owned(name: str) -> web.Response | None:
@@ -188,9 +209,12 @@ async def _remote_channel_reserved(request: web.Request) -> Callable[[str], bool
 
 
 def _managed_name_owned(name: str) -> web.Response | None:
-    """The 409 for a name a Connections client secret or the WakaTime OAuth tokens own."""
-    owned = _connections_client_secret_owned(name)
-    return owned if owned is not None else _wakatime_oauth_tokens_owned(name)
+    """The 409 for a name a backend connection, a Connections client secret or the WakaTime OAuth tokens own."""
+    return (
+        _backend_connection_owned(name)
+        or _connections_client_secret_owned(name)
+        or _wakatime_oauth_tokens_owned(name)
+    )
 
 
 async def _channel_credential_owned(request: web.Request, name: str) -> web.Response | None:
@@ -434,7 +458,11 @@ def _list_items(vault: SecretVault) -> list[dict[str, object]]:
     value is ever in the response.
     Blocking file IO: call via ``asyncio.to_thread``.
     """
-    rows = sorted(vault.list_items(), key=lambda row: row["name"])
+    # A backend connection is the gateway's, never a row a person edits.
+    rows = sorted(
+        (row for row in vault.list_items() if not secret_backends.is_connection_item(row["name"])),
+        key=lambda row: row["name"],
+    )
     typed = [row["name"] for row in rows if row["type"] != items.ITEM_TYPE_SECRET]
     # One entry that fails to decrypt must not hide the rest, nor itself: it
     # is listed as corrupt, so it can be deleted. A missing or unreadable key
@@ -521,6 +549,7 @@ async def api_secrets_list(request: web.Request) -> web.Response:
         payload["unused"] = unused
     if managed_config_error:
         payload["managed_error"] = True
+    payload["backends"] = await asyncio.to_thread(secret_backends.backends_view, vault, names)
     return web.json_response(payload)
 
 
@@ -723,4 +752,7 @@ def setup_secrets_routes(app: web.Application) -> None:
     app.router.add_get("/api/secrets", api_secrets_list)
     app.router.add_get("/api/secrets/usage", api_secrets_usage)
     app.router.add_post("/api/secrets", api_secrets_set)
+    from kiro_crew.dashboard.handlers import secret_backends as backend_routes
+
+    backend_routes.setup_secret_backend_routes(app)
     app.router.add_delete("/api/secrets/{name}", api_secrets_delete)

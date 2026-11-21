@@ -311,6 +311,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _forget_pending_trace_links,
     _forget_registry_ssh_sign_in_refusals,
     _forget_sandbox_launch_mark,
+    _forget_secret_backend_state,
     _forget_tracing_switch,
     _fresh_aws_bin_dir_trust,
     _fresh_config_load_debug_memories,

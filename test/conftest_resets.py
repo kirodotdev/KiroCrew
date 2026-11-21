@@ -1659,3 +1659,35 @@ def _published_redaction_verdict_on():
     seams = sys.modules.get("kiro_crew.redaction_seams")
     if seams is not None:
         seams.publish(False)
+
+
+@pytest.fixture(autouse=True)
+def _forget_secret_backend_state():
+    """Give every test no approved 1Password client, no extra registered secret
+    backend and no connect generation.
+
+    ``onepassword._APPROVED`` keeps the SDK client a test stubbed, with a clock
+    reading; ``backend._REGISTERED`` keeps a backend a test registered; and
+    ``dashboard.handlers.secret_backends`` keeps per-backend generations and
+    locks. Nothing in production clears them: one gateway owns the process. Left
+    set, a later test on the same worker reads a listing as approved, sees an
+    extra backend, or has its connect refused as replaced.
+
+    Reset before and after, so a test that never imported a module pays one
+    dict lookup each way.
+    """
+
+    def forget() -> None:
+        onepassword = sys.modules.get("kiro_crew.secrets.onepassword")
+        if onepassword is not None:
+            onepassword.forget_approvals()
+        backend = sys.modules.get("kiro_crew.secrets.backend")
+        if backend is not None:
+            backend.reset_registered_for_tests()
+        routes = sys.modules.get("kiro_crew.dashboard.handlers.secret_backends")
+        if routes is not None:
+            routes.reset_for_tests()
+
+    forget()
+    yield
+    forget()

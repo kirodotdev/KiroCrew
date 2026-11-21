@@ -439,6 +439,71 @@ export interface SecretsListResponse {
    *  are still authoritative, so this is a warning beside a good list rather
    *  than a failed request. */
   managed_error?: boolean
+  /** Password managers, in the order a reference asks them. */
+  backends?: SecretBackendView[]
+}
+
+/** An item read from a connected password manager. Read-only: never edited or
+ *  deleted here. Same public fields as a local item. */
+export interface SecretBackendItem {
+  name: string
+  type: SecretItemType
+  /** The backend id. */
+  source: string
+  /** A reference to this name reads another item (a local one, an earlier
+   *  backend's, or one Kiro Crew keeps for itself). */
+  shadowed?: boolean
+  /** The provider has more than one item of this name, so a reference fails. */
+  ambiguous?: boolean
+  updated_at?: string
+  fields?: SecretLoginPublicFields | Record<string, never>
+}
+
+/** One input of a backend's connect form, declared by the backend. */
+export interface SecretBackendFormField {
+  name: string
+  label_key: string
+  secret: boolean
+  required: boolean
+  placeholder_key: string
+}
+
+/** A backend failure. `message_key` (with `params`) words a provider-specific
+ *  code; `install_command` is set for a missing package where pip can install
+ *  into the gateway's interpreter. */
+export interface SecretBackendError {
+  code: string
+  message: string
+  message_key?: string
+  params?: Record<string, string>
+  install_command?: string
+}
+
+/** One password manager's block of `GET /api/secrets`. `error` keeps the
+ *  local list usable when the provider cannot be read. */
+export interface SecretBackendView {
+  id: string
+  /** The provider's own name, shown as is. */
+  name: string
+  status: 'connected' | 'not_connected' | 'unavailable' | 'needs_approval'
+  connected: boolean
+  /** What is connected (an account or vaults): set while connected. */
+  account?: string
+  /** Which form the connection came from: the main one or the fallback. */
+  connected_form?: 'main' | 'fallback'
+  items?: SecretBackendItem[]
+  error?: SecretBackendError
+  form: SecretBackendFormField[]
+  /** A second way to connect (a token), shown on request or when the main one cannot work here. */
+  fallback_form: SecretBackendFormField[]
+  fallback_label_key: string
+  /** Open on the fallback form: the main way cannot work on this install. */
+  fallback_first: boolean
+  /** The main form signs in through the provider's desktop app. */
+  app_sign_in: boolean
+  capabilities: { item_types: SecretItemType[] }
+  help_url: string
+  help_label_key: string
 }
 
 /** Which kind of place references a vault item (`secrets_usage.py`). */
@@ -593,6 +658,14 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       post('/api/secrets', typeof value === 'string' ? { name, value } : { name, ...value }).then(j),
     /** Remove a vault secret by name. Same transport reason as `secretsSave`. */
     secretsDelete: (name: string) => del('/api/secrets/' + encodeURIComponent(name)).then(j),
+    /** Connect a password manager with one form's values (read-only); `form` names the fallback. */
+    secretsBackendConnect: (id: string, values: Record<string, string>) =>
+      post('/api/secrets/backends/' + encodeURIComponent(id), values).then(j) as Promise<{ ok: true; account: string }>,
+    /** Approve again in the provider's app, for a connection made through it. */
+    secretsBackendApprove: (id: string) =>
+      post('/api/secrets/backends/' + encodeURIComponent(id) + '/approve', {}).then(j) as Promise<{ ok: true; account: string }>,
+    /** Forget a password manager's token. Nothing at the provider changes. */
+    secretsBackendDisconnect: (id: string) => del('/api/secrets/backends/' + encodeURIComponent(id)).then(j),
   }
 
   const consents = {

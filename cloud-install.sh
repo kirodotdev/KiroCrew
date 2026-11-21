@@ -11,7 +11,7 @@
 #  the Python `kiro_crew.cloud` module (testable, cross-platform). It NEVER
 #  stores AWS credentials — the aws CLI resolves them from your profile/SSO.
 #
-#  Usage (from a clone):   bash cloud-install.sh [--size <tier>] [--non-interactive] [--voice]
+#  Usage (from a clone):   bash cloud-install.sh [--size <tier>] [--non-interactive] [--voice] [--1password]
 # ======================================================================
 set -euo pipefail
 
@@ -25,6 +25,7 @@ unset PYTHONPATH PYTHONHOME
 SIZE=""
 NONINTERACTIVE=0
 WITH_VOICE=0
+WITH_1PASSWORD=0
 # while+shift (not `for arg in "$@"`): the space-separated `--size <tier>`
 # form needs to consume the following word, which a for-loop can't do.
 while [ $# -gt 0 ]; do
@@ -33,6 +34,7 @@ while [ $# -gt 0 ]; do
         --size=*) SIZE="${1#*=}";;
         --non-interactive) NONINTERACTIVE=1;;
         --voice) WITH_VOICE=1;;
+        --1password) WITH_1PASSWORD=1;;
         *) ;;
     esac
     shift || true
@@ -227,6 +229,19 @@ if [ "$WITH_VOICE" -eq 1 ]; then
     info "Including voice extras (.[voice])"
 fi
 KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$_pip_target" -q && ok "Kiro Crew client installed" || { warn "pip install failed"; exit 1; }
+
+# The 1Password backend, after the core install and on its own, as the desktop
+# build adds it: its SDK publishes no wheel for musl or glibc older than 2.32,
+# which no environment marker can name, so a host without one keeps the install
+# and goes on without 1Password. --only-binary is scoped to that one name.
+if [ "$WITH_1PASSWORD" -eq 1 ]; then
+    if KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -q --only-binary onepassword-sdk \
+        -e "${REPO_ROOT}"'[1password]' >/dev/null 2>&1; then
+        info "Including 1Password (.[1password])"
+    else
+        warn "No prebuilt 1Password SDK for this platform; continuing without 1Password."
+    fi
+fi
 umask "$_KC_PREV_UMASK"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$_venv/bin/kirocrew" "$HOME/.local/bin/kirocrew"
