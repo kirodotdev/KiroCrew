@@ -29,15 +29,13 @@ boundary function is exercised in-process.
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
-import pytest
-
+from conftest import requires_symlinks
 from kiro_crew import agent_scratch
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege")
+@requires_symlinks
 def test_s5_1_record_owner_must_not_follow_a_symlink(tmp_path: Path) -> None:
     scratch = tmp_path / "sess-deadbeef"
     scratch.mkdir()
