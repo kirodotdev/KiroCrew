@@ -465,6 +465,9 @@ def _served_keys(store_name: str, keys: set[str], since: datetime) -> set[str] |
                         line = json.loads(raw)
                     except ValueError:
                         continue
+                    except RecursionError:
+                        # An unreadable receipt may have named a pending lesson.
+                        return None
                     if not isinstance(line, dict) or line.get("memory_store") != store_name:
                         continue
                     for kind in injection_receipts.KINDS:
