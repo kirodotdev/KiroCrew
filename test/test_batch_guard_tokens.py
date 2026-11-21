@@ -78,6 +78,28 @@ def test_a_time_a_word_or_a_small_number_is_not_a_token(text):
     assert _guard().tokens_of(text) == set()
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "07:30:45\u0661",  # Arabic-Indic digit glued on the right
+        "\u066107:30:45",  # Arabic-Indic digit glued on the left
+        "07:30:45\uff11",  # fullwidth digit
+        "07:30:45\uff1a",  # fullwidth colon
+    ],
+)
+def test_a_time_glued_to_a_compatibility_digit_or_colon_is_not_proof(text):
+    # A time is proof only when its own bytes end at a real boundary. A
+    # compatibility digit or colon glued to either side is still a digit or a
+    # colon to the reader, so the time is part of a longer value, not proof.
+    assert _guard().times_of(text) == set()
+
+
+def test_a_time_glued_to_a_word_is_still_proof():
+    # The rule is about digits and colons, not every neighbouring character:
+    # a streamed "..._at_12:34:56" still yields the time.
+    assert _guard().times_of("at07:30:45Z") == {"07:30:45"}
+
+
 # -- the rule --
 
 
