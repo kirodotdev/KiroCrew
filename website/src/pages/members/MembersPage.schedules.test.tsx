@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { useState } from 'react'
-import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within, act, cleanup } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
 import { __resetPanelTabs } from '../../hooks/usePanelTabs'
+import { browserStageStore } from '../../hooks/useBrowserLive.stage'
 
 /* The crewmate's schedules, on the Profile card (crewmate-panel IA).
  *
@@ -855,6 +856,25 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     expect(screen.queryByDisplayValue('Check the board')).toBeNull()
     expect(await screen.findByTestId('side-panel-root')).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it("a browser card's big view asks before a docked Profile's draft goes; kept, it opens full screen instead", async () => {
+    // Unmount first: a reset's notify() would re-render the mounted page outside act().
+    onTestFinished(() => { cleanup(); browserStageStore.__resetForTests() })
+    localStorage.setItem('mc-members-panel-open', '0')
+    await openDraft()
+    expect(screen.getByTestId('crew-profile-docked')).toBeInTheDocument()
+    // Expand on the Bot's live browser card asks the page to show its picture big.
+    act(() => { browserStageStore.open('member-oncall', { turnId: null, mode: 'live' }) })
+    await answer('Cancel')
+    // Kept: the draft stays, and the picture goes to the full-screen sheet the card hosts.
+    expect(browserStageStore.get('member-oncall')?.surface).toBe('sheet')
+    expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
+    act(() => { browserStageStore.close('member-oncall') })
+    act(() => { browserStageStore.open('member-oncall', { turnId: null, mode: 'live' }) })
+    await answer('Discard')
+    expect(await screen.findByRole('tab', { name: 'Preview' })).toHaveAttribute('aria-selected', 'true')
+    expect(browserStageStore.get('member-oncall')?.surface).toBe('panel')
   })
 
   it('Workspace from a FLOATING Profile opens Files without asking — the card and its draft stay mounted', async () => {

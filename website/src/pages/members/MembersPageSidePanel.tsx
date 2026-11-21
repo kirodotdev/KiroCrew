@@ -48,6 +48,7 @@ import { usePanelTabDescriptors } from '../../hooks/panelTabRegistry'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
 import { useMemberDocumentComments } from '../../hooks/useMemberDocumentComments'
 import { useRunInTerminalBridge, useRunInTerminalRefs } from '../../hooks/useRunInTerminalBridge'
+import { browserStageStore, registerBrowserStageHost } from '../../hooks/useBrowserLive.stage'
 import { useSlotRunsHere } from '../../components/sessionEnvironmentHooks'
 import { lastActivityEpoch } from '../chat/sessionOrder'
 import { type ChatSlot } from '../../types'
@@ -227,8 +228,9 @@ export function useMembersPageSidePanel({
   // closes that card exactly like togglePanel's reveal path. A floating Profile
   // stays mounted beside the panel — and so is never asked: the draft question
   // belongs only to an exit that unmounts the card, and a "keep my draft" here
-  // would otherwise block Files for a draft that was never at risk.
-  const openCrewView = useCallback((view: ViewKind) => {
+  // would otherwise block Files for a draft that was never at risk. Resolves
+  // whether the view opened: false when the person kept the draft.
+  const openCrewView = useCallback((view: ViewKind): Promise<boolean> => {
     const unmountsCard = profile?.placement === 'column'
     const focus = () => {
       if (unmountsCard) setProfile(null)
@@ -236,8 +238,8 @@ export function useMembersPageSidePanel({
       if (beside) setDockedOpen(true)
       else setOverlayOpen(true)
     }
-    if (!unmountsCard || !schedAtStakeRef.current()) { focus(); return }
-    void schedGuardRef.current().then((ok) => { if (ok) focus() })
+    if (!unmountsCard || !schedAtStakeRef.current()) { focus(); return Promise.resolve(true) }
+    return schedGuardRef.current().then((ok) => { if (ok) focus(); return ok })
   }, [tabsCtl, beside, setDockedOpen, profile, schedAtStakeRef, schedGuardRef, setOverlayOpen, setProfile])
   // The session open in the panel's Sessions tab, per Bot (keyed on the Bot's
   // thread key), so it survives a tab switch and a Bot switch and back. Only the
@@ -395,6 +397,37 @@ export function useMembersPageSidePanel({
     if (besideRef.current) setDockedOpen(true)
     else setOverlayOpen(true)
   }, [closeReplyThread, setDockedOpen, setOverlayOpen])
+  // Expand or Replay on the Bot's own browser card in its thread, and a Sessions
+  // row's Live, show the picture big in this panel's Preview tab, as on the
+  // chat page. The page is the host only while its thread is confirmed: the
+  // Preview tab is withheld otherwise, and with no host the store opens the
+  // full-screen sheet the card hosts, as on a page with no side panel (the
+  // unregister also drops a panel stage, so no card keeps pointing at it). The
+  // callback goes through a ref, so a render does not re-register it. When the
+  // person keeps a docked Profile's schedule draft, the Bot's own card takes
+  // the full-screen sheet instead and any other stage is dropped: the thread's
+  // card is the one browser card this page draws.
+  const threadKeyRef = useRef(confirmedSlot)
+  threadKeyRef.current = confirmedSlot
+  const openPreviewRef = useRef<(key: string) => void>(() => {})
+  openPreviewRef.current = (key: string) => {
+    closeReplyThread()
+    void openCrewView('browser').then((opened) => {
+      if (opened) return
+      const stage = browserStageStore.get(key)
+      if (stage?.surface !== 'panel') return
+      if (key === threadKeyRef.current) browserStageStore.open(key, { turnId: stage.turnId, mode: stage.mode, preferSheet: true })
+      else browserStageStore.close(key)
+    })
+  }
+  useEffect(() => {
+    if (!confirmedSlot) return undefined
+    return registerBrowserStageHost((key) => openPreviewRef.current(key))
+  }, [confirmedSlot])
+  // A Sessions row's Live: that session's browser, live, in the Preview tab.
+  const watchSessionBrowser = useCallback((key: string) => {
+    browserStageStore.open(key, { turnId: null, mode: 'live' })
+  }, [])
   const { openFile, openWorkingTreeDiff, openArtifact, saveFile } = usePanelDocumentActions({
     tabsCtl,
     slotRef: activeSlotRef,
@@ -481,6 +514,10 @@ export function useMembersPageSidePanel({
     committedDrivingRef.current = { member: activeMemberKey, keys }
     return keys.map((k) => byKey.get(k)).filter((s): s is (typeof mine)[number] => !!s)
   }, [liveSlots, activeMemberKey])
+  // The Preview tab's agent browser follows these sessions too. One array per
+  // set of keys, not per slots frame, so the tab does not re-render on every frame.
+  const drivingKeyList = drivingSessions.map((s) => s.key).join('\n')
+  const browserFollowKeys = useMemo(() => (drivingKeyList ? drivingKeyList.split('\n') : []), [drivingKeyList])
   // A PREVIEW LINK -- `?dashboard=preview`, the link `dashboard_preview` hands the
   // crewmate to show the person -- opens the side panel on the Dashboard tab, where
   // the staged page is drawn under its preview label. Once per crewmate and strip
@@ -534,7 +571,7 @@ export function useMembersPageSidePanel({
     sidePanelHiddenNow, actionError, setActionError, actionInfo, showActionError, revealPanelAfterOpen, openArtifact,
     openFile, openWorkingTreeDiff, saveFile, submitComments, runInTerminalScope, openFileGuarded, openFolderGuarded, openArtifactGuarded,
     openSessionGuarded, drivingSessions, openPanelSession, setOpenPanelSession, openSessionInPanel, slotsLoaded,
-    panelSessionFocused, setPanelSessionFocused,
+    panelSessionFocused, setPanelSessionFocused, browserFollowKeys, watchSessionBrowser,
     dashboardPreviewLink, focusPanelTab, leaveDashboardPreview, requestCloseOverlay, activeTabId,
   }
 }
@@ -576,7 +613,7 @@ export function MembersPageSidePanel({
     closeReplyThread, setShownTabId, dashboardVisitedFor, closeOverlay, sidePanelOnScreen, sidePanelHiddenNow,
     openFile, openWorkingTreeDiff, saveFile, submitComments, dashboardPreviewLink, leaveDashboardPreview,
     requestCloseOverlay, drivingSessions, openPanelSession, setOpenPanelSession, openSessionGuarded, slotsLoaded,
-    setPanelSessionFocused,
+    setPanelSessionFocused, browserFollowKeys, watchSessionBrowser,
   } = sidePanel
   const { reduceMotion } = profileFlight
   const { openArtifactInPanel } = navigation
@@ -670,6 +707,9 @@ export function MembersPageSidePanel({
           onOpenInChat={openSessionGuarded}
           onPaneFocusChange={setPanelSessionFocused}
           panelHidden={sidePanelHiddenNow}
+          // Only while the panel can show the Preview tab (the thread is
+          // confirmed), so Live always lands in this panel.
+          onWatchBrowser={confirmedSlot ? watchSessionBrowser : undefined}
         />
       ),
     },
@@ -703,6 +743,7 @@ export function MembersPageSidePanel({
     persistSlot: confirmedSlot,
     hiddenViews,
     viewTitles,
+    browserFollowKeys,
     onActiveTabChange: setShownTabId,
     projectDir,
     onFileOpen: openFile,
