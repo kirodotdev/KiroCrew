@@ -302,6 +302,7 @@ def write_mate_spec(mate_id: str, spec: dict[str, Any]) -> Path:
     reads the snapshot). Atomic at ``0o600``; refuses another instance's file
     (:func:`_refuse_foreign_file`).
     """
+    from kiro_crew.agent_discovery import note_spec_change
     from kiro_crew.config.loader import publish_mate_agents
     from kiro_crew.mate_worker import drop_partial_platform_servers
 
@@ -319,6 +320,7 @@ def write_mate_spec(mate_id: str, spec: dict[str, Any]) -> Path:
             owners = _read_owners()
             _refuse_foreign_file(mate_id, owners)
             atomic_write(path, json.dumps(spec, indent=2), fsync=True, mode=0o600)
+            note_spec_change(path)
             if owners.get(mate_id) != _this_home():
                 owners[mate_id] = _this_home()
                 atomic_write(

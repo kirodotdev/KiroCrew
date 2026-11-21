@@ -257,3 +257,37 @@ def clear_list_agents_cache() -> None:
     with _PARSED_SPECS_LOCK:
         _PARSED_SPECS_CACHE.clear()
         _PARSED_SPECS_GEN += 1
+
+
+def reset_spec_cache_generation_for_tests() -> None:
+    """Drop the spec caches and put the generation back to 0: the state of a
+    process that has written no spec. Test seam for a harness that boots several
+    homes in one process; the generation counts the booted home's writes, and
+    the memos keyed on it and the held revisions are dropped with it. Answers
+    other modules stamp with the generation (the crewmate verdicts) are theirs
+    to drop."""
+    global _PARSED_SPECS_GEN
+    # Deferred: dir_revision imports this module.
+    from kiro_crew.agent_discovery_parts import dir_revision
+
+    _LIST_AGENTS_CACHE.clear()
+    with _PARSED_SPECS_LOCK:
+        _PARSED_SPECS_CACHE.clear()
+        _PARSED_SPECS_GEN = 0
+    with dir_revision._HELD_REVISIONS_LOCK:
+        dir_revision._HELD_REVISIONS.clear()
+
+
+def note_spec_change(path: Path | str) -> None:
+    """An in-process writer wrote, replaced or unlinked the spec at *path*.
+
+    The one call every spec writer makes at the write: it moves the spec
+    generation (:func:`clear_list_agents_cache`), the key every answer pinned to
+    an agents directory carries (the spec memos, the snapshot key, the shared
+    revision), so the write is seen by the next lookup inside a revision hold or
+    inside one timestamp tick. A name that is not a spec of either form, or a
+    skill-view alias, moves nothing: the walks never read it.
+    """
+    name = os.path.basename(str(path))
+    if is_agent_spec_name(name) and not is_native_skill_alias_name(name):
+        clear_list_agents_cache()

@@ -147,6 +147,15 @@ cross-home flake three tests later.
      removal evidence and scan completeness of the home's
      ``kiro/agents`` directory, which the next boot would read as its own until
      its first refresh lands.
+   * ``config.loader`` agents-folder revision hold (``_AGENTS_DIR_REVISION_HOLD_MS``,
+     ``_AGENTS_DIR_REVISION_HOLD_TICKET``) -- the ``agent.agents_dir_revision_hold_ms``
+     the home's config published, and the load ticket it came in under.
+   * ``agent_discovery`` spec generation (``_PARSED_SPECS_GEN`` with its caches) --
+     the count of specs the boot wrote into the home's ``kiro/agents``, which every
+     memo pinned to that directory is keyed on.
+   * ``crewmate_harness._VERDICTS`` -- the crewmate capability verdicts, stamped
+     with that generation; a verdict of the previous home would pass for current
+     once the generation restarts at 0.
    * ``dashboard.handlers.updates._auto_effect`` -- the update loop's derived
      ``auto_update_effect``, read from the boot's install root and policy; a
      stale one is served on the next boot's status frames, and it is also what
@@ -303,8 +312,10 @@ from aiohttp import ClientSession, ClientTimeout
 
 from kiro_crew import agent as agent_mod
 from kiro_crew import (
+    agent_discovery,
     autonudge,
     crash_guard,
+    crewmate_harness,
     embeddings,
     executors,
     github_runner,
@@ -866,6 +877,15 @@ def _reset_home_bound_globals() -> None:
     config_loader._MATERIALIZED_COMPLETE = False
     config_loader._MATERIALIZED_MEMO = None
     config_loader._MATERIALIZED_AGENTS_READY = False
+    # The agents-folder revision hold the booted home's config published, and the
+    # spec generation its writes moved: both follow the home's agents directory.
+    config_loader.reset_agents_dir_revision_hold_for_tests()
+    agent_discovery.reset_spec_cache_generation_for_tests()
+    # The crewmate verdicts are stamped with that generation; once it restarts
+    # at 0 a verdict of the previous home could pass for current.
+    with crewmate_harness._VERDICT_LOCK:
+        crewmate_harness._VERDICTS.clear()
+        crewmate_harness._REFRESHING.clear()
     governance._CONFIRM_PATTERNS_MEMO = None
     recall_pool._settings_cache = None
     dashboard_updates._auto_effect = None

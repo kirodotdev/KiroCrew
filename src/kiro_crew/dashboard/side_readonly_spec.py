@@ -984,6 +984,9 @@ def _unlink_if_unchanged(candidate: _ReapCandidate) -> bool:
         return False
     try:
         os.unlink(candidate.path)
+        from kiro_crew.agent_discovery import note_spec_change
+
+        note_spec_change(candidate.path)
     except OSError:
         logger.debug("read-only spec reap: could not remove %r", candidate.path.name, exc_info=True)
         return False

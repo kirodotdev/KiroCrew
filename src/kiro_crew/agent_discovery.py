@@ -70,16 +70,24 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _AGENTS_DIR_RACY_MAX_DIGESTS,
         _AGENTS_DIR_RACY_WINDOW_NS,
         _DIGEST_CHUNK_BYTES,
+        _HELD_REVISIONS,
+        _HELD_REVISIONS_LOCK,
         _NO_DIGEST,
         _PIN_EVERY_ENTRY_ON_BYTES,
+        _REVISION_SCOPE,
         AGENTS_DIR_MEMO_ENABLED,
         AgentsDirMemo,
         AgentsDirRevision,
         T,
+        _hold_ms_seen,
         _revision_pin,
         _SpecStatRevision,
         _young_entry_digest,
         agents_dir_revision,
+        agents_dir_revision_hold_ns,
+        agents_dir_revision_scope,
+        fresh_agents_dir_revision,
+        shared_agents_dir_revision,
     )
     from kiro_crew.agent_discovery_parts.project_agents import (  # noqa: F401
         _declared_project_agent_name,
@@ -172,7 +180,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ListAgentsSig,
         cached_agent_specs,
         clear_list_agents_cache,
+        note_spec_change,
         parsed_agent_specs,
+        reset_spec_cache_generation_for_tests,
         spec_cache_generation,
         warm_agent_specs,
     )
@@ -187,6 +197,8 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import stat  # noqa: F401
     import threading  # noqa: F401
     import time  # noqa: F401
+    from contextlib import contextmanager  # noqa: F401
+    from contextvars import ContextVar  # noqa: F401
     from dataclasses import asdict, dataclass, field  # noqa: F401
     from pathlib import Path  # noqa: F401
     from typing import Any, Callable, Generic, Iterator, Mapping, Sequence, TypeVar  # noqa: F401

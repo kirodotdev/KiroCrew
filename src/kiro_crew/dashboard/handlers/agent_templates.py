@@ -69,6 +69,7 @@ from kiro_crew.agent_discovery import (
     clear_list_agents_cache,
     iter_agent_spec_files,
     list_agents,
+    note_spec_change,
 )
 from kiro_crew.agent_files import KAS_RESERVED_AGENT_IDS, OWNED_KIRO_AGENT_FILES
 from kiro_crew.agent_spec_format import is_markdown_spec
@@ -324,6 +325,7 @@ def _tombstone(spec_path: Path) -> str:
         grave = spec_path.with_name(f"{spec_path.name}.bak.{stamp}.{n}")
         n += 1
     spec_path.rename(grave)
+    note_spec_change(spec_path)
     # Only a grave of THIS file goes: ``<name>.bak.<epoch>`` or its
     # same-second twin. A glob's ``*`` crosses dots, so ``foo.json.bak.*`` would
     # also match a live template someone named ``foo.json.bak.5`` (a legal name,

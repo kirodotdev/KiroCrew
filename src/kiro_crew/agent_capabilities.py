@@ -33,6 +33,7 @@ from kiro_crew.agent_capabilities_tool_limits import (  # noqa: F401 - re-export
     tool_limited_servers,
 )
 from kiro_crew.agent_capabilities_withheld import withheld_approvals as _withheld_approvals
+from kiro_crew.agent_discovery import note_spec_change
 from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME
 from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
 from kiro_crew.agent_spec_format import (
@@ -1684,6 +1685,7 @@ class CapabilityService:
                             json.dumps(spec, indent=2) + "\n",
                             restrict_to_owner=True,
                         )
+                        note_spec_change(root / (name + ".json"))
                     else:
                         if (
                             identity["scope"] != "global"
@@ -1731,6 +1733,7 @@ class CapabilityService:
                     json.dumps(spec, indent=2) + "\n",
                     restrict_to_owner=True,
                 )
+                note_spec_change(root / (name + ".json"))
                 document["agents"][member]["kiro_agent"] = name
                 return document
 
@@ -1814,6 +1817,7 @@ class CapabilityService:
                 for snap, spec, target in committed:
                     path = root / (target + ".json")
                     atomic_write(path, json.dumps(spec, indent=2) + "\n", restrict_to_owner=True)
+                    note_spec_change(path)
                     document["agents"][snap["member"]]["kiro_agent"] = target
                 return document if changed_binding else None
 

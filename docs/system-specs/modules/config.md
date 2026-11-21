@@ -2601,7 +2601,20 @@ The snapshot is only ever rebuilt off-loop:
   key `agents_dir_revision` cannot prove (Windows by default, a symlinked spec,
   more than 64 entries younger than 2 s) scans every time. Callers whose inputs
   keep moving scan one after another; readers of the snapshot never wait on the
-  flight lock. A reuse heals like a scan, outside the lock, and the agent-catalog
+  flight lock. The key read before a scan is the revision every memo and
+  snapshot share (`agent_discovery.shared_agents_dir_revision`): inside an
+  `agents_dir_revision_scope` (one resolve that reads a directory more than
+  once: the KAS spec resolve, the crewmate worker-spec verdict) the directory
+  is walked once per resolve, and under a configured
+  `agent.agents_dir_revision_hold_ms` (default 0) a revision walked within the
+  hold answers without a walk. Both are keyed on the in-process spec
+  generation, so a spec Kiro Crew writes is seen at once; a write from outside
+  the process is seen by the next resolve, or within the hold. The key read
+  after a scan is always a fresh walk (`fresh_agents_dir_revision`), so a
+  write during the scan is never memoized. `KiroCrewConfig.load` publishes the
+  hold into this module (`publish_agents_dir_revision_hold_ms`, under its load
+  ticket like the timezone), so the lookup path never reads `config.json` and a
+  config load imports nothing from the discovery family. A reuse heals like a scan, outside the lock, and the agent-catalog
   fetch (`dashboard/handlers/agent_catalog.py`) calls the refresh once and then
   heals for the owner over a complete snapshot. `_MATERIALIZED_SCAN_COUNTS`
   counts reuses and scans, and a declined record is logged once per key.
@@ -4353,6 +4366,7 @@ and re-exported by `sections.py` and `loader.py`; the load-time clamp lives in
 | `POOL_SIZE_MAX` | 10 | `session.pool_size` |
 | `CHAT_TURN_TIMEOUT_MIN` / `_MAX` | 300 / 86400 | `agent.chat_turn_timeout_secs` |
 | `TOOL_APPROVAL_TIMEOUT_MIN` / `_MAX` | 30 / 7200 | `agent.tool_approval_timeout_secs` |
+| `AGENTS_DIR_REVISION_HOLD_MS_MAX` | 1000 | `agent.agents_dir_revision_hold_ms` |
 
 The table names the ceilings; `_SECURITY_BOUNDED_FIELDS` is the authoritative list
 of every clamped `(section, key, min, max)` and also covers

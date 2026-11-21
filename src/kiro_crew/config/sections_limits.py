@@ -39,6 +39,11 @@ logger = logging.getLogger("kiro_crew.config.loader")
 SUBAGENT_AUTO_MAX_CEILING = 64  # agent.subagent_auto_max — concurrent subagent ceiling
 SUBAGENT_MAX_TURNS_CEILING = 1000  # agent.subagent_max_turns — per-subagent turn budget
 POOL_SIZE_MAX = 10  # session.pool_size — pre-warmed process pool
+# agent.agents_dir_revision_hold_ms — how long one agents-folder fingerprint is
+# reused by every spec memo (agent_discovery_parts.dir_revision). Held under the
+# 2 s racy window there, so an entry written during a hold is still young, and
+# pinned on its bytes, at the next walk.
+AGENTS_DIR_REVISION_HOLD_MS_MAX = 1000
 
 # agent.chat_turn_timeout_secs — wall-clock ceiling for one chat turn. The ACP
 # transport's per-prompt wait follows this value (acp/client_timeouts.py

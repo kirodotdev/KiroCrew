@@ -62,7 +62,7 @@ from uuid import uuid4
 from kiro_crew import agent as _agent
 from kiro_crew import platform_compat
 from kiro_crew.acp.client import AcpClient
-from kiro_crew.agent_discovery import _read_agent_spec
+from kiro_crew.agent_discovery import _read_agent_spec, note_spec_change
 from kiro_crew.agent_files import AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
 from kiro_crew.config.loader import data_home
 from kiro_crew.connections.tool_test import _classify as _classify_tool_inventory
@@ -500,6 +500,7 @@ def _remove_mint_agent_spec(spec_path: str) -> None:
         return
     try:
         Path(spec_path).unlink(missing_ok=True)
+        note_spec_change(spec_path)
     except OSError:
         # Keep the row. It is the only thing that authorizes deleting this file, so
         # dropping it here would strand a real spec that no later sweep can see --
