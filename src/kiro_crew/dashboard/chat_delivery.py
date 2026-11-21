@@ -416,10 +416,13 @@ def steer_origin_kwargs(slot: Any, message: str) -> dict[str, str]:
     """The keywords that tell a client's ``steer`` who wrote *message*.
 
     ``origin`` is automation while the slot holds *message* as an automation steer
-    (a work-ledger wake), so the agent is not told the user wrote it. A user's or a
-    peer's steer passes nothing, so its call is the one every client always took.
+    (a work-ledger wake) or as another session's steer (``peer_origin``), so the
+    agent is not told the user wrote it. A user's steer passes nothing, so its call
+    is the one every client always took.
     """
-    if message in getattr(slot, "_steer_automation", {}):
+    if message in getattr(slot, "_steer_automation", {}) or message in getattr(
+        slot, "_steer_peer_origin", set()
+    ):
         return {"origin": STEER_ORIGIN_AUTOMATION}
     return {}
 
@@ -443,6 +446,7 @@ async def steer_into_running_turn(
     user_origin: bool = False,
     channel_origin: bool = False,
     owner_origin: bool = False,
+    peer_origin: bool = False,
     admission: dict | None = None,
     decision_strip: dict | None = None,
     attachments: dict | None = None,
@@ -681,6 +685,7 @@ async def steer_into_running_turn(
             slot._steer_user_origin,
             slot._steer_channel_origin,
             slot._steer_owner_origin,
+            slot._steer_peer_origin,
             slot._steer_admissions,
             slot._steer_attachment_meta,
             slot._steer_act_now,
@@ -747,6 +752,10 @@ async def steer_into_running_turn(
     # Any text steered in, from anyone, ends "one shared user asked for this
     # turn": its tool prompts go back to the owner alone. Before the RPC, as below.
     forget_turn_requester(slot)
+    # Held only for a peer's steer, which its re-send after a take-back reads
+    # (``steer_origin_kwargs``); released with the maps above.
+    if peer_origin:
+        slot._steer_peer_origin.add(message)
     if channel_origin:
         # NARROW the running turn's directive provenance, at admission. The turn's
         # ``_directive_channel_origin`` is its opener's -- False for a
@@ -922,6 +931,7 @@ async def steer_into_running_turn(
         slot._steer_user_origin.pop(message, None)
         slot._steer_channel_origin.pop(message, None)
         slot._steer_owner_origin.pop(message, None)
+        slot._steer_peer_origin.discard(message)
         slot._steer_admissions.pop(message, None)
         slot._steer_attachment_meta.pop(message, None)
         slot._steer_act_now.discard(message)
@@ -965,6 +975,7 @@ async def steer_into_running_turn(
             slot._steer_user_origin.pop(message, None)
             slot._steer_channel_origin.pop(message, None)
             slot._steer_owner_origin.pop(message, None)
+            slot._steer_peer_origin.discard(message)
             slot._steer_admissions.pop(message, None)
             slot._steer_attachment_meta.pop(message, None)
             slot._steer_act_now.discard(message)
@@ -1081,6 +1092,7 @@ async def steer_into_running_turn(
         slot._steer_user_origin.pop(message, None)
         slot._steer_channel_origin.pop(message, None)
         slot._steer_owner_origin.pop(message, None)
+        slot._steer_peer_origin.discard(message)
     # Still registered, the provenance is held like the attachments: the RPC
     # accepting the write is not consumption, and a turn that ends before the
     # `steering_consumed` echo requeues the text from these records. Dropping them

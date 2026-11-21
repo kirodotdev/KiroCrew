@@ -262,6 +262,7 @@ def _settle_consumed_steers(
         slot._steer_user_origin.pop(settled_msg, None)
         slot._steer_channel_origin.pop(settled_msg, None)
         slot._steer_owner_origin.pop(settled_msg, None)
+        slot._steer_peer_origin.discard(settled_msg)
         slot._steer_decision_strips.pop(settled_msg, None)
         slot._steer_possibly_delivered.discard(settled_msg)
     if settled_count or newly_possibly_delivered:
@@ -349,6 +350,7 @@ def _release_delivered_peer_steer(slot: "_ChatSlot", steer_msg: str) -> None:
         getattr(slot, name).pop(steer_msg, None)
     slot._steer_act_now.discard(steer_msg)
     slot._steer_possibly_delivered.discard(steer_msg)
+    slot._steer_peer_origin.discard(steer_msg)
 
 
 def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> None:
@@ -515,6 +517,8 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         # requeued steer's turn may read a peer crew's sessions only if the
         # owner sent it. Absent means not the owner.
         _owner = bool(getattr(slot, "_steer_owner_origin", {}).pop(steer_msg, False))
+        _peer: set[str] = getattr(slot, "_steer_peer_origin", set())
+        _peer.discard(steer_msg)
         if _channel:
             # A channel steer that re-enters the queue runs as its own turn, so it
             # takes the mark the hand-off's queued entry carries: the text is the

@@ -44,7 +44,7 @@ class FakeProvider:
     def has_active_turn(self) -> bool:
         return self._active
 
-    async def steer(self, text: str) -> bool:
+    async def steer(self, text: str, *, origin: str = "user") -> bool:
         self.steered.append(text)
         return True
 

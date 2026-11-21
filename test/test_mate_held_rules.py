@@ -117,7 +117,7 @@ class _Provider:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         return True
 
     async def approve_tool(self, request_id) -> None:

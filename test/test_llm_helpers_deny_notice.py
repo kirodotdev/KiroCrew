@@ -75,7 +75,7 @@ class _Provider:
         self.calls: list[str] = []
         self.steered: list[str] = []
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.calls.append("steer")
         self.steered.append(message)
         return True
@@ -364,7 +364,7 @@ async def test_backend_missing_the_attribute_only_rejects():
 @pytest.mark.asyncio
 async def test_a_failing_steer_still_rejects():
     class _Raising(_Provider):
-        async def steer(self, message: str) -> bool:
+        async def steer(self, message: str, *, origin: str = "user") -> bool:
             self.calls.append("steer")
             raise RuntimeError("transport gone")
 
@@ -426,7 +426,7 @@ async def test_audit_lands_before_the_steer_and_survives_cancellation(monkeypatc
     monkeypatch.setattr("kiro_crew.sel.sel", lambda: sel)
 
     class _Stalled(_Provider):
-        async def steer(self, message: str) -> bool:
+        async def steer(self, message: str, *, origin: str = "user") -> bool:
             self.calls.append("steer")
             await asyncio.sleep(3600)
             return True
@@ -456,7 +456,7 @@ async def test_cancelled_mid_steer_does_not_hang_on_a_stalled_reject(monkeypatch
     trying, and its outcome is read when it settles."""
 
     class _StalledBoth(_Provider):
-        async def steer(self, message: str) -> bool:
+        async def steer(self, message: str, *, origin: str = "user") -> bool:
             self.calls.append("steer")
             await asyncio.sleep(3600)
             return True
@@ -498,7 +498,7 @@ async def test_cancelled_mid_steer_does_not_hang_on_a_stalled_reject(monkeypatch
 @pytest.mark.asyncio
 async def test_cancelled_mid_steer_still_answers_the_wire_for_the_bg_oneliner():
     class _Stalled(_Provider):
-        async def steer(self, message: str) -> bool:
+        async def steer(self, message: str, *, origin: str = "user") -> bool:
             self.calls.append("steer")
             await asyncio.sleep(3600)
             return True

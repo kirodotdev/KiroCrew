@@ -110,7 +110,7 @@ class _Provider:
     def context_usage_pct(self) -> float:
         return 0.0
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.calls.append("steer")
         self.steered.append(message)
         return True
@@ -200,7 +200,7 @@ async def test_eval_backend_without_steer_only_rejects(monkeypatch):
 async def test_eval_failing_steer_still_rejects(monkeypatch):
     provider = _Provider(title="write_file")
 
-    async def _boom(message: str) -> bool:
+    async def _boom(message: str, *, origin: str = "user") -> bool:
         provider.calls.append("steer")
         raise RuntimeError("pipe closed")
 
@@ -219,7 +219,7 @@ async def test_eval_audit_lands_before_the_steer(monkeypatch):
     monkeypatch.setattr(runner_mod, "sel", lambda: fake_sel)
     provider = _Provider(title="write_file")
 
-    async def _steer(message: str) -> bool:
+    async def _steer(message: str, *, origin: str = "user") -> bool:
         order.append("steer")
         return True
 
@@ -285,7 +285,7 @@ async def test_judge_audit_lands_before_the_steer(monkeypatch):
     monkeypatch.setattr(judge_mod, "sel", lambda: fake_sel)
     provider = _Provider()
 
-    async def _steer(message: str) -> bool:
+    async def _steer(message: str, *, origin: str = "user") -> bool:
         order.append("steer")
         return True
 
@@ -471,7 +471,7 @@ async def test_a_backend_without_steer_only_rejects():
 async def test_a_failing_steer_still_rejects():
     provider = _SubagentProvider([_request()])
 
-    async def _boom(message: str) -> bool:
+    async def _boom(message: str, *, origin: str = "user") -> bool:
         provider.calls.append("steer")
         raise RuntimeError("pipe closed")
 
@@ -498,7 +498,7 @@ async def test_the_audit_lands_before_the_steer():
     order: list[str] = []
     provider = _SubagentProvider([_request()])
 
-    async def _steer(message: str) -> bool:
+    async def _steer(message: str, *, origin: str = "user") -> bool:
         order.append("steer")
         return True
 
@@ -524,7 +524,7 @@ async def test_a_failing_audit_still_steers_and_rejects():
     order: list[str] = []
     provider = _SubagentProvider([_request()])
 
-    async def _steer(message: str) -> bool:
+    async def _steer(message: str, *, origin: str = "user") -> bool:
         order.append("steer")
         return True
 

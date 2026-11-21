@@ -637,8 +637,9 @@ async def steer(self: AcpClient, message: str, *, origin: str = STEER_ORIGIN_USE
     elif self.backend in ACP_BACKENDS_STEER_CONCURRENT_PROMPT:
         sent = await self._steer_via_concurrent_prompt(text)
     else:
-        wrapped = wrap_user_message(text)
-        await self._send_request("_session/steer", steer_params(self._session_id, wrapped, origin))
+        await self._send_request(
+            "_session/steer", steer_params(self._session_id, text, origin, self.backend)
+        )
         batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
         # See AcpSessionHandle.steer for why the stamp is taken at the write.
         self._last_steer_monotonic = time.monotonic()

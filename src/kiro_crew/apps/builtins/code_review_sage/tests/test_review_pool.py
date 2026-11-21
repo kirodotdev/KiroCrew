@@ -340,7 +340,7 @@ class TestApprovalAndAudit(unittest.IsolatedAsyncioTestCase):
         # while the request is still unanswered -- steer, THEN reject.
         trace: list = []
 
-        async def _steer(_handle, text):
+        async def _steer(_handle, text, *, origin="user"):
             trace.append(("steer", text))
             return True
 

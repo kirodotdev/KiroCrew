@@ -86,7 +86,7 @@ class _Provider:
     def context_usage_pct(self) -> float:
         return self._pct.pop(0) if self._pct else 0.0
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.calls.append("steer")
         self.steered.append(message)
         return True
@@ -276,7 +276,7 @@ async def test_backend_without_steer_only_rejects(tmp_path):
 async def test_a_failing_steer_still_rejects(tmp_path):
     provider = _Provider()
 
-    async def _boom(message: str) -> bool:
+    async def _boom(message: str, *, origin: str = "user") -> bool:
         provider.calls.append("steer")
         raise RuntimeError("pipe closed")
 
@@ -295,7 +295,7 @@ async def test_audit_lands_before_the_steer(tmp_path, monkeypatch):
     monkeypatch.setattr(task_executor, "sel", lambda: fake_sel)
     provider = _Provider()
 
-    async def _steer(message: str) -> bool:
+    async def _steer(message: str, *, origin: str = "user") -> bool:
         order.append("steer")
         return True
 

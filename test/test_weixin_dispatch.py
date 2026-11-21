@@ -721,7 +721,7 @@ def test_a_mid_turn_caption_still_reaches_the_running_turn(tmp_path, monkeypatch
         def has_active_turn(self):
             return True
 
-        async def steer(self, text):
+        async def steer(self, text, *, origin: str = "user"):
             self.steered.append(text)
             return True
 
@@ -774,7 +774,7 @@ def test_a_turn_starting_during_the_download_still_refuses_the_attachment(tmp_pa
         def has_active_turn(self):
             return True
 
-        async def steer(self, text):
+        async def steer(self, text, *, origin: str = "user"):
             self.steered.append(text)
             return True
 

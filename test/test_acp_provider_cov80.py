@@ -104,7 +104,7 @@ class TestSteer:
         provider = _provider()
         provider._client.steer = AsyncMock(return_value=True)
         assert await provider.steer("also check the logs") is True
-        provider._client.steer.assert_awaited_once_with("also check the logs")
+        provider._client.steer.assert_awaited_once_with("also check the logs", origin="user")
 
     @pytest.mark.asyncio
     async def test_unsteerable_client_returns_false(self) -> None:

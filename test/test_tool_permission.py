@@ -953,7 +953,7 @@ class _Client:
         self.supports_refusal_steer = steer != "unsupported"
         self.parked = asyncio.Event()
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.log.append(("steer", message))
         if self._steer == "raise":
             raise RuntimeError("pipe closed")

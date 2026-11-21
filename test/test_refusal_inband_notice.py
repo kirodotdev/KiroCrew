@@ -62,7 +62,7 @@ class _SteerClient:
         self.calls: list[str] = []
         self.steered: list[str] = []
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.calls.append("steer")
         self.steered.append(message)
         return self._steer_result
@@ -72,7 +72,7 @@ class _SteerClient:
 
 
 class _RaisingSteerClient(_SteerClient):
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.calls.append("steer")
         raise RuntimeError("transport gone")
 
@@ -150,7 +150,9 @@ class TestSteerPolicyNotice:
     @pytest.mark.asyncio
     async def test_client_missing_the_attribute_is_treated_as_unsupported(self):
         class _Bare:
-            async def steer(self, message: str) -> bool:  # pragma: no cover - never reached
+            async def steer(
+                self, message: str, *, origin: str = "user"
+            ) -> bool:  # pragma: no cover - never reached
                 raise AssertionError("must not be called")
 
         notices: list[str] = []

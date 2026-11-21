@@ -125,7 +125,7 @@ class _SlackSteerProvider:
             yield event
         yield AcpEvent(kind=EVENT_COMPLETE)
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.calls.append("steer")
         self.steered.append(message)
         return True
@@ -203,7 +203,7 @@ async def test_slack_hook_deny_audits_before_the_steer(slack_harness, monkeypatc
     monkeypatch.setattr(h, "sel", lambda: sel_mock)
 
     class _Ordered(_SlackSteerProvider):
-        async def steer(self, message):
+        async def steer(self, message, *, origin: str = "user"):
             order.append("steer")
             return await super().steer(message)
 
@@ -242,7 +242,7 @@ async def test_slack_agent_authored_reason_is_redacted_before_it_reaches_the_mod
 
 @pytest.mark.asyncio
 class _StalledSlack(_SlackSteerProvider):
-    async def steer(self, message):
+    async def steer(self, message, *, origin: str = "user"):
         await asyncio.sleep(3600)
         return True
 
@@ -357,7 +357,7 @@ class _ChannelClient:
         for ev in self._events:
             yield ev
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.calls.append("steer")
         self.steered.append(message)
         return True
@@ -478,7 +478,7 @@ async def test_channel_audits_before_the_steer(channel_sel):
     channel_sel.log_tool_invocation.side_effect = lambda **kw: order.append("audit")
 
     class _Ordered(_ChannelClient):
-        async def steer(self, message):
+        async def steer(self, message, *, origin: str = "user"):
             order.append("steer")
             return await super().steer(message)
 
@@ -495,7 +495,7 @@ async def test_channel_audits_before_the_steer(channel_sel):
 @pytest.mark.asyncio
 async def test_channel_cancelled_mid_steer_still_answers_the_wire():
     class _Stalled(_ChannelClient):
-        async def steer(self, message):
+        async def steer(self, message, *, origin: str = "user"):
             await asyncio.sleep(3600)
             return True
 
@@ -556,7 +556,7 @@ class _DriverProvider:
         for ev in self._events:
             yield ev
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.calls.append("steer")
         self.steered.append(message)
         return True
@@ -640,7 +640,7 @@ async def test_driver_audits_before_the_steer(monkeypatch):
     monkeypatch.setattr("kiro_crew.messaging.driver.sel", lambda: sel_mock)
 
     class _Ordered(_DriverProvider):
-        async def steer(self, message):
+        async def steer(self, message, *, origin: str = "user"):
             order.append("steer")
             return await super().steer(message)
 
@@ -654,7 +654,7 @@ async def test_driver_audits_before_the_steer(monkeypatch):
 
 
 class _StalledDriverProvider(_DriverProvider):
-    async def steer(self, message):
+    async def steer(self, message, *, origin: str = "user"):
         await asyncio.sleep(3600)
         return True
 

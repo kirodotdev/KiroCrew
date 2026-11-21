@@ -106,7 +106,7 @@ class _Provider:
         for ev in events:
             yield ev
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.calls.append("steer")
         self.steered.append(message)
         return True
@@ -166,7 +166,7 @@ def _assert_steered_then_rejected(provider: _Provider, *fragments: str) -> str:
 
 
 def _recording_steer(client: _Provider, order: list[str]):
-    async def _steer(message: str) -> bool:
+    async def _steer(message: str, *, origin: str = "user") -> bool:
         order.append("steer")
         client.calls.append("steer")
         client.steered.append(message)
