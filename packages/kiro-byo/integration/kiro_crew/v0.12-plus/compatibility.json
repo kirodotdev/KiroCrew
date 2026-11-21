@@ -1,0 +1,179 @@
+{
+  "family_regex": "^\\d+\\.\\d+\\.\\d+(?:(?:-(?:rc|alpha|beta|preview|dev|insider)[.\\-]?\\d+)|(?:(?:rc|a|b|dev)\\d+))?(?:\\+[A-Za-z0-9._-]+)?$",
+  "transformer": "adaptive12",
+  "generated_files": [
+    "src/kiro_crew/agent_sdk/backends.py",
+    "src/kiro_crew/agent_sdk/backends_mcp.py",
+    "src/kiro_crew/agent_sdk/backends_members.py",
+    "src/kiro_crew/agent_sdk/backends_sessions.py",
+    "src/kiro_crew/agent_sdk/backends_turns.py",
+    "src/kiro_crew/agent_sdk/backends_models.py",
+    "src/kiro_crew/agent_sdk/backends_routing.py",
+    "src/kiro_crew/agent_sdk/backends_launch.py",
+    "src/kiro_crew/acp/types.py",
+    "src/kiro_crew/agent_sdk/host_auth.py",
+    "src/kiro_crew/acp/harness/__init__.py",
+    "src/kiro_crew/acp/runtime_session_load.py",
+    "src/kiro_crew/providers/mirrors/registry.py",
+    "src/kiro_crew/config/loader_builders.py",
+    "src/kiro_crew/dashboard/handlers/agents.py",
+    "src/kiro_crew/dashboard/chat_api/slot_effort.py",
+    "src/kiro_crew/dashboard/chat_title.py"
+  ],
+  "baseline": "KiroCrew 0.12.0 RC/stable or newer: source-guarded candidate (real Host E2E not verified)",
+  "hash_mode": "normalized_utf8_lf",
+  "mode": "adaptive_semantic",
+  "base_sha256": {},
+  "accepted_prior_overlay_sha256": {},
+  "created_files": [
+    "src/kiro_crew/acp/harness/kiro_byo.py"
+  ],
+  "verified_through": "",
+  "verified_commit": "",
+  "verified_at": "",
+  "required_contract_symbols": {
+    "src/kiro_crew/agent.py": [
+      "require_fork_governance",
+      "ensure_agent_materialized",
+      "_MEMBER_DASHBOARD_GRANTS",
+      "_MEMBER_PANEL_GRANTS",
+      "_EXPORTS_BY_OWNER",
+      "__getattr__"
+    ],
+    "src/kiro_crew/acp/kas_agents.py": [
+      "pre_tool_hook_matchers",
+      "load_agent_spec",
+      "resolve_prompt"
+    ],
+    "src/kiro_crew/acp/kas_permissions.py": [
+      "allowed_tools_to_permissions",
+      "withhold_hook_gated_auto_approval",
+      "auto_approved_capabilities"
+    ],
+    "src/kiro_crew/acp/launch.py": [
+      "resolve_self_served_launch"
+    ],
+    "src/kiro_crew/acp/harness/_common.py": [
+      "MembershipHarness"
+    ],
+    "src/kiro_crew/acp/harness/base.py": [
+      "NotificationAliases",
+      "SessionExtras",
+      "SpawnContext",
+      "SpawnPlan",
+      "TeardownPolicy"
+    ],
+    "src/kiro_crew/acp/session_handle.py": [
+      "AcpRuntimeError"
+    ],
+    "src/kiro_crew/acp/session_mcp.py": [
+      "IDENTITY_BOUND_SERVERS",
+      "acp_server_element",
+      "session_mcp_projection"
+    ],
+    "src/kiro_crew/config/paths.py": [
+      "kiro_agents_dir"
+    ],
+    "src/kiro_crew/platform/governance.py": [
+      "may_skip_gate_now"
+    ],
+    "src/kiro_crew/providers/mirrors/base.py": [
+      "Concern",
+      "Disposition",
+      "Ruling",
+      "SessionProjection"
+    ],
+    "src/kiro_crew/providers/mirrors/identity.py": [
+      "control_plane_identity_env",
+      "with_env"
+    ],
+    "src/kiro_crew/agent_materialization/worker_agent.py": [
+      "require_fresh_derived_spec",
+      "DerivedSpecStale"
+    ],
+    "src/kiro_crew/agent_materialization/managed_mcp.py": [
+      "managed_mcp_spec_entry"
+    ],
+    "src/kiro_crew/apps/manager_records.py": [
+      "app_data_dir"
+    ],
+    "src/kiro_crew/acp/harness/kas.py": [
+      "resolve_projected_spec",
+      "mate_worker_projection"
+    ],
+    "src/kiro_crew/mate_worker.py": [
+      "MATE_WORKER_AGENT",
+      "WorkerKitUnreadable"
+    ],
+    "src/kiro_crew/config/loader_document.py": [
+      "member_acp_backend_declared"
+    ],
+    "src/kiro_crew/config/loader_builders.py": [
+      "_read_backend_choice"
+    ],
+    "src/kiro_crew/agent_sdk/backends.py": [
+      "ACP_BACKENDS_KNOWN",
+      "register_selectable_backend"
+    ],
+    "src/kiro_crew/agent_sdk/backends_routing.py": [
+      "ACP_BACKEND_ROUTING",
+      "Routing"
+    ]
+  },
+  "required_contract_exports": {},
+  "verified_family_regex": "",
+  "min_version": "0.12.0",
+  "required_contract_markers": {
+    "src/kiro_crew/apps/manager.py": [
+      "from kiro_crew import _facade_mirror",
+      "_facade_mirror.install"
+    ],
+    "src/kiro_crew/dashboard/chat_handlers.py": [
+      "_facade_compose(",
+      "_owner_slot_effort"
+    ],
+    "src/kiro_crew/_facade_compose.py": [
+      "def compose(",
+      "new = FunctionType(fn.__code__, namespace",
+      "for holder in [namespace, *(vars(owner) for owner in owners)]"
+    ],
+    "src/kiro_crew/acp/runtime_session_load.py": [
+      "async def load_session(",
+      "await handle.apply_session_permission_routing()",
+      "self._harness.record_session_projection(",
+      "await self.terminate_session(resume_sid)",
+      "self._start_mount_check("
+    ]
+  },
+  "verified_versions": [],
+  "source_audit": "2026-11-05: baseline set to stable v0.12.0. Official tag source not retrievable locally; local semantic fixtures and CI checkout are not live Host E2E certification.",
+  "pinned_source_sha256": {},
+  "candidate_policy": "Accept 0.12.0 RC and stable + later valid releases only after strict installed-source, permission-routing, and dashboard contract checks. Version strings alone never certify compatibility.",
+  "semantic_candidate_regex": "",
+  "semantic_clock_seams_unpinned": [],
+  "semantic_unpinned_files": [
+    "src/kiro_crew/agent_sdk/backends.py",
+    "src/kiro_crew/agent_sdk/backends_mcp.py",
+    "src/kiro_crew/agent_sdk/backends_members.py",
+    "src/kiro_crew/agent_sdk/backends_sessions.py",
+    "src/kiro_crew/agent_sdk/backends_turns.py",
+    "src/kiro_crew/agent_sdk/backends_models.py",
+    "src/kiro_crew/agent_sdk/backends_routing.py",
+    "src/kiro_crew/agent_sdk/backends_launch.py",
+    "src/kiro_crew/acp/types.py",
+    "src/kiro_crew/agent_sdk/host_auth.py",
+    "src/kiro_crew/acp/harness/__init__.py",
+    "src/kiro_crew/acp/runtime_session_load.py",
+    "src/kiro_crew/providers/mirrors/registry.py",
+    "src/kiro_crew/config/loader_builders.py",
+    "src/kiro_crew/dashboard/handlers/agents.py",
+    "src/kiro_crew/dashboard/chat_api/slot_effort.py",
+    "src/kiro_crew/dashboard/chat_title.py"
+  ],
+  "retired_generated_files": [
+    "src/kiro_crew/dashboard/chat_handlers.py",
+    "src/kiro_crew/acp_backends.py",
+    "src/kiro_crew/agent_sdk/tool_gate.py",
+    "src/kiro_crew/members_parts/member_sessions.py"
+  ]
+}
