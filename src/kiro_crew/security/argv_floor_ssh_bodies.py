@@ -150,17 +150,31 @@ def _substitution_reaches_self(text_lower: str) -> bool:
 # there it separates path components (``C:\Windows\System32\OpenSSH\ssh.exe``,
 # ``.\ssh.exe``) instead of escaping the next character as POSIX shell rules do.
 _PATH_SEPARATOR_BACKSLASH_RE = re.compile(r"\\(?=[\w.?*\[-])")
+_BACKSLASH_WORD_RE = re.compile(r"[^\s;&|()<>]*\\[^\s;&|()<>]*")
+_SSH_PROGRAM_PATH_END_RE = re.compile(r"(?:ssh|scp|sftp|rsync|[^\\/]*\.exe)\Z")
+
+
+def _path_word_with_separators(match: "re.Match[str]") -> str:
+    word = match.group(0)
+    last = re.split(r"[\\/]", word.rstrip("\"'"))[-1]
+    if _SSH_PROGRAM_PATH_END_RE.match(last) is None:
+        return word
+    return _PATH_SEPARATOR_BACKSLASH_RE.sub("/", word)
 
 
 def _with_backslash_path_separators(text: str) -> str:
-    """*text* with each backslash before a path-name character read as ``/``.
+    """*text* with each backslash before a path-name character read as ``/``, in a word
+    whose last component is an ssh program (``ssh``, ``scp``, ``sftp``, ``rsync``) or
+    ends in ``.exe``.
 
     The tokenizer drops an unquoted backslash and keeps a quoted one, and the program
     basename splits on ``/`` only, so neither reading isolates ``ssh.exe`` at the end of
     a Windows path. A backslash before a quote, a blank, a separator or another
-    backslash is left as written, so the quoting the tokenizer reads is unchanged.
+    backslash is left as written, so the quoting the tokenizer reads is unchanged. A
+    word that cannot name a program (``src\\s*``, a glob argument) keeps its POSIX
+    reading, so a file operand is not read as a program path.
     """
-    return _PATH_SEPARATOR_BACKSLASH_RE.sub("/", text)
+    return _BACKSLASH_WORD_RE.sub(_path_word_with_separators, text)
 
 
 def _reaches_self_over_ssh(text_lower: str, raw_text: "str | None" = None) -> bool:

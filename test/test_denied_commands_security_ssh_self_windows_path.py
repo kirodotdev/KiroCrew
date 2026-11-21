@@ -67,6 +67,10 @@ def test_the_spellings_refused_without_the_path_reading_stay_refused(cmd):
         r"C:\Windows\System32\OpenSS?\ss?.exe -p 22 example.com",
         r"echo a\ssh -p 22 localhost",
         r"type C:\Users\me\notes.txt",
+        # A glob operand is a file name, not a program path: only a word ending in an
+        # ssh program or in ``.exe`` gets the path reading.
+        r"tar -czf out.tgz src\s* *.*",
+        r"git add src\s* README.md",
     ],
 )
 def test_a_backslash_path_that_does_not_connect_here_is_allowed(cmd):
@@ -77,4 +81,5 @@ def test_the_path_reading_keeps_escapes_before_quotes_and_blanks():
     from kiro_crew.security.argv_floor_ssh_bodies import _with_backslash_path_separators
 
     assert _with_backslash_path_separators(r".\ssh.exe") == "./ssh.exe"
-    assert _with_backslash_path_separators(r"a\ b \" \' \; \\x") == r"a\ b \" \' \; \/x"
+    assert _with_backslash_path_separators(r"a\ b \" \' \; \\ssh.exe") == r"a\ b \" \' \; \/ssh.exe"
+    assert _with_backslash_path_separators(r"src\s* x\y.exe") == r"src\s* x/y.exe"

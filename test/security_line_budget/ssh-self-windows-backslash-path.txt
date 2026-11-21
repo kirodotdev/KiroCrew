@@ -1,7 +1,8 @@
-+29
++43
 On Windows PowerShell reads a backslash as a path separator, so the ssh-to-self floor
 missed `C:\Windows\System32\OpenSSH\ssh.exe localhost` and `.\ssh.exe localhost`: the
 POSIX tokenizer drops each unquoted backslash and the program basename splits on `/`
 only. `argv_floor_ssh_bodies.py` reads the line once more with each backslash before a
-path-name character as `/`, and refuses when either reading refuses, so it only adds
-refusals (#38634).
+path-name character as `/`, in a word whose last component is an ssh program or ends in
+`.exe`, and refuses when either reading refuses, so it only adds refusals for a program
+path and none for a glob operand such as `src\s*` (#38634).
