@@ -101,7 +101,10 @@ from kiro_crew.agent_parts.shared_home import (
     _decline_shared_agent_home,
     _declined_home_warned,
     _existing_specs_are_mine,
+    _new_shared_spec_needs_owner_pin,
+    _owned_by_another_home,
     _rebuild_spec_install_admitted,
+    _shared_agents_target,
     _warn_declined_home_once,
     _worktree_declined_spec_hint,
 )
@@ -139,6 +142,7 @@ from kiro_crew.agent_parts.spec_files import (
     KIRO_AGENTS_DIR,
     _atomic_json_write,
     _atomic_json_write_unguarded,
+    _declined_foreign_spec_removal,
     _declined_foreign_spec_write,
     _notify_if_config_write,
     agents_spec_lock,

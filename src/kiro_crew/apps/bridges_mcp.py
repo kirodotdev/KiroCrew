@@ -1088,7 +1088,16 @@ def _register_mcp_servers(
             )
         )
         _sync_app_tool_refs(mcp_data, app_name)
-        _write_mcp_json_unlocked(mcp_data)
+        written = _write_mcp_json_unlocked(mcp_data)
+    if not written:
+        # This data home does not own the shared agent spec; nothing was written,
+        # so nothing is registered. The guard has already logged and audited it.
+        logger.info(
+            "App %s: MCP server registration skipped, this data home does not own the "
+            "shared agent spec",
+            app_name,
+        )
+        return []
     logger.info(
         "Registered %d MCP server(s) for app %s (live_port=%s); skipped %d HTTP server(s) "
         "with no live backend: %s",
@@ -1277,8 +1286,11 @@ def _deregister_mcp_servers(app_name: str) -> int:
             del servers[k]
         before = mcp_data.get("tools")
         _sync_app_tool_refs(mcp_data, app_name)
-        if to_remove or mcp_data.get("tools") != before:
-            _write_mcp_json_unlocked(mcp_data)
+        # A refused write (this data home does not own the shared spec) removed
+        # nothing: the owner's entries stay on disk, so report none removed.
+        tools_changed = mcp_data.get("tools") != before
+        if (to_remove or tools_changed) and not _write_mcp_json_unlocked(mcp_data, removal=True):
+            to_remove = []
     # NOT scrubbed here: the legacy shared ~/.kiro/settings/mcp.json is held by
     # OTHER processes (Kiro IDE, other kiro-cli agents), so its cross-process
     # flock can block indefinitely. deregister_app() runs synchronously on the

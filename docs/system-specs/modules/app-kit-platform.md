@@ -1172,6 +1172,49 @@ for every ENABLED app on every gateway start: through
 one. Scrubbing only on deregister meant an already-enabled app kept leaking until the
 user happened to disable it.
 
+**The writer asks the shared-home ownership guard.** `kirocrew.json` is the spec
+`agent._decline_shared_agent_home` protects, and `_write_mcp_json_unlocked`
+(`bridges_mcp_config.py`), the one write the register, deregister and prune paths
+share, asks the same question through `agent._declined_foreign_spec_write` before
+it writes. A gateway on a non-default `KIROCREW_HOME` runs the boot reconcile over
+its own installed apps; a stdio server that launches a `kiro_crew` module gets
+`command = sys.executable`, so an unguarded write repointed the live gateway's
+`auto-improvement` entry at a preview build's interpreter. When the shared
+directory belongs to another home the write returns `False`, the file is left
+byte-identical, `_register_mcp_servers` returns `[]` and `_deregister_mcp_servers`
+returns `0`; the guard logs the WARNING and the SEL `agent_home_write` denial. A
+default-home instance, an instance whose own provenance is in the specs, a
+private redirected target and the dedicated `isolated_agents_dir` write as before
+(`test_app_bridges_home_guard.py`). On the first shared-directory write from a
+relocated home, the writer includes the existing `kirocrew-core` managed entry.
+Its `KIROCREW_HOME` pin makes the app-created file recognizable on later register,
+deregister and prune writes.
+
+The removals in that directory ask a narrower question,
+`agent._declined_foreign_spec_removal`: do the specs belong to another data home?
+A removal of this home's own app entries writes nothing of this instance, so the
+ephemeral arms (a linked worktree, a temp checkout) do not refuse it, and a
+default-home gateway run from a linked worktree still removes a disabled or denied
+app's agents and MCP entries. `_deregister_mcp_servers` and the MCP half of the
+prune pass `removal=True` to the writer for this. The agent removals ask once per
+sweep, under
+`agents_spec_lock` held until the last unlink, so ownership cannot change between
+the answer and a delete: `_deregister_agents` (which the boot reconcile runs for every app this
+instance denies) and the agent half of `_prune_stale_app_resources`, each of which
+also removes the app's launch copies. When another home owns the directory they
+delete nothing and
+`_deregister_agents` returns `0`, as `_deregister_mcp_servers` does. That is a
+settled no-op, not an error: `_register_agents` declines every write there, so
+nothing in the directory is this home's to remove, and a retry gets the same
+answer until ownership changes. `kirocrew app disable` therefore completes, and
+the health watch's `_drop_disabled_app_resources` does not retry it every sweep.
+When the agent-spec lock cannot be opened or acquired, the sweep raises.
+`deregister_app` records the failure, so app disable reports incomplete cleanup and
+the health watch retries. The upgrade prune logs the agent failure and continues
+the MCP stale-entry prune. The boot reconcile's denied-app branch revokes each
+resource kind independently, so a failed agent sweep does not skip skill or MCP
+server revocation.
+
 **The dashboard's whole-config PUT merges rather than replaces, for exactly this
 reason.** `PUT /api/agent/config` persists a whole-file snapshot the client read
 earlier, so an app registration landing between that read and the PUT used to be
