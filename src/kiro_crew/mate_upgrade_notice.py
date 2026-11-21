@@ -11,10 +11,11 @@ import json
 import logging
 import os
 import time
-from pathlib import Path
+from contextlib import suppress
 
 from kiro_crew import crewmate_prompts
 from kiro_crew import members as members_mod
+from kiro_crew.member_folder import open_member_folder
 
 logger = logging.getLogger(__name__)
 
@@ -56,16 +57,12 @@ def mark_policy_owed(name: str, change: str, *, held: bool = False, fresh: bool 
     (``mate_held_rules``): the dashboard bell gets a note too, with a link to the Bot.
     """
     try:
-        path = _dir(name) / POLICY_OWED_FILENAME
-        path.parent.mkdir(parents=True, exist_ok=True)
-        from kiro_crew.atomic_write import atomic_write
-
         record: dict[str, object] = {"member": name, "change": change}
         if held:
             record["held"] = True
         if fresh:
             record["fresh"] = True
-        atomic_write(path, json.dumps(record) + "\n", restrict_to_owner=True)
+        _write_owed(name, POLICY_OWED_FILENAME, record)
     except Exception:  # noqa: BLE001 - no notice is the safe direction
         logger.warning("could not record the policy notice owed by %r", name, exc_info=True)
 
@@ -86,8 +83,10 @@ def kept_notice_prompt(reason: str) -> str:
     return WORKER_UPGRADE_PREFIX + crewmate_prompts.fill("upgrade_notice_kept", reason=reason)
 
 
-def _dir(name: str) -> Path:
-    return members_mod.member_dir(members_mod.member_slug(name))
+def _write_owed(name: str, filename: str, record: dict[str, object]) -> None:
+    """Write *record* as *filename* in crewmate *name*'s folder, through the held folder."""
+    with open_member_folder(members_mod.member_slug(name)) as folder:
+        folder.write(filename, json.dumps(record) + "\n")
 
 
 def notice_prompt(changes: str = "") -> str:
@@ -104,12 +103,8 @@ def mark_notice_owed(name: str, changes: str = "") -> None:
     and what it withheld; empty when the worker grants exactly what the old agent did.
     """
     try:
-        path = _dir(name) / NOTICE_OWED_FILENAME
-        path.parent.mkdir(parents=True, exist_ok=True)
-        from kiro_crew.atomic_write import atomic_write
-
         record = {"member": name, "changes": changes} if changes else {"member": name}
-        atomic_write(path, json.dumps(record) + "\n", restrict_to_owner=True)
+        _write_owed(name, NOTICE_OWED_FILENAME, record)
     except Exception:  # noqa: BLE001 - no notice is the safe direction
         logger.warning("could not record the upgrade notice owed by %r", name, exc_info=True)
 
@@ -117,12 +112,7 @@ def mark_notice_owed(name: str, changes: str = "") -> None:
 def mark_kept_owed(name: str, reason: str) -> None:
     """Record that crewmate *name*, left where it was, owes its user *reason*. Never raises."""
     try:
-        path = _dir(name) / KEPT_OWED_FILENAME
-        path.parent.mkdir(parents=True, exist_ok=True)
-        from kiro_crew.atomic_write import atomic_write
-
-        record = {"member": name, "reason": reason}
-        atomic_write(path, json.dumps(record) + "\n", restrict_to_owner=True)
+        _write_owed(name, KEPT_OWED_FILENAME, {"member": name, "reason": reason})
     except Exception:  # noqa: BLE001 - no notice is the safe direction
         logger.warning("could not record the kept notice owed by %r", name, exc_info=True)
 
@@ -130,7 +120,9 @@ def mark_kept_owed(name: str, reason: str) -> None:
 def clear_kept_owed(name: str) -> None:
     """Drop crewmate *name*'s unclaimed kept notice: it has moved. Never raises."""
     try:
-        (_dir(name) / KEPT_OWED_FILENAME).unlink(missing_ok=True)
+        with open_member_folder(members_mod.member_slug(name)) as folder:
+            with suppress(FileNotFoundError):
+                os.unlink(folder.leaf(KEPT_OWED_FILENAME), dir_fd=folder.fd)
     except Exception:  # noqa: BLE001 - the moved-notice guard in claim_kept_notice still holds
         logger.warning("could not clear the kept notice owed by %r", name, exc_info=True)
 
@@ -139,7 +131,8 @@ def _claim(slug: str, member: str, owed: str, claimed: str) -> dict | None:
     """The owed record, claimed once; ``None`` when not owed or already claimed.
 
     The owed record must name this member. ``O_CREAT | O_EXCL`` on the claim
-    marker is the guard: atomic across tasks and processes.
+    marker is the guard: atomic across tasks and processes. The record is read
+    by path (a read only); the marker is created in the held member folder.
     """
     try:
         directory = members_mod.member_dir(slug)
@@ -149,10 +142,16 @@ def _claim(slug: str, member: str, owed: str, claimed: str) -> dict | None:
     if not isinstance(record, dict) or record.get("member") != member:
         return None
     try:
-        fd = os.open(directory / claimed, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with open_member_folder(slug) as folder:
+            fd = os.open(
+                folder.leaf(claimed),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=folder.fd,
+            )
     except FileExistsError:
         return None
-    except OSError:
+    except (OSError, members_mod.MemberSlugError):
         logger.warning("could not claim the upgrade notice for %r", member, exc_info=True)
         return None
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
