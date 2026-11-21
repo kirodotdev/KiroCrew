@@ -2,7 +2,7 @@
 """Where ``members`` is a link, no site looks the folder up by name and then writes there.
 
 ``open_member_folder`` opens the folder a link at ``members`` names once and holds it.
-Four sites outside it used to name ``members`` as a string. Each is either routed through
+Four sites outside it name ``members`` as a string. Each is either routed through
 that held folder (it writes) or declared read-only (it writes nothing): the tests below
 show the write sites keep to the held folder and the read-only sites leave the tree as it was.
 """
