@@ -16,31 +16,37 @@ Protocol, one JSON object per line each way:
 * reply ``{"id": n, "ok": true, "result": <json>}`` or
   ``{"id": n, "ok": false, "error": "<text>"}``.
 
-The allowlist is the whole surface: ``run.py``, ``browser_js``, ``browser_cdp``,
-``http_get`` and the agent-helper loader are not reachable through it, and ``js`` is
-accepted only so the gateway can run its own accessibility walker. The supervisor
-checks the same list before it sends (``supervisor.HELPERS``); this copy is what holds
-if anything else ever reaches the pipe.
+The allowlist is the whole surface: ``run.py``, Harness's MCP server and the
+agent-helper loader are not reachable through it. ``js`` runs the gateway's own
+accessibility walker and, with ``cdp`` and ``http_get``, the agent's ``js``, ``cdp``
+and ``http_get`` ops (``browser_harness.raw_ops``). The supervisor checks the same
+list before it sends (``supervisor.HELPERS``); this copy is what holds if anything
+else ever reaches the pipe.
 """
 
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 import re
 import sys
 import traceback
+import urllib.error
+import urllib.request
 from typing import Any, Callable
 
 #: Helper name -> (helpers.py function, accepted keyword arguments). A name starting
-#: with ``_local_`` is a function in THIS file built from Harness's ``cdp`` primitive:
-#: the mouse moves Harness has no helper for.
+#: with ``_local_`` is a function in THIS file, built from Harness's ``cdp`` primitive
+#: (the mouse moves Harness has no helper for) or, for ``http_get``, from urllib.
 _ALLOWLIST: dict[str, tuple[str, tuple[str, ...]]] = {
     "goto": ("goto_url", ("url",)),
     "click": ("click_at_xy", ("x", "y", "button", "clicks")),
     "mouse_move": ("_local_mouse_move", ("x", "y")),
     "drag": ("_local_drag", ("x", "y", "to_x", "to_y")),
     "type_text": ("type_text", ("text",)),
+    "fill_input": ("fill_input", ("selector", "text", "clear_first")),
+    "dispatch_key": ("dispatch_key", ("selector", "key", "event")),
     "press_key": ("press_key", ("key", "modifiers")),
     "scroll": ("scroll", ("x", "y", "dy", "dx")),
     "screenshot": ("capture_screenshot", ("path", "full", "max_dim")),
@@ -51,16 +57,21 @@ _ALLOWLIST: dict[str, tuple[str, tuple[str, ...]]] = {
     "page_info": ("page_info", ()),
     "dialog": ("_local_dialog", ("action", "text")),
     "wait_for_load": ("wait_for_load", ("timeout",)),
+    "wait_for_element": ("wait_for_element", ("selector", "timeout", "visible")),
+    "wait_for_network_idle": ("wait_for_network_idle", ("timeout", "idle_ms")),
     "new_tab": ("new_tab", ("url",)),
     "switch_tab": ("switch_tab", ("target", "activate")),
     "list_tabs": ("list_tabs", ("include_chrome",)),
     "close_tab": ("close_tab", ("target",)),
     "current_tab": ("current_tab", ()),
     "js": ("js", ("expression", "target_id")),
+    "cdp": ("_local_cdp", ("method", "params")),
+    "http_get": ("_local_http_get", ("url", "headers", "timeout")),
     "js_isolated": ("_local_js_isolated", ("expression",)),
     "frame_owner_count": ("_local_frame_owner_count", ()),
     "closed_secret_count": ("_local_closed_secret_count", ()),
     "page_clock": ("_local_page_clock", ("state",)),
+    "set_files": ("_local_set_files", ("expression", "files")),
 }
 
 #: The world :func:`_local_js_isolated` evaluates in: the top frame's own isolated
@@ -78,12 +89,63 @@ _ERROR_CAP = 4000
 #: error reply of a few hundred bytes instead, so the pipe never desynchronises.
 #: The walker caps what it returns (nodes, console text) far below this.
 REPLY_CAP_BYTES = 4 * 1024 * 1024
+#: Most body bytes one ``http_get`` reads. JSON-escaped at its worst (six bytes a
+#: character) it still fits :data:`REPLY_CAP_BYTES`.
+HTTP_BODY_CAP_BYTES = 512 * 1024
 
 
 def _local_mouse_move(helpers: Any, x: float, y: float) -> dict[str, float]:
     """Move the pointer to a viewport point (hover) on the daemon's current tab."""
     helpers.cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y)
     return {"x": x, "y": y}
+
+
+def _local_cdp(helpers: Any, method: str, params: dict[str, Any] | None = None) -> Any:
+    """Harness ``cdp(method, **params)`` on the daemon's current tab.
+
+    A param named like one of the helper's own arguments would be taken as that
+    argument (a ``session_id`` would move the command to another tab), so it is refused.
+    """
+    params = dict(params or {})
+    taken = {"session_id", "_response_timeout"} & set(params)
+    if taken:
+        raise ValueError(f"cdp: params may not carry {sorted(taken)}")
+    return helpers.cdp(method, **params)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+def _local_http_get(
+    helpers: Any, url: str, headers: dict[str, str] | None = None, timeout: float = 20.0
+) -> Any:
+    """Harness ``http_get``'s plain urllib GET, without following a redirect.
+
+    The gateway judges only the URL it was asked for, so a redirect is answered as
+    ``{"status", "location"}`` and the next hop is a new call that is judged and
+    asked again. At most :data:`HTTP_BODY_CAP_BYTES` of the body are read (after
+    gzip), so a huge response cannot fill this process; the gateway cuts far below
+    that. Harness's hosted fetch proxy is not used.
+    """
+    del helpers
+    h = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "gzip"}
+    h.update(headers or {})
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(urllib.request.Request(url, headers=h), timeout=timeout) as r:
+            body: Any = r
+            if r.headers.get("Content-Encoding") == "gzip":
+                body = gzip.GzipFile(fileobj=r)
+            data = body.read(HTTP_BODY_CAP_BYTES)
+    except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            location = exc.headers.get("Location", "")
+            exc.close()
+            return {"status": exc.code, "location": location}
+        raise
+    return data.decode("utf-8", errors="replace")
 
 
 def _local_drag(helpers: Any, x: float, y: float, to_x: float, to_y: float) -> dict[str, Any]:
@@ -228,10 +290,65 @@ def _local_js_isolated(helpers: Any, expression: str) -> Any:
     that does not give a value raises, so the gateway's guard fails closed instead of
     reading an empty answer as zero.
     """
+    out = helpers.cdp(
+        "Runtime.evaluate",
+        expression=expression,
+        contextId=_isolated_context(helpers, "js_isolated"),
+        returnByValue=True,
+    )
+    if out.get("exceptionDetails"):
+        raise RuntimeError("js_isolated: the expression threw")
+    return (out.get("result") or {}).get("value")
+
+
+def _local_set_files(helpers: Any, expression: str, files: Any) -> dict[str, bool]:
+    """Set one ``<input type=file>`` to *files* (1 to :data:`_MAX_FILES` gateway-staged paths).
+
+    *expression* is the walker's ``fileInput(ref, true)``, evaluated in the same
+    isolated world as :func:`_local_js_isolated` (where the refs live); it gives the
+    element only when it is a visible, enabled file input, else ``null``, and then
+    nothing is set (``{"ok": false}``). ``DOM.setFileInputFiles`` on that node fires
+    the page's own ``input`` and ``change`` events.
+    """
+    if not (
+        isinstance(files, list)
+        and 1 <= len(files) <= _MAX_FILES
+        and all(isinstance(f, str) and f for f in files)
+    ):
+        raise ValueError(f"set_files takes 1 to {_MAX_FILES} file paths")
+    out = helpers.cdp(
+        "Runtime.evaluate",
+        expression=expression,
+        contextId=_isolated_context(helpers, "set_files"),
+        returnByValue=False,
+    )
+    if out.get("exceptionDetails"):
+        raise RuntimeError("set_files: the expression threw")
+    found = out.get("result") or {}
+    object_id = found.get("objectId")
+    if found.get("subtype") != "node" or not isinstance(object_id, str):
+        return {"ok": False}
+    try:
+        helpers.cdp("DOM.setFileInputFiles", files=files, objectId=object_id)
+    finally:
+        try:
+            helpers.cdp("Runtime.releaseObject", objectId=object_id)
+        except Exception:  # noqa: BLE001 - the page dropped it already: nothing to free
+            pass
+    return {"ok": True}
+
+
+#: Most paths one ``set_files`` takes; the gateway's ``upload`` (``UPLOAD_MAX_FILES``)
+#: is the same, kept equal by a test.
+_MAX_FILES = 10
+
+
+def _isolated_context(helpers: Any, who: str) -> int:
+    """The execution context of the walker's isolated world in the tab's top frame."""
     tree = helpers.cdp("Page.getFrameTree")
     frame_id = ((tree.get("frameTree") or {}).get("frame") or {}).get("id")
     if not isinstance(frame_id, str) or not frame_id:
-        raise RuntimeError("js_isolated: the tab has no top frame")
+        raise RuntimeError(f"{who}: the tab has no top frame")
     made = helpers.cdp(
         "Page.createIsolatedWorld",
         frameId=frame_id,
@@ -240,13 +357,8 @@ def _local_js_isolated(helpers: Any, expression: str) -> Any:
     )
     context_id = made.get("executionContextId")
     if not isinstance(context_id, int) or isinstance(context_id, bool):
-        raise RuntimeError("js_isolated: no isolated world was created")
-    out = helpers.cdp(
-        "Runtime.evaluate", expression=expression, contextId=context_id, returnByValue=True
-    )
-    if out.get("exceptionDetails"):
-        raise RuntimeError("js_isolated: the expression threw")
-    return (out.get("result") or {}).get("value")
+        raise RuntimeError(f"{who}: no isolated world was created")
+    return context_id
 
 
 def _pierced_document(helpers: Any, who: str) -> dict[str, Any]:
@@ -373,12 +485,15 @@ def _split_camel(text: str) -> str:
 
 
 _LOCAL: dict[str, Callable[..., Any]] = {
+    "_local_cdp": _local_cdp,
+    "_local_http_get": _local_http_get,
     "_local_dialog": _local_dialog,
     "_local_mouse_move": _local_mouse_move,
     "_local_drag": _local_drag,
     "_local_page_clock": _local_page_clock,
     "_local_screenshot_clip": _local_screenshot_clip,
     "_local_js_isolated": _local_js_isolated,
+    "_local_set_files": _local_set_files,
     "_local_frame_owner_count": _local_frame_owner_count,
     "_local_closed_secret_count": _local_closed_secret_count,
 }

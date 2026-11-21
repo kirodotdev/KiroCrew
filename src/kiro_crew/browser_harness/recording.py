@@ -102,7 +102,9 @@ OP_KINDS: Mapping[str, str] = {
     "click": "click",
     "type": "type",
     "paste": "type",
+    "fill": "type",
     "press_key": "key",
+    "dispatch_key": "key",
     "drag": "drag",
     "scroll": "scroll",
     "navigate": "navigate",
@@ -202,7 +204,7 @@ def sanitize_args(op: str, args: Mapping[str, Any] | None, *, secret: bool = Fal
             out["values"] = [str(v)[:MAX_ARG_CHARS] for v in raw[:16] if v is not None]
     text = args.get("text")
     if isinstance(text, str):
-        typed = op in ("type", "paste")
+        typed = op in ("type", "paste", "fill")
         if typed and (secret or bool(args.get("secret"))):
             out["chars"] = len(text)
             out["secret"] = True

@@ -289,6 +289,20 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "state and binary pixel frames are unchanged.",
     ),
     (
+        "Browser js, cdp and http_get results",
+        "browser_harness/raw_ops.py",
+        "The value a page script, a DevTools command or a direct fetch returns to the "
+        "agent passes the exfiltration-URL and credential redactors whole, then is "
+        "fence-neutralized and capped, before it leaves the op route.",
+    ),
+    (
+        "Browser sign-in completion",
+        "browser_harness/sign_in.py",
+        "The page URL a provider's sign-in completion lands on, the only part of it the "
+        "agent sees, passes the exfiltration-URL and credential redactors before it is "
+        "returned or written to the step label.",
+    ),
+    (
         "Browser action change reports",
         "browser_harness/change_report.py",
         "The `changes` report a click, type or select carries while "

@@ -9887,6 +9887,8 @@
       "trust_all_base_today": "Jedem <mono/>-Befehl bis Mitternacht vertrauen ({{time}})",
       "trust_all_tools": "Allen Werkzeugen in dieser Sitzung vertrauen",
       "trust_all_tools_channel": "Allen Werkzeugen in diesem Kanal vertrauen — bleibt nach Neustarts bestehen",
+      "trust_site_act_session": "Lesen, Klicken und Tippen auf <mono/> in dieser Sitzung vertrauen",
+      "trust_site_read_session": "Lesen von Seiten auf <mono/> in dieser Sitzung vertrauen",
       "trust_this_command": "<mono/> vertrauen",
       "trust_this_command_channel": "<mono/> für @{{role}} vertrauen — bis {{productName}} neu startet",
       "trust_this_command_hour": "<mono/> eine Stunde lang vertrauen (bis {{time}})",
