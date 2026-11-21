@@ -19,6 +19,7 @@ import { timeAgo } from '../utils/timeAgo'
 import type { AppDispatch, RootState } from '../store'
 import { relayOpenStarted } from '../store/instancesSlice'
 import { openRelayPane, relayPaneBridge } from '../lib/relayCrewPanes'
+import { forgetRelayCrewsOpened } from '../lib/crewWarmSet'
 
 export type RelayCrewOpenResult = { ok: boolean; error?: string }
 type RelayCrewBridge = { open: (endpointId: string) => Promise<RelayCrewOpenResult> }
@@ -92,6 +93,8 @@ export function openRelayCrewInBrowser(endpointId: string, dispatch: AppDispatch
  *  browser tab is not closed from here (this page cut its `opener`, which also
  *  ends this page's hold on it): the gateway tells the tab itself. */
 export async function closeRelayCrews(): Promise<void> {
+  // The next account must not warm a Crew only this one opened.
+  forgetRelayCrewsOpened()
   const b = (window as { relayCrewAPI?: { closeAll?: () => Promise<unknown> } }).relayCrewAPI
   if (typeof b?.closeAll !== 'function') return
   try {

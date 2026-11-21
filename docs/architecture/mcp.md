@@ -2237,7 +2237,9 @@ wait for a restart). It differs in four places. The stub's `--agent` identity is
 file gets no settings injection: the worker's servers are its Bot file's. A
 file is taken only when it is a plain file (no symlink) in a plain folder, is not
 the Bot conductor or worker spec, and is named by this instance's Bot owner
-record. A symlinked or non-folder `~/.kiro/mates/agents`, a symlinked Bot
+record. A file that predates the record and has no entry is recorded as this
+instance's at that check when this instance's roster binds it, and is off the
+record otherwise. A symlinked or non-folder `~/.kiro/mates/agents`, a symlinked Bot
 file and a file off the record are skipped with a log line and treated as
 absent, as the agents loop treats a source its hardened reader refuses: the pass
 stays cacheable and `live_incomplete` is not set for them. The `crewmate:` prefix

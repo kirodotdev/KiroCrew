@@ -33,7 +33,11 @@ from kiro_crew.acp._frame_record import record_frame
 from kiro_crew.acp.elicitation import is_elicitation_request
 from kiro_crew.acp.harness import NotificationAliases
 from kiro_crew.acp.kas_agent_config_error import METHOD_KAS_CUSTOM_AGENT_CONFIG_ERROR
-from kiro_crew.acp.runtime_frame_accounting import _DROP_NO_SESSION, _ROSTER_OVERFLOW_REJECT_REASON
+from kiro_crew.acp.runtime_frame_accounting import (
+    _DROP_NO_SESSION,
+    _ROSTER_OVERFLOW_REJECT_REASON,
+    is_unread_session_start_notice,
+)
 from kiro_crew.acp.runtime_host_requests import _UNREGISTERED_REJECT_REASON
 from kiro_crew.acp.session_handle import AcpFrameTooLarge, AcpModeNotFound, AcpRuntimeError
 from kiro_crew.acp.structured_error_data import OVERSIZE_REPLY_DATA
@@ -862,6 +866,10 @@ async def _reader_loop(self: AcpRuntime) -> None:
                     or self._start_collectors
                 ):
                     self._stage_init_frame(msg)
+                elif is_unread_session_start_notice(msg):
+                    # A session-start notice Crew does not read, for a session
+                    # not registered yet: no frame lost, so not counted.
+                    pass
                 else:
                     _replayed = (
                         session_id in self._load_replay_frames
@@ -917,6 +925,10 @@ async def _reader_loop(self: AcpRuntime) -> None:
                     msg.fanout_no_owner = True
                 for queue in _queues:
                     await queue.put(msg)
+            elif is_unread_session_start_notice(msg):
+                # Sent before a fresh runtime's first session is registered,
+                # and read by no session: no frame lost, so not counted.
+                pass
             else:
                 # Same unbounded shape as the unknown-session branch: with
                 # zero registered sessions EVERY global notification lands

@@ -533,6 +533,7 @@ const SHELL_HANDLES = [
   "relay-crew:pane-close",
   "relay-crew:pane-inactive",
   "relay-crew:pane-overlay",
+  "relay-crew:prewarm-pane",
   "remote-crew:forward-pane-ports",
   "tray-icon:get",
   "tray-icon:set",
