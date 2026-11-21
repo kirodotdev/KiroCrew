@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any, Mapping, NamedTuple
 
 from kiro_crew.acp.claude_settings_sources import (
-    claude_config_dir,
+    child_claude_config_dir,
     claude_home,
     read_claude_settings_bytes,
     read_user_settings,
@@ -323,7 +323,7 @@ def child_project_mcp_gate(
     if environ is None:
         return project_mcp_gate(work_dir, config_dir=None)
     return project_mcp_gate(
-        work_dir, config_dir=claude_config_dir(environ), home=claude_home(environ)
+        work_dir, config_dir=child_claude_config_dir(environ), home=claude_home(environ)
     )
 
 

@@ -48,7 +48,24 @@ def claude_home(environ: Mapping[str, str]) -> Path | None:
     return home if home.is_absolute() else None
 
 
-def claude_config_dir(environ: Mapping[str, str]) -> Path | None:
+def claude_config_dir() -> Path | None:
+    """The user's Claude config directory, or None when no home directory resolves.
+
+    The resolution the ``claude`` CLI itself makes (``CLAUDE_CONFIG_DIR``, else
+    ``~/.claude``), read in the gateway because the child inherits its environment.
+    The project MCP gate reads approvals through the stricter
+    :func:`child_claude_config_dir` instead.
+    """
+    override = os.environ.get("CLAUDE_CONFIG_DIR")
+    if override:
+        return Path(override)
+    try:
+        return Path.home() / ".claude"
+    except RuntimeError:
+        return None
+
+
+def child_claude_config_dir(environ: Mapping[str, str]) -> Path | None:
     """The config directory a ``claude`` process started with *environ* reads.
 
     ``CLAUDE_CONFIG_DIR`` when it is set, else ``.claude`` in the home directory
@@ -192,7 +209,7 @@ def other_sources_define_available_models(
     Never raises: a missing, unreadable or malformed file counts as not defining
     the key.
     """
-    user_dir = config_dir if config_dir is not None else claude_config_dir(os.environ)
+    user_dir = config_dir if config_dir is not None else claude_config_dir()
     managed = (
         managed_dir
         if managed_dir is not None
@@ -254,7 +271,7 @@ def a_source_decides_thinking(
     left unset. Never raises: a missing, unreadable or malformed file decides
     nothing.
     """
-    user_dir = config_dir if config_dir is not None else claude_config_dir(os.environ)
+    user_dir = config_dir if config_dir is not None else claude_config_dir()
     managed = (
         managed_dir
         if managed_dir is not None
@@ -325,7 +342,7 @@ def user_models_a_family_entry_covers(
     managed file sets ``availableModelsMatch`` to ``"exact"``: under that
     setting an entry allows only its own version. Never raises.
     """
-    user_dir = config_dir if config_dir is not None else claude_config_dir(os.environ)
+    user_dir = config_dir if config_dir is not None else claude_config_dir()
     if user_dir is None:
         return []
     settings = _settings_object(user_dir / "settings.json")

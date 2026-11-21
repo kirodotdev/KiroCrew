@@ -15,7 +15,6 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.acp.claude_settings_sources import (
-    a_source_decides_thinking,
     family_entry_covers,
     other_sources_define_available_models,
     read_claude_settings_bytes,
@@ -133,9 +132,8 @@ def test_config_dir_defaults_to_claude_config_dir_env(tmp_path, monkeypatch):
     )
 
 
-def test_empty_claude_config_dir_env_reads_no_home_file(tmp_path, monkeypatch):
-    """Claude Code keeps an empty CLAUDE_CONFIG_DIR as its config root, its own cwd, so
-    the home directory's settings file is not its user tier."""
+def test_empty_claude_config_dir_env_falls_back_to_home(tmp_path, monkeypatch):
+    """An empty CLAUDE_CONFIG_DIR is unset, so the default home directory applies."""
     fake_home = tmp_path / "home"
     _write(fake_home / ".claude" / "settings.json", {"availableModels": ["opus"]})
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "")
@@ -143,27 +141,8 @@ def test_empty_claude_config_dir_env_reads_no_home_file(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
     assert (
         other_sources_define_available_models(tmp_path / "work", managed_dir=_managed(tmp_path))
-        is False
+        is True
     )
-
-
-@pytest.mark.parametrize("value,decides", [(None, True), ("", False)])
-def test_the_thinking_check_falls_back_to_the_same_config_dir(
-    tmp_path, monkeypatch, value, decides
-):
-    """With no config dir named, the thinking check reads the gateway's, as the other
-    checks do: the home's ``.claude`` with ``CLAUDE_CONFIG_DIR`` absent, none for an
-    empty one."""
-    fake_home = tmp_path / "home"
-    _write(fake_home / ".claude" / "settings.json", {"alwaysThinkingEnabled": False})
-    monkeypatch.setenv("USERPROFILE" if os.name == "nt" else "HOME", str(fake_home))
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
-    if value is None:
-        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-    else:
-        monkeypatch.setenv("CLAUDE_CONFIG_DIR", value)
-    work = tmp_path / "work"
-    assert a_source_decides_thinking(work, managed_dir=_managed(tmp_path)) is decides
 
 
 def _raise_runtime_error() -> Path:

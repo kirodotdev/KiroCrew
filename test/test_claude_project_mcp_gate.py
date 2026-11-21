@@ -224,7 +224,7 @@ class TestNames:
 
 class TestConfigDir:
     def test_the_childs_environment_names_the_config_dir(self, tmp_path):
-        claude_config_dir = claude_settings_sources.claude_config_dir
+        claude_config_dir = claude_settings_sources.child_claude_config_dir
         assert claude_config_dir({"CLAUDE_CONFIG_DIR": str(tmp_path)}) == tmp_path
         assert claude_config_dir({_HOME_VAR: str(tmp_path)}) == tmp_path / ".claude"
         # Claude Code reads a relative one from its own cwd, the session's work dir.
@@ -237,19 +237,24 @@ class TestConfigDir:
     def test_an_empty_config_dir_names_none_beside_an_absolute_home(self, tmp_path):
         # Claude Code keeps "" as its config root, which is its cwd, the session's work dir.
         empty = {"CLAUDE_CONFIG_DIR": "", _HOME_VAR: str(tmp_path)}
-        assert claude_settings_sources.claude_config_dir(empty) is None
+        assert claude_settings_sources.child_claude_config_dir(empty) is None
         assert claude_settings_sources.claude_home(empty) == tmp_path
+
+    def test_the_transcript_root_still_resolves_a_relative_config_dir(self, _floor_monkeypatch):
+        # Only the gate is strict: incognito transcript cleanup still finds its root.
+        _floor_monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative")
+        assert claude_settings_sources.claude_config_dir() == Path("relative")
 
     def test_an_empty_home_names_no_home_and_no_config_dir(self, tmp_path, _floor_monkeypatch):
         # The gateway's own home is not the child's when the child's is set to "".
         _floor_monkeypatch.setenv(_HOME_VAR, str(tmp_path))
         assert claude_settings_sources.claude_home({_HOME_VAR: ""}) is None
-        assert claude_settings_sources.claude_config_dir({_HOME_VAR: ""}) is None
+        assert claude_settings_sources.child_claude_config_dir({_HOME_VAR: ""}) is None
 
     def test_absent_keys_fall_back_to_the_accounts_home(self, tmp_path, _floor_monkeypatch):
         _floor_monkeypatch.setenv(_HOME_VAR, str(tmp_path))
         assert claude_settings_sources.claude_home({}) == tmp_path
-        assert claude_settings_sources.claude_config_dir({}) == tmp_path / ".claude"
+        assert claude_settings_sources.child_claude_config_dir({}) == tmp_path / ".claude"
 
     def test_on_windows_an_empty_userprofile_names_no_home(self, monkeypatch):
         # Windows reads USERPROFILE, never HOME; the gateway's own home is not the child's.
@@ -258,7 +263,7 @@ class TestConfigDir:
         monkeypatch.setattr(claude_settings_sources.os, "name", "nt")
         empty = {"USERPROFILE": "", "HOME": "C:\\Users\\other"}
         assert claude_settings_sources.claude_home(empty) is None
-        assert claude_settings_sources.claude_config_dir(empty) is None
+        assert claude_settings_sources.child_claude_config_dir(empty) is None
         named = claude_settings_sources.claude_home({"USERPROFILE": "C:\\Users\\u"})
         assert named == PureWindowsPath("C:\\Users\\u")
 
