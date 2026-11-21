@@ -18344,12 +18344,16 @@
         "friendly_hauntings_only": "친절한 유령만",
         "kiro_ghost_haunt_animation": "Kiro 유령 출몰 애니메이션",
         "kiro_ghost_haunt_text_overlay": "Kiro 유령 출몰 텍스트 오버레이",
-        "kiro_haunt": "Kiro 유령 출몰"
+        "kiro_haunt": "Kiro 유령 출몰",
+        "tooltip_active": "코드베이스에 출몰 중",
+        "tooltip_idle": "벽을 통과해 떠도는 중"
       },
       "missionControl": {
         "missionControlScene": {
           "lv_level_title": "Lv.{{level}} {{title}}",
-          "mission_control_scene": "미션 컨트롤 장면"
+          "mission_control_scene": "미션 컨트롤 장면",
+          "tooltip_active": "바이브 코딩 중",
+          "tooltip_idle": "TikTok 둠스크롤 중"
         }
       },
       "neuralConstellationScene": {
@@ -18357,7 +18361,9 @@
         "idle": "대기",
         "neural_constellation_animation": "뉴럴 별자리 애니메이션",
         "neural_constellation_text_overlay": "뉴럴 별자리 텍스트 오버레이",
-        "neural_network": "뉴럴 네트워크"
+        "neural_network": "뉴럴 네트워크",
+        "tooltip_active": "신경 경로 처리 중",
+        "tooltip_idle": "신호 대기 중"
       },
       "officeScene": {
         "active": "활성",
@@ -18367,24 +18373,70 @@
         "no_tasks": "태스크 없음",
         "office_scene": "오피스 장면",
         "office_scene_labels": "오피스 장면 레이블",
-        "to_do": "할 일"
+        "to_do": "할 일",
+        "tooltip_active": "PR 갈아 넣는 중",
+        "tooltip_idle": "CR 승인 대기 중",
+        "new_audiobook": "새 오디오북?",
+        "adding_to_lib": "라이브러리에 추가!",
+        "ch_5_has_a_bug": "5장에 버그",
+        "narrating_fix": "수정 녹음 중!",
+        "deploy_ready": "배포 준비됐어?",
+        "ship_it": "출시!",
+        "review_the_pr": "PR 봐줄래?",
+        "lgtm": "LGTM!",
+        "metadata_sync": "메타데이터 동기화?",
+        "ingested": "적재 완료!",
+        "latency_up": "지연 시간 증가…",
+        "scaling_now": "지금 확장 중!",
+        "coffee_break": "커피 한잔?",
+        "always": "당연히!",
+        "a_b_test_done": "A/B 테스트 완료",
+        "plus_12_listens": "청취 +12%!"
       },
       "pandaOfficeScene": {
         "panda_den": "🐼 판다 소굴",
         "panda_office_scene": "판다 오피스 장면",
-        "panda_office_scene_labels": "판다 오피스 장면 레이블"
+        "panda_office_scene_labels": "판다 오피스 장면 레이블",
+        "token_expired": "토큰 만료?",
+        "refreshing": "갱신 중!",
+        "cr_approved": "CR 승인됨!",
+        "ship_it": "출시! 🐼",
+        "deploy_ready": "배포 준비됐어?",
+        "bamboo_break": "대나무 간식?",
+        "review_the_pr": "PR 봐줄래?",
+        "lgtm": "LGTM!",
+        "aztec_timeout": "Aztec 타임아웃",
+        "scaling_now": "지금 확장 중!",
+        "latency_up": "지연 시간 증가…",
+        "checking_aao": "AAO 확인 중",
+        "chess_later": "나중에 체스?",
+        "always": "당연히!",
+        "pull_ups": "턱걸이?",
+        "after_deploy": "배포 끝나고!",
+        "pull_ups_sign": "턱걸이"
       },
       "underwaterLabScene": {
         "deep_sea_lab": "심해 연구소",
+        "vacant": "비어 있음",
         "research_station": "연구 기지",
         "underwater_lab_scene": "수중 연구소 장면",
-        "underwater_lab_scene_labels": "수중 연구소 장면 레이블"
+        "underwater_lab_scene_labels": "수중 연구소 장면 레이블",
+        "tooltip_active": "심해 탐사 중",
+        "tooltip_idle": "숨 쉬러 올라오는 중",
+        "scanning": "스캔 중…",
+        "all_clear": "이상 없음",
+        "signal_ok": "신호 양호",
+        "depth_200m": "수심: 200m",
+        "sync_done": "동기화 완료",
+        "data_recv": "데이터 수신"
       },
       "wateringHoleScene": {
         "on_the_savanna": "사바나에 {{n}}/{{total}}",
         "watering_hole": "물웅덩이",
         "watering_hole_scene": "물웅덩이 장면",
-        "watering_hole_scene_labels": "물웅덩이 장면 레이블"
+        "watering_hole_scene_labels": "물웅덩이 장면 레이블",
+        "tooltip_active": "이동 중",
+        "tooltip_idle": "휴식 중"
       },
       "wizardTowerScene": {
         "arcane_academy": "비전 학원",
@@ -18393,7 +18445,9 @@
         "i_see": "그렇군요!",
         "resting": "휴식 중",
         "wizard_tower_scene": "마법사 탑 장면",
-        "wizard_tower_spell_text": "마법사 탑 주문 텍스트"
+        "wizard_tower_spell_text": "마법사 탑 주문 텍스트",
+        "tooltip_active": "주문 시전 중",
+        "tooltip_idle": "마법서 연구 중"
       }
     },
     "schedulePage": {

@@ -19332,12 +19332,16 @@
         "friendly_hauntings_only": "solo apparizioni amichevoli",
         "kiro_ghost_haunt_animation": "Animazione del fantasma Kiro",
         "kiro_ghost_haunt_text_overlay": "Sovrapposizione di testo del fantasma Kiro",
-        "kiro_haunt": "Dimora di Kiro"
+        "kiro_haunt": "Dimora di Kiro",
+        "tooltip_active": "Infesta il codice",
+        "tooltip_idle": "Attraversa i muri"
       },
       "missionControl": {
         "missionControlScene": {
           "lv_level_title": "Liv.{{level}} {{title}}",
-          "mission_control_scene": "Scena del centro di controllo"
+          "mission_control_scene": "Scena del centro di controllo",
+          "tooltip_active": "Vibe coding",
+          "tooltip_idle": "Scrolla TikTok senza fine"
         }
       },
       "neuralConstellationScene": {
@@ -19345,7 +19349,9 @@
         "idle": "inattivo",
         "neural_constellation_animation": "Animazione della costellazione neurale",
         "neural_constellation_text_overlay": "Sovrapposizione di testo della costellazione neurale",
-        "neural_network": "Rete neurale"
+        "neural_network": "Rete neurale",
+        "tooltip_active": "Elabora percorsi neurali",
+        "tooltip_idle": "In attesa di segnale"
       },
       "officeScene": {
         "active": "Attivo",
@@ -19355,24 +19361,70 @@
         "no_tasks": "Nessuna attività",
         "office_scene": "Scena dell'ufficio",
         "office_scene_labels": "Etichette della scena dell'ufficio",
-        "to_do": "Da fare"
+        "to_do": "Da fare",
+        "tooltip_active": "Macina PR",
+        "tooltip_idle": "Aspetta l'approvazione della CR",
+        "new_audiobook": "Nuovo audiolibro?",
+        "adding_to_lib": "Lo aggiungo alla libreria!",
+        "ch_5_has_a_bug": "Bug nel cap. 5",
+        "narrating_fix": "Sto narrando il fix!",
+        "deploy_ready": "Deploy pronto?",
+        "ship_it": "Spediamo!",
+        "review_the_pr": "Revisioni la PR?",
+        "lgtm": "LGTM!",
+        "metadata_sync": "Sync dei metadati?",
+        "ingested": "Ingerito!",
+        "latency_up": "Latenza in aumento…",
+        "scaling_now": "Sto scalando!",
+        "coffee_break": "Pausa caffè?",
+        "always": "Sempre!",
+        "a_b_test_done": "Test A/B finito",
+        "plus_12_listens": "+12% di ascolti!"
       },
       "pandaOfficeScene": {
         "panda_den": "🐼 Covo dei panda",
         "panda_office_scene": "Scena dell'ufficio dei panda",
-        "panda_office_scene_labels": "Etichette della scena dell'ufficio dei panda"
+        "panda_office_scene_labels": "Etichette della scena dell'ufficio dei panda",
+        "token_expired": "Token scaduto?",
+        "refreshing": "Lo rinnovo!",
+        "cr_approved": "CR approvata!",
+        "ship_it": "Spediamo! 🐼",
+        "deploy_ready": "Deploy pronto?",
+        "bamboo_break": "Pausa bambù?",
+        "review_the_pr": "Revisioni la PR?",
+        "lgtm": "LGTM!",
+        "aztec_timeout": "Timeout di Aztec",
+        "scaling_now": "Sto scalando!",
+        "latency_up": "Latenza in aumento…",
+        "checking_aao": "Controllo AAO",
+        "chess_later": "Scacchi dopo?",
+        "always": "Sempre!",
+        "pull_ups": "Trazioni?",
+        "after_deploy": "Dopo il deploy!",
+        "pull_ups_sign": "trazioni"
       },
       "underwaterLabScene": {
         "deep_sea_lab": "Laboratorio degli abissi",
+        "vacant": "libero",
         "research_station": "stazione di ricerca",
         "underwater_lab_scene": "Scena del laboratorio subacqueo",
-        "underwater_lab_scene_labels": "Etichette della scena del laboratorio subacqueo"
+        "underwater_lab_scene_labels": "Etichette della scena del laboratorio subacqueo",
+        "tooltip_active": "Esplora gli abissi",
+        "tooltip_idle": "Riemerge per respirare",
+        "scanning": "Scansione…",
+        "all_clear": "Tutto libero",
+        "signal_ok": "Segnale OK",
+        "depth_200m": "Profondità: 200 m",
+        "sync_done": "Sync completato",
+        "data_recv": "Dati ricevuti"
       },
       "wateringHoleScene": {
         "on_the_savanna": "{{n}}/{{total}} nella savana",
         "watering_hole": "Pozza d'acqua",
         "watering_hole_scene": "Scena della pozza d'acqua",
-        "watering_hole_scene_labels": "Etichette della scena della pozza d'acqua"
+        "watering_hole_scene_labels": "Etichette della scena della pozza d'acqua",
+        "tooltip_active": "In movimento",
+        "tooltip_idle": "A riposo"
       },
       "wizardTowerScene": {
         "arcane_academy": "Accademia arcana",
@@ -19381,7 +19433,9 @@
         "i_see": "Capisco!",
         "resting": "a riposo",
         "wizard_tower_scene": "Scena della torre del mago",
-        "wizard_tower_spell_text": "Testo dell'incantesimo della torre del mago"
+        "wizard_tower_spell_text": "Testo dell'incantesimo della torre del mago",
+        "tooltip_active": "Lancia incantesimi",
+        "tooltip_idle": "Studia il grimorio"
       }
     },
     "schedulePage": {

@@ -18838,12 +18838,16 @@
         "friendly_hauntings_only": "केवल दोस्ताना भूत",
         "kiro_ghost_haunt_animation": "Kiro भूत एनिमेशन",
         "kiro_ghost_haunt_text_overlay": "Kiro भूत टेक्स्ट ओवरले",
-        "kiro_haunt": "Kiro भूत-अड्डा"
+        "kiro_haunt": "Kiro भूत-अड्डा",
+        "tooltip_active": "कोडबेस में भटक रहा है",
+        "tooltip_idle": "दीवारों से गुज़र रहा है"
       },
       "missionControl": {
         "missionControlScene": {
           "lv_level_title": "स्तर {{level}} {{title}}",
-          "mission_control_scene": "मिशन कंट्रोल दृश्य"
+          "mission_control_scene": "मिशन कंट्रोल दृश्य",
+          "tooltip_active": "वाइब कोडिंग",
+          "tooltip_idle": "TikTok स्क्रॉल कर रहा है"
         }
       },
       "neuralConstellationScene": {
@@ -18851,7 +18855,9 @@
         "idle": "निष्क्रिय",
         "neural_constellation_animation": "न्यूरल तारामंडल एनिमेशन",
         "neural_constellation_text_overlay": "न्यूरल तारामंडल टेक्स्ट ओवरले",
-        "neural_network": "न्यूरल नेटवर्क"
+        "neural_network": "न्यूरल नेटवर्क",
+        "tooltip_active": "न्यूरल पथ प्रोसेस कर रहा है",
+        "tooltip_idle": "सिग्नल का इंतज़ार"
       },
       "officeScene": {
         "active": "सक्रिय",
@@ -18861,24 +18867,70 @@
         "no_tasks": "कोई टास्क नहीं",
         "office_scene": "ऑफ़िस दृश्य",
         "office_scene_labels": "ऑफ़िस दृश्य के लेबल",
-        "to_do": "बाकी"
+        "to_do": "बाकी",
+        "tooltip_active": "PR निपटा रहा है",
+        "tooltip_idle": "CR की मंज़ूरी का इंतज़ार",
+        "new_audiobook": "नई ऑडियोबुक?",
+        "adding_to_lib": "लाइब्रेरी में जोड़ रहा हूँ!",
+        "ch_5_has_a_bug": "अध्याय 5 में बग है",
+        "narrating_fix": "फ़िक्स रिकॉर्ड कर रहा हूँ!",
+        "deploy_ready": "डिप्लॉय तैयार?",
+        "ship_it": "भेज दो!",
+        "review_the_pr": "PR देखोगे?",
+        "lgtm": "LGTM!",
+        "metadata_sync": "मेटाडेटा सिंक?",
+        "ingested": "ले लिया!",
+        "latency_up": "लेटेंसी बढ़ रही है…",
+        "scaling_now": "अभी स्केल कर रहा हूँ!",
+        "coffee_break": "कॉफ़ी ब्रेक?",
+        "always": "हमेशा!",
+        "a_b_test_done": "A/B टेस्ट पूरा",
+        "plus_12_listens": "+12% सुनवाई!"
       },
       "pandaOfficeScene": {
         "panda_den": "🐼 पांडा अड्डा",
         "panda_office_scene": "पांडा ऑफ़िस दृश्य",
-        "panda_office_scene_labels": "पांडा ऑफ़िस दृश्य के लेबल"
+        "panda_office_scene_labels": "पांडा ऑफ़िस दृश्य के लेबल",
+        "token_expired": "टोकन एक्सपायर?",
+        "refreshing": "रिफ़्रेश कर रहा हूँ!",
+        "cr_approved": "CR मंज़ूर!",
+        "ship_it": "भेज दो! 🐼",
+        "deploy_ready": "डिप्लॉय तैयार?",
+        "bamboo_break": "बांस ब्रेक?",
+        "review_the_pr": "PR देखोगे?",
+        "lgtm": "LGTM!",
+        "aztec_timeout": "Aztec टाइमआउट",
+        "scaling_now": "अभी स्केल कर रहा हूँ!",
+        "latency_up": "लेटेंसी बढ़ रही है…",
+        "checking_aao": "AAO देख रहा हूँ",
+        "chess_later": "बाद में शतरंज?",
+        "always": "हमेशा!",
+        "pull_ups": "पुल-अप्स?",
+        "after_deploy": "डिप्लॉय के बाद!",
+        "pull_ups_sign": "पुल-अप्स"
       },
       "underwaterLabScene": {
         "deep_sea_lab": "गहरे समुद्र की लैब",
+        "vacant": "खाली",
         "research_station": "शोध केंद्र",
         "underwater_lab_scene": "अंडरवाटर लैब दृश्य",
-        "underwater_lab_scene_labels": "अंडरवाटर लैब दृश्य के लेबल"
+        "underwater_lab_scene_labels": "अंडरवाटर लैब दृश्य के लेबल",
+        "tooltip_active": "गहराई की खोज में",
+        "tooltip_idle": "साँस लेने ऊपर आ रहा है",
+        "scanning": "स्कैन हो रहा है…",
+        "all_clear": "सब ठीक",
+        "signal_ok": "सिग्नल OK",
+        "depth_200m": "गहराई: 200 मी",
+        "sync_done": "सिंक पूरा",
+        "data_recv": "डेटा मिला"
       },
       "wateringHoleScene": {
         "on_the_savanna": "सवाना में {{n}}/{{total}}",
         "watering_hole": "पानी का ठिकाना",
         "watering_hole_scene": "पानी के ठिकाने का दृश्य",
-        "watering_hole_scene_labels": "पानी के ठिकाने के दृश्य के लेबल"
+        "watering_hole_scene_labels": "पानी के ठिकाने के दृश्य के लेबल",
+        "tooltip_active": "चल रहा है",
+        "tooltip_idle": "आराम कर रहा है"
       },
       "wizardTowerScene": {
         "arcane_academy": "जादुई अकादमी",
@@ -18887,7 +18939,9 @@
         "i_see": "समझ गया!",
         "resting": "आराम कर रहा है",
         "wizard_tower_scene": "जादूगर की मीनार का दृश्य",
-        "wizard_tower_spell_text": "जादूगर की मीनार का मंत्र टेक्स्ट"
+        "wizard_tower_spell_text": "जादूगर की मीनार का मंत्र टेक्स्ट",
+        "tooltip_active": "जादू कर रहा है",
+        "tooltip_idle": "जादू की किताब पढ़ रहा है"
       }
     },
     "schedulePage": {

@@ -19826,12 +19826,16 @@
         "friendly_hauntings_only": "только дружелюбные призраки",
         "kiro_ghost_haunt_animation": "Анимация призрака Kiro",
         "kiro_ghost_haunt_text_overlay": "Текстовый слой анимации призрака Kiro",
-        "kiro_haunt": "Призраки Kiro"
+        "kiro_haunt": "Призраки Kiro",
+        "tooltip_active": "Бродит по кодовой базе",
+        "tooltip_idle": "Проплывает сквозь стены"
       },
       "missionControl": {
         "missionControlScene": {
           "lv_level_title": "Ур.{{level}} {{title}}",
-          "mission_control_scene": "Сцена центра управления"
+          "mission_control_scene": "Сцена центра управления",
+          "tooltip_active": "Вайб-кодинг",
+          "tooltip_idle": "Листает TikTok"
         }
       },
       "neuralConstellationScene": {
@@ -19839,7 +19843,9 @@
         "idle": "простой",
         "neural_constellation_animation": "Анимация нейронного созвездия",
         "neural_constellation_text_overlay": "Текстовый слой нейронного созвездия",
-        "neural_network": "Нейросеть"
+        "neural_network": "Нейросеть",
+        "tooltip_active": "Обрабатывает нейронные пути",
+        "tooltip_idle": "Ждёт сигнал"
       },
       "officeScene": {
         "active": "Активно",
@@ -19849,24 +19855,70 @@
         "no_tasks": "Нет задач",
         "office_scene": "Сцена офиса",
         "office_scene_labels": "Подписи сцены офиса",
-        "to_do": "К выполнению"
+        "to_do": "К выполнению",
+        "tooltip_active": "Пилит PR",
+        "tooltip_idle": "Ждёт одобрения CR",
+        "new_audiobook": "Новая аудиокнига?",
+        "adding_to_lib": "Добавляю в библиотеку!",
+        "ch_5_has_a_bug": "Баг в 5-й главе",
+        "narrating_fix": "Начитываю фикс!",
+        "deploy_ready": "Деплой готов?",
+        "ship_it": "Выкатываем!",
+        "review_the_pr": "Глянешь PR?",
+        "lgtm": "LGTM!",
+        "metadata_sync": "Синк метаданных?",
+        "ingested": "Загружено!",
+        "latency_up": "Задержка растёт…",
+        "scaling_now": "Масштабирую!",
+        "coffee_break": "Кофе-брейк?",
+        "always": "Всегда!",
+        "a_b_test_done": "A/B-тест готов",
+        "plus_12_listens": "+12% прослушиваний!"
       },
       "pandaOfficeScene": {
         "panda_den": "🐼 Логово панды",
         "panda_office_scene": "Сцена офиса панд",
-        "panda_office_scene_labels": "Подписи сцены офиса панд"
+        "panda_office_scene_labels": "Подписи сцены офиса панд",
+        "token_expired": "Токен протух?",
+        "refreshing": "Обновляю!",
+        "cr_approved": "CR одобрен!",
+        "ship_it": "Выкатываем! 🐼",
+        "deploy_ready": "Деплой готов?",
+        "bamboo_break": "Бамбуковый перерыв?",
+        "review_the_pr": "Глянешь PR?",
+        "lgtm": "LGTM!",
+        "aztec_timeout": "Таймаут Aztec",
+        "scaling_now": "Масштабирую!",
+        "latency_up": "Задержка растёт…",
+        "checking_aao": "Проверяю AAO",
+        "chess_later": "Шахматы потом?",
+        "always": "Всегда!",
+        "pull_ups": "Подтягивания?",
+        "after_deploy": "После деплоя!",
+        "pull_ups_sign": "турник"
       },
       "underwaterLabScene": {
         "deep_sea_lab": "Глубоководная лаборатория",
+        "vacant": "свободно",
         "research_station": "исследовательская станция",
         "underwater_lab_scene": "Сцена подводной лаборатории",
-        "underwater_lab_scene_labels": "Подписи сцены подводной лаборатории"
+        "underwater_lab_scene_labels": "Подписи сцены подводной лаборатории",
+        "tooltip_active": "Исследует глубины",
+        "tooltip_idle": "Всплывает за воздухом",
+        "scanning": "Сканирую…",
+        "all_clear": "Всё чисто",
+        "signal_ok": "Сигнал OK",
+        "depth_200m": "Глубина: 200 м",
+        "sync_done": "Синк готов",
+        "data_recv": "Данные получены"
       },
       "wateringHoleScene": {
         "on_the_savanna": "{{n}}/{{total}} в саванне",
         "watering_hole": "Водопой",
         "watering_hole_scene": "Сцена водопоя",
-        "watering_hole_scene_labels": "Подписи сцены водопоя"
+        "watering_hole_scene_labels": "Подписи сцены водопоя",
+        "tooltip_active": "В пути",
+        "tooltip_idle": "Отдыхает"
       },
       "wizardTowerScene": {
         "arcane_academy": "Академия магии",
@@ -19875,7 +19927,9 @@
         "i_see": "Понятно!",
         "resting": "отдыхает",
         "wizard_tower_scene": "Сцена башни волшебника",
-        "wizard_tower_spell_text": "Текст заклинания в башне волшебника"
+        "wizard_tower_spell_text": "Текст заклинания в башне волшебника",
+        "tooltip_active": "Читает заклинания",
+        "tooltip_idle": "Изучает гримуар"
       }
     },
     "schedulePage": {

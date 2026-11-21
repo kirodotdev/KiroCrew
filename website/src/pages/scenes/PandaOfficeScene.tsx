@@ -7,7 +7,10 @@ import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useScen
 import { i18nT } from '../../i18n/t'
 import { sliceCodePoints } from '../../utils/codePoints'
 
-const OFFICE_THEME: SceneTooltipTheme = { active: 'Grinding PRs', idle: 'Waiting for CR approval' }
+const OFFICE_THEME: SceneTooltipTheme = {
+  get active() { return i18nT('pages.scenes.officeScene.tooltip_active') },
+  get idle() { return i18nT('pages.scenes.officeScene.tooltip_idle') },
+}
 const PANDA_WHITE = '#f5f5f5'
 const PANDA_BLACK = '#222'
 const PANDA_PINK = '#f4a5b0'
@@ -69,10 +72,14 @@ const COL = {
   pullBar: '#666', pullBarDark: '#444',
 }
 const CHAT_LINES = [
-  ['Token expired?', 'Refreshing!'], ['CR approved!', 'Ship it! 🐼'],
-  ['Deploy ready?', 'Bamboo break?'], ['Review the PR?', 'LGTM!'],
-  ['Aztec timeout', 'Scaling now!'], ['Latency up...', 'Checking AAO'],
-  ['Chess later?', 'Always!'], ['Pull-ups?', 'After deploy!'],
+  ['pages.scenes.pandaOfficeScene.token_expired', 'pages.scenes.pandaOfficeScene.refreshing'],
+  ['pages.scenes.pandaOfficeScene.cr_approved', 'pages.scenes.pandaOfficeScene.ship_it'],
+  ['pages.scenes.pandaOfficeScene.deploy_ready', 'pages.scenes.pandaOfficeScene.bamboo_break'],
+  ['pages.scenes.pandaOfficeScene.review_the_pr', 'pages.scenes.pandaOfficeScene.lgtm'],
+  ['pages.scenes.pandaOfficeScene.aztec_timeout', 'pages.scenes.pandaOfficeScene.scaling_now'],
+  ['pages.scenes.pandaOfficeScene.latency_up', 'pages.scenes.pandaOfficeScene.checking_aao'],
+  ['pages.scenes.pandaOfficeScene.chess_later', 'pages.scenes.pandaOfficeScene.always'],
+  ['pages.scenes.pandaOfficeScene.pull_ups', 'pages.scenes.pandaOfficeScene.after_deploy'],
 ]
 const COFFEE_MACHINE = { x: 390, y: 240 }
 const WHITEBOARD = { x: 350, y: 14, w: 60, h: 36 }
@@ -164,7 +171,7 @@ export default function PandaOfficeScene({ agents, visible = true }: { agents: A
     })
 
     kanbanRef.current = capped.filter(s => s.running).map(s => s.name).slice(0, 4)
-    if (kanbanRef.current.length === 0) kanbanRef.current = ['No tasks']
+    if (kanbanRef.current.length === 0) kanbanRef.current = [i18nT('pages.scenes.officeScene.no_tasks')]
 
     agentsRef.current = newAgents
     setAgentCount(newAgents.length)
@@ -268,7 +275,7 @@ export default function PandaOfficeScene({ agents, visible = true }: { agents: A
       const { x, y, w, h } = WHITEBOARD
       d(x - 1, y - 1, w + 2, h + 2, COL.whiteboardFrame)
       d(x, y, w, h, COL.whiteboard)
-      const cols = ['To Do', 'Active', 'Done']
+      const cols = [i18nT('pages.scenes.officeScene.to_do'), i18nT('pages.scenes.officeScene.active'), i18nT('pages.scenes.officeScene.done')]
       const cw = w / 3
       cols.forEach((label, i) => {
         if (i > 0) d(x + cw * i, y, 0.5, h, '#bbb')
@@ -331,7 +338,7 @@ export default function PandaOfficeScene({ agents, visible = true }: { agents: A
       d(px - 1, py + 26, 4, 2, COL.pullBarDark)
       d(px + 23, py + 26, 4, 2, COL.pullBarDark)
       // Label
-      drawLabel(T, 'pull-ups', (px + 13) * S, (py - 3) * S, { role: 'label', color: '#888', bgColor: 'rgba(0,0,0,0.4)', align: 'center', scale: S })
+      drawLabel(T, i18nT('pages.scenes.pandaOfficeScene.pull_ups_sign'), (px + 13) * S, (py - 3) * S, { role: 'label', color: '#888', bgColor: 'rgba(0,0,0,0.4)', align: 'center', scale: S })
     }
 
     const drawChessTable = (_t: number) => {
@@ -465,7 +472,7 @@ export default function PandaOfficeScene({ agents, visible = true }: { agents: A
 
       // Nameplate on cubicle wall (if occupied, filled by agent draw)
       if (!occupied) {
-        drawLabel(T, 'empty', (dx + 15) * S, (dy + 1) * S, { role: 'label', color: '#555', bgColor: '#333', align: 'center', scale: S })
+        drawLabel(T, i18nT('pages.scenes.wizardTowerScene.empty'), (dx + 15) * S, (dy + 1) * S, { role: 'label', color: '#555', bgColor: '#333', align: 'center', scale: S })
       }
     }
 
@@ -550,7 +557,7 @@ export default function PandaOfficeScene({ agents, visible = true }: { agents: A
       X.fillText(kindEmoji, (bx + 8) * S, (by - 6 + bob) * S)
 
       // Status label
-      drawLabel(T, a.running ? 'active' : 'idle', (bx + 4) * S, (by - 11 + bob) * S, { role: 'status', color: a.running ? '#4f4' : '#888', bgColor: 'rgba(0,0,0,0.5)', align: 'center', scale: S })
+      drawLabel(T, a.running ? i18nT('pages.scenes.neuralConstellationScene.active') : i18nT('pages.scenes.neuralConstellationScene.idle'), (bx + 4) * S, (by - 11 + bob) * S, { role: 'status', color: a.running ? '#4f4' : '#888', bgColor: 'rgba(0,0,0,0.5)', align: 'center', scale: S })
       // Real-message speech bubble — appears when the session's latest message changes
       if (a.lastMessage && Date.now() - a.msgAt < SPEECH_BUBBLE_MS) {
         const msgAge = Date.now() - a.msgAt
@@ -643,8 +650,8 @@ export default function PandaOfficeScene({ agents, visible = true }: { agents: A
         a.activity = 'collab'; b.activity = 'collab'
         collabRef.current = [a, b]
         const lines = CHAT_LINES[Math.random() * CHAT_LINES.length | 0]
-        speechRef.current = { a: lines[0], b: '' }
-        timeouts.push(window.setTimeout(() => { speechRef.current.b = lines[1] }, 1200))
+        speechRef.current = { a: i18nT(lines[0]), b: '' }
+        timeouts.push(window.setTimeout(() => { speechRef.current.b = i18nT(lines[1]) }, 1200))
         timeouts.push(window.setTimeout(() => {
           const live = agentsRef.current
           if (!live.includes(a) || !live.includes(b)) {

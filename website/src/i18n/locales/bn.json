@@ -18838,12 +18838,16 @@
         "friendly_hauntings_only": "শুধু বন্ধুত্বপূর্ণ ভূতুড়েপনা",
         "kiro_ghost_haunt_animation": "Kiro ভূতের ভুতুড়ে অ্যানিমেশন",
         "kiro_ghost_haunt_text_overlay": "Kiro ভূতের ভুতুড়ে টেক্সট ওভারলে",
-        "kiro_haunt": "Kiro ভূতুড়ে ডেরা"
+        "kiro_haunt": "Kiro ভূতুড়ে ডেরা",
+        "tooltip_active": "কোডবেসে ঘুরে বেড়াচ্ছে",
+        "tooltip_idle": "দেয়াল ভেদ করে ভেসে যাচ্ছে"
       },
       "missionControl": {
         "missionControlScene": {
           "lv_level_title": "লেভেল {{level}} {{title}}",
-          "mission_control_scene": "মিশন কন্ট্রোল দৃশ্য"
+          "mission_control_scene": "মিশন কন্ট্রোল দৃশ্য",
+          "tooltip_active": "ভাইব কোডিং",
+          "tooltip_idle": "TikTok স্ক্রল করছে"
         }
       },
       "neuralConstellationScene": {
@@ -18851,7 +18855,9 @@
         "idle": "নিষ্ক্রিয়",
         "neural_constellation_animation": "নিউরাল কনস্টেলেশন অ্যানিমেশন",
         "neural_constellation_text_overlay": "নিউরাল কনস্টেলেশন টেক্সট ওভারলে",
-        "neural_network": "নিউরাল নেটওয়ার্ক"
+        "neural_network": "নিউরাল নেটওয়ার্ক",
+        "tooltip_active": "নিউরাল পথ প্রসেস করছে",
+        "tooltip_idle": "সিগন্যালের অপেক্ষায়"
       },
       "officeScene": {
         "active": "সক্রিয়",
@@ -18861,24 +18867,70 @@
         "no_tasks": "কোনো টাস্ক নেই",
         "office_scene": "অফিস দৃশ্য",
         "office_scene_labels": "অফিস দৃশ্যের লেবেল",
-        "to_do": "করতে হবে"
+        "to_do": "করতে হবে",
+        "tooltip_active": "PR নিয়ে খাটছে",
+        "tooltip_idle": "CR অনুমোদনের অপেক্ষায়",
+        "new_audiobook": "নতুন অডিওবুক?",
+        "adding_to_lib": "লাইব্রেরিতে যোগ করছি!",
+        "ch_5_has_a_bug": "অধ্যায় 5-এ বাগ",
+        "narrating_fix": "ফিক্স বর্ণনা করছি!",
+        "deploy_ready": "ডিপ্লয় রেডি?",
+        "ship_it": "ছেড়ে দাও!",
+        "review_the_pr": "PR দেখবে?",
+        "lgtm": "LGTM!",
+        "metadata_sync": "মেটাডেটা সিঙ্ক?",
+        "ingested": "নেওয়া হয়েছে!",
+        "latency_up": "লেটেন্সি বাড়ছে…",
+        "scaling_now": "এখনই স্কেল করছি!",
+        "coffee_break": "কফি ব্রেক?",
+        "always": "সবসময়!",
+        "a_b_test_done": "A/B টেস্ট শেষ",
+        "plus_12_listens": "+12% শোনা!"
       },
       "pandaOfficeScene": {
         "panda_den": "🐼 পান্ডার ডেরা",
         "panda_office_scene": "পান্ডা অফিস দৃশ্য",
-        "panda_office_scene_labels": "পান্ডা অফিস দৃশ্যের লেবেল"
+        "panda_office_scene_labels": "পান্ডা অফিস দৃশ্যের লেবেল",
+        "token_expired": "টোকেন মেয়াদ শেষ?",
+        "refreshing": "রিফ্রেশ করছি!",
+        "cr_approved": "CR অনুমোদিত!",
+        "ship_it": "ছেড়ে দাও! 🐼",
+        "deploy_ready": "ডিপ্লয় রেডি?",
+        "bamboo_break": "বাঁশ ব্রেক?",
+        "review_the_pr": "PR দেখবে?",
+        "lgtm": "LGTM!",
+        "aztec_timeout": "Aztec টাইমআউট",
+        "scaling_now": "এখনই স্কেল করছি!",
+        "latency_up": "লেটেন্সি বাড়ছে…",
+        "checking_aao": "AAO দেখছি",
+        "chess_later": "পরে দাবা?",
+        "always": "সবসময়!",
+        "pull_ups": "পুল-আপ?",
+        "after_deploy": "ডিপ্লয়ের পরে!",
+        "pull_ups_sign": "পুল-আপ"
       },
       "underwaterLabScene": {
         "deep_sea_lab": "গভীর সমুদ্র ল্যাব",
+        "vacant": "খালি",
         "research_station": "গবেষণা কেন্দ্র",
         "underwater_lab_scene": "পানির নিচের ল্যাব দৃশ্য",
-        "underwater_lab_scene_labels": "পানির নিচের ল্যাব দৃশ্যের লেবেল"
+        "underwater_lab_scene_labels": "পানির নিচের ল্যাব দৃশ্যের লেবেল",
+        "tooltip_active": "গভীরে অভিযান চালাচ্ছে",
+        "tooltip_idle": "শ্বাস নিতে উপরে উঠছে",
+        "scanning": "স্ক্যান করছে…",
+        "all_clear": "সব ঠিক",
+        "signal_ok": "সিগন্যাল OK",
+        "depth_200m": "গভীরতা: 200 মি",
+        "sync_done": "সিঙ্ক শেষ",
+        "data_recv": "ডেটা পেয়েছি"
       },
       "wateringHoleScene": {
         "on_the_savanna": "সাভানায় {{n}}/{{total}}",
         "watering_hole": "জলাশয়",
         "watering_hole_scene": "জলাশয় দৃশ্য",
-        "watering_hole_scene_labels": "জলাশয় দৃশ্যের লেবেল"
+        "watering_hole_scene_labels": "জলাশয় দৃশ্যের লেবেল",
+        "tooltip_active": "চলছে",
+        "tooltip_idle": "বিশ্রাম নিচ্ছে"
       },
       "wizardTowerScene": {
         "arcane_academy": "জাদুবিদ্যা অ্যাকাডেমি",
@@ -18887,7 +18939,9 @@
         "i_see": "বুঝলাম!",
         "resting": "বিশ্রামে",
         "wizard_tower_scene": "জাদুকরের টাওয়ার দৃশ্য",
-        "wizard_tower_spell_text": "জাদুকরের টাওয়ারের মন্ত্র টেক্সট"
+        "wizard_tower_spell_text": "জাদুকরের টাওয়ারের মন্ত্র টেক্সট",
+        "tooltip_active": "মন্ত্র পড়ছে",
+        "tooltip_idle": "জাদুর বই পড়ছে"
       }
     },
     "schedulePage": {
