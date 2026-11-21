@@ -5930,6 +5930,18 @@ frame. Below the bound the frame is never a counted drop and reaches no session
 queue. The set is process-wide because every runtime reads the same directory and a
 runtime starts for most sessions.
 
+**A session-start notice Crew does not read is not a drop.** kiro-cli sends
+`_kiro/powers/items_changed`, `_kiro/steering/documents_changed`,
+`_kiro/sessions/changed` and `_kiro/memory/syncStatus` at every `session/new` and
+`session/load`, and Crew reads none of them (`classify_notification` skips them).
+The two that name a session arrive before it is registered. The two that name none
+arrive while a fresh runtime has no registered session (measured on kiro-cli
+3.5.0). The reader drops such a frame without `_note_dropped_frame`, so
+`dropped_frames{method_class=other}` counts frames Crew lost, not session starts.
+The set is `KAS_UNREAD_SESSION_START_NOTICES` in `acp/runtime_frame_accounting.py`.
+A registered session still receives these notices, and any other unroutable
+`_kiro/*` notice is still counted.
+
 **An oversize stdout line is a dropped frame, not a dead runtime.** A single
 JSON-RPC line over the reader's `_STDOUT_BUFFER_LIMIT` (10 MB) used to
 `_mark_dead` the runtime, which fails every pending future and poisons every
