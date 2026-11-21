@@ -18,6 +18,7 @@ import pytest
 from apps_registry_helpers import _catalog_absent  # noqa: F401 - fixture
 from apps_registry_helpers import _explicit_registry_execution_admission  # noqa: F401 - fixture
 from apps_registry_helpers import unsandboxed_spawn  # noqa: F401 - fixture
+from git_maintenance_helpers import git_maintenance_off_entries
 
 from kiro_crew import platform_compat
 from kiro_crew.apps import registry
@@ -88,6 +89,7 @@ async def _fetch_repo_with_hostile_lfsconfig(tmp_path, monkeypatch, filter_body:
         "GIT_COMMITTER_NAME": "Registry Test",
         "GIT_COMMITTER_EMAIL": "registry@example.invalid",
     }
+    env.update(git_maintenance_off_entries(env))
     _git("init", "--quiet", "--template=", "-b", "main", cwd=work, env=env)
     (work / ".lfsconfig").write_text(
         f'[lfs]\n\turl = {_ATTACKER_LFS_URL}\n[remote "origin"]\n\tlfsurl = {_ATTACKER_LFS_URL}\n',
@@ -116,6 +118,7 @@ async def _fetch_repo_with_hostile_lfsconfig(tmp_path, monkeypatch, filter_body:
         "GIT_CONFIG_KEY_1": "filter.lfs.smudge",
         "GIT_CONFIG_VALUE_1": f'"{sys.executable}" "{script}"',
     }
+    clone_env.update(git_maintenance_off_entries(clone_env))
     monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
     result = await registry._git_fetch_branch(

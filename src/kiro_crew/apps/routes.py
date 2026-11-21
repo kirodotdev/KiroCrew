@@ -161,6 +161,7 @@ from kiro_crew.apps.registry import (
     resolve_installed_trust_repository,
 )
 from kiro_crew.apps.registry_pipeline.checkout import _HOOKS_NEUTRALIZER_ARGV
+from kiro_crew.apps.registry_pipeline.git_targets import _lfs_endpoint_pin_argv
 from kiro_crew.apps.registry_pipeline.subprocess_env import (
     _git_network_env,
     _proxy_env_has_credentials,
