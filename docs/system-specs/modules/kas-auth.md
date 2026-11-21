@@ -322,7 +322,7 @@ kiro-cli does) or parse the JWT `exp`.
 ### AWS Builder ID / IAM Identity Center — fully independent
 
 Standard AWS SSO-OIDC. **No Kiro-controlled gate.** Runtime dynamic client
-registration (`RegisterClient`, `client_type=public`, `client_name="Kiro Crew"`) →
+registration (`RegisterClient` with `clientType: "public"` and `clientName` = `OIDC_CLIENT_NAME`, `"Kiro Crew"`) →
 returns `client_id` + `client_secret`; PKCE authorization-code on an arbitrary loopback
 port (or device code via `StartDeviceAuthorization`); `CreateToken`. Endpoints:
 `https://oidc.<region>.amazonaws.com` (Builder ID region `us-east-1`). Scopes:
@@ -649,7 +649,9 @@ engine instead ([aws-control.md](aws-control.md)).
   renders the login page; full loopback token exchange not yet run end-to-end.
 - Builder ID / IdC / External IdP: contract implemented from source and covered by unit
   tests with a mocked HTTP session; **not yet exercised against the live endpoints**.
-- Unit tests: `test/test_kas_auth_{store,device,flows,helpers,shape_idp,whoami}.py` cover the
+- Unit tests: `test/test_kas_auth_store.py`, `test/test_kas_auth_device.py`,
+  `test/test_kas_auth_flows.py`, `test/test_kas_auth_helpers.py`,
+  `test/test_kas_auth_shape_idp.py` and `test/test_kas_auth_whoami.py` cover the
   store (perms, priority, expiry, invalid-token drops), the device state machine, SSO-OIDC
   polling, all three refresh paths + the single-flight lock + peer recovery, the
   KasAuthProvider contract (incl. the refresh-token-never-leaks assertion), PKCE/URL

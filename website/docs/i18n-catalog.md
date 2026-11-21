@@ -176,7 +176,8 @@ Authoring rules that follow:
   referent does not change with an edition must not interpolate the name:
   `app.star_kirocrew_on_github` wraps a hardcoded upstream repo URL, and the
   survey (`components.sessionPulseSurveyCard.email_disclosure`) and install
-  receipts (`privacyDisclosure.installReceipt*`) name the recipient of data
+  receipts (`privacyDisclosure.installReceiptTitle`,
+  `privacyDisclosure.installReceiptBody`, `privacyDisclosure.installReceiptFields`) name the recipient of data
   sent to hardcoded upstream endpoints. Interpolating those would make an
   edition misattribute a link target or where user data goes.
 - **Wire-format identifiers keep their unspaced literal.** The generated

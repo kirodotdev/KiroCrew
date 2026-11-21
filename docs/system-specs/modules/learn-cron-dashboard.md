@@ -5710,10 +5710,11 @@ remote shell script executed unsandboxed; a credential-writing child process),
 and each copy on the Kiro Crew side was one more thing to drift — the installer's
 pin silently broke setup on any upstream change.
 
-What remains is detection only. `_run_process` no longer accepts `sandboxed=`,
-`stdin_data=`, or `on_output=`, so every spawn is one of two read-only probes
-(`--version`, `whoami`), sandboxed, with a fixed argv, and nothing can be piped
-into an interpreter or scraped out of a child's stdout.
+What remains is detection only. `_run_process` (in
+`src/kiro_crew/kiro_prerequisite_process.py`) takes a fixed argv, `env`,
+`timeout_secs` and sandbox settings, with no sandbox opt-out, no stdin input and
+no output callback, so every spawn runs sandboxed with a fixed argv, and nothing
+can be piped into an interpreter or scraped out of a child's stdout.
 `TestKiroCrewNeverSetsUpKiroCli` pins the absence of each symbol.
 
 The sign-in card therefore shows the commands in `<code>` elements, rendered
