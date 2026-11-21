@@ -65,13 +65,13 @@
       "create_returned_no_session": "The session was created, but the server didn't send it back. Try again."
     },
     "pullRequestPanel": {
-      "not_declared": "This app can't show pull requests. This app's developer hasn't allowed it: the app's permissions don't declare {{path}}. Ask the app's developer to add it."
+      "not_declared": "This app can't show pull requests. This app's developer hasn't allowed it: the app's permissions don't declare {{path}}. Only the app's developer can change this."
     },
     "fileTree": {
-      "not_declared": "This app can't show the project's files. This app's developer hasn't allowed it: the app's permissions don't declare {{path}}. Ask the app's developer to add it."
+      "not_declared": "This app can't show the project's files. This app's developer hasn't allowed it: the app's permissions don't declare {{path}}. Only the app's developer can change this."
     },
     "projectPicker": {
-      "not_declared": "This app can't show the project picker. This app's developer hasn't allowed it: the app's permissions don't declare {{path}}. Ask the app's developer to add it."
+      "not_declared": "This app can't show the project picker. This app's developer hasn't allowed it: the app's permissions don't declare {{path}}. Only the app's developer can change this."
     },
     "sessionChanges": {
       "not_declared": "This app can't show this chat's changes. This app's developer hasn't allowed it: the app's permissions don't declare {{path}}. Only the app's developer can change this.",
