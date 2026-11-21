@@ -1,4 +1,4 @@
-"""The eleven computer-use tools and the single in-gateway dispatch chokepoint.
+"""The twelve computer-use tools and the single in-gateway dispatch chokepoint.
 
 **Everything in this module runs in the GATEWAY process**, never in the stdio MCP
 sidecar. :mod:`kiro_crew.mcp_computer` is a thin shim that resolves the caller's
@@ -133,6 +133,7 @@ from kiro_crew.computer_use.types import (
     TOOL_GET_STATE,
     TOOL_LAUNCH_APP,
     TOOL_LIST_APPS,
+    TOOL_LIST_WINDOWS,
     TOOL_PERFORM_ACTION,
     TOOL_PRESS_KEY,
     TOOL_SCROLL,
@@ -150,6 +151,7 @@ from kiro_crew.computer_use.types import (
     Snapshot,
     SnapshotRequest,
     StaleIndex,
+    WindowRef,
 )
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.platform.context import PlatformCompositionError
@@ -211,6 +213,7 @@ _QUOTED_RUN_RE = re.compile(r"\"[^\"]*\"|'[^']*'")
 # both are queried with ``requires_app_identity=False``.
 _APP_SCOPED_TOOLS: frozenset[str] = frozenset(
     {
+        TOOL_LIST_WINDOWS,
         TOOL_GET_STATE,
         TOOL_CLICK,
         TOOL_DRAG,
@@ -676,6 +679,17 @@ def _run(
         return _render_apps(visible, session_key=session_key, agent=agent, app=app)
 
     assert target is not None  # every remaining tool is app-scoped (step 2)
+
+    if tool_name == TOOL_LIST_WINDOWS:
+        # Window list only — no tree walk, no pixels. The target policy at step (5)
+        # already ran on the resolved app, and on macOS that resolution surfaces a
+        # denied window of the process if it has one, so a process hosting Kiro
+        # Crew's own dashboard is refused before its other windows are enumerated.
+        # Each listed window is then held to the same ``policy.check_app`` the app
+        # list applies, because an operator's ``extra_denied_apps`` pattern can match
+        # one window's title and not the resolved one's: that title is the content
+        # the denylist keeps out of the model's context.
+        return render.render_windows(target, _permitted_windows(svc, target, cfg))
 
     if tool_name == TOOL_GET_STATE:
         req = service.snapshot_request(
@@ -1252,8 +1266,8 @@ def _with_notes(body: str, shaped: Mapping[str, Any]) -> str:
 def _declared_observations(tool_name: str) -> tuple[str, ...]:
     """The observation channels a tool's reply would carry, for the gate.
 
-    Only the MANDATORY channel of each observation tool is declared, and only for
-    the observation tools:
+    Only the MANDATORY channel of each reading tool is declared, and only for the
+    reading tools:
 
     * ``computer_get_state`` declares ``a11y_tree``. Denying it denies the call —
       correct, because "no accessibility tree" has no partial form. ``screenshot``
@@ -1262,18 +1276,37 @@ def _declared_observations(tool_name: str) -> tuple[str, ...]:
       succeeds with the image omitted and annotated) rather than by a gate denial.
     * ``computer_list_apps`` declares ``window_titles`` — the only user data it
       can disclose.
-    * A mutator declares nothing. Its refreshed tree is narrowed by the response
+    * ``computer_list_windows`` declares ``window_titles`` for the same reason. It
+      is classed ``mutate`` only so it is approved per call; it synthesizes no
+      input.
+    * An input tool declares nothing. Its refreshed tree is narrowed by the response
       shaper; declaring a channel here would let "deny screenshots" silently
       become "deny clicking".
     """
     if tool_name == TOOL_GET_STATE:
         return (OBS_A11Y_TREE,)
-    if tool_name == TOOL_LIST_APPS:
+    if tool_name in (TOOL_LIST_APPS, TOOL_LIST_WINDOWS):
         return (OBS_WINDOW_TITLES,)
     return ()
 
 
 # ── Helpers ──
+
+
+def _permitted_windows(
+    svc: "service.ComputerUseService", target: AppRef, cfg: PolicyConfig
+) -> "tuple[WindowRef, ...]":
+    """The app's windows the target policy lets the model see.
+
+    Each window is judged on its own title by the same ``policy.check_app`` that
+    ``computer_list_apps`` applies, so a window the operator denies is left out.
+    """
+    return tuple(
+        win
+        for win in svc.list_windows(target)
+        if policy.check_app(replace(target, window_id=win.window_id, window_title=win.title), cfg)
+        is None
+    )
 
 
 def _mutation_walk_budget(

@@ -97,6 +97,10 @@ def _cu_coord_field(name: str, *, required: bool = False) -> FieldSpec:
 
 MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
     _cu_types.TOOL_LIST_APPS: ToolSchema(tool_name=_cu_types.TOOL_LIST_APPS, fields=[]),
+    _cu_types.TOOL_LIST_WINDOWS: ToolSchema(
+        tool_name=_cu_types.TOOL_LIST_WINDOWS,
+        fields=[_CU_APP_FIELD],
+    ),
     _cu_types.TOOL_LAUNCH_APP: ToolSchema(
         tool_name=_cu_types.TOOL_LAUNCH_APP,
         # ONE field, and the absence of the others is the point. No ``path``, no

@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 
 from kiro_crew.computer_use import policy, windows_ffi
-from kiro_crew.computer_use.types import AppRef, ComputerUseError
+from kiro_crew.computer_use.types import AppRef, ComputerUseError, WindowRef
 
 logger = logging.getLogger(__name__)
 
@@ -252,6 +252,37 @@ def resolve_app(query: str) -> AppRef:
     raise ComputerUseError(_ERR_NO_MATCH.format(query=query))
 
 
+def _same_app(candidate: AppRef, app: AppRef) -> bool:
+    """Whether *candidate* is another window of the application *app* names.
+
+    The pid AND the published identity, never the pid alone: a broker such as
+    ``ApplicationFrameHost.exe`` fronts unrelated packaged apps under one pid, and
+    :func:`_app_ref` gives each of those windows its own title as its identity.
+    Matching on the pid would list Settings' window as one of HP Audio Control's;
+    matching on both keeps each hosted app its own one-window application.
+    """
+    return (
+        candidate.pid == app.pid
+        and candidate.bundle_id == app.bundle_id
+        and candidate.name == app.name
+    )
+
+
+def list_windows(app: AppRef) -> "tuple[WindowRef, ...]":
+    """The on-screen top-level windows of *app*, front to back.
+
+    The same entries :func:`list_apps` publishes (this module already lists one
+    entry per window), narrowed to *app*'s pid and identity (see :func:`_same_app`),
+    with each window's screen rect from :func:`window_bounds`, so it shares the
+    coordinate space of the element frames.
+    """
+    return tuple(
+        WindowRef(window_id=ref.window_id, title=ref.window_title, bounds=window_bounds(ref))
+        for ref in list_apps()
+        if _same_app(ref, app)
+    )
+
+
 def find_window_for(name: str) -> "AppRef | None":
     """The on-screen window of the app *name* identifies, or ``None``.
 
@@ -372,6 +403,7 @@ __all__ = [
     "find_window_for",
     "hwnd_owns_point",
     "list_apps",
+    "list_windows",
     "resolve_app",
     "window_bounds",
 ]

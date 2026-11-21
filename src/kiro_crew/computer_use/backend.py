@@ -146,6 +146,10 @@ class ComputerUseBackend(abc.ABC):
         """
 
     @abc.abstractmethod
+    def list_windows(self, app: AppRef) -> DriverResult:
+        """The on-screen windows of *app*, front to back, in ``DriverResult.windows``."""
+
+    @abc.abstractmethod
     def launch_app(
         self,
         query: str,
@@ -292,6 +296,9 @@ class UnsupportedBackend(ComputerUseBackend):
         return self._refuse()
 
     def resolve_app(self, query: str) -> DriverResult:
+        return self._refuse()
+
+    def list_windows(self, app: AppRef) -> DriverResult:
         return self._refuse()
 
     def launch_app(

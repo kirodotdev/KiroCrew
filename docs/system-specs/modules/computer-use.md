@@ -358,7 +358,7 @@ flipping one flag.
 
 ---
 
-## The 11-tool contract
+## The 12-tool contract
 
 Server `kirocrew-computer` (slash-free: kiro-cli splits an agent `@server`
 reference on `/`). All tools prefixed `computer_` so the GUI plane is
@@ -367,6 +367,7 @@ namespace-distinct from every other server's tools.
 | Tool | Required | Optional | Class |
 |---|---|---|---|
 | `computer_list_apps` | — | — | observe |
+| `computer_list_windows` | `app` | — | mutate |
 | `computer_launch_app` | `app` (≤128) | — | mutate |
 | `computer_get_state` | `app` | `text_limit` (1..20000, d=500), `max_tree_nodes` (1..5000, d=1200), `max_tree_depth` (1..128, d=64), `screenshot` (bool, d from config) | observe |
 | `computer_click` | `app` + **exactly one of** (`element_index` \| `x`+`y`) | `click_count` (1..3, d=1), `mouse_button` (`left`\|`right`\|`middle`, d=left), `click_method` (`auto`\|`accessibility`\|`app_post`\|`sky_click`\|`global`, d=auto) | mutate, pointer |
@@ -416,7 +417,9 @@ stdio loop and kills the server.
 `computer_end_turn` is control-plane (it drops Kiro Crew's *own* cached snapshots
 and touches no other application, so it is neither observe nor mutate). The
 class labels above are the code-owned `governance._CU_ACTION_CLASSES` table —
-see [governance.md](governance.md).
+see [governance.md](governance.md). `computer_list_windows` only reads, yet carries
+`mutate` and sits in `MUTATING_TOOLS`, so `_cu_read_only_auto_approve` (which passes
+only `observe` actions) never passes it and the gate treats it like a click.
 
 All three spool writers (`service._persist_image`, `capture_macos.persist_jpeg`
 and `capture_windows.persist_jpeg`) name their files with `tempfile.mkstemp`, not
@@ -441,6 +444,35 @@ bundle id nor a display name is dropped because there is nothing to show. Termin
 and password managers appear in the list like everything else. Every listing ends
 with `UNLISTED_APPS_NOTE`, so neither a short list nor an empty one reads as every
 app that is open; the note names no hidden app and counts none.
+
+### Window listing (`computer_list_windows`)
+
+`computer_list_windows(app)` lists the resolved app's on-screen windows, front to
+back, one line each with its `window_id`, title and screen rect
+(`render.render_windows`). The agent otherwise sees one window per app:
+`apps_macos.list_apps` collapses a process to its frontmost TITLED window, so a
+66x20 helper titled "Window" in front of a document window wins, and nothing tells
+the agent the document window exists. Windows already lists one entry per
+top-level HWND, and its `resolve_app` matches a title fragment, so there a listed
+title passed as `app` reaches that window.
+
+- **macOS** (`apps_macos.list_windows`): every layer-0 window of the pid, titled or
+  not and however small, the same filter `list_apps` applies before it collapses.
+- **Windows** (`apps_windows.list_windows`): the `list_apps` entries with the same
+  pid AND published identity (`_same_app`), because `ApplicationFrameHost.exe`
+  fronts unrelated packaged apps under one pid. Each rect is read inside the DPI
+  scope.
+- **The target policy runs twice.** `tools._dispatch` runs `policy.check_app` on the
+  resolved app before anything is listed; on macOS that resolution already surfaces
+  a denied window of the process (the `list_apps` collapse rule), so a process
+  showing Kiro Crew's own dashboard is refused outright. Then
+  `tools._permitted_windows` holds each listed window to `policy.check_app` on its
+  own title, so a sibling an operator `extra_denied_apps` pattern or the built-in
+  floor denies is left out, as `computer_list_apps` leaves it out.
+- **Approved per call.** The tool declares the `window_titles` channel and is
+  classed `mutate`, as described under the tool table.
+- `list_windows` is abstract on `ComputerUseBackend`, so every backend states how
+  it enumerates windows; `UnsupportedBackend` refuses it like its other methods.
 
 ### Result shape: text only, by construction
 
@@ -2529,7 +2561,7 @@ overlay built at the gateway's start, the answer the MCP tab gives. On every oth
 backend the line names only the Kiro CLI backend, routed or not. The projection's
 own withhold warnings are silenced for this one question: no session runs in it.
 
-### `call` is a harness, not an eleventh tool
+### `call` is a harness, not a thirteenth tool
 
 `call` runs the existing tools through `tools.dispatch_tool` — **the same ordered
 chokepoint an agent call traverses**. The fail-closed primary enable, the
@@ -2562,7 +2594,7 @@ reply carries the `Error: ` prefix.
 
 `call` has **no MCP twin**, and that is the MCP-first rule being followed rather
 than bent: the rule exists so the model gets a structured tool instead of being
-told to shell out, and the model already has all eleven tools. A tool that runs other
+told to shell out, and the model already has all twelve tools. A tool that runs other
 tools would let a model launder one per-call gate decision into many.
 
 ### Deliberately not ported from the reference implementation
