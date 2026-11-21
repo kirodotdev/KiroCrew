@@ -926,10 +926,12 @@ def _gitlab_summary(query: IssueQuery, item: dict[str, Any]) -> dict[str, Any] |
     if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
         return None
     state = "closed" if item.get("state") == "closed" else "open"
+    # A self-managed instance under a relative URL root keeps that root.
+    url_root = hosts._gitlab_url_root(query.host)
     return {
         "provider": "gitlab",
         # Built from the validated host and project, never from web_url.
-        "url": f"https://{query.host}/{query.scope}/-/issues/{number}",
+        "url": f"https://{query.host}{url_root}/{query.scope}/-/issues/{number}",
         "key": f"#{number}",
         "number": number,
         "title": str(item.get("title") or ""),

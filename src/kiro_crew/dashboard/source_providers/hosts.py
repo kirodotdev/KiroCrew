@@ -9,9 +9,12 @@ while cold; the chip switch fails OPEN.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
+from collections.abc import Mapping
 
+from kiro_crew.config.sections_dashboard_hosts import split_gitlab_host_entry
 from kiro_crew.dashboard.source_providers import LOGGER_NAME
 from kiro_crew.loop_lock import LoopBoundLock
 
@@ -205,6 +208,17 @@ async def ensure_gitlab_hosts_loaded() -> frozenset[str]:
         return gitlab
 
 
+@functools.lru_cache(maxsize=4)
+def _gitlab_url_roots_of(entries: frozenset[str]) -> Mapping[str, str]:
+    """Map each entry's ``host[:port]`` to its relative URL root (``""`` at the root)."""
+    return dict(split_gitlab_host_entry(entry) for entry in entries)
+
+
+@functools.lru_cache(maxsize=4)
+def _gitlab_authorities_of(entries: frozenset[str]) -> frozenset[str]:
+    return frozenset(_gitlab_url_roots_of(entries))
+
+
 def _allowed_gitlab_hosts() -> frozenset[str]:
     """Return the cached self-managed GitLab hosts without touching the filesystem.
 
@@ -214,22 +228,47 @@ def _allowed_gitlab_hosts() -> frozenset[str]:
     widen it. Before the first :func:`ensure_gitlab_hosts_loaded` completes the
     snapshot is empty, which fails closed (a self-managed URL is simply not
     recognized yet).
+
+    Returns the ``host[:port]`` of each entry: an entry that carries the
+    instance's relative URL root (``gitlab.example.com/gitlab``) authorizes its
+    host, and :func:`_gitlab_url_root` returns the root.
     """
-    return _gitlab_hosts_snapshot
+    return _gitlab_authorities_of(_gitlab_hosts_snapshot)
 
 
-def gitlab_hosts_blocking() -> frozenset[str]:
+def _gitlab_url_root(host: str) -> str:
+    """The relative URL root configured for an allowlisted GitLab ``host[:port]``.
+
+    ``""`` for gitlab.com, an instance served at the root, or a host not listed.
+    """
+    return _gitlab_url_roots_of(_gitlab_hosts_snapshot).get(host, "")
+
+
+@functools.lru_cache(maxsize=4)
+def _gitlab_root_served_authorities_of(entries: frozenset[str]) -> frozenset[str]:
+    return frozenset(host for host, root in _gitlab_url_roots_of(entries).items() if not root)
+
+
+def gitlab_hosts_blocking(*, served_at_root: bool = False) -> frozenset[str]:
     """The self-managed GitLab allowlist for sync code that runs OFF the event loop.
 
     The cached snapshot while it is fresh, including a fresh EMPTY one (an operator
     with no self-managed hosts pays no config read). Otherwise one blocking config
     read, which does not touch the shared snapshot. Never call this on the loop: use
     :func:`ensure_gitlab_hosts_loaded` there.
+
+    Returns the ``host[:port]`` of each entry, like :func:`_allowed_gitlab_hosts`,
+    so a caller comparing a URL's host never sees an entry's relative URL root.
+    ``served_at_root=True`` leaves out every entry that carries a URL root, for a
+    caller that builds project paths without knowing about one.
     """
     if _gitlab_hosts_fresh():
-        return _gitlab_hosts_snapshot
-    gitlab, _jira, _chips, _github, _bitbucket_server, _gerrit = _load_source_link_settings()
-    return gitlab
+        entries = _gitlab_hosts_snapshot
+    else:
+        entries, _jira, _chips, _github, _bitbucket_server, _gerrit = _load_source_link_settings()
+    if served_at_root:
+        return _gitlab_root_served_authorities_of(entries)
+    return _gitlab_authorities_of(entries)
 
 
 def _allowed_jira_hosts() -> frozenset[str]:
