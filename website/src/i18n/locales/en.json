@@ -64,16 +64,18 @@
     "chatSession": {
       "create_returned_no_session": "The session was created, but the server didn't send it back. Try again."
     },
+    "refusal": {
+      "ask_agent": "Ask the agent to explain this"
+    },
     "pullRequestPanel": {
-      "not_declared": "This app can't show pull requests. Only its developer can turn this on ({{path}})."
+      "not_declared": "This app can't show pull requests. Only its developer can turn this on. Developer: add {{path}} to the app's permissions."
     },
     "projectPicker": {
-      "not_declared": "This app can't show the project picker. Only its developer can turn this on ({{path}})."
+      "not_declared": "This app can't show the project picker. Only its developer can turn this on. Developer: add {{path}} to the app's permissions."
     },
     "sessionChanges": {
-      "not_declared": "This app can't show this chat's changes. Only its developer can turn this on ({{path}}).",
-      "diff_not_declared": "This app can't show this file's changes. Only its developer can turn this on ({{path}}).",
-      "ask_agent": "Ask the agent to explain this",
+      "not_declared": "This app can't show this chat's changes. Only its developer can turn this on. Developer: add {{path}} to the app's permissions.",
+      "diff_not_declared": "This app can't show this file's changes. Only its developer can turn this on. Developer: add {{path}} to the app's permissions.",
       "pick_a_file": "Pick a file to see its changes.",
       "diff_unavailable": "This chat didn't record the whole file before and after this change, so there's no diff to show."
     },
@@ -99,7 +101,7 @@
       "loading": "Loading issues…",
       "loading_more": "Loading…",
       "more_people": "+{{n}}",
-      "not_declared": "This app can't show issues. Only its developer can turn this on ({{path}}).",
+      "not_declared": "This app can't show issues. Only its developer can turn this on. Developer: add {{path}} to the app's permissions.",
       "open_in": "Open in {{provider}}",
       "opened_by": "Opened by {{name}}",
       "priority": "Priority: {{priority}}",

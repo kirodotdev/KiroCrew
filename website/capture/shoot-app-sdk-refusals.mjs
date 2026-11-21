@@ -1,11 +1,11 @@
 /**
  * Screenshot harness for the App SDK refusals (capture/app-sdk-refusals.tsx).
  *
- * Serves the isolated entry with a programmatic Vite dev server on loopback and
- * shoots the page and each component's refusal frame: dark and light at 760px,
- * dark at 320px.
- * The entry declares no API path, so no request is sent; no gateway or token is
- * involved.
+ * Serves the isolated entry with a programmatic Vite dev server on loopback,
+ * picks the file in the "diff" frame so its diff pane shows the diff refusal,
+ * then shoots the page and each frame: dark and light at 760px, dark at 320px.
+ * The one request the entry sends (the diff frame's file list) is answered
+ * inside the entry; no gateway or token is involved.
  *
  * Usage (from website/): node capture/shoot-app-sdk-refusals.mjs [outDir] [lang]
  */
@@ -25,12 +25,16 @@ await server.listen()
 const origin = server.resolvedUrls?.local?.[0]?.replace(/\/$/, '') || `http://127.0.0.1:${server.config.server.port}`
 const browser = await chromium.launch({ executablePath: chromiumExecutable(), env: { ...process.env, LD_LIBRARY_PATH: '' } })
 
-const FRAMES = ['pr', 'picker', 'issues', 'changes']
+const FRAMES = ['pr', 'picker', 'issues', 'changes', 'diff']
 for (const [theme, width] of [['dark', 760], ['light', 760], ['dark', 320]]) {
-  const page = await browser.newPage({ viewport: { width, height: 1200 }, deviceScaleFactor: 2 })
+  const page = await browser.newPage({ viewport: { width, height: 1600 }, deviceScaleFactor: 2 })
   page.on('pageerror', e => console.log('PAGE EXCEPTION:', e.message))
   await page.goto(`${origin}/capture/app-sdk-refusals.html?theme=${theme}&lang=${LANG}`)
-  for (const id of FRAMES) await page.getByTestId(`frame-${id}`).getByRole('alert').waitFor({ timeout: 20000 })
+  const diff = page.getByTestId('frame-diff')
+  await diff.getByTestId('session-file-row').waitFor({ timeout: 20000 })
+  await diff.getByTestId('session-file-diff').click()
+  await diff.getByTestId('app-session-changes-diff-not-declared').waitFor({ timeout: 20000 })
+  for (const id of FRAMES) await page.getByTestId(`frame-${id}`).getByRole('alert').first().waitFor({ timeout: 20000 })
   await page.waitForTimeout(400)
   await page.getByTestId('frames').screenshot({ path: `${OUT}/all-${LANG}-${theme}-${width}.png` })
   for (const id of FRAMES) {

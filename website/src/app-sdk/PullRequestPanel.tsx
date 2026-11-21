@@ -110,6 +110,11 @@ export default function PullRequestPanel({ sources, selectedUrl, onSelect }: App
         testId="app-pull-request-panel-not-declared"
         message={i18nT('appSdk.pullRequestPanel.not_declared', { path: PULL_REQUEST_PANEL_PATHS.source })}
         askAgent
+        // Says what the agent does here, so it does not read as a second
+        // person to fix what only the app's developer can change.
+        askAgentLabel={i18nT('appSdk.refusal.ask_agent')}
+        // The longer label beside the message squeezes it to a word per line on a phone.
+        actionPlacement="below-on-phone"
       />
     )
   }

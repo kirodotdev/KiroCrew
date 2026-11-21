@@ -130,9 +130,12 @@ describe('scopedIssuesTransport', () => {
 describe('fails closed', () => {
   it('refuses an app that declares only the single-issue read, and sends nothing', async () => {
     render(externalApp(['/api/source/issue', '/api/source/pull-request'], <IssueList query={QUERY} />))
-    expect(await screen.findByTestId('app-issue-list-not-declared', {}, LAZY)).toHaveTextContent(
-      `This app can't show issues. Only its developer can turn this on (${ISSUES_PATH}).`,
+    const refusal = await screen.findByTestId('app-issue-list-not-declared', {}, LAZY)
+    expect(refusal).toHaveTextContent(
+      `This app can't show issues. Only its developer can turn this on. Developer: add ${ISSUES_PATH} to the app's permissions.`,
     )
+    // The hand-off says what the agent does, not a second person to fix it.
+    expect(within(refusal).getByRole('button', { name: 'Ask the agent to explain this' })).toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
     expect(mockApi.fetchIssues).not.toHaveBeenCalled()
   })

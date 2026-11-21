@@ -143,6 +143,11 @@ export default function IssueList({ query, view = 'condensed', showFilters = fal
         testId="app-issue-list-not-declared"
         message={i18nT('appSdk.issues.not_declared', { path: ISSUES_PATH })}
         askAgent
+        // Says what the agent does here, so it does not read as a second
+        // person to fix what only the app's developer can change.
+        askAgentLabel={i18nT('appSdk.refusal.ask_agent')}
+        // The longer label beside the message squeezes it to a word per line on a phone.
+        actionPlacement="below-on-phone"
       />
     )
   }

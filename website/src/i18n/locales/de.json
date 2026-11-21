@@ -356,16 +356,18 @@
     "chatSession": {
       "create_returned_no_session": "Die Sitzung wurde erstellt, aber der Server hat sie nicht zurückgegeben. Versuche es erneut."
     },
+    "refusal": {
+      "ask_agent": "Den Agenten bitten, das zu erklären"
+    },
     "pullRequestPanel": {
-      "not_declared": "Diese App kann keine Pull Requests anzeigen. Nur der Entwickler der App kann das freischalten ({{path}})."
+      "not_declared": "Diese App kann keine Pull Requests anzeigen. Nur der Entwickler der App kann das freischalten. Entwickler: Füge {{path}} zu den Berechtigungen der App hinzu."
     },
     "projectPicker": {
-      "not_declared": "Diese App kann die Projektauswahl nicht anzeigen. Nur der Entwickler der App kann das freischalten ({{path}})."
+      "not_declared": "Diese App kann die Projektauswahl nicht anzeigen. Nur der Entwickler der App kann das freischalten. Entwickler: Füge {{path}} zu den Berechtigungen der App hinzu."
     },
     "sessionChanges": {
-      "not_declared": "Diese App kann die Änderungen dieses Chats nicht anzeigen. Nur der Entwickler der App kann das freischalten ({{path}}).",
-      "diff_not_declared": "Diese App kann die Änderungen dieser Datei nicht anzeigen. Nur der Entwickler der App kann das freischalten ({{path}}).",
-      "ask_agent": "Den Agenten bitten, das zu erklären",
+      "not_declared": "Diese App kann die Änderungen dieses Chats nicht anzeigen. Nur der Entwickler der App kann das freischalten. Entwickler: Füge {{path}} zu den Berechtigungen der App hinzu.",
+      "diff_not_declared": "Diese App kann die Änderungen dieser Datei nicht anzeigen. Nur der Entwickler der App kann das freischalten. Entwickler: Füge {{path}} zu den Berechtigungen der App hinzu.",
       "pick_a_file": "Wähle eine Datei, um ihre Änderungen zu sehen.",
       "diff_unavailable": "Dieser Chat hat die ganze Datei vor und nach dieser Änderung nicht aufgezeichnet, daher gibt es keinen Diff."
     },
@@ -391,7 +393,7 @@
       "loading": "Issues werden geladen…",
       "loading_more": "Wird geladen…",
       "more_people": "+{{n}}",
-      "not_declared": "Diese App kann keine Issues anzeigen. Nur der Entwickler der App kann das freischalten ({{path}}).",
+      "not_declared": "Diese App kann keine Issues anzeigen. Nur der Entwickler der App kann das freischalten. Entwickler: Füge {{path}} zu den Berechtigungen der App hinzu.",
       "open_in": "In {{provider}} öffnen",
       "opened_by": "Erstellt von {{name}}",
       "priority": "Priorität: {{priority}}",

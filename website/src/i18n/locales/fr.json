@@ -373,16 +373,18 @@
     "chatSession": {
       "create_returned_no_session": "La session a été créée, mais le serveur ne l’a pas renvoyée. Réessaie."
     },
+    "refusal": {
+      "ask_agent": "Demander à l'agent de l'expliquer"
+    },
     "pullRequestPanel": {
-      "not_declared": "Cette app ne peut pas afficher de pull requests. Seul le développeur de l'app peut l'activer ({{path}})."
+      "not_declared": "Cette app ne peut pas afficher de pull requests. Seul le développeur de l'app peut l'activer. Développeur : ajoute {{path}} aux autorisations de l'app."
     },
     "projectPicker": {
-      "not_declared": "Cette app ne peut pas afficher le sélecteur de projet. Seul le développeur de l'app peut l'activer ({{path}})."
+      "not_declared": "Cette app ne peut pas afficher le sélecteur de projet. Seul le développeur de l'app peut l'activer. Développeur : ajoute {{path}} aux autorisations de l'app."
     },
     "sessionChanges": {
-      "not_declared": "Cette app ne peut pas afficher les modifications de ce chat. Seul le développeur de l'app peut l'activer ({{path}}).",
-      "diff_not_declared": "Cette app ne peut pas afficher les modifications de ce fichier. Seul le développeur de l'app peut l'activer ({{path}}).",
-      "ask_agent": "Demander à l'agent de l'expliquer",
+      "not_declared": "Cette app ne peut pas afficher les modifications de ce chat. Seul le développeur de l'app peut l'activer. Développeur : ajoute {{path}} aux autorisations de l'app.",
+      "diff_not_declared": "Cette app ne peut pas afficher les modifications de ce fichier. Seul le développeur de l'app peut l'activer. Développeur : ajoute {{path}} aux autorisations de l'app.",
       "pick_a_file": "Choisis un fichier pour voir ses modifications.",
       "diff_unavailable": "Ce chat n'a pas enregistré le fichier entier avant et après cette modification, il n'y a donc pas de diff à afficher."
     },
@@ -410,7 +412,7 @@
       "loading": "Chargement des tickets…",
       "loading_more": "Chargement…",
       "more_people": "+{{n}}",
-      "not_declared": "Cette app ne peut pas afficher de tickets. Seul le développeur de l'app peut l'activer ({{path}}).",
+      "not_declared": "Cette app ne peut pas afficher de tickets. Seul le développeur de l'app peut l'activer. Développeur : ajoute {{path}} aux autorisations de l'app.",
       "open_in": "Ouvrir dans {{provider}}",
       "opened_by": "Ouvert par {{name}}",
       "priority": "Priorité : {{priority}}",

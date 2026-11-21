@@ -373,16 +373,18 @@
     "chatSession": {
       "create_returned_no_session": "A sessão foi criada, mas o servidor não a devolveu. Tente novamente."
     },
+    "refusal": {
+      "ask_agent": "Pedir ao agente para explicar"
+    },
     "pullRequestPanel": {
-      "not_declared": "Este app não pode mostrar pull requests. Só o desenvolvedor do app pode ativar isso ({{path}})."
+      "not_declared": "Este app não pode mostrar pull requests. Só o desenvolvedor do app pode ativar isso. Desenvolvedor: adicione {{path}} às permissões do app."
     },
     "projectPicker": {
-      "not_declared": "Este app não pode mostrar o seletor de projetos. Só o desenvolvedor do app pode ativar isso ({{path}})."
+      "not_declared": "Este app não pode mostrar o seletor de projetos. Só o desenvolvedor do app pode ativar isso. Desenvolvedor: adicione {{path}} às permissões do app."
     },
     "sessionChanges": {
-      "not_declared": "Este app não pode mostrar as alterações deste chat. Só o desenvolvedor do app pode ativar isso ({{path}}).",
-      "diff_not_declared": "Este app não pode mostrar as alterações deste arquivo. Só o desenvolvedor do app pode ativar isso ({{path}}).",
-      "ask_agent": "Pedir ao agente para explicar",
+      "not_declared": "Este app não pode mostrar as alterações deste chat. Só o desenvolvedor do app pode ativar isso. Desenvolvedor: adicione {{path}} às permissões do app.",
+      "diff_not_declared": "Este app não pode mostrar as alterações deste arquivo. Só o desenvolvedor do app pode ativar isso. Desenvolvedor: adicione {{path}} às permissões do app.",
       "pick_a_file": "Escolha um arquivo para ver suas alterações.",
       "diff_unavailable": "Este chat não registrou o arquivo inteiro antes e depois desta alteração, então não há diff para mostrar."
     },
@@ -410,7 +412,7 @@
       "loading": "Carregando issues…",
       "loading_more": "Carregando…",
       "more_people": "+{{n}}",
-      "not_declared": "Este app não pode mostrar issues. Só o desenvolvedor do app pode ativar isso ({{path}}).",
+      "not_declared": "Este app não pode mostrar issues. Só o desenvolvedor do app pode ativar isso. Desenvolvedor: adicione {{path}} às permissões do app.",
       "open_in": "Abrir no {{provider}}",
       "opened_by": "Aberta por {{name}}",
       "priority": "Prioridade: {{priority}}",

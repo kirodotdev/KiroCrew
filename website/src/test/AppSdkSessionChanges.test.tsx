@@ -122,7 +122,7 @@ describe('the App SDK SessionChanges', () => {
     const listRefusal = await screen.findByTestId('app-session-changes-not-declared')
     expect(listRefusal).toHaveTextContent(SESSION_CHANGES_PATHS.sessionFiles)
     // What the app can't show, then who can turn it on, then the path.
-    expect(listRefusal).toHaveTextContent(`This app can't show this chat's changes. Only its developer can turn this on (${SESSION_CHANGES_PATHS.sessionFiles}).`)
+    expect(listRefusal).toHaveTextContent(`This app can't show this chat's changes. Only its developer can turn this on. Developer: add ${SESSION_CHANGES_PATHS.sessionFiles} to the app's permissions.`)
     // The hand-off says what the agent does, not a second person to fix it.
     expect(within(listRefusal).getByRole('button', { name: 'Ask the agent to explain this' })).toBeInTheDocument()
     expect(screen.queryByTestId('session-file-row')).toBeNull()
@@ -159,7 +159,7 @@ describe('the App SDK SessionChanges', () => {
     expect(diffRefusal).toHaveTextContent(SESSION_CHANGES_PATHS.sessionFileDiff)
     // Said as the one file's changes, the row's "Show changes": the list of
     // changes beside it does show. Then who can turn it on, then the path.
-    expect(diffRefusal).toHaveTextContent(`This app can't show this file's changes. Only its developer can turn this on (${SESSION_CHANGES_PATHS.sessionFileDiff}).`)
+    expect(diffRefusal).toHaveTextContent(`This app can't show this file's changes. Only its developer can turn this on. Developer: add ${SESSION_CHANGES_PATHS.sessionFileDiff} to the app's permissions.`)
     expect(within(diffRefusal).getByRole('button', { name: 'Ask the agent to explain this' })).toBeInTheDocument()
     expect(screen.queryByTestId('pierre-pair')).toBeNull()
     const paths = fetchMock.mock.calls.map(pathOf)
