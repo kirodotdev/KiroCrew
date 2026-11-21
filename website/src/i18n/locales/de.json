@@ -14906,6 +14906,7 @@
       "jump_to_new_one": "{{count}} neue · Zum Ende",
       "jump_to_new_other": "{{count}} neue · Zum Ende",
       "could_not_repair_images": "Die Bilder konnten nicht repariert werden",
+      "could_not_edit_and_resend": "Bearbeiten & erneut senden fehlgeschlagen",
       "session_closed_elsewhere": "Dieser Chat wurde außerhalb dieses Fensters geschlossen."
     },
     "chatSidebar": {

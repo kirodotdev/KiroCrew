@@ -15260,6 +15260,7 @@
       "jump_to_new_other": "{{count}} novas · Ir para o final",
       "jump_to_new_many": "{{count}} novas · Ir para o final",
       "could_not_repair_images": "Não foi possível reparar as imagens",
+      "could_not_edit_and_resend": "Não foi possível editar e reenviar",
       "session_closed_elsewhere": "Este chat foi fechado fora desta janela."
     },
     "chatSidebar": {
