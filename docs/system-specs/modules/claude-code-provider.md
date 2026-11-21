@@ -452,12 +452,12 @@ the primary spawn (not only on the model-substitution retry) with
 `permissions.defaultMode` when requested, `permissions.deny` rules derived from
 the spec's `disabledTools`, and the `permissions.ask` rules a `toolsSettings` shell
 or write allowlist needs (above). Once the provider-advertised model cache is warm it
-writes a pinned `model`, and it writes `availableModels` only when another settings
+writes `availableModels`, and only when another settings
 source (user `settings.json`, project `.claude/settings.json`, or the managed
 `managed-settings.json` and its `managed-settings.d/*.json` drop-ins) already defines
 one; on a cold cache both keys are omitted, except for the covered names below. Claude Code's rule is that an allowlist
 entry naming a specific id disables that family's alias wildcard, so Crew's own list
-would cap `haiku` at Haiku 4.5 (issue #22995); a `model` key has no such effect. The
+would cap `haiku` at Haiku 4.5 (issue #22995). The
 adapter gives each literal `availableModels` entry one picker row, while the CLI also
 allows the newer models that a version prefix covers (`claude-opus-5` allows
 `claude-opus-5-5`). So when Crew writes its list it also names the keys of the user's
@@ -478,16 +478,45 @@ missed: the seed then
 omits Crew's list as it does on a cold cache, so a versioned `[1m]` pick can resolve
 to the 200K window under that policy.
 
-The model-substitution retry is the one case that writes `model` on a cold cache.
+**A session's pinned model is never written as `model`.** Claude Code reads a
+settings `model` as a pin and folds that model's whole family into one alias row: a
+session pinned to Opus 4.8 is offered one `opus` row (Opus 4.8) and no Opus 5 or Opus
+5.5, Crew then caches that short list as what the account is served, and an in-chat
+`/model` to the pinned id does nothing (#37240; measured with
+`@anthropic-ai/claude-agent-sdk` 0.3.312's `supportedModels()`). The pin reaches the
+session over `session/set_config_option` instead (`_apply_startup_model`), which
+narrows nothing, so the seed only has to list it when it carries `availableModels`.
+Pinned by `test/test_acp_session_mcp.py::TestLocalSettingsSeed::test_a_pinned_model_never_reaches_the_settings_file`.
+
+The model-substitution retry is the one case that writes `model`, warm cache or cold.
 When `session/new` returns the policy advisory ("Model X is restricted ... Using Y
-instead") with no session, `_new_session_following_substitution` adopts Y and re-seeds
-with `model` set to Y as the backend spelled it. Without that key the user's own
+instead") with no session, the refused X is the model the seed left to the user's
+settings (their `settings.json` `model`, or the adapter default), not necessarily the
+session's pin. So the retry re-seeds with `model` set to the session's pin when the
+pin, folded onto the advertised spelling, is in the cached advertised list (that
+list already applies the policy allowlist, so the pin is served), and to Y as the
+backend spelled it otherwise: no pin, a pin not advertised, or a cold cache
+(`_substitution_retry_model`). The session runs that model. Without the key the user's own
 `settings.json` still names X, so the retry would be refused the same way. That is
 the state of every install whose pinned model is restricted from its first session,
-because no `session/new` has ever succeeded to warm the cache. The adapter reads
+because no `session/new` has ever succeeded to warm the cache. A refusal of the model
+the seed already names is not retried, since a retry cannot help; this holds when Y
+equals the pin too, because the pin never reached the refused request. When the
+retry named the pin and the backend refuses that too, the start falls back ONCE to
+the model the second advisory offers, as before the pin left the seed: a session on
+the offered model beats one that never starts. So one start sends `session/new` at
+most three times (`_SUBSTITUTION_RESENDS` re-sends on the shared runtime). The retry's
+model also rides the envelope's flag tier (`_meta.claudeCode.options.settings.model`,
+`_claude_session_meta`), since a seed a sibling session shares is not rewritten and
+the flag tier outranks the user's settings the refused default came from. The per-chat
+client (`_retry_after_model_substitution`) and the shared runtime
+(`ClaudeHarness.adopt_substituted_model`) apply the same rule. The adapter reads
 `ANTHROPIC_MODEL` ahead of every settings file, so a restricted id set there is not
 replaced by this re-seed. Pinned by
-`test/test_acp_client_model_substitution.py::TestSubstitutionFollow::test_retry_on_cold_cache_seeds_the_substitute_model`.
+`test/test_acp_client_model_substitution.py::TestSubstitutionFollow::test_retry_on_cold_cache_seeds_the_substitute_model`
+, `test_a_served_pin_survives_a_refused_inherited_default` and
+`test_a_refused_pin_falls_back_once_to_the_offered_model` (in it and in
+`test/test_claude_shared_runtime.py`).
 
 With `agent.model` at `auto` the seed writes no `model` key, so the adapter takes the
 model from the user's own settings (`ANTHROPIC_MODEL`, then `settings.model`). After
@@ -564,11 +593,11 @@ Only the model half (`availableModels`, `model`) may differ from the payload thi
 client would have written (`_share_sibling_settings_seed`). It grants no permission,
 and each session's own model reaches the adapter live: `_apply_startup_model` pushes
 it over `session/set_config_option`, which claude-agent-acp accepts only for an
-`availableModels` entry. So the seed must list this session's `model`, name none
-when this session pins none, or, when neither seed carries `availableModels`, leave
-the adapter on its own advertised list, where the push is accepted. A pinned session
-then runs its own pin, and an unpinned one starts on the adapter's default rather
-than the owner's pin. The seed's bytes are read only when they match the durable
+`availableModels` entry. So the seed must list the model this session runs (its
+adopted substitute, else its pin), name none when this session runs neither, or, when
+neither seed carries `availableModels`, leave the adapter on its own advertised list,
+where the push is accepted. A pinned session then runs its own pin, and an unpinned one
+starts on the adapter's default rather than an owner's substitute. The seed's bytes are read only when they match the durable
 record, through the same bounded, no-follow, non-blocking read the ownership check
 uses (`_settings_path_bytes`), and the share validates exactly those bytes. A seed
 that differs in a permission key — another permission mode, another agent's deny
