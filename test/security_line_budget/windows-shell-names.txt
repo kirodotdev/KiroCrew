@@ -1,0 +1,20 @@
++86
+The nested-shell walk and the pipe-into-evaluator test compare a program word without its
+Windows .exe/.cmd/.bat suffix (_strip_win_program_suffix and the one suffix list it reads,
+_WIN_PROGRAM_SUFFIXES, in shell_normalizer, which deny_gate already imports), so bash.exe -c,
+bash.exe<<<, | sh.exe and | xargs.exe are read like the bare spellings; and the deny gate's
+whole-string pass also matches one added view built from program words: the program word of
+every command, at the top level and inside every nested literal shell payload, is collected
+when it carries the suffix and read bare wherever it is written and not followed by a letter,
+digit or _ (bash -c "curl.exe \"...\"" | sh reads as its bare twin; an argument spelled the
+same, as in curl.exe ... -o curl.exe, is read bare too, which can only add a refusal; where
+the word goes on, as os.exe in os.execvp(, it stays as written), for the rows that span a
+separator (curl .* | sh). The Windows readings the gate matches live in the sibling
+deny_gate_windows, which keeps deny_gate under 1,600 lines and loads with the first command
+the gate judges, not with the gate.
+A suffixed shell or download client is then judged by these rows and the nested-shell walk
+as its bare spelling is, the bare rows' reach included (a download piped into sha256sum is
+refused both ways), as long as the program word is written as one literal word. Reading the
+suffix turns a refusal into an allow in one place, the
+publish floor's defer-to-payload: a suffixed shell's script
+(bash.exe -c "(git push origin my-feature)") is judged like the bare shell's.
