@@ -84,6 +84,22 @@ describe('useMessageSearch', () => {
     ])
   })
 
+  it('excludes a steering-only reply hidden by its policy-block turn', () => {
+    const msgs = [
+      msg('user', 'Find the visible result'),
+      msg('assistant', 'The visible result is ready.'),
+      msg('inject', '[Tool blocked — reason sent to the agent] policy'),
+      msg('assistant', '[STEERING steer-ab12: hidden result acknowledgement]'),
+    ]
+    const { result } = renderHook(() => useMessageSearch(msgs, 'slot-x'))
+    act(() => result.current.setTerm('result'))
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(result.current.matches).toEqual([
+      { msgIdx: 0, occ: 0 },
+      { msgIdx: 1, occ: 0 },
+    ])
+  })
+
   it('case-insensitive by default', () => {
     const msgs = [msg('user', 'Hello HELLO hello')]
     const { result } = renderHook(() => useMessageSearch(msgs, 'slot-1'))
