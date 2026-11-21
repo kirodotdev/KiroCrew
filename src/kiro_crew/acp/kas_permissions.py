@@ -1017,6 +1017,15 @@ def _asking_only(refs: str, outcome: str, reason: str) -> None:
     """The ``audit_decision`` of :func:`projection_accepts`: a question, not a refusal."""
 
 
+class RefusalReason:
+    """An ``audit_decision`` that keeps why a block is refused and reports nothing."""
+
+    why = ""
+
+    def __call__(self, refs: str, outcome: str, reason: str) -> None:
+        """A left-out allow is not a refusal of the block: nothing to keep."""
+
+
 def projection_accepts(raw: Any) -> bool:
     """Whether :func:`parse_user_permissions` would relay *raw* rather than refuse it whole.
 
@@ -1051,6 +1060,9 @@ def _refuse_block(
     every grant in it."""
     if audit_decision is _asking_only:
         return
+    if isinstance(audit_decision, RefusalReason):
+        audit_decision.why = audit_decision.why or why
+        return
     audit_decision("the authored `permissions` block", "withheld", f"refused: {why}")
     logger.warning(
         "agent %r: refusing its whole `permissions` block -- %s. None of it travels; "
@@ -1067,7 +1079,7 @@ _DROPPED: dict[str, Any] = {}
 
 def _drop_rule(agent_id: str, where: str, count: int, audit_decision: _AuditDecision) -> None:
     """Report one authored ``allow`` left out for an ``exclude`` list too long to send."""
-    if audit_decision is _asking_only:
+    if audit_decision is _asking_only or isinstance(audit_decision, RefusalReason):
         return
     audit_decision(
         f"the authored `permissions` {where}",

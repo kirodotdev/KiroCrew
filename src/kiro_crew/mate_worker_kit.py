@@ -443,6 +443,7 @@ def _plan(member: str, body: Any) -> tuple[Path, dict[str, Any], dict[str, Any],
     """
     from kiro_crew.mate_config import MateConfigError, _carried_restrictions, _resolved_source_spec
     from kiro_crew.mate_config_migration import uncarried_restrictions
+    from kiro_crew.mate_held_rules import _bundle_beside_rules
     from kiro_crew.platform.governance import sanitize_agent_config_governance
 
     template, _revision = _request(body)
@@ -452,6 +453,11 @@ def _plan(member: str, body: Any) -> tuple[Path, dict[str, Any], dict[str, Any],
         source = _resolved_source_spec(template)
     except MateConfigError as exc:
         raise WorkerKitError("template_unreadable") from exc
+    if _bundle_beside_rules(source.get("permissions")):
+        # A named bundle only expands into allow rules on KAS's side, and KAS
+        # refuses a block that names one. Leaving it behind narrows; the rules
+        # beside it are carried, as the upgrade path does (``mate_held_rules``).
+        source = {**source, "permissions": {"rules": source["permissions"]["rules"]}}
     source, tkit["held_grants"] = _without_held_grants(source, spec, path.stem)
     lost = uncarried_restrictions(source)
     if lost:
