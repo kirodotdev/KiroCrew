@@ -70,16 +70,22 @@ export interface AppSessionChangesProps {
   projectDir?: string
 }
 
-function refusal(path: string, testId: string) {
-  return (
+/** The refusal for an undeclared read. The list's fills the component's area
+ *  on its own; the diff's names the one file, since the list beside it shows. */
+function refusal(key: 'not_declared' | 'diff_not_declared', path: string, testId: string) {
+  const notice = (
     <ErrorNotice
       variant="inline"
       className="whitespace-normal max-w-full"
       testId={testId}
-      message={i18nT('appSdk.sessionChanges.not_declared', { path })}
+      message={key === 'diff_not_declared'
+        ? i18nT('appSdk.sessionChanges.diff_not_declared', { path })
+        : i18nT('appSdk.sessionChanges.not_declared', { path })}
       askAgent
     />
   )
+  if (key === 'diff_not_declared') return notice
+  return <div className="w-full h-full min-h-0 flex items-center justify-center p-4">{notice}</div>
 }
 
 export default function SessionChanges({ slotKey, projectDir = '' }: AppSessionChangesProps) {
@@ -97,14 +103,14 @@ export default function SessionChanges({ slotKey, projectDir = '' }: AppSessionC
   const diffAllowed = builtin || (!!client && apiPathAllowed(allowedPaths, SESSION_CHANGES_PATHS.sessionFileDiff))
   // No identity is the refusal even under a scoped provider: only a host
   // surface that named its app may read a chat's files.
-  if (!identity || !listAllowed) return refusal(SESSION_CHANGES_PATHS.sessionFiles, 'app-session-changes-not-declared')
+  if (!identity || !listAllowed) return refusal('not_declared', SESSION_CHANGES_PATHS.sessionFiles, 'app-session-changes-not-declared')
   const body = (
     <Suspense fallback={<ContentSkeleton rows={6} />}>
       <SessionChangesBody
         slot={slotKey}
         projectDir={projectDir}
         active={active}
-        diffRefusal={diffAllowed ? null : refusal(SESSION_CHANGES_PATHS.sessionFileDiff, 'app-session-changes-diff-not-declared')}
+        diffRefusal={diffAllowed ? null : refusal('diff_not_declared', SESSION_CHANGES_PATHS.sessionFileDiff, 'app-session-changes-diff-not-declared')}
       />
     </Suspense>
   )

@@ -897,8 +897,8 @@ manifest's `permissions.api`:
 The two are siblings, not parent and child, so declaring one does not declare the
 other. Without the list's path, or outside an app, `SessionChanges` renders a refusal
 naming it, with the **Ask the agent** hand-off, and sends nothing. With the list's path
-alone, the list shows and picking a file renders the same refusal for the diff's path
-in the diff's place, sending nothing. The diff is the change the session recorded; when
+alone, the list shows and picking a file renders a refusal naming the diff's path in
+the diff's place, sending nothing. The diff is the change the session recorded; when
 its record holds no whole before-and-after copy, the pane says so. Both reads are
 read-only. A built-in page keeps the dashboard's client. The list draws no **Browse**
 hand-off and picking a row does not open the file in a tab: those belong to the chat
