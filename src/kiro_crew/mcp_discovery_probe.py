@@ -56,6 +56,8 @@ from kiro_crew.mcp_discovery_probe_state import (
 from kiro_crew.mcp_discovery_remote import _probe_remote
 from kiro_crew.mcp_discovery_server_info import McpServerInfo
 from kiro_crew.mcp_entry import lists_before_handlers
+from kiro_crew.mcp_gateway.apps import strip_model_hidden_tools
+from kiro_crew.mcp_gateway.backend_mcp_apps import _mcp_apps_client_capabilities
 from kiro_crew.mcp_gateway.read_limits import resolve_read_buffer_limit
 from kiro_crew.sandbox import (
     CANONICAL_TEMP_KEYS,
@@ -839,6 +841,7 @@ async def probe_server(
         # gets one retry on the same pipe with the newest older one it lists,
         # the step-down the HTTP probe takes (``mcp_discovery_remote``).
         protocol_version = MCP_CLIENT_PROTOCOL_VERSION
+        capabilities = _mcp_apps_client_capabilities()
         while True:
             init_req = (
                 json.dumps(
@@ -848,7 +851,7 @@ async def probe_server(
                         "method": "initialize",
                         "params": {
                             "protocolVersion": protocol_version,
-                            "capabilities": {},
+                            "capabilities": capabilities,
                             "clientInfo": (
                                 dict(client_info)
                                 if client_info
@@ -962,6 +965,10 @@ async def probe_server(
             cache_on_exit = client_info is None
             return server
         result = resp2.get("result", {}) if isinstance(resp2, dict) else {}
+        if isinstance(result, dict):
+            # The gateway withholds an app-only tool from every session's listing,
+            # so the probe does not report it as one of the server's tools.
+            strip_model_hidden_tools(result)
         tools_data = result.get("tools") if isinstance(result, dict) else None
         if not isinstance(tools_data, list):
             # A response without a tools LIST is malformed, not "no tools":

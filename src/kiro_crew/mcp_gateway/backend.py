@@ -1001,6 +1001,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         MCP_APPS_EXTENSION_KEY,
         MCP_APPS_MIME_TYPE,
         _inject_client_extensions,
+        _mcp_apps_client_capabilities,
         _mcp_apps_enabled,
         mcp_apps_env_override,
     )
