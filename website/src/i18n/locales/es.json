@@ -8012,7 +8012,6 @@
     },
     "instanceTabBar": {
       "chain_via": "{{via}} › {{name}}",
-      "group_my_crews": "Mis crews",
       "group_this_computer": "Este equipo",
       "connected": "conectado",
       "connected_refresh": "conectado · actualización en {{time}}",
@@ -21014,7 +21013,7 @@
         "loading": "Cargando…",
         "local_bin_kirocrew": "~/.local/bin/kirocrew",
         "multi_instance_management_is": "La gestión de crews remotos está",
-        "multi_instance_management_is_off": "La gestión de crews remotos está desactivada",
+        "multi_instance_management_is_off": "Crew remoto está desactivado",
         "must_match_the_port_the_remote_gateway_serves_on": "Usa el puerto en el que escucha el gateway remoto. Varios crews pueden compartir un puerto: el puerto de reenvío local se asigna por separado.",
         "name": "Nombre",
         "no_instances_configured_yet_add_one_below_to_man": "Aún no hay crews remotos configurados. Añade uno abajo para gestionar un crew remoto.",

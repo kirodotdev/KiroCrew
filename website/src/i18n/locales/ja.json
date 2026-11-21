@@ -7594,7 +7594,6 @@
     },
     "instanceTabBar": {
       "chain_via": "{{via}} › {{name}}",
-      "group_my_crews": "マイクルー",
       "group_this_computer": "このコンピューター",
       "connected": "接続済み",
       "connected_refresh": "接続済み · {{time}} に更新",
@@ -19960,7 +19959,7 @@
         "loading": "読み込み中…",
         "local_bin_kirocrew": "~/.local/bin/kirocrew",
         "multi_instance_management_is": "リモートクルー管理は",
-        "multi_instance_management_is_off": "リモートクルー管理はオフです",
+        "multi_instance_management_is_off": "リモートクルーはオフです",
         "must_match_the_port_the_remote_gateway_serves_on": "リモートゲートウェイがリッスンしているポートを使用してください。複数のクルーで同じポートを共有できます。ローカルの転送ポートは別途割り当てられます。",
         "name": "名前",
         "no_instances_configured_yet_add_one_below_to_man": "まだリモートクルーが設定されていません。下に追加して、リモートクルーを管理してください。",

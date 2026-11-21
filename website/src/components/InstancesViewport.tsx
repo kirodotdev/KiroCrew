@@ -1411,6 +1411,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
             : '',
           pathParent: parentName,
           brokenAt,
+          transport: i.connection_method === 'fargate' ? 'fargate' as const : usesSsmTransport(i) ? 'ssm' as const : 'ssh' as const,
         }),
       )
       const selfInst = insts.find(i => i.id === id)

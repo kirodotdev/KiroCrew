@@ -8012,7 +8012,6 @@
     },
     "instanceTabBar": {
       "chain_via": "{{via}} › {{name}}",
-      "group_my_crews": "Le mie crew",
       "group_this_computer": "Questo computer",
       "connected": "connesso",
       "connected_refresh": "connesso · aggiornamento {{time}}",
@@ -21014,7 +21013,7 @@
         "loading": "Caricamento…",
         "local_bin_kirocrew": "~/.local/bin/kirocrew",
         "multi_instance_management_is": "La gestione delle crew remote è",
-        "multi_instance_management_is_off": "La gestione delle crew remote è disattivata",
+        "multi_instance_management_is_off": "Crew remota è disattivata",
         "must_match_the_port_the_remote_gateway_serves_on": "Usa la porta su cui è in ascolto il gateway remoto. Più crew possono condividere la stessa porta: la porta di forwarding locale viene assegnata separatamente.",
         "name": "Nome",
         "no_instances_configured_yet_add_one_below_to_man": "Ancora nessuna crew remota configurata. Aggiungine una qui sotto per gestire una crew remota.",

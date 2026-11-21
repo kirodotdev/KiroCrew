@@ -8012,7 +8012,6 @@
     },
     "instanceTabBar": {
       "chain_via": "{{via}} › {{name}}",
-      "group_my_crews": "Mes crews",
       "group_this_computer": "Cet ordinateur",
       "connected": "connecté",
       "connected_refresh": "connecté · actualisation {{time}}",
@@ -21014,7 +21013,7 @@
         "loading": "Chargement…",
         "local_bin_kirocrew": "~/.local/bin/kirocrew",
         "multi_instance_management_is": "La gestion des crews distantes est",
-        "multi_instance_management_is_off": "La gestion des crews distantes est désactivée",
+        "multi_instance_management_is_off": "Crew distante est désactivée",
         "must_match_the_port_the_remote_gateway_serves_on": "Utilisez le port sur lequel la passerelle distante écoute. Plusieurs crews peuvent partager un port ; le port de redirection local est attribué séparément.",
         "name": "Nom",
         "no_instances_configured_yet_add_one_below_to_man": "Aucune crew distante configurée pour l'instant. Ajoutez-en une ci-dessous pour gérer une crew distante.",

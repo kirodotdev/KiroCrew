@@ -7594,7 +7594,6 @@
     },
     "instanceTabBar": {
       "chain_via": "{{via}} › {{name}}",
-      "group_my_crews": "내 크루",
       "group_this_computer": "이 컴퓨터",
       "connected": "연결됨",
       "connected_refresh": "연결됨 · 갱신 {{time}}",
@@ -19960,7 +19959,7 @@
         "loading": "불러오는 중…",
         "local_bin_kirocrew": "~/.local/bin/kirocrew",
         "multi_instance_management_is": "원격 크루 관리는",
-        "multi_instance_management_is_off": "원격 크루 관리가 꺼져 있습니다",
+        "multi_instance_management_is_off": "원격 크루가 꺼져 있습니다",
         "must_match_the_port_the_remote_gateway_serves_on": "리모트 게이트웨이가 수신하는 포트를 사용하세요. 여러 크루가 같은 포트를 공유할 수 있으며, 로컬 포워딩 포트는 별도로 할당됩니다.",
         "name": "이름",
         "no_instances_configured_yet_add_one_below_to_man": "설정된 원격 크루가 아직 없습니다. 아래에서 추가해 원격 크루를 관리하세요.",

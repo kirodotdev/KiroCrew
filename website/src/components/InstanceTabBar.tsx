@@ -25,7 +25,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, Fragment, type CSSProperties, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Home, Loader2, ChevronDown, Pin, Check, X } from 'lucide-react'
+import { Home, Loader2, ChevronDown, Pin, Check, Lock, X } from 'lucide-react'
 import { api, type InstanceView } from '../api/client'
 import { isInstancesDisabledError } from '../utils/instancesDisabled'
 import { useAppSelector } from '../store'
@@ -34,7 +34,7 @@ import { isEmbeddedPane } from '../lib/embedded'
 import { useRelayTabs } from '../lib/relayCrewPanes'
 import { embeddedTeamCrewsGroups } from './embeddedTeamCrewsGroups'
 import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
-import { hasDashboardPane } from '../utils/remoteCrew'
+import { crewTransportLabel, hasDashboardPane } from '../utils/remoteCrew'
 import { useSelectInstance } from '../hooks/useSelectInstance'
 import { isRelayHostOffline } from '../utils/relayHostOffline'
 import { useOutageFailure } from '../hooks/useOutageFailure'
@@ -524,11 +524,16 @@ export interface SwitcherEntry {
   /** Named in the bar when it is in front, but no row of its own in the menu: an
    *  open relay Crew is reached through its row in the Remote Crews group. */
   menuHidden?: boolean
+  /** How this dashboard reaches a crew of its own (SSH, SSM, Fargate). Set, the
+   *  row reads Private with a lock and this tag, like a Private relay row. */
+  source?: string
 }
 
 /** More menu groups after the Crews (the Team Crews group). They are not
- *  destinations: no pins, no stable order, no unread. `close` closes the menu. */
-export type SwitcherExtraGroups = (close: () => void) => ReactNode
+ *  destinations: no pins, no stable order, no unread. `close` closes the menu.
+ *  `headed` is true when the menu already drew the "Remote Crews" heading over
+ *  its own crews, so the group continues that one list without a second one. */
+export type SwitcherExtraGroups = (close: () => void, headed?: boolean) => ReactNode
 
 function SwitcherRow({
   entry,
@@ -606,7 +611,14 @@ function SwitcherRow({
           <span className="truncate">{entry.name}</span>
           {/* A crew whose ssh alias IS its name would otherwise render the same
               word twice, which reads as a bug rather than as extra detail. */}
-          {entry.detail && entry.detail !== entry.name ? (
+          {entry.source ? (
+            // Read as a Private relay row reads: a lock, the type, then the tag.
+            <span className="truncate text-[12px] text-muted" data-testid="crew-row-private">
+              <Lock className="lucide-inline mr-1" aria-hidden />
+              {i18nT('components.relayCrews.type_personal')} · {entry.source}
+              {entry.detail && entry.detail !== entry.name ? ` · ${entry.detail}` : ''}
+            </span>
+          ) : entry.detail && entry.detail !== entry.name ? (
             <span className="truncate text-[12px] text-muted">{entry.detail}</span>
           ) : null}
         </span>
@@ -729,6 +741,7 @@ function SwitcherMenu({
     const onScreen = (e.id ?? null) === activeId || (pinned.has(id) && !clippedPinned.has(id))
     return onScreen ? sum : sum + e.unread
   }, 0)
+  const shownEntries = entries.filter(entry => !entry.menuHidden)
   const label =
     elsewhere > 0
       ? i18nT('components.instanceTabBar.switch_crew_unread', { n: elsewhere })
@@ -773,16 +786,17 @@ function SwitcherMenu({
         onCloseAutoFocus={onCloseAutoFocus}
       >
         <DropdownMenuRadioGroup value={activeId ?? LOCAL_VALUE}>
-          {entries.filter(entry => !entry.menuHidden).map((entry, i) => (
+          {shownEntries.map((entry, i) => (
             <Fragment key={entry.id ?? LOCAL_VALUE}>
               {/* Local is the user's own machine, not a crew: a rule separates it
                   from the remote list so the two never read as one flat set. */}
               {i === 1 ? <DropdownMenuSeparator /> : null}
               {/* Group names only when another group follows; a menu of Local
-                  and SSH Crews alone stays exactly as it was. */}
+                  and SSH Crews alone stays exactly as it was. The crews here
+                  open the one "Remote Crews" list the extra group continues. */}
               {extraGroups && i < 2 ? (
                 <DropdownMenuLabel>
-                  {i18nT(i === 0 ? 'components.instanceTabBar.group_this_computer' : 'components.instanceTabBar.group_my_crews')}
+                  {i18nT(i === 0 ? 'components.instanceTabBar.group_this_computer' : 'components.relayCrews.group_team_crews')}
                 </DropdownMenuLabel>
               ) : null}
               <SwitcherRow
@@ -795,7 +809,7 @@ function SwitcherMenu({
             </Fragment>
           ))}
         </DropdownMenuRadioGroup>
-        {extraGroups ? extraGroups(() => onOpenChange(false)) : null}
+        {extraGroups ? extraGroups(() => onOpenChange(false), shownEntries.length > 1) : null}
         {/* A row-order preference, not a destination: it sits below the crew list
             behind a separator so it never reads as one more crew to switch to.
             `onSelect`'s preventDefault keeps the menu open — the user sees the
@@ -1358,6 +1372,7 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
         // An older host relays only the joined string, so fall back to it: the
         // chip then squeezes as one box, which is what it did before.
         pathParent: t.pathParent,
+        source: t.transport ? crewTransportLabel({ connection_method: t.transport }) : undefined,
       })),
     ]
   }, [host])
@@ -1489,6 +1504,7 @@ export default function InstanceTabBar({
             ? i18nT('components.instanceTabBar.chain_via', { via: parentName, name: inst.name })
             : '',
           pathParent: parentName,
+          source: crewTransportLabel(inst),
         }
       }),
       ...relayTabs.map(t => ({

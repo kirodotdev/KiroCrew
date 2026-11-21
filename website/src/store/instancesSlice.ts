@@ -59,6 +59,9 @@ export interface HostTab {
    *  connected and merely unreachable itself, so naming it would be false. Absent
    *  when the chain is healthy, and absent from an older parent's model. */
   brokenAt?: string
+  /** How the parent reaches this crew, for the row's "Private · <source>" line.
+   *  Absent from an older parent's model, whose rows then show the host alone. */
+  transport?: 'ssh' | 'ssm' | 'fargate'
 }
 
 /** The embedded pane's OWN tunnel status, used by its readout capsule (item 1). */

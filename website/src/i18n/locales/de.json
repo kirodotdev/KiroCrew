@@ -7803,7 +7803,6 @@
     },
     "instanceTabBar": {
       "chain_via": "{{via}} › {{name}}",
-      "group_my_crews": "Meine Crews",
       "group_this_computer": "Dieser Computer",
       "connected": "verbunden",
       "connected_refresh": "verbunden · Aktualisierung {{time}}",
@@ -20487,7 +20486,7 @@
         "loading": "Wird geladen…",
         "local_bin_kirocrew": "~/.local/bin/kirocrew",
         "multi_instance_management_is": "Die Remote-Crew-Verwaltung ist",
-        "multi_instance_management_is_off": "Die Remote-Crew-Verwaltung ist deaktiviert",
+        "multi_instance_management_is_off": "Remote-Crew ist deaktiviert",
         "must_match_the_port_the_remote_gateway_serves_on": "Verwenden Sie den Port, auf dem das Remote-Gateway lauscht. Crews dürfen sich einen Port teilen — der lokale Weiterleitungsport wird separat zugewiesen.",
         "name": "Name",
         "no_instances_configured_yet_add_one_below_to_man": "Noch keine Remote-Crews konfiguriert. Fügen Sie unten eine hinzu, um eine Remote-Crew zu verwalten.",

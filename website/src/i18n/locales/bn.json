@@ -7803,7 +7803,6 @@
     },
     "instanceTabBar": {
       "chain_via": "{{via}} › {{name}}",
-      "group_my_crews": "আমার ক্রু",
       "group_this_computer": "এই কম্পিউটার",
       "connected": "সংযুক্ত",
       "connected_refresh": "সংযুক্ত · রিফ্রেশ {{time}}",
@@ -20487,7 +20486,7 @@
         "loading": "লোড হচ্ছে…",
         "local_bin_kirocrew": "~/.local/bin/kirocrew",
         "multi_instance_management_is": "রিমোট ক্রু ব্যবস্থাপনা এখন",
-        "multi_instance_management_is_off": "রিমোট ক্রু ব্যবস্থাপনা বন্ধ আছে",
+        "multi_instance_management_is_off": "রিমোট ক্রু বন্ধ আছে",
         "must_match_the_port_the_remote_gateway_serves_on": "রিমোট গেটওয়ে যে পোর্টে শোনে সেই পোর্ট ব্যবহার করো। একাধিক ক্রু একই পোর্ট ব্যবহার করতে পারে — স্থানীয় ফরওয়ার্ড পোর্ট আলাদাভাবে বরাদ্দ করা হয়।",
         "name": "নাম",
         "no_instances_configured_yet_add_one_below_to_man": "এখনও কোনো রিমোট ক্রু কনফিগার করা হয়নি। একটি রিমোট ক্রু পরিচালনা করতে নিচে একটি যোগ করো।",

@@ -4,6 +4,7 @@
  * hand-written mock and a new export there breaks every one of them.
  */
 import type { LaunchJobStatus } from '../api/client'
+import { i18nT } from '../i18n/t'
 
 /** Warm-set cap when the gateway reports none — named after the Python
  *  constant it pins, WARM_SET_CAP_AUTO_CEILING in
@@ -20,6 +21,15 @@ export const BUILTIN_PROVISIONER_ID = 'aws_ec2'
  *  Mirrors SSM_TRANSPORT_METHODS in src/kiro_crew/instances/registry.py. */
 export const usesSsmTransport = (inst: { connection_method?: string }): boolean =>
   inst.connection_method === 'ssm' || inst.connection_method === 'fargate'
+
+/** A crew's transport as its source tag (SSH / SSM / Fargate), the one wording
+ *  the Remote Crew rows and the switcher rows share. */
+export const crewTransportLabel = (inst: { connection_method?: string }): string =>
+  inst.connection_method === 'fargate'
+    ? i18nT('pages.settings.remoteCrewPanel.type_fargate')
+    : inst.connection_method === 'ssm'
+      ? i18nT('pages.settings.remoteCrewPanel.type_ssm')
+      : i18nT('pages.settings.remoteCrewPanel.type_ssh')
 
 /** Whether a crew has a dashboard to embed. A fargate crew exposes a turn
  *  API on its forwarded port and nothing else: no dashboard, no token. So it
