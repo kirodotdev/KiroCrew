@@ -1290,6 +1290,9 @@ ref writes one `mcp_tools_added` SEL record. Slash-containing names use the
 concrete mount alias in refs; the offered record keeps the edition's original name.
 A same-named entry in `~/.kiro/settings/mcp.json` never replaces such a server's
 `command`, `args` or `env`; only its `timeout` and `disabled` reach the spec.
+A same-named entry in `~/.kiro/crew/mcp.json` never replaces its `command` or
+`args` either. Its other keys reach the spec, and its `env` keys win over the
+edition's while the edition's other keys stay.
 
 
 What you may safely hand-edit: a spec you authored yourself; a conductor spec's
