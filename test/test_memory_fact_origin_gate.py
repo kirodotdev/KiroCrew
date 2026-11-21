@@ -18,6 +18,7 @@ import pytest
 from consolidation_lease_helpers import lease_aware_log
 
 from kiro_crew import memory_fact_origin_gate as mfg
+from kiro_crew import memory_kind_routing as mkr
 from kiro_crew import memory_origin_gate as mog
 from kiro_crew.config.section_builders import _build_memory_config
 from kiro_crew.history import HistoryConsolidator
@@ -241,6 +242,8 @@ async def _run_pass(monkeypatch, mode: str, rows: list[dict]) -> dict[str, Any]:
 
     monkeypatch.setattr(executors, "run_in_memory_background_pool", inline)
     monkeypatch.setattr(mog, "configured_mode", lambda: "off")
+    # Kind routing defaults to enforce and would stamp a kind on project.* items.
+    monkeypatch.setattr(mkr, "configured_kind_routing_mode", lambda: "off")
     monkeypatch.setattr(mfg, "configured_mode", lambda: mode)
     monkeypatch.setattr(
         mfg, "record_fact_origin_gate", lambda s, g, **_: seen["logged"].append(g) or True

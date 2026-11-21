@@ -944,15 +944,12 @@ def get_lessons_context(
             ``repo_scope`` gate. Omitting it withholds every scoped lesson.
         authority_order: ``memory.rule_authority_order`` for a background
             read (:mod:`kiro_crew.memory_rule_authority`). ``off`` keeps the
-            rule block's order; ``shadow`` keeps it and records in the
-            injection receipt which ids the authority order would add or drop;
-            ``enforce`` orders the rule block by authority level, keeping the
+            rule block's order; ``enforce`` orders the rule block by authority level, keeping the
             authored-before-untagged split and request relevance inside a level.
         lesson_fold: ``memory.lesson_fold`` for a background read
             (:mod:`kiro_crew.memory_lesson_fold`). ``off`` keeps the rule block;
-            ``shadow`` keeps it and records in the injection receipt which ids
-            would fold into which; ``enforce`` leaves folded rows out of the rule
-            block and says how many.
+            ``enforce`` leaves folded rows out of the rule block and says how
+            many.
         relevance_rule: ``memory.relevance_rule`` for a background read
             (:mod:`kiro_crew.memory_relevance_rule`). ``off`` admits the
             findings tier on any shared stemmed word; ``shadow`` keeps that and
@@ -1031,9 +1028,8 @@ def get_lessons_context(
         # which still holds inside a level, as does request relevance. Same rows,
         # so the room below is the same under every mode.
         directives = authored + untagged
-        by_level = _rule_authority.by_authority(directives)
         if order_mode == _rule_authority.MODE_ENFORCE:
-            directives = by_level
+            directives = _rule_authority.by_authority(directives)
         fold_header = ""
         if fold_space is not None:
             # The kept copy is chosen by authority, then recency, not by request
@@ -1042,9 +1038,8 @@ def get_lessons_context(
             space, dim = fold_space
             pairs = _lesson_fold.fold_pairs(directives, entries, space=space, dim=dim)
             folded = {key for _, key in pairs}
-            if fold_mode == _lesson_fold.MODE_ENFORCE and folded:
+            if folded:
                 directives = [e for e in directives if e[0].get("key") not in folded]
-                by_level = [e for e in by_level if e[0].get("key") not in folded]
                 fold_header = "\n" + _lesson_fold.FOLD_NOTICE.format(count=len(folded))
             injection_receipts.record_stage(
                 injection_receipts.LESSON_FOLD,
@@ -1083,9 +1078,7 @@ def get_lessons_context(
                 if not hard_cap or len(whole) <= hard_cap
                 else tighter_lesson_budget(cap, hard_cap)
             )
-        if order_mode == _rule_authority.MODE_SHADOW:
-            _record_authority_shadow(directives, by_level, directive_room, directive_tier)
-        elif order_mode == _rule_authority.MODE_ENFORCE:
+        if order_mode == _rule_authority.MODE_ENFORCE:
             injection_receipts.record_stage(
                 injection_receipts.RULE_AUTHORITY_ORDER,
                 mode=order_mode,
@@ -1239,33 +1232,6 @@ def get_lessons_context(
         selected = ranked[:1]
     injection_receipts.note_recalled_lessons(selected)
     return render(selected)
-
-
-def _record_authority_shadow(
-    current: list[tuple[dict, str]],
-    by_level: list[tuple[dict, str]],
-    room: int,
-    tier: dict[str, str],
-) -> None:
-    """Record which rule ids the authority order would add to or drop from the block.
-
-    Both orders are fitted to the same *room* inside private collections, so the
-    probe leaves no omission record and no receipt of its own.
-    """
-    kept: list[set[str]] = []
-    for rows in (current, by_level):
-        with context_omissions.collect(), injection_receipts.collect() as probe:
-            render_lesson_tier(rows, room, omission_kind=context_omissions.LESSON_RULES, **tier)
-        entry = probe.get(injection_receipts.LESSONS) or {}
-        kept.append(set(entry.get("ids") or ()))
-    shown, ordered = kept
-    injection_receipts.record_stage(
-        injection_receipts.RULE_AUTHORITY_ORDER,
-        mode=_rule_authority.MODE_SHADOW,
-        policy=_rule_authority.POLICY_VERSION,
-        would_add=sorted(ordered - shown),
-        would_drop=sorted(shown - ordered),
-    )
 
 
 def _renderable_entries(
