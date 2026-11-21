@@ -878,9 +878,19 @@ For always-on operation (channel bots, cron jobs, background tasks):
 
 ```bash
 kirocrew service install    # systemd on Linux, launchd on macOS
-kirocrew service status
+kirocrew service status     # also says whether it starts at the next boot or login
+kirocrew service disable    # stop it and keep it stopped; it stays installed
+kirocrew service enable     # start it, and at every boot or login again
 kirocrew service uninstall
 ```
+
+`kirocrew stop` stops the service only until the next boot (Linux) or login
+(macOS), because the unit or plist stays enabled. To keep it stopped without
+removing it, run `kirocrew service disable`: on Linux that is `systemctl
+disable` then `stop` in each scope that has the unit (sudo for the system
+unit), on macOS `launchctl disable` then `bootout`. `kirocrew service enable`
+reverses it, and `kirocrew service install` also clears a disabled launchd
+label before it loads the agent.
 
 On Linux this writes `/etc/systemd/system/kirocrew.service` (sudo is prompted
 for the unit file, the `systemctl` calls and `loginctl enable-linger`; the

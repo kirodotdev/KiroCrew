@@ -71,6 +71,7 @@ started.
 from __future__ import annotations
 
 import importlib as _importlib
+import os as _os
 import sys as _sys
 import time
 from dataclasses import dataclass
@@ -94,7 +95,7 @@ from kiro_crew.service.linux_systemctl import (
     _systemctl,
     _unit_state,
 )
-from kiro_crew.service.linux_uninstall import _first_line
+from kiro_crew.service.linux_uninstall import _first_line, _installer_unit_path
 
 
 def user_unit_installed() -> bool:
@@ -276,6 +277,157 @@ def stop() -> list[str]:
             spelled = "systemctl --user" if user else "sudo systemctl"
             refused.append(f"{spelled} stop {SERVICE_NAME}")
     return refused
+
+
+def _set_boot_start(verbs: tuple[str, str]) -> tuple[list[str], list[str]] | None:
+    """Run *verbs* (``disable`` + ``stop``, or ``enable`` + ``start``) on our unit
+    in every scope whose manager has it loaded, running or not.
+
+    ``None`` only when both scopes answered and neither has our unit.
+    Otherwise ``(refused, unreached)``. ``refused`` holds one line per step
+    that did not take, empty when every step took: a scope stops at its first
+    refusal and lists that step and every later one as the command to run by
+    hand, and the next scope is still tried. A running unit of ours that is
+    not ``loaded`` (``masked``, its file deleted) cannot take the verbs and is
+    reported there with its state; a stopped one is reported with its load
+    state (``masked``: unmask first), except that ``disable`` leaves a stopped
+    masked unit alone, since it already cannot start. ``disable`` never runs
+    on a LINKED unit (:func:`_link_entry`): ``systemctl disable`` would remove
+    the link and so uninstall it; the line says what to remove by hand
+    instead. After ``enable`` + ``start`` the unit must stay up for the settle
+    window :func:`restart` uses (:func:`_confirm_up`); one that does not is a
+    refused line naming its journal. ``unreached`` names each scope this shell
+    could not query (a sudo root shell cannot see the account's user manager):
+    with no unit found anywhere it goes into ``refused`` instead, since
+    nothing was done; beside a scope that did change it is the part the
+    caller must report as not done. ``enable`` with our unit in both scopes
+    changes neither and returns the per-scope commands as ``refused``. An
+    alias of another unit is never touched. Two calls rather than ``--now``, which the systemd 219 this
+    module supports does not have. The system scope goes through sudo exactly
+    as :func:`stop` does.
+    """
+    states = [_unit_state(user=user) for user in (False, True)]
+    if verbs[0] == "enable" and all(s.load == "loaded" and s.ours for s in states):
+        # Both scopes hold our unit (a stale one beside the live one): starting
+        # both would put a second gateway on the port and the lock, the hazard
+        # restart() never takes either. The operator picks the scope.
+        return (
+            [
+                f"both the system and the user scope have {SERVICE_NAME}.service; "
+                "enable only the one you use:",
+                f"sudo systemctl enable {SERVICE_NAME} && sudo systemctl start {SERVICE_NAME}",
+                f"systemctl --user enable {SERVICE_NAME} && systemctl --user start {SERVICE_NAME}",
+            ],
+            [],
+        )
+    lines: list[str] = []
+    found = False
+    for state in states:
+        user = state.scope == "user"
+        spelled = "systemctl --user" if user else "sudo systemctl"
+        if state.load == "loaded" and state.ours:
+            found = True
+            link = _link_entry(state.fragment, user=user) if verbs[0] == "disable" else None
+            if link is not None:
+                # `systemctl disable` removes every symlink to the unit file,
+                # the `systemctl link` entry too, which uninstalls the unit.
+                lines.append(
+                    f"{state.scope} scope: the unit is linked ({link} -> "
+                    f"{_os.path.realpath(link)}), and `systemctl disable` would remove that "
+                    "link and uninstall it; to keep it installed, remove only its "
+                    f"`.wants/` entry by hand, then run `{spelled} stop {SERVICE_NAME}`"
+                )
+                continue
+            for i, verb in enumerate(verbs):
+                if _systemctl(verb, f"{SERVICE_NAME}.service", user=user).returncode != 0:
+                    lines += [f"{spelled} {left} {SERVICE_NAME}" for left in verbs[i:]]
+                    break
+            else:
+                # A Type=simple start job succeeds once the process is forked,
+                # so a gateway that exits at once is caught here, as restart does.
+                failed = _confirm_up(user=user) if verbs[1] == "start" else None
+                if failed is not None:
+                    lines.append(
+                        f"{state.scope} scope: enabled, but {failed[1]}; "
+                        f"see `{_journal_hint(user=user)}`"
+                    )
+        elif state.acts_on:
+            found = True
+            lines.append(
+                f"{state.scope} scope: the unit is {state.load} and still {state.active}, "
+                f"so it cannot be {verbs[0]}d; stop it with `{spelled} stop {SERVICE_NAME}`"
+            )
+        elif state.installed and state.ours:
+            # Stopped but not loaded (masked, or a unit file that does not
+            # parse): the unit is there, so never read as "not installed".
+            found = True
+            if state.load == "masked" and verbs[0] == "disable":
+                continue  # a stopped masked unit already cannot start
+            fix = (
+                f"run `{spelled} unmask {SERVICE_NAME}` first"
+                if state.load == "masked"
+                else f"see `{spelled} status {SERVICE_NAME}`"
+            )
+            lines.append(
+                f"{state.scope} scope: the unit is {state.load}, so it cannot be "
+                f"{verbs[0]}d; {fix}"
+            )
+    unreached = [
+        f"{s.scope} scope: not reachable from this shell ({s.error})"
+        for s in states
+        if not s.reachable
+    ]
+    if not found:
+        return (unreached, []) if unreached else None
+    return lines, unreached
+
+
+def _link_entry(fragment: str, *, user: bool) -> str | None:
+    """The ``systemctl link`` entry a loaded unit is reached through, else
+    ``None``: ``fragment`` itself when it is a symlink, or the installer's own
+    path when that is a symlink resolving to ``fragment``. Read from the
+    filesystem alone, whoever wrote the unit file and whether or not it carries
+    the managed marker: ``systemctl disable`` removes such an entry either way."""
+    if not fragment:
+        return None
+    if _os.path.islink(fragment):
+        return fragment
+    own = _installer_unit_path(user=user)
+    if _os.path.islink(own) and _os.path.realpath(own) == _os.path.realpath(fragment):
+        return own
+    return None
+
+
+def disable() -> tuple[list[str], list[str]] | None:
+    """Keep the unit installed but stop it starting at boot or login, and stop it
+    now: ``systemctl disable`` then ``stop`` in every scope that has it. Same
+    return as :func:`_set_boot_start`."""
+    return _set_boot_start(("disable", "stop"))
+
+
+def enable() -> tuple[list[str], list[str]] | None:
+    """Undo :func:`disable`: ``systemctl enable`` then ``start`` in every scope
+    that has our unit. Same return as :func:`_set_boot_start`."""
+    return _set_boot_start(("enable", "start"))
+
+
+def _boot_start_line(state: _UnitState) -> str | None:
+    """Whether the unit in this scope starts at the next boot (system scope) or
+    login (user scope), from ``systemctl is-enabled``; ``None`` for a scope
+    without our unit. A state other than ``enabled`` / ``disabled`` (``static``,
+    ``masked``, ``linked`` …) is named as systemd reports it."""
+    if not (state.installed and state.ours):
+        return None
+    res = _systemctl(
+        "is-enabled", f"{SERVICE_NAME}.service", sudo=False, user=state.scope == "user"
+    )
+    value = (res.stdout or "").strip()
+    when = "the next login" if state.scope == "user" else "the next boot"
+    if value == "enabled":
+        return f"  Starts at {when}: yes. To keep it stopped: kirocrew service disable"
+    if value == "disabled":
+        return f"  Starts at {when}: no (disabled). To turn it back on: kirocrew service enable"
+    return f"  Starts at {when}: unknown (systemctl is-enabled says {value or 'nothing'})"
 
 
 # How long a unit the manager just restarted must stay up before the restart is
@@ -469,7 +621,9 @@ def status() -> str:
     (:func:`_stale_unit_lines`): a ``RestartPreventExitStatus`` that does not name
     :data:`LIVE_HOLDER_EXIT_CODE`, or a start-rate cap other than the unit's;
     and one advisory line for a ``Restart=`` other than ``always``
-    (:func:`_restart_policy_line`); nothing is rewritten.
+    (:func:`_restart_policy_line`); nothing is rewritten. A scope with our unit
+    also says whether it starts at the next boot or login
+    (:func:`_boot_start_line`).
 
     Status is queryable without sudo. We avoid sudo here so
     ``kirocrew service status`` doesn't prompt for a password just to
@@ -483,6 +637,9 @@ def status() -> str:
         restart_line = _restart_policy_line(state)
         if restart_line:
             lines.append(f"  Warning: {restart_line}")
+        boot_line = _boot_start_line(state)
+        if boot_line:
+            lines.append(boot_line)
         if state.installed:
             res = _systemctl(
                 "status", f"{SERVICE_NAME}.service", "--no-pager", sudo=False, user=user
@@ -533,7 +690,7 @@ def restart_policy_notes() -> list[str]:
 #   ``linux_uninstall`` -- service uninstall: which unit is ours, and its scope teardown.
 #
 # This module keeps the verbs that read and drive an installed unit: the user-scope
-# queries, is_active, is_up, alias_holder, stop, restart and status. Its docstring
+# queries, is_active, is_up, alias_holder, stop, disable, enable, restart and status. Its docstring
 # describes the whole family: "this file" there, and its sudo scope, cover what the
 # owners escalate.
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
@@ -594,7 +751,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         OwnedUnit,
         UninstallReport,
         _finish_scope,
-        _installer_unit_path,
         _is_mask_of_our_name,
         _not_ours,
         _owned_unit,

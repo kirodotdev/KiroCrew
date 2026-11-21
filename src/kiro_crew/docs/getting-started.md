@@ -207,6 +207,8 @@ For a source checkout this updates the checkout and rebuilds it. Restart the gat
 ```bash
 kirocrew service install     # launchd LaunchAgent on macOS, systemd unit on Linux
 kirocrew service status
+kirocrew service disable     # keep it stopped (kirocrew stop lasts until the next boot or login)
+kirocrew service enable      # turn it back on
 kirocrew service uninstall
 ```
 
