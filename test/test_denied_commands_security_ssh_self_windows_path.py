@@ -70,6 +70,9 @@ def test_the_spellings_refused_without_the_path_reading_stay_refused(cmd):
         # An argument is a file name, not a program path: only the word where a
         # command starts gets the path reading.
         r"git add tools\ssh.exe README.md",
+        # A separator inside a quoted argument starts no command.
+        r"git commit -m 'fix; C:\Windows\System32\OpenSSH\ssh.exe' -- localhost",
+        r'git commit -m "fix; C:\Windows\System32\OpenSSH\ssh.exe" -- localhost',
         r"tar -czf out.tgz src\s* *.*",
         r"git add src\s* README.md",
     ],

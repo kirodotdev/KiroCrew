@@ -150,11 +150,10 @@ def _substitution_reaches_self(text_lower: str) -> bool:
 # there it separates path components (``C:\Windows\System32\OpenSSH\ssh.exe``,
 # ``.\ssh.exe``) instead of escaping the next character as POSIX shell rules do.
 _PATH_SEPARATOR_BACKSLASH_RE = re.compile(r"\\(?=[\w.?*\[-])")
-# The word where a program starts: the line's first, or the first after ``; & | ( newline``,
-# past a PowerShell call operator ``&``. A quoted word is taken whole (it may hold blanks).
-_PROGRAM_WORD_RE = re.compile(
-    r"""((?:\A|[;&|\n(])[ \t]*(?:&[ \t]*)?)('[^']*'|"[^"]*"|[^\s;&|()<>]+)"""
-)
+# The word at a command start, past a PowerShell call operator ``&``. A quoted word is
+# taken whole (it may hold blanks).
+_PROGRAM_WORD_RE = re.compile(r"""[ \t]*(?:&[ \t]*)?('[^']*'|"[^"]*"|[^\s;&|()<>'"]+)""")
+_COMMAND_SEPARATORS = frozenset(";&|\n(")
 
 
 def _with_backslash_path_separators(text: str) -> str:
@@ -166,11 +165,36 @@ def _with_backslash_path_separators(text: str) -> str:
     a Windows path. A backslash before a quote, a blank, a separator or another
     backslash is left as written, so the quoting the tokenizer reads is unchanged. An
     argument keeps its POSIX reading, so a file operand (``git add tools\\ssh.exe``) is
-    not read as a program.
+    not read as a program. A command starts at the line's start or after an unquoted,
+    unescaped ``; & | ( newline``, so a separator inside a quoted argument
+    (``git commit -m 'a; C:\\x\\ssh.exe'``) starts nothing. One pass, linear in *text*.
     """
-    return _PROGRAM_WORD_RE.sub(
-        lambda m: m.group(1) + _PATH_SEPARATOR_BACKSLASH_RE.sub("/", m.group(2)), text
-    )
+    out: list[str] = []
+    i, n, quote, at_start = 0, len(text), "", True
+    while i < n:
+        if at_start:
+            at_start = False
+            match = _PROGRAM_WORD_RE.match(text, i)
+            if match is not None:
+                word = match.group(1)
+                out.append(text[i : match.start(1)])
+                out.append(_PATH_SEPARATOR_BACKSLASH_RE.sub("/", word))
+                i = match.end()
+                continue
+        ch = text[i]
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch == "\\":
+            out.append(text[i : i + 2])
+            i += 2
+            continue
+        elif ch in "'\"":
+            quote = ch
+        elif ch in _COMMAND_SEPARATORS:
+            at_start = True
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _reaches_self_over_ssh(text_lower: str, raw_text: "str | None" = None) -> bool:
