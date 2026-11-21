@@ -232,6 +232,32 @@ class TestTheModeRefusalExplanation:
         assert "agent.default_agent" not in cause + remedy
         assert "kiro-cli agent validate" in remedy
 
+    def test_a_bots_agent_names_the_dashboard_not_setup(
+        self, registry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Bot chats on the mate conductor, which lives in ``mates/agents/``:
+        kiro-cli does not list that folder and setup does not write it, so the
+        setup remedy cannot fix a Bot."""
+        from kiro_crew.config import paths as paths_mod
+
+        mates = tmp_path / "mates" / "agents"
+        mates.mkdir(parents=True)
+        monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: registry)
+        monkeypatch.setattr(paths_mod, "_mate_agents_dir_override", lambda: mates)
+        (mates / "kirocrew-mate-conductor.json").write_text("{}", encoding="utf-8")
+        (mates / "helper.json").write_text("{}", encoding="utf-8")
+        for agent in ("kirocrew-mate-conductor", "kirocrew-mate-worker", "helper"):
+            cause, remedy = srs.unavailable_mode_explanation(agent)
+            assert cause == (
+                f"{agent!r} is a Bot's agent, which Kiro Crew keeps in "
+                f"{srs._home_relative(mates)}/, not in the agents folder kiro-cli lists, "
+                "and `kirocrew setup --agent-only` does not write it."
+            )
+            assert remedy == "Chat with the Bot from the dashboard's Bots page."
+        # A name with no Bot file keeps the ordinary answer.
+        _, remedy = srs.unavailable_mode_explanation("ops")
+        assert remedy == "Run `kirocrew setup --agent-only` to materialize the agent config."
+
     def test_a_published_spec_is_explained_and_names_its_base(self, registry: Path) -> None:
         cause, remedy = srs.unavailable_mode_explanation("scout--readonly")
         assert "kirocrew setup --agent-only" not in cause + remedy

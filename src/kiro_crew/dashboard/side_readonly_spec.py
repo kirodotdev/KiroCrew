@@ -62,6 +62,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.agent_files import is_mate_service_agent
+from kiro_crew.config.paths import mate_agents_dir
+from kiro_crew.mate_worker import _mate_file_on_disk
 from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
 from kiro_crew.validation import is_registered_agent_name
 
@@ -240,8 +243,9 @@ def _ordinary_mode_explanation(agent: str) -> tuple[str, str]:
 
     A missing ``~/.kiro/agents/<agent>.json`` keeps the "likely missing" answer,
     except when *agent* is the configured ``agent.default_agent`` and not a spec
-    setup writes: :func:`missing_default_agent_explanation` names the setting.
-    A file that IS present was found but not listed, which means kiro-cli refused
+    setup writes: :func:`missing_default_agent_explanation` names the setting,
+    and except for a Bot's agent: :func:`bot_agent_explanation` names the
+    dashboard. A file that IS present was found but not listed, which means kiro-cli refused
     it or started before it was written, so the answer says that and points at
     ``kiro-cli agent validate``, the one check that reports kiro-cli's own parse
     error. A file that sets a key and its alias together names both
@@ -271,7 +275,7 @@ def _ordinary_mode_explanation(agent: str) -> tuple[str, str]:
         logger.debug("could not read %s to word a mode refusal", target, exc_info=True)
         return missing
     if not present:
-        return missing_default_agent_explanation(agent) or missing
+        return bot_agent_explanation(agent) or missing_default_agent_explanation(agent) or missing
     # Name the file that was probed: ``KIRO_HOME`` can move kiro-cli's agents
     # directory away from ``~/.kiro/agents``, and the command has to validate the
     # file kiro-cli dropped, not a copy at the default path.
@@ -292,6 +296,32 @@ def _ordinary_mode_explanation(agent: str) -> tuple[str, str]:
         "parser rejected the file, or kiro-cli started before the file was written.",
         f"Run {validate} to see kiro-cli's parse error. If it passes, start a new "
         "session so a fresh kiro-cli lists the agent.",
+    )
+
+
+def bot_agent_explanation(agent: str) -> tuple[str, str] | None:
+    """``(cause, remedy)`` when *agent* is a Bot's agent, kept outside the agents folder.
+
+    A Bot chats on the mate conductor and works through the mate worker, and a
+    Bot may own its file; all three live in ``mates/agents/``
+    (:func:`kiro_crew.config.paths.mate_agents_dir`), which kiro-cli does not
+    list and ``kirocrew setup --agent-only`` does not write, so the setup remedy
+    cannot fix one. The dashboard runs a Bot's chat, so the remedy points there.
+
+    ``None`` for any other name, and on any probe failure. Blocking I/O (two
+    stats): run it off the event loop. Never raises, since it only words a refusal.
+    """
+    try:
+        if not (is_mate_service_agent(agent) or _mate_file_on_disk(agent)):
+            return None
+        folder = _home_relative(mate_agents_dir())
+    except Exception:  # noqa: BLE001 -- wording only; the refusal is raised regardless
+        logger.debug("could not check whether %r is a Bot's agent", agent, exc_info=True)
+        return None
+    return (
+        f"{agent!r} is a Bot's agent, which Kiro Crew keeps in {folder}/, not in the "
+        "agents folder kiro-cli lists, and `kirocrew setup --agent-only` does not write it.",
+        "Chat with the Bot from the dashboard's Bots page.",
     )
 
 
