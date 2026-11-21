@@ -1186,13 +1186,26 @@ and every `conftest.py` (the two loaded before the conftest redirects
 bytecode, the rootdir one and `test/conftest.py`, are still read from the
 in-tree `__pycache__` by a process that starts without the redirect). It parses and compiles source and imports no test
 module, conftest or `kiro_crew`, which is what separates it from the serial
-`--collect-only` prewarm that measured slower. It does not choose what a shard
+`--collect-only` prewarm that measured slower. On Windows the step passes
+`--compile-product` and then also compiles every `*.py` under the ini's
+`pythonpath` (`src`) with `py_compile`, to the ordinary import cache under that
+root. The redirected root is empty on a fresh runner, so without this each
+worker compiles every product module it imports while it collects (about 3,900
+for one shard), and all workers compile the same ones at the same time. The
+Linux step does not pass it: on CI a Windows worker's collection got about 16%
+shorter (65 s against 77 s) and a Linux worker's did not change (129 s both),
+because the Linux shards run under the coverage tracer, which costs far more
+than compiling does. Third-party and standard-library modules are left to the
+workers on both: a shard imports about a sixth of the installed ones, so
+compiling them all costs about what it saves. It does not choose what a shard
 collects: pytest's discovery and the plugin still do. It is best effort: it
 exits 0 whatever happens, a file it did not cache is rewritten by pytest, and
 the reduced and leaf scopes skip it. Bytecode is never restored from
 `actions/cache` or committed. The step prints its file count and elapsed
-seconds. `test/test_ci_rewrite_prewarm.py` proves pytest reads the prewarmed pyc
-and pins the cache root against the conftest's.
+seconds, and on Windows a second line for the product modules.
+`test/test_ci_rewrite_prewarm.py` proves pytest reads the prewarmed pyc, that an
+import reads a compiled product module without compiling it again, and pins
+the cache root against the conftest's.
 
 The root conftest's import-time telemetry guard fails the offending module's
 collection report on every worker, so pytest/xdist fails the job even when the
