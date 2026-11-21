@@ -73,6 +73,7 @@ from kiro_crew.config.memory_sections import (
     SkillsConfig,
     _coerce_embedding_provider,
     _read_auto_add_documents,
+    consolidation_selection_mode_from,
     dream_mode_from,
     extraction_instructions_from,
     fact_origin_gate_mode_from,
@@ -410,6 +411,9 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         member_lesson_dedup=member_lesson_dedup_mode_from(section.get("member_lesson_dedup")),
         relevance_rule=relevance_rule_mode_from(section.get("relevance_rule")),
         dream=dream_mode_from(section.get("dream")),
+        consolidation_selection=consolidation_selection_mode_from(
+            section.get("consolidation_selection")
+        ),
         inject_memory=section.read("inject_memory", _safe_bool),
         inject_lessons=section.read("inject_lessons", _safe_bool),
         inject_lessons_per_turn=section.read("inject_lessons_per_turn", _safe_bool),
