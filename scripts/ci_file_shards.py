@@ -21,15 +21,48 @@ so a list of about 1,200 files takes up to an hour to collect. Spell it
 ``--file-shard-targets=PATH``: pytest picks its rootdir before this plugin's
 options exist, so a separate PATH token outside the checkout counts as a test
 argument there and can move the rootdir off the checkout.
+
+A targets list is a small part of the suite, and neither the hash nor the pins
+(placed for the whole suite) spread it evenly: two heavy files sharing a shard
+set the run's time while the other shards finish early. So the listed files
+are placed by measured time instead, heaviest first onto the shard with the
+least time so far, ties going to the shard holding fewer files and then to the
+lower shard number, and equal weights ordered by path. The seconds come from a
+weights file ``scripts/ci_file_shard_pins.py`` writes next to the pin files,
+one per platform; ``--file-shard-weights=PATH`` names another. A target the
+weights file does not list (new, renamed) gets the file's median weight, so
+unmeasured targets spread across the shards too. Every shard and every xdist
+worker computes the same placement, because it depends only on the targets
+list, the weights file and the shard count. Pins never apply to a target.
+That makes the list part of the contract: every shard of a run must be given
+the same set of targets, in any order. A hash owner holds whatever the other
+shards were given; a placement does not, so shards given different sets could
+each leave a file to another.
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+import heapq
+import math
+import statistics
+import sys
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import pytest
+
+_HERE = Path(__file__).resolve().parent
+DEFAULT_WEIGHTS = {
+    "linux": _HERE / "ci_file_shard_weights.txt",
+    "windows": _HERE / "ci_file_shard_weights_windows.txt",
+}
+
+
+def default_weights_path(platform: str | None = None) -> Path:
+    """Return the checked-in weights file for ``sys.platform`` (Linux's off Windows)."""
+    name = sys.platform if platform is None else platform
+    return DEFAULT_WEIGHTS["windows" if name == "win32" else "linux"]
 
 
 def hash_shard(relative: str, count: int) -> int:
@@ -83,17 +116,66 @@ def read_pins(path: Path, count: int) -> dict[str, int]:
     return pins
 
 
-def read_targets(path: Path, root: Path) -> frozenset[Path]:
-    """Parse a targets file: one root-relative test file per line, blanks skipped."""
+def read_targets(path: Path, root: Path) -> tuple[Path, ...]:
+    """Parse a targets file: one root-relative test file per line, blanks skipped.
+
+    Returned in file order with repeats dropped, so every shard sees one list.
+    """
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
         raise pytest.UsageError(f"cannot read --file-shard-targets {path}: {exc}") from exc
-    targets = frozenset(root / line.strip() for line in lines if line.strip())
+    targets = tuple(dict.fromkeys(root / line.strip() for line in lines if line.strip()))
     for target in targets:
         if not target.is_file():
             raise pytest.UsageError(f"--file-shard-targets {path} lists {target}, not a file")
     return targets
+
+
+def read_weights(path: Path) -> dict[str, int]:
+    """Parse a weights file: ``<seconds> <path>`` lines, as whole milliseconds.
+
+    Integers keep the placement exact: summing floats in a different order
+    could break a tie differently on two shards. Refuse a weight that is not a
+    finite, non-negative number, or a path listed twice.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise pytest.UsageError(f"cannot read --file-shard-weights {path}: {exc}") from exc
+    weights: dict[str, int] = {}
+    for number, line in enumerate(lines, 1):
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        value, _, relative = text.partition(" ")
+        try:
+            seconds = float(value)
+        except ValueError:
+            seconds = math.nan
+        if not relative or not math.isfinite(seconds) or seconds < 0:
+            raise pytest.UsageError(f"{path}:{number}: expected '<seconds> <path>'")
+        if relative in weights:
+            raise pytest.UsageError(f"{path}:{number}: {relative} is weighted twice")
+        weights[relative] = round(seconds * 1000)
+    return weights
+
+
+def balance(names: Iterable[str], weights: Mapping[str, int], count: int) -> dict[str, int]:
+    """Place each name on a one-based shard, heaviest first onto the lightest.
+
+    A name ``weights`` does not list weighs the median of ``weights``. The
+    result depends on the SET of names alone, never on their order.
+    """
+    default = statistics.median_low(weights.values()) if weights else 0
+    weight = {name: weights.get(name, default) for name in names}
+    heap = [(0, 0, shard) for shard in range(1, count + 1)]
+    owners = {}
+    for name in sorted(weight, key=lambda name: (-weight[name], name)):
+        load, files, shard = heapq.heappop(heap)
+        owners[name] = shard
+        heapq.heappush(heap, (load + weight[name], files + 1, shard))
+    return owners
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -110,6 +192,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="File listing the only test files to collect, one root-relative path per line",
     )
+    group.addoption(
+        "--file-shard-weights",
+        default=None,
+        help="Measured seconds per file, used to spread --file-shard-targets across the shards; "
+        "default: the platform's checked-in weights file",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -117,10 +205,12 @@ def pytest_configure(config: pytest.Config) -> None:
     index = config.getoption("file_shard")
     pins_path = config.getoption("file_shard_pins")
     targets_path = config.getoption("file_shard_targets")
+    weights_path = config.getoption("file_shard_weights")
     if count is None and index is None:
-        if pins_path is not None or targets_path is not None:
+        if pins_path is not None or targets_path is not None or weights_path is not None:
             raise pytest.UsageError(
-                "--file-shard-pins and --file-shard-targets require --file-shards and --file-shard"
+                "--file-shard-pins, --file-shard-targets and --file-shard-weights require "
+                "--file-shards and --file-shard"
             )
         return
     if count is None or index is None or not 1 <= index <= count:
@@ -128,11 +218,17 @@ def pytest_configure(config: pytest.Config) -> None:
     if config.getoption("splits", default=None):
         raise pytest.UsageError("file sharding cannot be combined with --splits")
     pins = read_pins(Path(pins_path), count) if pins_path is not None else {}
-    targets = (
-        read_targets(Path(targets_path), config.rootpath) if targets_path is not None else None
-    )
+    targets = None
+    weights = None
+    if targets_path is not None:
+        targets = read_targets(Path(targets_path), config.rootpath)
+        weights = read_weights(
+            Path(weights_path) if weights_path is not None else default_weights_path()
+        )
+    elif weights_path is not None:
+        raise pytest.UsageError("--file-shard-weights requires --file-shard-targets")
     config.pluginmanager.register(
-        FileShards(config.rootpath, count, index, pins, targets), "ci-file-shards"
+        FileShards(config.rootpath, count, index, pins, targets, weights), "ci-file-shards"
     )
 
 
@@ -145,7 +241,8 @@ class FileShards:
     not yet imported the file. This also works for explicit file arguments,
     non-Python File collectors, and each xdist worker's independent collection.
     Only ``--file-shard-targets`` reaches directory traversal, to skip whatever
-    holds no target.
+    holds no target. The targets are owned by ``balance``; with no targets list
+    every file keeps its pin or hash owner.
     """
 
     def __init__(
@@ -154,14 +251,27 @@ class FileShards:
         count: int,
         index: int,
         pins: Mapping[str, int] | None = None,
-        targets: frozenset[Path] | None = None,
+        targets: Iterable[Path] | None = None,
+        weights: Mapping[str, int] | None = None,
     ) -> None:
         self.root = root
         self.count = count
         self.index = index
         self.pins = dict(pins or {})
         # Each target and every directory above it; discovery skips everything else.
-        self.keep = None if targets is None else {p for t in targets for p in (t, *t.parents)}
+        self.keep: set[Path] | None = None
+        # Keyed by path, like ``keep``, so a target is found however the OS compares paths.
+        self.balanced: dict[Path, int] | None = None
+        if targets is not None:
+            try:
+                names = {t: t.relative_to(root).as_posix() for t in dict.fromkeys(targets)}
+            except ValueError as exc:
+                raise pytest.UsageError(
+                    "file-sharded targets must be inside pytest's rootdir"
+                ) from exc
+            owners = balance(names.values(), weights or {}, count)
+            self.keep = {p for t in names for p in (t, *t.parents)}
+            self.balanced = {target: owners[name] for target, name in names.items()}
 
     def pytest_ignore_collect(self, collection_path: Path) -> bool | None:
         # Never False: firstresult would let it override pytest's own ignores.
@@ -175,10 +285,14 @@ class FileShards:
     ) -> pytest.CollectReport | None:
         if not isinstance(collector, pytest.File):
             return None
-        try:
-            owner = file_shard(collector.path, self.root, self.count, self.pins)
-        except ValueError as exc:
-            raise pytest.UsageError("file-sharded targets must be inside pytest's rootdir") from exc
+        owner = None if self.balanced is None else self.balanced.get(collector.path)
+        if owner is None:
+            try:
+                owner = file_shard(collector.path, self.root, self.count, self.pins)
+            except ValueError as exc:
+                raise pytest.UsageError(
+                    "file-sharded targets must be inside pytest's rootdir"
+                ) from exc
         if owner == self.index:
             return None
         # Empty collection, not a skipped test: this file is run by its owner.
@@ -187,7 +301,10 @@ class FileShards:
         return pytest.CollectReport(collector.nodeid, "passed", None, [])
 
     def pytest_report_header(self) -> str:
-        pinned = f", {len(self.pins)} pinned" if self.pins else ""
+        if self.balanced is not None:
+            detail = f", {len(self.balanced)} targets placed by measured time"
+        else:
+            detail = f", {len(self.pins)} pinned" if self.pins else ""
         return (
-            f"CI file shard {self.index}/{self.count}: whole files, assigned before import{pinned}"
+            f"CI file shard {self.index}/{self.count}: whole files, assigned before import{detail}"
         )

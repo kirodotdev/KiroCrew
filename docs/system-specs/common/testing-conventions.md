@@ -5281,8 +5281,23 @@ full suite. Regenerate the Windows file when its shards drift apart: on 10 green
 `main` runs of 2026-11-19 and 2026-11-20, the file generated on 2026-11-19 left the
 heaviest Windows shard at a median 1.18x the mean test seconds, and a file planned
 from 9 of those runs and replayed on the one held out at 1.06x (#39955); no file
-outside the 800 took more than 30 s in any of them. macOS, release and the
-reduced and leaf scopes keep pure hash ownership.
+outside the 800 took more than 30 s in any of them. macOS and release keep pure
+hash ownership.
+
+A `--file-shard-targets` list (the reduced scope, the leaf corpus gates, the docs
+contract readers) is placed by neither hash nor pins: both are made for the whole
+suite, and on a small list two heavy files can share a shard and set the run's
+time. The plugin places the listed files by measured time, heaviest first onto
+the shard with the least time so far, with ties going to the shard holding fewer
+files, then the lower shard number, and equal weights ordered by path. Every
+shard computes the same placement from the list, the shard count and the
+platform's weights file: `scripts/ci_file_shard_weights.txt`, or
+`scripts/ci_file_shard_weights_windows.txt` on Windows. Each holds a file's
+measured test seconds, written by `scripts/ci_file_shard_pins.py` in the same run
+as the pin file (`--weights-out` writes it alone, beside a trial `--out`). A
+listed file with no weight gets the file's median, so new files spread too. The
+weights only move a listed file between shards; a stale one costs balance, never
+a test.
 
 Before the Linux and Windows full-suite test step, `scripts/ci_rewrite_prewarm.py`
 writes pytest's assertion-rewrite pyc for the shard's test files (same hash and

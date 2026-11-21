@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import random
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -14,7 +16,16 @@ import pytest
 import yaml
 
 from scripts import ci_file_shard_pins
-from scripts.ci_file_shards import file_shard, hash_shard, read_pins
+from scripts.ci_file_shards import (
+    DEFAULT_WEIGHTS,
+    FileShards,
+    balance,
+    default_weights_path,
+    file_shard,
+    hash_shard,
+    read_pins,
+    read_weights,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 45
@@ -377,6 +388,246 @@ class TestFileShards(unittest.TestCase):
         self.assertEqual(set(read_pins(out, 2)), set(weights))
         self.assertEqual(spread(), 0.0)
 
+    def write_weights(self, name, seconds):
+        return self.write(name, "".join(f"{value} {path}\n" for path, value in seconds.items()))
+
+    def random_case(self, seed):
+        """A targets set, a weights table and a shard count, the same for a given seed."""
+        rng = random.Random(seed)
+        count = rng.randint(1, 12)
+        names = [f"test/d{rng.randint(0, 3)}/test_{i}.py" for i in range(rng.randint(0, 60))]
+        weights = {}
+        for name in names:
+            roll = rng.random()
+            if roll < 0.2:
+                continue  # never measured
+            # Zero, a run of equal weights, and a few files far heavier than the rest.
+            weights[name] = 0 if roll < 0.3 else 1000 if roll < 0.5 else rng.randint(1, 10**6)
+        for extra in range(rng.randint(0, 20)):
+            weights[f"test/unlisted/test_{extra}.py"] = rng.randint(0, 10**6)
+        return rng, count, names, weights
+
+    def test_balance_gives_each_target_one_shard_within_the_longest_first_bound(self):
+        for seed in range(300):
+            with self.subTest(seed=seed):
+                rng, count, names, weights = self.random_case(seed)
+                owners = balance(names, weights, count)
+                self.assertEqual(set(owners), set(names))
+                self.assertLessEqual(set(owners.values()), set(range(1, count + 1)))
+                default = statistics.median_low(weights.values()) if weights else 0
+                weigh = {name: weights.get(name, default) for name in names}
+                load = [0] * (count + 1)
+                for name, shard in owners.items():
+                    load[shard] += weigh[name]
+                # Longest-first never leaves the slowest shard further above the
+                # mean than one file: max <= total/m + (1 - 1/m) * heaviest.
+                heaviest = max(weigh.values(), default=0)
+                self.assertLessEqual(max(load) * count, sum(load) + (count - 1) * heaviest)
+                # The `count` heaviest targets (ties by path) each open a shard.
+                first = sorted(names, key=lambda name: (-weigh[name], name))[:count]
+                self.assertEqual(len({owners[name] for name in first}), len(first))
+                # Order and repeats in the list do not matter, only the set.
+                shuffled = names + rng.sample(names, len(names) // 2)
+                rng.shuffle(shuffled)
+                self.assertEqual(balance(shuffled, weights, count), owners)
+                # An unmeasured target is placed exactly as one weighing the median.
+                self.assertEqual(balance(names, {**weights, **weigh}, count), owners)
+
+    def test_balance_spreads_targets_evenly_when_no_weight_tells_them_apart(self):
+        names = [f"test/test_new_{i}.py" for i in range(37)]
+        tables = {
+            "no weights at all": {},
+            "none of the targets measured": {"test/test_other.py": 4000, "test/test_b.py": 9},
+            "every target weighs nothing": dict.fromkeys(names, 0),
+            "every target weighs the same": dict.fromkeys(names, 250),
+        }
+        for label, weights in tables.items():
+            for count in (1, 2, 5, 8, 40):
+                with self.subTest(label, count=count):
+                    owners = balance(names, weights, count)
+                    sizes = [list(owners.values()).count(s) for s in range(1, count + 1)]
+                    self.assertLessEqual(max(sizes) - min(sizes), 1)
+
+    def test_every_shard_index_and_path_flavour_computes_the_same_target_owners(self):
+        for seed in range(40):
+            rng, count, names, weights = self.random_case(seed)
+            expected = balance(names, weights, count)
+            pins = {name: rng.randint(1, count) for name in names}
+            for root in (PurePosixPath("/checkout"), PureWindowsPath("C:/different checkout")):
+                for index in range(1, count + 1):
+                    plugin = FileShards(
+                        root, count, index, pins, [root / name for name in names], weights
+                    )
+                    owners = {p.relative_to(root).as_posix(): s for p, s in plugin.balanced.items()}
+                    self.assertEqual(owners, expected, (seed, root, index))
+        # Windows spells a listed path either way; both name the one weighted file.
+        root = PureWindowsPath("C:/checkout")
+        weights = {"test/sub/test_heavy.py": 9000, "test/sub/test_light.py": 1}
+        spelled = [root / "test\\sub\\test_heavy.py", root / "test/sub/test_light.py"]
+        plugin = FileShards(root, 2, 1, None, [*spelled, root / "test/sub/test_heavy.py"], weights)
+        self.assertEqual(len(plugin.balanced), 2)
+        self.assertIn("2 targets placed by measured time", plugin.pytest_report_header())
+        self.assertEqual(plugin.balanced[root / "test/sub/test_heavy.py"], 1)
+        self.assertEqual(plugin.balanced[root / "test/sub/test_light.py"], 2)
+        with self.assertRaises(pytest.UsageError):
+            FileShards(root, 2, 1, None, [PureWindowsPath("D:/elsewhere/test_x.py")], weights)
+
+    def test_no_targets_list_leaves_every_file_on_its_pin_or_hash_shard(self):
+        rng = random.Random(7)
+        names = [f"test/d{i % 5}/test_{i}.py" for i in range(200)]
+        pins = {name: rng.randint(1, 8) for name in names[::3]}
+        for index in range(1, 9):
+            plugin = FileShards(self.root, 8, index, pins)
+            self.assertIsNone(plugin.balanced)
+            self.assertIsNone(plugin.keep)
+            self.assertEqual(plugin.pins, pins)
+            self.assertNotIn("measured time", plugin.pytest_report_header())
+        for name in names:
+            owner = file_shard(self.root / name, self.root, 8, pins)
+            self.assertEqual(owner, pins.get(name, hash_shard(name, 8)))
+
+    def seed_targets(self):
+        """Six files whose hash and pins put the two heavy ones on ONE shard of three."""
+        owner = hash_shard("test/test_heavy_a.py", 3)
+        twin = next(
+            f"test/test_heavy_b{i}.py"
+            for i in range(100)
+            if hash_shard(f"test/test_heavy_b{i}.py", 3) == owner
+        )
+        seconds = {"test/test_heavy_a.py": 900.0, twin: 850.5, "test/test_mid.py": 40}
+        seconds.update({f"apps/demo/test_light_{i}.py": 1.25 for i in range(2)})
+        names = [*seconds, "test/nested/test_unmeasured.py"]
+        for name in names:
+            self.write(name, "def test_a(): pass\ndef test_b(): pass\n")
+        self.write("test/test_unlisted.py", "raise RuntimeError('not a target')\n")
+        # The list repeats a line and holds a blank; neither may change the result.
+        targets = self.write("targets.txt", "\n".join([*names, "", names[0]]) + "\n")
+        weights = self.write_weights("weights.txt", {**seconds, "test/test_deleted.py": 5})
+        return names, twin, targets, weights
+
+    def test_targets_are_spread_by_measured_time_and_every_shard_agrees(self):
+        names, twin, targets, weights = self.seed_targets()
+        expected = balance(names, read_weights(weights), 3)
+        self.assertNotEqual(expected["test/test_heavy_a.py"], expected[twin])
+        # Pins belong to the full suite: one that names a target does not move it.
+        pins = self.write_pins("pins.txt", 3, dict.fromkeys(names, 1))
+        options = (f"--file-shard-targets={targets}", f"--file-shard-weights={weights}")
+        seen = []
+        for index in range(1, 4):
+            shard = ("--file-shards=3", f"--file-shard={index}")
+            result = self.run_pytest(*shard, *options)
+            self.assert_ok(result)
+            owned = self.items()
+            self.assertEqual(
+                {item.split("::")[0] for item in owned},
+                {name for name, owner in expected.items() if owner == index},
+            )
+            self.assert_ok(self.run_pytest(*shard, *options, f"--file-shard-pins={pins}"))
+            self.assertEqual(self.items(), owned)
+            self.assert_ok(self.run_pytest("-p", "xdist.plugin", "-n2", *shard, *options))
+            self.assertEqual(self.items("gw0"), self.items("gw1"))
+            self.assertCountEqual(self.items("gw0"), owned)
+            seen.extend(owned)
+        self.assertCountEqual(seen, [f"{name}::test_{t}" for name in names for t in "ab"])
+
+    def test_targets_without_a_weights_option_use_the_checked_in_file(self):
+        names, _twin, targets, _weights = self.seed_targets()
+        expected = balance(names, read_weights(default_weights_path()), 3)
+        for index in range(1, 4):
+            self.assert_ok(
+                self.run_pytest(
+                    "--file-shards=3", f"--file-shard={index}", f"--file-shard-targets={targets}"
+                )
+            )
+            self.assertEqual(
+                {item.split("::")[0] for item in self.items()},
+                {name for name, owner in expected.items() if owner == index},
+            )
+        # A list of blank lines selects nothing: pytest's "no tests" exit, never the suite.
+        blank = self.write("blank.txt", "\n\n")
+        result = self.run_pytest(
+            "--file-shards=3", "--file-shard=1", f"--file-shard-targets={blank}"
+        )
+        self.assertEqual(result.returncode, 5, result.stdout + result.stderr)
+
+    def test_malformed_weights_files_fail_instead_of_guessing_a_weight(self):
+        self.write("test/test_ok.py", "def test_ok(): pass\n")
+        targets = self.write("targets.txt", "test/test_ok.py\n")
+        cases = {
+            "negative": self.write("negative.txt", "-1 test/test_ok.py\n"),
+            "not a number": self.write("word.txt", "heavy test/test_ok.py\n"),
+            "not finite": self.write("inf.txt", "inf test/test_ok.py\n"),
+            "nan": self.write("nan.txt", "nan test/test_ok.py\n"),
+            "no path": self.write("nopath.txt", "12.5\n"),
+            "weighted twice": self.write("twice.txt", "1 test/test_ok.py\n2 test/test_ok.py\n"),
+            "missing file": self.root / "absent.txt",
+        }
+        shard = ("--file-shards=2", "--file-shard=1")
+        for label, path in cases.items():
+            with self.subTest(label):
+                result = self.run_pytest(
+                    *shard, f"--file-shard-targets={targets}", f"--file-shard-weights={path}"
+                )
+                self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        good = self.write("good.txt", "# a comment\n\n0 test/test_ok.py\n")
+        self.assertEqual(read_weights(good), {"test/test_ok.py": 0})
+        # Weights place a targets list and nothing else; alone they are a mistake.
+        for args in ((*shard, f"--file-shard-weights={good}"), (f"--file-shard-weights={good}",)):
+            result = self.run_pytest(*args)
+            self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+
+    def test_committed_weights_files_parse_for_both_platforms(self):
+        self.assertEqual(default_weights_path("win32"), DEFAULT_WEIGHTS["windows"])
+        for platform in ("linux", "darwin"):
+            self.assertEqual(default_weights_path(platform), DEFAULT_WEIGHTS["linux"])
+        for path in DEFAULT_WEIGHTS.values():
+            weights = read_weights(path)
+            self.assertTrue(weights, path)
+            self.assertGreater(statistics.median_low(weights.values()), 0, path)
+
+    def test_pin_generator_writes_the_weights_it_measured_and_only_where_asked(self):
+        seconds = {"test/test_heavy.py": 120.0, "test/test_light.py": 0.75}
+        # Measured in one run of three (no weight), and too brief to round to any time.
+        unweighted = {"test/test_new.py": 50.0, "test/test_instant.py": 0.0001}
+        runs = self.root / "runs"
+        for run in "abc":
+            shard_dir = runs / run / "linux-pytest-progress-1"
+            shard_dir.mkdir(parents=True)
+            measured = {**seconds, "test/test_instant.py": 0.0001}
+            if run == "c":
+                measured["test/test_new.py"] = 50.0
+            records = [
+                {"event": "phase_end", "module": name, "phase": "call", "elapsed": value}
+                for name, value in measured.items()
+            ]
+            (shard_dir / "gw0.jsonl").write_text(
+                "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8"
+            )
+        for name in (*seconds, *unweighted):
+            self.write(name, "def test_ok(): pass\n")
+        out = self.root / "pins.txt"
+        weights_out = self.root / "weights.txt"
+        argv = [str(runs / run) for run in "abc"]
+        argv += ["--shards=2", f"--out={out}", f"--root={self.root}"]
+        committed = {path: path.read_bytes() for path in DEFAULT_WEIGHTS.values()}
+        # A trial plan (--out) leaves the checked-in weights alone.
+        self.assertEqual(ci_file_shard_pins.main(argv), 0)
+        self.assertFalse(weights_out.exists())
+        for path, content in committed.items():
+            self.assertEqual(path.read_bytes(), content, path)
+        self.assertEqual(ci_file_shard_pins.main(argv + [f"--weights-out={weights_out}"]), 0)
+        first = weights_out.read_bytes()
+        weights = read_weights(weights_out)
+        self.assertEqual(set(weights), set(seconds))
+        for name, value in seconds.items():
+            # Each run's total differs by the file measured once, so allow the rescale.
+            self.assertAlmostEqual(weights[name] / 1000, value, delta=value * 0.01)
+        self.assertEqual(ci_file_shard_pins.main(argv + [f"--weights-out={weights_out}"]), 0)
+        self.assertEqual(weights_out.read_bytes(), first)
+        # What the generator wrote is what places a targets list.
+        owners = balance([*seconds, *unweighted], weights, 2)
+        self.assertNotEqual(owners["test/test_heavy.py"], owners["test/test_light.py"])
+
     def test_reduced_backend_scope_timeout_accounts_for_windows(self):
         self.assertEqual(
             _backend_scope_timeout_seconds(windows=False), _LINUX_BACKEND_SCOPE_TIMEOUT_SECONDS
@@ -397,9 +648,11 @@ class TestFileShards(unittest.TestCase):
         workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
         count = workflow["jobs"]["backend-test"]["env"]["SHARD_COUNT"]
         buckets = {shard: [] for shard in range(1, count + 1)}
+        # The list reaches pytest as --file-shard-targets, placed by measured time.
+        owners = balance(files, read_weights(default_weights_path()), count)
         for name in files:
             self.assertTrue((ROOT / name).is_file(), name)
-            buckets[file_shard(ROOT / name, ROOT, count)].append(name)
+            buckets[owners[name]].append(name)
         for shard, bucket in buckets.items():
             self.assertTrue(bucket, f"reduced backend shard {shard}/{count} is empty")
         self.assertCountEqual([name for bucket in buckets.values() for name in bucket], files)
