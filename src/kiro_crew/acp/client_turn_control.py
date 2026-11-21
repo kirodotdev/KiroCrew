@@ -986,7 +986,10 @@ def _release_accepted_steers(self: AcpClient, req_id: int, reason: str, refusal:
     """
     accepted = getattr(self, "_steers_accepted", None) or []
     self._steers_accepted = []
-    self._held_steer_unsent().update(text for _, text in self._held_steers())
+    unresolved = self._held_steer_writes()
+    self._held_steer_unsent().update(
+        text for _, text in self._held_steers() if text not in unresolved
+    )
     self._steers_held = []
     if self._steering_turn_req == req_id:
         self._steering_turn_req = None
