@@ -255,6 +255,12 @@ export interface DecisionsView {
    */
   withdrawn: boolean
   /**
+   * Consent is recorded for the address the config names, whatever the dashboard's
+   * policy says: a surface the ceiling permits still sends under it. False on an older
+   * gateway, which names no surface.
+   */
+  consentRecorded: boolean
+  /**
    * Sampling percentage worth PRINTING, or `null` when there is nothing to say.
    *
    * `null` covers the configs that mean "do not print a rate": the section or
@@ -336,6 +342,7 @@ const UNSUPPORTED: DecisionsView = {
   configuredEndpoint: '',
   endpointMoved: false,
   withdrawn: false,
+  consentRecorded: false,
   bucket: null,
   toolArgs: false,
   compaction: false,
@@ -392,6 +399,7 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket' | 'poin
       configuredEndpoint: '',
       endpointMoved: false,
       withdrawn: false,
+      consentRecorded: false,
       toolArgs: false,
       compaction: false,
       memoryText: false,
@@ -409,6 +417,9 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket' | 'poin
   // refusal is the reason, which is not a moved address.
   const withdrawn = root.withdrawn === true
   const endpointMoved = enabled && root.permits !== true && !withdrawn
+  // The server's own comparison too, held apart from `withdrawn`: a refused model can
+  // also sit at an address the consent does not cover, and then nothing is sent.
+  const consentRecorded = enabled && root.covers_configured === true
   // An exact `true`, like `enabled` above: this field decides whether a new
   // category of conversation content leaves the machine, so a truthy stand-in is
   // not a deliberate yes. An older gateway omits it entirely and reads as off.
@@ -439,6 +450,7 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket' | 'poin
     configuredEndpoint,
     endpointMoved,
     withdrawn,
+    consentRecorded,
     toolArgs,
     compaction,
     memoryText,
