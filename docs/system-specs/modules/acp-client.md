@@ -562,8 +562,10 @@ cannot be replaced by a stale pre-enumeration snapshot. Lock identity changes or
 a two-second acquisition timeout fail closed without writing the settings file.
 So does a `.kiro` or `.kiro/settings` link into a kiro home's own settings
 folder (`KIRO_HOME`'s, or `~/.kiro`'s), checked before anything is created,
-because that folder holds the user's own kiro-cli defaults. Every other link,
-such as a `.kiro` shared across git worktrees, is followed.
+because that folder holds the user's own kiro-cli defaults. A link that
+resolves outside the work dir, a `.kiro` shared across git worktrees included,
+is refused the same way (see below); only a link to a folder inside the work dir
+is followed.
 When the workspace is a git work-tree top (it holds `.git` itself), taking that
 lock also appends anchored patterns for the overlay and its lock to the
 repository's local `info/exclude` (the common git dir, so linked worktrees are
@@ -573,6 +575,25 @@ repository's exclude list. Only missing lines are appended, the
 user's own lines are never rewritten, and a failed exclude write never blocks
 the overlay. A repository that already tracks `.kiro/settings/cli.json` still
 sees it modified: git's exclude list does not hide tracked files (known limit).
+The lock admits a `.kiro` or `settings` link component by component. It uses
+`lstat` and `readlink` only on names already inside the resolved work directory,
+then decides containment from the link text before probing the target. A link
+naming a remote, outside, other-drive, or looping path is refused without being
+opened or resolved. Projection and rollback then read and write the admitted
+folder. An effort pick under a refused link, or on a `cli.json` that is refused,
+unparseable or past the size ceiling, raises `EffortOverlayRefused`, whether or
+not the target contains `cli.json`; a clear or Default raises it for a refused
+link or `cli.json` and a file past the ceiling, and treats an unparseable file as
+naming no effort. The slot effort route answers it 400 `effort_overlay_refused`,
+commits no slot value and does not reset the session, because kiro-cli reads
+effort only from that file. With no live session, or while a turn runs, the route
+saves a pick without writing it, so it first checks the overlay a cold start would
+write (`effort_overlay_refusal`, in the folder `cold_start_work_dir` names, or the
+running session's own) and answers the same 400. A busy lock still answers the
+retryable 409 `effort_overlay_busy`. A component swapped for
+a link after admission is still refused by the pinned walk (see
+[providers](providers.md)); an outside link skips projection and logs the existing
+refusal.
 Crew records the original local inheritance key's presence and value in
 `kirocrew.skillDiscovery.previousInheritance`. Rollback restores that snapshot
 only while the native key still equals Crew's asserted `true`, removes Crew's

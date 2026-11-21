@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import contextmanager
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -280,17 +279,26 @@ class TestCliOverlay:
         (settings_dir / "cli.json").write_text("{ not json", encoding="utf-8")
         assert _clear_cli_overlay_effort(tmp_path, "claude-opus-4.7") is True
 
-        _write_cli_overlay(tmp_path, "claude-opus-4.7", "max")
-        real_open = Path.open
+        (settings_dir / "cli.json").write_text(
+            json.dumps(
+                {
+                    "chat.modelDefaults": {"claude-opus-4.7": {"output_config": {"effort": "max"}}},
+                }
+            ),
+            encoding="utf-8",
+        )
 
-        def _flaky_open(self, *args, **kwargs):
-            if self.name == "cli.json":
-                raise OSError("sharing violation")
-            return real_open(self, *args, **kwargs)
+        def _flaky_read(_cli_json, _settings_dir):
+            raise OSError("sharing violation")
 
-        monkeypatch.setattr(Path, "open", _flaky_open)
-        assert _clear_cli_overlay_effort(tmp_path, "claude-opus-4.7") is False
-        monkeypatch.undo()
+        def _failed_pinned_read(_settings_fd, _cli_json):
+            raise OSError("sharing violation")
+
+        with monkeypatch.context() as temporary_patches:
+            temporary_patches.setattr(acp_provider, "_read_named_cli_json", _flaky_read)
+            temporary_patches.setattr(acp_provider, "_read_pinned_cli_json", _failed_pinned_read)
+            assert _clear_cli_overlay_effort(tmp_path, "claude-opus-4.7") is False
+
         assert _read_cli_overlay(tmp_path) == {"claude-opus-4.7": "max"}
 
     def test_clear_reports_failure_only_when_the_lock_is_genuinely_stuck(
@@ -310,9 +318,10 @@ class TestCliOverlay:
             raise OSError("lock busy")
             yield  # pragma: no cover - unreachable, keeps the generator shape
 
-        monkeypatch.setattr(acp_provider, "workspace_cli_settings_lock", _busy)
-        assert _clear_cli_overlay_effort(tmp_path, "claude-opus-4.7") is False
-        monkeypatch.undo()
+        with monkeypatch.context() as temporary_patches:
+            temporary_patches.setattr(acp_provider, "locked_workspace_cli_settings", _busy)
+            assert _clear_cli_overlay_effort(tmp_path, "claude-opus-4.7") is False
+
         assert seen["timeout"] == acp_provider.CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
         assert _read_cli_overlay(tmp_path) == {"claude-opus-4.7": "max"}
 

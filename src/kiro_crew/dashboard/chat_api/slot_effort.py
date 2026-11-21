@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
     from kiro_crew.dashboard.chat_handlers import (
         _TEARDOWN_INCOMPLETE_WARNING,
+        ACP_BACKENDS_EFFORT_OVERLAY,
         ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
         AcpProvider,
         DashboardState,
@@ -344,6 +345,51 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 return web.json_response({"ok": True, "reasoning_effort": effort})
         logger.info("Slot %s reasoning_effort switched to %r", name, effort or "default")
 
+        # With no live session, or with a turn running, the pick is saved here and
+        # written to cli.json by the next spawn or turn, where a refusal is only
+        # logged. kiro-cli reads effort only from that file, so a pick it refuses on
+        # every retry is answered here, as change_effort answers a live one.
+        cold = provider is None
+        deferred = (
+            isinstance(provider, AcpProvider)
+            and provider.supports_effort()
+            and provider.has_active_turn()
+        )
+        if effort and (cold or deferred):
+            from kiro_crew.session_allocation_parts.cold_start_work_dir import (
+                cold_start_work_dir,
+            )
+
+            overlay_refusal: Exception | None = None
+            try:
+                if isinstance(provider, AcpProvider):
+                    backend = provider.capabilities.backend
+                    work_dir = provider._client._work_dir
+                else:
+                    backend = await _configured_backend_for_slot(slot)
+                    work_dir = await asyncio.to_thread(
+                        cold_start_work_dir,
+                        state.sessions._session_map,
+                        session_key,
+                        slot.project or None,
+                    )
+                if backend in ACP_BACKENDS_EFFORT_OVERLAY:
+                    overlay_refusal = await asyncio.to_thread(
+                        AcpProvider.effort_overlay_refusal, work_dir
+                    )
+            except Exception:
+                # Nothing could be told about the file: the pick is saved as before.
+                logger.debug("Slot %s effort overlay probe failed", name, exc_info=True)
+            if overlay_refusal is not None:
+                logger.warning(
+                    "Slot %s effort change refused by the workspace overlay: %s",
+                    name,
+                    overlay_refusal,
+                )
+                return web.json_response(
+                    {"error": str(overlay_refusal), "code": "effort_overlay_refused"}, status=400
+                )
+
         _updated_live: bool | None = False
         if isinstance(provider, AcpProvider) and provider.supports_effort():
             # Guard against racing the in-flight prompt read loop: a live
@@ -372,6 +418,16 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 else:
                     _updated_live = await provider.clear_effort(every_model=True)
             except Exception as exc:
+                if getattr(exc, "overlay_refused", False) is True:
+                    # The workspace cli.json refuses every write, pick or clear,
+                    # and kiro-cli reads effort only from it: a reset would start
+                    # on the file's level while the slot showed this one.
+                    logger.warning(
+                        "Slot %s effort change refused by the workspace overlay: %s", name, exc
+                    )
+                    return web.json_response(
+                        {"error": str(exc), "code": "effort_overlay_refused"}, status=400
+                    )
                 if provider.switches_by_relaunch is True or (
                     effort and getattr(exc, "command_refused", False) is True
                 ):

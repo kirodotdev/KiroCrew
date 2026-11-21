@@ -963,6 +963,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         overlay_entry,
         overlay_pins,
         project_hooks_consent_path,
+        provider_work_dir,
         read_config_text,
         read_endorsed_config_text,
         read_local_secret,
