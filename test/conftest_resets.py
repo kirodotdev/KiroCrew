@@ -311,6 +311,24 @@ def _forget_declared_mcp_not_ready_notes():
 
 
 @per_test_guard
+def _forget_governance_off_streak():
+    """Give every test no governance-off start failure counted before it.
+
+    ``session_handle_mcp._governance_off_streak`` counts back-to-back failed
+    starts, and from the second one the message stops advising a resend; left
+    set, a later test's first failure would read as a repeat. Cleared before and
+    after, so a test that never imported the module pays one dict lookup.
+    """
+    mcp = sys.modules.get("kiro_crew.acp.session_handle_mcp")
+    if mcp is not None:
+        mcp._governance_off_streak = 0
+    yield
+    mcp = sys.modules.get("kiro_crew.acp.session_handle_mcp")
+    if mcp is not None:
+        mcp._governance_off_streak = 0
+
+
+@per_test_guard
 def _forget_gatewayd_telemetry_override():
     """Give every test the platform-context telemetry provider, not gatewayd's.
 
