@@ -26,7 +26,7 @@ def provider_replaces(store: str | None = None) -> bool:
 def refuse(verb: str) -> None:
     print(
         f"`{verb}` works on Crew's own memory, which a memory provider replaces right now. "
-        "Switch back to Crew memory (the owner's PUT /api/memory/provider) to use it.",
+        "Switch back in Settings > Overview > Memory > Memory provider to use it.",
         file=sys.stderr,
     )
     sys.exit(2)

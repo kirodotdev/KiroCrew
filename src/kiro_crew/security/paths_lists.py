@@ -656,6 +656,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # owner-only ``/api/shared-crew/preview`` handler is the only writer and
     # opens the path directly, not through this gate.
     "shared_crew_preview.json",
+    # The owner's memory provider preview switch, same class: an agent that could
+    # write it would let an app serve or manage Crew's memory on the next start.
+    "memory_provider_preview.json",
     "ssh_auth_sock_consent.json",
     "project_hooks_consent.json",
     # The owner's credential-redaction switch. Same class of control as the

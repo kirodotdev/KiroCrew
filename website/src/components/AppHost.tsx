@@ -27,6 +27,7 @@ import { i18nT } from '../i18n/t'
 import { appDisplayName, appDescription } from './appstore/appManifest'
 import { withBase } from '@/lib/basePath'
 import { useAppSlotPush } from '../utils/appSlotPush'
+import { disclosedApi } from './appstore/trustGrants'
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -317,7 +318,9 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
 
   const entry = entryOverride || app.manifest?.ui?.entry
   const permissions = app.manifest?.permissions || {}
-  const allowedApi = permissions.api || []
+  // `memoryAdmin` is granted as the `/api/memory/provider` prefix; the gateway stages it
+  // like any `api` entry and refuses it until the owner approves it.
+  const allowedApi = disclosedApi(permissions) ?? []
   const allowedEvents = permissions.events || []
   const bundlePath = withBase(`/apps/${app.name}/ui/${entry}`)
 

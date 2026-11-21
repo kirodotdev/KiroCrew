@@ -9,11 +9,19 @@ import type { AppInfo } from './appDetailPageTypes'
 import { knownDesktopCapabilities } from '../components/appstore/desktopCapabilities'
 import { knownBrowserVerbs } from '../components/appstore/browserVerbs'
 
-export function stagedGrantsOf(app: AppInfo | null) {
+import { MEMORY_ADMIN_API_PREFIX, disclosedApi } from '../components/appstore/trustGrants'
+
+export function stagedGrantsOf(app: AppInfo | null, memoryProvidersActive = true) {
   // Declared api/events entries outside the approved set (`approvedGrants`) are
   // held back: the app runs without them until the owner approves them here.
+  // `memoryAdmin` is granted as the one API prefix it opens (`apps/point_grants.py`),
+  // so an update that adds it waits here like any declared `api` entry. While the
+  // memory provider preview is off the gateway grants no such prefix, so it never waits.
+  const declaredApi = (disclosedApi(app?.manifest?.permissions) ?? []).filter(
+    p => memoryProvidersActive || p !== MEMORY_ADMIN_API_PREFIX,
+  )
   const stagedApi = app?.approvedGrants
-    ? (app.manifest?.permissions?.api || []).filter(p => !(app.approvedGrants?.api || []).includes(p))
+    ? declaredApi.filter(p => !(app.approvedGrants?.api || []).includes(p))
     : []
   const stagedEvents = app?.approvedGrants
     ? (app.manifest?.permissions?.events || []).filter(e => !(app.approvedGrants?.events || []).includes(e))

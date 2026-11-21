@@ -2559,6 +2559,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.memory-providers",
+    "label": "Memory providers",
+    "labelKey": "pages.overview.memoryProvider.preview_title",
+    "description": "Apps that serve, replace or manage Crew's memory",
+    "hint": "Lets an app serve or replace Crew's memory and, once you approve it, read and edit that memory.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.model-for-the-small-model-judge",
     "label": "Model for the small-model judge",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_judge_model",

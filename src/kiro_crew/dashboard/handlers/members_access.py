@@ -44,6 +44,13 @@ async def _deny_app_caller(request: web.Request, operation: str) -> web.Response
     request_app = request.get("app", "")
     if not request_app:
         return None
+    from kiro_crew.dashboard.handlers._shared import MEMORY_ADMIN_GRANT
+
+    if request.get(MEMORY_ADMIN_GRANT) == f"app:{request_app}":
+        # The memory app host facade dispatched this after checking the app's
+        # ``permissions.memoryAdmin`` and its route allowlist; the owner gate the
+        # route runs next audits the admission.
+        return None
     try:
         _sel().log_api_access(
             caller=request_app,

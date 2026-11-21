@@ -10094,7 +10094,7 @@ Writers: `webhook_sources.py`, `apps/webhook_source_sdk.py`, `apps/context.py`,
 `apps/builtins/ops_mission_control/tests/test_webhook_governance.py`,
 `website/src/test/TrustAppModalWebhookSource.test.tsx`.
 
-## 43. An app can serve Crew's memory (seam level 8)
+## 43. An app can serve Crew's memory (seam level 8), and can manage it with the owner's consent (seam level 10)
 
 An app declares memory providers in `contributes.memoryProviders`
 (`apps/manifest_memory_providers.py`, at most four): an `id`
@@ -10112,12 +10112,172 @@ the gateway, the CLI, the recall pool or the consolidation child for it; those r
 provider through the gateway's routes or not at all. The contract, the modes and every
 memory path are in memory-skills-hooks.md, "Memory providers".
 
-**Choosing a provider is the owner's.** Every `/api/memory/provider` route, the move
-and import routes and the benchmark routes answer the owner's own dashboard session
-only; an app token gets 403 `owner_only` and every internal-secret caller is refused
-(the read-only conformance checks are the one internal path). An app has no SDK verb
-and no manifest permission that reaches these routes; the owner switches with
-`PUT /api/memory/provider`, plans and runs a move, and plans and starts a benchmark.
+**Choosing a provider is the owner's.** `PUT /api/memory/provider` refuses every app
+token and every internal-secret caller; only the owner's own dashboard session switches.
+An app asks with the App SDK's `requestMemoryProviderChange(target)`, which opens the
+host-rendered `MemoryProviderSheet`; the owner's press performs the switch and the
+promise answers `switched`, `cancelled` or `unavailable` (no sheet host mounted). With
+the sheet's copy checked and a provider as the target, the press first runs a move into
+that provider and sends the switch only once the move is done; a failed or partial move,
+or a sheet closed while it copies, switches nothing and answers `cancelled`. A remote
+target's consent ticked on the sheet rides on that move (`egress_consent` on the owner's
+`POST /migrations`, recorded before the target is resolved through the switch's own
+`_grant_for_checked_install`, so the grant names the install the move checked and a
+reinstall during the check answers 409 `provider_changed`), since the switch that otherwise records it comes after. A copy back
+into Crew memory runs after the switch, because Crew memory is read-only while a
+provider replaces it (`_into_builtin_refusal`), and the sheet's copy line and
+"Existing memory" row say it copies back right after the switch, never "first".
+`requestMemoryMove({from, to})` opens the host-rendered `MemoryMoveSheet` the same way:
+the sheet plans the move (a dry run an app may also start itself), and only the owner's
+press runs it; a remote target the owner has not agreed to send memory to shows the
+consent box, and the run carries that consent (a plan sends no memory and needs none); the promise answers `moved` (a finished run the owner did not roll back), `started` (the
+sheet closed while the run was still copying; it keeps going), `cancelled` (no run, or
+the owner pressed Undo) or `unavailable`. Running,
+resuming and rolling back a move refuse every app token.
+`requestMemoryBench(request)` opens the host-rendered `MemoryBenchSheet` with a copy of
+the request's arrays, so the app cannot change the run after the owner saw its plan: the sheet
+plans a provider benchmark (a dry run an app may also start itself), shows each
+provider's egress, cleanup method and the reader and judge call budget, asks the owner
+to tick an acknowledgement before a copy of their own memory leaves the machine (naming each remote provider's installed app version, the value the gateway checks), and
+only the owner's press starts the run; the promise answers
+`{outcome: 'started', runId}`, `cancelled` or `unavailable`. A finished run's warnings (a
+provider reset that left items behind, an unscored unit) show in the sheet as a partial
+`ErrorNotice` with an ask-the-agent hand-off. Starting, resuming and
+cancelling a run and building an own-memory eval set refuse every app token. An app holding `memoryAdmin` reads the runs it planned and every run the owner
+started (the run its request opened is one); another app's plans stay its own. All three
+verbs and `permissions.memoryAdmin` share App Kit level 10, the batch that level opens, so a
+pin needs `--min-sdk-level 10` (`scripts/adoption_pin.py`).
+
+**What the sheets show.** Each sheet is one card. The switch sheet asks "Switch to
+<provider>?" (a title a narrow window may cut short, so the card's first row, Memory,
+names the target), says in one line what happens (it fully replaces Crew memory, or adds a
+read-only source), then answers four rows from the provider's handshake: where memory
+lives (this machine, or sent off the device, in the warning colour), read, write and
+delete (all three, or read only), existing memory (copied from the memory in use first, chosen by its own tick under the card that names both ends;
+which is the replacing provider while one replaces Crew memory, or not; the owner's
+tick) and switching back (any time; not shown on the switch back to Crew memory). Adding
+a read-only source asks "Add <provider> as a source?", its button is "Add source", and it
+has no switching-back row. Any consent a switch needs sits in one warning box
+under the card. The footer holds one full-width primary button and a quiet Cancel. The
+copy and bench sheets use the same card (source, destination and counts; test set,
+questions, model calls and each provider's egress). Each ends on a line saying only the
+owner can approve it and an app can only ask; an "Ask the agent" hand-off from a sheet's
+error closes the sheet first. Every JSON answer the facade relays to an app goes through the memory read
+redaction (`_redacted_for_app`), so a credential in a steering file or member document
+never reaches it; the owner's own editors read them raw. A chat steering route reached
+through the facade skips the app's own-slot rule (`chat_steering._chat_rows` checks the
+facade grant), since the owner's chat steering is what the grant manages. An app's full-document PUT through the facade is refused (409
+`document_holds_secret`) when that document's own read changes under the redaction:
+the app only ever saw it masked, so saving its copy would replace the owner's text with
+the markers. The check reads the write's own target (a `member` in the body names it; a
+`goals/long-term` rewrite of an existing goal is checked against that goal's stored text,
+since the goals read already scrubs it; only those two routes are read
+ahead, so a handler that reads its body capped keeps the stream); only a 404 lets the write through
+unchecked, and any other failed read refuses (409 `document_unchecked`). A goals read
+through the facade answers the owner's goal record (`member_goals.api_member_goals_get`
+takes the owner branch for a request carrying the app's `MEMORY_ADMIN_GRANT`), not the
+trimmed `BotGoals` view, so the app reads the ids its goal rewrites name. The dashboard
+re-reads the preview switch on every socket reconnect (`refreshServerStateAfterReconnect`),
+since a restarted gateway is where a changed choice takes effect. While the preview is
+off the gateway grants no `memoryAdmin` prefix, so the app page holds none back for
+approval (`stagedGrantsOf` is passed the switch's `active`). A read of the switch that
+fails for any reason but a refusal is never taken for off: the app page keeps the grant
+listed, the Memory tab says the read failed through `ErrorNotice`, and the memory verbs
+answer `'unavailable'`, not `'not_enabled'`. An app's `PATCH
+/api/memory/provider/items/{id}` is refused the same way (409 `document_holds_secret`) when
+the stored item changes under the redaction every item answer goes through. An app's
+text-writing bulk preview (`POST /api/memory/bulk/preview`, `replace_text` or `set`) is
+refused (409 `document_holds_secret`) when any row the edit changes, on any page, holds
+text the redaction alters: a `replace_text` `after` would show a credential's text past
+the redaction, and a `set` built from the masked copy would replace the credential with
+the markers. The App SDK's own API scope (`AppHost`) includes the `memoryAdmin` prefix
+the same way the trust prompt does (`trustGrants.disclosedApi`). A copy that left an item refused, erroring or in conflict
+(`conflict:*`, edited on both sides since an earlier copy) is reported, never closed
+silently, and the copy sheet counts conflicts on their own row. The parts are shared in
+`components/memorySheetParts.tsx`. The Settings card shows the memory in use (its mark,
+name, health dot, mode and a "Switch back" link; the dot is red when the provider is
+unavailable or its own health check fails), then "Other providers", one row each
+with one line (on this machine, or a warning that it sends memory off the device) and a
+"Switch" link, or "Add as source" for a provider that can only be read.
+
+**Behind the memory provider Feature preview.** While the Crew does not run it
+(memory-skills-hooks.md, "Memory providers"), `memoryAdmin` is not added to the app's
+grants and never honoured, the install and permissions surfaces render its line as
+"Memory access (not enabled on this Crew)" (`trustGrants.apiGrantLabel`), and
+`requestMemoryProviderChange`, `requestMemoryMove` and `requestMemoryBench` settle
+`'not_enabled'` without opening anything (the host sets
+`app-sdk/memoryProviderPreview.ts`'s marker from `GET /api/memory/provider-preview`).
+
+**`permissions.memoryAdmin`.** Grants an app token the `/api/memory/provider` routes
+(browse, search, edit, delete, plan a move, export, plan an import) and nothing else: it joins the
+app's API allowlist as the one prefix `/api/memory/provider` (`token_auth_app_scope`),
+staged like any API entry so an update that adds it waits for the owner, and the
+handlers check the flag again and write an audit record naming the app for every call.
+The install trust prompt, the re-approval row and the installed permissions card show it
+as one plain line that leads with the outcome ("Read and edit Crew's memory and the
+instructions your Bots follow") and then names every instruction surface the facade opens
+in plain words (each Bot's rules, long-term goals and personality, and the standing
+instructions for every chat), never the raw
+prefix (`trustGrants.apiGrantLabel`); a catalog row carries the flag for that prompt
+(`official_catalog._DISCLOSED_PERMISSIONS`); `TrustAppModalHostApi.test.tsx` pins that line
+against the instruction-writing rows of `HOST_ROUTES`.
+The existing store-scoped memory routes stay closed to app tokens, and the advisory
+`permissions.memory` field is unchanged.
+
+**The memory app host facade.** `/api/memory/provider/host/<rest>` is the one door from
+`memoryAdmin` to Crew's owner memory routes (`dashboard/handlers/memory_app_host.py`).
+It sits under the `/api/memory/provider` prefix the grant already opens, so it needs no
+new manifest permission. It answers the owner, or an app the provider routes' own
+`_caller` admits (manifest `memoryAdmin`, app enabled, audited as `host`), and anyone
+else gets 403 `memory_admin_required`. It dispatches to `/api/<rest>` only when that
+method and route canonical are in `HOST_ROUTES`: the records list, refresh and history,
+bulk preview and apply, Dreaming's review queue, the context stack and preview, the store
+list, preferences and projects, the member rules, goals and SOUL documents, steering
+files and a chat's steering switch. Nothing that changes config, members, apps or
+sessions is listed, and neither is the member roster (`GET /api/members`), which carries
+each Bot's last message; any other path, `..` included, is a 404. For an app it sets the
+request-state key `MEMORY_ADMIN_GRANT` = `app:<name>` on the inner request, which
+`require_owner_dashboard_request` and the member routes' `_deny_app_caller` admit and
+audit (`resources=memory_admin_grant`). Request state is server side, so no header or
+cookie can carry the grant, and a direct call to an owner route stays refused. The
+app's own page calls as the owner's session, so this door matters for an app token
+(its backend, or a surface that holds one).
+
+The facade's own routes: `GET /api/memory/context-stack?store=&chat=` builds the
+session-start prompt for the store with the context builder, splits it into blocks in
+send order (`context_blocks.block_spans`, then the member section openers), and gives
+each its size, owner, cap group (the V2 essentials envelope, `ESSENTIAL_MAX_CHARS`),
+whether the newest session-start turn's trace sent it, and the steering files the
+harness loads itself (counted only when the prompt does not already quote them).
+`GET /api/memory/review` lists Dreaming's proposals; `POST /api/memory/review/{id}`
+accepts or rejects one through the same preview/apply path the editor uses. Dreaming
+records each cited row's `updated_at` when it queues a proposal (`seen`). Accepting
+re-reads those rows in the transaction that takes the proposal off the list, and a
+proposal any of whose rows is gone or edited since (or that has no `seen`) answers 409
+`review_item_stale` and stays listed, so a merge never forgets a row the owner kept or
+corrected. An accept holds the store's writer lock from its first check to its last edit
+(`_accept`), and each edit checks `seen` again and that the keeper is still live
+(`_edit`'s `proposal`), once more inside `apply_edit`'s own write transaction
+(`precondition`), so a correction or a forgotten keeper landing after the first check,
+from this gateway or another process, is refused the same way, never edited over. The proposal leaves the list only after its edits succeed; an edit that fails
+leaves it listed for another try. Retired
+experiences and conflicting edits have no queue here: an app calls
+`/api/memory/retired` and the bulk preview/apply routes directly.
+`GET|PUT /api/members/{slug}/soul` reads and writes a member's `SOUL.md` (16,000 chars).
+The read is the essentials builder's own (`member_essential_context._read`): its real
+path must sit in the member's workspace, so a link to a credential leaf or a device is
+refused, and it is size-capped; a longer file answers 413 `soul_too_large`, and the
+response is redacted like every memory read. Because every read is redacted, a PUT over a stored `SOUL.md` that
+holds a secret is refused (409 `document_holds_secret`) for every caller, and so is a PUT
+over one the read refuses (over the cap, unreadable, or a link out of the workspace: 409
+`document_unchecked`); such a file is edited in the workspace. A saved `SOUL.md` is then
+checked against the Bot's whole essentials envelope with the validator a private profile
+write uses (`_build_v2_essentials(..., profile_overrides={})`); when it no longer fits,
+the old file is put back and the PUT answers 413 `soul_over_budget`. Saves run one at a
+time (`_save_soul`), so a refused save never puts its old file back over a save that
+landed in between. Where a provider id is not
+in the overview, the sheets and the settings page show the id itself, never "Crew memory",
+and the copy sheet keeps Copy disabled until the overview loads.
 
 **Consent for egress.** A provider that states `egress: "remote"` answers only after the
 owner agreed at the switch; the grant is in the keystone `memory_provider_consent.json`

@@ -583,6 +583,10 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # next start. The read-only mount is the load-bearing half; the shell gate
     # matches no paths.
     "shared_crew_preview.json",
+    # The owner's memory provider preview switch. A writable record lets an
+    # auto-approved agent choose whether an app may serve or manage Crew's memory
+    # on its next start. The read-only mount is the load-bearing half.
+    "memory_provider_preview.json",
     # The decision log that keystone's feature writes. Sealing the grant and
     # leaving the RECORD writable would be half a control: an agent that cannot
     # switch the seam on can still append a ``kind="feedback"`` line -- the exact
@@ -1048,6 +1052,7 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     "decisions_consent.json",
     "memory_provider_consent.json",
     "shared_crew_preview.json",
+    "memory_provider_preview.json",
     "ssh_auth_sock_consent.json",
     "project_hooks_consent.json",
     "credential_redaction.json",

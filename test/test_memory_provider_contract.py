@@ -256,6 +256,7 @@ def _manifest(providers, backend=True) -> AppManifest:
         "displayName": "Fixture",
         "description": "d",
         "contributes": {"memoryProviders": providers},
+        "permissions": {"memoryAdmin": True},
     }
     if backend:
         data["backend"] = {"entryPoint": "backend/server.py", "healthCheck": "/health"}
@@ -265,6 +266,7 @@ def _manifest(providers, backend=True) -> AppManifest:
 def test_a_declared_provider_is_read_and_serialized() -> None:
     manifest = _manifest([{"id": "fixture", "displayName": "F", "route": "/memory-provider"}])
     assert [p.id for p in manifest.contributes.memoryProviders.usable()] == ["fixture"]
+    assert manifest.permissions.memoryAdmin is True
     assert manifest.to_dict()["contributes"]["memoryProviders"][0]["route"] == "/memory-provider"
     assert not [e for e in manifest.validate() if "memoryProviders" in e]
 
@@ -287,6 +289,13 @@ def test_a_malformed_declaration_refuses_the_install(providers, backend, needle)
     assert any(needle in e for e in errors), errors
     if manifest.contributes.memoryProviders.errors:
         assert manifest.contributes.memoryProviders.usable() == []
+
+
+def test_memory_admin_is_granted_only_by_a_literal_true() -> None:
+    from kiro_crew.apps.manifest_sections import Permissions
+
+    assert Permissions.from_dict({"memoryAdmin": "true"}).memoryAdmin is False
+    assert Permissions.from_dict({"memoryAdmin": True}).to_dict() == {"memoryAdmin": True}
 
 
 def test_a_trickling_provider_answer_stops_at_the_whole_deadline(monkeypatch) -> None:

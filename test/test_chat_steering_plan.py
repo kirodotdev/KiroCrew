@@ -385,7 +385,9 @@ def _state(slot: _ChatSlot) -> DashboardState:
     return state
 
 
-async def _get(state: DashboardState, slot: str, app_name: str = "") -> tuple[int, dict]:
+async def _get(
+    state: DashboardState, slot: str, app_name: str = "", grant: str = ""
+) -> tuple[int, dict]:
     app = web.Application()
     app["state"] = state
 
@@ -393,6 +395,10 @@ async def _get(state: DashboardState, slot: str, app_name: str = "") -> tuple[in
     async def as_app(request, handler):
         if app_name:
             request["app"] = app_name
+        if grant:
+            from kiro_crew.dashboard.handlers._shared import MEMORY_ADMIN_GRANT
+
+            request[MEMORY_ADMIN_GRANT] = grant
         return await handler(request)
 
     app.middlewares.append(as_app)
@@ -477,6 +483,17 @@ async def test_a_channel_linked_chat_lists_its_own_project(home, tmp_path, monke
 @pytest.mark.asyncio
 async def test_an_app_cannot_read_a_slot_it_does_not_own(home):
     status, _data = await _get(_state(_ChatSlot("main")), "main", app_name="some-app")
+    assert status == 404
+
+
+@pytest.mark.asyncio
+async def test_the_memory_admin_facade_reads_the_owners_chat_steering(home, monkeypatch):
+    # Only the facade sets the grant, and only for the app it names.
+    _config(monkeypatch, "codex")
+    slot = _ChatSlot("main")
+    status, _data = await _get(_state(slot), "main", app_name="memory", grant="app:memory")
+    assert status == 200
+    status, _data = await _get(_state(slot), "main", app_name="other", grant="app:memory")
     assert status == 404
 
 

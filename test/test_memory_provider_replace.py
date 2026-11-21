@@ -15,7 +15,13 @@ import json
 import pytest
 from member_memory_helpers import env  # noqa: F401 -- the fixture is requested by name
 from member_memory_helpers import make_request
-from memory_provider_helpers import FIXTURE_ID, READONLY_ID, fixture_provider, set_provider
+from memory_provider_helpers import (  # noqa: F401
+    FIXTURE_ID,
+    READONLY_ID,
+    fixture_provider,
+    memory_provider_preview_on,
+    set_provider,
+)
 
 from kiro_crew.context_assembly import budget as _budgets
 from kiro_crew.dashboard.handlers import cron_lessons, memory_member

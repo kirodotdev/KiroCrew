@@ -11,6 +11,188 @@
 import type { MemoryCarveEntry, MemoryStoreSummary, RetiredMemory, MemoryBackup } from '../../types'
 import type { MemoryRecordQuery, MemoryRecord, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRef, MemoryRecordRevision } from '../../types/memoryEditing'
 import type { ClientTransport } from './transport'
+import type { SharedCrewPreviewSetting } from '../sharedCrew'
+
+/** One provider's `connect` answer, as `GET /api/memory/provider` reports it. */
+export interface MemoryProviderCapabilities {
+  api_version: number
+  provider: { name: string; version: string }
+  egress: 'local' | 'remote'
+  read_only: boolean
+  ops: string[]
+  kinds: string[]
+  search: { lexical: boolean; semantic: boolean; filters: string[] }
+  writes: {
+    verbatim: boolean
+    preserves_timestamps: boolean
+    keeps_origin: boolean
+    idempotent: boolean
+    dry_run_put: boolean
+    max_batch: number
+    max_text: number
+  }
+  history: { revisions: boolean; retired: boolean; changes: boolean }
+  ingest: 'none' | 'raw' | 'items'
+  isolation: { multi_store: boolean; principal_auth: boolean }
+  documents: 'none' | 'read' | 'readwrite'
+  steering: 'none'
+  max_page: number
+}
+
+/** One installed provider an app declares. */
+export interface MemoryProviderRow {
+  id: string
+  app: string
+  app_version: string
+  display_name: string
+  description: string
+  settings_page: string
+  enabled: boolean
+  capabilities?: MemoryProviderCapabilities
+  replace_gaps?: string[]
+  /** What each mode lacks, by mode (`op:delete`, `kind:finding`, `writes.verbatim`, ...). */
+  mode_gaps?: { augment: string[]; replace: string[] }
+  egress_consented?: boolean
+  /** The provider did not answer `connect`: a failed call, not an eligibility refusal. */
+  connect_failed?: boolean
+  blocked_reason?: string
+  latency?: { calls: number; ops: Record<string, { p50_ms: number; p95_ms: number; count: number }> }
+}
+
+export interface MemoryProviderOverview {
+  mode: 'builtin' | 'replace' | 'augment'
+  id: string
+  switched_at: number
+  stop_learning_ack: boolean
+  builtin: { id: string; display_name: string }
+  providers: MemoryProviderRow[]
+  shared_crew: boolean
+  policy_allows: boolean
+  active: { mode: string; id: string; unavailable: string; health?: { ok: boolean; detail: string } }
+}
+
+export interface MemoryProviderSwitch {
+  mode: 'builtin' | 'replace' | 'augment'
+  id?: string
+  egress_consent?: boolean
+  stop_learning_ack?: boolean
+  pin_member_stores_builtin?: boolean
+}
+
+/** One planned sample of a move: never more than the first 300 characters. */
+export interface MemoryMoveSample {
+  id: string
+  kind: string
+  text: string
+  planned: string
+  created_at?: number | null
+}
+
+/** A move job (`/api/memory/provider/migrations/{id}`): a plan, a run, or a rollback. */
+export interface MemoryMove {
+  id: string
+  from: string
+  to: string
+  store: string
+  dry_run: boolean
+  state:
+    | 'planning'
+    | 'planned'
+    | 'running'
+    | 'paused'
+    | 'verifying'
+    | 'done'
+    | 'failed'
+    | 'cancelled'
+    | 'rolling_back'
+    | 'rolled_back'
+    /** An undo that failed or was interrupted: it continues only as an undo. */
+    | 'rollback_failed'
+  checkpoint: { cursor: string | null; listed: number; source_done?: boolean }
+  by_kind: Record<string, number>
+  outcomes: Record<string, number>
+  skipped_kinds: Record<string, number>
+  notes: string[]
+  verify: { checked?: number; matched?: number; mismatched?: number; unread?: number }
+  rolled_back: number
+  error: string
+  samples?: Record<string, MemoryMoveSample[]>
+}
+
+/** What `POST /api/memory/provider/bench/runs` takes (and `requestMemoryBench` asks for). */
+export interface MemoryBenchRequest {
+  /** A suite id (`longmemeval`, `precisionmem`, ...) or `own:<eval set id>`. */
+  suite: string
+  variant?: string
+  /** `builtin`, `baseline:none`, `baseline:recency` or `app:<app id>/<provider id>`. */
+  providers: string[]
+  mode?: 'retrieval' | 'answer' | 'both'
+  k?: number[]
+  budget_chars?: number
+  limit_instances?: number | null
+  max_llm_calls?: number
+  egress_ack?: Record<string, { app_version: string; items: number }>
+  dry_run?: boolean
+}
+
+/** One provider's row in a benchmark plan. */
+export interface MemoryBenchPlanRow {
+  id: string
+  name: string
+  egress: 'local' | 'remote'
+  /** The provider's own handshake version. */
+  version: string
+  /** The installed app's version: what an egress acknowledgement names. */
+  app_version: string
+  cleanup: 'reset' | 'delete'
+  ingest_mode: string
+  ingest_why: string
+  writes: number
+  turns: number
+  /** Dimension -> why it is not measured (or measured with a caveat). */
+  na: Record<string, string>
+}
+
+export interface MemoryBenchPlan {
+  suite: { id: string; name: string; license: string; license_note: string; restricted: boolean }
+  units: number
+  queries: number
+  items: number
+  llm_calls_estimate: number
+  max_llm_calls: number
+  providers: MemoryBenchPlanRow[]
+  egress_refusal?: string
+}
+
+export interface MemoryBenchRun {
+  id: string
+  state: 'planned' | 'running' | 'paused' | 'done' | 'failed' | 'cancelled' | 'budget_exhausted'
+  plan: MemoryBenchPlan
+  progress: Record<string, { done: number; total: number }>
+  warnings: string[]
+  error: string
+}
+
+/** What `POST /api/memory/provider/migrations` takes. */
+export interface MemoryMoveRequest {
+  from: string
+  to: string
+  store?: string
+  kinds?: string[]
+  include_retired?: boolean
+  preserve_timestamps?: boolean
+  dry_run?: boolean
+  /** The owner's consent to send memory to a remote target, recorded before the move. */
+  egress_consent?: boolean
+}
+
+/** The states in which a move is still working. */
+export const MEMORY_MOVE_ACTIVE_STATES: ReadonlySet<MemoryMove['state']> = new Set([
+  'planning',
+  'running',
+  'verifying',
+  'rolling_back',
+])
 
 /**
  * The optional `store=` parameter on memory content routes.
@@ -102,7 +284,7 @@ const memoryQuery = (q: MemoryCarveQuery): string => {
   return s ? `?${s}` : ''
 }
 
-export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }: ClientTransport) {
+export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch, jSharedCrewPreview }: ClientTransport) {
   const memoryAndVectors = {
     // Memory
     //
@@ -220,6 +402,41 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
     vectorContextPreview: (query?: string) => fetch('/api/memory/context-preview' + (query ? '?q=' + encodeURIComponent(query) : '')).then(j),
     memoryGraph: () => fetch('/api/memory/graph').then(j),
     consolidateMemory: (key: string, includeHistory: boolean) => post('/api/memory/consolidate', { key, include_history: includeHistory }).then(j),
+    /** Which memory answers, every installed provider, and the active one's health. */
+    memoryProvider: (probe = false) =>
+      fetch('/api/memory/provider' + (probe ? '?probe=1' : '')).then(j) as Promise<MemoryProviderOverview>,
+    /** Switch. The owner's own dashboard session only; refusals carry a `code`. */
+    switchMemoryProvider: (body: MemoryProviderSwitch) =>
+      put('/api/memory/provider', body).then(j) as Promise<{ ok: boolean; mode: string; id?: string }>,
+    /** Plan (`dry_run`) or start a move between two providers; answers the job. */
+    startMemoryMove: (body: MemoryMoveRequest) =>
+      post('/api/memory/provider/migrations', body).then(j) as Promise<MemoryMove>,
+    memoryMove: (id: string) =>
+      fetch('/api/memory/provider/migrations/' + encodeURIComponent(id)).then(j) as Promise<MemoryMove>,
+    /** Every move and plan the caller may see, newest last; the owner sees all. */
+    memoryMoves: () =>
+      fetch('/api/memory/provider/migrations').then(j) as Promise<{ migrations: MemoryMove[] }>,
+    /** Plan (`dry_run`, the default) or start a benchmark run. Only the owner starts one. */
+    startMemoryBench: (body: MemoryBenchRequest) =>
+      post('/api/memory/provider/bench/runs', body).then(j) as Promise<{ run_id: string; state: string; plan: MemoryBenchPlan }>,
+    memoryBenchRun: (id: string) =>
+      fetch('/api/memory/provider/bench/runs/' + encodeURIComponent(id)).then(j) as Promise<MemoryBenchRun>,
+    /** Continue a paused or failed move from its checkpoint. The owner only. */
+    resumeMemoryMove: (id: string) =>
+      post('/api/memory/provider/migrations/' + encodeURIComponent(id) + '/resume').then(j) as Promise<MemoryMove>,
+    /** Delete from the target what this move inserted, and nothing else. The owner only. */
+    rollbackMemoryMove: (id: string) =>
+      post('/api/memory/provider/migrations/' + encodeURIComponent(id) + '/rollback').then(j) as Promise<MemoryMove>,
+    /** The owner's memory provider preview switch, shaped like the Shared Crew one.
+     *  A 404 (an older gateway) reads as "not available"; a non-owner's 403
+     *  `owner_only` throws but is not journaled. */
+    memoryProviderPreview: async (): Promise<SharedCrewPreviewSetting | null> => {
+      const r = await get('/api/memory/provider-preview')
+      if (r.status === 404) return null
+      return await jSharedCrewPreview(r) as SharedCrewPreviewSetting
+    },
+    memoryProviderSetPreview: async (enabled: boolean): Promise<SharedCrewPreviewSetting> =>
+      await j(await put('/api/memory/provider-preview', { enabled })) as SharedCrewPreviewSetting,
   }
 
   const lessons = {

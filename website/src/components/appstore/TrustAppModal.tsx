@@ -39,6 +39,7 @@ import { desktopCapabilityLine, knownDesktopCapabilities } from './desktopCapabi
 import { browserVerbLine, knownBrowserVerbs } from './browserVerbs'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
 import { PREVIEW_APP_BROWSER_SDK } from '../../utils/previewFlags'
+import { apiGrantLabel } from './trustGrants'
 
 /** Machine-readable code the enable and registry-install paths return when trust is missing. */
 export const APP_EXECUTION_DENIED = 'app_execution_denied'
@@ -974,7 +975,7 @@ export default function TrustAppModal({
               <ul className="flex flex-wrap gap-1">
                 {hostApi.map(path => (
                   <li key={path}>
-                    <code className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text break-all">{path}</code>
+                    <span className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text break-words">{apiGrantLabel(path)}</span>
                   </li>
                 ))}
               </ul>

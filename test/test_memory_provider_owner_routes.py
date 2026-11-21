@@ -16,7 +16,13 @@ import pytest
 from aiohttp.test_utils import make_mocked_request
 from member_memory_helpers import env  # noqa: F401 -- the fixture is requested by name
 from member_memory_helpers import json_payload, make_request
-from memory_provider_helpers import FIXTURE_ID, READONLY_ID, fixture_provider, set_provider
+from memory_provider_helpers import (  # noqa: F401
+    FIXTURE_ID,
+    READONLY_ID,
+    fixture_provider,
+    memory_provider_preview_on,
+    set_provider,
+)
 
 from kiro_crew.dashboard.handlers import memory_provider as handlers
 from kiro_crew.dashboard.handlers import memory_provider_bench as bench
@@ -458,6 +464,26 @@ async def test_crews_own_memory_prepares_a_named_store_before_reading_it(
     )
     assert prepared == ["member-alice"] and response.status == 503
     assert _json(response)["code"] == "store_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_an_owner_move_into_a_remote_provider_records_the_consent_it_carries(
+    served, monkeypatch
+) -> None:
+    from kiro_crew.memory_provider import consent
+
+    caps = served.fixture.capabilities()
+    remote = type(caps)(**{**caps.__dict__, "egress": "remote"})
+    monkeypatch.setattr(served.fixture, "capabilities", lambda: remote)
+    plan = await _move(served, {"from": "builtin", "to": FIXTURE_ID, "dry_run": True})
+    assert plan["status"] == 202, plan
+    await _job_state(plan["id"], {"planned", "failed"})
+    refused = await _move(served, {"from": "builtin", "to": FIXTURE_ID})
+    assert refused["status"] == 503
+    started = await _move(served, {"from": "builtin", "to": FIXTURE_ID, "egress_consent": True})
+    assert started["status"] == 202, started
+    assert consent.has_egress_consent(served.fixture)
+    await _job_state(started["id"], {"done", "failed"})
 
 
 @pytest.mark.asyncio

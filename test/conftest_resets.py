@@ -271,6 +271,23 @@ def _forget_observed_people():
 
 
 @per_test_guard
+def _forget_memory_provider_preview_snapshot():
+    """Give every test a fresh memory provider preview snapshot.
+
+    ``memory_provider.preview`` reads its keystone once per process and keeps the
+    answer, so a later test on the worker would see an earlier data home's choice.
+    Reset before and after; a test that never imported the module pays a dict lookup.
+    """
+    preview = sys.modules.get("kiro_crew.memory_provider.preview")
+    if preview is not None:
+        preview.reset_for_tests()
+    yield
+    preview = sys.modules.get("kiro_crew.memory_provider.preview")
+    if preview is not None:
+        preview.reset_for_tests()
+
+
+@per_test_guard
 def _forget_offered_instance_types():
     """Give every test an empty EC2 instance-type offering cache.
 
