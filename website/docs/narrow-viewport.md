@@ -167,8 +167,14 @@ width (an unfolded foldable in landscape is about 951px wide). A browser in desk
 the desktop form from 768px and keeps the phone form below it: the desktop top bar's
 collapse ladder (`.tb-measured`) only has rungs from 768px, so an iPad Split View or
 Slide Over window must not get the desktop form. Every other device, touch laptops
-included, keeps the 768px breakpoint. A home-screen web app has no
-desktop-site toggle, so it keeps the browser's default mode.
+included, keeps the 768px breakpoint. A home-screen web app or an in-app browser has no
+desktop-site toggle, so Settings > Display > View > Touch screen layout
+(`TouchLayoutSetting.tsx`) overrides the browser's mode on a touch-first device:
+Automatic (the default) is the rule above, Phone layout is the phone form at any width,
+and Desktop layout on wide screens is the desktop-mode result (desktop form from 768px,
+phone form below). The choice is saved on this browser only (`kc-touch-layout`), is read
+only after the touch-first test so a mouse device never sees it, and takes effect at
+once because `useIsMobile` re-reads the form on its change event.
 
 **The shell is an application, not a zoomable document — page zoom is off on touch.**
 Pinching magnifies a `position: fixed` / `h-dvh` layout whose scrollers are all
