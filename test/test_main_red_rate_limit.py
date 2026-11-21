@@ -576,3 +576,53 @@ def test_a_first_red_run_after_a_green_one_does_not_read_the_closed_issues(tmp_p
     assert out.returncode == 0, out.stderr
     assert not [c for c in _calls(stub) if "--state closed" in c]
     assert len(_wrote(stub, "create")) == 1
+
+
+# ── Replay: a suspected-red issue is not a record of main ────────────────────
+
+
+def _suspected(run_id: int, number: int = 8) -> dict:
+    """A `Main may be red` issue as the suspect workflow files it: its own title and marker.
+
+    It is written by the same Actions token, and its record is shaped like the
+    watcher's, so only the title prefix and the marker keep the two apart.
+    """
+    record = mod.next_state(None, {BREAK: "x"}, "c" * 40, run_id, f"{REPO_URL}/actions/runs/1")
+    return {
+        "number": number,
+        "title": f"ci: Main may be red: {BREAK}",
+        "body": f"### Main may be red (not confirmed)\n\n<!-- main-red-suspect-state"
+        f" {mod.dump_state(record)} -->\n",
+        "author": _open_issue()["author"],
+    }
+
+
+def test_a_suspected_red_issue_bounds_no_walk_back_and_is_not_the_watchers_issue() -> None:
+    suspected = _suspected(990)
+    assert prev_mod.last_recorded([suspected]) == -1
+    assert mod.pick_issue([suspected]) is None
+
+
+@_needs_posix
+def test_a_suspected_red_issue_open_or_closed_changes_nothing_about_the_replay(
+    tmp_path: Path,
+) -> None:
+    """One is open and one was closed: the watcher files its own issue and replays as without."""
+    out, stub = _run_step(
+        tmp_path,
+        jobs=TWO_JOBS,
+        logs={},
+        annotations={**TWO_NOTES, 91: _notes(BREAK), 94: _notes(BREAK)},
+        issues=[_suspected(995)],
+        runs=[_run_row(50, "failure", 1000), _earlier(49, 990), _earlier(48, 980, "success")],
+        past_jobs={990: TWO_LEGS_BEFORE},
+        closed_issues=[],
+        closed_unlabelled=[_suspected(990, number=7)],
+    )
+    assert out.returncode == 0, out.stderr
+    assert len(_wrote(stub, "create")) == 1
+    assert all(c.startswith("issue edit 77 ") for c in _wrote(stub, "edit"))
+    assert not (stub / "edit-8.md").exists()
+    assert _read_runs(stub) == ["990"]
+    state = _state(stub, "edit-77.md")
+    assert (state["first_run_id"], state["streak"]) == (990, 2)

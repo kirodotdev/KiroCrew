@@ -475,6 +475,9 @@ jobs:
             # walk back. The closed issues are read as the open one is found: the
             # labelled list, and the unlabelled one for an issue filed while the
             # label could not be added. Without either read nothing is replayed.
+            # A `Main may be red:` issue of `main-red-suspect.yml` is in neither
+            # sense a record of main: it has another title and another marker, so
+            # it bounds no walk back, open or closed.
             if [ -z "$existing" ]; then
               closed_label=(--label main-red --limit 20)
               for closed_list in labelled unlabelled; do
