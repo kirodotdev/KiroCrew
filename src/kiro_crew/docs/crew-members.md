@@ -168,8 +168,18 @@ kirocrew agent update oncall --workspace incidents
 kirocrew agent update oncall --display-name "On-call"
 kirocrew agent update oncall --model <model-id>
 kirocrew agent update oncall --model ""
+kirocrew agent update oncall --backend claude
+kirocrew agent update oncall --backend ""
 kirocrew agent delete oncall
 ```
+
+`--backend` (on `create` and `update`) pins the agent harness the Bot's own
+chat and its workers run on (`agents.<name>.acp_backend`), and `--backend ""`
+clears the pin so the Bot inherits the harness Settings names for Bots again.
+It takes the same harnesses the Bot's harness picker offers, and refuses any
+other. Changing the harness re-checks the Bot's stored model and worker model
+against it with the same offline checks `--model` runs. A chat that is already
+running keeps its harness; the new pin applies from the Bot's next new session.
 
 `--model` (on `create` and `update`) sets the Bot's default model, and
 `--model ""` or `--model auto` clears it so the Bot inherits again;

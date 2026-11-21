@@ -5678,6 +5678,13 @@ kiro-cli that lacks its engine.
   with the `crewmate_harness_unavailable` reason. Saving it rebuilds the provider
   factory (`refresh_defaults`), and so does an edit outside the dashboard
   (`session_parts.config_apply`).
+- **From the CLI.** `kirocrew agent create|update --backend <id>` stores the pin
+  through the same `harness_pin_rejected` rule (`cli_commands_agent._agent_backend_or_exit`;
+  `--backend ""` clears it), exiting 1 with nothing written for any other value.
+  A harness change re-judges the stored `model` and `worker_model` against the
+  new harness with the offline checks `--model` runs (`_agent_model_or_exit`
+  with the pending pin), and `update` writes only `acp_backend` beside the other
+  changed fields. Pinned by `test/test_cli_agent_backend.py`.
 - **A refusal names what chose the harness.** A `capability_harness_unsupported`
   refusal (a worker's at `session_create`, at `spawn_run` and on its chat's
   error row through `mate_worker.worker_kit_backend_refusal`; a Bot chat's on
