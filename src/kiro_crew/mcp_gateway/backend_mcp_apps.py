@@ -132,6 +132,20 @@ def _mcp_apps_enabled() -> bool:
     return bool(cfg.mcp_gateway.apps_enabled)
 
 
+def _mcp_apps_client_capabilities() -> dict[str, Any]:
+    """The ``initialize`` capabilities a dashboard probe of a stdio server sends.
+
+    A stdio server is served to sessions through a gateway stub, whose backend
+    declares the ``ui`` extension (:func:`_inject_client_extensions`). A server
+    that lists its UI tools only to a client declaring it would otherwise show the
+    probe a smaller tool set than the one sessions receive. Empty while the same
+    feature gate holds the extension back.
+    """
+    if not _mcp_apps_enabled():
+        return {}
+    return {"extensions": {MCP_APPS_EXTENSION_KEY: {"mimeTypes": [MCP_APPS_MIME_TYPE]}}}
+
+
 def _inject_client_extensions(msg: dict[str, Any]) -> dict[str, Any]:
     """Return ``msg`` with ``capabilities.extensions["io.modelcontextprotocol/ui"]``
     deep-merged into an ``initialize`` frame — or ``msg`` unchanged when the
