@@ -973,6 +973,15 @@ async def _run_inner_impl(
                     # partial).
                     yield _withheld
                     return
+                if classify_stop_reason(
+                    str(getattr(_withheld, "stop_reason", "") or "")
+                ).is_success:
+                    # A completion withheld only for an infrastructure error
+                    # still landed, and another prompt follows, so it is
+                    # reported here like a Stop-hook continuation above.
+                    from kiro_crew.llm_helpers import record_interaction_event
+
+                    record_interaction_event(client, session_key, "subagent")
                 _final_segment = ""
                 msg = _nudge
                 continue
