@@ -376,8 +376,9 @@
       "not_declared": "Este app não pode mostrar o seletor de projetos. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Peça ao desenvolvedor do app para adicioná-lo."
     },
     "sessionChanges": {
-      "not_declared": "Este app não pode mostrar as alterações deste chat. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Peça ao desenvolvedor do app para adicioná-lo.",
-      "diff_not_declared": "Este app não pode mostrar as alterações deste arquivo. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Peça ao desenvolvedor do app para adicioná-lo.",
+      "not_declared": "Este app não pode mostrar as alterações deste chat. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso.",
+      "diff_not_declared": "Este app não pode mostrar as alterações deste arquivo. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso.",
+      "ask_agent": "Pedir ao agente para explicar",
       "pick_a_file": "Escolha um arquivo para ver suas alterações.",
       "diff_unavailable": "Este chat não registrou o arquivo inteiro antes e depois desta alteração, então não há diff para mostrar."
     },

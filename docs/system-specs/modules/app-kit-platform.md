@@ -6262,8 +6262,8 @@ the way §18g chooses the pull-request client:
   `/api/project/session-file-diff`; without it the diff's place shows its own refusal,
   worded as that file's changes, the row's Show changes, and the diff is never mounted.
   Each refusal gives its reason first (this app's developer has not allowed it), names
-  the undeclared path after it, and ends by telling the person to ask the app's developer
-  to add it. The two paths are siblings at a slash boundary, so neither declaration
+  the undeclared path after it, and ends by saying only the app's developer can change
+  it; its hand-off reads "Ask the agent to explain this". The two paths are siblings at a slash boundary, so neither declaration
   admits the other, and the scoped transport still checks each request.
 - **builtin**: the dashboard's client, as §18g keeps it for a builtin page.
 - **none**: the external answer with nothing declared, the refusal.
