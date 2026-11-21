@@ -9653,7 +9653,7 @@
       "trust_all_base_today": "모든 <mono/> 명령 자정까지 신뢰({{time}})",
       "trust_all_tools": "이 세션의 모든 도구 신뢰",
       "trust_all_tools_channel": "이 채널의 모든 도구 신뢰 — 재시작 후에도 유지",
-      "trust_site_act_session": "<mono/>에서 읽기, 클릭, 입력을 이 세션 동안 신뢰",
+      "trust_site_act_session": "<mono/>에서 읽기, 클릭, 입력, 업로드를 이 세션 동안 신뢰",
       "trust_site_read_session": "<mono/> 페이지 읽기를 이 세션 동안 신뢰",
       "trust_this_command": "<mono/> 신뢰",
       "trust_this_command_channel": "<mono/> 명령을 @{{role}}에 대해 신뢰 — {{productName}} 재시작 전까지",

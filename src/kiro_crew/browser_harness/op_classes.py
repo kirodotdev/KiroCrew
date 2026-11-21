@@ -7,7 +7,7 @@ One classifier, read by two consumers that must agree on what "reads only" means
   any other op back so the agent can read the note first;
 * a host trust grant (``kiro_crew.browser_host_trust``) covers an op on one
   site by its class: a "read" grant covers opening and reading that site's
-  pages, an "act" grant covers clicking and typing there too.
+  pages, an "act" grant covers clicking, typing and uploading files there too.
 
 Stdlib only, so the MCP shim can import it before it lists its tools.
 """
@@ -36,15 +36,16 @@ HARNESS_HELPER_OPS: tuple[str, ...] = ("js", "cdp", "http_get")
 
 #: Ops no standing grant covers, a person's site grant or an app's ``browserSites``:
 #: each asks on the card. A site grant names one host and covers pressing, typing
-#: and picking on its pages; these reach past that. ``upload`` sends a local file;
-#: ``js`` runs any script; ``cdp`` can reach the whole browser (every tab, every
-#: cookie); ``http_get`` fetches outside the browser.
-CARD_ONLY_OPS = frozenset({"upload", *HARNESS_HELPER_OPS})
-#: Ops a host trust grant never covers: :data:`CARD_ONLY_OPS`, plus ``ask`` (a
-#: question to the person) and ``reflex`` (a whole loop of ops).
-#: Ops no host grant covers: the card-only ones, the person's own asks, and the
-#: reads that answer from every tab the agent owns (``tabs list``, ``iframe_target``),
-#: since one host's grant does not cover another site's tab.
+#: and picking on its pages; these reach past that. ``js`` runs any script; ``cdp``
+#: can reach the whole browser (every tab, every cookie); ``http_get`` fetches
+#: outside the browser. ``upload`` is not one: a person's "act" grant on a site
+#: covers it there, though an app's ``browserSites`` does not
+#: (``apps.browser_sites.gate_grants``).
+CARD_ONLY_OPS = frozenset(HARNESS_HELPER_OPS)
+#: Ops no host grant covers: the card-only ones, ``ask`` (the person's own
+#: question), ``reflex`` (a whole loop of ops) and ``iframe_target``, which answers
+#: from every tab the agent owns, since one host's grant does not cover another
+#: site's tab.
 NO_HOST_TRUST_OPS = CARD_ONLY_OPS | {"ask", "reflex", "iframe_target"}
 
 
@@ -73,6 +74,7 @@ _ACT_OPS = frozenset(
         "press_key",
         "select_option",
         "type",
+        "upload",
         *HARNESS_HELPER_OPS,
     }
 )
@@ -93,8 +95,8 @@ def host_trust_class(op: str, op_args: dict[str, Any]) -> str:
     """``"read"`` or ``"act"`` for an op a host grant may cover, ``""`` for one it never does.
 
     Read: :func:`reads_only`, plus opening a page (``navigate``, ``tabs new``) and
-    scrolling. Act: every op that presses, types or picks on the page, plus going
-    back and switching or closing tabs. An op this module does not name gets
+    scrolling. Act: every op that presses, types, picks or uploads files on the
+    page, plus going back and switching or closing tabs. An op this module does not name gets
     ``""``, so a new op asks until someone classes it here.
     """
     if op in NO_HOST_TRUST_OPS or card_only(op, op_args):

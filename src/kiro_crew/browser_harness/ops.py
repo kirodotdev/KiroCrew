@@ -8,7 +8,7 @@ through ``/api/browser/op``), and it reaches the browser only two ways:
   daemon's IPC (``goto``, ``click``, ``type_text``, ``press_key``, ``scroll``,
   ``mouse_move``, ``drag``, ``screenshot``, ``page_info``, ``wait_for_load``,
   ``new_tab``, ``switch_tab``, ``list_tabs``, ``js``, ``upload``'s ``set_files``,
-  and the ``reflex`` op's ``page_clock``);
+  ``chooser_files`` and ``drop_files``, and the ``reflex`` op's ``page_clock``);
 * the ``js`` helper with :data:`WALKER_SOURCE` -- the page-side half of this
   module (``snapshot_walker.js``) -- so every read or write these ops make in the
   page is a method on that one script. The ``js``, ``cdp`` and ``http_get`` ops
@@ -255,6 +255,14 @@ class OpContext:
     #: a leaf no sandboxed agent can read or write (the hidden IPC leaf). ``None``
     #: refuses ``upload`` (``not_available``).
     upload_dir: Path | None = None
+    #: The host whose act site grant lets ``upload`` run with no card (``""``: on
+    #: the card). Such an upload sends nothing under the strict sandbox's hidden
+    #: folders and re-reads the tab's host right before the files go.
+    upload_grant_host: str = ""
+    #: Whether the governance ceiling lets this caller read a path (``filesystem.read``).
+    #: ``upload`` asks it for every file a folder or glob expands to: the tool gate
+    #: judged only the entries as written.
+    read_allowed: Callable[[str], bool] = lambda _path: True
 
 
 def screenshot_dir(home: Path) -> Path:
@@ -1817,6 +1825,8 @@ async def run_op(op: str, args: dict[str, Any], ctx: OpContext) -> dict[str, Any
             "page_info",
             "wait_for_load",
             "set_files",
+            "chooser_files",
+            "drop_files",
             "fill_input",
             "dispatch_key",
             "wait_for_element",

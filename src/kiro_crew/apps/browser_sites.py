@@ -240,8 +240,9 @@ def gate_grants(facts: Any) -> bool:
     * the app holds approved sites right now (read fresh);
     * a call that names a URL (``navigate``, ``tabs`` ``new``) names one of them; any
       other URL falls through to the card, and the op route refuses it anyway;
-    * the call is not :func:`card_only` (``upload``, ``js``, ``cdp``, ``http_get``,
-      ``tabs close``), which always asks.
+    * the call is not :func:`card_only` (``js``, ``cdp``, ``http_get``, ``tabs
+      close``), which always asks, nor ``upload``, which only a person's own site
+      grant covers.
 
     A granted slot is noted (:func:`note_granted_session`) before the approval leaves,
     so the op route holds it to its sites even if they are revoked before the call
@@ -259,8 +260,11 @@ def gate_grants(facts: Any) -> bool:
         return False
     readable, url = browser_call_url(call.raw_params)
     op_args = call.raw_params.get("args")
-    if not readable or card_only(
-        str(call.raw_params.get("op")), op_args if isinstance(op_args, dict) else {}
+    op = str(call.raw_params.get("op"))
+    if (
+        not readable
+        or op == "upload"
+        or card_only(op, op_args if isinstance(op_args, dict) else {})
     ):
         return False
     # Call time: the facade imports nothing from here at module level.

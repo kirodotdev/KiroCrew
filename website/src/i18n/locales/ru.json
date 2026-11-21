@@ -10361,7 +10361,7 @@
       "trust_all_base_today": "Доверять любой команде <mono/> до полуночи ({{time}})",
       "trust_all_tools": "Доверять всем инструментам в этом сеансе",
       "trust_all_tools_channel": "Доверять всем инструментам в этом канале — сохраняется после перезапуска",
-      "trust_site_act_session": "Доверять чтению, нажатиям и вводу на <mono/> в этом сеансе",
+      "trust_site_act_session": "Доверять чтению, нажатиям, вводу и отправке файлов на <mono/> в этом сеансе",
       "trust_site_read_session": "Доверять чтению страниц <mono/> в этом сеансе",
       "trust_this_command": "Доверять <mono/>",
       "trust_this_command_channel": "Доверять <mono/> для @{{role}} — до перезапуска {{productName}}",
