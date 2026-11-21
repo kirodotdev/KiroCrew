@@ -563,6 +563,43 @@ describe('AboutPanel gateway restart', () => {
     expect(screen.queryByTestId('gateway-restart-row')).toBeNull()
   })
 
+  it('keeps the standing Restart beside the in-app update flow, which draws none', async () => {
+    // An arm-capable install installs the new version beside the running one and
+    // starts it on the next restart, so restarting is the step left to take.
+    const posts = stubFetch()
+    seedStatus({
+      update_available: true,
+      update_check_status: 'succeeded',
+      update_can_apply: false,
+      update_can_arm: true,
+      update_channel: 'nightly',
+      update_latest_version: '0.14.0.dev2',
+    })
+    mountWeb()
+
+    await screen.findByTestId('in-app-update')
+    expect(screen.queryByTestId('gateway-restart')).toBeNull()
+    fireEvent.click(screen.getByTestId('gateway-restart-standing'))
+    fireEvent.click(screen.getByTestId('gateway-restart-standing'))
+    await waitFor(() => expect(posts.some(p => p.url.includes('/api/restart'))).toBe(true))
+  })
+
+  it('keeps the standing Restart when the installer card has no command', async () => {
+    stubFetch()
+    seedStatus({
+      update_available: true,
+      update_check_status: 'succeeded',
+      update_can_apply: false,
+      update_command: '',
+      update_channel: 'stable',
+    })
+    mountWeb()
+
+    await screen.findByTestId('manual-update-instructions')
+    expect(screen.queryByTestId('gateway-restart')).toBeNull()
+    expect(screen.getByTestId('gateway-restart-row')).toBeTruthy()
+  })
+
   it('treats the connection drop after a restart as success, not failure', async () => {
     // os.execv replaces the process image, so the POST's connection is reset by
     // the very thing it asked for. Reporting that as an error would tell the
