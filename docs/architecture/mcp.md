@@ -1504,8 +1504,8 @@ approval identity and its display holds the whole launch. Each command and env
 list is shown in full up to 512 entries and 16384 characters; a list past
 either bound is cut, ends in a `…(partial)` marker, and leaves the server
 unapprovable. An approval covers only a launch the operator can read: a row's
-**Details** and the Review dialog show this display beside the Approve that
-pins it, so a change past a cut would be approved unseen. This scrubbed,
+**Details** and the Review dialog show this display beside the button that
+pins it (**Share across chats**, or **Approve update** for a changed launch), so a change past a cut would be approved unseen. This scrubbed,
 bounded GET follows the other dashboard read routes and does not require owner
 identity; the POST that records the choice remains owner-only. The bulk review
 reads every candidate at once with the
