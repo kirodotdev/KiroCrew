@@ -6266,8 +6266,11 @@ the way §18g chooses the pull-request client:
 - **none**: the external answer with nothing declared, the refusal.
 
 This grants nothing the app does not have already: both reads are the ones `useAppApi()`
-would send for the same declaration, and each handler refuses an app token's foreign slot
-(`dashboard/session_files.py`, `_gated_slot`). The list's `onBrowse` and its file-open
+would send for the same declaration. The declaration is the in-page guardrail the scoped
+transport applies, not a gateway boundary: an in-page request carries the owner's session
+with no app claim, so `SessionChanges` reads whatever slot it is given, as `ChatEmbed`
+does. The handlers' foreign-slot refusal (`dashboard/session_files.py`, `_gated_slot`)
+applies to app tokens, the requests an app's backend sends. The list's `onBrowse` and its file-open
 hand-off are not offered: they open tabs in the chat window's side panel. Picking a row,
 or its Show changes control, shows that file's recorded change; the diff query's key
 carries the row's change time, so a newer edit reads the diff again. The list and diff
