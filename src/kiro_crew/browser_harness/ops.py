@@ -50,6 +50,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.browser_harness import daemon_line
 from kiro_crew.browser_harness.budgets import CHANGE_AFTER_S, CHANGE_BEFORE_S
 from kiro_crew.browser_harness.frames import FRAME_READ_CAP, split_frame_ref
 from kiro_crew.browser_snapshots import SNAPSHOT_DIR_NAME
@@ -469,6 +470,12 @@ async def _isolated_count(ctx: OpContext, method: str) -> int | None:
 PAGE_WORLD_METHODS = frozenset({"stamp", "state", "consoleMessages"})
 
 
+def _walker_expression(method: str, *args: Any) -> str:
+    """The expression :func:`_page` evaluates for one walker call in the tab's top frame."""
+    rendered = ", ".join(json.dumps(a) for a in args)
+    return f"{WALKER_SOURCE}.{method}({rendered})"
+
+
 async def _page(ctx: OpContext, method: str, *args: Any) -> Any:
     """Call one method of the walker in the page: the ONLY use of the ``js`` and
     ``js_isolated`` helpers (:data:`PAGE_WORLD_METHODS` run in the first, the rest,
@@ -513,9 +520,8 @@ async def _page(ctx: OpContext, method: str, *args: Any) -> Any:
         # A count that could not be taken reads as one field: the guard refuses.
         counted = await _guard_count(ctx, method)
         return 1 if counted is None else counted
-    rendered = ", ".join(json.dumps(a) for a in args)
     helper = "js" if method in PAGE_WORLD_METHODS else "js_isolated"
-    value = await ctx.helper(helper, expression=f"{WALKER_SOURCE}.{method}({rendered})")
+    value = await ctx.helper(helper, expression=_walker_expression(method, *args))
     if method == "activeField" and isinstance(value, dict) and value.get("frame"):
         frames = ctx.frames()
         inner = await frames.focused() if frames is not None else None
@@ -1006,11 +1012,31 @@ async def _type(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     if not field["ok"]:
         return field
     await _step(ctx, f"Type into {ref or field['tag'] or 'the field'}")
-    await ctx.helper("type_text", text=text)
+    refused = await _type_text(ctx, text, ref)
+    if refused is not None:
+        return refused
     submitted = bool(args.get("submit"))
     if submitted:
         await ctx.helper("press_key", key="Enter", modifiers=0)
     return {"ok": True, "ref": ref, "chars": len(text), "submitted": submitted}
+
+
+async def _type_text(ctx: OpContext, text: str, ref: Any) -> dict[str, Any] | None:
+    """Insert *text* in pieces that each fit the Harness daemon's request line.
+
+    The caller judged the field before the first piece; the page may move focus
+    while a piece lands, so each later piece is judged again (*ref* focused again
+    when given). Answers the refusal that stopped it, with ``chars_typed``, or ``None``.
+    """
+    typed = 0
+    for chunk in daemon_line.type_chunks(text):
+        if typed:
+            field = await _focus_field(ctx, ref)
+            if not field["ok"]:
+                return {**field, "chars_typed": typed}
+        await ctx.helper("type_text", text=chunk)
+        typed += len(chunk)
+    return None
 
 
 async def _focus_field(ctx: OpContext, ref: Any) -> dict[str, Any]:
@@ -1049,6 +1075,18 @@ async def _paste(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     field = await _focus_field(ctx, ref)
     if not field["ok"]:
         return field
+    # A top-frame paste rides the walker's own line to the Harness daemon; a frame
+    # ref's goes through the gateway's session, which has no such line.
+    if split_frame_ref(ref) is None and not daemon_line.expression_fits(
+        _walker_expression("paste", ref, html or "", text)
+    ):
+        return refusal(
+            "bad_text",
+            "text and html are too long to hand to the page in one paste: with the "
+            f"page script they pass the browser daemon's {daemon_line.DAEMON_LINE_BYTES}-"
+            "byte request once encoded (quotes and non-ASCII characters take several "
+            "bytes each); paste less at a time, or use `type` for plain text",
+        )
     # The walker hands both to the page as a paste event; the clipboard is never written.
     pasted = await _page(ctx, "paste", ref, html or "", text)
     if not isinstance(pasted, dict) or not pasted.get("ok"):
@@ -1069,7 +1107,9 @@ async def _paste(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
         field = await _focus_field(ctx, ref)
         if not field["ok"]:
             return field
-        await ctx.helper("type_text", text=text)
+        refused = await _type_text(ctx, text, ref)
+        if refused is not None:
+            return refused
     return {"ok": True, "ref": ref, "chars": len(text), "handled": handled}
 
 
