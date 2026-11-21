@@ -19445,6 +19445,8 @@
         "show_token_usage": "컨텍스트 토큰 표시",
         "sidebar_click_opens_tab": "사이드바 세션을 세션 탭에서 열기",
         "sidebar_click_opens_tab_desc": "세션을 클릭하면 활성 탭의 세션을 바꾸지 않고 별도의 세션 탭에서 엽니다.",
+        "session_row_tab_active": "Cmd/Ctrl-클릭 시 세션 탭으로 전환",
+        "session_row_tab_active_desc": "세션을 {{mod}}-클릭하면 활성 탭으로 열리고, 가운데 클릭하면 백그라운드에서 열립니다",
         "simplified_tool_call_names": "간소화된 도구 호출 이름",
         "tool_calls_start_expanded": "도구 호출을 펼친 상태로 시작",
         "tool_calls_start_expanded_desc": "도구 호출 행을 접지 않고 입력과 출력이 보이는 상태로 엽니다. 직접 펼치거나 접은 행은 그 선택을 유지합니다.",

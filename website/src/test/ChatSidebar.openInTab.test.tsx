@@ -12,7 +12,7 @@
  * context menu from one press. The two "wrong platform" cases pin that.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within, cleanup } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -71,7 +71,7 @@ const slot = (key: string, title: string): ChatSlot => ({
 
 const SLOTS = [slot('s1', 'Session 1'), slot('s2', 'Session 2')]
 
-function renderSidebar(opts: { onOpenSlotInNewTab?: (key: string) => void; connected?: boolean } = {}) {
+function renderSidebar(opts: { onOpenSlotInNewTab?: (key: string) => void; onSelectSlot?: (key: string) => void; connected?: boolean } = {}) {
   const store = createTestStore({
     dashboard: {
       status: { platform: 'linux' },
@@ -107,6 +107,7 @@ function renderSidebar(opts: { onOpenSlotInNewTab?: (key: string) => void; conne
               defaultAgent="default"
               installedAgents={[]}
               onOpenSlotInNewTab={opts.onOpenSlotInNewTab}
+              onSelectSlot={opts.onSelectSlot}
             />
           </MemoryRouter>
         </ThemeProvider>
@@ -131,6 +132,7 @@ function auxClick(el: HTMLElement, button: number) {
 describe('ChatSidebar – open-as-tab gestures', () => {
   beforeEach(() => {
     localStorage.setItem('mc-session-stale-collapse-ms', '0')
+    localStorage.removeItem('mc-chat-config')
     switchSlotMock.mockClear()
     macPlatform = false
   })
@@ -238,5 +240,145 @@ describe('ChatSidebar – open-as-tab gestures', () => {
     expect(switchSlotMock).not.toHaveBeenCalled()
     fireEvent.click(row('Session 2'), { ctrlKey: true })
     expect(switchSlotMock).toHaveBeenCalledWith({ key: 's2', announceOnMissing: true, gesture: true })
+  })
+})
+
+/** Store the opt-in "Switch to Session Tabs on Cmd/Ctrl-Click" chat setting the way Settings does. */
+function setSessionRowTabActive(value: unknown) {
+  localStorage.setItem('mc-chat-config', JSON.stringify({ sessionRowTabActive: value }))
+}
+
+/** Render, fire one gesture on Session 2, and record every callback it reached. */
+function outcome(fire: (el: HTMLElement) => void, opts: { mac: boolean; setting: unknown }) {
+  macPlatform = opts.mac
+  if (opts.setting === undefined) localStorage.removeItem('mc-chat-config')
+  else setSessionRowTabActive(opts.setting)
+  switchSlotMock.mockClear()
+  const onOpenSlotInNewTab = vi.fn()
+  const onSelectSlot = vi.fn()
+  renderSidebar({ onOpenSlotInNewTab, onSelectSlot })
+  fire(row('Session 2'))
+  const seen = {
+    open: onOpenSlotInNewTab.mock.calls,
+    select: onSelectSlot.mock.calls,
+    switch: switchSlotMock.mock.calls.slice(),
+  }
+  cleanup()
+  return seen
+}
+
+/**
+ * The opt-in "Switch to Session Tabs on Cmd/Ctrl-Click" chat setting (`sessionRowTabActive`).
+ * Off, the default, every gesture does what main does and what the cases above
+ * pin: Cmd/Ctrl-click queues a background tab, the sidebar-wide rule in
+ * docs/decisions/2026-10-17-sidebar-create-controls-shift-opens-the-active-tab.md.
+ * On, only the tab modifier changes: it opens the active tab and reports the
+ * row, so the host leaves Split View the way a plain click does.
+ */
+describe('ChatSidebar – "Switch to Session Tabs on Cmd/Ctrl-Click" setting', () => {
+  beforeEach(() => {
+    localStorage.setItem('mc-session-stale-collapse-ms', '0')
+    localStorage.removeItem('mc-chat-config')
+    switchSlotMock.mockClear()
+    macPlatform = false
+  })
+
+  const TAB_MODIFIER = [
+    { name: 'Ctrl+click off macOS', mac: false, fire: (el: HTMLElement) => fireEvent.click(el, { ctrlKey: true }) },
+    { name: 'Cmd+click on macOS', mac: true, fire: (el: HTMLElement) => fireEvent.click(el, { metaKey: true }) },
+  ]
+  const OTHER_GESTURES = [
+    { name: 'Ctrl+click on macOS', mac: true, fire: (el: HTMLElement) => fireEvent.click(el, { ctrlKey: true }) },
+    { name: 'Cmd+click off macOS', mac: false, fire: (el: HTMLElement) => fireEvent.click(el, { metaKey: true }) },
+    { name: 'Ctrl+Shift+click', mac: false, fire: (el: HTMLElement) => fireEvent.click(el, { ctrlKey: true, shiftKey: true }) },
+    { name: 'Ctrl+Alt+click', mac: false, fire: (el: HTMLElement) => fireEvent.click(el, { ctrlKey: true, altKey: true }) },
+    { name: 'Cmd+Shift+click on macOS', mac: true, fire: (el: HTMLElement) => fireEvent.click(el, { metaKey: true, shiftKey: true }) },
+    { name: 'middle-click', mac: false, fire: (el: HTMLElement) => auxClick(el, 1) },
+    { name: 'plain click', mac: false, fire: (el: HTMLElement) => fireEvent.click(el) },
+  ]
+
+  for (const g of TAB_MODIFIER) {
+    it(`off: ${g.name} queues a BACKGROUND tab, as on main`, () => {
+      for (const setting of [undefined, false]) {
+        const seen = outcome(g.fire, { mac: g.mac, setting })
+        expect(seen.open).toEqual([['s2', { background: true }]])
+        expect(seen.select).toEqual([])
+        expect(seen.switch).toEqual([])
+      }
+    })
+
+    it(`on: ${g.name} opens the ACTIVE tab and reports the row`, () => {
+      const seen = outcome(g.fire, { mac: g.mac, setting: true })
+      // No background flag, so the host switches to the new tab.
+      expect(seen.open).toEqual([['s2']])
+      expect(seen.select).toEqual([['s2']])
+      expect(seen.switch).toEqual([])
+    })
+  }
+
+  for (const g of OTHER_GESTURES) {
+    it(`${g.name} does the same with the setting on as off`, () => {
+      const off = outcome(g.fire, { mac: g.mac, setting: false })
+      const on = outcome(g.fire, { mac: g.mac, setting: true })
+      expect(on).toEqual(off)
+    })
+  }
+
+  it('middle-click stays a BACKGROUND open with the setting on', () => {
+    const seen = outcome(el => auxClick(el, 1), { mac: false, setting: true })
+    expect(seen.open).toEqual([['s2', { background: true }]])
+    expect(seen.select).toEqual([])
+  })
+
+  it('reads a stored non-boolean as off', () => {
+    const seen = outcome(el => fireEvent.click(el, { ctrlKey: true }), { mac: false, setting: 'true' })
+    expect(seen.open).toEqual([['s2', { background: true }]])
+    expect(seen.select).toEqual([])
+  })
+
+  it('applies a change in Settings on the next click, without a reload', () => {
+    const onOpenSlotInNewTab = vi.fn()
+    renderSidebar({ onOpenSlotInNewTab, onSelectSlot: vi.fn() })
+    fireEvent.click(row('Session 2'), { ctrlKey: true })
+    setSessionRowTabActive(true)
+    fireEvent.click(row('Session 2'), { ctrlKey: true })
+    expect(onOpenSlotInNewTab.mock.calls).toEqual([['s2', { background: true }], ['s2']])
+  })
+})
+
+/**
+ * The row menu's "Open in a session tab" is a foreground open whatever the
+ * setting says. It reports the row so the host leaves Split View; before, it
+ * switched the active session behind the grid and nothing visibly changed.
+ */
+describe('ChatSidebar – row menu open-in-tab', () => {
+  beforeEach(() => {
+    localStorage.setItem('mc-session-stale-collapse-ms', '0')
+    localStorage.removeItem('mc-chat-config')
+    switchSlotMock.mockClear()
+    macPlatform = false
+  })
+
+  async function pickMenuItem() {
+    fireEvent.pointerDown(within(row('Session 2')).getByRole('button', { name: 'More options' }), { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /session tab/i }))
+  }
+
+  it('opens in front and reports the selection', async () => {
+    const onOpenSlotInNewTab = vi.fn()
+    const onSelectSlot = vi.fn()
+    renderSidebar({ onOpenSlotInNewTab, onSelectSlot })
+    await pickMenuItem()
+    expect(onOpenSlotInNewTab.mock.calls).toEqual([['s2']])
+    expect(onSelectSlot).toHaveBeenCalledWith('s2')
+  })
+
+  it('reports no selection while offline, where the host cannot switch', async () => {
+    const onOpenSlotInNewTab = vi.fn()
+    const onSelectSlot = vi.fn()
+    renderSidebar({ onOpenSlotInNewTab, onSelectSlot, connected: false })
+    await pickMenuItem()
+    expect(onOpenSlotInNewTab.mock.calls).toEqual([['s2']])
+    expect(onSelectSlot).not.toHaveBeenCalled()
   })
 })

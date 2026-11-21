@@ -20491,6 +20491,8 @@
         "show_token_usage": "Mostrar os tokens de contexto",
         "sidebar_click_opens_tab": "Abrir sessões da barra lateral em uma aba de sessão",
         "sidebar_click_opens_tab_desc": "Clicar em uma sessão a abre em uma aba de sessão própria, em vez de substituir a sessão da aba ativa.",
+        "session_row_tab_active": "Mudar para abas de sessão com Cmd/Ctrl-clique",
+        "session_row_tab_active_desc": "{{mod}}-clique em uma sessão a abre como aba ativa, e o clique do meio a abre em segundo plano",
         "simplified_tool_call_names": "Nomes simplificados de chamadas de ferramenta",
         "tool_calls_start_expanded": "Mostrar chamadas de ferramentas expandidas",
         "tool_calls_start_expanded_desc": "Abre as linhas de chamadas de ferramentas com a entrada e a saída visíveis, em vez de recolhidas. As linhas que você abre ou fecha manualmente mantêm sua escolha.",

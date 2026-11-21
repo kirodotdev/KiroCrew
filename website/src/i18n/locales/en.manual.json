@@ -9670,6 +9670,8 @@
         "followup_start_sends_hint": "For follow-up suggestion cards only. When this is on, Start becomes Run and sends the card's prompt to the new session at once. When it is off, Start opens the new session with the prompt in its message box, and nothing is sent until you press send.",
         "sidebar_click_opens_tab": "Open Sidebar Sessions in a Session Tab",
         "sidebar_click_opens_tab_desc": "A click opens the session in its own session tab instead of replacing the active tab's session.",
+        "session_row_tab_active": "Switch to Session Tabs on Cmd/Ctrl-Click",
+        "session_row_tab_active_desc": "{{mod}}-click on a session opens it as the active tab, and middle-click opens it in the background",
         "copy_on_select": "Copy on select",
         "copy_on_select_desc": "Copy text to the clipboard as soon as you select it in the conversation with the mouse. The Quote, Ask about this and Copy row still opens.",
         "failed_to_save_selectable_models": "Failed to save selectable models",

@@ -19445,6 +19445,8 @@
         "show_token_usage": "显示上下文令牌",
         "sidebar_click_opens_tab": "在会话标签页中打开侧边栏会话",
         "sidebar_click_opens_tab_desc": "点击会话会在单独的会话标签页中打开，不会替换当前标签页里的会话。",
+        "session_row_tab_active": "Cmd/Ctrl-点击时切换到会话标签页",
+        "session_row_tab_active_desc": "{{mod}}-点击会话会将其作为当前标签页打开，中键点击则在后台打开",
         "simplified_tool_call_names": "简化工具调用名称",
         "tool_calls_start_expanded": "工具调用默认展开",
         "tool_calls_start_expanded_desc": "工具调用行打开时直接显示输入和输出，而不是折叠。你手动展开或折叠的行会保留你的选择。",

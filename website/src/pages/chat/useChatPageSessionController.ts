@@ -217,7 +217,8 @@ export function useChatPageSessionController({
     // A BACKGROUND open (middle-click, modifier-click) queues the session and
     // leaves the user where they are — the browser/editor meaning of the
     // gesture, and the whole point of using it to triage several rows in a row.
-    // The row menu is a deliberate "take me there", so it opens in foreground.
+    // The row menu is a deliberate "take me there", so it opens in foreground,
+    // as modifier-click does when the opt-in `sessionRowTabActive` is on.
     if (opts?.background) return
     if (!connectedRef.current) return
     // Foreground open-in-tab is a user gesture on a session reference: the

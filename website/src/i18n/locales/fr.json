@@ -20491,6 +20491,8 @@
         "show_token_usage": "Afficher les jetons de contexte",
         "sidebar_click_opens_tab": "Ouvrir les sessions de la barre latérale dans un onglet de session",
         "sidebar_click_opens_tab_desc": "Un clic sur une session l'ouvre dans son propre onglet de session au lieu de remplacer la session de l'onglet actif.",
+        "session_row_tab_active": "Basculer vers les onglets de session avec Cmd/Ctrl-clic",
+        "session_row_tab_active_desc": "Un {{mod}}-clic sur une session l'ouvre comme onglet actif, et un clic du milieu l'ouvre en arrière-plan",
         "simplified_tool_call_names": "Noms d'appels d'outils simplifiés",
         "tool_calls_start_expanded": "Afficher les appels d’outils dépliés",
         "tool_calls_start_expanded_desc": "Ouvrir les lignes d’appel d’outil avec leur entrée et leur sortie visibles, au lieu de repliées. Les lignes que tu ouvres ou fermes à la main gardent ton choix.",
