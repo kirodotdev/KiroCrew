@@ -11992,6 +11992,8 @@
       "conflict_message": "Tes dernières modifications ne sont pas enregistrées. Recharge pour voir l’autre version, ou garde la tienne et enregistre-la à sa place.",
       "conflict_reload": "Recharger le canevas",
       "conflict_title": "Ce canevas a été modifié ailleurs",
+      "masked_refused_message": "Cette modification déplace, copie ou scinde du texte masqué, elle n'a donc pas été enregistrée. Annulez-la pour continuer, ou rechargez le canevas.",
+      "masked_stale_message": "Le texte masqué de ce canevas a été modifié ailleurs, votre version ne peut donc pas être enregistrée par-dessus. Rechargez le canevas pour continuer ; les modifications depuis votre dernier enregistrement seront perdues.",
       "custom_colour": "Couleur personnalisée",
       "default_colour": "Couleur par défaut",
       "delete": "Supprimer",

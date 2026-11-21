@@ -39,6 +39,17 @@ type SaveState = 'saved' | 'pending' | 'saving' | 'conflict' | 'failed'
 
 const isConflict = (err: unknown) => err instanceof ApiError && err.status === 409
 
+/** Which masked-merge refusal a 400 is, from the route's `code`; `null` for any other error. */
+function maskedRefusal(err: unknown): 'stale' | 'refused' | null {
+  if (!(err instanceof ApiError) || err.status !== 400) return null
+  try {
+    const code = (JSON.parse(err.body) as { code?: unknown }).code
+    return code === 'masked_merge_stale' ? 'stale' : code === 'masked_merge_refused' ? 'refused' : null
+  } catch {
+    return null
+  }
+}
+
 const isOwnToken = (own: ReadonlySet<string>, token: string | undefined) => !!token && own.has(token)
 
 /**
@@ -79,6 +90,9 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
   const [canvas, setCanvas] = useState<Canvas | null>(parsed.ok ? parsed.canvas : null)
   const [state, setStateNow] = useState<SaveState>('saved')
   const [error, setError] = useState<string | null>(null)
+  // A refused masked merge fails the same way on every retry, so its notice
+  // offers a reload instead.
+  const [refusal, setRefusal] = useState<'stale' | 'refused' | null>(null)
   const resolvingRef = useRef(false)
   const [resolving, setResolving] = useState(false)
   // Bumped whenever content from outside replaces the canvas, so the editor
@@ -204,6 +218,7 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
           setState('conflict')
         } else {
           setState('failed')
+          setRefusal(maskedRefusal(err))
           setError(err instanceof Error ? err.message : String(err))
         }
       } finally {
@@ -327,6 +342,7 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
       void qc.invalidateQueries({ queryKey: ['artifact', artifact.slug] })
     } catch (err) {
       setState('failed')
+      setRefusal(null)
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       resolvingRef.current = false
@@ -348,6 +364,7 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
       await save()
     } catch (err) {
       setState('failed')
+      setRefusal(null)
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       resolvingRef.current = false
@@ -393,9 +410,16 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
       {state === 'failed' && (
         <ErrorNotice
           title={t('components.canvas.save_failed_title')}
-          message={error}
+          message={refusal === 'stale' ? t('components.canvas.masked_stale_message')
+            : refusal === 'refused' ? t('components.canvas.masked_refused_message') : error}
           // No hand-off: the failed save is still only on this page, and the hand-off navigates away.
-          footer={<div className="mt-2"><Btn onClick={retry}>{t('components.canvas.save_retry')}</Btn></div>}
+          footer={(
+            <div className="mt-2">
+              {refusal
+                ? <Btn disabled={resolving} onClick={() => { void reload() }}>{t('components.canvas.conflict_reload')}</Btn>
+                : <Btn onClick={retry}>{t('components.canvas.save_retry')}</Btn>}
+            </div>
+          )}
         />
       )}
       <div

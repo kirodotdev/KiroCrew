@@ -126,6 +126,20 @@ describe('a canvas artifact', () => {
     expect(screen.queryByText('This canvas changed somewhere else')).toBeNull()
   })
 
+  it('a refused masked merge says what happened and offers a reload, not a retry that fails again', async () => {
+    updateArtifact.mockRejectedValueOnce(new ApiError(400, 'raw server text', JSON.stringify({ code: 'masked_merge_stale' })))
+    render(wrap(<CanvasArtifactBody artifact={art(serializeCanvas(emptyCanvas()))} isCurrent />))
+    addSticky()
+    await act(async () => { await vi.advanceTimersByTimeAsync(800) })
+    expect(screen.getByText(/Hidden text on this canvas changed somewhere else/)).toBeTruthy()
+    expect(screen.queryByText('raw server text')).toBeNull()
+    expect(screen.queryByText('Try saving again')).toBeNull()
+
+    artifact.mockResolvedValueOnce({ ...art(serializeCanvas(withShapes(3))), content_token: 'tLive' })
+    await act(async () => { fireEvent.click(screen.getByText('Reload the canvas')); await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.queryByText('The canvas could not be saved')).toBeNull()
+  })
+
   it('serializes Keep mine then Reload until the overwrite PATCH settles', async () => {
     updateArtifact.mockRejectedValueOnce(new ApiError(409, 'stale', '{}'))
     const { rerender } = render(wrap(<CanvasArtifactBody artifact={art(serializeCanvas(emptyCanvas()))} isCurrent />))

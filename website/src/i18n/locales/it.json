@@ -11992,6 +11992,8 @@
       "conflict_message": "Le tue ultime modifiche non sono salvate. Ricarica per vedere l’altra versione, oppure mantieni la tua e salvala sopra l’altra.",
       "conflict_reload": "Ricarica la lavagna",
       "conflict_title": "Questa lavagna è stata modificata altrove",
+      "masked_refused_message": "Questa modifica sposta, copia o divide testo nascosto, quindi non è stata salvata. Annullala per continuare a modificare o ricarica la lavagna.",
+      "masked_stale_message": "Il testo nascosto di questa lavagna è stato modificato altrove, quindi la tua versione non può essere salvata sopra. Ricarica la lavagna per continuare; le modifiche dall'ultimo salvataggio andranno perse.",
       "custom_colour": "Colore personalizzato",
       "default_colour": "Colore predefinito",
       "delete": "Elimina",

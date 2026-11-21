@@ -760,8 +760,12 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             # save that names another (a "Keep mine" over a newer version) could
             # pair a placeholder with another writer's value, so it is refused.
             placeholders_token = body.get("placeholders_token")
+            # The code tells the page which way out to offer: a stale save can
+            # only reload, a refused edit can also be undone.
+            code = "masked_merge_refused"
             try:
                 if placeholders_token is not None and placeholders_token != expected_token:
+                    code = "masked_merge_stale"
                     raise MaskedMergeError(
                         "this save's hidden-text placeholders come from an older version"
                     )
@@ -776,7 +780,9 @@ async def api_artifact_update(request: web.Request) -> web.Response:
                     error=str(exc),
                     extra={"slug": slug},
                 )
-                return _err(f"{exc}; nothing was written")
+                return web.json_response(
+                    {"error": f"{exc}; nothing was written", "code": code}, status=400
+                )
         # OFF the event loop: update() writes current.html, a version snapshot
         # and -- for a linked artifact -- the source file itself, so running it
         # inline stalls the gateway for every other session on a large file or a

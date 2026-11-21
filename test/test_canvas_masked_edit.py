@@ -309,6 +309,7 @@ class TestRoute:
         )
         assert resp.status == 400
         assert "nothing was written" in _json_body(resp)["error"]
+        assert _json_body(resp)["code"] == "masked_merge_refused"
         assert isolated_store.get("board").content == STORED
 
     @pytest.mark.asyncio
@@ -325,7 +326,7 @@ class TestRoute:
             )
         )
         assert resp.status == 400
-        assert "nothing was written" in _json_body(resp)["error"]
+        assert _json_body(resp)["code"] == "masked_merge_stale"
         assert isolated_store.get("board").content == STORED
         same = await api_artifact_update(
             _request(

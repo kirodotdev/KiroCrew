@@ -6774,6 +6774,8 @@
       "conflict_message": "Your latest changes are not saved. Reload to see the other version, or keep yours and save it over the other one.",
       "conflict_reload": "Reload the canvas",
       "conflict_title": "This canvas changed somewhere else",
+      "masked_refused_message": "This change moves, copies or splits hidden text, so it wasn't saved. Undo it to keep editing, or reload the canvas.",
+      "masked_stale_message": "Hidden text on this canvas changed somewhere else, so your version can't be saved over it. Reload the canvas to keep working; changes since your last save will be lost.",
       "custom_colour": "Custom colour",
       "default_colour": "Default colour",
       "delete": "Delete",
