@@ -495,8 +495,8 @@ class TestTheNoticeShowsOnlyItsOwnFailures:
     """The notice's step list never shows more failures than its header counts.
 
     A replan marks the steps that never ran SKIPPED, so a run whose step 2 failed
-    and was replanned into two passing steps used to list two failures under a
-    header that counted one.
+    and was replanned into two passing steps lists one failure, the one its
+    header counts.
     """
 
     def test_the_failed_count_matches_the_failures_the_list_shows(self, tmp_path: Path) -> None:
