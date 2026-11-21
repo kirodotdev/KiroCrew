@@ -82,7 +82,7 @@ describe("window-lifecycle sends the verdict with every fullscreen change", () =
     assert.ok(fn, "could not locate sendFullScreen");
     assert.match(
       fn[1],
-      /send\("fullscreen-changed", win\.isFullScreen\(\), \{\s*menuBarOverlap: menuBarCanOverlap\(win, screen\),\s*\}\)/,
+      /send\("fullscreen-changed", win\.isFullScreen\(\), \{\s*menuBarOverlap: menuBarCanOverlap\(win, screen\),\s*pageRaised: win\._mcHtmlFullScreen\?\.raisedWindow\(\) === true,\s*\}\)/,
     );
   });
 
@@ -154,5 +154,16 @@ describe("preload forwards the verdict", () => {
       [true, true],
       [false, false],
     ]);
+  });
+
+  it("marks a fullscreen page-raised only on an explicit pageRaised: true", () => {
+    const { api, emit } = loadPreload();
+    const heard = [];
+    api.onFullScreenChanged((_fs, _overlap, pageRaised) => heard.push(pageRaised));
+    emit(true, { pageRaised: true });
+    emit(true, { pageRaised: 1 });
+    emit(true, {});
+    emit(true);
+    assert.deepEqual(heard, [true, false, false, false]);
   });
 });

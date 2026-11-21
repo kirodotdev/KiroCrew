@@ -325,6 +325,7 @@
     "open_command_bar": "Befehlsleiste öffnen",
     "focus_mode": "Fokusmodus",
     "focus_mode_on_announce": "Fokusmodus an. Drück {{chord}}, um ihn auszuschalten.",
+    "fullscreen_exit_hint": "Vollbild an. Drück F11, um das Vollbild zu verlassen.",
     "focus_mode_title": "Fokusmodus · Alt+Umschalt+M",
     "focus_mode_title_mac": "Fokusmodus · ⌥⇧M",
     "connect_your_phone": "Telefon verbinden",

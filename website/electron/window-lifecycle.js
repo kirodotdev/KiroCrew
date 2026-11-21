@@ -418,8 +418,11 @@ function createWindowLifecycle(options) {
     // menu bar (a notched built-in display).
     const sendFullScreen = () => {
       if (win.isDestroyed() || view.webContents.isDestroyed()) return;
+      // `pageRaised`: a video raised this fullscreen and leaves it on Esc, so
+      // the renderer's "Press F11 to exit" hint stays out of its way.
       view.webContents.send("fullscreen-changed", win.isFullScreen(), {
         menuBarOverlap: menuBarCanOverlap(win, screen),
+        pageRaised: win._mcHtmlFullScreen?.raisedWindow() === true,
       });
     };
 
@@ -442,7 +445,12 @@ function createWindowLifecycle(options) {
     });
     win.on("enter-full-screen", () => {
       updateViewBounds();
-      sendFullScreen();
+      // Windows and Linux emit this before the page's `enter-html-full-screen`
+      // (html-fullscreen.js), so a video's claim, and with it `pageRaised`, is
+      // only readable on the next turn. macOS emits it after, and its layout
+      // wants the state at once.
+      if (IS_MAC) sendFullScreen();
+      else setImmediate(sendFullScreen);
       scheduleFullscreenSettle();
     });
     win.on("leave-full-screen", () => {
@@ -747,6 +755,8 @@ function createWindowLifecycle(options) {
       })),
       defaults: { width: 1280, height: 860 },
       minSize: { width: 550, height: 600 },
+      // Only macOS shows a way out of fullscreen (window-state.js explains).
+      restoreFullScreen: IS_MAC,
     });
 
     const opts = applyDashboardChrome({

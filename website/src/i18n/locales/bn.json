@@ -325,6 +325,7 @@
     "open_command_bar": "Command Bar খুলুন",
     "focus_mode": "ফোকাস মোড",
     "focus_mode_on_announce": "ফোকাস মোড চালু আছে। এটি বন্ধ করতে {{chord}} চাপো।",
+    "fullscreen_exit_hint": "পূর্ণ স্ক্রিন চালু আছে। এটি থেকে বের হতে F11 চাপো।",
     "focus_mode_title": "ফোকাস মোড · Alt+Shift+M",
     "focus_mode_title_mac": "ফোকাস মোড · ⌥⇧M",
     "connect_your_phone": "ফোন সংযুক্ত করুন",

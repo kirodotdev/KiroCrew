@@ -339,6 +339,7 @@
     "open_command_bar": "Apri Command Bar",
     "focus_mode": "Modalità concentrazione",
     "focus_mode_on_announce": "Modalità concentrazione attiva. Premi {{chord}} per disattivarla.",
+    "fullscreen_exit_hint": "Schermo intero attivo. Premi F11 per uscire dallo schermo intero.",
     "focus_mode_title": "Modalità concentrazione · Alt+Maiusc+M",
     "focus_mode_title_mac": "Modalità concentrazione · ⌥⇧M",
     "connect_your_phone": "Collega il telefono",

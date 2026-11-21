@@ -311,6 +311,7 @@
     "open_command_bar": "Command Bar 열기",
     "focus_mode": "집중 모드",
     "focus_mode_on_announce": "집중 모드가 켜졌습니다. {{chord}} 키를 누르면 꺼집니다.",
+    "fullscreen_exit_hint": "전체 화면이 켜졌습니다. F11 키를 누르면 전체 화면이 종료됩니다.",
     "focus_mode_title": "집중 모드 · Alt+Shift+M",
     "focus_mode_title_mac": "집중 모드 · ⌥⇧M",
     "connect_your_phone": "휴대폰 연결",

@@ -353,6 +353,7 @@
     "open_command_bar": "Открыть Command Bar",
     "focus_mode": "Режим фокусировки",
     "focus_mode_on_announce": "Режим фокусировки включён. Нажми {{chord}}, чтобы выключить его.",
+    "fullscreen_exit_hint": "Полноэкранный режим включён. Нажми F11, чтобы выйти из него.",
     "focus_mode_title": "Режим фокусировки · Alt+Shift+M",
     "focus_mode_title_mac": "Режим фокусировки · ⌥⇧M",
     "connect_your_phone": "Подключить телефон",

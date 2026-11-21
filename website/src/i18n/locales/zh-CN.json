@@ -311,6 +311,7 @@
     "open_command_bar": "打开 Command Bar",
     "focus_mode": "专注模式",
     "focus_mode_on_announce": "专注模式已开启。按 {{chord}} 可关闭。",
+    "fullscreen_exit_hint": "已进入全屏。按 F11 退出全屏。",
     "focus_mode_title": "专注模式 · Alt+Shift+M",
     "focus_mode_title_mac": "专注模式 · ⌥⇧M",
     "connect_your_phone": "连接手机",

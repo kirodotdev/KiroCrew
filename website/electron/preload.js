@@ -209,9 +209,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Second argument: whether the macOS menu bar can slide over the window.
   // Only an explicit `menuBarOverlap: false` from main turns it off, so a
   // missing or malformed payload keeps the renderer's menu-bar band.
+  // Third argument: true only when a page's video raised this fullscreen.
   onFullScreenChanged: (callback) => {
     const handler = (_event, isFullScreen, info) =>
-      callback(!!isFullScreen, !(info && info.menuBarOverlap === false));
+      callback(
+        !!isFullScreen,
+        !(info && info.menuBarOverlap === false),
+        !!(info && info.pageRaised === true),
+      );
     ipcRenderer.on("fullscreen-changed", handler);
     return () => ipcRenderer.removeListener("fullscreen-changed", handler);
   },
