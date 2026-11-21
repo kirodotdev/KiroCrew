@@ -389,28 +389,24 @@ Request flow:
 
    `/api/token/local` carries its own gate: loopback (or a same-principal unix
    peer), then `X-Local-Secret`, then the local-owner process check. Each
-   refusal is a `403` with a machine-readable `code` naming its SEL
+   refusal is a `403` with a machine-readable `code` matching its SEL
    `token.local` record's `resources`: `loopback_only` (`non-loopback`),
    `invalid_secret` (`invalid-secret`) and `member_owner_token_refused`
-   (`unverified-owner-process`, or `app-backend-refused app=<name>`). The owner-process check answers with
+   (`unverified-owner-process`). The owner-process check answers with
    provenance, not a bare verdict (`member_memory_auth.local_owner_bootstrap_provenance`
    returns a `LocalOwnerProvenance`): when the caller is owned by an app backend
    this gateway spawned, the backend registry's name for that app
    (`apps.backend.spawned_backend_owner`) is consulted before the host-process
    leg, so an unsandboxed backend that would also pass as a host process is still
-   named. A caller the registry names (`provenance.app is not None`, including an
-   empty registry key) is an app backend or a descendant of one: it is code the
-   owner enabled, not the owner, so the mint signs no token of any kind for it. It
-   gets `403` `member_owner_token_refused` with the body `An app backend cannot
-   request an owner token.` and a `denied` record whose `resources` is
-   `app-backend-refused app=<name>`; this is a second `resources` value under the
-   same `code`, beside `unverified-owner-process`. The name is the registry key,
-   which `apps.manifest.app_name_error` holds to kebab-case, so it can carry
-   neither a space nor `=` and cannot forge a second field in the row. A host
-   process gets an owner token with no `app` claim and a success record whose
-   `resources` is `token-issued`. A registry that raises names no app and leaves
-   the host-process leg to decide as before. `/api/relay-viewer/token` refuses the
-   same callers by the same `is not None` test. On loopback TCP the caller's
+   attributed to its app. The success record's `resources` is `token-issued` for
+   a host process and `token-issued app=<name>` for an app backend; the response
+   body is unchanged. The name is the registry key, which `apps.manifest.app_name_error`
+   holds to kebab-case, so it can carry neither a space nor `=` and cannot forge a
+   second field in the row. It is NOT a token claim: an `app`-scoped token is
+   refused by `is_owner_dashboard_request`, so a claim would withdraw the
+   capability the admission grants. Consulting the registry first changes what is
+   recorded, never what is admitted; a registry that raises names no app and
+   leaves the host-process leg to decide as before. On loopback TCP the caller's
    pid comes from `platform_compat.get_tcp_peer_pid`, a scan of every process's
    descriptors, so it is resolved once per accepted connection: the answer is kept
    against that connection's transport with the process start id read beside it,
