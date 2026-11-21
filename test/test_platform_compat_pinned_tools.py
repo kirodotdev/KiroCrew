@@ -180,11 +180,20 @@ def test_process_owner_uid_ignores_a_planted_ps_on_path(tmp_path, monkeypatch):
 
     ``process_owner_uid`` reads ``/proc`` on Linux and shells out to ``ps`` only
     on macOS, so the darwin branch is selected explicitly to exercise the spawn
-    on any POSIX host rather than leaving it covered on macOS CI alone.
+    on any POSIX host rather than leaving it covered on macOS CI alone. The
+    trusted ``ps`` is a controlled one, so the test does not depend on the host
+    shipping a real ``ps`` (a slim container has none).
     """
 
     if pc.IS_WINDOWS:  # pragma: no cover - POSIX binary resolution
         pytest.skip("POSIX binary resolution")
+
+    trusted_dir = tmp_path / "trusted"
+    trusted_dir.mkdir()
+    trusted_ps = trusted_dir / "ps"
+    trusted_ps.write_text(f"#!/bin/sh\necho {os.getuid()}\n")
+    trusted_ps.chmod(0o755)
+    monkeypatch.setattr(pc, "_TRUSTED_SYSTEM_BIN_DIRS", (str(trusted_dir),))
 
     shim = tmp_path / "ps"
     shim.write_text("#!/bin/sh\necho 999999\n")
@@ -422,17 +431,22 @@ class TestTrustedGitBin:
     """
 
     def test_uses_the_trusted_system_resolver(self, monkeypatch) -> None:
-        monkeypatch.setattr(pc, "trusted_system_bin", lambda _n: "/usr/bin/git")
+        monkeypatch.setattr(pc, "trusted_system_bin_quiet", lambda _n: "/usr/bin/git")
         assert pc.trusted_git_bin() == "/usr/bin/git"
 
-    def test_windows_falls_back_to_the_git_for_windows_roots(self, monkeypatch, tmp_path) -> None:
+    def test_windows_falls_back_to_the_git_for_windows_roots(
+        self, monkeypatch, tmp_path, caplog
+    ) -> None:
         """Git for Windows installs under Program Files, never System32.
 
         Without the fallback every supported Windows source install resolves to
-        None, which would silently disable the callers that depend on it.
+        None, which would silently disable the callers that depend on it. A git
+        the fallback finds is not reported as unavailable on the way.
         """
-        monkeypatch.setattr(pc, "trusted_system_bin", lambda _n: None)
+        monkeypatch.setattr(pc, "_UNPINNED_TOOL_PROBED", set())
+        monkeypatch.setattr(pc, "trusted_system_bin_quiet", lambda _n: None)
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc.shutil, "which", lambda _n: r"C:\Program Files\Git\cmd\git.EXE")
 
         gfw = tmp_path / "Git" / "cmd"
         gfw.mkdir(parents=True)
@@ -440,23 +454,36 @@ class TestTrustedGitBin:
         exe.write_text("")
         exe.chmod(0o755)
         monkeypatch.setattr(pc, "_WINDOWS_GIT_DIRS", (str(gfw),))
-        assert pc.trusted_git_bin() == str(exe)
+        with caplog.at_level(logging.WARNING, logger=pc.logger.name):
+            assert pc.trusted_git_bin() == str(exe)
+        assert not [r for r in caplog.records if "treated as unavailable" in r.getMessage()]
 
-    def test_windows_returns_none_when_the_roots_are_empty(self, monkeypatch) -> None:
+    def test_windows_returns_none_when_the_roots_are_empty(self, monkeypatch, caplog) -> None:
         """Fixed roots only -- a miss returns None without consulting PATH.
 
         Reading `%ProgramFiles%` instead would let a poisoned variable redirect
         the lookup to an agent-writable directory, which is the hole the pin
-        exists to close.
+        exists to close. A real miss is still reported, naming the Git for
+        Windows roots it searched.
         """
-        monkeypatch.setattr(pc, "trusted_system_bin", lambda _n: None)
+        monkeypatch.setattr(pc, "_UNPINNED_TOOL_PROBED", set())
+        monkeypatch.setattr(pc, "trusted_system_bin_quiet", lambda _n: None)
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_system_dirs", lambda: (r"C:\Windows\system32",))
+        monkeypatch.setattr(pc.shutil, "which", lambda _n: r"D:\tools\git.exe")
         monkeypatch.setattr(pc, "_WINDOWS_GIT_DIRS", (r"Z:\nonexistent\Git\cmd",))
-        assert pc.trusted_git_bin() is None
+        with caplog.at_level(logging.WARNING, logger=pc.logger.name):
+            assert pc.trusted_git_bin() is None
+        messages = [r.getMessage() for r in caplog.records]
+        assert len(messages) == 1
+        assert "treated as unavailable" in messages[0]
+        assert r"Z:\nonexistent\Git\cmd" in messages[0]
 
     def test_posix_never_probes_the_windows_roots(self, monkeypatch) -> None:
         """On POSIX the trusted-dirs decision is final."""
-        monkeypatch.setattr(pc, "trusted_system_bin", lambda _n: None)
+        monkeypatch.setattr(pc, "_UNPINNED_TOOL_PROBED", set())
+        monkeypatch.setattr(pc, "trusted_system_bin_quiet", lambda _n: None)
+        monkeypatch.setattr(pc.shutil, "which", lambda _n: None)
         monkeypatch.setattr(pc, "IS_WINDOWS", False)
         monkeypatch.setattr(
             pc,

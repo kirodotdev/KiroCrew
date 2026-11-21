@@ -404,12 +404,12 @@ def _patch_path():
 def _git_resolvable():
     """Pin git's resolution so these tests do not depend on the host's layout.
 
-    The probe resolves git from fixed system directories, and on Windows git lives
-    under ``C:\\Program Files\\Git``, so the real lookup would decline before the mocked
+    The probe resolves git from fixed install directories only, so on a host that
+    keeps git elsewhere the real lookup would decline before the mocked
     ``subprocess.run``.
     """
     with patch(
-        "kiro_crew.platform.update_capability.trusted_system_bin",
+        "kiro_crew.platform.update_capability.trusted_git_bin",
         return_value="/usr/bin/git",
     ):
         yield

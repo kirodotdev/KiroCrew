@@ -31,7 +31,7 @@ from typing import Any
 
 from kiro_crew._bootstrap import _source_checkout_root
 from kiro_crew.beacon import baked_distribution, distribution
-from kiro_crew.platform_compat import trusted_system_bin
+from kiro_crew.platform_compat import trusted_git_bin
 
 #: Who owns replacing this install's bytes.
 MANAGED_BY_ELECTRON = "electron"
@@ -155,12 +155,13 @@ def _git_toplevel(root: str) -> str | None:
     # PATH is NOT trusted to name the binary. A gateway's PATH legitimately leads
     # with agent-writable directories (a worktree venv's `bin`, `~/.local/bin`), and
     # this runs unattended on the boot check — a bare "git" would let a planted shim
-    # execute with the gateway's environment. `None` (git is not in a fixed system
-    # directory) is INDETERMINATE, the same as any other answer this probe cannot
-    # obtain: `is_git_worktree` then falls back to the on-disk repository markers, so
-    # a host that keeps git outside those directories loses the authoritative answer
-    # but never loses the update path.
-    git_bin = trusted_system_bin("git")
+    # execute with the gateway's environment. `trusted_git_bin` adds Git for
+    # Windows' default install roots, since git is never in System32. `None`
+    # (git is in none of those directories) is INDETERMINATE, the same as any other
+    # answer this probe cannot obtain: `is_git_worktree` then falls back to the
+    # on-disk repository markers, so a host that keeps git elsewhere loses the
+    # authoritative answer but never loses the update path.
+    git_bin = trusted_git_bin()
     if git_bin is None:
         return None
     try:

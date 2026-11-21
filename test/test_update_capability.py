@@ -33,7 +33,7 @@ def _init_repo(path) -> None:
 def _pin_probe_git(monkeypatch, tmp_path):
     """Resolve the worktree probe's git to a fake under ``tmp_path``.
 
-    ``_git_toplevel`` finds git through ``trusted_system_bin`` (fixed system
+    ``_git_toplevel`` finds git through ``trusted_git_bin`` (fixed install
     directories, never PATH) and asks ``rev-parse --show-toplevel`` about the
     install root. Left alone, that is the HOST's git running from the test
     process -- and on a host that keeps git outside those directories the probe
@@ -83,7 +83,7 @@ def _pin_probe_git(monkeypatch, tmp_path):
             encoding="utf-8",
         )
         fake.chmod(0o755)
-    monkeypatch.setattr(update_capability, "trusted_system_bin", lambda _name: str(fake))
+    monkeypatch.setattr(update_capability, "trusted_git_bin", lambda: str(fake))
     return fake
 
 
@@ -585,21 +585,19 @@ class TestTheProbeDoesNotTrustPath:
     ):
         """A miss must degrade, never deny the update path.
 
-        `trusted_system_bin` returning None means "cannot resolve a trustworthy
-        git" — on a host that keeps git outside the fixed system directories the
+        `trusted_git_bin` returning None means "cannot resolve a trustworthy
+        git" — on a host that keeps git outside the fixed install directories the
         authoritative answer is lost, so detection has to fall back to the on-disk
         repository markers rather than concluding "not a checkout".
 
-        This is the NORMAL case on Windows, where git ships under
-        ``C:\\Program Files\\Git`` and never appears in System32. The fallback is
+        On Windows that is a git installed off the default
+        ``C:\\Program Files\\Git`` roots. The fallback is
         what keeps those installs updatable, and because it requires the marker at
         the root ITSELF it still refuses to treat a subdirectory of a checkout as
         the checkout — the ancestor-capture defect the git anchor was added for
         does not come back with it.
         """
-        monkeypatch.setattr(
-            "kiro_crew.platform.update_capability.trusted_system_bin", lambda _n: None
-        )
+        monkeypatch.setattr("kiro_crew.platform.update_capability.trusted_git_bin", lambda: None)
         checkout = tmp_path / "checkout"
         checkout.mkdir()
         (checkout / ".git").mkdir()
