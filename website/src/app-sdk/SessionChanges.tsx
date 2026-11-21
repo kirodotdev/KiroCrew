@@ -82,6 +82,9 @@ function refusal(key: 'not_declared' | 'diff_not_declared', path: string, testId
         ? i18nT('appSdk.sessionChanges.diff_not_declared', { path })
         : i18nT('appSdk.sessionChanges.not_declared', { path })}
       askAgent
+      // Says what the agent does here, so it does not read as a second
+      // person to fix what only the app's developer can change.
+      askAgentLabel={i18nT('appSdk.sessionChanges.ask_agent')}
     />
   )
   if (key === 'diff_not_declared') return notice
