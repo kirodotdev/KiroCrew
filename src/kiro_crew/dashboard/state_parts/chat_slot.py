@@ -1068,6 +1068,17 @@ class _ChatSlot:
         if was and not self._has_reader_flag:
             self._retry_deferred_release()
 
+    def durable_source(self) -> list[dict[str, Any]]:
+        """The list the durable queue writer persists from: the held peer steers
+        (``deferred_steer.saved_queue_entries``), then ``_queue``.
+
+        Every check that judges whether a queued prompt is kept
+        (``warn_if_not_durable``, ``refused_durable_ids``) reads this rather than
+        ``_queue`` alone, so a prompt the held steers push past the count cap or
+        the byte budget is reported and marked as one the queue pushes out is.
+        """
+        return deferred_steer.saved_queue_entries(self) + self._queue
+
     def durable_queue_entries(self) -> list[dict[str, Any]]:
         """The queued user prompts a metadata writer may persist right now.
 
@@ -1076,7 +1087,7 @@ class _ChatSlot:
         hands it back as a queue card. The drift check reads this too, so a hold
         or a settle owes a save as a queue change does.
         """
-        return durable_queue_entries(deferred_steer.saved_queue_entries(self) + self._queue)
+        return durable_queue_entries(self.durable_source())
 
     def durable_queue_view(self) -> tuple[list[dict[str, Any]], int]:
         """Persistable queued prompts and the candidate count, from one read.
@@ -1085,7 +1096,7 @@ class _ChatSlot:
         difference describes one observation of the queue rather than two. The
         held peer steers lead, as in :meth:`durable_queue_entries`.
         """
-        return durable_queue_view(deferred_steer.saved_queue_entries(self) + self._queue)
+        return durable_queue_view(self.durable_source())
 
     @property
     def queue_persist_pending(self) -> bool:

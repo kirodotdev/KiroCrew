@@ -1533,7 +1533,7 @@ def queue_for_next_turn(
     # Accepted, and possibly not persisted: the write ceilings refuse an entry
     # past the count cap or the byte budget and the send is still accepted, so
     # that case is logged at WARNING and drawn on the card this frame makes.
-    if not warn_if_not_durable(slot._queue, qid, slot.key):
+    if not warn_if_not_durable(slot.durable_source(), qid, slot.key):
         push.setdefault("meta", {})["durable"] = False
     from kiro_crew.dashboard import responsive_chat as _rc
 

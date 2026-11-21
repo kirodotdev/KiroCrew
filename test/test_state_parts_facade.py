@@ -215,6 +215,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self) -> 'tuple[list[dict[str, Any]], int]'",
     ),
+    "durable_source": ("function", False, False, "(self) -> 'list[dict[str, Any]]'"),
     "enqueue_or_run_prompt": (
         "function",
         False,
