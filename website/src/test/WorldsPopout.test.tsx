@@ -25,6 +25,7 @@ vi.mock('../pages/scenes/NeuralConstellationScene', () => ({ default: (p: { agen
 vi.mock('../pages/scenes/WizardTowerScene', () => ({ default: (p: { agents: unknown[] }) => <div data-testid="scene-wizard">WizardScene ({p.agents.length})</div> }))
 vi.mock('../pages/scenes/UnderwaterLabScene', () => ({ default: (p: { agents: unknown[] }) => <div data-testid="scene-underwater">UnderwaterScene ({p.agents.length})</div> }))
 vi.mock('../pages/scenes/mission-control/MissionControlScene', () => ({ default: (p: { agents: unknown[] }) => <div data-testid="scene-mission">MissionScene ({p.agents.length})</div> }))
+vi.mock('../pages/scenes/HanoiScene', () => ({ default: (p: { agents: unknown[] }) => <div data-testid="scene-hanoi">HanoiScene ({p.agents.length})</div> }))
 
 beforeEach(() => { localStorage.clear(); mockBroadcastScene.mockClear() })
 
@@ -36,6 +37,7 @@ describe('WorldsPopout', () => {
     expect(screen.getByText('Wizard Tower')).toBeInTheDocument()
     expect(screen.getByText('Deep Lab')).toBeInTheDocument()
     expect(screen.getByText('Mission Control')).toBeInTheDocument()
+    expect(screen.getByText('Hà Nội')).toBeInTheDocument()
   })
 
   it('shows office scene by default', () => {
