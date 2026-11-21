@@ -62,11 +62,13 @@ def test_the_engine_release_is_the_pin_without_its_node_suffix() -> None:
 
 def test_the_public_surface_is_exactly_the_pin_and_the_engine_gate() -> None:
     assert sorted(kas_pin.__all__) == [
+        "KAS_CHECKS_AUTO_APPROVALS_MIN_ENGINE_VERSION",
         "KAS_PIN_ENGINE_RELEASE",
         "KAS_PIN_MANIFEST_SHA256",
         "KAS_PIN_VERSION",
         "KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION",
         "KAS_VERSION_OVERRIDE_ENV",
+        "engine_checks_auto_approvals",
         "engine_spec_permissions_supported",
         "pinned_version",
     ]

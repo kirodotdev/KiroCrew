@@ -6252,6 +6252,18 @@
       "title_wants_to_run": "<title/> の実行を求めています"
     },
     "approvalModePicker": {
+      "approve_for_me_failed": "「代わりに承認」をオンにできませんでした。もう一度お試しください。",
+      "approve_for_me_busy": "いまの返答が終わるまで待ってから、もう一度 Approve for me を選んでください。",
+      "approve_for_me_not_owners": "Approve for me は、ここから操作しているチャットでのみ使えます。チャネル、スケジュール、アプリにつながったチャットでは使えません。",
+      "approve_for_me_label": "代わりに承認",
+      "approve_for_me_desc": "このチャットでは、KAS がシェルコマンドやファイル編集を含むふだんの操作をあなたの代わりに承認し、迷ったときはあなたに確認します",
+      "approve_for_me_details": "Approve for me のしくみ",
+      "approve_for_me_detail_skip": "{{productName}} はまず、KAS があなたの代わりに承認しようとする各操作をチェックします：危険なコマンド、機密ファイル、あなたの承認ルールとフック",
+      "approve_for_me_detail_direct": "あなた自身の常に許可ルールやプリセットが許可する操作は、{{productName}} が確認せずにそのまま実行されます",
+      "approve_for_me_detail_kept": "チェックで止められた場合は、いつもの承認カードが表示されます",
+      "approve_for_me_detail_blocked": "KAS が自分で操作をブロックすることもあり、その行には「Blocked by KAS」と表示されます",
+      "approve_for_me_detail_off": "チャンネル、スケジュール、あなた以外からのメッセージではオフになり、管理者プロファイルが適用されている間もオフです",
+      "approve_for_me_detail_logged": "この方法で KAS が承認またはブロックした操作は、セキュリティログに記録されます",
       "nudge_body": "ここで {{productName}} の承認モードを調整できます。ここで「信頼」を選ぶと、このチャットでは事前に確認せずに作業します。いつでも戻せます。",
       "nudge_dismiss": "了解しました",
       "nudge_title": "確認の回数を減らしたいですか？",

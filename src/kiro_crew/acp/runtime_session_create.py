@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 from kiro_crew import session_head
-from kiro_crew.acp import kas_cli_settings, kas_env_launch, runtime_start
+from kiro_crew.acp import kas_approve_for_me, kas_cli_settings, kas_env_launch, runtime_start
 from kiro_crew.acp._dispatch import (
     attach_kas_custom_agents,
     build_session_new_params,
@@ -66,6 +66,7 @@ from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_APPROVE_FOR_ME,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     METHOD_SESSION_NEW,
     JsonRpcMessage,
@@ -1126,6 +1127,9 @@ async def _finish_create_session(
     # the shared process.
     try:
         await handle.apply_session_permission_routing()
+        if self.acp_backend in ACP_BACKENDS_APPROVE_FOR_ME:
+            # Before any prompt: the session's approve-for-me reads ``on`` or ``off``.
+            await kas_approve_for_me.settle(handle)
     except Exception:
         await self.terminate_session(session_id)
         raise

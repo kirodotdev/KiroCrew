@@ -724,6 +724,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "line, and a wrong membership is a defect, not a feature a card could mark: a "
         "hidden switch, or a write to another harness's option of the same id"
     ),
+    "ACP_BACKENDS_APPROVE_FOR_ME": (
+        "whether a session may opt into its engine approving tool calls on its own. "
+        "The approval-mode picker offers it only on a member and only where the "
+        "approval_modes policy names it, and the picker row itself says what it "
+        "gives up, so a card line would repeat it"
+    ),
     "ACP_BACKENDS_FAST_MODE_CONFIG_OPTION": (
         "whether the session's advertised Fast mode switch is read and written. The "
         "switch shows only while the adapter advertises it, so a member needs no card "

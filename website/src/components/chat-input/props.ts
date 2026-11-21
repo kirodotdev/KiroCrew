@@ -365,6 +365,9 @@ export interface ChatInputProps {
   approvalMode?: string
   /** The approval-mode picker drives another machine's session (crew window). */
   approvalModeRemote?: ApprovalModeRemote
+  /** The KAS session's approve-for-me read-back; `undefined` while it offers none,
+   *  which keeps the choice out of the approval-mode picker. */
+  approveForMe?: boolean
   /** Drawn directly right of the approval-mode picker (the mid-chat conductor mode chip). */
   afterApprovalMode?: React.ReactNode
   reasoningEffort?: string

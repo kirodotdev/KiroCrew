@@ -26,7 +26,6 @@ if TYPE_CHECKING:
         _GATE_TIER_KINDS,
         _HOST_SEARCH_BUILTIN_TOOLS,
         _READ_ONLY_TOOL_KINDS,
-        KIRO_TOOL_ALIASES,
         GateRule,
         GateTier,
         HookManager,
@@ -52,6 +51,7 @@ if TYPE_CHECKING:
         _search_deny_target,
         _tool_matches,
         audit_bash_exfiltration,
+        builtin_names,
         command_invokes_git,
         current_context,
         deepseek_policy_alias,
@@ -1160,6 +1160,9 @@ def _operator_confirms(facts: GateFacts, grant_targets: tuple[str, ...]) -> bool
     if patterns:
         call = facts.call
         targets = [*grant_targets, call.title, facts.normalized]
+        if not call.mcp_server and call.mcp_tool:
+            # A built-in answers to its aliases too (``run_command`` -> ``execute_bash``).
+            targets += builtin_names(call.mcp_tool)
         if call.mcp_server:
             tool_ref = mcp_identity_ref(call.mcp_server, call.mcp_tool)
             targets += [tool_ref, f"Running: {tool_ref}", mcp_identity_ref(call.mcp_server, "")]
@@ -1249,22 +1252,8 @@ def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
 
 
 def _spec_builtin_names(call: ToolCall) -> tuple[str, ...]:
-    """Every name a KAS built-in call answers to on the grant plane.
-
-    Its stamped id, kiro-cli's spelling of that id (``shell`` -> ``execute_bash``),
-    the kiro-cli policy names that are the SAME work (``read_file`` -> ``fs_read``),
-    and for a shell call both of KAS's shell tools. A deny-only alias is left out: ``delete_file`` is governed under
-    ``fs_write`` but a ``fs_write`` grant never mounted it, so it never approves it.
-    """
-    raw = call.mcp_tool
-    names = [raw, KIRO_TOOL_ALIASES.get(raw, raw)]
-    may_admit, _deny_only = policy_alias_split(raw)
-    names.extend(may_admit)
-    if "execute_bash" in names:
-        # KAS's one built-in alias pair: both shell tools reach the permission
-        # frame as ``run_command``, so a grant of either names this call.
-        names.append("execute_pwsh")
-    return tuple(dict.fromkeys(n for n in names if n))
+    """Every name a KAS built-in call answers to on the grant plane (``tool_names.builtin_names``)."""
+    return builtin_names(call.mcp_tool)
 
 
 def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
