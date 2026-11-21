@@ -31,7 +31,8 @@ import {
   distinctCommands,
   distinctChanges,
   distinctDrawn,
-  unmatchedKeys,
+  markedKeysPerLaunch,
+  mergedEnvRule,
   wholeLaunchChanges,
   type EnvValueChange,
   envValueChanges,
@@ -98,6 +99,8 @@ function LaunchBlock({
   complete,
   marked,
   only,
+  perLaunch,
+  gained,
 }: {
   label: string
   commands?: string[][]
@@ -107,43 +110,80 @@ function LaunchBlock({
   marked?: { args: ReadonlySet<string>; env: ReadonlySet<string> }
   /** When set, only these env names are listed (the keys that changed). */
   only?: ReadonlySet<string>
+  /** Draw each launch with its own env keys under its command, not one merged list. */
+  perLaunch?: boolean
+  /** In per-launch mode, the keys each launch (by index in `commands`) gained. */
+  gained?: ReadonlyArray<ReadonlySet<string>>
 }) {
+  const argvNodes = (argv: string[]) =>
+    argv.map((arg, i) => (
+      <Fragment key={i}>
+        {i > 0 && ' '}
+        {marked?.args.has(arg) ? (
+          <mark className="rounded-sm bg-warn/25 px-0.5 text-[var(--text)]">{argvLine([arg])}</mark>
+        ) : (
+          argvLine([arg])
+        )}
+      </Fragment>
+    ))
+  const envRow = (names: string[], also?: ReadonlySet<string>) =>
+    names.length > 0 && (
+      <p className="m-0 break-words text-[12px] [overflow-wrap:anywhere]">
+        <span className={DETAILS_LABEL_CLASS}>{i18nT('pages.mcpManagement.details_env')}</span>{' '}
+        {names.map((n, i) => (
+          <Fragment key={n}>
+            {i > 0 && ', '}
+            {marked?.env.has(n) || also?.has(n) ? (
+              <mark className="rounded-sm bg-warn/25 px-0.5 font-mono text-[var(--text)]">{n}</mark>
+            ) : (
+              <span className="font-mono text-[var(--text)]">{n}</span>
+            )}
+          </Fragment>
+        ))}
+      </p>
+    )
+  const preClass =
+    'm-0 whitespace-pre-wrap [overflow-wrap:anywhere] rounded bg-[var(--bg)] px-2 py-1.5 font-mono text-[12px] text-[var(--text)]'
+  if (perLaunch) {
+    // Each distinct launch once, its own env keys under it, so a key that
+    // moved from one launch to another shows under a different command.
+    const seen = new Set<string>()
+    const launches = (commands ?? [])
+      .map((command, i) => ({ command, env: envs?.[i] ?? [], gained: gained?.[i] }))
+      .filter(l => {
+        const k = JSON.stringify([l.command, [...l.env].sort()])
+        if (seen.has(k)) return false
+        seen.add(k)
+        return true
+      })
+    return (
+      <div className="min-w-0 space-y-1">
+        <div className={DETAILS_LABEL_CLASS}>{label}</div>
+        {launches.map((l, i) => (
+          <div key={i} className="min-w-0 space-y-0.5">
+            <pre className={preClass}>{argvNodes(l.command)}</pre>
+            {envRow(envKeyNames([l.env]), l.gained)}
+          </div>
+        ))}
+        {complete === false && (
+          <p className="m-0 text-[12px]">{i18nT('pages.mcpManagement.details_runs_cut')}</p>
+        )}
+      </div>
+    )
+  }
   const names = envKeyNames(envs).filter(n => !only || only.has(n))
   return (
     <div className="min-w-0 space-y-1">
       <div className={DETAILS_LABEL_CLASS}>{label}</div>
-      <pre className="m-0 whitespace-pre-wrap [overflow-wrap:anywhere] rounded bg-[var(--bg)] px-2 py-1.5 font-mono text-[12px] text-[var(--text)]">
+      <pre className={preClass}>
         {distinctCommands(commands).map((argv, line) => (
           <Fragment key={line}>
             {line > 0 && '\n'}
-            {argv.map((arg, i) => (
-              <Fragment key={i}>
-                {i > 0 && ' '}
-                {marked?.args.has(arg) ? (
-                  <mark className="rounded-sm bg-warn/25 px-0.5 text-[var(--text)]">{argvLine([arg])}</mark>
-                ) : (
-                  argvLine([arg])
-                )}
-              </Fragment>
-            ))}
+            {argvNodes(argv)}
           </Fragment>
         ))}
       </pre>
-      {names.length > 0 && (
-        <p className="m-0 break-words text-[12px] [overflow-wrap:anywhere]">
-          <span className={DETAILS_LABEL_CLASS}>{i18nT('pages.mcpManagement.details_env')}</span>{' '}
-          {names.map((n, i) => (
-            <Fragment key={n}>
-              {i > 0 && ', '}
-              {marked?.env.has(n) ? (
-                <mark className="rounded-sm bg-warn/25 px-0.5 font-mono text-[var(--text)]">{n}</mark>
-              ) : (
-                <span className="font-mono text-[var(--text)]">{n}</span>
-              )}
-            </Fragment>
-          ))}
-        </p>
-      )}
+      {envRow(names)}
       {complete === false && (
         <p className="m-0 text-[12px]">{i18nT('pages.mcpManagement.details_runs_cut')}</p>
       )}
@@ -317,21 +357,26 @@ export function RefusalLaunch({ refusal }: { refusal: LaunchRefusal }) {
     // repeats them. The env summary stays: the columns list key names only.
     const values = envValueChanges(refusal)
     const lines = envLines(diff.envAdded, diff.envRemoved, values)
-    // A key the same on both sides (the gateway's own PATH folds out to this)
-    // tells the reader nothing, so each column lists only the keys that changed.
-    // A launch whose command is new on its side keeps its own keys too: the
-    // value sets across all launches can match while that launch gained a key.
-    const valueChanged = values.map(v => v.name)
+    // A merged key list per side is used only where it cannot hide a change:
+    // one launch per side (list that launch's changed keys), or every launch on
+    // both sides with the same env (list none). Otherwise each column draws
+    // every launch with its own keys, since the gateway's order pairs nothing.
+    const rule = mergedEnvRule(refusal)
+    const changedNames = values.map(v => v.name)
+    const beforeKeys =
+      rule === 'single' ? new Set([...diff.envRemoved, ...changedNames]) : rule === 'same' ? new Set<string>() : undefined
+    const afterKeys =
+      rule === 'single' ? new Set([...diff.envAdded, ...changedNames]) : rule === 'same' ? new Set<string>() : undefined
+    const eachLaunch = rule === null
+    // Per launch, mark a key that is not set on every launch of both sides,
+    // so a newly preloaded launch, or a preload that moved, stands out.
     const approvedSide = { commands: refusal.approved_commands, envs: refusal.approved_envs }
     const newSide = { commands: refusal.commands, envs: refusal.envs }
-    const beforeOwn = unmatchedKeys(approvedSide, newSide)
-    const afterOwn = unmatchedKeys(newSide, approvedSide)
-    // A launch of a command both sides run changed too: per-key sets can't prove
-    // which keys moved between those launches (two of them swapping a loader
-    // preload), so no key is hidden and the changed launches are drawn whole.
+    const gainedBefore = eachLaunch ? markedKeysPerLaunch(approvedSide, newSide) : undefined
+    const gainedAfter = eachLaunch ? markedKeysPerLaunch(newSide, approvedSide) : undefined
+    // A launch of a command both sides run changed too: its values are drawn
+    // whole behind Show full command, since the columns show key names only.
     const whole = wholeLaunchChanges(refusal)
-    const beforeKeys = whole.sameCommandChanged ? undefined : new Set([...diff.envRemoved, ...valueChanged, ...beforeOwn])
-    const afterKeys = whole.sameCommandChanged ? undefined : new Set([...diff.envAdded, ...valueChanged, ...afterOwn])
     return (
       <div className="min-w-0 space-y-2">
         {/* What changed in the env, said once above the two columns. */}
@@ -347,16 +392,20 @@ export function RefusalLaunch({ refusal }: { refusal: LaunchRefusal }) {
             label={i18nT('pages.mcpManagement.details_approved')}
             commands={refusal.approved_commands}
             envs={refusal.approved_envs}
-            marked={{ args: new Set(diff.removed), env: new Set([...diff.envRemoved, ...beforeOwn]) }}
+            marked={{ args: new Set(diff.removed), env: new Set(diff.envRemoved) }}
             only={beforeKeys}
+            perLaunch={eachLaunch}
+            gained={gainedBefore}
           />
           <LaunchBlock
             label={i18nT('pages.mcpManagement.details_new')}
             commands={refusal.commands}
             envs={refusal.envs}
             complete={refusal.complete}
-            marked={{ args: new Set(diff.added), env: new Set([...diff.envAdded, ...afterOwn]) }}
+            marked={{ args: new Set(diff.added), env: new Set(diff.envAdded) }}
             only={afterKeys}
+            perLaunch={eachLaunch}
+            gained={gainedAfter}
           />
         </div>
         {whole.sameCommandChanged && refusal.complete !== false && (
