@@ -151,17 +151,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NEEDED_POINTS: "10500" # the reserve and one weekday
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
           state="$(gh api rate_limit --jq '.resources.graphql | "\(.limit) \(.remaining)"' || true)"
           limit="${state%% *}"
           remaining="${state##* }"
           if ! [[ "$limit" =~ ^[0-9]+$ && "$remaining" =~ ^[0-9]+$ ]]; then
-            echo "::warning::The GraphQL rate limit could not be read; the census reads it with its first query."
+            warn "The GraphQL rate limit could not be read; the census reads it with its first query."
             exit 0
           fi
           echo "GraphQL bucket of this token: ${limit} points an hour, ${remaining} left." | tee -a "$GITHUB_STEP_SUMMARY"
           if [ "$limit" -lt "$NEEDED_POINTS" ]; then
-            echo "::error::This token's GraphQL bucket is ${limit} points an hour; the census leaves 7,700 and a weekday costs 3,000, so it needs ${NEEDED_POINTS}. Nothing was read."
+            err "This token's GraphQL bucket is ${limit} points an hour; the census leaves 7,700 and a weekday costs 3,000, so it needs ${NEEDED_POINTS}. Nothing was read."
             exit 1
           fi
 
@@ -171,13 +173,15 @@ jobs:
           REPO: ${{ github.repository }}
           DAY: ${{ inputs.day }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           if [ -z "$DAY" ]; then
             set -- --last-days 1
           elif [[ "$DAY" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
             set -- --since "$DAY" --until "$DAY"
           else
-            echo "::error::day must be a YYYY-MM-DD date, or empty."
+            err "day must be a YYYY-MM-DD date, or empty."
             exit 1
           fi
           mkdir -p census
@@ -199,9 +203,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           case "$status" in
             0) ;;
-            3) echo "::warning::The census stopped at its API budget; the summary is marked Partial and says what was read. To read the day again, run this workflow by hand with day set to it." ;;
+            3) warn "The census stopped at its API budget; the summary is marked Partial and says what was read. To read the day again, run this workflow by hand with day set to it." ;;
             *)
-              echo "::error::The census could not be taken (exit ${status}); the reason is in this step's log."
+              err "The census could not be taken (exit ${status}); the reason is in this step's log."
               exit 1
               ;;
           esac
@@ -254,13 +258,15 @@ jobs:
           BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
           DAY: ${{ inputs.day }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           if [ -z "$DAY" ]; then
             set --
           elif [[ "$DAY" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
             set -- --until "$DAY"
           else
-            echo "::error::day must be a YYYY-MM-DD date, or empty."
+            err "day must be a YYYY-MM-DD date, or empty."
             exit 1
           fi
           mkdir -p week
@@ -282,9 +288,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           case "$status" in
             0) ;;
-            3) echo "::warning::The week is incomplete; the summary names each day that is missing or partial and says how to read it." ;;
+            3) warn "The week is incomplete; the summary names each day that is missing or partial and says how to read it." ;;
             *)
-              echo "::error::The week could not be added up (exit ${status}); the reason is in this step's log."
+              err "The week could not be added up (exit ${status}); the reason is in this step's log."
               exit 1
               ;;
           esac
