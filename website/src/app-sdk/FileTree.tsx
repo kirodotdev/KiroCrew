@@ -117,6 +117,17 @@ function TreeBody({ client, projectDir, onOpenFile, selectedPath, searchQuery, a
   useLayoutEffect(() => {
     if (selectedPath && root && selectedPath.startsWith(`${root}/`)) lastOpened.current = selectedPath
   }, [selectedPath, root])
+  // While a `selectedPath` change commits, the tree reconciles its selection to
+  // it (deselecting the rows it replaces, one notification each), and any row
+  // left selected for a moment is no user open. Set in render, cleared after
+  // every commit, after the tree's own layout effects.
+  const reconciling = useRef(false)
+  const seenSelected = useRef(selectedPath)
+  if (seenSelected.current !== selectedPath) {
+    seenSelected.current = selectedPath
+    reconciling.current = true
+  }
+  useLayoutEffect(() => { reconciling.current = false })
   if (q.isError) {
     const cause = searchErrorCause(q.error)
     return (
@@ -143,7 +154,7 @@ function TreeBody({ client, projectDir, onOpenFile, selectedPath, searchQuery, a
         <PierreWorkspaceTree
           projectDir={projectDir}
           onFileOpen={path => {
-            if (path === lastOpened.current) return
+            if (reconciling.current || path === lastOpened.current) return
             lastOpened.current = path
             onOpenFile?.(path)
           }}
