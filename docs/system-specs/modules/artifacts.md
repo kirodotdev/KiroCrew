@@ -1886,7 +1886,11 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   back under the placeholder the save still carries
   (`dashboard/artifact_masked_merge.py`, `restore_masked_values`): only for a
   dashboard save (never an agent's), of a stored `canvas`, whose `expected_token`
-  is the stored token. Identical placeholders carry no identity, so a value goes
+  is the stored token. The page also sends `placeholders_token`, the token of the
+  masked read its placeholders came from; when it differs from `expected_token`
+  (a "Keep mine" after a 409 saves the old draft against the live token) the
+  route answers 400 and writes nothing, because the old placeholders would pair
+  with the newer version's values. Identical placeholders carry no identity, so a value goes
   back only where the pairing is certain: a text (a shape's field, by node `id`)
   that still carries placeholders must carry as many as it held, with the text
   between each two of them unchanged; only the text before the first and after

@@ -54,7 +54,7 @@ describe('the canvas edit callback across read-only transitions', () => {
     expect(vi.mocked(CanvasEditor).mock.lastCall?.[0].readOnly).toBe(true)
     await act(async () => { expect(await flushCanvas('board')).toBe(true) })
     expect(api.updateArtifact).toHaveBeenCalledWith('board', {
-      content: serializeCanvas(draft), snapshot: false, expected_token: 't1',
+      content: serializeCanvas(draft), snapshot: false, expected_token: 't1', placeholders_token: 't1',
     })
   })
 })

@@ -116,8 +116,11 @@ describe('a canvas artifact', () => {
     updateArtifact.mockResolvedValueOnce({ content_token: 'tMine' })
     await act(async () => { fireEvent.click(screen.getByText('Keep my version')); await vi.advanceTimersByTimeAsync(0) })
     expect(updateArtifact).toHaveBeenCalledTimes(2)
-    const body = updateArtifact.mock.calls[1][1] as { content: string; expected_token: string }
+    const body = updateArtifact.mock.calls[1][1] as { content: string; expected_token: string; placeholders_token: string }
     expect(body.expected_token).toBe('tLive')
+    // The draft's placeholders still come from the first read, so the server can
+    // refuse to merge them into the live version's hidden values.
+    expect(body.placeholders_token).toBe('t1')
     const mine = parseCanvas(body.content)
     expect(mine.ok && mine.canvas.shapes).toHaveLength(2)
     expect(screen.queryByText('This canvas changed somewhere else')).toBeNull()

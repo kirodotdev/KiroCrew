@@ -51,7 +51,7 @@ async function nextSave(change: (canvas: Canvas) => void, token: string) {
   change(document('Next'))
   await tick()
   expect(api.updateArtifact).toHaveBeenLastCalledWith('board', {
-    content: serializeCanvas(document('Next')), snapshot: false, expected_token: token,
+    content: serializeCanvas(document('Next')), snapshot: false, expected_token: token, placeholders_token: token,
   })
   expect(screen.getByTestId('canvas-save-status')).toHaveTextContent('Saved')
   expect(screen.queryByText('This canvas changed somewhere else')).toBeNull()

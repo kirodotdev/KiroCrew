@@ -90,6 +90,11 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
   // written, and the token that names them.
   const baseRef = useRef(content)
   const tokenRef = useRef(artifact.content_token)
+  // The token of the read whose placeholders the canvas holds. It moves with
+  // tokenRef except on "Keep mine", which saves the old draft against the live
+  // token: the server then refuses a merge that would pair old placeholders with
+  // the newer version's hidden values.
+  const placeholdersRef = useRef(artifact.content_token)
   const liveBeforeHistory = useRef<string | null>(null)
   const draftRef = useRef<Canvas | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -130,6 +135,7 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
       if (token) {
         if (isOwnToken(ownTokens.current, token) || token === tokenRef.current) return
         tokenRef.current = token
+        placeholdersRef.current = token
       }
     }
     // Untokened file reads reconcile by bytes without replacing the save token.
@@ -156,7 +162,9 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
     const run = (async () => {
       try {
         const expected = tokenRef.current
-        const saved = await api.updateArtifact(artifact.slug, { content: body, snapshot: false, expected_token: expected })
+        const saved = await api.updateArtifact(artifact.slug, {
+          content: body, snapshot: false, expected_token: expected, placeholders_token: placeholdersRef.current,
+        })
         // The reply is the masked read of what was stored. Where it differs from what
         // was sent (a credential typed into the canvas is masked on a read), the page
         // takes it, a newer draft included, so its next save matches the server's copy.
@@ -167,6 +175,7 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
         baseRef.current = kept
         const token = (saved as Artifact | undefined)?.content_token
         tokenRef.current = token
+        placeholdersRef.current = token
         if (token) {
           ownTokens.current.add(token)
           if (expected) ownTokens.current.add(expected)
@@ -308,6 +317,7 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
       baseRef.current = body
       liveBeforeHistory.current = null
       tokenRef.current = live.content_token
+      placeholdersRef.current = live.content_token
       ownTokens.current.clear()
       setOwn(null)
       setCanvas(next.ok ? next.canvas : null)

@@ -756,7 +756,15 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             and expected_token == stored_token
             and carries_placeholder(content)
         ):
+            # The placeholders line up only with the masked read they came from. A
+            # save that names another (a "Keep mine" over a newer version) could
+            # pair a placeholder with another writer's value, so it is refused.
+            placeholders_token = body.get("placeholders_token")
             try:
+                if placeholders_token is not None and placeholders_token != expected_token:
+                    raise MaskedMergeError(
+                        "this save's hidden-text placeholders come from an older version"
+                    )
                 content = await _run_off_loop(
                     lambda: _keep_masked_canvas_values(slug, stored_content, content)
                 )

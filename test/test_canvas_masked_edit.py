@@ -312,6 +312,31 @@ class TestRoute:
         assert isolated_store.get("board").content == STORED
 
     @pytest.mark.asyncio
+    async def test_placeholders_from_an_older_version_are_refused_400(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        masked, token = await self._canvas(isolated_store)
+        # "Keep mine" after a 409: the save names the live token, but its
+        # placeholders came from the read before it.
+        resp = await api_artifact_update(
+            _request(
+                body={"content": masked, "expected_token": token, "placeholders_token": "0" * 64},
+                match={"slug": "board"},
+            )
+        )
+        assert resp.status == 400
+        assert "nothing was written" in _json_body(resp)["error"]
+        assert isolated_store.get("board").content == STORED
+        same = await api_artifact_update(
+            _request(
+                body={"content": masked, "expected_token": token, "placeholders_token": token},
+                match={"slug": "board"},
+            )
+        )
+        assert same.status == 200
+        assert isolated_store.get("board").content == STORED
+
+    @pytest.mark.asyncio
     async def test_an_agent_write_is_not_merged(self, isolated_store, patch_restricted) -> None:
         masked, token = await self._canvas(isolated_store)
         resp = await api_artifact_update(
