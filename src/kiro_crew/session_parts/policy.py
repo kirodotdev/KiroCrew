@@ -12,6 +12,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Protocol
 
+from kiro_crew import workflow_step_keys as _step_keys
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_SESSION_EVICTION,
@@ -110,8 +111,10 @@ POOL_DECISIONS: frozenset[str] = frozenset(
 )
 
 # Stateless session-key prefixes — skip resume across restarts.
-_WORKFLOW_AUTHOR_PREFIX = "wf-author:"
-_WORKFLOW_POOL_PREFIX = "wf-pool:"
+_WORKFLOW_AUTHOR_PREFIX = _step_keys.WORKFLOW_AUTHOR_KEY_PREFIX
+_WORKFLOW_POOL_PREFIX = _step_keys.WORKFLOW_POOL_KEY_PREFIX
+# The facade mirror serves this module's own names, so the module alias goes.
+del _step_keys
 _STATELESS_PREFIXES = (
     "cron:",
     _SUBAGENT_PREFIX,

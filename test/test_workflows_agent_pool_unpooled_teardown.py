@@ -21,6 +21,7 @@ import logging
 import pytest
 
 from kiro_crew.workflow_memory import WorkflowMemoryError
+from kiro_crew.workflows import agent_exec
 from kiro_crew.workflows.agent_pool import build_pooled_agent_fn
 
 _LOGGER = "kiro_crew.workflows.agent_pool"
@@ -170,16 +171,21 @@ async def test_body_error_wins_over_destroy_failure(monkeypatch, caplog):
     await pool.shutdown()
 
 
+def _chain_a() -> str:
+    """The session key of the ``session="chain-A"`` steps of run ``run``."""
+    return agent_exec.named_session_key("run", "chain-A")
+
+
 @pytest.mark.asyncio
 async def test_named_release_failure_does_not_mask_result(caplog):
     sessions = _FailingSessions(release_fails=True)
     agent_fn, pool = _build(sessions)
     with caplog.at_level(logging.DEBUG, logger=_LOGGER):
         result = await agent_fn("step", {"session": "chain-A"})
-    assert result == "[chain-A] step"
+    assert result == f"[{_chain_a()}] step"
     # Lease returned (attempted), conversation retained — never cleanup=True.
-    assert sessions.release_calls == [("chain-A", False)]
-    assert "chain-A" in sessions.live
+    assert sessions.release_calls == [(_chain_a(), False)]
+    assert _chain_a() in sessions.live
     assert sessions.destroy_calls == []
     records = _teardown_records(caplog)
     assert len(records) == 1 and "_TeardownError" in records[0].getMessage()
@@ -197,7 +203,7 @@ async def test_named_release_failure_does_not_mask_body_error(monkeypatch):
     agent_fn, pool = _build(sessions)
     with pytest.raises(ValueError, match="provider failed"):
         await agent_fn("step", {"session": "chain-A"})
-    assert sessions.release_calls == [("chain-A", False)]
+    assert sessions.release_calls == [(_chain_a(), False)]
     await pool.shutdown()
 
 
