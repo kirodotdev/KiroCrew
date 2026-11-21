@@ -1364,7 +1364,7 @@ def _kiro_crew_package_attr_floor(request):
     Compares, at teardown, every ``kiro_crew.*`` entry of ``sys.modules`` the test
     inherited and its parent package's attribute (plus the root package's own globals,
     which an in-process ``importlib.reload(kiro_crew)`` rebinds) with what they were at
-    setup, using C-level ``map`` comparisons; only a change takes the slow path. A
+    setup, read through one C-level multi-key read per dict; only a change takes the slow path. A
     module the test imported for the first time is checked too: one left in
     ``sys.modules`` without its parent attribute is bound back. Reports by default and
     fails under ``KIROCREW_PKG_ATTR_STRICT=1``; restores either way. A module- or
