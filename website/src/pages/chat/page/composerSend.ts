@@ -8,16 +8,17 @@ import type { CapacityResponse } from '../../../api/sharedCrew'
 import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import { store, type AppDispatch } from '../../../store'
 import type { ChatMessage, ChatSlot } from '../../../types'
-import { expandAll as expandPasteTokens, carryPastes, mergeCarriedDraft, type PasteBlock } from '../../../utils/pasteTokens'
-import { mergeSessionRefs, type SessionRef } from '../../../utils/sessionRefs'
+import { expandAll as expandPasteTokens, carryPastes, mergeCarriedDraft, restoreMissingBlocks, type PasteBlock } from '../../../utils/pasteTokens'
+import { mergeSessionRefs, sanitizeSessionRefs, type SessionRef } from '../../../utils/sessionRefs'
+import { sanitizePasteBlocks } from '../../../utils/chatPasteDrafts'
 import type { PickedFileTokens } from './composerFileMentions'
 import { queuedSendStash } from '../../../hooks/useQueuedMessageActions'
 import { syncSlotRunningFromServer, capturePendingAskId, createSlot, appendMessage, selectComposerBusy, startLocalTurn, endLocalTurn, appendSlotMessage, setSlotRunning, selectPendingTurn, selectSendConfirmed, selectSlotRunEpoch, selectSlotStreamState, markSendUnconfirmed, confirmOptimisticSend, resolveOptimisticSteer, recordSendAttempt, ageFolderSuggestion } from '../../../store/chatSlice'
 import { confirmedDelivered } from '../../../utils/sendDelivery'
-import { warnDeliveryUnconfirmed } from '../../../utils/deliveryWarning'
-import { announceIfRemovedSendDelivered } from '../../../components/useDeliveryWarningStrip'
+import { warnDeliveryUnconfirmed, type DraftOwner } from '../../../utils/deliveryWarning'
+import { announceIfRemovedSendDelivered, type RecoveredSends } from '../../../components/useDeliveryWarningStrip'
 import { mintSendId, sendTurn } from '../../../chat-core/transport/sendTurn'
-import { prependQuote, type MessageQuote } from '../../../chat-core/composer/messageQuote'
+import { prependQuote, readMessageQuote, type MessageQuote } from '../../../chat-core/composer/messageQuote'
 import { isEmptyTurn, buildOutgoingTurn } from '../../../chat-core/composer/outgoingTurn'
 import { storeSentPastes } from '../../../chat-core/composer/composerPastes'
 import { clearDictated, markDictated, takeDictated, wantsDictationNote } from '../../../chat-core/composer/dictationProvenance'
@@ -31,11 +32,11 @@ import { CHANNEL_CHALLENGE_ORIGIN, takeChallengeSend } from '../../../utils/chan
 import { PREFILL_STORAGE_KEY } from '../../../utils/navIntent'
 import { isComposerSendHeld } from '../../../utils/composerSendHolds'
 import type { ComposerHandle } from '../../../chat-core/composer/Composer'
-import { loadDrafts, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
+import { loadDrafts, markDraftApplied, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
 import { setFileDraft } from '../../../utils/chatFileDrafts'
 import { NO_SLOT_TOKEN_KEY } from '../../../utils/chatFileTokenDrafts'
-import { setPasteDraft } from '../../../utils/chatPasteDrafts'
-import { setSessionRefDraft } from '../../../utils/chatSessionRefDrafts'
+import { pasteDraftsSaveFailed, setPasteDraft } from '../../../utils/chatPasteDrafts'
+import { sessionRefDraftsSaveFailed, setSessionRefDraft } from '../../../utils/chatSessionRefDrafts'
 import { extractKnowledgeQuery, type KnowledgeResult } from '../useKnowledgeFetch'
 import { i18nT } from '../../../i18n/t'
 import type { useActiveSlotState } from './activeSlotState'
@@ -55,7 +56,9 @@ interface ComposerSendOptions {
   drafts: MutableRefObject<Record<string, string>>
   fileDrafts: MutableRefObject<Record<string, string[]>>
   pasteDrafts: MutableRefObject<Record<string, PasteBlock[]>>
-  saveDrafts: () => void
+  saveDrafts: () => boolean
+  /** The draft stores' instance: a restore not yet durable hands it to the delivery strip. */
+  draftOwner: DraftOwner
   sessionRefDrafts: MutableRefObject<Record<string, SessionRef[]>>
   activeSlotRef: MutableRefObject<string | null>
   composerSlotRef: MutableRefObject<string | null>
@@ -134,6 +137,41 @@ export function mergeSentTurns(earlier: SentTurnRestore, later: SentTurnRestore)
   }
 }
 
+const isKnowledgeResult = (v: unknown): v is KnowledgeResult => {
+  if (!v || typeof v !== 'object') return false
+  const k = v as Record<string, unknown>
+  return typeof k.id === 'string' && typeof k.title === 'string' && typeof k.content === 'string'
+    && typeof k.summary === 'string' && typeof k.match_type === 'string' && typeof k.tokens === 'number'
+    && (k.source === null || typeof k.source === 'string')
+}
+
+/** A persisted page payload, or `null` when `isEmptyTurn` would refuse it. The quote comes back inside
+ *  the text: the stage is not saved with the draft, so a second reload would lose it. */
+export function parseSentTurn(v: unknown): SentTurnRestore | null {
+  if (!v || typeof v !== 'object') return null
+  const r = v as Record<string, unknown>
+  if (typeof r.inlined !== 'string') return null
+  const quote = readMessageQuote({ quote: r.quote })
+  const sessionRefs = sanitizeSessionRefs(r.sessionRefs) ?? []
+  if (!r.inlined.trim() && !quote && !sessionRefs.length) return null
+  const tokens: Record<string, string[]> = {}
+  if (r.slotTokens && typeof r.slotTokens === 'object') {
+    for (const [k, list] of Object.entries(r.slotTokens as Record<string, unknown>)) {
+      if (Array.isArray(list)) tokens[k] = list.filter((t): t is string => typeof t === 'string')
+    }
+  }
+  const knowledge = Array.isArray(r.knowledge) ? r.knowledge.filter(isKnowledgeResult) : []
+  return {
+    inlined: quote ? prependQuote(r.inlined, quote) : r.inlined,
+    pastes: sanitizePasteBlocks(r.pastes) ?? [],
+    sessionRefs,
+    quote: null,
+    ...(Object.keys(tokens).length ? { slotTokens: tokens } : {}),
+    ...(knowledge.length ? { knowledge } : {}),
+    ...(r.dictated === true ? { dictated: true } : {}),
+  }
+}
+
 /**
  * send(): the main composer's whole turn submission, from slash interception and the
  * outgoing turn through session creation, delivery receipts and every recovery path,
@@ -143,7 +181,7 @@ export function mergeSentTurns(earlier: SentTurnRestore, later: SentTurnRestore)
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function useComposerSend({
-  mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef, forkUnavailable,
+  mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, draftOwner, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef, forkUnavailable,
   setInput, inputRef, sendingRef, pendingAgentRef, pendingAgentKindRef, setPendingAgent, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, setActionError, showActionError,
   messageQuote, setPrefillHint, autoSendRef, setAutoSendTick, newSessionRef, widgetPrefillRef, mergeSlotTokens, pasteBlocksRef, pendingFilesRef, pendingSessionsRef, pickedFileTokens, setPasteBlocks, readPasteBlocks, installPasteBlocks,
   setPendingFiles, setPendingSessions, composerRef, currentProjectRef, colorThemeRef, autoFollowAllowed, scrollBottom, setRefusedPress, createFailReason,
@@ -213,7 +251,9 @@ export function useComposerSend({
    * literal. Shares the create-failure path's merge rule so a reference
    * staged while the send was in flight is not clobbered.
    */
-  const restoreSentTurn = useCallback((slot: string, sent: SentTurnRestore) => {
+  const restoreSentTurn = useCallback((slot: string, sent: SentTurnRestore, recovered?: RecoveredSends) => {
+    // Its text is already in this draft from an earlier load: only what the draft lacks comes back.
+    const inDraft = recovered?.applied === true
     // Ownership of the live composer state, not the active tab: see the
     // steer receipt's `onScreenNow` for the mid-switch window this closes.
     const onScreenNow = composerSlotRef.current === slot
@@ -234,19 +274,22 @@ export function useComposerSend({
     const keepText = onScreenNow ? inputRef.current : (drafts.current[slot] ?? '')
     const keepPastes = onScreenNow ? readPasteBlocks() : (pasteDrafts.current[slot] ?? [])
     const carried = carryPastes(sent.inlined, sent.pastes, keepPastes)
-    const pastesBack = carried.pastes
+    const pastesBack = inDraft ? restoreMissingBlocks(keepText, keepPastes, sent.pastes) : carried.pastes
     // Same merge rule as the create-failure path above, and the separator lives
     // in `mergeRecoveredDraft` rather than in a template literal here: the blank
     // line between the kept draft and the recovered payload is message
     // structure, not copy, so it stays off the i18n gate honestly rather than by
     // exemption (same treatment as appendSessionRefLinks).
     // The quote: back on the stage when live and free, else in the text.
-    const textBack = messageQuote.recoverInto(mergeCarriedDraft(keepText, carried), sent.quote, onScreenNow && composerMountedRef.current)
+    const textBack = inDraft ? keepText : messageQuote.recoverInto(mergeCarriedDraft(keepText, carried), sent.quote, onScreenNow && composerMountedRef.current)
     if (sent.dictated) markDictated(slot)
     setDraft(drafts.current, slot, textBack)
+    if (recovered) markDraftApplied(slot, recovered.ids)
     setPasteDraft(pasteDrafts.current, slot, pastesBack)
     setSessionRefDraft(sessionRefDrafts.current, slot, refsBack)
-    saveDrafts()
+    const stored = saveDrafts() && !pasteDraftsSaveFailed() && !sessionRefDraftsSaveFailed()
+    const textKept = slot in drafts.current
+    const kept = textKept && (!pastesBack.length || slot in pasteDrafts.current) && (!refsBack.length || slot in sessionRefDrafts.current)
     if (onScreenNow) {
       setInput(textBack); installPasteBlocks(pastesBack); setPendingSessions(refsBack)
       // Advance the effect-synced mirrors with their setters, so a second restore
@@ -260,6 +303,9 @@ export function useComposerSend({
     // fresh bookkeeping (fork GPT review; same rule as the text above).
     if (sent.slotTokens) mergeSlotTokens(slot, sent.slotTokens)
     if (sent.knowledge?.length && onScreenNow) mergeKnowledgeBack(sent.knowledge)
+    if (stored && kept) return true
+    // Off screen and dropped from the in-memory map, no instance holds it: the record stays.
+    return textKept || onScreenNow ? draftOwner : false
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messageQuote.recoverInto])
 

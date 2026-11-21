@@ -155,7 +155,22 @@ export function typedDuringCreate(baseline: string, current: string): string | n
   return current.slice(baseline.length)
 }
 
-const isNonEmptyString = (v: unknown): string | null => (typeof v === 'string' && v ? v : null)
+/** Recovered sends merged into each slot's draft, written by the same save as the text (`encode`). */
+const appliedIds = new Map<string, Set<string>>()
+
+/** A stored entry is the text, or `{ text, applied }` once recovered sends were merged into it. */
+function sanitizeDraft(v: unknown, slot: string): string | null {
+  if (typeof v === 'string') return v || null
+  if (!v || typeof v !== 'object') return null
+  const { text, applied } = v as { text?: unknown; applied?: unknown }
+  if (typeof text !== 'string' || !text) return null
+  if (Array.isArray(applied)) {
+    const ids = appliedIds.get(slot) ?? new Set<string>()
+    for (const id of applied) if (typeof id === 'string' && id) ids.add(id)
+    if (ids.size) appliedIds.set(slot, ids)
+  }
+  return text
+}
 
 const store = createSlotDraftStore<string>({
   key: DRAFTS_KEY,
@@ -163,11 +178,30 @@ const store = createSlotDraftStore<string>({
   ttlMs: DRAFT_TTL_MS,
   maxEntries: DRAFT_MAX_ENTRIES,
   maxStoreBytes: DRAFT_MAX_STORE_BYTES,
-  sanitize: isNonEmptyString,
+  sanitize: sanitizeDraft,
+  encode: (slot, text) => {
+    const ids = appliedIds.get(slot)
+    return ids?.size ? { text, applied: [...ids] } : text
+  },
 })
+
+/** Record that recovered sends `ids` were merged into `slot`'s draft; persisted by the next save. */
+export function markDraftApplied(slot: string, ids: readonly string[]): void {
+  if (!slot || !ids.length) return
+  const held = appliedIds.get(slot) ?? new Set<string>()
+  for (const id of ids) held.add(id)
+  appliedIds.set(slot, held)
+}
+
+export const isDraftApplied = (slot: string, sendId: string): boolean => appliedIds.get(slot)?.has(sendId) === true
+
+/** The ids describe the text, so they go when it does. */
+export function setDraft(drafts: Record<string, string>, slot: string, value: string): void {
+  store.set(drafts, slot, value)
+  if (!(slot in drafts)) appliedIds.delete(slot)
+}
 
 export const loadDrafts = store.load
 export const saveDrafts = store.save
 export const draftsSaveFailed = store.lastSaveFailed
-export const setDraft = store.set
-export const __resetForTests = store.__resetForTests
+export const __resetForTests = (): void => { appliedIds.clear(); store.__resetForTests() }

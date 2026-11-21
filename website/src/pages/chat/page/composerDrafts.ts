@@ -5,6 +5,7 @@ import { clearDictated, isDictated, noteComposerEdit } from '../../../chat-core/
 import type { RootState } from '../../../store'
 import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDraft, appendTypedText, mergeIntoDraft, typedDuringCreate } from '../../../utils/chatDrafts'
 import { registerMainComposer } from '../../../utils/composerRestore'
+import { createDraftOwner, draftSaved, dropDraftOwner, type DraftOwner } from '../../../utils/deliveryWarning'
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../../../utils/chatFileDrafts'
 import { loadFileTokenDrafts, saveFileTokenDrafts as persistFileTokenDrafts } from '../../../utils/chatFileTokenDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../../../utils/chatPasteDrafts'
@@ -53,14 +54,35 @@ export function useComposerDraftStores() {
   // smearing onto another.
   const sessionRefDrafts = useRef<Record<string, SessionRef[]>>(null!)
   if (sessionRefDrafts.current === null) sessionRefDrafts.current = loadSessionRefDrafts()
+  // The recovered sends this instance's stores hold, and only this instance's saves can retire.
+  const draftOwner = useRef<DraftOwner>(null!)
+  if (draftOwner.current === null) draftOwner.current = createDraftOwner()
   const saveDraftsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Per slot, the stores whose cap dropped it: not durable until each holds it after a later save.
+  const lostToCap = useRef(new Map<string, Set<number>>())
   const saveDrafts = useCallback(() => {
+    const held = [drafts.current, fileDrafts.current, pasteDrafts.current, sessionRefDrafts.current]
+    const before = held.map(store => Object.keys(store))
     const textStored = persistDrafts(drafts.current)
     const filesStored = persistFileDrafts(fileDrafts.current)
-    persistPasteDrafts(pasteDrafts.current)
-    persistSessionRefDrafts(sessionRefDrafts.current)
+    const pastesStored = persistPasteDrafts(pasteDrafts.current)
+    const refsStored = persistSessionRefDrafts(sessionRefDrafts.current)
     persistFileTokenDrafts(pickedFileTokens.current)
-    return textStored && filesStored
+    held.forEach((store, i) => {
+      for (const slot of before[i]) {
+        if (slot in store) continue
+        const lost = lostToCap.current.get(slot) ?? new Set<number>()
+        lost.add(i)
+        lostToCap.current.set(slot, lost)
+      }
+    })
+    for (const [slot, lost] of lostToCap.current) {
+      for (const i of lost) if (slot in held[i]) lost.delete(i)
+      if (!lost.size) lostToCap.current.delete(slot)
+    }
+    const stored = textStored && filesStored
+    if (stored && pastesStored && refsStored) draftSaved('page', draftOwner.current, slot => !lostToCap.current.has(slot))
+    return stored
   }, [])
   const saveDraftsDebounced = useCallback(() => {
     if (saveDraftsTimer.current) clearTimeout(saveDraftsTimer.current)
@@ -110,7 +132,7 @@ export function useComposerDraftStores() {
   //             alias consumer -- see ChatPane's restoreDraft adapter)
   const pickedFileTokens = useRef<Record<string, Record<string, string[]>>>(null!)
   if (pickedFileTokens.current === null) pickedFileTokens.current = loadFileTokenDrafts()
-  return { drafts, fileDrafts, pasteDrafts, sessionRefDrafts, pickedFileTokens, saveDraftsTimer, saveDrafts, saveDraftsDebounced, flushDrafts }
+  return { drafts, fileDrafts, pasteDrafts, sessionRefDrafts, pickedFileTokens, saveDraftsTimer, saveDrafts, saveDraftsDebounced, flushDrafts, draftOwner: draftOwner.current }
 }
 
 export type ComposerDraftStores = ReturnType<typeof useComposerDraftStores>
@@ -161,7 +183,7 @@ export function useComposerDraftLifecycle({
   setActionError,
   updateHistoryQuery,
 }: ComposerDraftLifecycleOptions) {
-  const { drafts, fileDrafts, pasteDrafts, sessionRefDrafts, pickedFileTokens, saveDraftsTimer, saveDraftsDebounced, flushDrafts } = stores
+  const { drafts, fileDrafts, pasteDrafts, sessionRefDrafts, pickedFileTokens, saveDraftsTimer, saveDraftsDebounced, flushDrafts, draftOwner } = stores
   const {
     stagedNowRef, pendingFilesRef, pasteBlocksRef, pendingSessionsRef,
     setPendingFiles, setPasteBlocks, setPendingSessions, setUploadError, setUploadHint,
@@ -394,7 +416,9 @@ export function useComposerDraftLifecycle({
     if (prevSlot.current) setPasteDraft(pasteDrafts.current, prevSlot.current, pasteBlocksRef.current)
     if (prevSlot.current) setSessionRefDraft(sessionRefDrafts.current, prevSlot.current, pendingSessionsRef.current)
     flushDrafts()
-  }, [flushDrafts, saveDraftsTimer, prevSlot, drafts, inputRef, fileDrafts, pendingFilesRef, pasteDrafts, pasteBlocksRef, sessionRefDrafts, pendingSessionsRef])
+    // A refused final flush leaves the records for the next page load, never for another instance's save.
+    dropDraftOwner(draftOwner)
+  }, [flushDrafts, draftOwner, saveDraftsTimer, prevSlot, drafts, inputRef, fileDrafts, pendingFilesRef, pasteDrafts, pasteBlocksRef, sessionRefDrafts, pendingSessionsRef])
   // Flush pending draft save on tab close / refresh (debounce may not fire)
   useEffect(() => {
     const h = () => {
