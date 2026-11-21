@@ -809,6 +809,8 @@ def sync_env(monkeypatch, tmp_path):
         return _proc(args)
 
     monkeypatch.setattr(wt, "_run_git", fake_run)
+    # The populate after the add is `test_worktree_populate.py`'s subject, against real git.
+    monkeypatch.setattr(wt, "populate_worktree", lambda *_a: _proc([]))
     monkeypatch.setattr(
         wt,
         "_cleanup_partial",
@@ -1045,11 +1047,11 @@ class TestCreateWorktreeSyncRealGit:
         )
         env.update(git_maintenance_off_entries(env))
 
-        def plain_git(args, cwd, *, stdout_decoder=None):
+        def plain_git(args, cwd, *, stdout_decoder=None, **kw):
             return subprocess.run(
                 ["git", *args],
                 cwd=cwd,
-                env=env,
+                env=kw.get("env") or env,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -1142,11 +1144,11 @@ class TestWorktreeInUseIgnoresSubmodules:
         )
         env.update(git_maintenance_off_entries(env))
 
-        def plain_git(args, cwd, *, stdout_decoder=None):
+        def plain_git(args, cwd, *, stdout_decoder=None, **kw):
             return subprocess.run(
                 ["git", *args],
                 cwd=cwd,
-                env=env,
+                env=kw.get("env") or env,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

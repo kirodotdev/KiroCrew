@@ -47,9 +47,19 @@ with no app identity to check.
   is still same-uid writable between calls. Checkout content filters are the one
   such vector `-c` cannot
   close — `.gitattributes` names a filter, and its `filter.<name>.process` /
-  `.smudge` driver comes from config under an arbitrary name — so a repo whose
-  **repository-scoped** config declares one is refused with a 409 telling the user
-  to create the worktree manually. Both scopes git reads inside a repo are probed:
+  `.smudge` driver comes from config under an arbitrary name — so the checkout
+  does not run under the repository's config at all: `worktree add --no-checkout`
+  registers the tree, and `kiro_crew.worktree_populate.populate_worktree` fills it
+  with `read-tree -u --reset` under a throwaway git dir whose config holds only
+  six non-executing settings (`core.symlinks`, `core.ignorecase`, `core.autocrlf`,
+  `core.eol`, `core.sparseCheckout`, `core.sparseCheckoutCone`), with system and
+  global config off. A driver written to the config after any probe therefore has
+  nothing to run it. The probe below stays as the early, friendly refusal: a repo
+  whose **repository-scoped** config declares a filter is refused with a 409
+  telling the user to create the worktree manually. The behaviour that follows: a
+  Git LFS file lands as its pointer text, because the LFS filter is a driver, and a
+  partial clone is refused, because the throwaway git dir names no promisor remote to
+  fetch missing blobs from. Both scopes git reads inside a repo are probed:
   `--local` (`.git/config`) and, whenever `extensions.worktreeConfig` is on,
   `--worktree` — probe first, classify a failed probe after
   (`kiro_crew.git_worktree_scope`): a probe that fails because the per-worktree
