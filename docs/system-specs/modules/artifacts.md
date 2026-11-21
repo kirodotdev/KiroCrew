@@ -1890,7 +1890,10 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   masked read its placeholders came from; when it differs from `expected_token`
   (a "Keep mine" after a 409 saves the old draft against the live token) the
   route answers 400 and writes nothing, because the old placeholders would pair
-  with the newer version's values. Identical placeholders carry no identity, so a value goes
+  with the newer version's values. Both masked-merge refusals carry a `code`
+  (`masked_merge_stale` for this one, `masked_merge_refused` for an edit the merge
+  cannot pair); the page shows its own message for each and offers "Reload the
+  canvas" instead of a retry that would be refused again. Identical placeholders carry no identity, so a value goes
   back only where the pairing is certain: a text (a shape's field, by node `id`)
   that still carries placeholders must carry as many as it held, with the text
   between each two of them unchanged; only the text before the first and after
