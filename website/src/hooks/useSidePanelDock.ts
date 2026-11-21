@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { safeSetItem } from '../utils/safeStorage'
+import { useViewportSegments } from './useViewportSegments'
 
 /**
  * Where the tabbed side panel docks: 'right' (default — a full-height column
@@ -35,8 +36,16 @@ function subscribe(cb: () => void) {
   return () => { listeners.delete(cb) }
 }
 
-/** Reactive read of the current dock position + a setter that broadcasts. */
-export function useSidePanelDock(): [SidePanelDock, (d: SidePanelDock) => void] {
-  const dock = useSyncExternalStore(subscribe, () => current, () => current)
-  return [dock, setSidePanelDock]
+/**
+ * Reactive read of the dock the panel is drawn at, a setter that broadcasts,
+ * and whether a fold holds the dock. While the device reports a fold the panel
+ * docks right whatever is stored: a bottom row would span both segments, and
+ * the panel takes the segment opposite the transcript (lib/foldCompanion.ts).
+ * The stored choice is read, never written, so it comes back when the device
+ * is flattened; callers hide the dock toggle while `locked` holds.
+ */
+export function useSidePanelDock(): [SidePanelDock, (d: SidePanelDock) => void, boolean] {
+  const stored = useSyncExternalStore(subscribe, () => current, () => current)
+  const locked = useViewportSegments() !== null
+  return [locked ? 'right' : stored, setSidePanelDock, locked]
 }

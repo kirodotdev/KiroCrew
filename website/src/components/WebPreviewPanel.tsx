@@ -12,6 +12,7 @@ import { SettingRef } from './settingRef/SettingRef'
 import { api } from '../api/client'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useFoldCompanionShown } from '../lib/foldCompanion'
 import { useNativeBrowser } from '../hooks/useNativeBrowser'
 import { normalizeLocalOrigin, previewAllowsUrl, urlHostPort } from '../utils/localPreviewOrigins'
 import { sendErrorToChat } from '../utils/errorReport'
@@ -295,6 +296,10 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   const device = DEVICE_PRESETS.find(d => d.id === deviceId) ?? DEVICE_PRESETS[0]
   const isDeviceSized = !!device.w
   const isMobile = useIsMobile()
+  // Beside a fold the panel's width is the segment's (lib/foldCompanion.ts),
+  // so expanding would change nothing: the toggle is offered only to leave a
+  // preview that was already expanded.
+  const foldHoldsWidth = useFoldCompanionShown()
   // Gate the crop→chat snip on the actual capability it uses (getDisplayMedia)
   // and never on mobile. Gating on the real mechanism — rather than a macOS
   // guess — also avoids exposing a failing action on a Mac browser driving a
@@ -641,7 +646,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
           </a>
         </div>
         {/* Expand toggle — a frequently used action, stays in the row. */}
-        <button
+        {(!foldHoldsWidth || expanded) && <button
           type="button"
           onClick={toggleExpand}
           className={`${iconBtn} ${expanded ? 'text-accent bg-accent-subtle hover:text-accent' : ''}`}
@@ -650,7 +655,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
           aria-pressed={expanded}
         >
           {expanded ? <Minimize size={14} /> : <Expand size={14} />}
-        </button>
+        </button>}
         {/* Divider */}
         <span aria-hidden="true" className="w-px h-5 bg-border shrink-0 mx-0.5" />
         {/* Device-size presets behind one trigger, so the row stays at 4 sibling

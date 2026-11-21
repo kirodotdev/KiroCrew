@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { animate, type MotionValue } from 'framer-motion'
 import { holdStreamingFlushes, releaseStreamingFlushes } from '../lib/streamHold'
 import { deepActiveElement } from '../utils/editableTarget'
@@ -289,6 +289,8 @@ function settleFor(to: number, distance?: number): { ease: Bezier; secs: number 
 
 let safeLeftPx: number | null = null
 let safeLeftBound = false
+let safeRightPx: number | null = null
+let safeRightBound = false
 
 /**
  * `env(safe-area-inset-left)` in px.
@@ -330,6 +332,65 @@ export function safeAreaLeft(): number {
   probe.remove()
   safeLeftPx = Number.isFinite(left) ? Math.max(0, left) : 0
   return safeLeftPx
+}
+
+/** `env(safe-area-inset-right)` in px, measured the way `safeAreaLeft` is: a
+ *  probe at `right: env(safe-area-inset-right)`, read against the viewport's
+ *  width. The shell's `p-safe` grid ends this far from the right edge. */
+export function safeAreaRight(): number {
+  if (typeof document === 'undefined') return 0
+  if (!safeRightBound) {
+    safeRightBound = true
+    const invalidate = () => { safeRightPx = null }
+    addEventListener('resize', invalidate)
+    addEventListener('orientationchange', invalidate)
+  }
+  if (safeRightPx != null) return safeRightPx
+  const probe = document.createElement('div')
+  const s = probe.style
+  s.position = 'fixed'
+  s.top = '0'
+  s.right = 'env(safe-area-inset-right)'
+  s.width = '0'
+  s.height = '0'
+  s.visibility = 'hidden'
+  document.body.appendChild(probe)
+  const right = document.documentElement.clientWidth - probe.getBoundingClientRect().right
+  probe.remove()
+  safeRightPx = Number.isFinite(right) ? Math.max(0, right) : 0
+  return safeRightPx
+}
+
+/** Both side insets as one stable snapshot, for a render that sizes panes to
+ *  the shell's `p-safe` box. */
+let safeInsetsSnap: { left: number; right: number } = { left: 0, right: 0 }
+function readSafeInsets(): { left: number; right: number } {
+  const left = safeAreaLeft()
+  const right = safeAreaRight()
+  if (safeInsetsSnap.left !== left || safeInsetsSnap.right !== right) safeInsetsSnap = { left, right }
+  return safeInsetsSnap
+}
+const NO_SAFE_INSETS = { left: 0, right: 0 }
+function subscribeSafeInsets(cb: () => void): () => void {
+  // Clear both measurements before notifying, so the render this wakes reads
+  // the new insets whichever listener the browser runs first.
+  const changed = () => { safeLeftPx = null; safeRightPx = null; cb() }
+  addEventListener('resize', changed)
+  addEventListener('orientationchange', changed)
+  return () => {
+    removeEventListener('resize', changed)
+    removeEventListener('orientationchange', changed)
+  }
+}
+
+/**
+ * The left and right safe-area insets, re-read when the viewport resizes or
+ * turns. A turn through 180 degrees moves a side inset from one edge to the
+ * other while the width and the fold segments stay the same, so a pane sized
+ * from the insets must re-render on that alone.
+ */
+export function useSafeInsets(): { left: number; right: number } {
+  return useSyncExternalStore(subscribeSafeInsets, readSafeInsets, () => NO_SAFE_INSETS)
 }
 
 /** A cubic-bezier's opening speed as a multiple of its average — `dy/dx` at

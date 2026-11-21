@@ -5,6 +5,7 @@ import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { LocalOverlayRoot } from '../components/overlayRoot'
 import { noteEscapeStoppedSpeech } from '../utils/speechStopKey'
+import { setFoldCompanionShown } from '../lib/foldCompanion'
 import WebPreviewPanel, { normalizeUrl, setSessionPreviewUrl, setSessionPreviewPending, isolatePreviewHost, isDashboardOrigin, withCacheBuster, httpEmbedRefusal, isPotentiallyTrustworthyHost } from '../components/WebPreviewPanel'
 
 // The crop button is gated on snip support (getDisplayMedia). Force it on so
@@ -202,6 +203,46 @@ describe('WebPreviewPanel', () => {
     // Quick-pick buttons are type=button so a valid draft in the URL field
     // can't be overridden by a stray form submission.
     expect((screen.getByText('localhost:5173').closest('button') as HTMLButtonElement).getAttribute('type')).toBe('button')
+  })
+
+  it('beside a fold, where the segment sets the panel width, offers no expand toggle', async () => {
+    setFoldCompanionShown(true)
+    try {
+      await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+      const input = screen.getByLabelText('Preview URL')
+      fireEvent.change(input, { target: { value: 'localhost:8080' } })
+      // The submit starts the liveness probe; its resolved fetch updates state, so it lands inside act.
+      await act(async () => { fireEvent.submit(input.closest('form') as HTMLFormElement) })
+      expect(screen.getByTitle('Web preview')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Expand preview' })).toBeNull()
+    } finally {
+      act(() => { setFoldCompanionShown(false) })
+    }
+  })
+
+  it('a preview already expanded when the fold layout appears keeps its Collapse control', async () => {
+    try {
+      await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+      const input = screen.getByLabelText('Preview URL')
+      fireEvent.change(input, { target: { value: 'localhost:8080' } })
+      // The submit starts the liveness probe; its resolved fetch updates state, so it lands inside act.
+      await act(async () => { fireEvent.submit(input.closest('form') as HTMLFormElement) })
+      fireEvent.click(screen.getByRole('button', { name: 'Expand preview' }))
+      expect(screen.getByRole('button', { name: 'Collapse', pressed: true })).toBeInTheDocument()
+      act(() => { setFoldCompanionShown(true) })
+      expect(screen.getByRole('button', { name: 'Collapse', pressed: true })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Expand preview' })).toBeNull()
+    } finally {
+      act(() => { setFoldCompanionShown(false) })
+    }
+  })
+
+  it('offers the expand toggle without a fold', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    const input = screen.getByLabelText('Preview URL')
+    fireEvent.change(input, { target: { value: 'localhost:8080' } })
+    await act(async () => { fireEvent.submit(input.closest('form') as HTMLFormElement) })
+    expect(screen.getByRole('button', { name: 'Expand preview' })).toBeInTheDocument()
   })
 
   it('loads a typed URL into the iframe (normalizing scheme + isolating host) on submit', async () => {

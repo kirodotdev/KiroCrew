@@ -34,6 +34,8 @@ const LIVE_CAUSES: ReadonlySet<string> = new Set(['change', 'resize', 'orientati
 /** The CSS hooks `styles/layout-morph.css` keys on. Exported for the tests. */
 export const MORPH_ATTR = 'layoutMorph'
 export const MORPH_EDGE_ATTR = 'layoutMorphEdge'
+/** Set while a fold's side panel closes inside the morph (runPaneAllocationChange). */
+export const MORPH_PANEL_ATTR = 'layoutMorphPanel'
 export const TRANSCRIPT_ATTR = 'data-vt-transcript'
 export const COMPOSER_ATTR = 'data-vt-composer'
 
@@ -128,25 +130,53 @@ let clearMarks: (() => void) | null = null
 export function runLayoutFormChange(apply: () => void, change: LayoutFormChange): void {
   if (!LIVE_CAUSES.has(change.cause) || document.visibilityState === 'hidden') { apply(); return }
 
-  const scroller = transcriptScroller()
   const focused = document.activeElement
   const update = () => {
     flushSync(apply)
     restoreFocus(focused)
   }
+  if (!morphAvailable()) { update(); return }
+  startMorph(update, change.toNarrow, update)
+}
 
+/**
+ * The book-pose pane allocation (lib/foldCompanion.ts) changing while a
+ * fold is reported: the side panel opening or closing moves the transcript
+ * between the two segments, and the sessions list leaves (`hidesSessions`) or
+ * comes back. Runs `apply` inside the same morph as a form switch, under the
+ * same conditions; anywhere it cannot animate, `apply` runs as is, so a caller
+ * in a layout effect gets a plain state update rather than a `flushSync`.
+ */
+export function runPaneAllocationChange(apply: () => void, hidesSessions: boolean): void {
+  if (document.visibilityState === 'hidden' || !morphAvailable()) { apply(); return }
+  const focused = document.activeElement
+  startMorph(() => {
+    // Inside the update, after the old snapshot: a closing panel's column
+    // leaves the new layout only (layout-morph.css).
+    if (!hidesSessions) document.documentElement.dataset[MORPH_PANEL_ATTR] = 'closing'
+    flushSync(apply)
+    restoreFocus(focused)
+  }, hidesSessions, apply)
+}
+
+function morphAvailable(): boolean {
   const start = (document as Document & { startViewTransition?: StartViewTransition }).startViewTransition
-  if (typeof start !== 'function' || prefersReducedMotion() || modalDialogOpen() || appPathname().startsWith('/embed/')) {
-    update()
-    return
-  }
+  return typeof start === 'function' && !prefersReducedMotion() && !modalDialogOpen() && !appPathname().startsWith('/embed/')
+}
 
+/** Marks the transcript, its composer and the root for one transition and runs
+ *  `update` inside it. `toNarrow` picks the sessions list's keyframe: out to
+ *  the leading edge, or in from it. `instead` runs if the API refuses to start.
+ *  Every marker, `MORPH_PANEL_ATTR` included, is cleared when it ends. */
+function startMorph(update: () => void, toNarrow: boolean, instead: () => void): void {
+  const start = (document as Document & { startViewTransition: StartViewTransition }).startViewTransition
+  const scroller = transcriptScroller()
   // A transition still running hands its markers over: clear them first, so a
   // node it named never carries a view-transition name beside the new one's.
   clearMarks?.()
   const gen = ++morphGen
   const root = document.documentElement
-  root.dataset[MORPH_ATTR] = change.toNarrow ? 'fold' : 'unfold'
+  root.dataset[MORPH_ATTR] = toNarrow ? 'fold' : 'unfold'
   root.dataset[MORPH_EDGE_ATTR] = leadingEdge(root)
   const dock = composerDockFor(scroller)
   scroller?.setAttribute(TRANSCRIPT_ATTR, '')
@@ -154,6 +184,7 @@ export function runLayoutFormChange(apply: () => void, change: LayoutFormChange)
   const clear = () => {
     delete root.dataset[MORPH_ATTR]
     delete root.dataset[MORPH_EDGE_ATTR]
+    delete root.dataset[MORPH_PANEL_ATTR]
     scroller?.removeAttribute(TRANSCRIPT_ATTR)
     dock?.removeAttribute(COMPOSER_ATTR)
     clearMarks = null
@@ -166,7 +197,7 @@ export function runLayoutFormChange(apply: () => void, change: LayoutFormChange)
   } catch {
     // The API refused to start: switch at once, as without it.
     clear()
-    update()
+    instead()
     return
   }
   transition.finished.then(cleanup, cleanup)

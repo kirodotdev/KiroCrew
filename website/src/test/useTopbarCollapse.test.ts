@@ -11,6 +11,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { MOBILE_BREAKPOINT } from '../hooks/useIsMobile'
+import { FOLD_TWO_PANE_QUERY } from '../hooks/useViewportSegments'
 import {
   TOPBAR_CONTAINER_FOLDS,
   TOPBAR_LEVELS,
@@ -503,8 +504,10 @@ describe('index.css measured ladders', () => {
   })
 
   it('scopes the desktop rules to the width App.tsx enables the ladders at', async () => {
-    // The shell (useAppShell) enables the hook exactly when useIsMobile is false.
+    // The shell (useAppShell) enables the hook exactly when useIsMobile is false:
+    // from the breakpoint up, and beside a reported fold from FOLD_TWO_PANE_MIN up.
     const s = await css()
-    expect(s).toMatch(new RegExp(`@media \\(min-width:${MOBILE_BREAKPOINT}px\\)\\{\\s*\\.topbar\\.tb-measured > `))
+    const fold = FOLD_TWO_PANE_QUERY.replace(/[()]/g, '\\$&')
+    expect(s).toMatch(new RegExp(`@media \\(min-width:${MOBILE_BREAKPOINT}px\\), ${fold}\\{\\s*\\.topbar\\.tb-measured > `))
   })
 })

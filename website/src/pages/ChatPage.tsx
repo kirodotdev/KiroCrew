@@ -1063,7 +1063,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const {
     mobileSessions, drawerMounted, drawerX, drawerPanelRef, drawerScrimRef, sideOverlayX, sideOverlayPanelRef, sideOverlayPhase, drawerScrim, openSidebar, closedSessionActions, sidebarFolderActions,
     closeSidebar, chatContainerRef, containerH, activitySlot, refreshActivitySlot, hasTaskDashboard, sidePanelWantsMount, inlineSidePanelShowing, drawerDragging, revealSourceLink, previewExpanded, sidebarOpen,
-    sidebarOnScreen, flyoutTriggerRef, flyoutSurfaceRef, flyoutEligible, flyout, expandFrom, expandSidebar,
+    sidebarOnScreen, flyoutTriggerRef, flyoutSurfaceRef, flyoutEligible, flyout, expandFrom, expandSidebar, sidePanelActivityOpen, foldCompanion, panelInline,
   } = useSessionsDrawer({
     embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
     hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, setSourceDismissed, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef,
@@ -1100,11 +1100,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     flyout.close()
   }, [dispatch, flyout, setSplitMode, sidebarClickOpensTab, ensureSlotTab])
   const {
-    flyoutNew, panelReserve, panelMaximized, panelFillWidth, mobileSessionsToggle, topbarSessionsToggle, mobileNewSessionItem, switchMemoryMode, showComposerMemoryChip, memorySwitching, composerOptimizing, handleOptimizingChange,
+    flyoutNew, panelReserve, panelMaximized, panelFillWidth, panelFoldWidth, panelFoldInset, mobileSessionsToggle, topbarSessionsToggle, mobileNewSessionItem, switchMemoryMode, showComposerMemoryChip, memorySwitching, composerOptimizing, handleOptimizingChange,
   } = usePanelLayout({
     mode, dispatch, isMobile, filteredSlots, slotsLoaded, activeSlot, isWelcomeState, showActionError, currentSlot, chatFolders, chatFoldersError, chatFoldersLoaded, mobileNewSessionBusy,
     mobileNewSessionInFlightRef, setMobileNewSessionBusy, setSidebarPinned, sidebarPinned, railWidth, winW, effectiveSidebarWidth, mobileSessions, openSidebar, closeSidebar, previewExpanded,
-    sidebarOpen, flyout, memorySwitch: { store: boundStore, composerSlotRef, inputRef, pendingFilesRef, pasteBlocksRef, pendingSessionsRef, drafts, fileDrafts, pasteDrafts, sessionRefDrafts, pickedFileTokens, saveDrafts, setActionError, composerMountedRef, lockRef: memorySwitchingRef },
+    sidebarOpen, foldCompanion, collapsedReclaim: COLLAPSED_PANE_RECLAIM_PX, flyout, memorySwitch: { store: boundStore, composerSlotRef, inputRef, pendingFilesRef, pasteBlocksRef, pendingSessionsRef, drafts, fileDrafts, pasteDrafts, sessionRefDrafts, pickedFileTokens, saveDrafts, setActionError, composerMountedRef, lockRef: memorySwitchingRef },
   })
 
   // "Keep this chat" on an incognito/temporary session (human-initiated only).
@@ -1325,15 +1325,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       </div>
       )}
       <ChatSidePanels
-        mode={mode} activeSlot={activeSlot} connected={connected} isMobile={isMobile} activityOpen={activityOpen} cursorIsForActiveSlot={cursorIsForActiveSlot} messages={messages}
+        mode={mode} activeSlot={activeSlot} connected={connected} isMobile={isMobile} activityOpen={sidePanelActivityOpen} cursorIsForActiveSlot={cursorIsForActiveSlot} messages={messages}
         slotHasMore={slotHasMore} insertDashboardReply={insertDashboardReply} addSourceCommentToChat={addSourceCommentToChat} handleArtifactOpen={handleArtifactOpen} handleFileOpen={handleFileOpen}
         handleFileSave={handleFileSave} handleOpenWorkingTreeDiff={handleOpenWorkingTreeDiff} hasBrowserTab={hasBrowserTab} hasLiveAppTab={hasLiveAppTab} panelIssues={panelIssues}
         panelSources={panelSources} dismissSource={dismissSource} reconcileIssueUrl={reconcileIssueUrl} reconcileSourceUrl={reconcileSourceUrl} search={search} selectedIssueUrl={selectedIssueUrl}
         selectedSourceUrl={selectedSourceUrl} selectIssueUrl={selectIssueUrl} selectSourceUrl={selectSourceUrl} tabsCtl={tabsCtl} submitComments={submitComments} currentSlot={currentSlot}
         handleAddToContext={handleAddToContext} sidePanelDock={sidePanelDock} sidePanelDockAnim={sidePanelDockAnim} effectiveSidebarWidth={effectiveSidebarWidth} toggleAct={toggleAct}
         chatNav={chatNav} chatPins={chatPins} chatPinsLoading={chatPinsLoading} handleJumpToPin={handleJumpToPin} handlePutPinInComposer={activeSlotRemoteBound || (splitMode && splitFeatureEnabled) || crewWindow ? undefined : handlePutPinInComposer} handleUnpinById={handleUnpinById} jumpToSearchResult={jumpToSearchResult}
-        activeSlotTitle={activeSlotTitle} activitySlot={activitySlot} refreshActivitySlot={refreshActivitySlot} embedded={!!embedded || !!popout} chatPaneEl={chatPaneEl} hasTaskDashboard={hasTaskDashboard} sidebarOpen={sidebarOpen} sideOverlayPanelRef={sideOverlayPanelRef}
-        sideOverlayPhase={sideOverlayPhase} sideOverlayX={sideOverlayX} panelFillWidth={panelFillWidth} panelMaximized={panelMaximized} panelReserve={panelReserve}
+        activeSlotTitle={activeSlotTitle} activitySlot={activitySlot} panelInline={panelInline} refreshActivitySlot={refreshActivitySlot} embedded={!!embedded || !!popout} chatPaneEl={chatPaneEl} hasTaskDashboard={hasTaskDashboard} sidebarOpen={sidebarOpen} sideOverlayPanelRef={sideOverlayPanelRef}
+        sideOverlayPhase={sideOverlayPhase} sideOverlayX={sideOverlayX} panelFillWidth={panelFillWidth} panelFoldWidth={panelFoldWidth} panelFoldInset={panelFoldInset} panelMaximized={panelMaximized} panelReserve={panelReserve}
         pinSummary={sidePanelPinSummary} trackpad={panelTrackpad}
       />
     </ChatPageFrame>

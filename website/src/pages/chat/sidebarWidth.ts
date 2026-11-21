@@ -5,12 +5,38 @@
  * `{ default, SIDEBAR_MIN, SIDEBAR_MAX }`, so anything else imported from it is
  * `undefined` at run time -- silent for a constant, a crash for a function.
  */
+import { segmentContentWidth, type SafeInsets } from '../../lib/foldCompanion'
 
 export const SIDEBAR_MIN = 180
 /** The view ceiling in the list views, which gain nothing from a wider
  *  sidebar. Board view has no view ceiling of its own: it may grow to the
  *  room the window leaves (`sidebarRoomWidth`), which holds every view. */
 export const SIDEBAR_MAX = 1400
+
+/**
+ * The width that ends the sessions list at a reported fold: the leading
+ * segment's part inside the shell's content box (the right-hand segment in a
+ * right-to-left document; `segmentContentWidth`) less the nav rail, floored
+ * at `SIDEBAR_MIN`. Segments are listed left to right.
+ */
+export function foldSidebarWidth(
+  { segments, railW, leading, insets }: { segments: readonly { x: number; width: number }[]; railW: number; leading: 'left' | 'right'; insets?: SafeInsets },
+): number {
+  return Math.max(SIDEBAR_MIN, segmentContentWidth(leadingSegment(segments, leading), segments, insets) - railW)
+}
+
+/** Whether the rail must stay compact beside a fold: expanded, it would leave
+ *  the leading segment less than the pane beside it needs (`paneMin`, the
+ *  sessions list's `SIDEBAR_MIN` by default), so that pane would cross the fold. */
+export function foldHoldsRailCompact(
+  { segments, expandedRailW, leading, paneMin = SIDEBAR_MIN, insets }: { segments: readonly { x: number; width: number }[]; expandedRailW: number; leading: 'left' | 'right'; paneMin?: number; insets?: SafeInsets },
+): boolean {
+  return segmentContentWidth(leadingSegment(segments, leading), segments, insets) < expandedRailW + paneMin
+}
+
+function leadingSegment<T>(segments: readonly T[], leading: 'left' | 'right'): T {
+  return leading === 'right' ? segments[segments.length - 1] : segments[0]
+}
 
 /**
  * A stored width read back from localStorage: `null` when it is not a usable

@@ -72,6 +72,8 @@ let reducedMotion = false
 const changeListeners = new Set<() => void>()
 const queryMatches = (query: string) => {
   if (query.includes('prefers-reduced-motion')) return reducedMotion
+  // These poses report no fold (one viewport segment); useIsMobile.foldTwoPane covers one that does.
+  if (query.includes('viewport-segments')) return false
   const max = /\(max-width:\s*(\d+)px\)/.exec(query)
   if (max) return viewportWidth <= Number(max[1])
   const min = /\(min-width:\s*(\d+)px\)/.exec(query)
