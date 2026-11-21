@@ -143,7 +143,8 @@ class TestToolForwarding:
         spec = next(t for t in schemas() if t["name"] == "spawn_run")
         props = spec["inputSchema"]["properties"]
         assert "backend" in props
-        assert "backend" in props["tasks"]["items"]["properties"]
+        (task_obj,) = (b for b in props["tasks"]["items"]["anyOf"] if b["type"] == "object")
+        assert "backend" in task_obj["properties"]
 
     def test_a_not_installed_refusal_shows_its_install_command(self):
         from kiro_crew import mcp_core
