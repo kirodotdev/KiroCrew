@@ -197,6 +197,7 @@ from kiro_crew.dashboard.chat_turn.native_cards import (
 from kiro_crew.dashboard.chat_turn.permission_prompt import _on_permission_prompt
 from kiro_crew.dashboard.chat_turn.prompt_assembly import (  # noqa: F401
     _expand_prompt_mention,
+    _resolve_prompt_mention,
     _turn_build_prompt,
     _turn_settle_debts,
 )
