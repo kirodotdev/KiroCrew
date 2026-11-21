@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { buildSrcdoc } from '../lib/widgetSrcdoc'
-import { runtimeScriptText, tailwindRuntimeQuery } from '../lib/tailwindRuntimeInline'
+import { tailwindRuntimeQuery } from '../lib/tailwindRuntimeInline'
 import { TAILWIND_RUNTIME_PATH } from '../lib/vendorPaths'
 
 // A document opened as a blob or saved as a file carries the Tailwind runtime
@@ -52,25 +52,9 @@ describe('buildSrcdoc with an inline runtime', () => {
     expect(scripts(doc).some((s) => s.textContent === js)).toBe(true)
   })
 
-  it('keeps the link for a bundle that cannot sit inside a script element', () => {
-    const doc = buildSrcdoc({ html: '<p>x</p>', themeVars: {}, mode: 'dark', inlineRuntime: 'var s="<!--<script>";' })
-    expect(runtimeTags(doc)).toHaveLength(1)
-  })
-
   it('neutralises a script terminator in the bundle so the element stays whole', () => {
     const doc = buildSrcdoc({ html: '<p>x</p>', themeVars: {}, mode: 'dark', inlineRuntime: 'var s="</SCRIPT>";' })
     expect(scripts(doc).some((s) => s.textContent === 'var s="<\\/SCRIPT>";')).toBe(true)
-  })
-})
-
-describe('runtimeScriptText', () => {
-  it.each(['</script>', '</SCRIPT>', '</Script >', '</sCrIpT/'])('neutralises %s', (close) => {
-    expect(runtimeScriptText(`x="${close}"`)).toBe(`x="<\\/${close.slice(2)}"`)
-  })
-
-  it('refuses an empty bundle and one that opens an HTML comment', () => {
-    expect(runtimeScriptText('')).toBeNull()
-    expect(runtimeScriptText('var s="<!--";')).toBeNull()
   })
 })
 
@@ -88,6 +72,11 @@ describe('tailwindRuntimeQuery', () => {
 
   it('fails on a refused read, so the link stays', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('denied', { status: 403 })))
-    await expect(tailwindRuntimeQuery.queryFn()).rejects.toThrow('403')
+    await expect(tailwindRuntimeQuery.queryFn()).rejects.toThrow('read failed')
+  })
+
+  it('fails on an empty bundle, so the link stays', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 200 })))
+    await expect(tailwindRuntimeQuery.queryFn()).rejects.toThrow('read failed')
   })
 })

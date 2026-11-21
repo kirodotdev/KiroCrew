@@ -20,23 +20,18 @@ import { TAILWIND_RUNTIME_PATH } from './vendorPaths'
 export const tailwindRuntimeQuery = {
   queryKey: ['tailwind-runtime'] as const,
   queryFn: async (): Promise<string> => {
-    const r = await fetch(withBase(TAILWIND_RUNTIME_PATH), { credentials: 'same-origin' })
-    if (!r.ok) throw new Error(`tailwind runtime: HTTP ${r.status}`)
-    return r.text()
+    const js = await fetchRuntimeText(window.location.origin + withBase(TAILWIND_RUNTIME_PATH))
+    if (!js) throw new Error('tailwind runtime: read failed')
+    return js
   },
   staleTime: Infinity,
   retry: false,
 }
 
-/** `js` made safe to put between `<script>` and `</script>`, or null.
- *
- * Every casing of `</script` is neutralised as `<\/script`, which the script
- * reads back unchanged. `<!--` is refused rather than escaped: after it, a later
- * `<script` puts the HTML tokenizer in its double-escaped state, where the
- * closing `</script>` does not end the element. The bundle contains neither
- * today; refusing keeps a dependency bump from breaking the document instead of
- * falling back to the link. */
-export function runtimeScriptText(js: string): string | null {
-  if (!js || js.includes('<!--')) return null
-  return js.replace(/<\/(script)/gi, '<\\/$1')
+/** The runtime text at *url*, read with the page's cookie; '' when refused.
+ * The one reader of the runtime: the saved dashboard file uses it too. */
+export async function fetchRuntimeText(url: string): Promise<string> {
+  const res = await fetch(url, { credentials: 'same-origin' })
+  if (!res.ok) return ''
+  return res.text()
 }
