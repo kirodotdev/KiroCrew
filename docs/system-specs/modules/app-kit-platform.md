@@ -9101,7 +9101,10 @@ set changes is closed, so a withdrawn capability leaves no window opened with it
 - `localFiles`: `revealFile(path)` and `openImage(path)` run `app-local-files.js`, the one
   copy of the rules Mochi's shell windows use too: reveal only an existing regular file;
   open only a regular file whose resolved path carries an image extension, through
-  `openPathHardened`. A path is a string of at most 4096 characters with no NUL.
+  `openPathHardened`. A path is a string of at most 4096 characters with no NUL. Both
+  refuse a UNC name (a path that starts with two separators, such as `\\host\share\x`)
+  before any file-system call, as `context-menu.js` does, since on Windows a `stat` of
+  one opens an SMB session to the host it names.
 - `gatewayChoice`: `listGateways()` and `chooseGateway(id)` run `app-window-gateways.js`.
   The choice is kept per app in the shell's store (`appWindowGatewayChoices`), never on a
   gateway. A crew is a target only when core reports its tunnel connected, core's

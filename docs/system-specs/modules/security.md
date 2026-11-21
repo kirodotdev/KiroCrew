@@ -1863,8 +1863,11 @@ it when absent in each of the app's existing data directories, `data/` and the m
 spelling (`sandbox_staging._materialize_declared_mask_dirs`), so its mask is in place
 before the backend first writes into it, an app tree with neither data directory refuses
 the spawn, and its backend gets it back while it is absent or a real directory. The
-installed app tree is sandbox-writable, so an agent that rewrites an `app.json` drops
-that app's masks from its next spawn; that residual is stated, not sealed.
+agent's file tools are refused an installed `app.json` or retained record while it holds
+a fence (`agent_readonly_dirs.write_protected_home_paths`); they stay readable, and a
+manifest that declares nothing stays writable. The installed app tree is still
+sandbox-writable, so an agent's shell that rewrites an `app.json` drops that app's masks
+from its next spawn; that residual is stated, not sealed.
 
 **App-declared agent-read-only directories.** An app's manifest may also list
 directories under its own data directory in `agentReadOnlyDirs`
