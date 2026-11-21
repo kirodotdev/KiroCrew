@@ -3341,6 +3341,19 @@ spec the same way kiro-cli v2 does where the wire allows it:
   `kirocrew-panel`) reaches the target as the session's copy. A record holding
   only `web_fetch` lists does not keep a target out: the gate never refuses a
   fetch by it, it only grants a `trusted` one, so the sub-agent's fetch asks.
+  Leaving a refused target out of the batch does not stop the engine: its own
+  loader still finds the target's on-disk profile when that file carries a
+  `permissions` block, and would run it without the hooks Crew fires. So each
+  named target Crew found and refused (`project_subagent_targets(refused_out=)`;
+  not a name no spec declares, an unmatched pattern or a reserved id, which the
+  parent's rule already denies) is denied to the sub-agent tool on the parent's
+  entry (`deny_refused_targets`: `{"capability": "subagent", "match": [names],
+  "effect": "deny"}`); KAS applies the most restrictive matching rule, so the
+  deny holds over the `availableAgents` exclude. Each such deny records one
+  `kas_subagent_target_denied` security event (source `kas_agent_projection`)
+  naming the parent and the denied targets. The session-start notice names
+  the targets past the cap and points to `spawn_run`, which runs an agent with
+  its own limits. A target past the cap is not denied.
   Everything that reads the batch for the session's own agent matches it by id.
   A sub-agent's call the session cannot tell from its own is answered with the
   session agent's gate grants (`allowedTools` built-ins, `allowedCommands`, write
