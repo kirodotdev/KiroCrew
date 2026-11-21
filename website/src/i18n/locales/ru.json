@@ -24509,6 +24509,8 @@
       "restart": "Применится после перезапуска шлюза",
       "default_label": "По умолчанию: {{value}}",
       "current_label": "Сейчас: {{value}}",
+      "show_all_values": "Показать все ({{count}})",
+      "show_fewer_values": "Показать меньше",
       "status_idle_draft": "Сохраняется, когда ты уходишь с поля",
       "status_idle_instant": "Сохраняется сразу после изменения",
       "status_saving": "Сохранение...",

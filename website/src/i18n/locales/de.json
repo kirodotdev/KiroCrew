@@ -23357,6 +23357,8 @@
       "restart": "Gilt nach Gateway-Neustart",
       "default_label": "Standard: {{value}}",
       "current_label": "Aktuell: {{value}}",
+      "show_all_values": "Alle anzeigen ({{count}})",
+      "show_fewer_values": "Weniger anzeigen",
       "status_idle_draft": "Wird gespeichert, wenn du das Feld verlässt",
       "status_idle_instant": "Wird gespeichert, sobald du es änderst",
       "status_saving": "Wird gespeichert…",

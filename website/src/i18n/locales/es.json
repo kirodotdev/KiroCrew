@@ -23933,6 +23933,8 @@
       "restart": "Se aplica tras reiniciar el gateway",
       "default_label": "Predeterminado: {{value}}",
       "current_label": "Actual: {{value}}",
+      "show_all_values": "Mostrar todo ({{count}})",
+      "show_fewer_values": "Mostrar menos",
       "status_idle_draft": "Se guarda al salir del campo",
       "status_idle_instant": "Se guarda en cuanto lo cambias",
       "status_saving": "Guardando…",

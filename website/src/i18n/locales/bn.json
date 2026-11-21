@@ -23357,6 +23357,8 @@
       "restart": "গেটওয়ে রিস্টার্টের পরে প্রযোজ্য",
       "default_label": "ডিফল্ট: {{value}}",
       "current_label": "এখন: {{value}}",
+      "show_all_values": "সব দেখাও ({{count}})",
+      "show_fewer_values": "কম দেখাও",
       "status_idle_draft": "ঘর ছাড়লেই সংরক্ষণ হয়",
       "status_idle_instant": "বদলালেই সংরক্ষণ হয়",
       "status_saving": "সংরক্ষণ হচ্ছে…",
