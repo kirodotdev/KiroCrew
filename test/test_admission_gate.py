@@ -497,8 +497,8 @@ class TestSpawnAdmissionGate(_TestSpawnAdmissionGateHarness):
         assert call_kwargs["metadata"]["min_gb"] == pytest.approx(5.0)
         deferred = [e for e in mgr._taskq.events(info.id) if e.kind == "deferred"]
         reason = str(deferred[-1].data.get("reason")) if deferred else ""
-        assert "3.0 GB available" in reason
-        assert "(1.00 GB for this start)" in reason
+        assert "3.0 GB free, needs 5.0 GB" in reason
+        assert reason.endswith("; close other apps to free some")
 
     # ── the deferral reason reaches the UI event and the caller ──────────────
     #
@@ -513,7 +513,7 @@ class TestSpawnAdmissionGate(_TestSpawnAdmissionGateHarness):
         info, events, _sel = self._spawn_capturing_queued(mgr, memory=(False, 3.2))
         assert info is not None and info.queued is True and info.done is False
         assert info.queued_reason == "low_memory"
-        assert "3.2 GB available" in info.queued_reason_detail
+        assert "3.2 GB free" in info.queued_reason_detail
         assert events, "the deferral must still emit the advisory queued count"
         last = events[-1]
         assert last["queued"] == 1
@@ -531,7 +531,7 @@ class TestSpawnAdmissionGate(_TestSpawnAdmissionGateHarness):
         info, events, _sel = self._spawn_capturing_queued(mgr, memory=(False, 3.2))
         assert info is not None and info.queued is True and info.done is False
         assert info.queued_reason == "low_memory"
-        assert "3.2 GB available" in info.queued_reason_detail
+        assert "3.2 GB free" in info.queued_reason_detail
         assert events and events[-1]["reason"] == "low_memory"
         assert events[-1]["available_gb"] == pytest.approx(3.2)
         assert events[-1]["required_gb"] == pytest.approx(5.0)
