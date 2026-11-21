@@ -896,22 +896,31 @@ class ClaudeHarness(MembershipHarness):
 
         The advisory ("Model X is restricted ... Using Y instead.") answers
         ``session/new`` with a ``-32603`` error and no session; the runtime parses
-        *substitute* out of it. The per-chat client pins the substitute and re-seeds
-        ``settings.local.json`` before re-issuing (``_retry_after_model_substitution``);
-        this does the same on the session's own state, so the runtime's one retry
-        starts on the model the gateway serves. A substitute already in use answers
-        False: the gateway refused it again.
+        *substitute* out of it. As the per-chat client does before re-issuing
+        (``_retry_after_model_substitution``), this names the session's pin when the
+        backend serves it, else *substitute* (``_substitution_retry_model``), and
+        re-seeds ``settings.local.json`` with it, so the runtime's one retry starts on
+        a model the gateway serves. When the seed already names the served pin and the
+        gateway refused it, this falls back once to *substitute*; when the seed already
+        names *substitute*, it answers False.
         """
-        if state is None or not substitute or substitute == state._model:
+        if state is None or not substitute:
             return False
+        model = state._substitution_retry_model(substitute)
+        if model == getattr(state, "_adopted_substitute_model", None):
+            if model == substitute:
+                return False
+            # The served pin was refused as well: fall back once to the model the
+            # backend offers, since a session on it beats one that never starts.
+            model = substitute
         # The name comes from the backend's advisory, so the log line does not
         # carry it: the session's own model row shows which model it runs.
         logger.warning(
             "claude shared session: session/new named a substitute model; "
             "adopting it and retrying once"
         )
-        state._model = substitute
-        state._adopted_substitute_model = substitute
+        state._model = model
+        state._adopted_substitute_model = model
         try:
             await asyncio.to_thread(state._write_claude_local_settings)
         except (OSError, ValueError, TypeError):

@@ -118,6 +118,9 @@ _ENTITLEMENT_PROBE_TIMEOUT = 30.0
 # A fresh answer is reused for this window so a burst of rejections (several
 # chats revalidating at once) costs one round-trip, not one per rejection.
 _ENTITLEMENT_PROBE_TTL_SECS = 20.0
+#: The most times one start re-sends ``session/new`` after a model-substitution
+#: refusal: once naming a served pin, once more naming the model the backend offers.
+_SUBSTITUTION_RESENDS = 2
 
 #: Closes of ``session/new`` requests their caller abandoned (asyncio keeps only
 #: weak task references).
@@ -604,38 +607,48 @@ async def create_session(
                 self._send_and_await(METHOD_SESSION_NEW, params, timeout=budget),
                 harness_state,
             )
-        except AcpRuntimeError as exc:
+        except AcpRuntimeError as first_refusal:
             # An organization-policy advisory refused the model and named one it
-            # serves: a host that adopts it (claude) is asked once more, with this
-            # session's envelope rebuilt on the substitute. Any other error stands.
-            substitute = _substitute_model_from_advisory(getattr(exc, "rpc_error", None))
-            owned_before = harness_state is not None and self._harness.permission_surface_owned(
-                harness_state
-            )
-            if (
-                harness_state is None
-                or not substitute
-                or not await self._harness.adopt_substituted_model(harness_state, substitute)
-            ):
-                raise
-            if owned_before and not self._harness.permission_surface_owned(harness_state):
-                # The re-seed found Crew's settings file replaced: the array this
-                # start carries was authorized under a surface Crew does not govern
-                # now, so it is not sent again (as the per-chat client refuses a
-                # fresh conversation in this case).
-                raise AcpRuntimeError(
-                    "the session's settings file was replaced; start the chat again"
-                ) from exc
-            meta = self._harness.session_meta(
-                harness_state, wire_servers, zero_tools=zero_tools, stub_token=stub_token
-            )
-            if meta is not None:
-                params["_meta"] = {**(params.get("_meta") or {}), **meta}
-            resp = await _kept_to_its_end(
-                self,
-                self._send_and_await(METHOD_SESSION_NEW, params, timeout=budget),
-                harness_state,
-            )
+            # serves: a host that adopts a model (claude) is asked again, with this
+            # session's envelope rebuilt on it. The host names a served pin first
+            # and the offered model after that pin is refused, so a start is
+            # re-sent at most twice. Any other error stands.
+            refusal = first_refusal
+            for attempt in range(_SUBSTITUTION_RESENDS):
+                substitute = _substitute_model_from_advisory(getattr(refusal, "rpc_error", None))
+                owned_before = harness_state is not None and self._harness.permission_surface_owned(
+                    harness_state
+                )
+                if (
+                    harness_state is None
+                    or not substitute
+                    or not await self._harness.adopt_substituted_model(harness_state, substitute)
+                ):
+                    raise refusal
+                if owned_before and not self._harness.permission_surface_owned(harness_state):
+                    # The re-seed found Crew's settings file replaced: the array this
+                    # start carries was authorized under a surface Crew does not govern
+                    # now, so it is not sent again (as the per-chat client refuses a
+                    # fresh conversation in this case).
+                    raise AcpRuntimeError(
+                        "the session's settings file was replaced; start the chat again"
+                    ) from refusal
+                meta = self._harness.session_meta(
+                    harness_state, wire_servers, zero_tools=zero_tools, stub_token=stub_token
+                )
+                if meta is not None:
+                    params["_meta"] = {**(params.get("_meta") or {}), **meta}
+                try:
+                    resp = await _kept_to_its_end(
+                        self,
+                        self._send_and_await(METHOD_SESSION_NEW, params, timeout=budget),
+                        harness_state,
+                    )
+                    break
+                except AcpRuntimeError as retry_refusal:
+                    if attempt == _SUBSTITUTION_RESENDS - 1:
+                        raise
+                    refusal = retry_refusal
         session_id = str(resp.get("sessionId") or "")
         permit.release()
         if not session_id:
