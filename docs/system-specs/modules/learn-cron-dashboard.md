@@ -2826,7 +2826,8 @@ specified compatibility change.
     readiness gate and its shutdown;
   - `crewmate_prune` — the Bot prune migration, its request gate and settle
     wait, and the channel transcript convergence;
-  - `heartbeat` — the loop stall watchdog, the 5-second heartbeat that beats it, the
+  - `heartbeat` — the loop stall watchdog, the 5-second heartbeat that beats it
+    while the default executor still runs its no-op probe, the
     prior crash dump's one report, and the healthy-boot marker both entrypoints
     dispatch once ready;
   - `diagnostics` — the boot telemetry event and the diagnostic recorder;

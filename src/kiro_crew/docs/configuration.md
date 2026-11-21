@@ -653,7 +653,11 @@ Spoken replies live in the `voice_reply` block of `config.json`: `enabled`,
 replies; empty, the default, lets each provider use its own default language, and
 the built-in providers speak the language of the selected voice.
 The `piper` provider was removed; a saved `piper` value speaks with `system` and
-logs one warning, and its `piper_*` keys are ignored. **Settings > Voice** is the writer for this block. It is not in
+logs one warning, and its `piper_*` keys are ignored. A running gateway picks up a
+change to this block in `config.json` without a restart. When `config.json` has
+its own `voice_reply` block, an edit only to `config.local.json` waits for the
+next restart; when it has none, the overlay's block is what the gateway sees, so
+that edit applies live too. **Settings > Voice** is the writer for this block. It is not in
 the config schema, so `kirocrew config set voice_reply.<key>` answers
 `Unknown key`.
 
