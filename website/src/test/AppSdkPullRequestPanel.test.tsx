@@ -170,7 +170,9 @@ describe('the App SDK PullRequestPanel', () => {
   it('refuses an external app that declares no source read, and sends nothing', async () => {
     // Declaring a write or a sibling read is not the panel's read.
     render(externalApp(['/api/apps/pr-panel-app', PULL_REQUEST_PANEL_PATHS.comment, '/api/source/issue'], panel))
-    expect(await screen.findByTestId('app-pull-request-panel-not-declared')).toHaveTextContent(PULL_REQUEST_PANEL_PATHS.source)
+    expect(await screen.findByTestId('app-pull-request-panel-not-declared')).toHaveTextContent(
+      `This app can't show pull requests. Only its developer can turn this on (${PULL_REQUEST_PANEL_PATHS.source}).`,
+    )
     expect(fetchMock).not.toHaveBeenCalled()
     expect(mockApi.pullRequestSource).not.toHaveBeenCalled()
   })

@@ -121,9 +121,10 @@ describe('the App SDK SessionChanges', () => {
     render(externalApp(['/api/apps/changes-app', SESSION_CHANGES_PATHS.sessionFileDiff, '/api/project/tree'], changes))
     const listRefusal = await screen.findByTestId('app-session-changes-not-declared')
     expect(listRefusal).toHaveTextContent(SESSION_CHANGES_PATHS.sessionFiles)
-    // The reason comes before the path, and it ends on who can fix it.
-    expect(listRefusal).toHaveTextContent("can't show this chat's changes. This app's developer hasn't allowed it")
-    expect(listRefusal).toHaveTextContent("Ask the app's developer to add it.")
+    // What the app can't show, then who can turn it on, then the path.
+    expect(listRefusal).toHaveTextContent(`This app can't show this chat's changes. Only its developer can turn this on (${SESSION_CHANGES_PATHS.sessionFiles}).`)
+    // The hand-off says what the agent does, not a second person to fix it.
+    expect(within(listRefusal).getByRole('button', { name: 'Ask the agent to explain this' })).toBeInTheDocument()
     expect(screen.queryByTestId('session-file-row')).toBeNull()
     expect(fetchMock).not.toHaveBeenCalled()
     expect(mockApi.sessionFiles).not.toHaveBeenCalled()
@@ -157,10 +158,9 @@ describe('the App SDK SessionChanges', () => {
     const diffRefusal = await screen.findByTestId('app-session-changes-diff-not-declared')
     expect(diffRefusal).toHaveTextContent(SESSION_CHANGES_PATHS.sessionFileDiff)
     // Said as the one file's changes, the row's "Show changes": the list of
-    // changes beside it does show. The reason comes before the path, and it
-    // ends on who can fix it.
-    expect(diffRefusal).toHaveTextContent("can't show this file's changes. This app's developer hasn't allowed it")
-    expect(diffRefusal).toHaveTextContent("Ask the app's developer to add it.")
+    // changes beside it does show. Then who can turn it on, then the path.
+    expect(diffRefusal).toHaveTextContent(`This app can't show this file's changes. Only its developer can turn this on (${SESSION_CHANGES_PATHS.sessionFileDiff}).`)
+    expect(within(diffRefusal).getByRole('button', { name: 'Ask the agent to explain this' })).toBeInTheDocument()
     expect(screen.queryByTestId('pierre-pair')).toBeNull()
     const paths = fetchMock.mock.calls.map(pathOf)
     expect(paths).toContain(SESSION_CHANGES_PATHS.sessionFiles)

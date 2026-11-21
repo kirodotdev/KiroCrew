@@ -130,7 +130,9 @@ describe('scopedIssuesTransport', () => {
 describe('fails closed', () => {
   it('refuses an app that declares only the single-issue read, and sends nothing', async () => {
     render(externalApp(['/api/source/issue', '/api/source/pull-request'], <IssueList query={QUERY} />))
-    expect(await screen.findByTestId('app-issue-list-not-declared', {}, LAZY)).toHaveTextContent(ISSUES_PATH)
+    expect(await screen.findByTestId('app-issue-list-not-declared', {}, LAZY)).toHaveTextContent(
+      `This app can't show issues. Only its developer can turn this on (${ISSUES_PATH}).`,
+    )
     expect(fetchMock).not.toHaveBeenCalled()
     expect(mockApi.fetchIssues).not.toHaveBeenCalled()
   })

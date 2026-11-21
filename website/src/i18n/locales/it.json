@@ -374,14 +374,15 @@
       "create_returned_no_session": "La sessione è stata creata, ma il server non l’ha restituita. Riprova."
     },
     "pullRequestPanel": {
-      "not_declared": "Questa app non può mostrare pull request: le sue autorizzazioni non dichiarano {{path}}."
+      "not_declared": "Questa app non può mostrare pull request. Solo lo sviluppatore dell'app può attivarlo ({{path}})."
     },
     "projectPicker": {
-      "not_declared": "Questa app non può mostrare il selettore di progetti: le sue autorizzazioni non dichiarano {{path}}."
+      "not_declared": "Questa app non può mostrare il selettore di progetti. Solo lo sviluppatore dell'app può attivarlo ({{path}})."
     },
     "sessionChanges": {
-      "not_declared": "Questa app non può mostrare le modifiche di questa chat. Lo sviluppatore di questa app non l'ha consentito: le autorizzazioni dell'app non dichiarano {{path}}. Chiedi allo sviluppatore dell'app di aggiungerlo.",
-      "diff_not_declared": "Questa app non può mostrare le modifiche di questo file. Lo sviluppatore di questa app non l'ha consentito: le autorizzazioni dell'app non dichiarano {{path}}. Chiedi allo sviluppatore dell'app di aggiungerlo.",
+      "not_declared": "Questa app non può mostrare le modifiche di questa chat. Solo lo sviluppatore dell'app può attivarlo ({{path}}).",
+      "diff_not_declared": "Questa app non può mostrare le modifiche di questo file. Solo lo sviluppatore dell'app può attivarlo ({{path}}).",
+      "ask_agent": "Chiedi all'agente di spiegarlo",
       "pick_a_file": "Scegli un file per vederne le modifiche.",
       "diff_unavailable": "Questa chat non ha registrato il file intero prima e dopo questa modifica, quindi non c'è un diff da mostrare."
     },
@@ -409,7 +410,7 @@
       "loading": "Caricamento delle issue…",
       "loading_more": "Caricamento…",
       "more_people": "+{{n}}",
-      "not_declared": "Questa app non può mostrare issue: i suoi permessi non dichiarano {{path}}.",
+      "not_declared": "Questa app non può mostrare issue. Solo lo sviluppatore dell'app può attivarlo ({{path}}).",
       "open_in": "Apri in {{provider}}",
       "opened_by": "Aperta da {{name}}",
       "priority": "Priorità: {{priority}}",

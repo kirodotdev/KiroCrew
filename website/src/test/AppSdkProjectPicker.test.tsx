@@ -82,7 +82,9 @@ describe('undeclaredProjectPickerPath', () => {
 describe('the App SDK ProjectPicker', () => {
   it('refuses an external app that declares none of the families, and mounts nothing', () => {
     render(externalApp(['/api/project-scaffold'], picker()))
-    expect(screen.getByTestId('app-project-picker-not-declared')).toHaveTextContent('/api/browse-dirs')
+    expect(screen.getByTestId('app-project-picker-not-declared')).toHaveTextContent(
+      "This app can't show the project picker. Only its developer can turn this on (/api/browse-dirs).",
+    )
     expect(screen.queryByTestId('host-project-picker')).toBeNull()
     expect(fetchMock).not.toHaveBeenCalled()
   })
