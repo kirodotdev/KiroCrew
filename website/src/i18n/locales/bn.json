@@ -12343,7 +12343,9 @@
         "installed_needs_newer_host": "{{name}}-এর ইনস্টল করা সংস্করণের জন্য নতুন {{productName}} দরকার। {{productName}} আপডেট করো; তোমার ডেটা বদলায়নি।"
       },
       "grants_reconsent_composer_actions": "কম্পোজার বোতাম: অ্যাপকে কম্পোজারের + মেনুতে এই বোতামগুলো যোগ করতে দেয়। ক্লিক করলে অ্যাপের লেখা তোমার খসড়ায় যোগ হয়; অ্যাপ খসড়া দেখতে বা পাঠাতে পারে না।",
-      "grants_reconsent_selection_actions": "নির্বাচিত লেখার কাজ: চ্যাটের উত্তরে তোমার নির্বাচিত লেখা অ্যাপের আইটেমগুলো পায়, এবং কপি বা খোলার জন্য ফল দিতে পারে।"
+      "grants_reconsent_selection_actions": "নির্বাচিত লেখার কাজ: চ্যাটের উত্তরে তোমার নির্বাচিত লেখা অ্যাপের আইটেমগুলো পায়, এবং কপি বা খোলার জন্য ফল দিতে পারে।",
+      "bots_scope_tools": "এই অ্যাপের জন্য টিক দেওয়া Bot নিজের চ্যাটে এই অ্যাপের টুল ব্যবহার করতে পারবে। অন্য Bot পরিবর্তন হবে না।",
+      "bots_scope_tools_preview_off": "ফিচার প্রিভিউতে <preview>Bot চ্যাটে অ্যাপের টুল</preview> চালু করার আগে, টিক দেওয়া Bot এই অ্যাপের টুল পাবে না।"
     },
     "appPage": {
       "loading_app": "অ্যাপ লোড হচ্ছে…",
@@ -12437,7 +12439,26 @@
       "open_app_details": "{{name}}-এর বিবরণ খোলো",
       "refresh_store": "স্টোর রিফ্রেশ করুন",
       "refreshing_store": "স্টোর রিফ্রেশ হচ্ছে…",
-      "store_catalog_unreachable": "অফিসিয়াল অ্যাপ ক্যাটালগে পৌঁছানো গেল না, তাই স্টোর তার অফলাইন তালিকা দেখাচ্ছে। গেটওয়ে ইন্টারনেটে পৌঁছাতে পারে কিনা দেখো, তারপর আবার রিফ্রেশ করো।"
+      "store_catalog_unreachable": "অফিসিয়াল অ্যাপ ক্যাটালগে পৌঁছানো গেল না, তাই স্টোর তার অফলাইন তালিকা দেখাচ্ছে। গেটওয়ে ইন্টারনেটে পৌঁছাতে পারে কিনা দেখো, তারপর আবার রিফ্রেশ করো।",
+      "bot_chat_stop_incomplete": "{{slugs}} এখনও {{name}}-এর টুল দিয়ে চলছে। এই bot চ্যাটগুলো বন্ধ করতে রিস্টার্ট করো। {{productName}}",
+      "uninstall_bot_chat_stop_failed": "{{name}} আনইনস্টল হয়েছে, কিন্তু bot \"{{slugs}}\"-এর কাছে এখনও এর টুল আছে। নিচের বোতাম দিয়ে সেগুলো সরাও বা {{productName}} রিস্টার্ট করো।",
+      "uninstall_bot_chat_stop_failed_one": "{{name}} আনইনস্টল হয়েছে, কিন্তু bot \"{{slugs}}\"-এর কাছে এখনও এর টুল আছে। নিচের বোতাম দিয়ে সেগুলো সরাও বা {{productName}} রিস্টার্ট করো।",
+      "uninstall_bot_chat_stop_failed_other": "{{name}} আনইনস্টল হয়েছে, কিন্তু bot \"{{slugs}}\"-এর কাছে এখনও এর টুল আছে। নিচের বোতাম দিয়ে সেগুলো সরাও বা {{productName}} রিস্টার্ট করো।",
+      "disable_bot_chat_stop_failed": "{{name}} বন্ধ হয়েছে, কিন্তু bot \"{{slugs}}\"-এর কাছে এখনও এর টুল আছে। নিচের বোতাম দিয়ে সেগুলো সরাও বা {{productName}} রিস্টার্ট করো।",
+      "disable_bot_chat_stop_failed_one": "{{name}} বন্ধ হয়েছে, কিন্তু bot \"{{slugs}}\"-এর কাছে এখনও এর টুল আছে। নিচের বোতাম দিয়ে সেগুলো সরাও বা {{productName}} রিস্টার্ট করো।",
+      "disable_bot_chat_stop_failed_other": "{{name}} বন্ধ হয়েছে, কিন্তু bot \"{{slugs}}\"-এর কাছে এখনও এর টুল আছে। নিচের বোতাম দিয়ে সেগুলো সরাও বা {{productName}} রিস্টার্ট করো।",
+      "bot_chat_stop_incomplete_revoked_one": "{{name}} আর বিশ্বস্ত নয়, কিন্তু bot \"{{slugs}}\"-এর কাছে এখনও এর টুল আছে। নিচের বোতাম দিয়ে সেগুলো সরাও বা {{productName}} রিস্টার্ট করো।",
+      "bot_chat_stop_incomplete_revoked_other": "{{name}} আর বিশ্বস্ত নয়, কিন্তু bot \"{{slugs}}\"-এর কাছে এখনও এর টুল আছে। নিচের বোতাম দিয়ে সেগুলো সরাও বা {{productName}} রিস্টার্ট করো।",
+      "bot_chat_stop_retry_one": "bot \"{{bots}}\" থেকে {{name}}-এর টুল সরাও",
+      "bot_chat_stop_retry_all_one": "bot \"{{bots}}\" থেকে অবিশ্বস্ত app-এর টুল সরাও",
+      "bot_chat_stop_retry_other": "bot \"{{bots}}\" থেকে {{name}}-এর টুল সরাও",
+      "bot_chat_stop_retry_all_other": "bot \"{{bots}}\" থেকে অবিশ্বস্ত app-এর টুল সরাও",
+      "bot_chat_stop_retrying": "সরানো হচ্ছে…",
+      "blanket_bot_chat_stop_failed_one": "সব থার্ড-পার্টি app-এ বিশ্বাস বন্ধ, কিন্তু bot \"{{slugs}}\"-এর কাছে এখনও অবিশ্বস্ত app-এর টুল আছে। নিচের বোতাম দিয়ে সেগুলো সরাও বা {{productName}} রিস্টার্ট করো।",
+      "blanket_bot_chat_stop_failed_other": "সব থার্ড-পার্টি app-এ বিশ্বাস বন্ধ, কিন্তু bot \"{{slugs}}\"-এর কাছে এখনও অবিশ্বস্ত app-এর টুল আছে। নিচের বোতাম দিয়ে সেগুলো সরাও বা {{productName}} রিস্টার্ট করো।",
+      "bot_chat_stop_retry_hint": "চ্যাটের ইতিহাস থেকে যাবে।",
+      "bot_chat_stop_unknown_bot": "কোনো bot",
+      "restart_gateway_link": "এই bot চ্যাটগুলো বন্ধ করতে রিস্টার্ট করো {{productName}}"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/মাস",
@@ -16370,7 +16391,10 @@
         "remote_dispatch_desc_summary": "সংযুক্ত মেশিনে Conductor mode-এর কাজ চালায়।",
         "remote_dispatch_save_failed": "রিমোট ডিসপ্যাচ সেভ করা যায়নি। আবার চেষ্টা করো।",
         "remote_dispatch_load_failed": "রিমোট ডিসপ্যাচ সেটিং পড়া যায়নি।",
-        "remote_dispatch_connect": "<0>Settings › Remote Crew</0>-এ মেশিন সংযুক্ত করো।"
+        "remote_dispatch_connect": "<0>Settings › Remote Crew</0>-এ মেশিন সংযুক্ত করো।",
+        "bot_chat_app_tools": "Bot চ্যাটে অ্যাপের টুল",
+        "bot_chat_app_tools_desc": "একটি bot থামাতে app-এর পাতায় তার টিক তুলে দাও।",
+        "bot_chat_app_tools_desc_summary": "যে অ্যাপগুলো তুমি অনুমতি দিয়েছ সেগুলোকে Bot-এর চ্যাটে তাদের টুল যোগ করতে দেয়। Bot ব্যবহারের আগে এখনো জিজ্ঞেস করে।"
       },
       "kasBundleCard": {
         "installed": "বিল্ট-ইন ইঞ্জিন {{version}}",
@@ -21091,7 +21115,8 @@
           "allow_all_confirm_body": "সব তৃতীয় পক্ষের অ্যাপকে বিশ্বাস করলে, আপনি যে অ্যাপই ইনস্টল করুন সেটি {{productName}}-এর ভিতরে নিজের কোড চালাতে পারবে, {{productName}}-এর সমান অ্যাক্সেস নিয়ে — আপনার ফাইল, আপনার সংরক্ষিত ক্রেডেনশিয়াল এবং ইন্টারনেট। একবারে একটি অ্যাপকে বিশ্বাস করা বেশি নিরাপদ।",
           "allow_all_confirm_ack": "আমি বুঝেছি, আমি যে তৃতীয় পক্ষের অ্যাপই ইনস্টল করি সেটি {{productName}}-এর অ্যাক্সেস নিয়ে নিজের কোড চালাতে পারবে।",
           "ineffective_label": "সংরক্ষিত, কিন্তু কাজ করছে না",
-          "ineffective_description": "এই নামগুলো বিশ্বাসযোগ্য হিসেবে সংরক্ষিত হয়েছিল, কিন্তু {{productName}} এগুলো গ্রহণ করে না, তাই অ্যাপগুলো এখনও ব্লক আছে। তালিকা পরিষ্কার করতে এগুলো সরিয়ে দিন।"
+          "ineffective_description": "এই নামগুলো বিশ্বাসযোগ্য হিসেবে সংরক্ষিত হয়েছিল, কিন্তু {{productName}} এগুলো গ্রহণ করে না, তাই অ্যাপগুলো এখনও ব্লক আছে। তালিকা পরিষ্কার করতে এগুলো সরিয়ে দিন।",
+          "bot_chats_not_stopped": "{{message}} Bot চ্যাট যেগুলো বন্ধ করা যায়নি: {{slugs}}."
         },
         "trustedRegistries": {
           "change_failed": "এই পরিবর্তনটি কার্যকর হয়নি: {{detail}}",

@@ -1400,6 +1400,12 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "native; kiro-cli's launch record already carries it, a Kiro Cloud sandbox "
     "registers no agent, and no other harness reads that tree",
     (
+        "src/kiro_crew/acp/runtime_session_setup.py",
+        "_mirrored_session_mcp",
+    ): "codex-acp folds whitespace in every server name it registers (codex_name, "
+    "codex's own adapter rule), so a Bot chat's record matches its offers under that "
+    "spelling; no other harness renames a server it is handed",
+    (
         "src/kiro_crew/acp/runtime_spawn_entry.py",
         "spawn",
     ): "moving kiro-cli's broken KAS extract aside and retrying is a repair for the "

@@ -12343,7 +12343,9 @@
         "installed_needs_newer_host": "{{name}} के इंस्टॉल किए गए संस्करण को नया {{productName}} चाहिए। {{productName}} अपडेट करो; तुम्हारा डेटा नहीं बदला है।"
       },
       "grants_reconsent_composer_actions": "कंपोज़र बटन: ऐप को कंपोज़र के + मेनू में ये बटन जोड़ने देता है। क्लिक करने पर ऐप का टेक्स्ट तुम्हारे ड्राफ़्ट में डलता है; ऐप ड्राफ़्ट को देख या भेज नहीं सकता।",
-      "grants_reconsent_selection_actions": "चुने गए टेक्स्ट की कार्रवाइयाँ: ऐप के आइटम को चैट जवाबों में तुम्हारा चुना गया टेक्स्ट मिलता है, और वे कॉपी या खोलने के लिए नतीजा दे सकते हैं।"
+      "grants_reconsent_selection_actions": "चुने गए टेक्स्ट की कार्रवाइयाँ: ऐप के आइटम को चैट जवाबों में तुम्हारा चुना गया टेक्स्ट मिलता है, और वे कॉपी या खोलने के लिए नतीजा दे सकते हैं।",
+      "bots_scope_tools": "इस ऐप के लिए टिक किए Bot को अपनी चैट में इसके टूल इस्तेमाल करने देता है। अन्य Bot नहीं बदलते।",
+      "bots_scope_tools_preview_off": "फ़ीचर प्रीव्यू में <preview>Bot चैट में ऐप के टूल</preview> चालू करने से पहले, चुने हुए Bot को इस ऐप के टूल नहीं मिलेंगे।"
     },
     "appPage": {
       "loading_app": "ऐप लोड हो रहा है…",
@@ -12437,7 +12439,26 @@
       "open_app_details": "{{name}} की जानकारी खोलो",
       "refresh_store": "स्टोर रीफ़्रेश करें",
       "refreshing_store": "स्टोर रीफ़्रेश हो रहा है…",
-      "store_catalog_unreachable": "आधिकारिक ऐप कैटलॉग तक नहीं पहुँच सके, इसलिए स्टोर अपनी ऑफ़लाइन सूची दिखा रहा है। जाँचो कि गेटवे इंटरनेट तक पहुँच सकता है, फिर दोबारा रीफ़्रेश करो।"
+      "store_catalog_unreachable": "आधिकारिक ऐप कैटलॉग तक नहीं पहुँच सके, इसलिए स्टोर अपनी ऑफ़लाइन सूची दिखा रहा है। जाँचो कि गेटवे इंटरनेट तक पहुँच सकता है, फिर दोबारा रीफ़्रेश करो।",
+      "bot_chat_stop_incomplete": "{{slugs}} अभी भी {{name}} के टूल चला रहे हैं। इन bot चैट्स को बंद करने के लिए रिस्टार्ट करो। {{productName}}",
+      "uninstall_bot_chat_stop_failed": "{{name}} अनइंस्टॉल हो गया है, लेकिन bots \"{{slugs}}\" के पास अभी भी उसके टूल हैं। नीचे के बटन से उन्हें हटाओ या {{productName}} रिस्टार्ट करो।",
+      "uninstall_bot_chat_stop_failed_one": "{{name}} अनइंस्टॉल हो गया है, लेकिन bot \"{{slugs}}\" के पास अभी भी उसके टूल हैं। नीचे के बटन से उन्हें हटाओ या {{productName}} रिस्टार्ट करो।",
+      "uninstall_bot_chat_stop_failed_other": "{{name}} अनइंस्टॉल हो गया है, लेकिन bots \"{{slugs}}\" के पास अभी भी उसके टूल हैं। नीचे के बटन से उन्हें हटाओ या {{productName}} रिस्टार्ट करो।",
+      "disable_bot_chat_stop_failed": "{{name}} बंद हो गया है, लेकिन bots \"{{slugs}}\" के पास अभी भी उसके टूल हैं। नीचे के बटन से उन्हें हटाओ या {{productName}} रिस्टार्ट करो।",
+      "disable_bot_chat_stop_failed_one": "{{name}} बंद हो गया है, लेकिन bot \"{{slugs}}\" के पास अभी भी उसके टूल हैं। नीचे के बटन से उन्हें हटाओ या {{productName}} रिस्टार्ट करो।",
+      "disable_bot_chat_stop_failed_other": "{{name}} बंद हो गया है, लेकिन bots \"{{slugs}}\" के पास अभी भी उसके टूल हैं। नीचे के बटन से उन्हें हटाओ या {{productName}} रिस्टार्ट करो।",
+      "bot_chat_stop_incomplete_revoked_one": "{{name}} अब भरोसेमंद नहीं है, लेकिन bot \"{{slugs}}\" के पास अभी भी उसके टूल हैं। नीचे के बटन से उन्हें हटाओ या {{productName}} रिस्टार्ट करो।",
+      "bot_chat_stop_incomplete_revoked_other": "{{name}} अब भरोसेमंद नहीं है, लेकिन bots \"{{slugs}}\" के पास अभी भी उसके टूल हैं। नीचे के बटन से उन्हें हटाओ या {{productName}} रिस्टार्ट करो।",
+      "bot_chat_stop_retry_one": "bot \"{{bots}}\" से {{name}} के टूल हटाओ",
+      "bot_chat_stop_retry_all_one": "bot \"{{bots}}\" से भरोसा हटाए गए apps के टूल हटाओ",
+      "bot_chat_stop_retry_other": "bots \"{{bots}}\" से {{name}} के टूल हटाओ",
+      "bot_chat_stop_retry_all_other": "bots \"{{bots}}\" से भरोसा हटाए गए apps के टूल हटाओ",
+      "bot_chat_stop_retrying": "हटाया जा रहा है…",
+      "blanket_bot_chat_stop_failed_one": "सभी थर्ड-पार्टी apps पर भरोसा बंद है, लेकिन bot \"{{slugs}}\" के पास अभी भी उन apps के टूल हैं जिन पर अब भरोसा नहीं है। नीचे के बटन से उन्हें हटाओ या {{productName}} रिस्टार्ट करो।",
+      "blanket_bot_chat_stop_failed_other": "सभी थर्ड-पार्टी apps पर भरोसा बंद है, लेकिन bots \"{{slugs}}\" के पास अभी भी उन apps के टूल हैं जिन पर अब भरोसा नहीं है। नीचे के बटन से उन्हें हटाओ या {{productName}} रिस्टार्ट करो।",
+      "bot_chat_stop_retry_hint": "चैट का इतिहास बना रहेगा।",
+      "bot_chat_stop_unknown_bot": "कोई bot",
+      "restart_gateway_link": "इन bot चैट्स को बंद करने के लिए रिस्टार्ट करो {{productName}}"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/माह",
@@ -16370,7 +16391,10 @@
         "remote_dispatch_desc_summary": "Conductor mode के काम जुड़ी हुई मशीनों पर चलाता है।",
         "remote_dispatch_save_failed": "रिमोट डिस्पैच सेव नहीं हो सका। फिर से कोशिश करो।",
         "remote_dispatch_load_failed": "रिमोट डिस्पैच सेटिंग पढ़ी नहीं जा सकी।",
-        "remote_dispatch_connect": "<0>सेटिंग्स › रिमोट क्रू</0> में मशीनें जोड़ो।"
+        "remote_dispatch_connect": "<0>सेटिंग्स › रिमोट क्रू</0> में मशीनें जोड़ो।",
+        "bot_chat_app_tools": "Bot चैट में ऐप के टूल",
+        "bot_chat_app_tools_desc": "किसी एक bot को रोकने के लिए app के पेज पर उसका टिक हटाओ।",
+        "bot_chat_app_tools_desc_summary": "जिन ऐप को तुमने अनुमति दी है, उन्हें Bot की चैट में अपने टूल जोड़ने देता है। Bot उन्हें इस्तेमाल करने से पहले अब भी पूछता है।"
       },
       "kasBundleCard": {
         "installed": "बिल्ट-इन इंजन {{version}}",
@@ -21091,7 +21115,8 @@
           "allow_all_confirm_body": "हर तीसरे पक्ष के ऐप पर भरोसा करने से, इंस्टॉल किया गया कोई भी ऐप {{productName}} के अंदर अपना कोड चला सकता है, उतनी ही पहुँच के साथ जितनी {{productName}} के पास है — तुम्हारी फ़ाइलें, सहेजे गए क्रेडेंशियल और इंटरनेट। एक बार में एक ऐप पर भरोसा करना ज़्यादा सुरक्षित है।",
           "allow_all_confirm_ack": "मैं समझता हूँ कि इंस्टॉल किया गया हर तीसरे पक्ष का ऐप {{productName}} की पहुँच के साथ अपना कोड चला सकेगा।",
           "ineffective_label": "सहेजा गया पर काम नहीं कर रहा",
-          "ineffective_description": "ये नाम भरोसेमंद के रूप में सहेजे गए थे, पर {{productName}} इन्हें स्वीकार नहीं करता, इसलिए ये ऐप अब भी ब्लॉक हैं। सूची साफ़ करने के लिए इन्हें हटा दें।"
+          "ineffective_description": "ये नाम भरोसेमंद के रूप में सहेजे गए थे, पर {{productName}} इन्हें स्वीकार नहीं करता, इसलिए ये ऐप अब भी ब्लॉक हैं। सूची साफ़ करने के लिए इन्हें हटा दें।",
+          "bot_chats_not_stopped": "{{message}} Bot चैट जो बंद नहीं हो सकीं: {{slugs}}."
         },
         "trustedRegistries": {
           "change_failed": "यह बदलाव लागू नहीं हुआ: {{detail}}",

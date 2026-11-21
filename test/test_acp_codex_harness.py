@@ -1571,7 +1571,15 @@ class TestTheRuntimeCarriesTheProjectionOntoTheSession:
 
     @staticmethod
     def _projection(servers: list[dict], denied: set[tuple[str, str]]):
-        async def _mirrored(agent, *, work_dir, session_key, channel_id, permission_surface_owned):
+        async def _mirrored(
+            agent,
+            *,
+            work_dir,
+            session_key,
+            channel_id,
+            permission_surface_owned,
+            harness_state=None,
+        ):
             assert permission_surface_owned is False
             return _MirroredSessionMcp(
                 servers=list(servers),

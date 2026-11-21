@@ -1349,6 +1349,46 @@ put a **Copy** or **Open &lt;host&gt;** item in that menu: nothing is
 copied or opened until the user picks it. Links inside the frame open through the
 dashboard's link bridge.
 
+### `contributes.botChatServers` — Tools in a Bot's Own Chat
+
+**Preview** (`bot_chat_app_tools`, off by default). Offers some of the app's MCP
+servers to the chats of the owner's Bots. A Bot's own chat normally carries the
+platform tools only; with this, it also carries the offered servers, and only on
+the Bots the owner ticked for the app.
+
+```json
+{
+  "agents": ["agents/lead.json"],
+  "permissions": { "bots": ["tools"] },
+  "contributes": {
+    "botChatServers": [{ "agent": "lead", "server": "inbox" }]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `agent` | string | One of the app's own agents (the file stem of an `agents` entry) |
+| `server` | string | A server that agent's spec declares in `mcpServers` |
+
+Nothing mounts from this alone. All of these must hold, read each time a Bot's
+chat starts its agent: the preview is on, the app is enabled, the owner approved
+the `tools` Bot scope (`permissions.bots`), and the owner ticked the Bot on the
+app's page. The server joins that one chat as `<app>:<server>`, with
+`KIROCREW_SESSION_LABEL` set to the chat's session, so the server can tell which
+Bot calls it. A platform server of the same name wins. Each call still goes
+through the Bot's own approvals.
+
+Unticking the Bot or updating the app takes the server off at the start of that
+chat's next turn: the chat restarts fresh without it. Disabling or uninstalling
+the app stops Bot chats that are using its servers immediately, interrupting the
+current turn if one is running. Ticking a Bot or enabling the app reloads the
+chat in place.
+
+A Bot whose chat runs on the Kiro CLI harness gets none of these servers: Kiro CLI
+reads the Bot's agent file off disk and has no per-session channel to carry them.
+Its chat says so once. Pin the Bot to Kiro Agent, Claude Code or Codex to use them.
+
 ### `contributes.composerActions` — Buttons That Put Text in the Composer
 
 A composer action is a row in the chat composer's **+** menu. When the user clicks
@@ -1905,7 +1945,7 @@ packages at all.
 | `permissions.memberThreads` | boolean | Widens `sessionApproval` to a Bot's pinned DM thread (the live `member-*` slot the owner opened): the same actions, nothing else about the Bot. Grants nothing without `sessionApproval`; see [the scope below](#permissionsmemberthreads--a-bots-own-thread) |
 | `permissions.spawn` | boolean | May start a background agent through the host's subagent manager (`ctx.spawn`) |
 | `permissions.jobs` | boolean | May run durable background work through `ctx.job` and the app-owned `_jobs/*` routes |
-| `permissions.bots` | string[] | Bot scopes, `"read"` and `"wake"`; any other entry is dropped. `read` lists the Bots the owner ticked for this app with their status and goals; `wake` sends one of them a fixed line the gateway writes. The owner ticks Bots in the app's detail page, and a fresh install reaches none. Also declare `/api/members` in `permissions.api`. A scope an update adds waits for the owner's approval. Never reaches a Bot's chats, briefing or rules. Called from the app's backend with its app token ([api-reference](api-reference.md#bots-permissionsbots-from-your-backend)) |
+| `permissions.bots` | string[] | Bot scopes, `"read"`, `"wake"` and `"tools"`; any other entry is dropped. `read` lists the Bots the owner ticked for this app with their status and goals; `wake` sends one of them a fixed line the gateway writes; `tools` (behind the `bot_chat_app_tools` feature preview) mounts the servers in [`contributes.botChatServers`](#contributesbotchatservers--tools-in-a-bots-own-chat) on each ticked Bot's own chat. The owner ticks Bots in the app's detail page, and a fresh install reaches none. Also declare `/api/members` in `permissions.api` for `read` and `wake`. A scope an update adds waits for the owner's approval. Never reaches a Bot's chats, briefing or rules. Called from the app's backend with its app token ([api-reference](api-reference.md#bots-permissionsbots-from-your-backend)) |
 | `permissions.proposeCrewmate` | boolean | **Preview, switched off**: `ctx.crewmate` stays `None` until an owner view lists the cards. May propose one Bot from a `.crewmate` bundle through `ctx.crewmate`. Gates a real capability like `spawn`: `ctx.crewmate` is absent unless the value is literally `true`. Each proposal is an owner change card; only the owner's press creates the Bot ([api-reference](api-reference.md#bot-proposals-ctxcrewmate)) |
 | `permissions.agentTurns` | boolean | May run agent turns on sessions keyed `<app>-<id>` through `ctx.turns`: every tool goes through the host's tool gate under this app's identity, and every turn is admitted as Crew automation. Gates a real capability like `spawn`: `ctx.turns` is absent unless the value is literally `true` ([api-reference](api-reference.md#agent-turns-ctxturns)) |
 | `permissions.chatSlots` | boolean | May open and drive dashboard chat slots keyed `<app>-<id>` through `ctx.chat_slots`: turns through the host's own chat runner under this app's identity, the slot's queue, stop, archive, transcript and the AutoNudge loops on those slots, never another slot. Shown at the trust prompt. `ctx.chat_slots` is absent unless the value is literally `true` (App Kit seam level 7, [api-reference](api-reference.md#chat-slots-ctxchat_slots)) |

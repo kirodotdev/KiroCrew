@@ -1236,3 +1236,204 @@ describe('SecurityPanel — allow-all toggle inherits #1414 semantics', () => {
     expect(screen.queryByRole('switch', { name: /trust every third-party app/i })).toBeNull()
   })
 })
+
+/* ── bot_chat_stop_incomplete_revoked: applies snapshot + shows new message ──
+ *
+ * When revoke returns 409 bot_chat_stop_incomplete the trust WAS removed (the
+ * backend wrote the new config), but some Bot chats could not be stopped.  The
+ * UI must reflect that trust is gone (apply the snapshot) while naming the Bots
+ * still running — it must NOT say the change did not take effect.
+ *
+ * Without the snapshot application the row stays marked "trusted" after the
+ * mutation, and the user believes the app is still trusted when it is not:
+ * security-state misinformation on a path the backend explicitly designed to
+ * communicate the nuance.
+ */
+describe('SecurityPanel — bot_chat_stop_incomplete_revoked', () => {
+  const makeBot409 = (bots: string[]) => new ApiError(
+    409,
+    'Conflict',
+    JSON.stringify({
+      code: 'bot_chat_stop_incomplete',
+      bots,
+      apps: [],          // trust removed → empty list
+      ineffective: [],
+      allowAll: false,
+      disabled: false,
+    }),
+  )
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
+    ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
+    ;(api.listTrustedApps as ReturnType<typeof vi.fn>).mockResolvedValue({
+      apps: ['auto-improvement'],
+      ineffective: [],
+      allowAll: false,
+    })
+    ;(api.untrustApp as ReturnType<typeof vi.fn>).mockRejectedValue(makeBot409(['atlas']))
+  })
+
+  it('applies the snapshot so the row is no longer marked trusted', async () => {
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+
+    const row = await screen.findByTestId('trusted-app-auto-improvement')
+    fireEvent.click(within(row).getByRole('button', { name: T.revoke() }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: T.revokeConfirmOk() }))
+
+    // The snapshot says apps: [] — the row must disappear, not stay "trusted".
+    await waitFor(() =>
+      expect(screen.queryByTestId('trusted-app-auto-improvement')).not.toBeInTheDocument(),
+    )
+  })
+
+  it('shows the revoked message, not the change_failed wrapper', async () => {
+    // Without this fix the error renders inside the change_failed template:
+    // "That change did not take effect: atlas are still running …"
+    // which contradicts the backend comment "grant is ALREADY revoked at this point".
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+
+    const row = await screen.findByTestId('trusted-app-auto-improvement')
+    fireEvent.click(within(row).getByRole('button', { name: T.revoke() }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: T.revokeConfirmOk() }))
+
+    // The new message says trust was removed.
+    expect(
+      await screen.findByText(
+        i18nT('pages.appsPage.bot_chat_stop_incomplete_revoked', { count: 1, slugs: 'atlas', name: 'auto-improvement' }),
+      ),
+    ).toBeInTheDocument()
+
+    // The old change_failed wrapper must NOT appear.
+    expect(
+      screen.queryByText(i18nT('pages.settings.securityPanel.trustedApps.change_failed', { detail: '' })),
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows a retry button in the revoked notice', async () => {
+    // Without the `actions` prop containing a retry Btn, the notice shows the
+    // message but provides no actionable control — removing the revokedAppName
+    // state and the Btn would leave the user with nothing to click.
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+
+    const row = await screen.findByTestId('trusted-app-auto-improvement')
+    fireEvent.click(within(row).getByRole('button', { name: T.revoke() }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: T.revokeConfirmOk() }))
+
+    // Wait for the revoked message to land, then check the retry button.
+    await screen.findByText(
+      i18nT('pages.appsPage.bot_chat_stop_incomplete_revoked', { count: 1, slugs: 'atlas', name: 'auto-improvement' }),
+    )
+    // The notice must be a blocking alert (role="alert"), not a status notice, so
+    // assistive technology announces it immediately — remove `impact="blocking"` from
+    // the ErrorNotice in SecurityPanelTrust and the role degrades to "status".
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    // The retry names the Bot it stops, and the line beside it says the chat stays.
+    expect(
+      screen.getByRole('button', { name: i18nT('pages.appsPage.bot_chat_stop_retry', { count: 1, bots: 'atlas', name: 'auto-improvement' }) }),
+    ).toBeInTheDocument()
+    expect(screen.getByText(i18nT('pages.appsPage.bot_chat_stop_retry_hint'))).toBeInTheDocument()
+  })
+
+  it('keeps the notice when the retry is refused for another reason, and shows that error', async () => {
+    // Clear the revoked notice on any failure and a refusal unrelated to the Bots
+    // (a startup hook still running) hides the chats that are still running.
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+    const row = await screen.findByTestId('trusted-app-auto-improvement')
+    fireEvent.click(within(row).getByRole('button', { name: T.revoke() }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: T.revokeConfirmOk() }))
+    const message = i18nT('pages.appsPage.bot_chat_stop_incomplete_revoked', { count: 1, slugs: 'atlas', name: 'auto-improvement' })
+    await screen.findByText(message)
+    ;(api.untrustApp as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new ApiError(
+      409,
+      'Conflict',
+      JSON.stringify({ code: 'startup_hook_still_running', error: 'the app startup hook is still running' }),
+    ))
+    fireEvent.click(screen.getByRole('button', { name: i18nT('pages.appsPage.bot_chat_stop_retry', { count: 1, bots: 'atlas', name: 'auto-improvement' }) }))
+    expect(await screen.findByText(/the app startup hook is still running/)).toBeInTheDocument()
+    expect(screen.getByText(message)).toBeInTheDocument()
+  })
+})
+
+/* ── blanket_trust_sweep_incomplete: 409 body names Bot slugs ────────────────
+ *
+ * When turning off blanket trust fails to stop a Bot chat,
+ * the 409 carries ``botStopFailed``.  ``trustFailureMessage`` must include the
+ * Bot slug in the displayed error so the user knows which Bot survived.
+ *
+ * Remove the ``botStopFailed`` read from ``trustFailureMessage`` and this test
+ * fails: the displayed error no longer contains the Bot slug.
+ */
+describe('SecurityPanel — blanket_trust_sweep_incomplete with botStopFailed', () => {
+  const makeSweepIncomplete409 = (botStopFailed: string[]) => new ApiError(
+    409,
+    'Conflict',
+    JSON.stringify({
+      code: 'blanket_trust_sweep_incomplete',
+      apps: ['auto-improvement'],
+      ineffective: [],
+      allowAll: false,
+      stopped: [],
+      stillRunning: [],
+      botStopFailed,
+      error: 'blanket trust is off, but these apps could not be stopped and may still be executing: ; Bot chats that could not be stopped: ' + botStopFailed.join(', '),
+    }),
+  )
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
+    ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
+    ;(api.listTrustedApps as ReturnType<typeof vi.fn>).mockResolvedValue({
+      apps: ['auto-improvement'],
+      ineffective: [],
+      allowAll: true,
+    })
+    ;(api.setTrustAllApps as ReturnType<typeof vi.fn>).mockRejectedValue(
+      makeSweepIncomplete409(['atlas']),
+    )
+  })
+
+  it('shows the Bot slug in the error when blanket sweep fails to stop a Bot', async () => {
+    // trustFailureMessage must include the Bot slug from botStopFailed so the
+    // user can see which Bot chat survived the blanket trust withdrawal.
+    // Remove the botStopFailed read in trustFailureMessage and 'atlas' no longer
+    // appears in the displayed error.
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+
+    await screen.findByTestId('trusted-app-auto-improvement')
+    const toggle = screen.getByRole('switch', { name: T.allowAllLabel() })
+    fireEvent.click(toggle)
+
+    expect((await screen.findAllByText(/atlas/)).length).toBeGreaterThan(0)
+  })
+
+  it('shows the switch off from the 409 snapshot and the stop on its own, with a retry', async () => {
+    // Read only the error text and the switch stays on and the line says the
+    // change did not take effect, though the flag was written off.
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+    await screen.findByTestId('trusted-app-auto-improvement')
+    const toggle = screen.getByRole('switch', { name: T.allowAllLabel() })
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(toggle)
+
+    const retry = await screen.findByRole('button', {
+      name: i18nT('pages.appsPage.bot_chat_stop_retry_all', { count: 1, bots: 'atlas' }),
+    })
+    expect(screen.getByRole('switch', { name: T.allowAllLabel() })).toHaveAttribute('aria-checked', 'false')
+    // Only a Bot chat was left running: said in words, not as the gateway's raw list.
+    expect(screen.getByText(i18nT('pages.appsPage.blanket_bot_chat_stop_failed', { count: 1, slugs: 'atlas' }))).toBeInTheDocument()
+    const changeFailed = i18nT('pages.settings.securityPanel.trustedApps.change_failed', { detail: '' }).trim()
+    expect(screen.queryByText(content => content.startsWith(changeFailed))).not.toBeInTheDocument()
+    fireEvent.click(retry)
+    await waitFor(() => expect(api.setTrustAllApps).toHaveBeenCalledTimes(2))
+    expect(api.setTrustAllApps).toHaveBeenLastCalledWith(false)
+  })
+})

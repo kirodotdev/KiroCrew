@@ -71,6 +71,10 @@ export const PREVIEW_SESSION_ENVIRONMENTS = `${PREVIEW_FLAG_PREFIX}session-envir
  */
 export const PREVIEW_CONNECTED_COMPUTERS = `${PREVIEW_FLAG_PREFIX}connected-computers`
 
+/** App tools in a Bot's chat (`bot_chat_app_tools`): lets a ticked Bot use an
+ *  app's servers in its own chat. Gateway-side toggle; per-app tick on the app page. */
+export const PREVIEW_BOT_CHAT_APP_TOOLS = `${PREVIEW_FLAG_PREFIX}bot-chat-app-tools`
+
 /** Inbound webhooks (`/webhooks`): functional, not yet polished enough to ship. */
 export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
 
@@ -267,6 +271,7 @@ export const PREVIEW_VISUAL_REFRESH = `${PREVIEW_FLAG_PREFIX}visual-refresh`
  * {@link PREVIEW_INSTANCE_SESSIONS} is left out: the gateway never keeps it.
  */
 export const PREVIEW_FLAGS: readonly string[] = [
+  PREVIEW_BOT_CHAT_APP_TOOLS,
   PREVIEW_CONNECTED_COMPUTERS,
   PREVIEW_WEBHOOKS,
   PREVIEW_ARTIFACT_DEPLOY,

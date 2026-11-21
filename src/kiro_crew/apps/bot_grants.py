@@ -3,8 +3,10 @@
 Two things must both hold before an app token reaches a Bot:
 
 - **A scope.** The manifest declares ``permissions.bots``: ``"read"`` (the Bot's
-  name, description, busy or idle, goals and key results) or ``"wake"`` (the
-  gateway's fixed wake line, ``dashboard.app_bot_wake``). ``bots`` is a staged
+  name, description, busy or idle, goals and key results), ``"wake"`` (the
+  gateway's fixed wake line, ``dashboard.app_bot_wake``) or ``"tools"`` (the app's
+  offered MCP servers on the Bot's own chat, ``bot_chat_app_tools``, behind its
+  preview). ``bots`` is a staged
   grant family (``manager_records.STAGED_GRANT_FAMILIES``) stored with the app's
   other approvals in the protected store (``apps.protected_app_state``), so a scope
   an update adds waits for the owner like a new API path does. It is registered
@@ -39,6 +41,8 @@ logger = logging.getLogger(__name__)
 BOT_SCOPE_READ = "read"
 #: Sends a ticked Bot the fixed wake line.
 BOT_SCOPE_WAKE = "wake"
+#: Mounts the app's offered MCP servers on a ticked Bot's own chat (``bot_chat_app_tools``).
+BOT_SCOPE_TOOLS = "tools"
 
 
 def app_bot_scopes(app_name: str) -> frozenset[str]:
@@ -102,6 +106,7 @@ def set_app_granted_bots(app_name: str, slugs: Iterable[str]) -> list[str] | Non
 __all__ = [
     "BOT_GRANT_FAMILY",
     "BOT_SCOPE_READ",
+    "BOT_SCOPE_TOOLS",
     "BOT_SCOPE_WAKE",
     "app_bot_scopes",
     "app_granted_bots",

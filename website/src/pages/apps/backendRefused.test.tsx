@@ -33,7 +33,7 @@ vi.mock('../../i18n/t', async importOriginal => {
   }
 })
 
-import { appActionNotice, backendRefusedNotice, backendRefusedReason } from '../../components/appstore/backendRefused'
+import { appActionNotice, backendRefusedNotice, backendRefusedReason, botChatStopFailedNotice, botChatStopFailedSlugs } from '../../components/appstore/backendRefused'
 import { useAppActions } from './useAppActions'
 import { useAppUpdates } from './useAppUpdates'
 import type { AppsData } from './useAppsData'
@@ -179,5 +179,85 @@ describe('useAppActions.runEnable — a refused backend is a warning', () => {
     await act(async () => { await result.current.runEnable('notes') })
 
     expect(result.current.displayError).toBe('')
+  })
+})
+
+import { uninstallBotChatStopFailedNotice } from '../../components/appstore/backendRefused'
+
+const STOP_KEY = 'pages.appsPage.uninstall_bot_chat_stop_failed'
+
+describe('uninstallBotChatStopFailedNotice', () => {
+  it('names the app when the response carries bot_chat_stop_failed', () => {
+    // The count picks the plural form; i18next does the choosing.
+    expect(uninstallBotChatStopFailedNotice('Notes', { bot_chat_stop_failed: ['atlas', 'nova'] }))
+      .toBe(`${STOP_KEY} ${JSON.stringify({ count: 2, name: 'Notes', slugs: 'atlas, nova' })}`)
+  })
+
+  it('passes a count of one for a single slug', () => {
+    expect(uninstallBotChatStopFailedNotice('Notes', { bot_chat_stop_failed: ['atlas'] }))
+      .toBe(`${STOP_KEY} ${JSON.stringify({ count: 1, name: 'Notes', slugs: 'atlas' })}`)
+  })
+
+  it('is empty when bot_chat_stop_failed is absent, empty, or non-array', () => {
+    expect(uninstallBotChatStopFailedNotice('Notes', { ok: true })).toBe('')
+    expect(uninstallBotChatStopFailedNotice('Notes', { bot_chat_stop_failed: [] })).toBe('')
+    expect(uninstallBotChatStopFailedNotice('Notes', { bot_chat_stop_failed: 'atlas' })).toBe('')
+    expect(uninstallBotChatStopFailedNotice('Notes', undefined)).toBe('')
+    expect(uninstallBotChatStopFailedNotice('Notes', null)).toBe('')
+  })
+})
+
+import { render, screen } from '@testing-library/react'
+import ErrorNotice from '../../components/ErrorNotice'
+
+describe('uninstall bot-chat-stop warning: accessible', () => {
+  it('renders with role="status" (not role="alert") so the uninstall success is not read as a failure', () => {
+    // impact="partial" on ErrorNotice renders role="status", not role="alert".
+    // This is what the warning slot uses so the reader hears it as a notice, not an error.
+    // Drop impact="partial" or add impact="blocking" and this assertion fails.
+    render(
+      <ErrorNotice
+        message="atlas, nova are still running with Test App's tools. They will not get new tools from it."
+        impact="partial"
+        askAgent
+        testId="stop-warn"
+      />,
+    )
+    const notice = screen.getByTestId('stop-warn')
+    expect(notice).toHaveAttribute('role', 'status')
+    expect(notice).toHaveTextContent('still running')
+  })
+
+  it('the sr-only live region carries the same text so it is announced on mount', () => {
+    // The sr-only <span role="status"> is always mounted so screen readers hear
+    // the message when warnMsg is first set. The ErrorNotice copy is hidden from AT.
+    // If the live region is absent, readers miss the announcement.
+    const { container } = render(
+      <span role="status" className="sr-only">
+        Test App was uninstalled, but some bot chats could not be stopped.
+      </span>,
+    )
+    const live = container.querySelector('[role="status"]')
+    expect(live).not.toBeNull()
+    expect(live?.textContent).toContain('could not be stopped')
+  })
+})
+
+describe('disable with bot_chat_stop_failed', () => {
+  /**
+   * The disable notice names the app and the Bot the way the uninstall and trust
+   * notices do; route it through appActionNotice's raw warnings instead and the
+   * Bot shows by slug with no app named.
+   */
+  it('names the app and the Bot', () => {
+    const slugs = botChatStopFailedSlugs({ ok: true, bot_chat_stop_failed: ['atlas'] })
+    expect(botChatStopFailedNotice('disable', 'Test App', slugs, s => (s === 'atlas' ? 'Atlas' : s)))
+      .toBe('pages.appsPage.disable_bot_chat_stop_failed {"count":1,"name":"Test App","slugs":"Atlas"}')
+  })
+
+  it('appActionNotice returns empty when no warnings and no bot_chat_stop_failed', () => {
+    const result = { ok: true }
+    const notice = appActionNotice('Test App', result, 'disable')
+    expect(notice).toBe('')
   })
 })

@@ -22,7 +22,7 @@ import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncContextManager
+from typing import TYPE_CHECKING, Any, AsyncContextManager
 
 from kiro_crew.acp.client import DEFAULT_MODEL, AcpClient
 from kiro_crew.acp.types import METHOD_SESSION_DELETE
@@ -149,26 +149,100 @@ async def start(self: AcpProvider) -> None:
 
 async def shutdown(self: AcpProvider) -> None:
     session_id = self.session_id
+    inner = getattr(self, "_client", None)
+    # Read before the inner shutdown resets it: whether a process is held now.
+    held = isinstance(inner, AcpClient) and getattr(inner, "_process", None) is not None
+    raised = True
     try:
-        if self.memory_mode != "persistent" and session_id and self.is_pi_backend:
-            await _delete_pi_session(self._client, session_id)
-    finally:
         try:
-            await self._client.shutdown()
+            if self.memory_mode != "persistent" and session_id and self.is_pi_backend:
+                await _delete_pi_session(self._client, session_id)
         finally:
             try:
-                if self.is_kas_backend:
-                    # The ``_client.shutdown()`` above already ended a non-persistent
-                    # session with ``_kiro/session/delete`` (the handle's ``destroy``),
-                    # so a second delete would only leave a ``released_sessions``
-                    # entry for a record the engine does not hold.
-                    pass
-                elif self.memory_mode != "persistent" and session_id:
-                    await self.cleanup_session(session_id)
+                await self._client.shutdown()
             finally:
-                # A cancel delivered during the transcript delete must not skip the reclaim.
-                if self._disposable_work_dir:
-                    await self._reclaim_work_dir()
+                try:
+                    if self.is_kas_backend:
+                        # The ``_client.shutdown()`` above already ended a non-persistent
+                        # session with ``_kiro/session/delete`` (the handle's ``destroy``),
+                        # so a second delete would only leave a ``released_sessions``
+                        # entry for a record the engine does not hold.
+                        pass
+                    elif self.memory_mode != "persistent" and session_id:
+                        await self.cleanup_session(session_id)
+                finally:
+                    # A cancel delivered during the transcript delete must not skip the
+                    # reclaim.
+                    if self._disposable_work_dir:
+                        await self._reclaim_work_dir()
+        raised = False
+    finally:
+        try:
+            _settle_shutdown_confirmation(self, inner, session_id, raised=raised, held=held)
+        except Exception:  # noqa: BLE001 - never mask the shutdown's own outcome
+            logger.warning(
+                "AcpProvider.shutdown: recording the close verdict failed", exc_info=True
+            )
+
+
+def _settle_shutdown_confirmation(
+    provider: AcpProvider,
+    inner: Any,
+    session_id: str | None,
+    *,
+    raised: bool,
+    held: bool,
+) -> None:
+    """Record whether this shutdown is a confirmed close, on every exit of it.
+
+    ``discard_conversation`` (teardown.py) reads ``_kas_shutdown_unconfirmed`` from
+    ``session.provider``, which IS this outer ``AcpProvider``. One rule decides:
+
+    - a shutdown that raised is unconfirmed, and the exception still propagates;
+    - an AcpClient that never launched a process (a refused preflight or adapter
+      version) and held none is confirmed: nothing it started can still run;
+    - otherwise the AcpClient host is judged like an owned runtime
+      (``teardown_confirmed`` on the verdict ``_reset_state`` wrote): confirmed only
+      with its whole tree confirmed dead. Its retry handle re-checks the PIDs that
+      outlived the kill, which ``_reset_state`` writes in the client shutdown's own
+      ``finally``, so a kill that raised has written them too;
+    - a shared-runtime inner provider forwards its own unconfirmed state.
+    """
+    if isinstance(inner, AcpClient):
+        from kiro_crew.acp.session_provider_shared import (
+            TreeSurvivors,
+            note_unconfirmed_teardown,
+            teardown_confirmed,
+        )
+
+        never_started = (
+            getattr(inner, "_spawned", True) is False
+            and not held
+            and not getattr(inner, "_unreaped_pids", ())
+        )
+        if not raised and (never_started or teardown_confirmed(inner, session_id, killed=True)):
+            return
+        pids = tuple(getattr(inner, "_unreaped_pids", ()) or ())
+        note_unconfirmed_teardown(
+            provider,
+            TreeSurvivors(pids),
+            session_id,
+            session_key=getattr(inner, "_session_key", None),
+        )
+        return
+    if inner is not None and getattr(inner, "_kas_shutdown_unconfirmed", False):
+        provider._kas_shutdown_unconfirmed = True
+        provider._kas_unconfirmed_runtime = getattr(inner, "_kas_unconfirmed_runtime", None)
+        provider._kas_unconfirmed_session_id = getattr(inner, "_kas_unconfirmed_session_id", None)
+    elif raised and inner is not None:
+        from kiro_crew.acp.session_provider_shared import note_unconfirmed_teardown
+
+        note_unconfirmed_teardown(
+            provider,
+            getattr(inner, "_runtime", None),
+            session_id,
+            session_key=getattr(inner, "_session_key", None),
+        )
 
 
 async def _delete_pi_session(client: AcpClient, session_id: str) -> None:

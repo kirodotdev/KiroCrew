@@ -5543,7 +5543,9 @@
         "installed_needs_newer_host": "The installed version of {{name}} needs a newer {{productName}}. Update {{productName}}; your data is unchanged."
       },
       "grants_reconsent_composer_actions": "Composer buttons: lets the app add these buttons to the composer's + menu. A click inserts the app's text into your draft; the app can't see the draft or send it.",
-      "grants_reconsent_selection_actions": "Selected-text actions: lets the app's items be handed text you select in chat replies, and offer it back for Copy or Open."
+      "grants_reconsent_selection_actions": "Selected-text actions: lets the app's items be handed text you select in chat replies, and offer it back for Copy or Open.",
+      "bots_scope_tools": "Lets a bot you tick for this app use its tools in its own chat. Other bots don't change.",
+      "bots_scope_tools_preview_off": "Off until you turn on <preview>App tools in bot chats</preview>."
     },
     "appsPage": {
       "all_apps": "All apps",
@@ -10361,7 +10363,8 @@
           "allow_all_confirm_body": "Allowing every third-party app lets any app you install run its own code inside {{productName}}, with the same access {{productName}} has — your files, your saved credentials, and the internet. Trusting one app at a time is safer.",
           "allow_all_confirm_ack": "I understand every third-party app I install will be able to run its own code with {{productName}}'s access.",
           "ineffective_label": "Saved but not working",
-          "ineffective_description": "These names were saved as trusted, but {{productName}} does not accept them, so the apps are still blocked. Remove them to tidy the list."
+          "ineffective_description": "These names were saved as trusted, but {{productName}} does not accept them, so the apps are still blocked. Remove them to tidy the list.",
+          "bot_chats_not_stopped": "{{message}} Bot chats that could not be stopped: {{slugs}}."
         },
         "trustedRegistries": {
           "change_failed": "That change did not take effect: {{detail}}",
@@ -11223,7 +11226,10 @@
         "remote_dispatch_desc_summary": "Runs conductor mode tasks on connected machines.",
         "remote_dispatch_save_failed": "Could not save remote dispatch. Try again.",
         "remote_dispatch_load_failed": "Could not read the remote dispatch setting.",
-        "remote_dispatch_connect": "Connect machines in <0>Settings › Remote Crew</0>."
+        "remote_dispatch_connect": "Connect machines in <0>Settings › Remote Crew</0>.",
+        "bot_chat_app_tools": "App tools in bot chats",
+        "bot_chat_app_tools_desc": "To stop one bot, untick it on the app's page.",
+        "bot_chat_app_tools_desc_summary": "Lets apps you allow add their tools to a bot's chat. The bot still asks before using them."
       },
       "kasBundleCard": {
         "installed": "Built-in engine {{version}}",

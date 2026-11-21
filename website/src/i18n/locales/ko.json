@@ -12070,7 +12070,9 @@
         "installed_needs_newer_host": "설치된 {{name}}에는 더 새로운 {{productName}}이(가) 필요합니다. {{productName}}을(를) 업데이트하세요. 데이터는 변경되지 않았습니다."
       },
       "grants_reconsent_composer_actions": "입력창 버튼: 앱이 입력창의 + 메뉴에 이 버튼들을 추가할 수 있습니다. 클릭하면 앱의 텍스트가 초안에 들어갑니다. 앱은 초안을 보거나 보낼 수 없습니다.",
-      "grants_reconsent_selection_actions": "선택한 텍스트 작업: 채팅 답변에서 선택한 텍스트가 앱 항목에 전달되며, 복사하거나 열 결과를 제공할 수 있습니다."
+      "grants_reconsent_selection_actions": "선택한 텍스트 작업: 채팅 답변에서 선택한 텍스트가 앱 항목에 전달되며, 복사하거나 열 결과를 제공할 수 있습니다.",
+      "bots_scope_tools": "이 앱에 체크한 Bot이 자기 채팅에서 그 도구를 사용할 수 있도록 합니다. 다른 Bot은 변경되지 않습니다.",
+      "bots_scope_tools_preview_off": "기능 미리 보기에서 <preview>Bot 채팅의 앱 도구</preview>를 켜기 전까지, 체크한 Bot은 이 앱의 도구를 받지 못합니다."
     },
     "appPage": {
       "loading_app": "앱을 불러오는 중…",
@@ -12158,7 +12160,20 @@
       "open_app_details": "{{name}} 세부 정보 열기",
       "refresh_store": "스토어 새로고침",
       "refreshing_store": "스토어 새로고침 중…",
-      "store_catalog_unreachable": "공식 앱 카탈로그에 연결할 수 없어 스토어가 오프라인 목록을 표시하고 있습니다. 게이트웨이가 인터넷에 연결되는지 확인한 뒤 다시 새로 고치세요."
+      "store_catalog_unreachable": "공식 앱 카탈로그에 연결할 수 없어 스토어가 오프라인 목록을 표시하고 있습니다. 게이트웨이가 인터넷에 연결되는지 확인한 뒤 다시 새로 고치세요.",
+      "bot_chat_stop_incomplete": "{{slugs}}이(가) 아직 {{name}}의 도구로 실행 중입니다. 이 봇 채팅을 중단하려면 재시작하세요 {{productName}}.",
+      "uninstall_bot_chat_stop_failed": "{{name}}이(가) 제거되었지만 봇 ‘{{slugs}}’의 채팅에 아직 해당 도구가 있습니다. 아래 버튼으로 제거하거나 {{productName}}을(를) 다시 시작하세요.",
+      "uninstall_bot_chat_stop_failed_other": "{{name}}이(가) 제거되었지만 봇 ‘{{slugs}}’의 채팅에 아직 해당 도구가 있습니다. 아래 버튼으로 제거하거나 {{productName}}을(를) 다시 시작하세요.",
+      "disable_bot_chat_stop_failed": "{{name}}이(가) 비활성화되었지만 봇 ‘{{slugs}}’의 채팅에 아직 해당 도구가 있습니다. 아래 버튼으로 제거하거나 {{productName}}을(를) 다시 시작하세요.",
+      "disable_bot_chat_stop_failed_other": "{{name}}이(가) 비활성화되었지만 봇 ‘{{slugs}}’의 채팅에 아직 해당 도구가 있습니다. 아래 버튼으로 제거하거나 {{productName}}을(를) 다시 시작하세요.",
+      "bot_chat_stop_incomplete_revoked_other": "{{name}}이(가) 더 이상 신뢰되지 않지만 봇 ‘{{slugs}}’의 채팅에 아직 해당 도구가 있습니다. 아래 버튼으로 제거하거나 {{productName}}을(를) 다시 시작하세요.",
+      "bot_chat_stop_retry_other": "봇 ‘{{bots}}’에서 {{name}} 도구 제거",
+      "bot_chat_stop_retry_all_other": "봇 ‘{{bots}}’에서 신뢰하지 않는 앱의 도구 제거",
+      "bot_chat_stop_retrying": "제거 중…",
+      "blanket_bot_chat_stop_failed_other": "모든 타사 앱 신뢰가 꺼졌지만 봇 ‘{{slugs}}’의 채팅에 아직 더 이상 신뢰되지 않는 앱의 도구가 있습니다. 아래 버튼으로 제거하거나 {{productName}}을(를) 다시 시작하세요.",
+      "bot_chat_stop_retry_hint": "채팅 기록은 유지됩니다.",
+      "bot_chat_stop_unknown_bot": "알 수 없는 봇",
+      "restart_gateway_link": "이 봇 채팅을 중단하려면 재시작하세요 {{productName}}"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/월",
@@ -15949,7 +15964,10 @@
         "remote_dispatch_desc_summary": "연결된 머신에서 Conductor mode 작업을 실행합니다.",
         "remote_dispatch_save_failed": "원격 디스패치를 저장하지 못했습니다. 다시 시도하세요.",
         "remote_dispatch_load_failed": "원격 디스패치 설정을 읽지 못했습니다.",
-        "remote_dispatch_connect": "<0>Settings › Remote Crew</0>에서 머신을 연결하세요."
+        "remote_dispatch_connect": "<0>Settings › Remote Crew</0>에서 머신을 연결하세요.",
+        "bot_chat_app_tools": "Bot 채팅의 앱 도구",
+        "bot_chat_app_tools_desc": "봇 하나만 멈추려면 앱 페이지에서 선택을 해제하세요.",
+        "bot_chat_app_tools_desc_summary": "허용한 앱이 Bot 채팅에 도구를 추가할 수 있게 합니다. Bot은 도구를 사용하기 전 계속 확인을 요청합니다."
       },
       "kasBundleCard": {
         "installed": "내장 엔진 {{version}}",
@@ -20531,7 +20549,8 @@
           "revoke_disables": "{{name}}은(는) 더 이상 신뢰되지 않으며 꺼졌습니다.",
           "revoke_hint": "신뢰를 해제하면 해당 앱도 꺼집니다.",
           "trusted_badge": "신뢰됨",
-          "unknown_error": "알 수 없는 오류"
+          "unknown_error": "알 수 없는 오류",
+          "bot_chats_not_stopped": "{{message}} 중지할 수 없는 Bot 채팅: {{slugs}}."
         },
         "trustedRegistries": {
           "change_failed": "이 변경이 적용되지 않았습니다: {{detail}}",

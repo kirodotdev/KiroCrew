@@ -12343,7 +12343,9 @@
         "installed_needs_newer_host": "Die installierte Version von {{name}} braucht ein neueres {{productName}}. Aktualisiere {{productName}}; deine Daten bleiben unverändert."
       },
       "grants_reconsent_composer_actions": "Eingabefeld-Schaltflächen: Die App darf diese Schaltflächen zum +-Menü des Eingabefelds hinzufügen. Ein Klick fügt den Text der App in deinen Entwurf ein; die App kann den Entwurf weder sehen noch senden.",
-      "grants_reconsent_selection_actions": "Aktionen für ausgewählten Text: Die Einträge der App erhalten Text, den du in Chat-Antworten auswählst, und können ein Ergebnis zum Kopieren oder Öffnen anbieten."
+      "grants_reconsent_selection_actions": "Aktionen für ausgewählten Text: Die Einträge der App erhalten Text, den du in Chat-Antworten auswählst, und können ein Ergebnis zum Kopieren oder Öffnen anbieten.",
+      "bots_scope_tools": "Ermöglicht einem Bot, den du für diese App anhakst, ihre Tools in seinem eigenen Chat zu nutzen. Andere Bots bleiben unverändert.",
+      "bots_scope_tools_preview_off": "Bevor du <preview>App-Tools in Bot-Chats</preview> in den Funktionsvorschauen einschaltest, erhalten die markierten Bots keine Tools dieser App."
     },
     "appPage": {
       "loading_app": "App wird geladen…",
@@ -12437,7 +12439,26 @@
       "open_app_details": "Details zu {{name}} öffnen",
       "refresh_store": "Store aktualisieren",
       "refreshing_store": "Store wird aktualisiert…",
-      "store_catalog_unreachable": "Der offizielle App-Katalog war nicht erreichbar, daher zeigt der Store seine Offline-Liste. Prüfe, ob das Gateway das Internet erreicht, und aktualisiere dann erneut."
+      "store_catalog_unreachable": "Der offizielle App-Katalog war nicht erreichbar, daher zeigt der Store seine Offline-Liste. Prüfe, ob das Gateway das Internet erreicht, und aktualisiere dann erneut.",
+      "bot_chat_stop_incomplete": "{{slugs}} verwenden noch die Tools von {{name}}. Starte neu, um diese Bot-Chats zu stoppen {{productName}}.",
+      "uninstall_bot_chat_stop_failed": "{{name}} ist deinstalliert, aber die Bots \"{{slugs}}\" haben noch seine Tools. Entferne sie mit der Schaltfläche unten oder starte {{productName}} neu.",
+      "uninstall_bot_chat_stop_failed_one": "{{name}} ist deinstalliert, aber der Bot \"{{slugs}}\" hat noch seine Tools. Entferne sie mit der Schaltfläche unten oder starte {{productName}} neu.",
+      "uninstall_bot_chat_stop_failed_other": "{{name}} ist deinstalliert, aber die Bots \"{{slugs}}\" haben noch seine Tools. Entferne sie mit der Schaltfläche unten oder starte {{productName}} neu.",
+      "disable_bot_chat_stop_failed": "{{name}} ist deaktiviert, aber die Bots \"{{slugs}}\" haben noch seine Tools. Entferne sie mit der Schaltfläche unten oder starte {{productName}} neu.",
+      "disable_bot_chat_stop_failed_one": "{{name}} ist deaktiviert, aber der Bot \"{{slugs}}\" hat noch seine Tools. Entferne sie mit der Schaltfläche unten oder starte {{productName}} neu.",
+      "disable_bot_chat_stop_failed_other": "{{name}} ist deaktiviert, aber die Bots \"{{slugs}}\" haben noch seine Tools. Entferne sie mit der Schaltfläche unten oder starte {{productName}} neu.",
+      "bot_chat_stop_incomplete_revoked_one": "{{name}} ist nicht mehr vertrauenswürdig, aber der Bot \"{{slugs}}\" hat noch seine Tools. Entferne sie mit der Schaltfläche unten oder starte {{productName}} neu.",
+      "bot_chat_stop_incomplete_revoked_other": "{{name}} ist nicht mehr vertrauenswürdig, aber die Bots \"{{slugs}}\" haben noch seine Tools. Entferne sie mit der Schaltfläche unten oder starte {{productName}} neu.",
+      "bot_chat_stop_retry_one": "Tools von {{name}} aus dem Bot \"{{bots}}\" entfernen",
+      "bot_chat_stop_retry_all_one": "Tools nicht vertrauenswürdiger Apps aus dem Bot \"{{bots}}\" entfernen",
+      "bot_chat_stop_retry_other": "Tools von {{name}} aus den Bots \"{{bots}}\" entfernen",
+      "bot_chat_stop_retry_all_other": "Tools nicht vertrauenswürdiger Apps aus den Bots \"{{bots}}\" entfernen",
+      "bot_chat_stop_retrying": "Wird entfernt…",
+      "blanket_bot_chat_stop_failed_one": "Das Vertrauen in alle Drittanbieter-Apps ist aus, aber der Bot \"{{slugs}}\" hat noch Tools nicht mehr vertrauenswürdiger Apps. Entferne sie mit der Schaltfläche unten oder starte {{productName}} neu.",
+      "blanket_bot_chat_stop_failed_other": "Das Vertrauen in alle Drittanbieter-Apps ist aus, aber die Bots \"{{slugs}}\" haben noch Tools nicht mehr vertrauenswürdiger Apps. Entferne sie mit der Schaltfläche unten oder starte {{productName}} neu.",
+      "bot_chat_stop_retry_hint": "Der Chatverlauf bleibt erhalten.",
+      "bot_chat_stop_unknown_bot": "ein Bot",
+      "restart_gateway_link": "Neustart, um diese Bot-Chats zu stoppen {{productName}}"
     },
     "artifactDeployPage": {
       "0_00_mo": "~0,00 $/Mon.",
@@ -16370,7 +16391,10 @@
         "remote_dispatch_desc_summary": "Führt Conductor mode-Aufgaben auf verbundenen Maschinen aus.",
         "remote_dispatch_save_failed": "Remote-Dispatch konnte nicht gespeichert werden. Versuch es noch einmal.",
         "remote_dispatch_load_failed": "Die Remote-Dispatch-Einstellung konnte nicht gelesen werden.",
-        "remote_dispatch_connect": "Verbinde Rechner unter <0>Settings › Remote Crew</0>."
+        "remote_dispatch_connect": "Verbinde Rechner unter <0>Settings › Remote Crew</0>.",
+        "bot_chat_app_tools": "App-Tools in Bot-Chats",
+        "bot_chat_app_tools_desc": "Um einen einzelnen Bot zu stoppen, entferne auf der Seite der App sein Häkchen.",
+        "bot_chat_app_tools_desc_summary": "Erlaubt Apps, die du zulässt, ihre Tools zum Chat eines Bots hinzuzufügen. Der Bot fragt weiterhin, bevor er sie nutzt."
       },
       "kasBundleCard": {
         "installed": "Integrierte Engine {{version}}",
@@ -21091,7 +21115,8 @@
           "allow_all_confirm_body": "Wenn du allen Apps von Drittanbietern vertraust, darf jede App, die du installierst, eigenen Code innerhalb von {{productName}} ausführen, mit denselben Zugriffsrechten, die {{productName}} hat — deine Dateien, deine gespeicherten Zugangsdaten und das Internet. Jeweils einer einzelnen App zu vertrauen ist sicherer.",
           "allow_all_confirm_ack": "Mir ist klar, dass jede App von Drittanbietern, die ich installiere, eigenen Code mit den Zugriffsrechten von {{productName}} ausführen kann.",
           "ineffective_label": "Gespeichert, aber ohne Wirkung",
-          "ineffective_description": "Diese Namen wurden als vertrauenswürdig gespeichert, aber {{productName}} akzeptiert sie nicht, deshalb bleiben die Apps blockiert. Entferne sie, um die Liste aufzuräumen."
+          "ineffective_description": "Diese Namen wurden als vertrauenswürdig gespeichert, aber {{productName}} akzeptiert sie nicht, deshalb bleiben die Apps blockiert. Entferne sie, um die Liste aufzuräumen.",
+          "bot_chats_not_stopped": "{{message}} Bot-Chats, die nicht gestoppt werden konnten: {{slugs}}."
         },
         "trustedRegistries": {
           "change_failed": "Diese Änderung wurde nicht übernommen: {{detail}}",

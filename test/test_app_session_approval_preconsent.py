@@ -469,6 +469,40 @@ def test_gateway_schedules_the_reconcile_after_readiness():
 
     source = inspect.getsource(service_boot.run)
     ready = source.index('print(f"KIROCREW_READY:')
-    scheduled = source.index("asyncio.create_task(reconcile_after_ready())")
+    scheduled = source.index("asyncio.create_task(reconcile_after_ready(self.dashboard_state))")
     assert ready < scheduled
     assert "reconcile_after_ready" not in inspect.getsource(service_boot._init_services)
+
+
+def test_reconcile_holds_the_stop_fence_through_the_pending_write(tmp_path, app_home, monkeypatch):
+    """Rule 1, session-approval re-consent: the app's stop fence is held during the
+    teardown (which gets the gateway state, so Bot chats are stopped too) and
+    during the consent-pending write, and released after. Drop the span and both
+    samples read 0; drop ``state`` and the teardown sees None."""
+    from kiro_crew import bot_chat_app_tools as tools
+
+    _install(tmp_path, sessionApproval=True)
+    _write_pre_feature_record("test-app", enabled=True)
+    monkeypatch.setattr(tools, "_FENCE_HOLD_COUNTS", {})
+    monkeypatch.setattr(tools, "_REVOCATION_FENCE", set())
+    monkeypatch.setattr(agent, "rebuild_agent_config", lambda **_kw: None)
+    seen: dict[str, object] = {}
+    gateway_state = object()
+
+    async def _teardown(name, record, **kw):
+        seen["teardown"] = tools._FENCE_HOLD_COUNTS.get(name, 0)
+        seen["state"] = kw.get("state")
+        return TeardownResult(warnings=[], failures=[])
+
+    real_mark = manager_mod.mark_session_approval_consent_pending
+
+    def _mark(name):
+        seen["write"] = tools._FENCE_HOLD_COUNTS.get(name, 0)
+        return real_mark(name)
+
+    monkeypatch.setattr("kiro_crew.apps.teardown.teardown_app_runtime", _teardown)
+    monkeypatch.setattr(manager_mod, "mark_session_approval_consent_pending", _mark)
+
+    assert asyncio.run(session_consent.reconcile_after_ready(gateway_state)) == ["test-app"]
+    assert seen == {"teardown": 1, "state": gateway_state, "write": 1}
+    assert tools._FENCE_HOLD_COUNTS.get("test-app", 0) == 0

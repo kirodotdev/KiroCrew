@@ -71,6 +71,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.agent_files import kas_wire_agent_id
+from kiro_crew.bot_chat_ending_fence import runtime_session_start
 from kiro_crew.config import live
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.mcp_gateway.session_servers import attach_stub_start_priority
@@ -175,6 +176,7 @@ def _close_abandoned_new(runtime: AcpRuntime, request: asyncio.Future[Any]) -> N
     task.add_done_callback(_ABANDONED_NEW_CLOSES.discard)
 
 
+@runtime_session_start
 async def create_session(
     self: AcpRuntime,
     cwd: str | Path | None = None,
@@ -325,6 +327,7 @@ async def create_session(
                     harness_state is not None
                     and self._harness.permission_surface_owned(harness_state)
                 ),
+                harness_state=harness_state,
             )
         if mirrored is not None:
             mcp_servers = mirrored.servers

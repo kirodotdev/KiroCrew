@@ -16,7 +16,7 @@ Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
 ``_mode_frame_superseded``, ``_native_skill_projection``, ``_pid``, ``_process``,
 ``_process_adapter``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_resume_session_id``, ``_resumed``, ``_scope_unit``, ``_session_id``,
-``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_work_dir_ready``.
+``_spawn_start_token``, ``_spawned``, ``_start_time``, ``_stderr_task``, ``_work_dir_ready``.
 
 Instance fields read: ``_agent``, ``_available_mode_ids``, ``_batch_window``,
 ``_channel_id``, ``_extra_env``, ``_model``, ``_modes_advertised``, ``_sandbox_mode``,
@@ -118,6 +118,7 @@ from kiro_crew.agent_sdk.backends import (
     can_restore_session,
     launch_for,
 )
+from kiro_crew.bot_chat_ending_fence import client_session_start
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.constants import KIROCREW_SPAWN_HOME_ENV, KIROCREW_SPAWN_INSTANCE_ENV
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
@@ -523,6 +524,7 @@ async def _spawn(self: AcpClient) -> None:
         _launch_tools(),
     )
     self._process = launched.process
+    self._spawned = True
     self._pid = self._process.pid
     self._kill_sent = None
     self._process_tree_confirmed_dead = False
@@ -827,6 +829,7 @@ async def _admit_scope(self: AcpClient) -> float:
     )
 
 
+@client_session_start
 async def _initialize_session(self: AcpClient) -> None:
     """Handshake: initialize → session/load or session/new → set_mode → set_model."""
     # 1. Initialize, once systemd has admitted the spawn's scope. Inside the try, so

@@ -686,6 +686,8 @@ class AcpRuntime:
         # descendant survived. Consumers use it to decide whether a work
         # directory is safe to reclaim.
         self._process_tree_confirmed_dead = False
+        # The PIDs the last kill could not show gone, re-checked by a later evict.
+        self._unreaped_pids: tuple[int, ...] = ()
         self._death_summary: str | None = None
         # The composed summary's parts, so the post-reap amendment rebuilds the
         # line instead of editing its text -- a tail carrying this format's own

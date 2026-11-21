@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -51,10 +52,17 @@ _NOTICE = (
 )
 
 
-def _owed(state: Any) -> set[str]:
+#: Called with no arguments once the reload it was passed with has happened.
+OnReloaded = Callable[[], None]
+
+
+def _owed(state: Any) -> dict[str, tuple[str, OnReloaded | None]]:
+    """``{slot key: (notice, on_reloaded)}`` for the slots owed a reload, each with
+    what its reload was asked with, so a reload deferred to a turn end says the same
+    thing and runs the same callback, once, when it happens."""
     owed = getattr(state, OWED_ATTR, None)
-    if not isinstance(owed, set):
-        owed = set()
+    if not isinstance(owed, dict):
+        owed = {}
         setattr(state, OWED_ATTR, owed)
     return owed
 
@@ -64,12 +72,18 @@ def is_owed(state: Any, slot: Any) -> bool:
     return getattr(slot, "key", "") in _owed(state)
 
 
-def _mark(state: Any, slot: Any, owed: bool) -> None:
+def _mark(
+    state: Any,
+    slot: Any,
+    owed: bool,
+    notice: str = _NOTICE,
+    on_reloaded: OnReloaded | None = None,
+) -> None:
     key = getattr(slot, "key", "")
     if owed:
-        _owed(state).add(key)
+        _owed(state)[key] = (notice, on_reloaded)
     else:
-        _owed(state).discard(key)
+        _owed(state).pop(key, None)
 
 
 def _is_busy(state: Any, slot: Any, session_key: str) -> bool:
@@ -83,12 +97,21 @@ def _is_busy(state: Any, slot: Any, session_key: str) -> bool:
     )
 
 
-async def reload_if_idle(state: Any, slot: Any) -> str:
+async def reload_if_idle(
+    state: Any,
+    slot: Any,
+    *,
+    notice: str = _NOTICE,
+    on_reloaded: OnReloaded | None = None,
+) -> str:
     """Reload *slot*'s agent process now when it is idle; mark it pending when busy.
 
     Returns :data:`RELOADED`, :data:`BUSY` (marked, reloaded at its next turn
     end), :data:`NOT_RUNNING` (no live process: its next spawn reads the new
-    spec anyway) or :data:`GONE`. Never raises.
+    spec anyway) or :data:`GONE`. Never raises. *on_reloaded* runs once the
+    process actually runs on the new spec: here on :data:`RELOADED` or
+    :data:`NOT_RUNNING`, or later, when the reload a :data:`BUSY` answer left owed
+    succeeds at a turn end. A reload that ends :data:`GONE` never runs it.
     """
     from kiro_crew.dashboard.chat_handlers import reload_slot_session
     from kiro_crew.dashboard.chat_utils import effective_session_key
@@ -102,10 +125,11 @@ async def reload_if_idle(state: Any, slot: Any) -> str:
         # turn is in flight (``slot.running``) and spawns on the kit it already
         # projected, so it keeps the reload owed for its turn end.
         if _is_busy(state, slot, session_key):
-            _mark(state, slot, True)
+            _mark(state, slot, True, notice, on_reloaded)
             return BUSY
         if state.sessions.get_provider(session_key) is None:
             _mark(state, slot, False)
+            _run_on_reloaded(on_reloaded, key)
             return NOT_RUNNING
         response = await reload_slot_session(
             state,
@@ -114,19 +138,29 @@ async def reload_if_idle(state: Any, slot: Any) -> str:
             still_ours=lambda _after: state._slots.get(key) is slot,
             denied=lambda _session_key: None,
             busy=lambda sk: _is_busy(state, slot, sk),
-            notice=_NOTICE,
+            notice=notice,
         )
     except Exception:  # noqa: BLE001 - a missed reload leaves the next spawn to read it
         logger.warning("Bot reload of %s failed", key, exc_info=True)
         return GONE
     if response.status == 409:
-        _mark(state, slot, True)
+        _mark(state, slot, True, notice, on_reloaded)
         return BUSY
     if response.status >= 400:
         return GONE
     _mark(state, slot, False)
     logger.info("Bot session %s reloaded onto its updated spec", key)
+    _run_on_reloaded(on_reloaded, key)
     return RELOADED
+
+
+def _run_on_reloaded(on_reloaded: OnReloaded | None, key: str) -> None:
+    if on_reloaded is None:
+        return
+    try:
+        on_reloaded()
+    except Exception:  # noqa: BLE001 - the reload itself has happened
+        logger.warning("Bot reload of %s: its follow-up failed", key, exc_info=True)
 
 
 def _workers_of(state: Any, member: str) -> list[Any]:
@@ -189,7 +223,8 @@ def schedule_reload_workers(state: Any, member: str) -> "asyncio.Task[dict[str, 
 async def _retry(state: Any, slot: Any) -> None:
     for attempt in range(RETRIES):
         await asyncio.sleep(RETRY_SECS * (attempt + 1))
-        outcome = await reload_if_idle(state, slot)
+        notice, on_reloaded = _owed(state).get(getattr(slot, "key", ""), (_NOTICE, None))
+        outcome = await reload_if_idle(state, slot, notice=notice, on_reloaded=on_reloaded)
         if outcome != BUSY:
             return
 

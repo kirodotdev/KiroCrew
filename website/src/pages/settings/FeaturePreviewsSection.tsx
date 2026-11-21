@@ -13,7 +13,7 @@ import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
 import { useSharedCrewCapabilities } from '../../hooks/sharedCrew/useSharedCrew'
-import { PREVIEW_APP_BROWSER_SDK, PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_VISUAL_REFRESH, PREVIEW_WEBHOOKS, PREVIEW_WIDGETS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_APP_BROWSER_SDK, PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BOT_CHAT_APP_TOOLS, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_VISUAL_REFRESH, PREVIEW_WEBHOOKS, PREVIEW_WIDGETS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { DecisionsCard } from './DecisionsCard'
 import { RemoteDispatchCard } from './RemoteDispatchCard'
@@ -125,6 +125,7 @@ function webhooksIntro(): FeaturePreviewIntro {
 function previewFlagLabel(flag: string): string {
   switch (flag) {
     case PREVIEW_ARTIFACT_DEPLOY: return i18nT('pages.developer.featurePreviewsTab.artifact_deploy')
+    case PREVIEW_BOT_CHAT_APP_TOOLS: return i18nT('pages.developer.featurePreviewsTab.bot_chat_app_tools')
     case PREVIEW_WEBHOOKS: return i18nT('pages.developer.featurePreviewsTab.webhooks')
     case PREVIEW_EXPLORE: return i18nT('pages.developer.featurePreviewsTab.explore')
     case PREVIEW_CREW_OAUTH: return i18nT('pages.developer.featurePreviewsTab.crew_oauth')
@@ -202,6 +203,7 @@ export function FeaturePreviewsSection() {
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   const sessionHarness = usePreviewFlag(PREVIEW_SESSION_HARNESS)
   const connectedComputers = usePreviewFlag(PREVIEW_CONNECTED_COMPUTERS)
+  const botChatAppTools = usePreviewFlag(PREVIEW_BOT_CHAT_APP_TOOLS)
   const explore = usePreviewFlag(PREVIEW_EXPLORE)
   const crewOauth = usePreviewFlag(PREVIEW_CREW_OAUTH)
   const visualRefresh = usePreviewFlag(PREVIEW_VISUAL_REFRESH)
@@ -525,6 +527,18 @@ export function FeaturePreviewsSection() {
             />
             {chatRuntimeSharing && <ChatRuntimeSharingHarnessRows />}
           </div>
+        )}
+        {/* App tools in a Bot's chat (`bot_chat_app_tools`): a gateway switch read at
+            each Bot chat's session start (`kiro_crew.bot_chat_app_tools.preview_on`).
+            NO ingress button: the per-app part lives on the app's own page. */}
+        {!previewsOff && (
+          <SettingsToggle
+            label={i18nT('pages.developer.featurePreviewsTab.bot_chat_app_tools')}
+            description={i18nT('pages.developer.featurePreviewsTab.bot_chat_app_tools_desc_summary')}
+            hint={i18nT('pages.developer.featurePreviewsTab.bot_chat_app_tools_desc')}
+            checked={botChatAppTools}
+            onChange={v => setPreviewFlag(PREVIEW_BOT_CHAT_APP_TOOLS, v)}
+          />
         )}
         {/* Connected computers (`connected_computers`): read by this gateway's
             backend too (`kiro_crew.connected_computers.flag`): off refuses sharing,

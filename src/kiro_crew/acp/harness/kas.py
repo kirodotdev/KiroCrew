@@ -115,7 +115,7 @@ from kiro_crew.kiro_cli import (
     resolved_kiro_cli_version,
     standalone_kiro_cli,
 )
-from kiro_crew.mate_worker import MATE_WORKER_AGENT
+from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_AGENT
 from kiro_crew.mcp_gateway import session_servers as session_servers_mod
 from kiro_crew.platform.tool_names import kas_verified_releases, kas_vocabulary_drift
 
@@ -1254,6 +1254,30 @@ class KasHarness(MembershipHarness):
         handle.kas_bundle_engine_version = self.bundle_engine_version
         handle.kas_untested_version_notice = self.untested_version_notice
         handle.kas_engine_fallback_notice = self.engine_fallback_notice
+        # Migrate the app-snapshot written by record_mounted from the conversation
+        # key to the native KAS session id.  This must happen here — after session/new
+        # returns and the handle (with its native session_id) is available — so
+        # note_unconfirmed_close can find the snapshot under the native id even when a
+        # swap_conversation has reused the same conversation key for a new session.
+        # A handle with no native id binds nothing: the snapshot stays under the
+        # conversation key, where note_unconfirmed_close also looks.
+        session_key: str = getattr(handle, "_session_key", "") or ""
+        native_sid = getattr(handle, "session_id", None)
+        if session_key and native_sid:
+            try:
+                from kiro_crew.bot_chat_app_tools import bind_snapshot_to_native_sid
+
+                bind_snapshot_to_native_sid(
+                    session_key, native_sid, getattr(handle, "_runtime", None)
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "KasHarness.record_session_projection: bind_snapshot_to_native_sid failed "
+                    "for %s / %s",
+                    session_key,
+                    native_sid,
+                    exc_info=True,
+                )
 
     async def session_extras(
         self,
@@ -1381,6 +1405,13 @@ class KasHarness(MembershipHarness):
                     # hold the crewmate's own limits.
                     raise AcpAgentUnavailable(str(exc), agent=agent) from exc
             else:
+                if agent == MATE_CONDUCTOR_AGENT:
+                    # A Bot's own chat: the shared conductor plus the app servers its
+                    # owner turned on for THIS Bot (``bot_chat_app_tools``), per
+                    # session. Added before the held limits so they cover these too.
+                    from kiro_crew.bot_chat_app_tools import conductor_session_spec
+
+                    spec = conductor_session_spec(spec, session_key)
                 # A child a Bot started runs under the Bot's identity: its held
                 # limits ask here too (the worker's are applied in its own merge).
                 from kiro_crew.mate_held_rules import HeldLimitsNotApplied, held_child_spec
@@ -1509,6 +1540,42 @@ class KasHarness(MembershipHarness):
                 governance_app=governance_app,
                 scope_muted=scope_muted,
             )
+            if agent == MATE_CONDUCTOR_AGENT and session_key:
+                # A Bot's own chat: settle its app-server record from what this
+                # projection really declares, after every withholding above.
+                from kiro_crew.bot_chat_app_tools import (
+                    check_and_filter_projection,
+                    mounted_names,
+                    record_mounted,
+                )
+
+                own = custom_agents[0] if custom_agents else {}
+                mcp_servers: dict = dict(own.get("mcpServers") or {})
+                # Pass codex_name as name_transform so the sidecar lookup can match
+                # whitespace-folded aliases ("notes:my_server") to the original
+                # ("notes:my server") that conductor_session_spec stored.
+                from kiro_crew.providers.mirrors.codex import codex_name as _cn
+
+                mcp_servers = check_and_filter_projection(
+                    session_key, mcp_servers, name_transform=_cn
+                )
+                if mcp_servers != own.get("mcpServers"):
+                    # Some entries were stripped; rebuild the custom agent dict.
+                    own = dict(own)
+                    own["mcpServers"] = mcp_servers
+                    if custom_agents:
+                        custom_agents = [own, *custom_agents[1:]]
+                voided_apps = record_mounted(session_key, mounted_names(mcp_servers))
+                if voided_apps:
+                    mcp_servers = {
+                        a: e
+                        for a, e in mcp_servers.items()
+                        if ":" not in a or a.split(":")[0] not in voided_apps
+                    }
+                    own = dict(own)
+                    own["mcpServers"] = mcp_servers
+                    if custom_agents:
+                        custom_agents = [own, *custom_agents[1:]]
             if agent == MATE_WORKER_AGENT:
                 # A Bot's worker: the `deniedCommands` entries nobody can judge
                 # hold its shell at the gate, whatever its Bot's Permissions.

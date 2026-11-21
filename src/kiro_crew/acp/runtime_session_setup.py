@@ -57,7 +57,10 @@ from kiro_crew.acp.types import (
     overlay_project_scope,
 )
 from kiro_crew.agent_files import LITE_AGENT_FILENAME
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_OAUTH_BRIDGE
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CODEX,
+    ACP_BACKENDS_CREW_OAUTH_BRIDGE,
+)
 from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
 from kiro_crew.agent_sdk.tool_search import spec_grants_tool_search
 from kiro_crew.config import live
@@ -668,6 +671,7 @@ async def _mirrored_session_mcp(
     session_key: str,
     channel_id: str,
     permission_surface_owned: bool = False,
+    harness_state: Any = None,
 ) -> _MirroredSessionMcp | None:
     """This session's ``mcpServers``, built by the host's agent-config MIRROR.
 
@@ -802,6 +806,79 @@ async def _mirrored_session_mcp(
             session_key=session_key or "",
             agent_id=active_agent or "",
         )
+    from kiro_crew.bot_chat_app_tools import (
+        mounted_names,
+        note_transient_drops,
+        preview_on,
+        record_mounted,
+    )
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+    if active_agent == MATE_CONDUCTOR_AGENT and session_key:
+        # Off the loop: preview_on reads config.json on a cache miss.
+        if not await asyncio.to_thread(preview_on):
+            # Preview is off: this session carries no app servers. The projection
+            # may have added some while the preview was still on, so they leave the
+            # outgoing array first, and the record is settled from what is left:
+            # the record always names exactly the array this session is handed.
+            # Seed-lag enforcement is NOT run here: no app server is delivered.
+            # The drop is the preview's, not the harness's, so the aliases stay out
+            # of the permanent _UNMOUNTED and a preview turned back on reloads them.
+            dropped = [
+                str(e.get("name"))
+                for e in servers
+                if isinstance(e, dict) and ":" in str(e.get("name") or "")
+            ]
+            servers = [
+                e for e in servers if not (isinstance(e, dict) and ":" in str(e.get("name") or ""))
+            ]
+            note_transient_drops(session_key, dropped)
+            await asyncio.to_thread(record_mounted, session_key, mounted_names(servers))
+        else:
+            # App-tools projection only when the preview is on.  Seed-lag check
+            # only here too — no server is delivered when preview is off.
+            if harness_state is not None and hasattr(harness_state, "_worker_settings_lag"):
+                if await asyncio.to_thread(  # recorded_durable takes a cross-process lock
+                    harness_state._worker_settings_lag,  # type: ignore[union-attr]
+                    projection.agent_spec,
+                ):
+                    logger.warning(
+                        "bot chat app tools: withholding array for %s -- seeded deny rules lag "
+                        "the projection (preview enabled between seed and array build); "
+                        "next start picks up the updated seed",
+                        session_key,
+                    )
+                    from kiro_crew.bot_chat_app_tools import mark_seed_lag_reproject
+
+                    mark_seed_lag_reproject(session_key)
+                    servers = []
+            # Settle the app-server record from the array this session is handed, as the
+            # AcpClient path does (``bot_chat_app_tools.record_mounted``).
+            from kiro_crew.bot_chat_app_tools import check_and_filter_projection
+            from kiro_crew.providers.mirrors.codex import codex_name
+
+            # codex registers each server under its whitespace-folded name.
+            spelled = codex_name if self.acp_backend == ACP_BACKEND_CODEX else str
+            # Strip any entry whose revocation generation advanced since the projection
+            # was built, so a stale cold-start cannot mount a revoked app's server.
+            # Uses to_thread because check_and_filter_projection calls _app_reaches
+            # (file reads, audit) and member_identity_for_session (blocking).
+            servers_dict = {e["name"]: e for e in servers if isinstance(e, dict) and e.get("name")}
+            name_xform = codex_name if self.acp_backend == ACP_BACKEND_CODEX else None
+            servers_dict = await asyncio.to_thread(
+                check_and_filter_projection, session_key, servers_dict, name_transform=name_xform
+            )
+            servers = list(servers_dict.values())
+            voided_apps = await asyncio.to_thread(
+                record_mounted, session_key, mounted_names(servers_dict), spelled
+            )
+            if voided_apps:
+                servers_dict = {
+                    a: e
+                    for a, e in servers_dict.items()
+                    if ":" not in a or a.split(":")[0] not in voided_apps
+                }
+                servers = list(servers_dict.values())
     return _MirroredSessionMcp(
         servers=servers,
         denied_tools=projection.denied_tools,

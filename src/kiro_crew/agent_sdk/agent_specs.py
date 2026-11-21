@@ -119,6 +119,30 @@ def switched_off_tools(spec: dict[str, Any] | None) -> frozenset[tuple[str, str]
     return session_mcp.session_mcp_disabled_tools(None, spec=spec)
 
 
+def unusable_disabled_tools(spec: dict[str, Any]) -> list[str]:
+    """Launched servers in *spec* whose ``disabledTools`` is set but malformed, sorted.
+
+    ``acp.kas_tool_limits.disabled_tool_exclusions``'s refusal list: a value that is
+    not a list of non-blank tool names carries no restriction, so a caller refuses
+    the server rather than launch it whole. Never raises.
+    """
+    from kiro_crew.acp import kas_tool_limits
+
+    return kas_tool_limits.disabled_tool_exclusions(spec)[1]
+
+
+def global_mcp_servers() -> dict[str, Any]:
+    """The ``mcpServers`` map of the user's global Kiro MCP settings, ``{}`` when unread.
+
+    ``acp.session_mcp._global_settings``, the file the dashboard's switch-offs land
+    in for a server a spec does not own. Blocking, and never raises.
+    """
+    from kiro_crew.acp import session_mcp
+
+    servers = session_mcp._global_settings().get("mcpServers")
+    return servers if isinstance(servers, dict) else {}
+
+
 def authored_spec_is_toolless(agent: str, work_dir: Any = None) -> bool:
     """Whether the spec *agent* resolves to in *work_dir* mounts nothing. Blocking.
 
@@ -271,3 +295,17 @@ def deferred_call_arguments(params: Any, server: str, tool: str) -> tuple[Any, b
     from kiro_crew.acp._dispatch import _workspace_call_arguments
 
     return _workspace_call_arguments(params, server, tool)
+
+
+def stamp_session_label(entry: dict[str, Any], label: str) -> dict[str, Any]:
+    """*entry* (an MCP server entry the caller owns) carrying *label* as its session label.
+
+    Drops the session-label marker and sets the label env var, the same spelling
+    every harness hands a server (``acp.session_label``). Mutates and returns *entry*.
+    """
+    from kiro_crew.acp.session_label import SESSION_LABEL_ENV, SESSION_LABEL_MARKER
+
+    entry.pop(SESSION_LABEL_MARKER, None)
+    env = entry.get("env")
+    entry["env"] = {**(env if isinstance(env, dict) else {}), SESSION_LABEL_ENV: label}
+    return entry

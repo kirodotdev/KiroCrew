@@ -604,7 +604,9 @@ def _granted_list(value: Any) -> list[str]:
 
 
 #: The entries ``permissions.bots`` may hold; ``apps.bot_grants`` grants only these.
-BOT_SCOPE_NAMES = ("read", "wake")
+#: ``"tools"`` is read only behind the ``bot_chat_app_tools`` preview
+#: (``kiro_crew.bot_chat_app_tools``).
+BOT_SCOPE_NAMES = ("read", "wake", "tools")
 
 
 def _bot_scopes(value: Any) -> list[str]:
@@ -722,7 +724,9 @@ class Permissions:
     webhookSource: bool = False  # noqa: N815
     #: Bot scopes (``apps.bot_grants``): ``"read"`` lists the Bots the owner ticked
     #: for this app with their status and goals, ``"wake"`` sends one of them the
-    #: gateway's fixed wake line. Any other entry is dropped. A staged grant family,
+    #: gateway's fixed wake line, ``"tools"`` mounts the MCP servers the app offers in
+    #: ``contributes.botChatServers`` on that Bot's own chat (``bot_chat_app_tools``).
+    #: Any other entry is dropped. A staged grant family,
     #: so an update that adds a scope waits for the owner.
     bots: list[str] = field(default_factory=list)
     # WS cross-app visibility opt-in: app names (or ["*"]) allowed to use

@@ -1403,6 +1403,14 @@
       "hint": "An app that asks for browser access can show the live browser of its own chats on its page, read those pages, and click and type there. Each part waits for your approval on the app's page. While this is off, no app gets any of it, even one you approved."
     },
     {
+      "id": "developer.app-tools-in-bot-chats",
+      "label": "App tools in bot chats",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.app-tools-in-bot-chats",
+      "description": "Lets apps you allow add their tools to a bot's chat. The bot still asks before using them.",
+      "hint": "To stop one bot, untick it on the app's page."
+    },
+    {
       "id": "developer.artifact-deploy",
       "label": "Artifact Deploy",
       "tab": "developer",

@@ -10997,6 +10997,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.bot_chat_app_tools",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: bot_chat_app_tools",
+      "help": "Turn on the 'bot_chat_app_tools' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.bridge_approvals",
       "kind": "core",
       "type": "boolean",

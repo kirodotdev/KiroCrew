@@ -12070,7 +12070,9 @@
         "installed_needs_newer_host": "已安装的 {{name}} 需要更新的 {{productName}}。请更新 {{productName}}；你的数据不受影响。"
       },
       "grants_reconsent_composer_actions": "输入框按钮：允许应用在输入框的 + 菜单中添加这些按钮。点击后会把应用的文字插入你的草稿；应用看不到草稿，也不能发送。",
-      "grants_reconsent_selection_actions": "选中文字操作：允许应用的条目拿到你在聊天回复中选中的文字，并提供结果供复制或打开。"
+      "grants_reconsent_selection_actions": "选中文字操作：允许应用的条目拿到你在聊天回复中选中的文字，并提供结果供复制或打开。",
+      "bots_scope_tools": "让你为此应用勾选的 Bot 在聊天里使用该应用的工具。其他 Bot 不受影响。",
+      "bots_scope_tools_preview_off": "在功能预览里打开<preview>Bot 聊天里的应用工具</preview>之前，勾选的 Bot 拿不到此 app 工具。"
     },
     "appPage": {
       "loading_app": "加载应用…",
@@ -12158,7 +12160,20 @@
       "open_app_details": "打开 {{name}} 的详情",
       "refresh_store": "刷新商店",
       "refreshing_store": "正在刷新商店…",
-      "store_catalog_unreachable": "无法连接官方应用目录，商店正在显示离线列表。请检查网关能否访问互联网，然后再次刷新。"
+      "store_catalog_unreachable": "无法连接官方应用目录，商店正在显示离线列表。请检查网关能否访问互联网，然后再次刷新。",
+      "bot_chat_stop_incomplete": "{{slugs}} 还在用 {{name}} 的工具运行。重启以停止这些 Bot 对话。 {{productName}}",
+      "uninstall_bot_chat_stop_failed": "{{name}} 已卸载，但 Bot“{{slugs}}”的对话里还有它的工具。用下面的按钮移除，或重启 {{productName}}。",
+      "uninstall_bot_chat_stop_failed_other": "{{name}} 已卸载，但 Bot“{{slugs}}”的对话里还有它的工具。用下面的按钮移除，或重启 {{productName}}。",
+      "disable_bot_chat_stop_failed": "{{name}} 已停用，但 Bot“{{slugs}}”的对话里还有它的工具。用下面的按钮移除，或重启 {{productName}}。",
+      "disable_bot_chat_stop_failed_other": "{{name}} 已停用，但 Bot“{{slugs}}”的对话里还有它的工具。用下面的按钮移除，或重启 {{productName}}。",
+      "bot_chat_stop_incomplete_revoked_other": "{{name}} 已不再受信任，但 Bot“{{slugs}}”的对话里还有它的工具。用下面的按钮移除，或重启 {{productName}}。",
+      "bot_chat_stop_retry_other": "从 Bot“{{bots}}”移除 {{name}} 的工具",
+      "bot_chat_stop_retry_all_other": "从 Bot“{{bots}}”移除未受信任 app 的工具",
+      "bot_chat_stop_retrying": "正在移除…",
+      "blanket_bot_chat_stop_failed_other": "“信任所有第三方 app”已关闭，但 Bot“{{slugs}}”的对话里还有已不受信任 app 的工具。用下面的按钮移除，或重启 {{productName}}。",
+      "bot_chat_stop_retry_hint": "对话记录会保留。",
+      "bot_chat_stop_unknown_bot": "某个 Bot",
+      "restart_gateway_link": "重启以停止这些 Bot 对话 {{productName}}"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/月",
@@ -15949,7 +15964,10 @@
         "remote_dispatch_desc_summary": "在已连接的机器上运行 Conductor mode 任务。",
         "remote_dispatch_save_failed": "无法保存远程派发设置。请重试。",
         "remote_dispatch_load_failed": "无法读取远程派发设置。",
-        "remote_dispatch_connect": "在 <0>Settings › Remote Crew</0> 中连接机器。"
+        "remote_dispatch_connect": "在 <0>Settings › Remote Crew</0> 中连接机器。",
+        "bot_chat_app_tools": "Bot 聊天里的应用工具",
+        "bot_chat_app_tools_desc": "要停掉某一个 Bot，在 app 页面取消勾选它。",
+        "bot_chat_app_tools_desc_summary": "允许你授权的应用把工具加进 Bot 的聊天里。Bot 使用工具前仍会照常询问。"
       },
       "kasBundleCard": {
         "installed": "内置引擎 {{version}}",
@@ -20548,7 +20566,8 @@
           "allow_all_confirm_body": "允许所有第三方应用后，你安装的任何应用都能在 {{productName}} 内部运行自身代码，访问权限与 {{productName}} 完全相同 — 你的文件、已保存凭据以及互联网。每次只信任一个应用更安全。",
           "allow_all_confirm_ack": "我明白我安装的每个第三方应用都将能够以 {{productName}} 的访问权限运行自身代码。",
           "ineffective_label": "已保存但未生效",
-          "ineffective_description": "这些名称已被保存为受信任，但 {{productName}} 不接受它们，因此这些应用仍然被拦截。移除它们可以整理这个列表。"
+          "ineffective_description": "这些名称已被保存为受信任，但 {{productName}} 不接受它们，因此这些应用仍然被拦截。移除它们可以整理这个列表。",
+          "bot_chats_not_stopped": "{{message}} 未能停止的 Bot 聊天：{{slugs}}。"
         },
         "trustedRegistries": {
           "change_failed": "该更改未生效：{{detail}}",

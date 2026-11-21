@@ -12070,7 +12070,9 @@
         "installed_needs_newer_host": "インストール済みの {{name}} には新しい {{productName}} が必要です。{{productName}} を更新してください。データは変更されていません。"
       },
       "grants_reconsent_composer_actions": "入力欄ボタン：入力欄の + メニューにこれらのボタンを追加できます。クリックするとアプリのテキストが下書きに挿入されます。アプリは下書きを見ることも送信することもできません。",
-      "grants_reconsent_selection_actions": "選択テキストの操作: チャットの返信で選択したテキストがアプリの項目に渡され、コピーまたは開くための結果を返せます。"
+      "grants_reconsent_selection_actions": "選択テキストの操作: チャットの返信で選択したテキストがアプリの項目に渡され、コピーまたは開くための結果を返せます。",
+      "bots_scope_tools": "このアプリにチェックした Bot が、自分のチャットでそのツールを使えるようにします。他の Bot は変わりません。",
+      "bots_scope_tools_preview_off": "機能プレビューで<preview>Bot チャットでのアプリのツール</preview>をオンにするまで、チェック済みの Bot はこのアプリのツールを受け取りません。"
     },
     "appPage": {
       "loading_app": "アプリを読み込み中…",
@@ -12158,7 +12160,20 @@
       "open_app_details": "{{name}} の詳細を開く",
       "refresh_store": "ストアを更新",
       "refreshing_store": "ストアを更新中…",
-      "store_catalog_unreachable": "公式アプリカタログに接続できなかったため、ストアはオフライン用の一覧を表示しています。ゲートウェイがインターネットに接続できるか確認してから、もう一度更新してください。"
+      "store_catalog_unreachable": "公式アプリカタログに接続できなかったため、ストアはオフライン用の一覧を表示しています。ゲートウェイがインターネットに接続できるか確認してから、もう一度更新してください。",
+      "bot_chat_stop_incomplete": "{{slugs}} はまだ{{name}}のツールを使用しています。Bot チャットを停止するには再起動してください。 {{productName}}",
+      "uninstall_bot_chat_stop_failed": "{{name}} はアンインストールされましたが、Bot「{{slugs}}」のチャットにはまだそのツールがあります。下のボタンで外すか、{{productName}} を再起動してください。",
+      "uninstall_bot_chat_stop_failed_other": "{{name}} はアンインストールされましたが、Bot「{{slugs}}」のチャットにはまだそのツールがあります。下のボタンで外すか、{{productName}} を再起動してください。",
+      "disable_bot_chat_stop_failed": "{{name}} は無効になりましたが、Bot「{{slugs}}」のチャットにはまだそのツールがあります。下のボタンで外すか、{{productName}} を再起動してください。",
+      "disable_bot_chat_stop_failed_other": "{{name}} は無効になりましたが、Bot「{{slugs}}」のチャットにはまだそのツールがあります。下のボタンで外すか、{{productName}} を再起動してください。",
+      "bot_chat_stop_incomplete_revoked_other": "{{name}} はもう信頼されていませんが、Bot「{{slugs}}」のチャットにはまだそのツールがあります。下のボタンで外すか、{{productName}} を再起動してください。",
+      "bot_chat_stop_retry_other": "Bot「{{bots}}」から {{name}} のツールを外す",
+      "bot_chat_stop_retry_all_other": "Bot「{{bots}}」から信頼されていない app のツールを外す",
+      "bot_chat_stop_retrying": "外しています…",
+      "blanket_bot_chat_stop_failed_other": "すべてのサードパーティ app の信頼はオフになりましたが、Bot「{{slugs}}」のチャットにはまだ信頼されなくなった app のツールがあります。下のボタンで外すか、{{productName}} を再起動してください。",
+      "bot_chat_stop_retry_hint": "チャット履歴は残ります。",
+      "bot_chat_stop_unknown_bot": "不明な Bot",
+      "restart_gateway_link": "Bot チャットを停止するには再起動してください {{productName}}"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/月",
@@ -15949,7 +15964,10 @@
         "remote_dispatch_desc_summary": "Conductor mode のタスクを接続したマシンで実行します。",
         "remote_dispatch_save_failed": "リモートディスパッチを保存できませんでした。もう一度お試しください。",
         "remote_dispatch_load_failed": "リモートディスパッチの設定を読み込めませんでした。",
-        "remote_dispatch_connect": "<0>Settings › Remote Crew</0> でマシンを接続します。"
+        "remote_dispatch_connect": "<0>Settings › Remote Crew</0> でマシンを接続します。",
+        "bot_chat_app_tools": "Bot チャットでのアプリのツール",
+        "bot_chat_app_tools_desc": "1 つの Bot だけ止めるには、app のページでチェックを外します。",
+        "bot_chat_app_tools_desc_summary": "許可したアプリが Bot のチャットにツールを追加できるようにします。Bot は使用前に引き続き確認を求めます。"
       },
       "kasBundleCard": {
         "installed": "内蔵エンジン {{version}}",
@@ -20548,7 +20566,8 @@
           "allow_all_confirm_body": "すべてのサードパーティアプリを信頼すると、インストールしたどのアプリも {{productName}} の内部で独自のコードを実行でき、{{productName}} と同じアクセス権 — あなたのファイル、保存された認証情報、およびインターネット — を持ちます。一度に1つのアプリだけを信頼する方が安全です。",
           "allow_all_confirm_ack": "インストールする各サードパーティアプリが、{{productName}} のアクセス権で独自のコードを実行できるようになることを理解しました。",
           "ineffective_label": "保存済みだが機能していません",
-          "ineffective_description": "これらの名前は信頼済みとして保存されましたが、{{productName}} はそれらを受け付けないため、アプリは依然としてブロックされています。リストを整理するには削除してください。"
+          "ineffective_description": "これらの名前は信頼済みとして保存されましたが、{{productName}} はそれらを受け付けないため、アプリは依然としてブロックされています。リストを整理するには削除してください。",
+          "bot_chats_not_stopped": "{{message}} 停止できなかった Bot チャット: {{slugs}}."
         },
         "trustedRegistries": {
           "change_failed": "この変更は反映されませんでした：{{detail}}",

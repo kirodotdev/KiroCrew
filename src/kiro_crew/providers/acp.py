@@ -152,6 +152,17 @@ class AcpProvider(LLMProvider):
     #: harness shared only for chats (``acp_lifecycle._chat_takes_shared_runtime``),
     #: consumed by the runtime start. None otherwise.
     _prejoined_chat_share: Any = None
+    #: Forwarded from the inner ``AcpSessionProvider`` after ``shutdown()``.
+    #: Set to True when a shared-KAS ``session/close`` was not confirmed (timeout
+    #: or refusal).  Read by ``discard_conversation(confirm_teardown=True)``
+    #: callers (bot app stop) so they can treat the unconfirmed case as a failure.
+    #: Declared here so ``getattr(session.provider, "_kas_shutdown_unconfirmed")``
+    #: on this outer wrapper is not a blind guess at a private attribute.
+    _kas_shutdown_unconfirmed: bool = False
+    #: Saved runtime for a later retry of the remote session/close.
+    _kas_unconfirmed_runtime: Any = None
+    #: Saved session_id for a later retry of the remote session/close.
+    _kas_unconfirmed_session_id: str | None = None
 
     reports_effort_support = True
     approval_withdrawable = True

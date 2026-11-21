@@ -1242,7 +1242,7 @@ async def run(self: GatewayOrchestrator) -> None:
     if not self._test_mode:
         from kiro_crew.apps.session_consent import reconcile_after_ready
 
-        _consent_task = asyncio.create_task(reconcile_after_ready())
+        _consent_task = asyncio.create_task(reconcile_after_ready(self.dashboard_state))
         self._background_tasks.add(_consent_task)
         _consent_task.add_done_callback(self._background_tasks.discard)
 

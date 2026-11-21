@@ -12616,7 +12616,9 @@
         "installed_needs_newer_host": "A versão instalada de {{name}} precisa de um {{productName}} mais recente. Atualize o {{productName}}; seus dados não mudam."
       },
       "grants_reconsent_composer_actions": "Botões do editor: permite que o app adicione estes botões ao menu + do editor. Um clique insere o texto do app no seu rascunho; o app não pode ver o rascunho nem enviá-lo.",
-      "grants_reconsent_selection_actions": "Ações sobre texto selecionado: permite que os itens do app recebam o texto que você seleciona nas respostas do chat e ofereçam um resultado para Copiar ou Abrir."
+      "grants_reconsent_selection_actions": "Ações sobre texto selecionado: permite que os itens do app recebam o texto que você seleciona nas respostas do chat e ofereçam um resultado para Copiar ou Abrir.",
+      "bots_scope_tools": "Permite a um Bot que você marcar para este app usar suas ferramentas no próprio chat. Outros Bots não mudam.",
+      "bots_scope_tools_preview_off": "Antes de ativar <preview>Ferramentas de apps nos chats de Bots</preview> em Prévias de recursos, os Bots marcados não receberão as ferramentas deste app."
     },
     "appPage": {
       "loading_app": "Carregando app…",
@@ -12716,7 +12718,32 @@
       "open_app_details": "Abrir os detalhes de {{name}}",
       "refresh_store": "Atualizar a loja",
       "refreshing_store": "Atualizando a loja…",
-      "store_catalog_unreachable": "Não foi possível acessar o catálogo oficial de apps, então a loja está mostrando sua lista offline. Verifique se o gateway consegue acessar a internet e atualize de novo."
+      "store_catalog_unreachable": "Não foi possível acessar o catálogo oficial de apps, então a loja está mostrando sua lista offline. Verifique se o gateway consegue acessar a internet e atualize de novo.",
+      "bot_chat_stop_incomplete": "{{slugs}} ainda está usando as ferramentas de {{name}}. Reinicie para parar esses chats de bot {{productName}}.",
+      "uninstall_bot_chat_stop_failed": "{{name}} foi desinstalado, mas os bots \"{{slugs}}\" ainda têm as ferramentas dele. Remova-as com o botão abaixo ou reinicie o {{productName}}.",
+      "uninstall_bot_chat_stop_failed_many": "{{name}} foi desinstalado, mas os bots \"{{slugs}}\" ainda têm as ferramentas dele. Remova-as com o botão abaixo ou reinicie o {{productName}}.",
+      "uninstall_bot_chat_stop_failed_one": "{{name}} foi desinstalado, mas o bot \"{{slugs}}\" ainda tem as ferramentas dele. Remova-as com o botão abaixo ou reinicie o {{productName}}.",
+      "uninstall_bot_chat_stop_failed_other": "{{name}} foi desinstalado, mas os bots \"{{slugs}}\" ainda têm as ferramentas dele. Remova-as com o botão abaixo ou reinicie o {{productName}}.",
+      "disable_bot_chat_stop_failed": "{{name}} foi desativado, mas os bots \"{{slugs}}\" ainda têm as ferramentas dele. Remova-as com o botão abaixo ou reinicie o {{productName}}.",
+      "disable_bot_chat_stop_failed_many": "{{name}} foi desativado, mas os bots \"{{slugs}}\" ainda têm as ferramentas dele. Remova-as com o botão abaixo ou reinicie o {{productName}}.",
+      "disable_bot_chat_stop_failed_one": "{{name}} foi desativado, mas o bot \"{{slugs}}\" ainda tem as ferramentas dele. Remova-as com o botão abaixo ou reinicie o {{productName}}.",
+      "disable_bot_chat_stop_failed_other": "{{name}} foi desativado, mas os bots \"{{slugs}}\" ainda têm as ferramentas dele. Remova-as com o botão abaixo ou reinicie o {{productName}}.",
+      "bot_chat_stop_incomplete_revoked_many": "{{name}} não é mais confiável, mas os bots \"{{slugs}}\" ainda têm as ferramentas dele. Remova-as com o botão abaixo ou reinicie o {{productName}}.",
+      "bot_chat_stop_incomplete_revoked_one": "{{name}} não é mais confiável, mas o bot \"{{slugs}}\" ainda tem as ferramentas dele. Remova-as com o botão abaixo ou reinicie o {{productName}}.",
+      "bot_chat_stop_incomplete_revoked_other": "{{name}} não é mais confiável, mas os bots \"{{slugs}}\" ainda têm as ferramentas dele. Remova-as com o botão abaixo ou reinicie o {{productName}}.",
+      "bot_chat_stop_retry_many": "Remover as ferramentas de {{name}} dos bots \"{{bots}}\"",
+      "bot_chat_stop_retry_all_many": "Remover as ferramentas dos apps não confiáveis dos bots \"{{bots}}\"",
+      "bot_chat_stop_retry_one": "Remover as ferramentas de {{name}} do bot \"{{bots}}\"",
+      "bot_chat_stop_retry_all_one": "Remover as ferramentas dos apps não confiáveis do bot \"{{bots}}\"",
+      "bot_chat_stop_retry_other": "Remover as ferramentas de {{name}} dos bots \"{{bots}}\"",
+      "bot_chat_stop_retry_all_other": "Remover as ferramentas dos apps não confiáveis dos bots \"{{bots}}\"",
+      "bot_chat_stop_retrying": "Removendo…",
+      "blanket_bot_chat_stop_failed_many": "A confiança em todos os apps de terceiros está desligada, mas os bots \"{{slugs}}\" ainda têm ferramentas de apps que não são mais confiáveis. Remova-as com o botão abaixo ou reinicie o {{productName}}.",
+      "blanket_bot_chat_stop_failed_one": "A confiança em todos os apps de terceiros está desligada, mas o bot \"{{slugs}}\" ainda tem ferramentas de apps que não são mais confiáveis. Remova-as com o botão abaixo ou reinicie o {{productName}}.",
+      "blanket_bot_chat_stop_failed_other": "A confiança em todos os apps de terceiros está desligada, mas os bots \"{{slugs}}\" ainda têm ferramentas de apps que não são mais confiáveis. Remova-as com o botão abaixo ou reinicie o {{productName}}.",
+      "bot_chat_stop_retry_hint": "O histórico do chat é mantido.",
+      "bot_chat_stop_unknown_bot": "um bot",
+      "restart_gateway_link": "Reiniciar para parar esses chats de bot {{productName}}"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/mês",
@@ -16791,7 +16818,10 @@
         "remote_dispatch_desc_summary": "Executa tarefas do Conductor mode em máquinas conectadas.",
         "remote_dispatch_save_failed": "Não foi possível salvar o despacho remoto. Tente de novo.",
         "remote_dispatch_load_failed": "Não foi possível ler a configuração de despacho remoto.",
-        "remote_dispatch_connect": "Conecte máquinas em <0>Settings › Remote Crew</0>."
+        "remote_dispatch_connect": "Conecte máquinas em <0>Settings › Remote Crew</0>.",
+        "bot_chat_app_tools": "Ferramentas de apps nos chats de Bots",
+        "bot_chat_app_tools_desc": "Para parar um só bot, desmarque-o na página do app.",
+        "bot_chat_app_tools_desc_summary": "Permite que apps que você autoriza adicionem suas ferramentas ao chat de um Bot. O Bot continua pedindo confirmação antes de usá-las."
       },
       "kasBundleCard": {
         "installed": "Motor integrado {{version}}",
@@ -21634,7 +21664,8 @@
           "allow_all_confirm_body": "Confiar em todos os apps de terceiros permite que qualquer app que você instalar execute o próprio código dentro do {{productName}}, com o mesmo acesso que o {{productName}} tem — seus arquivos, suas credenciais salvas e a internet. Confiar em um app por vez é mais seguro.",
           "allow_all_confirm_ack": "Entendo que todo app de terceiros que eu instalar vai poder executar o próprio código com o acesso do {{productName}}.",
           "ineffective_label": "Salvo, mas sem efeito",
-          "ineffective_description": "Esses nomes foram salvos como confiáveis, mas o {{productName}} não os aceita, então os apps continuam bloqueados. Remova-os para limpar a lista."
+          "ineffective_description": "Esses nomes foram salvos como confiáveis, mas o {{productName}} não os aceita, então os apps continuam bloqueados. Remova-os para limpar a lista.",
+          "bot_chats_not_stopped": "{{message}} Chats de Bot que não puderam ser parados: {{slugs}}."
         },
         "trustedRegistries": {
           "change_failed": "A alteração não entrou em vigor: {{detail}}",
