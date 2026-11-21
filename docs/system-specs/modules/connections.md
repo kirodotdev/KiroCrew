@@ -1641,6 +1641,11 @@ the row, the audit, a log line or the page. `access_denied` covers both a user
 who declined and an organization policy that blocks the client, so the card's
 copy names both. Every listener (the shared loopback, a pre-registered card's
 own port, the public route) answers through the same `SignIn._callback`.
+A callback with a usable code holds its page until `SignIn.finish` settles: it
+says "Signed in" only once the code swap and the vault write landed, says the
+sign-in did not finish when either failed or the sign-in was shut down, and
+after `_CALLBACK_PAGE_WAIT_SECS` (45 s) points the user back to Kiro Crew for
+the result. Each page is a fixed string.
 
 A registry entry with an `org_admin_guide` (a `<file>.md#<anchor>` docs
 section, DCR entries only; Atlassian today) gets `signInRedirect` on its

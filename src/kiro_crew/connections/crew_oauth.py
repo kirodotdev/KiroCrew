@@ -130,6 +130,12 @@ _REFRESH_SKEW_SECS = 120.0
 #: How long one consent may stay open.
 SIGN_IN_TTL_SECS = 600.0
 _HTTP_TIMEOUT_SECS = 20.0
+#: How long the consent tab waits for the code swap and the write before it
+#: answers that the outcome is shown in Kiro Crew instead.
+_CALLBACK_PAGE_WAIT_SECS = 45.0
+_PAGE_SIGNED_IN = "Signed in. You can close this tab and return to Kiro Crew."
+_PAGE_NOT_FINISHED = "Sign-in did not finish. Return to Kiro Crew to see why, then connect again."
+_PAGE_PENDING = "Kiro Crew is still finishing the sign-in. Return to Kiro Crew to see the result."
 #: Refresh errors that mean the stored refresh token is dead (after one re-read).
 _DEAD_GRANT_ERRORS = frozenset(
     {"bad_refresh_token", "invalid_grant", "invalid_refresh_token", "unauthorized_client"}
@@ -760,6 +766,9 @@ class SignIn:
         self._verifier = generate_code_verifier()
         self._challenge = generate_code_challenge(self._verifier)
         self._done: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        # True once the swap and the write landed, False when they did not: what
+        # the consent tab says after the code arrives.
+        self._settled: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
         self._runner: Any = None
         self.url = ""
         self.bound_port = 0
@@ -878,7 +887,15 @@ class SignIn:
             self._done.set_exception(CrewOAuthError(callback_refusal(request.query.get("error"))))
             return web.Response(text="Sign-in was not completed. You can close this tab.")
         self._done.set_result(code)
-        return web.Response(text="Signed in. You can close this tab and return to Kiro Crew.")
+        try:
+            ok = await asyncio.wait_for(asyncio.shield(self._settled), _CALLBACK_PAGE_WAIT_SECS)
+        except asyncio.TimeoutError:
+            return web.Response(text=_PAGE_PENDING)
+        return web.Response(text=_PAGE_SIGNED_IN if ok else _PAGE_NOT_FINISHED)
+
+    def _settle(self, ok: bool) -> None:
+        if not self._settled.done():
+            self._settled.set_result(ok)
 
     async def finish(self, store: TokenStore | None = None) -> None:
         """Wait for the callback, swap the code, store the pair. Raises :class:`CrewOAuthError`."""
@@ -930,12 +947,17 @@ class SignIn:
                     await asyncio.to_thread(target.replace, self.slug, tokens)
 
         self._write = asyncio.ensure_future(_swap_and_write())
-        await asyncio.shield(self._write)
-        if self._dcr is not None:
-            # One custody: the harness's own grant for this URL goes (RFC §4.2).
-            from kiro_crew.connections.crew_oauth_dcr import drop_harness_grants
+        try:
+            await asyncio.shield(self._write)
+            if self._dcr is not None:
+                # One custody: the harness's own grant for this URL goes (RFC §4.2).
+                from kiro_crew.connections.crew_oauth_dcr import drop_harness_grants
 
-            await drop_harness_grants(self.slug, self._project_dirs)
+                await drop_harness_grants(self.slug, self._project_dirs)
+        except BaseException:
+            self._settle(False)
+            raise
+        self._settle(True)
 
     async def _dcr_exchange(self, code: str) -> dict[str, Any]:
         """The DCR code swap; a client the vendor does not know is forgotten."""
@@ -958,6 +980,8 @@ class SignIn:
         self._closing = True
         if not self._done.done():
             self._done.cancel()
+        # A tab still waiting is answered before its listener closes.
+        self._settle(False)
         runner, self._runner = self._runner, None
         if runner is not None:
             await runner.cleanup()
