@@ -6336,7 +6336,10 @@ handed over, or a project file the page moved `selectedPath` to (moved in a layo
 after the tree's own, so a notification for the previous file in that commit stays
 silent). The shared tree reports a kept selection again on a listing refresh, a filter
 change and twice in one click on a filtered row; it reports nothing for a multi-selection
-or its own echo. None of those is a change, so none fires. Limits: a cleared `selectedPath`
+or its own echo. None of those is a change, so none fires. While a `selectedPath` change commits,
+the export ignores every report (set in render, cleared by a layout effect after each
+commit): the tree's echo deselects the rows it replaces one at a time, and a row it leaves
+selected for a moment is no user open. Limits: a cleared `selectedPath`
 or one outside the project moves nothing, because the tree keeps the row selected (its
 behaviour in the Files rail, unchanged here), so re-picking the file the page just closed
 fires only after another file is opened; re-clicking the opened file never fires. A

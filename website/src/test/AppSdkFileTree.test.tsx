@@ -352,6 +352,39 @@ describe('the App SDK FileTree', () => {
     expect(onOpenFile.mock.calls.map(c => c[0])).toEqual([`${ROOT}/README.md`, `${ROOT}/src/a.ts`])
   })
 
+  it('opens no row the tree leaves selected while it reconciles a page-driven switch', async () => {
+    const onOpenFile = vi.fn()
+    const page = (selected: string | null) => (
+      <AppApiProvider appName="file-tree-reconcile-app" allowedApiPaths={[FILE_TREE_PATHS.tree]} navigateFn={() => {}}>
+        <FileTree projectDir={ROOT} onOpenFile={onOpenFile} selectedPath={selected} />
+      </AppApiProvider>
+    )
+    const view = render(page(null))
+    expect(await screen.findByTestId('file-tree', {}, LAZY_TREE)).toBeInTheDocument()
+    await waitFor(() => expect(treeMock.last().calls.resetPaths.length).toBeGreaterThan(0))
+    const model = treeMock.last()
+    act(() => { model.simulateSelection('README.md') })
+    view.rerender(page(`${ROOT}/README.md`))
+    // Ctrl/Cmd-click adds src/a.ts: two rows selected, so no open.
+    act(() => { model.simulateSelection('src/a.ts', ['README.md', 'src/a.ts']) })
+    // As the real model does, each deselect notifies, the first leaving src/a.ts alone.
+    const getItem = model.getItem.bind(model)
+    model.getItem = (path: string) => {
+      const item = getItem(path)
+      if (!item) return item
+      return { ...item, deselect: () => { item.deselect(); model.simulateVisibleRows([]) } }
+    }
+    // As the real model does, focusing a path it does not hold keeps the focus where it is.
+    const focusPath = model.focusPath.bind(model)
+    model.focusPath = (path: string) => { if (getItem(path)) focusPath(path) }
+    // The page shows a file whose folder is not loaded: the tree drops README.md's selection.
+    view.rerender(page(`${ROOT}/sub/B.md`))
+    expect(onOpenFile.mock.calls.map(c => c[0])).toEqual([`${ROOT}/README.md`])
+    // A user open afterwards still fires.
+    act(() => { model.simulateSelection('src/a.ts') })
+    expect(onOpenFile.mock.calls.map(c => c[0])).toEqual([`${ROOT}/README.md`, `${ROOT}/src/a.ts`])
+  })
+
   it('sends no tree read while the host has the page hidden', async () => {
     const client = new QueryClient()
     const hidden = (active: boolean) => (

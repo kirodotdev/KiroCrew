@@ -1096,7 +1096,8 @@ keeps the tree as the dashboard has it.
 `onOpenFile` fires once per change of the opened file: the first file the user opens, then
 each different one. The opened file is the last one the tree reported, or a project file
 you set as `selectedPath`. A listing refresh, a filter change, the second notification of a
-click on a filtered row, a multi-selection and re-clicking the opened file never fire it.
+click on a filtered row, a multi-selection, re-clicking the opened file and the tree
+adjusting its rows to a `selectedPath` you set never fire it.
 Limits: setting `selectedPath` to `null` or to a file outside the project leaves the tree's
 row selected, as in the Files rail, so picking the file you just closed fires only after
 another file has been opened. A refresh that leaves exactly one file of a multi-selection
