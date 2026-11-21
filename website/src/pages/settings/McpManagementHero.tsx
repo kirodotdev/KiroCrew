@@ -30,6 +30,8 @@ import {
   detailsWhyKey,
   DOCS_URL,
   gibNumber,
+  launchDiff,
+  launchIsApprovable,
   type LaunchRefusal,
   withCurrentLaunch,
 } from './mcpManagementModel'
@@ -416,9 +418,10 @@ export function ReviewApprovalsDialog({
         className={narrow ? 'h-screen supports-[height:100dvh]:h-dvh' : undefined}
       >
         <DialogHeader>
-          {/* Counts what still waits, so it drops as blocks are handled. */}
+          {/* A yes/no question the two buttons answer; its number form follows
+              what still waits, so it drops as blocks are handled. */}
           <DialogTitle>
-            {i18nT('pages.mcpManagement.approval_title', {
+            {i18nT('pages.mcpManagement.review_title', {
               count: Math.max(1, items.filter(i => stateOf(i.server.name).kind !== 'approved' && stateOf(i.server.name).kind !== 'skipped').length),
             })}
           </DialogTitle>
@@ -426,12 +429,9 @@ export function ReviewApprovalsDialog({
         {/* The body is the only scroller; its overscroll never reaches the page. */}
         <DialogBody data-testid="mcp-review-body" className="overscroll-contain">
           <div className="space-y-3">
-          {/* What approving risks and when it is fine, said once for every block.
-              In the body, not the header: the header row would squeeze the title. */}
-          <DialogDescription>
-            {i18nT('pages.mcpManagement.share_risk')}{' '}
-            {i18nT('pages.mcpManagement.review_when_safe')}
-          </DialogDescription>
+          {/* No explainer here: what sharing risks is said once, in the confirm
+              shown when sharing is turned on, and each block's buttons are named
+              by their result. */}
           {items.map(item => {
             const { server } = item
             const refusal = withCurrentLaunch(item.refusal, currentLaunches, server.name)
@@ -439,6 +439,15 @@ export function ReviewApprovalsDialog({
             const handled = st.kind === 'approved' || st.kind === 'skipped'
             const nameId = `mcp-review-name-${server.name}`
             const reasonId = `mcp-review-reason-${server.name}`
+            // Drop the "what changed" line only when the diff below draws one:
+            // an env-value-only change, or a refusal with no approved display,
+            // draws none, and there the line is the only sign of a change.
+            const diff = refusal.approved_commands !== undefined ? launchDiff(refusal) : null
+            const changedHint =
+              refusal.reason === 'changed_needs_reapproval' &&
+              launchIsApprovable(refusal) &&
+              diff !== null &&
+              diff.added.length + diff.removed.length + diff.envAdded.length + diff.envRemoved.length > 0
             return (
               <section
                 key={server.name}
@@ -458,19 +467,20 @@ export function ReviewApprovalsDialog({
                 </div>
                 {!handled && (
                   <div className="mt-1.5 min-w-0 space-y-2 text-[12px] text-[var(--muted)]">
-                    <p id={reasonId} className="m-0 text-[12.5px]">
-                      {i18nT(detailsWhyKey(server, 'needs_reapproval', refusal))}
-                    </p>
+                    {/* A changed launch needs no "what changed" line: the diff below
+                        says it and the button says what pressing it does. Other
+                        reasons (never approved here, not approvable) stay. */}
+                    {!changedHint && (
+                      <p id={reasonId} className="m-0 text-[12.5px]">
+                        {i18nT(detailsWhyKey(server, 'needs_reapproval', refusal))}
+                      </p>
+                    )}
                     {/* The endpoint's compare-and-set rejected the write and handed
                         back the newer launch drawn just below. A rejected request, so
                         an ErrorNotice; above the launch, not with the error below it,
                         because its copy points down at that launch. */}
                     <ErrorNotice variant="inline" message={st.launchMoved ?? null} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} />
                     <RefusalLaunch refusal={refusal} />
-                    {/* What the two buttons do, said in the block they act on. */}
-                    <p id={`mcp-review-means-${server.name}`} className="m-0 text-[12.5px] text-[var(--text)]">
-                      {i18nT('pages.mcpManagement.review_what_approve_does')}
-                    </p>
                     <ErrorNotice variant="inline" message={st.error ?? null} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} />
                     <div className={['flex gap-2', narrow ? 'flex-col' : 'flex-wrap justify-end'].join(' ')}>
                       <Btn
@@ -488,7 +498,7 @@ export function ReviewApprovalsDialog({
                         primary
                         className={[SHARE_BUTTON_CLASS, narrow ? 'w-full justify-center' : ''].join(' ')}
                         disabled={st.kind === 'approving' || !supported}
-                        aria-describedby={`${nameId} ${reasonId} mcp-review-means-${server.name}`}
+                        aria-describedby={changedHint ? nameId : `${nameId} ${reasonId}`}
                         onClick={() => void approve(item)}
                       >
                         <Check size={14} aria-hidden="true" />
