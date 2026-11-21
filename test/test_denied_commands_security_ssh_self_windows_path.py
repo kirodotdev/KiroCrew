@@ -67,8 +67,9 @@ def test_the_spellings_refused_without_the_path_reading_stay_refused(cmd):
         r"C:\Windows\System32\OpenSS?\ss?.exe -p 22 example.com",
         r"echo a\ssh -p 22 localhost",
         r"type C:\Users\me\notes.txt",
-        # A glob operand is a file name, not a program path: only a word ending in an
-        # ssh program or in ``.exe`` gets the path reading.
+        # An argument is a file name, not a program path: only the word where a
+        # command starts gets the path reading.
+        r"git add tools\ssh.exe README.md",
         r"tar -czf out.tgz src\s* *.*",
         r"git add src\s* README.md",
     ],
@@ -81,5 +82,9 @@ def test_the_path_reading_keeps_escapes_before_quotes_and_blanks():
     from kiro_crew.security.argv_floor_ssh_bodies import _with_backslash_path_separators
 
     assert _with_backslash_path_separators(r".\ssh.exe") == "./ssh.exe"
-    assert _with_backslash_path_separators(r"a\ b \" \' \; \\ssh.exe") == r"a\ b \" \' \; \/ssh.exe"
-    assert _with_backslash_path_separators(r"src\s* x\y.exe") == r"src\s* x/y.exe"
+    assert _with_backslash_path_separators(r"a\.b\\c\ d") == r"a/.b\/c\ d"
+    assert _with_backslash_path_separators(r"tar src\s* x\y.exe") == r"tar src\s* x\y.exe"
+    assert _with_backslash_path_separators(r"cd x; .\ssh.exe h") == r"cd x; ./ssh.exe h"
+    # One long word is read in one pass, not once per starting position.
+    long_word = "echo " + "a\\" * 100_000
+    assert _with_backslash_path_separators(long_word) == long_word

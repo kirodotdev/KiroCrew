@@ -150,31 +150,27 @@ def _substitution_reaches_self(text_lower: str) -> bool:
 # there it separates path components (``C:\Windows\System32\OpenSSH\ssh.exe``,
 # ``.\ssh.exe``) instead of escaping the next character as POSIX shell rules do.
 _PATH_SEPARATOR_BACKSLASH_RE = re.compile(r"\\(?=[\w.?*\[-])")
-_BACKSLASH_WORD_RE = re.compile(r"[^\s;&|()<>]*\\[^\s;&|()<>]*")
-_SSH_PROGRAM_PATH_END_RE = re.compile(r"(?:ssh|scp|sftp|rsync|[^\\/]*\.exe)\Z")
-
-
-def _path_word_with_separators(match: "re.Match[str]") -> str:
-    word = match.group(0)
-    last = re.split(r"[\\/]", word.rstrip("\"'"))[-1]
-    if _SSH_PROGRAM_PATH_END_RE.match(last) is None:
-        return word
-    return _PATH_SEPARATOR_BACKSLASH_RE.sub("/", word)
+# The word where a program starts: the line's first, or the first after ``; & | ( newline``,
+# past a PowerShell call operator ``&``. A quoted word is taken whole (it may hold blanks).
+_PROGRAM_WORD_RE = re.compile(
+    r"""((?:\A|[;&|\n(])[ \t]*(?:&[ \t]*)?)('[^']*'|"[^"]*"|[^\s;&|()<>]+)"""
+)
 
 
 def _with_backslash_path_separators(text: str) -> str:
-    """*text* with each backslash before a path-name character read as ``/``, in a word
-    whose last component is an ssh program (``ssh``, ``scp``, ``sftp``, ``rsync``) or
-    ends in ``.exe``.
+    """*text* with each backslash before a path-name character read as ``/``, in the
+    word where each command starts.
 
     The tokenizer drops an unquoted backslash and keeps a quoted one, and the program
     basename splits on ``/`` only, so neither reading isolates ``ssh.exe`` at the end of
     a Windows path. A backslash before a quote, a blank, a separator or another
-    backslash is left as written, so the quoting the tokenizer reads is unchanged. A
-    word that cannot name a program (``src\\s*``, a glob argument) keeps its POSIX
-    reading, so a file operand is not read as a program path.
+    backslash is left as written, so the quoting the tokenizer reads is unchanged. An
+    argument keeps its POSIX reading, so a file operand (``git add tools\\ssh.exe``) is
+    not read as a program.
     """
-    return _BACKSLASH_WORD_RE.sub(_path_word_with_separators, text)
+    return _PROGRAM_WORD_RE.sub(
+        lambda m: m.group(1) + _PATH_SEPARATOR_BACKSLASH_RE.sub("/", m.group(2)), text
+    )
 
 
 def _reaches_self_over_ssh(text_lower: str, raw_text: "str | None" = None) -> bool:
@@ -215,8 +211,9 @@ def _reaches_self_over_ssh(text_lower: str, raw_text: "str | None" = None) -> bo
             return True
     finally:
         _MAIN_READING.reset(token)
-    # shortcut: only the line itself gets the path reading, not its quoted scripts or
-    # substitution bodies; widen it if a Windows path in a nested payload is reported.
+    # shortcut: only a command's first word and only the line itself get the path reading,
+    # not an argument (``cmd /c C:\\...\\ssh.exe``), a quoted script or a substitution body;
+    # widen it if a Windows path there is reported.
     path_text = _with_backslash_path_separators(text_lower)
     if path_text == text_lower:
         return False
