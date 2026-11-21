@@ -1188,3 +1188,232 @@ async def test_a_hard_stop_discards_a_resend_of_a_consumed_steer_as_never_run(
     assert receipt.startswith("discarded@"), receipt
     notices = [m["content"] for m in caller.messages if m.get("role") == "notice"]
     assert len(notices) == 1 and "discarded before it ran" in notices[0], notices
+
+
+@pytest.mark.asyncio
+async def test_a_broadcast_of_an_injected_steer_still_in_flight_is_that_steer(tmp_path):
+    """(ao) The same body re-sent by broadcast while the injected steer is pending.
+
+    The broadcast's prompt carries another provenance line, so it is a different text
+    with the same steer id. It is the same steer: nothing is held, and the turn's end
+    does not run the injected original a second time.
+    """
+    from kiro_crew.dashboard import deferred_steer
+
+    state = _make_state(tmp_path)
+    caller, target, client = _loss_recovery_target(state)
+    target._created_by = caller.key
+    first = await _send(state, caller)
+    assert first.get("pending_steer") is True
+    await deferred_steer.flush_at_boundary(state, target)
+    client.steer.assert_awaited_once()
+    injected = client.steer.await_args.args[0]
+    assert target._deferred_steer_delivered.get(first["steer_id"]) == injected
+    assert injected in target._pending_steers, "still in flight: not consumed yet"
+
+    result = await sc.broadcast_to_targets(
+        state,
+        caller_session_key=_key(caller),
+        message=TEXT,
+        mode="steer",
+        targets=["chat-2"],
+    )
+    row = result["results"][0]
+    assert row["steer_id"] == first["steer_id"], row
+    assert row.get("pending_steer") is False and row.get("steer_state") == "steering", row
+    assert not target._deferred_steers, "the re-send is not held"
+    assert target._deferred_steer_delivered.get(first["steer_id"]) == injected
+    client.steer.assert_awaited_once()
+
+    spawn = await _hand_off(state, target)
+
+    assert spawn.call_count == 0, "the injected original does not run again from the queue"
+    assert not target._queue
+    receipt = target._deferred_steer_receipts[first["steer_id"]]["state"]
+    assert not receipt.startswith("queued@"), receipt
+
+
+def _keep_every_target(state):
+    """A running kiro-cli-like target: it keeps every steer, so none is marked delivered."""
+    caller = _slot(state, "chat-1")
+    target = _running(_peer_target(state, "chat-2", caller))
+    target._created_by = caller.key
+    client = _steerable(accepted=True)
+    client.steer_needs_loss_recovery = False
+    target._acp_client = client
+    return caller, target, client
+
+
+async def _broadcast(state, caller, target="chat-2", message=TEXT):
+    result = await sc.broadcast_to_targets(
+        state,
+        caller_session_key=_key(caller),
+        message=message,
+        mode="steer",
+        targets=[target],
+    )
+    return result["results"][0]
+
+
+@pytest.mark.asyncio
+async def test_a_broadcast_of_a_pending_unmarked_steer_is_that_steer(tmp_path):
+    """(ap) Steered at once and still pending, unmarked: a broadcast of it is the same steer."""
+    state = _make_state(tmp_path)
+    caller, target, client = _keep_every_target(state)
+    first = await _send(state, caller)
+    assert first["steered"] is True
+
+    row = await _broadcast(state, caller)
+
+    assert row.get("steer_state") == "steering" and row["steered"] is False, row
+    client.steer.assert_awaited_once()
+    assert sum(TEXT in text for text in target._pending_steers) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_send_of_a_pending_unmarked_broadcast_steer_is_that_steer(tmp_path):
+    """(aq) The reverse order: broadcast first, then ``session_send`` of the same body."""
+    state = _make_state(tmp_path)
+    caller, target, client = _keep_every_target(state)
+    first = await _broadcast(state, caller)
+    assert first["steered"] is True
+
+    second = await _send(state, caller)
+
+    assert second.get("steer_state") == "steering" and second["steered"] is False, second
+    client.steer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_broadcast_of_an_injected_unmarked_held_steer_is_not_held_again(tmp_path):
+    """(ar) Held, injected at a boundary without a mark, still pending: not held a second time."""
+    from kiro_crew.dashboard import deferred_steer
+
+    state = _make_state(tmp_path)
+    caller, target, client = _keep_every_target(state)
+    client.supports_steer = False
+    first = await _send(state, caller)
+    assert first["pending_steer"] is True
+    client.supports_steer = True
+    await deferred_steer.flush_at_boundary(state, target)
+    client.steer.assert_awaited_once()
+    assert not target._deferred_steer_delivered, "keeps every steer: no mark"
+    client.supports_steer = False  # the immediate path is unavailable at this instant
+
+    row = await _broadcast(state, caller)
+
+    assert row.get("steer_state") == "steering" and row["pending_steer"] is False, row
+    assert not target._deferred_steers
+    client.supports_steer = True
+    await deferred_steer.flush_at_boundary(state, target)
+    client.steer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_broadcast_during_the_hand_off_of_a_pending_steer_runs_it_once(tmp_path):
+    """(as) The hand-off requeues the pending original; a broadcast of it then is that steer."""
+    from kiro_crew.dashboard import deferred_steer
+
+    state = _make_state(tmp_path)
+    caller, target, client = _keep_every_target(state)
+    await _send(state, caller)  # steered, pending, unmarked
+    client.supports_steer = False
+    other = await _send(state, caller, message="and also run the tests")
+    assert other["pending_steer"] is True  # so the hand-off awaits requeue_all
+    real = deferred_steer.requeue_all
+    late: dict = {}
+
+    async def _requeue_with_a_resend(state_, slot_):
+        late["during"] = await _broadcast(state, caller)
+        await real(state_, slot_)
+
+    run_chat = MagicMock(return_value=MagicMock())
+    with (
+        patch.object(deferred_steer, "requeue_all", _requeue_with_a_resend),
+        patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+        patch.object(chat_runner, "_run_chat", new=run_chat),
+    ):
+        try:
+            await chat_runner._hand_off_queue(
+                state, target, drain=True, allow_automatic_successor=False
+            )
+        finally:
+            if target.task is not None:
+                target.task.cancel()
+
+    assert late["during"].get("steer_state") == "steering", late
+    ran = "".join(str(call.args[2]) for call in run_chat.call_args_list)
+    queued = "".join(str(entry.get("content", "")) for entry in target._queue)
+    assert ran.count(TEXT) + queued.count(TEXT) == 1, (ran, queued)
+
+
+@pytest.mark.asyncio
+async def test_a_broadcast_of_a_pending_steer_with_the_recovery_key_on_is_that_steer(tmp_path):
+    """(at) Loss-prone with ``peer_steer_loss_recovery`` on: no mark, still the same steer."""
+    from kiro_crew.dashboard import chat_delivery
+
+    state = _make_state(tmp_path)
+    caller, target, client = _keep_every_target(state)
+    client.steer_needs_loss_recovery = True
+    key_on = MagicMock()
+    key_on.agent.peer_steer_loss_recovery = True
+    with patch.object(chat_delivery.live, "snapshot", return_value=key_on):
+        first = await _send(state, caller)
+        row = await _broadcast(state, caller)
+
+    assert first["steered"] is True
+    assert row.get("steer_state") == "steering" and row["steered"] is False, row
+    client.steer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_another_senders_broadcast_of_the_same_body_is_its_own_steer(tmp_path):
+    """(au) The caller is part of the steer: another sender's same body is delivered too."""
+    state = _make_state(tmp_path)
+    caller, target, client = _keep_every_target(state)
+    other = _slot(state, "chat-3")
+    first = await _send(state, caller)
+    assert first["steered"] is True
+
+    row = await _broadcast(state, other)
+
+    assert row["steered"] is True, row
+    assert client.steer.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_hard_stop_of_an_injected_unmarked_held_steer_tells_its_sender(
+    tmp_path, monkeypatch
+):
+    """(av) Kept-every harness: injected at a boundary, unconsumed, then a hard stop.
+
+    The text is discarded before the turn read it, so its receipt does not read
+    delivered and its sender gets the one hard-stop notice, as a marked steer's does.
+    """
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.dashboard import chat_handlers as ch
+    from kiro_crew.dashboard import deferred_steer
+
+    state = _make_state(tmp_path)
+    fake = MagicMock()
+    for module in (sc, ch):
+        monkeypatch.setattr(module, "sel", lambda fake=fake: fake)
+    monkeypatch.setattr(sc, "_sel_off_loop", lambda write, what: write())
+    caller, target, client = _keep_every_target(state)
+    client.supports_steer = False
+    first = await _send(state, caller)
+    assert first["pending_steer"] is True
+    client.supports_steer = True
+    await deferred_steer.flush_at_boundary(state, target)
+    assert any(TEXT in text for text in target._pending_steers), "injected, not consumed"
+    assert not target._deferred_steer_delivered, "keeps every steer: no mark"
+
+    state.sessions.stop_turn = AsyncMock(return_value="cancelled")
+    await ch.stop_slot_turn(state, target)
+    await ch.stop_slot_turn(state, target)
+
+    receipt = target._deferred_steer_receipts[first["steer_id"]]["state"]
+    assert receipt.startswith("unconfirmed@"), receipt
+    notices = [m["content"] for m in caller.messages if m.get("role") == "notice"]
+    assert len(notices) == 1, notices

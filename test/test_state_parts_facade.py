@@ -634,6 +634,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_deferred_flush_task": ("value", "None"),
     "_deferred_steer_delivered": ("value", "{}"),
     "_deferred_steer_ended_gen": ("value", "-1"),
+    "_deferred_steer_injected": ("value", "{}"),
     "_deferred_steer_receipts": ("value", "{}"),
     "_deferred_steers": ("value", "[]"),
     "_steer_act_now": ("value", "set()"),

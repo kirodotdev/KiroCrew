@@ -127,6 +127,12 @@ def hold(
     """
     if known_steer(slot, steer_id) is not None:
         return DUPLICATE
+    marked_text = slot._deferred_steer_delivered.get(steer_id)
+    if marked_text is not None and marked_text in slot._pending_steers:
+        # The marked steer is injected and still pending in this turn: a send of the
+        # same id is that steer, whatever its prompt text (another verb carries
+        # another provenance line), and its mark stays for the teardown to honour.
+        return DUPLICATE
     if slot._turn_generation == slot._deferred_steer_ended_gen:
         # The turn is in its hand-off: nothing would hand a held steer on.
         return ENDED
@@ -144,10 +150,10 @@ def hold(
         )
     )
     slot._deferred_steer_receipts.pop(steer_id, None)
-    # A mark left for this id belongs to a settled steer: the sender answers a steer
-    # whose text is still in flight, registered or pending as the same steer before it
-    # calls this. Kept, it would make this fresh entry read as delivered.
+    # A mark that reaches here names text that is not pending: that steer is settled.
+    # Kept, it would make this fresh entry read as delivered.
     slot._deferred_steer_delivered.pop(steer_id, None)
+    slot._deferred_steer_injected.pop(steer_id, None)
     return HELD
 
 
@@ -168,12 +174,13 @@ def settle_held(slot: "_ChatSlot", steer_id: str, state: str) -> None:
 
 
 def mark_unconfirmed(slot: "_ChatSlot", text: str) -> None:
-    """The turn ended with a delivered-marked steer *text* still unconfirmed.
+    """The turn ended with a boundary-injected steer *text* still unconfirmed.
 
     Its receipt reads ``unconfirmed@<time>`` instead of ``delivered@<time>``: the
-    harness took it but never confirmed it, and it is not queued back.
+    harness took it but never confirmed it, and it is not queued back. Every marked
+    steer is recorded injected too, so the injected record names both kinds.
     """
-    for steer_id, marked_text in slot._deferred_steer_delivered.items():
+    for steer_id, marked_text in slot._deferred_steer_injected.items():
         if marked_text == text:
             slot._deferred_steer_receipts[steer_id] = {"state": _stamp("unconfirmed")}
 
@@ -219,9 +226,10 @@ async def flush_at_boundary(state: "DashboardState", slot: "_ChatSlot") -> None:
     """Retry every held steer of *slot* now. Called at each tool-call boundary."""
     # A delivered mark only matters while its steer is still pending; drop the rest,
     # so the marks never outgrow the pending list.
-    for steer_id, text in list(slot._deferred_steer_delivered.items()):
-        if text not in slot._pending_steers:
-            slot._deferred_steer_delivered.pop(steer_id, None)
+    for marks in (slot._deferred_steer_delivered, slot._deferred_steer_injected):
+        for steer_id, text in list(marks.items()):
+            if text not in slot._pending_steers:
+                marks.pop(steer_id, None)
     for held in list(slot._deferred_steers):
         if held not in slot._deferred_steers:
             continue
@@ -285,3 +293,4 @@ def discard_all(slot: "_ChatSlot", notify: Callable[["DeferredSteer"], object]) 
             "unconfirmed" if held.steer_id in slot._deferred_steer_delivered else "discarded",
         )
     slot._deferred_steer_delivered.clear()
+    slot._deferred_steer_injected.clear()

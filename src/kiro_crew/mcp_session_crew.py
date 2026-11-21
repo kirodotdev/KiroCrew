@@ -178,13 +178,6 @@ def run_crew_send(args: dict[str, Any], ctx: ToolContext) -> str:
         return redact(f"Error: could not send to that crew session: {refused.error}")
     if resp.get("steered") is True:
         how = "steered into its running turn"
-    elif resp.get("pending_steer") is True:
-        how = "held as a pending-steer (injected at its next tool boundary)"
-    elif resp.get("steer_state"):
-        how = (
-            "already on its way (the same steer is still going into its running turn; "
-            "nothing was sent again)"
-        )
     elif args.get("steer"):
         how = "queued (the crew could not steer its running turn)"
     else:

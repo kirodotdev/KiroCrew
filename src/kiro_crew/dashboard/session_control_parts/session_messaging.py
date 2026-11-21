@@ -385,7 +385,8 @@ async def send_to_target(
     # redaction can only shrink the text, so validating the raw form is the honest
     # limit and keeps the error keyed to what the caller actually sent.
     envelope = _SEND_PROVENANCE.format(caller=caller_key or "unknown", via=via or "session_send")
-    prompt = envelope + _neutralize_send_provenance(sanitize_outbound(body))
+    sent_text = _neutralize_send_provenance(sanitize_outbound(body))
+    prompt = envelope + sent_text
 
     # The structured cross-session sender, stamped by the gateway onto the row the
     # delivery appends (``meta.relay``). The receiver's transcript draws the
@@ -444,11 +445,29 @@ async def send_to_target(
         )
         return reply
 
+    # The prompts both steer verbs build for this caller and body differ only in the
+    # provenance line; any of them still on its way into this turn is this steer.
+    steer_prompts = {prompt}
+    if caller_key:
+        steer_prompts |= {
+            _SEND_PROVENANCE.format(caller=caller_key, via=steer_via) + sent_text
+            for steer_via in ("session_send", BROADCAST_VIA)
+        }
+
+    def _steer_on_its_way() -> bool:
+        return any(
+            text in slot._steer_rpc_in_flight
+            or text in slot._steer_delivery_ids
+            or text in slot._pending_steers
+            for text in steer_prompts
+        )
+
     if steer and slot.running:
-        # A re-send of a steer that is still held is the same steer: report it again,
-        # deliver nothing a second time. A settled steer is not held, so the same
-        # text is a new message, and on an idle target it starts a turn.
-        if deferred_steer.known_steer(slot, steer_id) is not None:
+        # A re-send of a steer that is still held, or still on its way into this turn
+        # through either steer verb, is the same steer: report it again, deliver
+        # nothing a second time. A settled steer is neither, so the same text is a
+        # new message, and on an idle target it starts a turn.
+        if deferred_steer.known_steer(slot, steer_id) is not None or _steer_on_its_way():
             return _same_steer()
         # The mid-turn arm. ONE text is handed to both arms, so what the target
         # reads and what its transcript keeps are the same bytes either way:
@@ -661,6 +680,7 @@ async def send_to_target(
                 raise
             except Exception:
                 slot._deferred_steer_delivered.pop(steer_id, None)
+                slot._deferred_steer_injected.pop(steer_id, None)
                 slot._steer_audience_fences.pop(fence, None)
                 raise
             if (
@@ -673,6 +693,7 @@ async def send_to_target(
                 return deferred_steer.DELIVERED
             if outcome != session_deliver.DELIVERED_STEERED:
                 slot._deferred_steer_delivered.pop(steer_id, None)
+                slot._deferred_steer_injected.pop(steer_id, None)
                 slot._steer_audience_fences.pop(fence, None)
                 # The turn ended during the RPC and its teardown queued the text.
                 return (
@@ -855,14 +876,10 @@ async def send_to_target(
                     code="target_moved",
                     status=409,
                 )
-            if slot.running and (
-                prompt in slot._steer_rpc_in_flight
-                or prompt in slot._steer_delivery_ids
-                or prompt in slot._pending_steers
-            ):
-                # The RPC was refused because the identical text is already on its way
-                # into this turn (an overlapping send of the same steer). Holding this
-                # one would inject the text a second time at the next boundary.
+            if slot.running and _steer_on_its_way():
+                # The RPC was refused because this steer is already on its way into
+                # this turn (an overlapping send of the same steer). Holding this one
+                # would inject the text a second time at the next boundary.
                 return _same_steer()
             if slot.running:
                 # Never a plain queue for a steer: hold it for the next tool
@@ -885,7 +902,7 @@ async def send_to_target(
                         status=429,
                     )
                 if hold_result == deferred_steer.DUPLICATE:
-                    # An overlapping send of the same steer got in during the RPC.
+                    # The same steer is already held, or injected and still pending.
                     return _same_steer()
                 # ENDED: the turn is in its hand-off, so nothing would hand a held
                 # steer on; the queue-or-run arm below queues it for the next turn.

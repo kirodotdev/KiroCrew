@@ -648,15 +648,15 @@ async def stop_slot_turn(
         _peer_recovery = _config is not None and _config.agent.peer_steer_loss_recovery
         from kiro_crew.dashboard import deferred_steer
 
-        _marked = set(slot._deferred_steer_delivered.values())
+        _injected = set(slot._deferred_steer_injected.values())
         _still_held = {held.text for held in slot._deferred_steers}
         for _discarded in slot._pending_steers:
             # With the key on a peer steer can wait for its turn's clean end, so a hard stop tells
             # its sender; one still in its RPC will answer unavailable and be queued instead. A
-            # held steer injected at a boundary is marked whatever the key says: its sender is told
-            # too, and its receipt stops reading delivered. One still held is told by `discard_all`.
+            # held steer injected at a boundary, marked or not, is told too whatever the key says,
+            # and its receipt stops reading delivered. One still held is told by `discard_all`.
             _admission = slot._steer_admissions.get(_discarded)
-            _was_injected = _discarded in _marked and _discarded not in _still_held
+            _was_injected = _discarded in _injected and _discarded not in _still_held
             if _was_injected:
                 deferred_steer.mark_unconfirmed(slot, _discarded)
             if (

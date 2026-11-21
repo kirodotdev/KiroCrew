@@ -579,6 +579,7 @@ async def _hand_off_queue(
     # Steers outrank queued messages, so they go to the head before the drain.
     _requeue_unconsumed_steers(state, slot)
     slot._deferred_steer_delivered.clear()
+    slot._deferred_steer_injected.clear()
     if drain and slot._queue:
         # A user message drained at a turn's end ends an armed synthesis's
         # batch only when no child of it is still out (running, delivering,

@@ -708,6 +708,7 @@ async def steer_into_running_turn(
         # By identity: a discard followed by a re-send leaves an entry of the same id.
         if not any(h is held_entry for h in slot._deferred_steers):
             return STEER_UNAVAILABLE
+        slot._deferred_steer_injected[held_key] = message
         # With the key on the operator wants the ordinary requeue-on-loss, so no mark.
         # A missing config reads as off, as the refusal above does.
         recovery_config = live.snapshot() if loss_prone else None

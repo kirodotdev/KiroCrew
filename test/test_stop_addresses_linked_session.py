@@ -49,6 +49,7 @@ class _FakeSlot:
         # kill discards held peer steers with the pending ones.
         self._deferred_steers: list = []
         self._deferred_steer_delivered: dict = {}
+        self._deferred_steer_injected: dict = {}
         self._deferred_steer_receipts: dict = {}
         # A real slot carries both from birth (slot_ladder): a hard kill settles a
         # take-back still in flight before it discards the pending steers.
