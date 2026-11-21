@@ -307,6 +307,92 @@ class TestShimArgvContract:
 
 
 @posix_only
+class TestShimPosixSpawnFlags:
+    """``--setsid``, ``--chdir=`` and ``--close-fds``: Popen's fork-child jobs, in-process."""
+
+    @staticmethod
+    def _stop_exec(*_args):
+        raise OSError(13, "stop here")
+
+    def test_the_three_jobs_run_in_popens_order_before_exec(self, tmp_path):
+        order: list[str] = []
+        with (
+            patch.object(shim.os, "setsid", lambda: order.append("setsid")),
+            patch.object(shim.os, "chdir", lambda path: order.append(f"chdir {path}")),
+            patch.object(shim, "_close_inherited_fds", lambda: order.append("close")),
+            patch.object(shim, "_apply_rlimits", lambda _p: order.append("limits")),
+            patch.object(shim.os, "execv", lambda *_a: order.append("exec") or self._stop_exec()),
+        ):
+            shim.main(
+                [
+                    "--rlimits=RLIMIT_NOFILE:1024",
+                    "--setsid",
+                    f"--chdir={tmp_path}",
+                    "--close-fds",
+                    "--",
+                    "/bin/true",
+                ]
+            )
+        assert order == ["setsid", f"chdir {tmp_path}", "close", "limits", "exec"]
+
+    def test_an_existing_session_leader_still_execs(self):
+        execs: list[tuple] = []
+
+        def already_leader():
+            raise PermissionError(1, "Operation not permitted")
+
+        with (
+            patch.object(shim.os, "setsid", already_leader),
+            patch.object(shim.os, "execv", lambda *a: execs.append(a) or self._stop_exec()),
+        ):
+            shim.main(["--setsid", "--", "/bin/true"])
+        assert len(execs) == 1
+
+    def test_an_unenterable_working_directory_never_reaches_exec(self, tmp_path, capsys):
+        execs: list[tuple] = []
+        with patch.object(shim.os, "execv", lambda *a: execs.append(a)):
+            rc = shim.main([f"--chdir={tmp_path / 'missing'}", "--", "/bin/true"])
+        assert rc == 127
+        assert execs == []
+        assert "cannot enter" in capsys.readouterr().err
+
+    def test_inherited_descriptors_above_stderr_are_closed(self):
+        closed: list[int] = []
+        with (
+            patch.object(shim.os, "listdir", lambda _d: ["0", "1", "2", "5", "9", "x"]),
+            patch.object(shim.os, "close", closed.append),
+        ):
+            shim._close_inherited_fds()
+        assert closed == [5, 9]
+
+    def test_a_close_failure_does_not_stop_the_others(self):
+        closed: list[int] = []
+
+        def close(fd):
+            closed.append(fd)
+            raise OSError(9, "Bad file descriptor")
+
+        with (
+            patch.object(shim.os, "listdir", lambda _d: ["4", "7"]),
+            patch.object(shim.os, "close", close),
+        ):
+            shim._close_inherited_fds()
+        assert closed == [4, 7]
+
+    def test_without_a_descriptor_listing_it_closes_by_range(self):
+        ranges: list[tuple[int, int]] = []
+
+        def no_listing(_d):
+            raise OSError(2, "No such file or directory")
+
+        with (
+            patch.object(shim.os, "listdir", no_listing),
+            patch.object(shim.os, "closerange", lambda lo, hi: ranges.append((lo, hi))),
+        ):
+            shim._close_inherited_fds()
+        assert len(ranges) == 1 and ranges[0][0] == 3 and ranges[0][1] > 3
+
+
 class TestShimRetryEndToEnd:
     @pytest.mark.asyncio
     async def test_target_appearing_inside_the_retry_window_is_executed(self, tmp_path):
