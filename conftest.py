@@ -184,6 +184,7 @@ def _floor_monkeypatch():
             "KIROCREW_SANDBOX_LEVEL",
             "PYTHONUTF8",
             "PYTHONIOENCODING",
+            "NoDefaultCurrentDirectoryInExePath",
         )
     }
     try:
