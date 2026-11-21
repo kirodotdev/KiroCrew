@@ -21385,9 +21385,9 @@
         "built_in_rules_enforced_note": "{{enabled}} regole integrate su {{total}} sono attualmente applicate, dopo le tue esclusioni e gli eventuali blocchi da criterio.",
         "bodyFields": {
           "allow": "Consenti questo campo d’ora in poi",
-          "allow_hint": "Consente a questo campo di arrivare a 256 KB. I controlli sui percorsi sensibili restano attivi. Il messaggio rifiutato non viene inviato di nuovo. «Smetti di consentire» annulla la scelta.",
+          "allow_hint": "Consente a questo campo di arrivare a 256 KB. I controlli sui percorsi sensibili restano attivi, e una credenziale nota in un campo oltre 20 KB viene comunque rifiutata. Il messaggio rifiutato non viene inviato di nuovo. «Smetti di consentire» annulla la scelta.",
           "defaults_title": "Integrati",
-          "desc": "Prima che uno strumento venga eseguito, ogni argomento viene controllato e un argomento oltre 20 KB viene rifiutato. Un campo in questo elenco è il corpo di un messaggio o di un documento: può arrivare a 256 KB, un percorso sensibile al suo interno viene rifiutato, e una credenziale o un link che porta fuori dati viene registrato come avviso, senza essere bloccato. Non viene mai letto come comando di shell. Ogni riga vale solo per il server e lo strumento esatti che nomina.",
+          "desc": "Prima che uno strumento venga eseguito, ogni argomento viene controllato e un argomento oltre 20 KB viene rifiutato. Un campo in questo elenco è il corpo di un messaggio o di un documento: può arrivare a 256 KB, un percorso sensibile al suo interno viene rifiutato, e se il campo supera 20 KB vengono rifiutate queste credenziali, in chiaro o in un link: un token GitHub, npm o DigitalOcean, una chiave segreta AWS etichettata o una chiave privata. Tutto il resto che i controlli trovano, e tutto ciò che si trova in un campo più piccolo, viene solo registrato come avviso. Non viene mai letto come comando di shell. Ogni riga vale solo per il server e lo strumento esatti che nomina.",
           "field_name": "Campo: {{field}}",
           "load_failed": "Impossibile caricare i campi del corpo del messaggio.",
           "owner_empty": "Non hai consentito alcun campo.",

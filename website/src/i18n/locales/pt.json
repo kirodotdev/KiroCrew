@@ -21385,9 +21385,9 @@
         "built_in_rules_enforced_note": "{{enabled}} de {{total}} regras integradas estão em vigor agora, depois das suas exclusões e de eventuais fixações por política.",
         "bodyFields": {
           "allow": "Permitir este campo daqui em diante",
-          "allow_hint": "Permite que este campo tenha até 256 KB. As verificações de caminhos sensíveis continuam. A mensagem recusada não é enviada de novo. \"Parar de permitir\" desfaz isso.",
+          "allow_hint": "Permite que este campo tenha até 256 KB. As verificações de caminhos sensíveis continuam, e uma credencial conhecida em um campo com mais de 20 KB ainda é recusada. A mensagem recusada não é enviada de novo. \"Parar de permitir\" desfaz isso.",
           "defaults_title": "Integrados",
-          "desc": "Antes de uma ferramenta rodar, cada argumento é verificado, e um argumento com mais de 20 KB é recusado. Um campo desta lista é o corpo de uma mensagem ou documento: pode ter até 256 KB, um caminho sensível nele é recusado, e uma credencial ou um link que leva dados para fora é registrado como aviso, sem ser bloqueado. Nunca é lido como um comando de shell. Cada linha vale apenas para o servidor e a ferramenta exatos que ela nomeia.",
+          "desc": "Antes de uma ferramenta rodar, cada argumento é verificado, e um argumento com mais de 20 KB é recusado. Um campo desta lista é o corpo de uma mensagem ou documento: pode ter até 256 KB, um caminho sensível nele é recusado, e se o campo tiver mais de 20 KB estas credenciais são recusadas, em texto simples ou em um link: um token do GitHub, npm ou DigitalOcean, uma chave secreta da AWS rotulada ou uma chave privada. Todo o resto que as verificações encontrarem, e tudo o que estiver em um campo menor, só é registrado como aviso. Nunca é lido como um comando de shell. Cada linha vale apenas para o servidor e a ferramenta exatos que ela nomeia.",
           "field_name": "Campo: {{field}}",
           "load_failed": "Não foi possível carregar os campos de corpo de mensagem.",
           "owner_empty": "Você não permitiu nenhum campo.",

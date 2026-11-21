@@ -21385,9 +21385,9 @@
         "built_in_rules_enforced_note": "{{enabled}} règles intégrées sur {{total}} sont actuellement appliquées, après vos désactivations et les éventuels verrouillages de politique.",
         "bodyFields": {
           "allow": "Autoriser ce champ désormais",
-          "allow_hint": "Autorise ce champ jusqu’à 256 Ko. Les vérifications de chemins sensibles continuent. Le message refusé n’est pas renvoyé. « Ne plus autoriser » annule ce choix.",
+          "allow_hint": "Autorise ce champ jusqu’à 256 Ko. Les vérifications de chemins sensibles continuent, et un identifiant connu dans un champ de plus de 20 Ko reste refusé. Le message refusé n’est pas renvoyé. «Ne plus autoriser» annule ce choix.",
           "defaults_title": "Intégrés",
-          "desc": "Avant l’exécution d’un outil, chaque argument est vérifié, et un argument de plus de 20 Ko est refusé. Un champ listé ici est le corps d’un message ou d’un document : il peut atteindre 256 Ko, un chemin sensible y est refusé, et un identifiant ou un lien qui fait sortir des données est consigné comme avertissement, sans être bloqué. Il n’est jamais lu comme une commande shell. Chaque ligne ne s’applique qu’au serveur et à l’outil exacts qu’elle nomme.",
+          "desc": "Avant l’exécution d’un outil, chaque argument est vérifié, et un argument de plus de 20 Ko est refusé. Un champ listé ici est le corps d’un message ou d’un document : il peut atteindre 256 Ko, un chemin sensible y est refusé, et si le champ dépasse 20 Ko, ces identifiants sont refusés, en texte brut ou dans un lien : un jeton GitHub, npm ou DigitalOcean, une clé secrète AWS étiquetée ou une clé privée. Tout le reste de ce que trouvent les vérifications, et tout ce qui se trouve dans un champ plus petit, est seulement consigné comme avertissement. Il n’est jamais lu comme une commande shell. Chaque ligne ne s’applique qu’au serveur et à l’outil exacts qu’elle nomme.",
           "field_name": "Champ : {{field}}",
           "load_failed": "Impossible de charger les champs de corps de message.",
           "owner_empty": "Tu n’as autorisé aucun champ.",

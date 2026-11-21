@@ -60,9 +60,9 @@ from kiro_crew.security import (
 )
 from kiro_crew.security.mcp_body_fields import (
     body_field_keys,
+    body_field_match_refusal,
     is_kirocrew_server,
     named_size_refusal,
-    warn_body_field_matches,
 )
 from kiro_crew.security.paths_resolver import bounded_judgment
 from kiro_crew.security.readonly_bash import (
@@ -743,7 +743,14 @@ async def _resolve_permission(
             if body_hit is not None:
                 return (*body_hit, "always_deny_input")
         if field_bodies:
-            warn_body_field_matches(field_bodies, _body_field_server, _body_field_tool)
+            field_refusal = body_field_match_refusal(
+                field_bodies,
+                _body_field_server,
+                _body_field_tool,
+                _MAX_SCANNABLE_TOOL_INPUT_CHARS,
+            )
+            if field_refusal is not None:
+                return ("body_field", field_refusal, "", "always_deny_input")
         return None
 
     def _named_size_refusal(hit: tuple[str, str, str], params: dict) -> tuple[str, str, str]:

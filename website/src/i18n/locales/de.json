@@ -20843,9 +20843,9 @@
         "built_in_rules_enforced_note": "{{enabled}} von {{total}} integrierten Regeln sind derzeit aktiv, nach Ihren Abwahlen und etwaigen Richtlinien-Fixierungen.",
         "bodyFields": {
           "allow": "Dieses Feld ab jetzt erlauben",
-          "allow_hint": "Erlaubt diesem Feld bis zu 256 KB. Prüfungen auf sensible Pfade laufen weiter. Die abgelehnte Nachricht wird nicht erneut gesendet. „Nicht mehr erlauben“ macht das rückgängig.",
+          "allow_hint": "Erlaubt diesem Feld bis zu 256 KB. Prüfungen auf sensible Pfade laufen weiter, und bekannte Zugangsdaten in einem Feld über 20 KB werden weiterhin abgelehnt. Die abgelehnte Nachricht wird nicht erneut gesendet. „Nicht mehr erlauben“ macht das rückgängig.",
           "defaults_title": "Integriert",
-          "desc": "Bevor ein Tool läuft, wird jedes Argument geprüft, und ein Argument über 20 KB wird abgelehnt. Ein hier aufgeführtes Feld ist der Text einer Nachricht oder eines Dokuments: Es darf bis 256 KB groß sein, ein sensibler Pfad darin wird abgelehnt, und Zugangsdaten oder ein Link, der Daten nach außen trägt, werden nur als Warnung protokolliert, nicht blockiert. Es wird nie als Shell-Befehl gelesen. Jede Zeile gilt nur für genau den Server und das Tool, die sie nennt.",
+          "desc": "Bevor ein Tool läuft, wird jedes Argument geprüft, und ein Argument über 20 KB wird abgelehnt. Ein hier aufgeführtes Feld ist der Text einer Nachricht oder eines Dokuments: Es darf bis 256 KB groß sein, ein sensibler Pfad darin wird abgelehnt, und ist das Feld über 20 KB groß, werden diese Zugangsdaten abgelehnt, im Klartext oder in einem Link: ein GitHub-, npm- oder DigitalOcean-Token, ein beschrifteter geheimer AWS-Schlüssel oder ein privater Schlüssel. Alles andere, was die Prüfungen finden, und alles in einem kleineren Feld wird nur als Warnung protokolliert. Es wird nie als Shell-Befehl gelesen. Jede Zeile gilt nur für genau den Server und das Tool, die sie nennt.",
           "field_name": "Feld: {{field}}",
           "load_failed": "Die Nachrichtentext-Felder konnten nicht geladen werden.",
           "owner_empty": "Du hast noch keine Felder erlaubt.",

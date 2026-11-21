@@ -320,9 +320,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.security.mcp_body_fields import (  # noqa: F401
         body_field_keys,
+        body_field_match_refusal,
         is_kirocrew_server,
         named_size_refusal,
-        warn_body_field_matches,
     )
     from kiro_crew.security.paths_resolver import bounded_judgment  # noqa: F401
     from kiro_crew.security.readonly_bash import (  # noqa: F401

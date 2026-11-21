@@ -21385,9 +21385,9 @@
         "built_in_rules_enforced_note": "{{enabled}} de {{total}} reglas integradas están aplicándose ahora mismo, tras tus exclusiones y cualquier fijación por política.",
         "bodyFields": {
           "allow": "Permitir este campo a partir de ahora",
-          "allow_hint": "Permite que este campo ocupe hasta 256 KB. Las comprobaciones de rutas sensibles siguen activas. El mensaje rechazado no se vuelve a enviar. \"Dejar de permitir\" lo deshace.",
+          "allow_hint": "Permite que este campo ocupe hasta 256 KB. Las comprobaciones de rutas sensibles siguen activas, y una credencial conocida en un campo de más de 20 KB se sigue rechazando. El mensaje rechazado no se vuelve a enviar. \"Dejar de permitir\" lo deshace.",
           "defaults_title": "Integrados",
-          "desc": "Antes de que se ejecute una herramienta se revisa cada argumento, y se rechaza cualquier argumento de más de 20 KB. Un campo de esta lista es el cuerpo de un mensaje o documento: puede tener hasta 256 KB, una ruta sensible en él se rechaza, y una credencial o un enlace que saca datos se registra como advertencia, sin bloquearse. Nunca se lee como un comando de shell. Cada fila se aplica solo al servidor y la herramienta exactos que nombra.",
+          "desc": "Antes de que se ejecute una herramienta se revisa cada argumento, y se rechaza cualquier argumento de más de 20 KB. Un campo de esta lista es el cuerpo de un mensaje o documento: puede tener hasta 256 KB, una ruta sensible en él se rechaza, y si el campo supera los 20 KB se rechazan estas credenciales, en texto sin formato o en un enlace: un token de GitHub, npm o DigitalOcean, una clave secreta de AWS etiquetada o una clave privada. Todo lo demás que encuentren las comprobaciones, y todo lo que haya en un campo más pequeño, solo se registra como advertencia. Nunca se lee como un comando de shell. Cada fila se aplica solo al servidor y la herramienta exactos que nombra.",
           "field_name": "Campo: {{field}}",
           "load_failed": "No se pudieron cargar los campos de cuerpo de mensaje.",
           "owner_empty": "No has permitido ningún campo.",
