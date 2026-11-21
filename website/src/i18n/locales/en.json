@@ -11546,7 +11546,7 @@
         "warning_memory": "They can also read your other conversations and this Crew's saved memory, and change what this Crew remembers.",
         "warning_tools": "They can't start runs or schedules by typing a command. But while the agent works on their messages, it can still create schedules and start tasks as you, and a schedule it creates keeps running as you after you remove that person. To stop one, open {{page}} and delete it.",
         "warning_trust": "Only add people you trust.",
-        "owner_only": "Only you can change this list or switch, approve tool prompts for a whole session, or use Slack Code channels.",
+        "owner_only": "Only you can change this list or switch, or approve tool prompts for a whole session. In Slack Code, each person works only in the code channels they open, and only you can change a code channel's settings.",
         "people_label": "People with access",
         "people_label_off": "People to share with",
         "people_empty": "No one yet. To find a member ID, open the person's Slack profile, select ⋮, then Copy member ID.",

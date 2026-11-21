@@ -520,7 +520,7 @@ describe('Share Slack access', () => {
   it('names what only the owner can do in plain words, except on a remote session', async () => {
     vi.spyOn(api, 'getSlackSharedAccess').mockResolvedValue(data({ enabled: true }))
     const { unmount } = renderWithProviders(<SlackSharedAccess />)
-    expect(await screen.findByText('Only you can change this list or switch, approve tool prompts for a whole session, or use Slack Code channels.')).toBeInTheDocument()
+    expect(await screen.findByText("Only you can change this list or switch, or approve tool prompts for a whole session. In Slack Code, each person works only in the code channels they open, and only you can change a code channel's settings.")).toBeInTheDocument()
     unmount()
     vi.spyOn(api, 'getSlackSharedAccess').mockResolvedValue(data({ enabled: true, read_only: true }))
     renderWithProviders(<SlackSharedAccess />)

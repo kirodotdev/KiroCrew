@@ -264,8 +264,10 @@ async def _shared_user_in_code_channel(
         return False
 
     def _refused() -> bool:
-        return shared_user_refused_in(channel) or (
-            bool(session or thread_ts) and shared_user_refused_for_slot(session, thread_ts)
+        # The channel they opened admits them (opener_admitted), there only.
+        return shared_user_refused_in(channel, user) or (
+            bool(session or thread_ts)
+            and shared_user_refused_for_slot(session, thread_ts, sender=user, channel=channel)
         )
 
     if await asyncio.to_thread(_refused):

@@ -121,6 +121,20 @@ def is_shared_user(cfg: Any, user_id: str, *, owner: bool) -> bool:
     return True
 
 
+def still_confirmed(cfg: Any, user_id: str, *, owner: bool) -> bool:
+    """Whether *user_id* is listed NOW and Slack's last answer for them confirmed them.
+
+    :func:`is_shared_user` without its expiry, for a check made where nothing primes
+    the answer (a code channel's session judged mid-turn, long after the person's
+    message). The list is read live, so the owner removing them, or switching shared
+    access off, ends it at once; a refusal from Slack does too.
+    """
+    if owner or not listed(cfg, user_id):
+        return False
+    verdict = _verdicts.get(user_id)
+    return verdict is not None and verdict.ok
+
+
 def was_shared(user_id: str) -> bool:
     """Whether *user_id* was admitted as a shared user earlier in this process."""
     return user_id in _ever_shared
@@ -198,14 +212,18 @@ SHARED_OWNER_ONLY_TEXT = "Blocked: Only the bot owner can do that."
 #: The buttons a shared user may press: tool approvals (the handler admits only
 #: the requester's own prompt and never their Trust), the review-mode draft of
 #: their own turn (the handler admits only the requester or the owner), question
-#: cards (an answer is a new message, as if typed; refused in a code channel) and
-#: Stop. Everything else on a card (settings, channels, sessions, resume, link,
-#: allowlist) is the owner's.
+#: cards (an answer is a new message, as if typed; refused in a code channel but the
+#: one they opened), Approve / Reject on a helper agent's card in a code channel (the
+#: handler admits only the owner or the channel's opener; its Trust stays the
+#: owner's) and Stop. Everything else on a card (settings, channels, sessions,
+#: resume, link, allowlist) is the owner's.
 _SHARED_ACTIONS = frozenset(
     {
         "approve_tool",
         "reject_tool",
         "trust_tool",
+        "kc_code_channel_worker_approve",
+        "kc_code_channel_worker_reject",
         "mc_stop_confirm",
         "mc_stop_cancel",
         "stop_kill_now",

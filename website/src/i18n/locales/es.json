@@ -21782,7 +21782,7 @@
         "warning_memory": "También pueden leer tus otras conversaciones y la memoria guardada de esta Crew, y cambiar lo que esta Crew recuerda.",
         "warning_tools": "Estas personas no pueden iniciar ejecuciones ni programaciones escribiendo un comando. Pero mientras el agente trabaja en sus mensajes, puede seguir creando programaciones e iniciando tareas como tú, y una programación creada así sigue ejecutándose como tú después de que quites a esa persona. Para detenerla, abre {{page}} y elimínala.",
         "warning_trust": "Añade solo a personas de confianza.",
-        "owner_only": "Solo tú puedes cambiar esta lista o este interruptor, aprobar solicitudes de herramientas para toda una sesión o usar los canales de Slack Code.",
+        "owner_only": "Solo tú puedes cambiar esta lista o este interruptor, o aprobar solicitudes de herramientas para toda una sesión. En Slack Code, cada persona trabaja solo en los canales de código que abre, y solo tú puedes cambiar los ajustes de un canal de código.",
         "people_label": "Personas con acceso",
         "people_label_off": "Personas con las que compartir",
         "people_empty": "Nadie todavía. Para ver un ID de miembro, abre el perfil de la persona en Slack, selecciona ⋮ y luego Copiar ID de miembro.",

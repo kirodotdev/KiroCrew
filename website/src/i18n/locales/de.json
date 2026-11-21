@@ -21236,7 +21236,7 @@
         "warning_memory": "Diese Personen können auch deine anderen Unterhaltungen und die gespeicherten Erinnerungen dieser Crew lesen und ändern, was sich diese Crew merkt.",
         "warning_tools": "Diese Personen können keine Läufe oder Zeitpläne per Befehl starten. Aber während der Agent an ihren Nachrichten arbeitet, kann er weiterhin als du Zeitpläne anlegen und Tasks starten, und ein so angelegter Zeitplan läuft als du weiter, nachdem du die Person entfernt hast. Um ihn zu stoppen, öffne {{page}} und lösche ihn.",
         "warning_trust": "Füge nur Personen hinzu, denen du vertraust.",
-        "owner_only": "Nur du kannst diese Liste oder diesen Schalter ändern, Tool-Anfragen für eine ganze Sitzung genehmigen oder Slack-Code-Kanäle nutzen.",
+        "owner_only": "Nur du kannst diese Liste oder diesen Schalter ändern oder Tool-Anfragen für eine ganze Sitzung genehmigen. In Slack Code arbeitet jede Person nur in den Code-Kanälen, die sie selbst öffnet, und nur du kannst die Einstellungen eines Code-Kanals ändern.",
         "people_label": "Personen mit Zugriff",
         "people_label_off": "Personen zum Teilen",
         "people_empty": "Noch niemand. Für die Mitglieds-ID öffne in Slack das Profil der Person, wähle ⋮ und dann Mitglieds-ID kopieren.",

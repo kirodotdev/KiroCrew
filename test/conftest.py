@@ -344,6 +344,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_channel_turn_ceiling,
     _reset_chromium_opt_in_record,
     _reset_cjk_segmenter,
+    _reset_code_channel_owner_only_notices,
     _reset_create_rate_limit_buckets,
     _reset_crewmate_worker_slots,
     _reset_degraded_config_observations,

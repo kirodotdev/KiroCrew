@@ -705,12 +705,15 @@ async def shared_user_refused_for_session(
     user_id: str, session: str, thread_ts: str, channel: str
 ) -> bool:
     """Refuse (and audit) a shared user whose message would reach a code channel's
-    session *session*, or a bound or revoked channel's anchor thread *thread_ts*."""
+    session *session*, or a bound or revoked channel's anchor thread *thread_ts*,
+    unless it is the channel they opened and they act in it (*channel*)."""
     if not is_shared_listed(user_id):
         return False
     from kiro_crew.slack.code_channels.routing import shared_user_refused_for_slot
 
-    if not await asyncio.to_thread(shared_user_refused_for_slot, session, thread_ts):
+    if not await asyncio.to_thread(
+        shared_user_refused_for_slot, session, thread_ts, sender=user_id, channel=channel
+    ):
         return False
     sel().log_api_access(
         caller=user_id,
@@ -792,10 +795,11 @@ async def route_linked_thread(
         from kiro_crew.slack.code_channels.routing import (
             shared_user_refused_in,
             shared_user_refused_unbound,
+            tell_owner_only,
         )
 
         if await asyncio.to_thread(
-            shared_user_refused_in, channel
+            shared_user_refused_in, channel, user_id
         ) or await shared_user_refused_unbound(slack, channel):
             sel().log_api_access(
                 caller=user_id,
@@ -805,6 +809,7 @@ async def route_linked_thread(
                 resources=f"channel={channel}",
                 error="code channel is owner-only",
             )
+            await tell_owner_only(slack, channel, user_id, reply_ts)
             return LinkedRoute.REFUSED
     if not (_dashboard_state and hasattr(_dashboard_state, "get_linked_slot")):
         return LinkedRoute.UNROUTED
@@ -826,6 +831,9 @@ async def route_linked_thread(
             _sessions = getattr(_dashboard_state, "sessions", None)
             _dest = str((_sessions.get_session_for_thread(reply_ts) if _sessions else "") or "")
         if await shared_user_refused_for_session(user_id, _dest, reply_ts, channel):
+            from kiro_crew.slack.code_channels.routing import tell_owner_only as _tell
+
+            await _tell(slack, channel, user_id, reply_ts)
             return LinkedRoute.REFUSED
     if not _linked_slot:
         # No live slot: a dashboard session whose tab is closed can still own
@@ -1025,6 +1033,20 @@ async def route_linked_thread(
         if not admitted or not (
             _dashboard_state._slots.get(_linked_slot_key) is _linked_slot  # type: ignore[attr-defined]
             and (route_pinned or _dashboard_state.get_linked_slot(reply_ts) is _linked_slot)
+        ):
+            return LinkedRoute.HELD
+    # A shared user reaches a code channel's session only as the channel's opener
+    # (shared_refusal.opener_admitted): judged again here, on the binding stored now,
+    # with nothing awaited before the append, so a removal or revocation during the
+    # awaits above (a question-card answer has no caller gate) appends nothing.
+    if is_shared_listed(user_id):
+        from kiro_crew.slack.code_channels.routing import (
+            shared_user_refused_for_slot,
+            shared_user_refused_in,
+        )
+
+        if shared_user_refused_in(channel, user_id) or shared_user_refused_for_slot(
+            _linked_slot_key, reply_ts, sender=user_id, channel=channel
         ):
             return LinkedRoute.HELD
     # Who wrote the text this slot is about to carry, for the code-channel

@@ -414,11 +414,15 @@ def shown_name(agent: str) -> str:
 NO_LONGER_ADMITTED = "the code channel no longer admits the bot"
 
 
-def _sync_gates(orch: Any, binding: Binding, user: str, team: str) -> bool:
+def _sync_gates(
+    orch: Any, binding: Binding, user: str, team: str, *, admit_opener: bool = False
+) -> bool:
     """The synchronous code-channel gates: workspace, owner, archive fence,
     feature, the channel and its origin, and the per-channel governance
     ceiling. No await, no disk read, so it can run inside the switch
-    transaction's commit section (``still_permitted``)."""
+    transaction's commit section (``still_permitted``). *admit_opener* lets the
+    channel's opener (:func:`.shared_refusal.opener_admitted`) pass the owner
+    gate too: only a helper agent card's Approve / Reject asks for it."""
     from kiro_crew.slack.code_channels.routing import _origin_of, channel_and_origin_permit
     from kiro_crew.slack.handler import is_owner
 
@@ -433,9 +437,11 @@ def _sync_gates(orch: Any, binding: Binding, user: str, team: str) -> bool:
         return False
     if current is None or current.session_key != binding.session_key:
         return False
+    from kiro_crew.slack.code_channels.shared_refusal import opener_admitted
+
     return bool(
         surface.workspace_admitted(team)
-        and is_owner(user)
+        and (is_owner(user) or (admit_opener and opener_admitted(current, user)))
         and binding.channel_id not in surface._archived_here
         and not current.archived_at
         and code_channels_on(cfg)
@@ -621,8 +627,12 @@ async def authorize(
     audit: Callable[[str, str, str], None] | None = None,
     not_allowed: str = NOT_ALLOWED_TEXT,
     owner_only: str = OWNER_ONLY_TEXT,
+    admit_opener: bool = False,
 ) -> str | None:
     """None when *user* may change *binding*'s settings; else the refusal to show.
+
+    *admit_opener* lets the channel's opener pass the owner gate (see
+    :func:`_sync_gates`); every setting stays the owner's.
 
     The gates every code-channel command applies, in its order, each refusal
     SEL-audited: the workspace, the owner, the code channel and its origin both
@@ -640,7 +650,9 @@ async def authorize(
     if not surface.workspace_admitted(team):
         write("denied", f"{resources} team_id={team}", "enterprise_origin_mismatch")
         return ""
-    if not is_owner(user):
+    from kiro_crew.slack.code_channels.shared_refusal import opener_admitted
+
+    if not (is_owner(user) or (admit_opener and opener_admitted(binding, user))):
         write("denied", resources, "unauthorized user")
         return owner_only
     origin = _origin_of(binding.channel_id, binding, None)

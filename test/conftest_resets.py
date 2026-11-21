@@ -1184,6 +1184,32 @@ def _reset_chromium_opt_in_record():
 
 
 @per_test_guard
+def _reset_code_channel_owner_only_notices():
+    """Start each test with no remembered code-channel owner-only notice, and no
+    channel remembered as being opened.
+
+    ``shared_refusal._noticed`` throttles the notice per person and channel on the
+    clock, and tests reuse both ids, so a notice one test sent could silence the
+    next test's. ``routing._opening`` lets a channel's unmentioned messages through
+    while it is opened, so one a test left would admit the next test's.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.slack.code_channels.shared_refusal")
+        if module is not None:
+            module._noticed.clear()
+        routing = sys.modules.get("kiro_crew.slack.code_channels.routing")
+        if routing is not None:
+            routing._opening.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_resource_subscription_state():
     """Start each test with no MCP resource-subscription state another test left.
 

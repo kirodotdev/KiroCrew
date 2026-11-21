@@ -687,6 +687,29 @@ async def handle_interaction(
 
     key = f"{channel}:{msg_ts}"
 
+    # A code channel a shared user opened: they answer its own session's prompts
+    # there, posted in that channel, like the owner. Trust stays the owner's (below).
+    if is_shared_listed(user_id) and action_id != _ACTION_TRUST:
+        from kiro_crew.slack.code_channels.shared_refusal import opener_answers_prompt
+
+        _cc_entry = _linked_approvals.get(key)
+        # The slot that asked and the session its turn ran on: both must be the
+        # channel's own, so a slot relinked to another session answers nothing here.
+        _cc_ids = (
+            (_cc_entry.slot_key or _cc_entry.session_key, _cc_entry.session_key)
+            if _cc_entry
+            else ("", "")
+        )
+        if (
+            _cc_entry is not None
+            and await asyncio.to_thread(opener_answers_prompt, channel, *_cc_ids, user_id)
+            # Asked again with nothing awaited before the answer (the store is loaded
+            # now): a removal, rebind or answer during the read above refuses.
+            and _linked_approvals.get(key) is _cc_entry
+            and opener_answers_prompt(channel, *_cc_ids, user_id)
+        ):
+            return _resolve_linked_click(_cc_entry, key, action_id, user_id, sessions)
+
     # A shared user (slack.shared_access) answers only the prompt their own turn
     # posted, and never grants Trust. Checked before the claim, so a refused click
     # leaves the prompt pending for the person it belongs to.

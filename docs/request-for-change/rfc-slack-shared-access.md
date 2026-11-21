@@ -89,8 +89,24 @@ the review-mode draft of their own turn. These stay the owner's:
 | A message starting with `/`; `!temporary` / `!incognito` | The agent harness's own commands (`/agent`, `/model`, `/tools trust-all`) and keeping a turn out of the owner's record |
 | The Home tab, the `sessions` list, and the `spawn list` and `status` keywords | They list every session or subagent, or count the host's |
 | `run` and natural-language cron keywords | Scheduling and task runs |
-| Code channels, including answering a card in one | Kept owner-only for v1 |
+| Code channels the owner opened, including answering a card in one; in a code channel a shared user opened, Trust this channel, the approval-mode and agent pickers, the helper-agent Turn-on, the channel's slash commands and Archive | A code channel is a persistent session in the owner's repositories (amended 2026-11-20, below) |
 | Every other button | Settings, sessions, resume, links and the allowlist |
+
+**Amended 2026-11-20: a shared user's own code channel.** The owner asked that
+shared users open their own code channels ("Let shared users open their own code
+channels -- this is part of adding users!"); it takes effect when the owner merges
+this amendment. A shared user's request for code work is classified like the
+owner's, and a code channel it opens records them as its opener
+(`Binding.opener`). That channel admits the owner and its opener, nobody else: the
+opener's messages, question cards, Stop, Approve / Reject on the tool prompts the
+channel's session posts there and on its helper agents' cards, and their turns start
+helper agents under the owner's own helper-agent switch. Every other shared user is refused there, and the controls in the row above
+stay the owner's. The admission is asked of the person at each message
+(`is_shared_user`, so a removal cuts them off) and of the channel the act happens in,
+so a thread elsewhere linked to that channel's session, or a helper agent it
+started, stays refused. A binding written without an opener is the owner's. A
+refused shared user is told why in an ephemeral only they see: each button press,
+and their messages at most once per channel every 10 minutes.
 
 The agent itself is not narrowed: a tool it runs in a shared user's turn is
 governed by the same approvals the owner's turns are, and the shared user answers
