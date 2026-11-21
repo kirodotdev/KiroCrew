@@ -2303,6 +2303,7 @@
       "enumValues": null,
       "defaultValue": {
         "timeout_secs": 3600,
+        "automated_idle_timeout_secs": 0,
         "idle_exempt_keys": [],
         "empty_response_auto_continue": true,
         "empty_response_max_continues": 1,
@@ -2341,6 +2342,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3600
+    },
+    {
+      "path": "session.automated_idle_timeout_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Idle Timeout After an Automated Turn",
+      "help": "Idle timeout in seconds for a session whose last turn no person sent, such as a scheduled job, a loop wake, a sub-agent completion or an app waking a chat. Your next message puts the session back on the Session Timeout. Used only when shorter than the Session Timeout, and not while that is 0. 0 (the default) turns it off. Read at every idle sweep, so a change needs no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "session.idle_exempt_keys",

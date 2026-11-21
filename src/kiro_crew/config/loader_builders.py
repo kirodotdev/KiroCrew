@@ -1147,6 +1147,9 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         timeout_secs=section.read(
             "timeout_secs", _safe_int, SESSION_TIMEOUT_MIN, SESSION_TIMEOUT_MAX
         ),
+        automated_idle_timeout_secs=section.read(
+            "automated_idle_timeout_secs", _safe_int, SESSION_TIMEOUT_MIN, SESSION_TIMEOUT_MAX
+        ),
         idle_exempt_keys=_load_idle_exempt_keys(section.get("idle_exempt_keys")),
         empty_response_auto_continue=bool(section.get("empty_response_auto_continue")),
         # RANGE-clamped like the other session ints: a hand-edited 0
