@@ -33,11 +33,13 @@ def _worker_crewmate(config: Any, execution: Any) -> str:
     """The crewmate a WORKER session runs for, else ``""`` (a conductor answers ``""``)."""
     from kiro_crew.dashboard.crewmate_approval import crewmate_name_for
     from kiro_crew.mate_worker import MATE_WORKER_AGENT
+    from kiro_crew.mate_worker_delegates import delegate_worker_agent
 
-    if (
-        getattr(execution, "selection_kind", "") != "template"
-        or getattr(execution, "template_id", "") != MATE_WORKER_AGENT
-    ):
+    worker = (
+        getattr(execution, "selection_kind", "") == "template"
+        and getattr(execution, "template_id", "") == MATE_WORKER_AGENT
+    )
+    if not (worker or delegate_worker_agent(execution)):
         return ""
     return crewmate_name_for(config, execution)
 

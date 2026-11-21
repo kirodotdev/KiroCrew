@@ -1370,7 +1370,14 @@ class KasHarness(MembershipHarness):
                 # A child a Bot started runs under the Bot's identity: its held
                 # limits ask here too (the worker's are applied in its own merge).
                 from kiro_crew.mate_held_rules import HeldLimitsNotApplied, held_child_spec
+                from kiro_crew.mate_worker import WorkerKitUnreadable
+                from kiro_crew.mate_worker_delegates import delegate_session_spec
 
+                try:
+                    # A Bot's delegate worker: its own spec under its Bot's limits.
+                    spec = delegate_session_spec(spec, agent, session_key)
+                except WorkerKitUnreadable as exc:
+                    raise AcpAgentUnavailable(str(exc), agent=agent) from exc
                 try:
                     spec = held_child_spec(spec, session_key)
                 except HeldLimitsNotApplied as exc:

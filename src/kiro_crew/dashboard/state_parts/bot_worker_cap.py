@@ -9,7 +9,8 @@ moves a slot to another manager and opens nothing, so it is not asked.
 
 A worker counts while its slot is live in ``state._slots``, by the member id in
 ``members.crewmate_worker_member_id``: the Bot's own worker sessions, on its
-worker template. A session a worker opens on another template keeps the Bot's
+worker template or on one of its ``worker_agents`` (``mate_worker_delegates``).
+A session a worker opens on another template keeps the Bot's
 member id but is not counted here; the per-creator cap bounds it. A finished
 worker keeps its seat until it is closed. A new worker is entered at its mint,
 so two parallel creates cannot both pass, and the workers a restart brought
@@ -30,10 +31,14 @@ logger = logging.getLogger("kiro_crew.dashboard.state")
 
 
 def own_worker_member(execution: Any) -> str:
-    """The Bot's ``member_id`` when *execution* is one of its own workers, else ``""``."""
-    from kiro_crew.mate_worker import is_own_worker_execution
+    """The Bot's ``member_id`` when *execution* is one of its workers, else ``""``.
 
-    if execution is None or not is_own_worker_execution(execution):
+    A delegate worker (one opened as a ``worker_agents`` template) counts too, so
+    the list never lets a Bot past its owner's ``max_workers``.
+    """
+    from kiro_crew.mate_worker_delegates import is_bot_worker_execution
+
+    if execution is None or not is_bot_worker_execution(execution):
         return ""
     return str(execution.member_id)
 
@@ -113,7 +118,11 @@ async def count_restored_workers(state: "DashboardState") -> None:
     keys = [
         slot_history_key(slot)
         for slot in list(state._slots.values())
-        if getattr(slot, "agent", "") == MATE_WORKER_AGENT
+        # A delegate worker (`mate_worker_delegates`) is a template pick by name.
+        if (
+            getattr(slot, "agent", "") == MATE_WORKER_AGENT
+            or getattr(slot, "agent_kind", "") == "template"
+        )
         and not crewmate_worker_member_id(slot_history_key(slot))
     ]
     if not keys:

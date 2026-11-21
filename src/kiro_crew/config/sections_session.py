@@ -408,6 +408,18 @@ class KiroCrewAgentConfig:
             "standard levels. An explicit effort on the call wins.",
         ),
     )
+    worker_agents: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Worker agents",
+            "Agent templates this Bot may open its worker sessions as, by name. "
+            "A session_create from the Bot's own chat naming one of them runs that "
+            "template unmodified (its prompt, tools, allowedTools and toolsSettings) "
+            "on the Bot's workspace and memory, under the stricter of its own limits "
+            "and the Bot's Permissions. Empty (the default): every session the Bot "
+            "opens is its own worker. Set by the owner; the Bot cannot change it.",
+        ),
+    )
     max_workers: int = field(
         default=BOT_MAX_WORKERS_DEFAULT,
         metadata=_meta(
@@ -848,3 +860,14 @@ class ResolvedBindings:
             and self.memory_store_name == other.memory_store_name
             and self.model == other.model
         )
+
+
+def coerce_worker_agents(raw: object) -> list[str]:
+    """``agents.<bot>.worker_agents`` as the loader keeps it: trimmed, unique names.
+
+    A non-list reads as ``[]`` and a non-string or blank entry is dropped, so a
+    hand-edited value never names an agent the Bot may become by accident.
+    """
+    if not isinstance(raw, list):
+        return []
+    return list(dict.fromkeys(a.strip() for a in raw if isinstance(a, str) and a.strip()))

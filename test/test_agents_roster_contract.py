@@ -102,6 +102,9 @@ WITHHELD_RECORD_FIELDS = frozenset(
         # Same home and same reason: the profile card's Workers at once limit,
         # read by `session_create`.
         "max_workers",
+        # Same home and same reason: the owner-set templates the Bot's workers
+        # may run as (``mate_worker_delegates``), read by `session_create`.
+        "worker_agents",
         # The .crewmate provenance stamp (rfc-crewmate-share.md §5.4 step 5):
         # written once by the import's create, rendered by nothing yet.
         "imported",

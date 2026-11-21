@@ -1014,9 +1014,10 @@ def note_worker_session(session_key: str, execution: Any) -> bool:
     template) drops the key, so the session leaves the crewmate's backend with its
     worker template.
     """
+    from kiro_crew.mate_worker_delegates import is_bot_worker_execution
     from kiro_crew.members import forget_crewmate_worker_session, note_crewmate_worker_session
 
-    if not is_own_worker_execution(execution):
+    if not is_bot_worker_execution(execution):
         forget_crewmate_worker_session(session_key)
         return False
     note_crewmate_worker_session(session_key, str(execution.member_id))

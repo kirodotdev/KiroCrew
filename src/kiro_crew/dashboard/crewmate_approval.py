@@ -17,19 +17,21 @@ logger = logging.getLogger(__name__)
 def crewmate_name_for(config: Any, execution: Any) -> str:
     """The ``config.agents`` name of the crewmate *execution* runs for, else ``""``.
 
-    A conductor chat (``mate_worker.is_conductor_execution``) or a worker on
-    ``kirocrew-mate-worker`` with the crewmate's ``member_id``. Any other record,
+    A conductor chat (``mate_worker.is_conductor_execution``), or a worker on
+    ``kirocrew-mate-worker`` or on one of the crewmate's ``worker_agents``
+    (``mate_worker_delegates``) with the crewmate's ``member_id``. Any other record,
     a missing one, or an id the config does not hold answers ``""``.
     """
     from kiro_crew.execution_context import member_config_for_id
     from kiro_crew.mate_worker import MATE_WORKER_AGENT, is_conductor_execution
+    from kiro_crew.mate_worker_delegates import delegate_worker_agent
 
     if execution is None:
         return ""
     is_worker = (
         getattr(execution, "selection_kind", "") == "template"
         and getattr(execution, "template_id", "") == MATE_WORKER_AGENT
-    )
+    ) or bool(delegate_worker_agent(execution))
     if not (is_worker or is_conductor_execution(execution, config)):
         return ""
     member_id = getattr(execution, "member_id", None)
@@ -96,7 +98,7 @@ async def apply_to_live_sessions(state: Any, name: str, mode: str) -> int:
     from kiro_crew.dashboard.chat_handlers import apply_approval_mode
     from kiro_crew.dashboard.chat_utils import slot_history_key
     from kiro_crew.execution_context import read_session_execution
-    from kiro_crew.mate_worker import MATE_WORKER_AGENT
+    from kiro_crew.mate_worker_delegates import is_bot_worker_execution
 
     slots = list(state._slots.values())
 
@@ -108,10 +110,7 @@ async def apply_to_live_sessions(state: Any, name: str, mode: str) -> int:
                 execution = read_session_execution(slot_history_key(slot))
             except Exception:  # noqa: BLE001 - an unreadable record is not this crewmate's
                 continue
-            if (
-                getattr(execution, "template_id", "") == MATE_WORKER_AGENT
-                and crewmate_name_for(config, execution) == name
-            ):
+            if is_bot_worker_execution(execution) and crewmate_name_for(config, execution) == name:
                 out.append(slot)
         return out
 

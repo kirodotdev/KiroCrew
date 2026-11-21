@@ -43,7 +43,20 @@ def _crewmate_worker_spec(
     refuses the worker, naming them.
     """
     from kiro_crew.mate_worker import MATE_WORKER_AGENT, WorkerKitUnreadable, worker_session_spec
+    from kiro_crew.mate_worker_delegates import delegate_session_spec, session_delegate
 
+    if agent and isinstance(spec, dict) and session_delegate(agent, session_key):
+        # A Bot's delegate worker: the template's own spec under its Bot's limits,
+        # refused on this host exactly when the Bot's own worker would be.
+        return delegate_session_spec(
+            dict(spec),
+            agent,
+            session_key,
+            refuse_tool_limits=not tool_limits_honoured,
+            refuse_spec_policy=not spec_policy_honoured,
+            mcp_tool_limits_carried=mcp_tool_limits_honoured,
+            native_tool_limits_carried=native_tool_limits_honoured,
+        )
     if agent != MATE_WORKER_AGENT or not session_key:
         return spec
     if not isinstance(spec, dict):
@@ -87,8 +100,9 @@ def crewmate_worker_deny_rules(
         ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     )
     from kiro_crew.mate_worker import MATE_WORKER_AGENT
+    from kiro_crew.mate_worker_delegates import session_delegate
 
-    if agent != MATE_WORKER_AGENT or not session_key:
+    if not session_key or (agent != MATE_WORKER_AGENT and not session_delegate(agent, session_key)):
         return None
     projection = session_mcp.session_mcp_projection(
         agent,
