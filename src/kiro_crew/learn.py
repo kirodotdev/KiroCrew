@@ -21,6 +21,7 @@ from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ALWAYS,
     LESSON_APPLIES_ON_TOPIC,
     LESSON_APPLIES_VALUES,
+    LESSON_RULES_HEADER,
     any_request_overlap,
     contains_volatile_lesson_fact,
     order_by_request_relevance,
@@ -1018,10 +1019,7 @@ class LessonStore:
             ranked_directives,
             directive_room,
             omission_kind=context_omissions.LESSON_RULES,
-            header=(
-                "[Learned corrections — retained rules from past mistakes.\n"
-                "Each binds under CRITICAL RULES but adds no ask case.]"
-            ),
+            header=LESSON_RULES_HEADER + "]",
             footer="[End of learned corrections]",
             omission=(
                 "[Context budget: omitted {count} of {total} retained rules above the "
