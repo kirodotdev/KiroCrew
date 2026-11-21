@@ -1,12 +1,13 @@
 import { useSyncExternalStore } from 'react'
 import { appPathname } from '@/lib/basePath'
 import { runLayoutFormChange } from '@/lib/layoutFormTransition'
-import { touchFirstForm } from '@/lib/touchLayoutForm'
+import { MOBILE_BREAKPOINT, recordUnfoldedForm, touchFirstForm } from '@/lib/touchLayoutForm'
+import { FOLD_TWO_PANE_QUERY } from '@/hooks/useViewportSegments'
 
 /* Exported for the top-bar rung-budget test: the <640px icon-only rung base in
    index.css needs the desktop readouts to be unreachable below the pill's
    label gate, which holds only while this form switch sits at or above it. */
-export const MOBILE_BREAKPOINT = 768
+export { MOBILE_BREAKPOINT }
 const MOBILE_QUERY = `(max-width: ${MOBILE_BREAKPOINT - 1}px)`
 
 // Lazy, cached on matchMedia's function identity: an import evaluated before matchMedia
@@ -42,6 +43,8 @@ const listeners = new Set<() => void>()
 // draws the old form. `null` while nothing is subscribed: reads go live.
 let committed: boolean | null = null
 let attachedMql: MediaQueryList | null = null
+// A fold or unfold at the same width fires no resize, only this list's `change`.
+let foldMql: MediaQueryList | null = null
 
 // A touch-first device takes the form its browser asks for (touchLayoutForm);
 // every other device keeps the width breakpoint. The resize and orientation
@@ -77,6 +80,7 @@ markForm(readLive())
 
 function notifyAll() {
   if (committed !== null) markForm(committed)
+  recordUnfoldedForm(committed !== null)
   for (const cb of [...listeners]) cb()
 }
 
@@ -111,6 +115,8 @@ function attach() {
   attachedMql = currentMql()
   wasViewportless = viewportless()
   attachedMql?.addEventListener('change', onSignal)
+  foldMql = typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia(FOLD_TWO_PANE_QUERY) : null
+  foldMql?.addEventListener?.('change', onSignal)
   if (typeof window !== 'undefined') {
     for (const type of WINDOW_RECHECK_EVENTS) window.addEventListener(type, onSignal)
     for (const type of DOCUMENT_RECHECK_EVENTS) document.addEventListener(type, onSignal)
@@ -120,6 +126,8 @@ function attach() {
 function detach() {
   attachedMql?.removeEventListener('change', onSignal)
   attachedMql = null
+  foldMql?.removeEventListener?.('change', onSignal)
+  foldMql = null
   if (typeof window !== 'undefined') {
     for (const type of WINDOW_RECHECK_EVENTS) window.removeEventListener(type, onSignal)
     for (const type of DOCUMENT_RECHECK_EVENTS) document.removeEventListener(type, onSignal)
@@ -131,6 +139,7 @@ function subscribe(cb: () => void) {
     attach()
     committed = readLive()
     markForm(committed)
+    recordUnfoldedForm(true)
   } else if (currentMql() !== attachedMql) {
     // `window.matchMedia` was replaced under a live subscription: follow the new list.
     attachedMql?.removeEventListener('change', onSignal)
@@ -140,7 +149,7 @@ function subscribe(cb: () => void) {
   listeners.add(cb)
   return () => {
     listeners.delete(cb)
-    if (listeners.size === 0) { detach(); committed = null; pending = null }
+    if (listeners.size === 0) { detach(); committed = null; pending = null; recordUnfoldedForm(false) }
   }
 }
 

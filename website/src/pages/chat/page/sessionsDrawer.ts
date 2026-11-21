@@ -7,6 +7,7 @@ import type { AppDispatch, RootState } from '../../../store'
 import type { ChatSlot, ChatFolder } from '../../../types'
 import { type SourceLinkKind, parseSourceLinkUrl, commitRevealedSource, type RevealedSources } from '../../../utils/pullRequestLinks'
 import { useShellSlot } from '../../../hooks/useShellSlot'
+import { panelInlineHost } from '../../../lib/touchLayoutForm'
 import { isTouchDevice } from '../../../utils/isTouchDevice'
 import { safeAreaLeft, registerDrawerTargets, animateDrawer, takeOverDrawer, useDrawerSwipe } from '../../../hooks/useDrawerSwipe'
 import { resumeFromHistory, requestFolderReveal, openActivityPanel, openActivityToTab } from '../../../store/chatSlice'
@@ -415,7 +416,11 @@ export function useSessionsDrawer({
   // it holds has left the document, so the lookup latches the current one.
   const [activitySlotRev, setActivitySlotRev] = useState(0)
   const refreshActivitySlot = useCallback(() => setActivitySlotRev(n => n + 1), [])
-  const activitySlot = useShellSlot('activity-bar-slot', !isMobile && !embedMode, activitySlotRev)
+  // The panel's host (panelInlineHost): inline in the phone form and wherever
+  // the form without a fold would be the phone one, so a fold never moves the
+  // panel to the other host.
+  const panelInline = panelInlineHost({ isMobile })
+  const activitySlot = useShellSlot('activity-bar-slot', !panelInline && !embedMode, activitySlotRev)
   /** The inline panel's mount predicate, shared by the overlay phase effect
    *  and ChatTitleOverlay's render so the two cannot disagree. */
   const hasTaskDashboard = tabsCtl.tabs.some(tab => tab.kind === 'command-center')
@@ -424,7 +429,18 @@ export function useSessionsDrawer({
   // Mobile right-panel overlay: slide in when the panel wants the screen,
   // slide out (keeping it mounted for the travel) when it stops wanting it.
   useEffect(() => {
-    if (!isMobile) { setSideOverlayPhase('closed'); takeOverDrawer(sideOverlayX); return }
+    if (!isMobile) {
+      // Beside a fold a touch-first phone takes the desktop form but keeps the
+      // inline panel (panelInlineHost). The overlay stays 'open' and at rest
+      // while the panel is on screen there, so folding and unfolding keep it
+      // mounted where it is instead of unmounting it and sliding a new one in.
+      const keep = panelInline && sidePanelWantsMount
+      takeOverDrawer(sideOverlayX)
+      if (keep) sideOverlayX.set(0)
+      sideOverlayPhaseRef.current = keep ? 'open' : 'closed'
+      setSideOverlayPhase(keep ? 'open' : 'closed')
+      return
+    }
     if (sidePanelWantsMount) {
       if (sideOverlayPhaseRef.current === 'open') return
       if (sideOverlayPhaseRef.current === 'closed') sideOverlayX.set(window.innerWidth || 0)
@@ -442,7 +458,7 @@ export function useSessionsDrawer({
         setSideOverlayPhase('closed')
       })
     }
-  }, [isMobile, sidePanelWantsMount, sideOverlayX])
+  }, [isMobile, panelInline, sidePanelWantsMount, sideOverlayX])
   /** Read by the right overlay's release handler, which must know whether the
    *  store currently has the panel open without depending on it. */
   const activityOpenRef = useRef(activityOpen)
@@ -760,6 +776,6 @@ export function useSessionsDrawer({
   return {
     mobileSessions, drawerMounted, drawerX, drawerPanelRef, drawerScrimRef, sideOverlayX, sideOverlayPanelRef, sideOverlayPhase, drawerScrim, openSidebar, closedSessionActions, sidebarFolderActions,
     closeSidebar, chatContainerRef, containerH, activitySlot, refreshActivitySlot, hasTaskDashboard, sidePanelWantsMount, inlineSidePanelShowing, drawerDragging, revealSourceLink, previewExpanded, sidebarOpen,
-    sidebarOnScreen, flyoutTriggerRef, flyoutSurfaceRef, flyoutEligible, flyout, expandFrom, expandSidebar,
+    sidebarOnScreen, flyoutTriggerRef, flyoutSurfaceRef, flyoutEligible, flyout, expandFrom, expandSidebar, panelInline,
   }
 }
