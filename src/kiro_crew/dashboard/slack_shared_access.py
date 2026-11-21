@@ -30,6 +30,7 @@ from aiohttp import web
 
 from kiro_crew.config.sections_slack import is_slack_user_id, shared_user_ids
 from kiro_crew.dashboard.origin import is_direct_local_request
+from kiro_crew.http_proxy import SLACK_API_URL, resolve_proxy
 from kiro_crew.sel import sel
 from kiro_crew.slack import shared_access
 
@@ -72,7 +73,9 @@ async def _slack_identity() -> tuple[str, str]:
 def _web_client(token: str) -> Any:
     from slack_sdk.web.async_client import AsyncWebClient
 
-    return AsyncWebClient(token=token, timeout=10) if token else None
+    if not token:
+        return None
+    return AsyncWebClient(token=token, timeout=10, proxy=resolve_proxy(SLACK_API_URL))
 
 
 def _user_view(verdict: shared_access.Verdict) -> dict[str, Any]:

@@ -77,3 +77,103 @@ def test_proxy_settings_are_read_per_call(monkeypatch):
     assert http_proxy.resolve_proxy("https://updates.example/feed") is None
     assert proxies.call_count == 2
     assert bypass.call_count == 3
+
+
+@pytest.mark.parametrize("environment_only", [True, False], ids=["environment", "os"])
+def test_bypass_check_does_not_raise_on_an_out_of_range_port(monkeypatch, environment_only):
+    # A base URL such as TELEGRAM_API_BASE_URL ending in :99999 must not make
+    # the shared check raise ValueError, which Telegram's call paths do not catch.
+    url = "https://tg.example:99999/botT/getMe"
+    # Pin the OS matcher to the environment-only variant, as the test above
+    # does, so the os case never reads this host's own registry or settings.
+    monkeypatch.setattr(
+        http_proxy.urllib.request,
+        "proxy_bypass",
+        http_proxy.urllib.request.proxy_bypass_environment,
+    )
+    for name in ("no_proxy", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+    assert http_proxy.is_bypassed(url, environment_only=environment_only) is False
+    monkeypatch.setenv("NO_PROXY", "tg.example")
+    assert http_proxy.is_bypassed(url, environment_only=environment_only) is True
+
+
+@pytest.mark.parametrize(
+    ("proxies", "expected"),
+    [
+        # What the stdlib returns for a Windows `ProxyServer` of `127.0.0.1:3128`.
+        (
+            {"http": "http://127.0.0.1:3128", "https": "http://127.0.0.1:3128"},
+            "http://127.0.0.1:3128",
+        ),
+        # `http=127.0.0.1:3128;https=127.0.0.1:3128`: an https= entry is still http://.
+        (
+            {"http": "http://127.0.0.1:3128", "https": "http://127.0.0.1:3128"},
+            "http://127.0.0.1:3128",
+        ),
+        # `socks=127.0.0.1:1080`: the stdlib copies a socks4:// URL into http and https.
+        (
+            {
+                "socks": "socks://127.0.0.1:1080",
+                "http": "socks4://127.0.0.1:1080",
+                "https": "socks4://127.0.0.1:1080",
+            },
+            None,
+        ),
+        ({"https": "socks5://127.0.0.1:1080"}, None),
+        # `http=127.0.0.1:3128;socks=127.0.0.1:1080`: the stdlib fills https with
+        # socks4://, and the http entry is still a usable HTTP CONNECT proxy.
+        (
+            {
+                "http": "http://127.0.0.1:3128",
+                "socks": "socks://127.0.0.1:1080",
+                "https": "socks4://127.0.0.1:1080",
+            },
+            "http://127.0.0.1:3128",
+        ),
+    ],
+    ids=["single-server", "per-protocol", "windows-socks", "socks5", "http-plus-socks"],
+)
+def test_only_a_proxy_the_clients_can_use_is_returned(monkeypatch, proxies, expected):
+    # These come from the OS settings: no proxy variable is set.
+    monkeypatch.setattr(http_proxy.urllib.request, "getproxies_environment", lambda: {})
+    monkeypatch.setattr(http_proxy.urllib.request, "getproxies", lambda: proxies)
+    monkeypatch.setattr(http_proxy.urllib.request, "proxy_bypass", lambda host: False)
+    monkeypatch.setattr(http_proxy, "_warned_schemes", set())
+
+    assert http_proxy.resolve_proxy("https://slack.com/api/") == expected
+
+
+_UNUSABLE_ENV_VALUES = ["socks5://127.0.0.1:1080", "10.0.0.1:3128"]
+
+
+@pytest.mark.parametrize("value", _UNUSABLE_ENV_VALUES, ids=["socks5", "schemeless"])
+def test_an_environment_proxy_passes_through_unchanged(monkeypatch, value):
+    # The operator's own HTTPS_PROXY reaches the client as written, whatever its
+    # scheme, so a misconfigured value fails closed there as on main.
+    for name in ("http_proxy", "https_proxy", "no_proxy", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.upper(), raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", value)
+    monkeypatch.setattr(
+        http_proxy.urllib.request, "getproxies", http_proxy.urllib.request.getproxies_environment
+    )
+    monkeypatch.setattr(
+        http_proxy.urllib.request,
+        "proxy_bypass",
+        http_proxy.urllib.request.proxy_bypass_environment,
+    )
+
+    assert http_proxy.resolve_proxy("https://slack.com/api/") == value
+
+
+@pytest.mark.parametrize("value", _UNUSABLE_ENV_VALUES, ids=["socks5", "schemeless"])
+def test_an_environment_proxy_wins_over_the_os_and_passes_through(monkeypatch, value):
+    # On Windows getproxies() returns the environment when it names a proxy,
+    # and the registry only when it does not.
+    env = {"https": value}
+    monkeypatch.setattr(http_proxy.urllib.request, "getproxies_environment", lambda: env)
+    monkeypatch.setattr(http_proxy.urllib.request, "getproxies", lambda: env)
+    monkeypatch.setattr(http_proxy.urllib.request, "proxy_bypass", lambda host: False)
+
+    assert http_proxy.resolve_proxy("https://slack.com/api/") == value

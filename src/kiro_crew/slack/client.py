@@ -20,7 +20,7 @@ from slack_sdk.http_retry.response import HttpResponse
 from slack_sdk.http_retry.state import RetryState
 from slack_sdk.web.async_client import AsyncWebClient
 
-from kiro_crew.http_proxy import resolve_proxy
+from kiro_crew.http_proxy import SLACK_API_URL, resolve_proxy
 from kiro_crew.slack.agent_sessions.fence import note_message, turn_muted
 from kiro_crew.slack.channel_policy import require_channel
 from kiro_crew.slack.team_ids import use_channel_team_store
@@ -464,6 +464,7 @@ class RealSlackClient(SlackClientOps):
         self._web = AsyncWebClient(
             token=bot_token,
             retry_handlers=[_ConnectSetupRetryHandler(max_retry_count=_SLACK_CONNECT_RETRY_COUNT)],
+            proxy=resolve_proxy(SLACK_API_URL),
         )
         # Channel→workspace team_id cache. Populated ONLY from
         # conversations_info()'s home-workspace answer by

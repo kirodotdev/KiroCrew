@@ -41,6 +41,8 @@ import websockets
 import websockets.uri
 from slack_sdk.socket_mode.websockets import SocketModeClient
 
+from kiro_crew.http_proxy import is_bypassed
+
 logger = logging.getLogger(__name__)
 
 # websockets 15 is the first release that detects a proxy, and the first whose
@@ -73,22 +75,13 @@ def _is_socks(proxy: str) -> bool:
     return urllib.parse.urlparse(proxy).scheme.lower().startswith("socks")
 
 
-def _bypassed(uri: str) -> bool:
-    parsed = urllib.parse.urlparse(uri)
-    host = parsed.hostname or ""
-    if not host:
-        return False
-    port = parsed.port or (443 if parsed.scheme == "wss" else 80)
-    return bool(urllib.request.proxy_bypass(host) or urllib.request.proxy_bypass(f"{host}:{port}"))
-
-
 def select_socket_mode_proxy(uri: str) -> str | None:
     """Return the proxy URL to open ``uri`` through, or ``None`` for direct.
 
     Raises :class:`SocksProxyUnavailable` when the only proxy configured for
     ``uri`` is a SOCKS one and ``python-socks`` is not installed.
     """
-    if _ws_get_proxy is None or _bypassed(uri):
+    if _ws_get_proxy is None or is_bypassed(uri):
         return None
     proxy: str | None = _ws_get_proxy(websockets.uri.parse_uri(uri))
     if proxy is None or not _is_socks(proxy) or _socks_supported():

@@ -35,7 +35,7 @@ class _FakeWebClient:
 
     calls: list[tuple[str, str]] = []
 
-    def __init__(self, token: str = "", timeout: int = 0) -> None:
+    def __init__(self, token: str = "", timeout: int = 0, proxy: str | None = None) -> None:
         self.token = token
 
     def apps_connections_open(self, app_token: str) -> dict[str, object]:

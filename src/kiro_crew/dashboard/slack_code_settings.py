@@ -31,6 +31,7 @@ from kiro_crew.config.sections_slack import (
     CODE_CHANNEL_DEFAULT_MAX,
 )
 from kiro_crew.effort import is_valid_effort
+from kiro_crew.http_proxy import SLACK_API_URL, resolve_proxy
 from kiro_crew.slack import features as slack_features
 from kiro_crew.slack import scope_probe
 
@@ -761,7 +762,7 @@ async def manifest_status(cfg: Any, bot_token: str, *, refresh: bool = False) ->
     else:
         from slack_sdk.web.async_client import AsyncWebClient
 
-        client = AsyncWebClient(token=bot_token, timeout=10)
+        client = AsyncWebClient(token=bot_token, timeout=10, proxy=resolve_proxy(SLACK_API_URL))
         if refresh:
             # Check again re-probes like a reconnect: a workspace an admin has
             # since enabled must read as such, so a runtime "feature_disabled"

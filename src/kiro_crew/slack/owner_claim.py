@@ -38,6 +38,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from kiro_crew.config.loader import CRED_OWNER_ID, CRED_SLACK_APP_TOKEN, CRED_SLACK_BOT_TOKEN
+from kiro_crew.http_proxy import SLACK_API_URL, resolve_proxy
 from kiro_crew.sel import sel
 from kiro_crew.validation import USER_ID_RE
 
@@ -351,7 +352,11 @@ class OwnerClaim:
     def _web_client(self, bot: str) -> Any:
         from slack_sdk.web.async_client import AsyncWebClient
 
-        return AsyncWebClient(token=bot, timeout=int(_SLACK_TIMEOUT_SECS))
+        return AsyncWebClient(
+            token=bot,
+            timeout=int(_SLACK_TIMEOUT_SECS),
+            proxy=resolve_proxy(SLACK_API_URL),
+        )
 
     def _socket_client(self, app: str, web: Any) -> Any:
         from kiro_crew.slack.socket_mode_proxy import ProxySelectingSocketModeClient
