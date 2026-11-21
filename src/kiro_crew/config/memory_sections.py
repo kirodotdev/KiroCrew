@@ -53,6 +53,10 @@ MEMBER_LESSON_DEDUP_MODES = ("off", "shadow", "enforce")
 #: ``memory.dream`` values; :mod:`kiro_crew.memory_dream` says what each does.
 DREAM_MODES = ("off", "propose")
 
+#: ``memory.consolidation_selection`` values; :mod:`kiro_crew.history_consolidation_selection`
+#: says what each does.
+CONSOLIDATION_SELECTION_MODES = ("newest", "relevance")
+
 #: ``memory.embedding_provider`` values. ``ollama_http`` selects the Ollama server
 #: backend in :mod:`kiro_crew.embeddings_ollama`.
 OLLAMA_HTTP_PROVIDER = "ollama_http"
@@ -659,6 +663,18 @@ class MemoryConfig:
             enum=list(DREAM_MODES),
         ),
     )
+    consolidation_selection: str = field(
+        default="newest",
+        metadata=_meta(
+            "Consolidation Row Selection",
+            "Which stored facts consolidation shows the model when they are too many "
+            "for its table. 'newest' (default) shows the most recently updated ones, as "
+            "before. 'relevance' shows the facts that match the conversation, the "
+            "newest, recent lessons and a slice that rotates through the rest, so old "
+            "facts can be updated or retired too.",
+            enum=list(CONSOLIDATION_SELECTION_MODES),
+        ),
+    )
     inject_memory: bool = field(
         default=True,
         metadata=_meta(
@@ -824,6 +840,13 @@ def dream_mode_from(raw: object) -> str:
     if isinstance(raw, str) and raw in DREAM_MODES:
         return raw
     return str(field_default(MemoryConfig, "dream"))
+
+
+def consolidation_selection_mode_from(raw: object) -> str:
+    """A stored ``memory.consolidation_selection``, or the field default for anything unknown."""
+    if isinstance(raw, str) and raw in CONSOLIDATION_SELECTION_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "consolidation_selection"))
 
 
 def lesson_extraction_enabled(memory: object) -> bool:
