@@ -398,9 +398,9 @@ describe('the Review dialog', () => {
     const search = block(dialog, 'search-mcp')
     expect(within(search).getByText(M('command_changed_hint_command'))).toBeTruthy()
     expect(pres(search)).toEqual(['/opt/search --v1', '/opt/search --v2'])
-    // What changed is said once, above the two columns, and marked in NEW.
-    expect(within(search).getByText(M('diff_changed', { from: '--v1', to: '--v2' }))).toBeTruthy()
-    expect(Array.from(search.querySelectorAll('mark')).map(m => m.textContent)).toEqual(['--v2'])
+    // The columns mark what changed on each side, so no line above repeats it.
+    expect(Array.from(search.querySelectorAll('li')).filter(li => li.textContent?.includes('--v1'))).toEqual([])
+    expect(Array.from(search.querySelectorAll('mark')).map(m => m.textContent)).toEqual(['--v1', '--v2'])
     expect(search.textContent).not.toContain('sha256')
     const tickets = block(dialog, 'tickets-mcp')
     expect(within(tickets).getByText(M('reapproval_reason_added_outside_dashboard_unapprovable'))).toBeTruthy()

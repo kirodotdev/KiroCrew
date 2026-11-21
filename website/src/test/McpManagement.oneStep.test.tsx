@@ -473,7 +473,13 @@ describe('the page-wide switch', () => {
   it.each([
     [{ commands: [['/opt/a', '--two']], approved_commands: [['/opt/a', '--one']] }, 'command_changed_hint_command'],
     [
-      { commands: [['/opt/a']], approved_commands: [['/opt/a']], envs: [['MODE=new']], approved_envs: [['MODE=old']] },
+      // The gateway sends a value outside its clear set hidden, as here.
+      {
+        commands: [['/opt/a']],
+        approved_commands: [['/opt/a']],
+        envs: [['MODE=<hidden sha256:00ff00ff>']],
+        approved_envs: [['MODE=<hidden sha256:11aa11aa>']],
+      },
       'command_changed_hint_settings',
     ],
   ])('says in Details what kind of change paused a server, with no env value', async (change, key) => {
