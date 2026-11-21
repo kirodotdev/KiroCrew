@@ -308,6 +308,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_tripwire_spec_disabled_tool": ("function", False, "42c6e584f488", "client_permissions"),
     "_unanswered_steering_id_set": ("annotation", False, "", ""),
     "_unanswered_steering_ids": ("function", False, "6e67e49bb5fd", "client_turn_control"),
+    "_unasked_call_attribution": ("function", False, "556f55260dba", "client_class"),
     "_unclassified_tool_call": ("function", False, "2dfacffa6279", "client_permissions"),
     "_uses_advertised_model_selection": ("property", False, "a6632a57e602", "client_class"),
     "_verify_session_mode": ("function", False, "4d0ed6879afd", "client_class"),
@@ -395,10 +396,11 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
 }
 
 #: ``ClaudeAcpClient``'s own members: what only a claude-agent-acp session does,
-#: bound from the claude owners, and the ``AcpClient`` hooks it fills.
+#: bound from the Claude owners, including its overrides of existing client seams.
 _CLAUDE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "__init__": ("function", False, "79ccca4df994", "client_claude"),
     "_adopted_substitute_model": ("annotation", False, "", ""),
+    "_apply_claude_requested_mode": ("function", True, "4d0ed6879afd", "client_claude_mode"),
     "_claim_pathname_if_ours": ("staticmethod", False, "af30c5c7e262", "client_claude"),
     "_claims_native_compaction": ("function", False, "c19e582b2edc", "client_claude_turn"),
     "_claude_adapter_argv": ("annotation", False, "", ""),
@@ -427,30 +429,63 @@ _CLAUDE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
     ),
     "_discard_claude_settings_seed": ("function", True, "b60c5fea256e", "client_seed_ownership"),
     "_discard_settings_seed": ("function", True, "b60c5fea256e", "client_seed_ownership"),
+    "_drain_notifications": (
+        "function",
+        True,
+        "23967cf3fb9c",
+        "client_claude_mode_seams",
+    ),
     "_ends_background_only_turns": ("data", False, "", ""),
     "_ensure_served_default": ("function", True, "b60c5fea256e", "client_claude_session"),
     "_exclude_foreign_local_settings": ("function", False, "0b50a902117a", "client_claude_session"),
     "_expected_settings_fingerprint": ("function", False, "77be1e224b87", "client_seed_ownership"),
+    "_follows_requested_mode": ("property", False, "a6632a57e602", "client_claude"),
     "_foreign_settings_is_crew_seed": ("function", False, "a6fc7539bdf3", "client_seed_ownership"),
     "_foreign_settings_owner": ("function", False, "0d96e8ab9b17", "client_seed_ownership"),
+    "_forget_confirmed_mode": (
+        "function",
+        False,
+        "b60c5fea256e",
+        "client_claude_mode_seams",
+    ),
     "_fork_session": ("function", True, "bca802976336", "client_claude_session"),
     "_hand_back_unrevoked_claim": ("function", False, "d12bff1e2bd1", "client_seed_ownership"),
     "_harness_compaction_event": ("function", False, "0d6b4eecc1f2", "client_claude_turn"),
     "_harness_session_mcp_servers": ("function", False, "f5423acdeebc", "client_claude_session"),
     "_harness_session_meta": ("function", False, "fc8c60fdad4c", "client_claude_session"),
+    "_initialize_params": (
+        "function",
+        False,
+        "16d9fe32838b",
+        "client_claude_mode_seams",
+    ),
+    "_leave_claude_approving_mode_for_model_switch": (
+        "function",
+        True,
+        "b60c5fea256e",
+        "client_claude_mode",
+    ),
     "_local_settings_exclusion": ("function", False, "9b2f6da70957", "client_claude_session"),
     "_log_claude_adapter_below_floor": ("function", False, "0453b971e505", "client_claude_session"),
     "_log_declined_share": ("function", False, "276d416344a7", "client_claude_seed"),
     "_note_claude_adapter_version": ("function", False, "b60c5fea256e", "client_claude_session"),
+    "_note_claude_mode_report": ("function", False, "e7b440d22db3", "client_claude_mode"),
     "_note_harness_adapter_version": ("function", False, "b60c5fea256e", "client_claude_session"),
     "_note_unhandled_session_update": ("function", False, "20ec496728df", "client_claude_turn"),
     "_note_worker_builtin_tools": ("function", False, "84f60ad5a315", "client_claude_session"),
     "_permission_surface_governed": ("property", False, "a6632a57e602", "client_claude"),
-    "_pin_claude_starting_mode": ("function", True, "4d0ed6879afd", "client_claude_session"),
+    "_pin_claude_starting_mode": ("function", True, "ed68e4a96d0c", "client_claude_session"),
     "_pin_starting_mode": ("function", True, "4d0ed6879afd", "client_claude_session"),
     "_pins_starting_mode": ("data", False, "", ""),
     "_prepare_claude_held_asks": ("function", True, "b60c5fea256e", "client_claude_session"),
     "_prepare_claude_side_read_denies": ("function", True, "b60c5fea256e", "client_claude_session"),
+    "_push_model_config_option": (
+        "function",
+        True,
+        "e60b4fb0cbfc",
+        "client_claude_mode_seams",
+    ),
+    "_read_message": ("function", True, "1159757afded", "client_claude_mode_seams"),
     "_reassert_adapter_resolved_model": ("function", True, "b60c5fea256e", "client_claude_session"),
     "_refuse_claude_session_below_floor_before_spawn": (
         "function",
@@ -464,6 +499,7 @@ _CLAUDE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_reset_harness_compaction": ("function", False, "b60c5fea256e", "client_claude_turn"),
     "_reset_settings_seed_state": ("function", False, "b60c5fea256e", "client_seed_ownership"),
     "_restore_aside_without_clobber": ("staticmethod", False, "276fb30edb8b", "client_claude"),
+    "_restore_claude_asking_mode_if_due": ("function", True, "b60c5fea256e", "client_claude_mode"),
     "_retract_reseed": ("function", False, "a76c82664804", "client_claude_seed"),
     "_retry_after_model_substitution": ("function", True, "56a9ed3b2989", "client_claude_session"),
     "_seed_session_settings": ("function", True, "b60c5fea256e", "client_claude_seed"),
@@ -489,6 +525,8 @@ _CLAUDE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_share_settings_seed_if_identical": ("function", False, "0b50a902117a", "client_claude_seed"),
     "_share_sibling_settings_seed": ("function", False, "0b50a902117a", "client_claude_seed"),
     "_steering_adapter_floor_met": ("function", False, "a6632a57e602", "client_claude_turn"),
+    "_track_claude_starting_mode": ("function", False, "8a6769d658b8", "client_claude_mode"),
+    "_unasked_call_attribution": ("function", False, "556f55260dba", "client_claude_mode"),
     "_verify_claude_project_denies_unchanged": (
         "function",
         True,
@@ -499,6 +537,7 @@ _CLAUDE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_worker_settings_lag": ("function", False, "61b6ef5a7c97", "client_seed_ownership"),
     "_write_claude_local_settings": ("function", False, "b60c5fea256e", "client_claude_seed"),
     "_write_settings_seed": ("function", False, "b60c5fea256e", "client_claude_seed"),
+    "ensure_ready": ("function", True, "b60c5fea256e", "client_claude_mode_seams"),
     "new_conversation": ("function", True, "b60c5fea256e", "client_new_conversation"),
     "release_settings_seed_claim": ("function", False, "b60c5fea256e", "client_seed_ownership"),
     "settings_withheld_cause": ("function", False, "bb418bb7ece8", "client_seed_ownership"),
@@ -1237,9 +1276,10 @@ def _imports_the_session_start(tree: ast.Module) -> bool:
     return f"{_PACKAGE}.client_start" in _owner_imports(tree)
 
 
-def test_only_the_facade_and_the_class_import_the_session_start() -> None:
+def test_only_the_facade_class_and_late_claude_seam_import_session_start() -> None:
     """Nothing reaches ``client_start`` before the facade has filled it: the package
-    imports the facade first, and the class module is the only other importer."""
+    imports the facade first; the class and the Claude seam ordered after start are
+    the only other importers."""
     src = Path(acp_client.__file__ or "").resolve().parents[1]
     importers = sorted(
         path.relative_to(src).as_posix()
@@ -1247,7 +1287,11 @@ def test_only_the_facade_and_the_class_import_the_session_start() -> None:
         if "client_start" in path.read_text(encoding="utf-8")
         and _imports_the_session_start(ast.parse(path.read_text(encoding="utf-8")))
     )
-    assert importers == ["acp/client.py", "acp/client_class.py"]
+    assert importers == [
+        "acp/client.py",
+        "acp/client_class.py",
+        "acp/client_claude_mode_seams.py",
+    ]
     package = ast.parse((src / "acp" / "__init__.py").read_text(encoding="utf-8"))
     first = next(n for n in package.body if isinstance(n, (ast.Import, ast.ImportFrom)))
     assert isinstance(first, ast.ImportFrom) and first.module == acp_client.__name__

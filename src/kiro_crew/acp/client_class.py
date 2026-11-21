@@ -1104,6 +1104,11 @@ class AcpClient:
         """Move a session off a starting mode Crew does not allow. Reached only where
         ``_pins_starting_mode`` is True."""
 
+    def _unasked_call_attribution(self, kind: str) -> dict[str, Any]:
+        """What let a call of an ``auto`` session run without asking the host, for its
+        SEL row (``_maybe_audit_unasked_tool_call``): Claude's classifier here."""
+        return {"reason": "claude_auto_mode", "decided_by": "claude_classifier"}
+
     def _local_settings_exclusion(self) -> tuple[bool, dict[str, Any] | None]:
         """Whether this session leaves a project's settings file out of its setting
         sources, and the settings it carries inline instead: never here."""

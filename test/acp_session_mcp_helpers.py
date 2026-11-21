@@ -22,6 +22,7 @@ import pytest
 
 from kiro_crew import agent as agent_mod
 from kiro_crew.acp import client as client_mod
+from kiro_crew.acp import client_transport as transport_mod
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp.client import ClaudeAcpClient
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
@@ -241,5 +242,5 @@ def _adapter_transport(
     monkeypatch.setattr(client, "_wait_for_response", _wait)
     monkeypatch.setattr(client, "_kill_process", _kill)
     monkeypatch.setattr(client, "_session_work_dir", _work_dir)
-    monkeypatch.setattr(client, "_drain_notifications", mock.AsyncMock())
+    monkeypatch.setattr(transport_mod, "_drain_notifications", mock.AsyncMock())
     return sent, killed
