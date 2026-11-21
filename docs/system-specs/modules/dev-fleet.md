@@ -278,7 +278,7 @@ inside `repository._repo()`; helpers in every sibling module must route through 
 accessor.
 
 Every OTHER route that resolves a worktree (`/worktree`, `/disk`, `/prune-candidates`,
-`/prune-run`, the pod routes, `/rebase`, `/make-live`) reaches `_discover_worktrees` too, so
+`/prune-run`, the pod routes, `/rebase`) reaches `_discover_worktrees` too, so
 both unresolved states are converted once in `hmac_proxy_middleware` into a `409`:
 `RepoNotConfigured` → `{"ok": false, "code": "repo_not_configured"}`, and `RepoUnreadable`
 (a checkout was named but git cannot enumerate it) → `{"ok": false, "code":
@@ -536,7 +536,7 @@ internal-secret caller there would expose the app's whole backend surface.
 
 | Method | Route | Input | Description |
 |--------|-------|-------|-------------|
-| POST | `/api/apps/dev-fleet/pod/up` | `{worktree, memory?, cpu?}` | Boot a pod, passing `memory` / `cpu` to the CLI as `--memory` / `--cpu`; answers the CLI's `--json` handle (`base_url`, `token`, `port`, `ttl`, and `checkout`, the pod's own clone path, which the pod-e2e harness compares with its own checkout). The token is minted **in the gateway process** when pod config is available (see *Token mint runs in the gateway*); otherwise the CLI mints it. Provisioning is NOT reachable here: a cold venv + SPA build is minutes of work, and one blocking request for that dies to any timeout with no way to learn the outcome. An unbuilt worktree is refused with the CLI's own remedy; the dashboard's Provision button streams the same work under a run id |
+| POST | `/api/apps/dev-fleet/pod/up` | `{worktree, memory?, cpu?, env?}` | Boot a pod, passing `memory` / `cpu` to the CLI as `--memory` / `--cpu` and each `env` `KEY=VALUE` (only `KIROCREW_KIRO_BIN`, `pod.env_overrides.ALLOWED_KEYS`) as `--env`; answers the CLI's `--json` handle (`base_url`, `token`, `port`, `ttl`, and `checkout`, the pod's own clone path, which the pod-e2e harness compares with its own checkout). The token is minted **in the gateway process** when pod config is available (see *Token mint runs in the gateway*); otherwise the CLI mints it. Provisioning is NOT reachable here: a cold venv + SPA build is minutes of work, and one blocking request for that dies to any timeout with no way to learn the outcome. An unbuilt worktree is refused with the CLI's own remedy; the dashboard's Provision button streams the same work under a run id |
 | POST | `/api/apps/dev-fleet/pod/restart` | `{worktree, memory?, cpu?}` | Restart the pod in place through `kirocrew pod restart`, keeping its isolated HOME, and answer the same handle as `pod/up`. `memory` / `cpu` record new ceilings first |
 | POST | `/api/apps/dev-fleet/pod/down` | `{worktree}` | Stop the pod and reclaim its isolated HOME |
 | GET | `/api/apps/dev-fleet/pod/status?worktree=` | — | `{name, status, port, health, memory, cpu}`, as `pod status --json` reports it |
@@ -544,7 +544,7 @@ internal-secret caller there would expose the app's whole backend surface.
 
 Contract:
 
-- **Gated on the app being enabled** (`_require_enabled`), since routes are
+- **Gated on the app's host-exec grant** (`_require_enabled` reads `host_exec_granted`, which the gateway writes on an owner enable, not the agent-writable `installed.json`), since routes are
   registered at startup and Dev Fleet ships `defaultEnabled: false`.
 - **No operator opt-in and no per-call approval, deliberately.** A pod runs the code
   in a git worktree an agent can write, started by the per-user service manager
@@ -616,11 +616,12 @@ Contract:
   `code=wrong_process`. The Open button mints through the gateway's owner-only
   `POST /api/apps/dev-fleet/pod-token` instead.
 - **Refusals are 409 with a literal `code`** (`pod_up_failed`, `pod_restart_failed`,
-  `pod_down_failed`, `pod_status_failed`, `pod_list_failed`); malformed input is 400
-  (`invalid_worktree`, `invalid_body`, `invalid_limit`). A refused lifecycle op is a host-state
+  `pod_restart_unsupported` on Windows, `pod_down_failed`, `pod_status_failed`,
+  `pod_list_failed`, `repo_unavailable`); malformed input is 400
+  (`invalid_worktree`, `invalid_body`, `invalid_limit`, `invalid_env`). A refused lifecycle op is a host-state
   answer, not a gateway bug. `repository._repo()` raises when no main checkout is
-  configured, and the read verbs catch that rather than letting a setup problem
-  surface as a 500.
+  configured, and every verb's shared wrapper (`_run_op`) answers that as
+  `repo_unavailable` rather than letting a setup problem surface as a 500.
 - **Every lifecycle CHANGE and every guard denial is written to the Security Event
   Log** under `dev_fleet.agent.*` (`pod_up`, `pod_restart`, `pod_down`, `machine_guard`): the caller
   is unattended, so the trail is what makes the run reviewable. The read verbs are
@@ -664,7 +665,8 @@ destructive operations (remove, prune) require client-side confirmation dialogs 
 the frontend. The two in-gateway write routes, `POST /api/apps/dev-fleet/make-live`
 and `POST /api/apps/dev-fleet/restart-gateway`, are the exception: they are
 dashboard-**owner** only and refuse every app token, because the pointer they write
-selects the code the gateway executes next (see *Make Live → Pointer file*). The
+selects the code the gateway executes next (see *Make Live → Pointer file*);
+`pod-token` and `create-release-worktree` take the same owner-only gate. The
 in-gateway read and lease routes admit only Dev Fleet's own backend token.
 
 ## Input Validation
@@ -1055,7 +1057,7 @@ step needs before using them, so provisioning a **fresh** worktree (no
   [Shared Dependency Cache for Worktrees](../../request-for-change/rfc-shared-dependency-cache.md).
 - **dist (`build_dist`)** — before `npm run build`, calls
   `ensure_node_modules(website)`: if `website/node_modules/.bin/tsc` is missing
-  it runs `npm ci` (falling back to a NON-MUTATING `npm install
+  or its provenance stamp no longer matches `website/package-lock.json`, it runs `npm ci` (falling back to a NON-MUTATING `npm install
   --no-package-lock` on lockfile drift — the flag keeps the fallback from
   rewriting the tracked `website/package-lock.json`, so provisioning never
   dirties the worktree), otherwise
@@ -1238,8 +1240,8 @@ duplicate Restart Gateway causes a second real ~10s gateway outage.
 
 `POST /api/apps/dev-fleet/restart-gateway` (gateway process) returns `{"ok": true, "start_id": …}`
 after the platform manager accepts the restart. Linux schedules detached
-`systemd-run`; macOS submits `launchctl stop` under the loaded contract described
-below. The bounce happens after the response, so success does not mean the new
+`systemd-run`; macOS sends `launchctl kill TERM gui/<uid>/<label>` once the installed and
+loaded restart contracts check current. The bounce happens after the response, so success does not mean the new
 gateway is serving yet.
 
 To close that gap the backend captures the unit's **start identity** BEFORE
@@ -1869,7 +1871,8 @@ choose the gateway's next image. Instead:
   `apps/backend.py` builds for every backend at spawn from the gateway's own
   `KIROCREW_BOUND_PORT` — the port is exported the moment it is reserved
   (`dashboard.server._reserve_dashboard_port`, before any backend spawns;
-  `_export_bound_port` republishes it once the site serves), so
+  the headless entrypoint, which reserves no socket, exports it through
+  `_export_bound_port` once its site serves), so
   `dashboard.server.start_dashboard` spawns this backend in the one boot wave
   with every other app, before `runner.setup()`. A gateway bound to a specific
   non-loopback interface gets no origin, so the broker is unconfigured there and
@@ -2474,7 +2477,7 @@ rebuild:
 
 | artifact | build input | where the built-from id is recorded |
 |---|---|---|
-| `venv` | `pyproject.toml` + `setup.cfg` oids (deps are dynamic: `pyproject.toml` sets `dynamic = ["dependencies"]` and the real `install_requires`/extras live in `setup.cfg`) | the manifest below |
+| `venv` | `pyproject.toml` + `setup.cfg` oids (deps are dynamic: `pyproject.toml` sets `dynamic = ["dependencies", "optional-dependencies"]` and the real `install_requires`/extras live in `setup.cfg`) | the manifest below |
 | `node_modules` | `website/package-lock.json` + `website/package.json` blob oids (`npm ci` installs exactly the lockfile, and refuses one that disagrees with `package.json`) | the manifest below |
 | `dist` | `HEAD:website` tree oid | the EXISTING `build-id.json` the dist already carries (see below) |
 

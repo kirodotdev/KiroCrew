@@ -565,7 +565,18 @@ TRUNCATED_WINDOW_NOTE = (
     "cannot be confirmed free of a secure (password) field. Re-run with a higher "
     "max_tree_nodes / max_tree_depth to capture it."
 )
-NO_APPS_NOTE = "No applications with on-screen windows were found."
+#: ``computer_list_apps`` omits a refused app entirely, so a listing that does not
+#: say so reads as complete: a model shown an empty list told the user nothing was
+#: open while they were looking at a browser on the Kiro Crew dashboard. No hidden
+#: app is named or counted, so nothing refused reaches the model.
+UNLISTED_APPS_NOTE = (
+    "Kiro Crew, apps with a window titled Kiro Crew, and apps blocked in "
+    "Computer Use settings are never listed."
+)
+NO_APPS_NOTE = (
+    "No application computer use may drive has an on-screen window. "
+    f"{UNLISTED_APPS_NOTE} Other apps can still be open."
+)
 
 # ── Permission probe states (ADVISORY ONLY — never a hard gate) ──
 # macOS attributes a TCC grant to the RESPONSIBLE PARENT process, so a probe

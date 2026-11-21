@@ -936,7 +936,7 @@ def _restart(cli_port: int | None = None) -> None:
     bypassed: the systemd unit name is not bound to a specific port, so
     short-circuiting through it would target the wrong gateway.
     """
-    from kiro_crew.cli_gateway_mode import restart_gateway_headless, service_gateway_headless
+    from kiro_crew.cli_restart_headless import live_gateway_headless
     from kiro_crew.dashboard.headless import print_client_access
 
     port = resolve_client_port(cli_port)
@@ -954,17 +954,7 @@ def _restart(cli_port: int | None = None) -> None:
                 resources=f"port={port} via=service",
             )
             print("✅ Restarted kirocrew service.")
-            try:
-                service_headless = service_gateway_headless(
-                    _resolve_restart_ready_timeout(), _RESTART_READY_POLL_INTERVAL
-                )
-            except (OSError, ValueError):
-                print("⚠️ Cannot read the gateway launch mode; no sign-in link printed.")
-                return
-            if service_headless:
-                print_client_access(port)
-            else:
-                _print_token_url(port)
+            _print_token_url(port)
             return
         if report.attempted or service_controller.is_service_active():
             # A managed unit was there and the restart did not take. An ATTEMPTED
@@ -1088,6 +1078,26 @@ def _restart(cli_port: int | None = None) -> None:
     if _refuse_desktop_supervised("gateway_restart", port, explicit_port=cli_port is not None):
         sys.exit(1)
 
+    # Before anything is stopped: the replacement repeats a live gateway's
+    # --headless, and a live gateway whose argv cannot be established refuses,
+    # never a guess.
+    headless = live_gateway_headless(port)
+    if headless is None:
+        sel().log_api_access(
+            caller="cli",
+            operation="gateway_restart",
+            outcome="denied",
+            source="cli",
+            resources=f"port={port} reason=launch_mode_unreadable",
+        )
+        print(
+            "❌ Cannot tell how the Kiro Crew process holding this data home was started; "
+            "nothing was stopped. Try again, or run kirocrew stop and then "
+            "kirocrew gateway --headless, or kirocrew gateway for one with the dashboard.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # No service active — bounce the foreground gateway and detach a fresh one.
     # Reuse _stop() for the SIGTERM path so behavior stays in sync if _stop
     # ever gains new safety checks. _stop() exits the process with sys.exit(1)
@@ -1114,8 +1124,6 @@ def _restart(cli_port: int | None = None) -> None:
     # so a 200 from the OUTGOING gateway can never be mistaken for the new one
     # coming up. None (no marker, e.g. after a crash) simply means there is no
     # old identity to exclude.
-    # Read before _stop: no restart may drop a mode it could not decode.
-    headless = restart_gateway_headless(port, _RESTART_READY_POLL_INTERVAL)
     prior_marker_pid = run_marker.read_pid(port)
     listeners = platform_compat.find_listening_pids(port)
     incumbents = [p for p in listeners if _is_kirocrew_process(p)]

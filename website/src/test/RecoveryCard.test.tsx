@@ -161,8 +161,6 @@ describe('parseRecoveryMessage', () => {
       `${HOOK}\nYour previous turn ended by offering a trivial read-only option. Perform it now.`,
     )
     expect(hook?.kind).toBe('hook')
-    expect(hook?.title).toBe('Continued by a hook')
-    expect(hook?.detail).toBe('requested by a hook · continuing')
     expect(hook?.chip).toBe('')
     expect(hook?.body.startsWith('[')).toBe(false)
     expect(hook?.body).toContain('trivial read-only option')
@@ -172,6 +170,16 @@ describe('parseRecoveryMessage', () => {
       expect(text?.toLowerCase()).not.toContain('recover')
       expect(text?.toLowerCase()).not.toContain('stall')
     }
+  })
+
+  it('names the hook once and never says the finished turn is still running', () => {
+    // The card stays in the transcript after the continued turn is over, so a
+    // present-tense "continuing" reads as live work that is not happening.
+    const hook = parseRecoveryMessage(`${HOOK}\nKeep going.`)
+    const line = `${hook?.title} · ${hook?.detail}`.toLowerCase()
+    expect(line).not.toContain('recoverycard.')
+    expect(line.match(/hook/g)).toHaveLength(1)
+    expect(line).not.toMatch(/continuing|\bin progress\b|running/)
   })
 
   it('does not attribute a hook continuation to the user', () => {
@@ -350,6 +358,21 @@ describe('RecoveryCard', () => {
   it('keeps the attention severity for a refusal', () => {
     render(<RecoveryCard parsed={parsed} />)
     expect(screen.getByTestId('recovery-card')).toHaveAttribute('data-severity', 'attention')
+  })
+
+  it('gives a hook continuation its own glyph, not the retry arrow', () => {
+    // Nothing was retried: the turn ended and a hook asked for another, so the
+    // recovery kinds' circular arrow would read as retry or refresh.
+    const { container, unmount } = render(<RecoveryCard parsed={parseRecoveryMessage(`${CONNECTION}\nContinue.`)!} />)
+    const retryGlyph = container.querySelector('[data-testid="recovery-card-toggle"] svg:nth-of-type(2)')?.getAttribute('class')
+    unmount()
+
+    render(<RecoveryCard parsed={parseRecoveryMessage(`${HOOK}\nKeep going.`)!} />)
+    const card = screen.getByTestId('recovery-card')
+    expect(card).toHaveAttribute('data-severity', 'routine')
+    const hookGlyph = card.querySelector('[data-testid="recovery-card-toggle"] svg:nth-of-type(2)')?.getAttribute('class')
+    expect(retryGlyph).toContain('lucide-rotate-ccw')
+    expect(hookGlyph).toContain('lucide-anchor')
   })
 })
 

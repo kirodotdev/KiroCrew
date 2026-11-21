@@ -41,6 +41,7 @@ from kiro_crew.apps.manager import (
 from kiro_crew.apps.manifest import Dependencies
 from kiro_crew.apps.point_grants import point_grant_families
 from kiro_crew.apps.registry import _manifest_shell_platform_refusal, minimal_env
+from kiro_crew.apps.routes_kiro import kiro_consent_refusal
 from kiro_crew.apps.routes_lifecycle import (
     _backend_platform_refusal,
     _deregister_app_off_loop,
@@ -293,6 +294,10 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
         denied = await require_owner_dashboard_request(request, "app_enable_session_consent")
+        if denied is not None:
+            return denied
+        # Kiro operations run with the host owner's own Kiro sign-in: the host owner only.
+        denied = kiro_consent_refusal(request, grants_consent)
         if denied is not None:
             return denied
 

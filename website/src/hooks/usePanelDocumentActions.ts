@@ -11,6 +11,7 @@ import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, partialReadCause }
 import { announceDashboardPreviewOpened, dashboardPreviewRef, dashboardPreviewTargetFromRef } from '../utils/dashboardPreview'
 import { errMessage } from '../utils/thunkError'
 import { optsForReplace } from '../pages/chat/replaceGuard'
+import { apiTransport } from '../api/apiTransport'
 
 type MutableRef<T> = { current: T }
 
@@ -37,7 +38,7 @@ export interface PanelDocumentActionsOptions {
 /** Write a file's new content. `slot` names the chat, so the gateway refuses a
  *  write for one that runs remotely. Shared with the file pop-out window. */
 export async function writeFile(filePath: string, content: string, slot: string | null | undefined): Promise<void> {
-  const res = await fetch('/api/file-write' + (slot ? '?slot=' + encodeURIComponent(slot) : ''), {
+  const res = await apiTransport.request('/api/file-write' + (slot ? '?slot=' + encodeURIComponent(slot) : ''), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path: filePath, content }),

@@ -18,7 +18,6 @@ from kiro_crew.config import sections as _sections
 from kiro_crew.config.loader_document import (
     _raw_agent_section,
     _raw_stt_provider,
-    kas_bundle_build_default,
     unsandboxed_exec_platform_default,
 )
 from kiro_crew.config.loader_locations import config_path
@@ -575,14 +574,14 @@ def _read_backend_choice(
 
 
 def _resolved_kas_bundle(agent_data: Mapping[str, object]) -> bool:
-    """``agent.kas_bundle`` as loaded: the stored value, else the build's default.
+    """``agent.kas_bundle`` as loaded: the SAVED value, else ``False``.
 
-    An undeclared key reads :func:`kas_bundle_build_default` (on in a nightly build
-    only), not the field's ``False``, the way ``sandbox_allow_unsandboxed_exec``
-    reads its platform default; ``save()`` keeps the undeclared key off disk.
+    An unset key is not resolved into the field: a packaged build only prefers the
+    engine for it, per spawn (``acp.kas_build_default``, ``kas_route`` rule 1b), so
+    every reader of the loaded field still reads "the user chose the engine".
+    ``save()`` keeps the undeclared key off disk, so that preference stays live.
     """
-    default = kas_bundle_build_default()
-    return _safe_bool(agent_data.get("kas_bundle", default), default)
+    return _safe_bool(agent_data.get("kas_bundle", False), False)
 
 
 #: Whether the member-backend remap was logged in this process (see below).
@@ -884,6 +883,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         apps_builtin_adoption=_builtin_adoption_markers(section.get("apps_builtin_adoption")),
         apps_builtin_adoption_nav=_builtin_adoption_nav(section.get("apps_builtin_adoption_nav")),
         apps_ui_stream_timeout_secs=section.read("apps_ui_stream_timeout_secs", _safe_int, 5, 600),
+        apps_ui_protected_copy=section.read("apps_ui_protected_copy", _safe_bool),
         jail=_normalize_jail(section.get("jail")),
         dangerously_skip_permissions=_read_skip_permissions(agent_data),
         yolo_duration=section.read("yolo_duration", _normalize_yolo_duration),

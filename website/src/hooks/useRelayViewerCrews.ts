@@ -101,6 +101,12 @@ export async function closeRelayCrews(): Promise<void> {
   }
 }
 
+/** A refusal that says the person is signed out: an ordinary state with a way
+ *  forward (sign in), so it is told as a status, not as an error. */
+export function isSignedOutRefusal(code: string | undefined): boolean {
+  return (code || '').toUpperCase() === 'SIGNED_OUT'
+}
+
 /** Plain text for a typed refusal code (the control plane client's codes, design
  *  section 5). Matched case-insensitively; every other code, the bridge's own
  *  INVALID_ENDPOINT and UNAVAILABLE included, gets the generic text. */
@@ -234,7 +240,8 @@ function relayCrewsPollMs(state: { error: unknown; data?: { crews: RelayCrewEntr
 /** Opening the switcher re-reads the list unless a successful read is this recent. */
 const OPEN_FRESH_MS = 5_000
 
-export function useRelayViewerCrews(): {
+/** `enabled` false reads nothing: an SSH Crew's own page (an embedded pane) shows the rows its window relays instead. */
+export function useRelayViewerCrews(enabled = true): {
   hidden: boolean
   crews: RelayCrewEntry[]
   /** The account the loaded list was read for; null when the gateway named none. */
@@ -256,6 +263,7 @@ export function useRelayViewerCrews(): {
     // The poll below is the retry, at its own pace.
     retry: false,
     refetchInterval: query => relayCrewsPollMs(query.state),
+    enabled,
   })
   // Stable, so the menu can call it once when it opens. Only a loaded list is read again.
   const refreshOnOpen = useCallback(() => {

@@ -13,52 +13,6 @@ alone never grants a mode. Origin-chat injection keeps the chat's own policy.
 Cron execution binding is published off the event loop before mode admission
 and provider allocation, using the run's already captured execution context.
 
-Every boot records boolean `headless`, writer `pid`, and a readable `start_token`
-in the run-marker directory's `gateway-mode.json`. The start token uses the pid
-sidecars' `pid_start_token` producer; an unreadable token is omitted.
-(`instances.run_marker.write_gateway_mode`). A headless boot awaits the write after the
-signing key preflight and before any service or listener starts. The headless write reuses
-the preflight's daemon-worker mechanism and its existing 30-second deadline, so a stalled
-headless write cannot hold up interpreter exit. A headless timeout logs critical, prints
-one stderr line naming the deadline and asking the owner to check data-home reachability,
-and exits with `SystemExit(1)`; a write error also aborts
-that boot, because a record still saying ordinary would let a CLI restart bring a crashed
-headless gateway back with the dashboard. An ordinary boot adds no work before listening:
-the write runs on a tracked background task scheduled beside the launcher/pid marker
-task once the listener is up, and a failure logs one warning and never stops startup. A
-stale record that write leaves can only say headless. The write runs while the process
-holds `gateway.lock`, so a pending write cannot land on a later gateway's record. The
-mode survives shutdown and is replaced at the next boot; the detached CLI restart reads
-it before stopping this gateway. A live gateway is identified by this home's lock
-holder. The record counts only if its pid matches and, when both start tokens are
-readable, they match. Foreground restart waits while a live holder is not named by
-the record, including an absent record or mismatched pid/start token. Each poll reads
-the holder, listeners, then the record. Waiting ends when:
-- The record names the holder: judge by the record.
-- The holder's pid is among `find_listening_pids(port)` and the record still does
-  not name it: ordinary.
-- The holder is gone: apply the no-live-gateway rule below.
-
-Headless boot publishes before listening or exits. An ignored stale headless record
-prints one warning. A different live holder does not reset the wait.
-The deadline is the headless record write's 30 seconds, shared through
-`instances.run_marker.GATEWAY_MODE_WRITE_TIMEOUT_SECS`; polling uses restart's
-`_RESTART_READY_POLL_INTERVAL`. Without a listener lookup tool only a named holder
-or no live holder ends the wait. At the deadline an unnamed, unconfirmed holder
-causes exit 1 before any stop or spawn, never an ordinary fallback, with one stderr line:
-`❌ The gateway of this data home is still starting and its mode cannot be checked; restart refused. Stop it with kirocrew stop, then start it with kirocrew gateway --headless or kirocrew gateway for one with the dashboard.`
-Other states need no wait; restart still does its own listener lookup after mode selection.
-With no live gateway, restart refuses a headless record with exit 1 before any
-stop or spawn and asks the operator to start with `kirocrew gateway --headless`
-or `kirocrew gateway` for the dashboard; an absent or ordinary record restarts
-ordinary. An indeterminate lock probe retains the validated record and leaves
-restart's stop and spawn guards in charge. Unreadable start identity leaves pid
-reuse undetected. After a managed restart, no live holder and a headless record
-at the wait bound suppress both the API banner and the sign-in link. A unit
-started by systemd or launchd itself runs its own command line and never reads
-the mode record.
-The launcher/pid marker worker never rewrites this mode.
-
 Startup wires memory objects behind one gateway-lifetime in-process barrier.
 Both dashboard and API-only servers receive the orchestrator's existing context
 builder. Post-bind workflow initialization uses that same object for essentials
@@ -102,7 +56,7 @@ successor gateway's barrier.
 
 After successful memory readiness, one gateway-owned repair loop visits the
 active Global store and cached named V1/V2 stores in round-robin order every 30
-seconds on the embedding executor. Each visit revalidates readiness and the
+seconds on the background memory executor. Each visit revalidates readiness and the
 named store's declaration and ownership, uses only an already-ready backend and
 repairs at most 16 missing vectors per memory kind using existing bulk pacing.
 Bounded cursor pages move past failed rows and wrap for retries. Later seeds,
@@ -192,6 +146,16 @@ parent for the same fenced block whatever the transcript holds, and records no
 On these dispatch paths, a reply in a dashboard-linked thread and a Slack-born
 session with prior turns fetch and record nothing.
 
+A reply typed in a dashboard-linked thread still names that thread on every
+turn, as a Slack-born turn does (`slack/handler_runtime/turn.py`):
+`dashboard/chat_turn/prompt_assembly.py` hands `build_message` the slot's
+`channel_id` and `thread_ts` with `include_channel_history=False` and no
+`thread_parent_text`, so the prompt's `[SLACK THREAD CONTEXT]` block names the
+thread and the agent can read it with the Slack tools. Only a turn whose words
+came from that linked channel gets the ids; a turn typed in the dashboard, or in
+another channel, gets none. A first turn that still holds a pending thread
+parent keeps the parent block instead.
+
 A NEW dashboard session can also join a thread it did not start: the challenge
 link's re-open flow posts `slack-link` with the thread's `thread_ts` and the
 challenge token's `msg_ts` (the reply that hit the challenge). When `msg_ts`
@@ -269,7 +233,12 @@ answer. A help gap's fallback notice names the run it was read from
 A capture at the runner's bound is unknown too. Every caller runs the verdict off
 any event loop (a worker thread or a sync CLI entry). An unknown probe on a Kiro CLI pick logs a WARNING
 (`KAS_CLI_FLOOR_KIRO_UNKNOWN_NOTICE`) naming why: no trusted kiro-cli, an
-`acp --help` that did not run, or a v3 start that did not finish. For a Kiro CLI pick, `kirocrew doctor`'s `engine:`
+`acp --help` that did not run, or a v3 start that did not finish. The floor task then
+asks again after each `kas_floor_wait.KIRO_PICK_VERDICT_RETRY_SECS` delay (1, 5 and
+15 minutes) while the pick is still stored and `kiro_cli_pick_verdict_open` holds (no
+v3 confirmed, KAS selectable), reconciling the live config after each ask, so a busy
+host's timed-out probe moves the pick once kiro-cli answers, without a restart. Before the
+first wait it releases the spawn gate, so no spawn waits for these asks. For a Kiro CLI pick, `kirocrew doctor`'s `engine:`
 row reads that same `kas_engine_verdict` and `kas_engine_start_verdict`, never its
 own probe, and says which
 engine the pick runs on by the floor's own rule: KAS only when v3
@@ -620,6 +589,10 @@ The bundled `slack-manifest.yaml` is the setup source of truth. Its bot scopes
 are `app_mentions:read`, `channels:history`, `channels:read`, `chat:write`,
 `commands`, `files:read`, `files:write`, `groups:history`, `groups:read`,
 `im:history`, `im:read`, `im:write`, `reactions:write`, and `users:read`.
+The Slack Code switches add gated scopes: `assistant:write` with agent
+sessions; `canvases:write`, `channels:write.invites`, `chat:write.customize`,
+`code_channels:manage`, `groups:write.invites` and `pins:write` with code
+channels.
 `message.groups` is subscribed alongside `message.channels` so private-channel
 turns and thread continuation are delivered.
 
@@ -629,6 +602,16 @@ The manifest also requests user scopes `channels:history`, `channels:read`,
 separately configured Slack MCP/search integration's `xoxp-...` token. The
 gateway constructs every Slack client with `SLACK_BOT_TOKEN`; it does not read
 or store the user token.
+
+The Slack MCP switch (`slack.slack_mcp`) is in `slack_manifest.FEATURES` but has
+no bot scope, so it is not in `FEATURE_SCOPES` and the capability probe, latches
+and runtime gate never see it. With it on, the manifest adds
+`settings.is_mcp_enabled`, `oauth_config.pkce_enabled` and the redirect URL
+`http://localhost:48106/callback`, and its user scopes become exactly the
+read-only set the Slack MCP server needs (the Slack Connections card's
+`recommended_scopes`): the template's one `#@!slack_mcp` line, `search:read`,
+renders only while the switch is off. With it off, the rendered manifest is
+byte-identical to the one without the switch.
 
 The manifest's one slash command is `/{{COMMAND}}`, rendered by `slack_manifest.slash_command(alias)` as `kirocrew-<alias>` (lowercase, cut to Slack's 32-character limit), because Slack resolves command names across a whole Enterprise Grid org and two installs registering the same `/kirocrew` collide. The dashboard's default alias `kirocrew` keeps `/kirocrew`. Slack delivers only commands the app registered, so `_handle_slash` and the code-channel router (both through `slack_manifest.is_app_command`) answer the live `/{slack.command}`, the shown `/{orch.slack_command}`, and every name `slack_manifest.MANIFEST_COMMAND_RE` matches (`/kirocrew` and `/kirocrew-<alias>`), whichever manifest created the app; no restart is needed. `kirocrew manifest` still prints the `kirocrew config set slack.command kirocrew-<alias>` line (applied live): `GET /api/slack/manifest` with no alias renders from the saved `slack.command`, so saving it is what keeps a later manifest update on the alias name. Once the owner gate passes, the typed name becomes `orch.slack_command`, so usage replies, the fallback help, the Home tab and the code-channel pickers name a command this app registered even while `slack.command` is the default; a `slack.command` change sets it again. Owner gating and the deny audit are the same for every answered name. Any other name is dropped.
 
@@ -656,8 +639,7 @@ badge (`push_refresh("update_available")`). A policy `min_version` floor keeps
 its prominent notice (`update_required`, no dismissal) and forces nothing: on a
 managed venv it stages the same way, on every other route it notifies. Nothing on
 this path restarts, pauses admission or applies in place: the scheduler has no
-restart code (`_restart_after_update*`, `_retry_pending_update_restart`,
-`_prepare_auto_update_apply` and `_auto_apply_update` are gone), and
+restart code, and
 `test_updates_never_restart_a_running_gateway.py` walks every scheduler module
 and a full coordinator cycle on every route to prove none can reach a restart.
 A person's click on Update only ARMS the update, which applies at the next
@@ -1009,10 +991,10 @@ The widest window for these races is boot. The first coordinator cycle starts
 before the MCP probe finishes, and the main flow reaches `shutdown_event.wait()`
 only after it.
 
-`systemctl stop|restart` on the generated unit already recovered before this:
-the unit's control-group SIGTERM reaches `cli.sh` directly. The paths that
-stranded the venv were `kirocrew stop`, Ctrl-C, `POST /api/shutdown` and the
-installer's own 300 s timeout.
+`systemctl stop|restart` on the generated unit recovers without this: the
+unit's control-group SIGTERM reaches `cli.sh` directly. The arms above cover
+`kirocrew stop`, Ctrl-C, `POST /api/shutdown` and the installer's own 600 s
+timeout.
 
 Not covered here:
 
@@ -1046,15 +1028,15 @@ Not covered here:
 
 **Self-initiated exits carry a non-zero status.** `_shutdown_and_exit` composes
 `shutdown_exit_code(watchdog) or persistence_lost_exit_code(...) or
-listener_guard_exit_code(...)` (the first term is 0 since the stale-asset watchdog stopped exiting), so an operator
+listener_guard_exit_code(...)` (the first term, the stale-asset watchdog's, is 0 in every state), so an operator
 stop still exits 0 while a shutdown the gateway asked for itself does not —
 a restart-on-failure supervisor never relaunches an exit 0:
 
 | Status | Source | Meaning |
 | --- | --- | --- |
 | 0 | operator (SIGTERM, `systemctl stop`, Ctrl+C) | stay down as asked |
-| 72 (`EX_OSFILE`) | persistence watchdog (`dashboard/persistence_watchdog.py`) | the data home stopped persisting after a healthy boot and the re-confirmed failure is the restart-curable `ENOSYS` case (a seccomp filter inherited from a torn-down sandbox). Only `ENOSYS` self-exits: a failure a restart cannot cure (full disk `ENOSPC`, read-only remount `EROFS`, quota) is logged loudly once per distinct reason (not every tick) but keeps serving, since a relaunch would meet the same boot preflight and crash-loop. It does NOT gate the exit on a supervisor being able to relaunch (`supervisor_reentry`, the check the stale-asset watchdog made while it still exited): the gateway this targets is typically started by hand inside a sandbox (`nohup`) and may have no supervisor, where exiting 72 stops a silent zombie loudly rather than restarting it; a systemd/launchd gateway never inherits the filter but gets the clean relaunch when any other persistence fault later turns `ENOSYS`-shaped |
-| 75 (`EX_TEMPFAIL`) | stale-asset watchdog (retired) | no longer produced: a vanished bundle is reported with an "update ready, restart to use it" notice and the gateway keeps serving; the status stays reserved |
+| 72 (`EX_OSFILE`) | persistence watchdog (`dashboard/persistence_watchdog.py`) | the data home stopped persisting after a healthy boot and the re-confirmed failure is the restart-curable `ENOSYS` case (a seccomp filter inherited from a torn-down sandbox). Only `ENOSYS` self-exits: a failure a restart cannot cure (full disk `ENOSPC`, read-only remount `EROFS`, quota) is logged loudly once per distinct reason (not every tick) but keeps serving, since a relaunch would meet the same boot preflight and crash-loop. It does NOT gate the exit on a supervisor being able to relaunch (`supervisor_reentry`): the gateway this targets is typically started by hand inside a sandbox (`nohup`) and may have no supervisor, where exiting 72 stops a silent zombie loudly rather than restarting it; a systemd/launchd gateway never inherits the filter but gets the clean relaunch when any other persistence fault later turns `ENOSYS`-shaped |
+| 75 (`EX_TEMPFAIL`) | stale-asset watchdog | reserved and never produced: a vanished bundle is reported with an "update ready, restart to use it" notice and the gateway keeps serving |
 | 69 (`EX_UNAVAILABLE`) | listener guard (`dashboard/listener_guard.py`), primary or secondary listener | the TCP listener could not be restored, so the process was alive but unreachable; a sidecar listener that cannot be withdrawn gives up with 69 before any rebind attempt |
 | 78 (`EX_CONFIG`) | gateway lock refusal (`gateway_lock.LIVE_HOLDER_EXIT_CODE`), before the gateway runs — not a shutdown | the serving-holder predicate (`GatewayLock._serving_verdict`) is True: the process `/proc/locks` positively identifies as holding `gateway.lock` is running, holds the configured dashboard port with its OWN socket at the address this gateway is configured to bind, and answers HTTP there — a sibling gateway already serves this home. The systemd unit's `RestartPreventExitStatus=` names this one status so it is NOT relaunched (see [cli](cli.md), *Service Management*); every other lock refusal — a holder no surface can identify, however the recorded pid looks; a holder whose own socket at the probed address is silent (a wedged gateway); a holder on the port only at another address, or one the platform did not report (the residual row, unasserted by design, so a stranger's answer there is never credited to it) among them — exits 1 and is relaunched |
 
@@ -1134,7 +1116,7 @@ new backend with the previous bundle; the error names `logs/frontend-build.log`,
 or says no log was written when none could be opened, as on Windows),
 its dependency sync failed, or it raised after the move. A later update that
 synced the dependencies of the tree it moved clears it. It is a record for the
-log and for the edition; the watchdog no longer reads it.
+log and for the edition; the watchdog does not read it.
 
 ### Event-loop stall watchdog & blocking-work executors
 
@@ -1268,13 +1250,13 @@ The one reaction a Slack turn wears on the message it answers, defined in `slack
 - **Done**: `finalize()` takes the ack down and adds nothing; the reply is the done signal. There is no `done` reaction and no per-phase trail, debounce or stall reaction on Slack.
 - **Error**: `finalize(error=True)` adds the `error` reaction (😱) on either surface, so a failed turn is never silent. It also upgrades a controller already finalized clean: the turn body finalizes before the reply is delivered, so a reply that then fails to post (`_SlackTurn.book_failure` on the native path, `SlackRenderer.close()` on an un-finalized turn) still shows 😱.
 - The add/remove calls are serialized, so a reply faster than the ack's add still takes it down.
-- `slack.reactions` accepts `queued` and `error` (either may be `null`); keys of the retired trail (`thinking`, `coding`, `browsing`, `tool`, `done`) are accepted and ignored. Other channels' phase ladder (`messaging/status_reactions.py`) is unchanged.
+- `slack.reactions` accepts `queued` and `error` (either may be `null`); keys of the retired trail (`thinking`, `coding`, `browsing`, `tool`, `done`) are accepted and ignored. Other channels keep their phase ladder (`messaging/status_reactions.py`).
 
 ### LLM-Initiated Commands
 
 The LLM executes cron and spawn operations via bash using the `kirocrew` CLI:
 - `kirocrew cron add "name" "message" --every 300` — writes to crons.json, gateway auto-detects via mtime sync
-- `kirocrew spawn run "task"` (subcommands `run`, `list`) — POSTs to dashboard API at localhost:5476, gateway spawns subagent
+- `kirocrew spawn run "task"` (subcommands `run`, `list`) — POSTs to the dashboard API on `127.0.0.1` at the port `kirocrew status` finds (`--port` overrides), gateway spawns subagent
 
 ### `handle_interaction(channel, msg_ts, action_id, user_id="", thread_ts="", slack=None, sessions=None) -> str | None`
 Routes Block Kit button clicks to pending tool approvals:
@@ -1494,7 +1476,7 @@ When a message arrives while a session is actively processing, it's queued inste
 
 Bidirectional message mirroring between dashboard chat sessions and Slack threads:
 
-- **Slack → Dashboard**: `handle_message()` asks `maybe_route_linked_thread` (`slack/handler_runtime/inbound.py`), which checks `_slack_to_slot` reverse lookup; if linked, routes message to dashboard slot's `_run_chat()` queue. The slot's turn runs after the Slack handler task has deleted the message's downloaded files, so `route_linked_thread` first stores each picture in the linked session's attachments (`slack/linked_thread_images.py`, `ConversationLog.store_ingested_images`) and the turn and the row name the copy. The event path records the files with `set_inbound_files` after the code-channel dispatch (which hands its own files to the bound session) and the queue drain records each entry's own `image_temp_paths`; non-picture files keep their temp paths
+- **Slack → Dashboard**: `handle_message()` asks `maybe_route_linked_thread` (`slack/handler_runtime/inbound.py`), which checks `_slack_to_slot` reverse lookup; if linked, routes message to dashboard slot's `_run_chat()` queue. The slot's turn runs after the Slack handler task has deleted the message's downloaded files, so `route_linked_thread` first stores each picture in the linked session's attachments (`slack/linked_thread_images.py`, `ConversationLog.store_ingested_images`) and the turn and the row name the copy. Only a download that keeps a sniffed raster suffix (`messaging/attachments.INLINEABLE_IMAGE_SUFFIXES`: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`) counts as a picture, because the ingest renames any other file that carries one; an SVG keeps its line as written, the same as a PDF. The event path records the files with `set_inbound_files` after the code-channel dispatch (which hands its own files to the bound session) and the queue drain records each entry's own `image_temp_paths`; non-picture files keep their temp paths
 - **A channel's configured agent holds on linked threads.** `channel_agent_mismatch` (`slack/handler_runtime/inbound.py`) compares resolved agent identities, not raw names: the channel's `slack.channels.<id>.agent` is a Bot when it is a `config.agents` key, else a template; the slot resolves as `_resolve_agent_selection` does (a Bot key not picked as a template is that Bot, any other name a template, no name `default_template`), read from the published alias snapshot with no I/O. Where a turn is about to run (a linked-thread reply and turn admission), the slot is compared by the execution record the turn will run on instead, read off the event loop (`linked_slot_channel_mismatch`); an unreadable record counts as a mismatch. A config error or an unpublished snapshot counts as a mismatch. Every writer that links a channel thread refuses a mismatch before any Slack write, judging the slot by the execution record its turns run on when it has one (`read_link_record`, read off the loop once and reused by the no-await re-check): `dashboard/chat_slack.py::link_slot_to_slack` (an existing thread or a new anchor) answers 409 `channel_agent_mismatch` with the channel's agent in `agent`, and the dashboard's signed-link landing then shows a notice naming it and leaves the prompt unsent; the Slack-side import (`!link-to-dashboard`, the Link to Dashboard button, `slack/interactions_options.py::_import_thread_to_slot`) raises `ChannelAgentMismatchError` and tells the sender; a thread-mode resume (`slack/interactions.py::_handle_resume_choice`) checks a live dashboard slot the same way, and refuses any other session (a closed tab, a Slack-born session) in a pinned channel because its agent cannot be read there (`channel_pinned_agent`); the owner is told to resume in a DM. A session linked to such a channel's thread cannot switch to another agent (`dashboard/chat_api/agent_switch.py`, 409 `channel_agent_pinned`, the same refusal for the dashboard picker and an in-turn `/agent`), checked again in the no-await commit window with the resolved namespace; a first send that would adopt an agent on an agent-less linked slot (`dashboard/chat_api/chat_send.py`, `dashboard/openai_compat.py`) is refused the same way, and an imported slot is bound to the channel's template; a provider-side switch mid-turn is vetoed the same way, before it is recorded and again just before it is committed (`dashboard/chat_turn/session_events.py`, notice `agent_switch_blocked_channel`, session reset); and `link_slot_to_slack` and the thread-mode resume re-check the slot's agent with no await just before they publish the link. A message typed in the linked Slack thread is also checked at turn admission under the same dispatch lock the switch routes hold (`dashboard/chat_turn/turn_admission.py`), so a turn never captures an agent other than the channel's. The queue drain does not judge the agent; admission does, by the record, so a change of the global default never drops a queued reply. Unlinking lifts the switch refusal. When the thread's owner is a dashboard session with no live slot (its tab is closed), the reply is checked against that owner's execution record before the plain route runs it (`closed_dashboard_owner_refused`); a missing or unreadable record is refused, and Slack-born owners keep their routing. A pinned OPTIONS answer whose asker has no live slot is checked the same way against the asker's session (`slack/handler_runtime/dispatch.py`). A reply in a thread already linked to a mismatched slot is stopped after the `!` command and `sessions` fall-through: it is audited `linked_thread_intercept` denied, the sender gets a notice naming the channel's agent, and it does not fall through, because normal routing would resolve the same thread owner. A typed `/agent <the channel's agent>` itself reaches the slot (an OPTIONS answer never does), and a pinned route is checked too. DMs and unpinned channels are unchanged. Queue merging never folds entries with different source channels into one turn, so a refusal takes only that channel's words.
 - **On plain Slack paths the channel's agent is a default, not a lock.** The rule above holds on dashboard-linked threads only. On the plain Slack route the channel's `slack.channels.<id>.agent` is the starting agent, which an operator can still change: an explicit `!ta` (`!agent`) switch in the thread overrides it (the thread override wins over the channel's agent, as "agent resolution order" below says), and a reply whose linked dashboard tab is closed and whose recorded agent is the channel's falls back to the plain runner, which does not veto a provider-side agent switch mid-turn. Whether a channel's agent should be a lock on these paths too is an open product decision, tracked in a public follow-up issue.
 - **Dashboard → Slack**: the dashboard turn (`_run_chat()` and its phases) mirrors user messages and agent responses to the linked thread. The prompt echo is the redacted, 500-char `_prepare_mirror_msg` text (a cut echo ends in `…` so it does not read as a message that broke mid-word) rendered by `slack.format.mirror_prompt_echo` as a `> *Sent from Kiro Crew:* …` quote (the bold label is host-written and comes first, so a reader in Slack can tell a person typed it in the dashboard, and a prompt that spells the label is only quoted text after it; the non-Slack leg sends the same `messaging.renderer.MIRROR_ECHO_LABEL` as plain text): `escape_mrkdwn_keep_links` keeps `<https://…>` / `<https://…|label>` links and `<#C…>` channel refs live, flattens `<@U…>` / `<@W…>` mentions to plain `@…` so the echo never re-pings, and escapes every other entity (`<!channel>`, `<!here>`, `<!subteam^…>`, …) and stray or truncated bracket. Only a prompt a person typed in the dashboard is echoed, by an allowlist (`chat_turn.recipient._prompt_typed_in_dashboard`, which also gates the non-Slack cross-surface echo): the turn must be stamped `_directive_user_origin`, not `_directive_channel_origin`, with actor `user` (no producer `_turn_actor`, not a loop self-wake), and not a runner payload, recovery requeue or disk-restored entry; the one recovery let through is a verbatim replay of a dashboard prompt whose turn died before its echo point (`_recovery_echo_owed`, from the entry's `MIRROR_ECHO_OWED_META_KEY` stamp), so it is echoed exactly once. A script cron's `/api/chat` send is stamped actor `cron` by the send handler. Every input defaults to "not the person", so monitor / work-ledger wakes, cron, sub-agent completions, task-runner turns, `session_send`, app sends and any later producer are never echoed, nor is a message typed in the linked Slack thread or code channel itself (channel origin; a merged queue batch is channel-origin when any entry is). Nor is the prompt a channel challenge link carries: the dashboard auto-sends it with `meta.origin = "channel_challenge"` (`website/src/utils/channelChallengeSend.ts`; the mark is keyed to the page's own pending auto-send, so a page left before it sends tags nothing), and `dashboard/channel_prompt.py` turns that into the turn's `_prompt_on_channel` for an immediate send, or a `promptOnChannel` queue-entry meta for a queued or held one that the drain hands back. A merge run stops where the mark changes, so a typed message never folds into a skipped echo, and an edit that changes a queued entry's words drops the mark. The mark only withholds the quote, so a sender who forges it loses nothing but that quote; a recovery replay needs no mark, because a turn whose echo was never owed is never stamped as owing one. Tool steps with no purpose line are labelled by `tool_call_title.derive_tool_call_title`, the same derivation the dashboard's tool rows use, never the raw `@server/tool` id. A `_Thinking…_` placeholder follows the echo; the task stream (`start_stream()` / `append_task()` / `stop_stream()`) opens on the first mirrored tool call, naming the owner as its recipient (the only person the gateway answers on Slack; an org-wide install refuses a stream that names none), and the placeholder is deleted when that stream opens, before the answer is posted, or at turn end, so no stale "Thinking…" stays above Slack's plan header. A turn that ends on an applied quiet end (`nothing_to_do`) with no answer text gets that outcome line (`Nothing new to report.` plus the model's note) posted as its reply (`_turn_stop_hook`), with no options control, and the channel-neutral leg to a linked non-Slack channel sends the same line: the dashboard shows it on the tool card, but on the thread the only other trace is a task step inside the collapsed stream, so a quiet patrol or auto-nudge cycle read there as one that never ran
@@ -1543,7 +1525,7 @@ Shared data-collection and Block Kit rendering for recent sessions, used by thre
 - **`sessions` keyword in DMs** — `_handle_sessions_command` in `handler_runtime/dispatch.py`
 - **App Home Tab** — 🧵 Sessions section in `_publish_home_tab` (split into "Main chat" and "Task runner" sub-lists)
 
-The channel-neutral collection lives in `messaging/sessions_view.py`; `kiro_crew/slack/sessions_view.py` wraps it and renders the Block Kit, so both `events.py` and `handler.py` can import it at module top-level without forming a circular import. `sessions_view.py` depends only on `kiro_crew.slack.blocks` and `kiro_crew.security` — it knows nothing about `events` or `handler`, which is what keeps the import graph acyclic.
+The channel-neutral collection lives in `messaging/sessions_view.py`; `kiro_crew/slack/sessions_view.py` wraps it and renders the Block Kit, so both `events.py` and `handler.py` can import it at module top-level without forming a circular import. `sessions_view.py` depends only on `kiro_crew.messaging.sessions_view`, `kiro_crew.config.paths`, `kiro_crew.slack.blocks` and `kiro_crew.security` — it knows nothing about `events` or `handler`, which is what keeps the import graph acyclic.
 
 All three surfaces call `await _collect_recent_sessions_off_loop(sessions, *, limit, kind, include_ended=False)` — the required entry point for async callers, which runs the synchronous collector `_collect_recent_sessions` in a worker thread via `asyncio.to_thread` — to read JSONL files under `~/.kiro/crew/sessions/`, classify them as `dashboard` (main chat slots), `taskrunner` (task runner steps), or `other`, and `_build_sessions_blocks(rows, *, for_home_tab=False)` to render them. The sync collector does unbounded-size transcript reads and is worker-thread-only: never call it directly from an `async def`. It pre-scans the directory (kind from the filename stem, rank from each candidate's line 0) and reads only the newest `limit` matching transcripts in full. `include_ended` and the third skip reason are covered under "Ended rows leave the list" below.
 
@@ -1555,7 +1537,7 @@ All three surfaces call `await _collect_recent_sessions_off_loop(sessions, *, li
 
 The slash command and keyword (which post via `chat.postMessage`) use the shared `blocks.session_task_card` builder. The Home Tab calls with `for_home_tab=True` and uses `section` blocks instead — Slack's `views.publish` API rejects `task_card` with `unsupported type: task_card`. Both paths keep the canonical `mc_session_resume_{key}` action ID handled by `interactions_sessions.py:_handle_session_resume`.
 
-The Home Tab requests up to `_HOME_TAB_SESSIONS_PER_KIND = 5` rows per kind so both surfaces stay well under Slack's 100-block view limit. The slash command and keyword each request `slack.sessions_limit` rows, default 10 — the collector's own `_SESSIONS_DEFAULT_LIMIT`. A configured value below 1, or one that is not a number at all, falls back to that default INSIDE the collector: the read loop breaks on `len(rows) >= limit` before it opens a file, so a 0 would render an empty list forever, and an uncomparable value would raise inside each surface's try block and turn a bad number into "Sessions unavailable" plus an error audit. The guard sits at the one chokepoint every surface passes through, so no surface can skip it. The UPPER bound is Slack's own and therefore lives in the Slack module: `chat.postMessage` rejects a payload over 50 blocks, the message layout costs 3 blocks per row less the trailing divider, and 17 rows render exactly 50 (measured against `_build_sessions_blocks`, and pinned by a test that measures it rather than restating the arithmetic). So `_message_surface_limit` clamps the DM keyword and the slash command to `MAX_MESSAGE_SESSION_ROWS`; an over-budget payload is rejected WHOLE, so an unclamped `sessions_limit: 18` would render no list at all, which reads as the feature being broken rather than as one number being too high. The Home Tab is unaffected: it posts through `views.publish`, whose budget is different, and asks for `_HOME_TAB_SESSIONS_PER_KIND` per kind.
+The Home Tab requests up to `slack.home_tab_sessions_per_kind` rows per kind (default 5, `_HOME_TAB_SESSIONS_PER_KIND`, also used for a value below 1) so both surfaces stay well under Slack's 100-block view limit. The slash command and keyword each request `slack.sessions_limit` rows, default 10 — the collector's own `_SESSIONS_DEFAULT_LIMIT`. A configured value below 1, or one that is not a number at all, falls back to that default INSIDE the collector: the read loop breaks on `len(rows) >= limit` before it opens a file, so a 0 would render an empty list forever, and an uncomparable value would raise inside each surface's try block and turn a bad number into "Sessions unavailable" plus an error audit. The guard sits at the one chokepoint every surface passes through, so no surface can skip it. The UPPER bound is Slack's own and therefore lives in the Slack module: `chat.postMessage` rejects a payload over 50 blocks, the message layout costs 3 blocks per row less the trailing divider, and 17 rows render exactly 50 (measured against `_build_sessions_blocks`, and pinned by a test that measures it rather than restating the arithmetic). So `_message_surface_limit` clamps the DM keyword and the slash command to `MAX_MESSAGE_SESSION_ROWS`; an over-budget payload is rejected WHOLE, so an unclamped `sessions_limit: 18` would render no list at all, which reads as the feature being broken rather than as one number being too high. The Home Tab is unaffected: it posts through `views.publish`, whose budget is different, and asks for `slack.home_tab_sessions_per_kind` per kind.
 
 **At most `_HOME_TAB_COLLECT_CONCURRENCY` Home Tab collections run at once.** Every `app_home_opened` from an allowed user schedules its own publish (while `slack.home_tab_builtin` is on, see below) with no dedupe, and each collection reads up to `limit` transcripts on the process-wide default executor — shared with history appends, cron store writes and session storage. Ungated, a burst of tab opens fills that executor with multi-MB reads and unrelated `asyncio.to_thread` callers queue behind them. The gate wraps only the collection; the Slack API calls around it stay unserialized. It is created lazily rather than at import, because a module-level `asyncio.Semaphore` binds to whichever loop is current when the module loads and the gateway's loop does not exist yet.
 
@@ -1598,8 +1580,8 @@ Triggers in-place ACP `/compact` on the current thread's session (`_handle_compa
 3. Runs `provider.compact()` bounded by `wait_for(..., 120)`, then
    `provider.wait_for_compaction(timeout=sessions.compact_wait_budget_secs())`
    (the `session.compact_wait_secs` budget)
-4. Posts result (✅/❌) + timing footer
-5. On failure: `sessions.discard_conversation(session_key)` — kills the session and drops only the resume sid, so the next message cold-starts. The session-map ENTRY survives, keeping the thread↔session linkage `get_session_for_thread` routes later replies through; `destroy` here would fork the thread into a fresh session with none of its context. Housekeeping never removes a channel identity (see [session](session.md))
+4. Posts result (✅/❌, ⚠ on a timeout) + timing footer
+5. On an exception: `sessions.discard_conversation(session_key)` — kills the session and drops only the resume sid, so the next message cold-starts. The session-map ENTRY survives, keeping the thread↔session linkage `get_session_for_thread` routes later replies through; `destroy` here would fork the thread into a fresh session with none of its context. Housekeeping never removes a channel identity (see [session](session.md))
 
 ## Wedged-Session Recovery (`AcpPromptBusy`)
 
@@ -1611,7 +1593,7 @@ LLM responses ending with `[OPTIONS: choice1 | choice2 | choice3]` are rendered 
 
 1. `extract_options()` parses the `[OPTIONS: ...]` tag from the response text
 2. Tag is stripped from the displayed message
-3. `build_options_blocks()` creates one plain button per choice (max 10, five to an `actions` row; more wrap into a second row). A label over 75 characters is cut with `…`; the button `value` keeps the full choice. The last row ends in a ⋯ overflow menu with **Choose several…** (only when there are two or more choices). Every row carries the staleness token in its `block_id`; rows after the first add a `~<row>` suffix (`outbound.options_row_block_id`), which `decode_options_token` reads past.
+3. `build_options_blocks()` creates one plain button per choice (max 10, five to an `actions` row; more wrap into a second row; choices past 10 are listed numbered in a context block to answer by typing). A label over 75 characters is cut with `…`; the button `value` keeps the full choice. The last row ends in a ⋯ overflow menu with **Choose several…** (only when there are two or more choices). Every row carries the staleness token in its `block_id`; rows after the first add a `~<row>` suffix (`outbound.options_row_block_id`), which `decode_options_token` reads past.
 4. A button click → `_handle_options()` → `_answer_options()`. **Choose several…** → `_open_options_several()` opens a modal of checkboxes (option values are indices; the card is held under a nonce by `outbound.remember_options_several`), and its submission → `_handle_options_several_submission()` → `_answer_options()` with every picked index.
 5. `_answer_options()` is the one answer path: the staleness check (the asker's newest SPEECH row against the token's, `ConversationLog.last_speech_row_ts`, so a compaction or watchdog-recycle notice appended after the answer never supersedes the card), then the once-only claim under the message's edit lock, then the in-place edit that replaces the card's rows with `✅ <@user> chose <choice>[, …] · <time>` (`build_options_answered_blocks`), then the turn: the chosen button values joined with `, `, with an `[OPTIONS multi-select: …]` context entry. A superseded card is struck through and an already-answered one left alone; either way the clicker gets a private "Already answered." and nothing is sent.
    The turn runs with `interpret_commands=False`, as on the transport channels: the model-authored choice reaches the agent, or the linked slot, as the answer, never as a `!` command, privacy modifier or keyword command (`status`, `sessions`, `spawn`, `run`, `cron`). A linked slot gets it with `_commands_off` (idle) or `COMMANDS_OFF_META_KEY` on its queued entry (busy or paused), so the slot never runs it as a `/` command either.
@@ -1712,8 +1694,9 @@ Messages arriving while a session is busy are queued with ⏳ reaction and drain
 
 ## Live configuration
 
-`GatewayOrchestrator` is the process's channel host, so it owns three config
-appliers, registered in `_register_config_appliers` on the shared `ConfigWatch`
+`GatewayOrchestrator` is the process's channel host, so it owns four config
+appliers (channel restart, Slack, default agent, and the
+`session_environments.*` applier), registered in `_register_config_appliers` on the shared `ConfigWatch`
 (the appliers' callbacks, `restart_channel` and the boot re-hoist are
 `slack/gateway_runtime/channel_lifecycle.py`; the hoists and the registration are
 `slack/gateway_runtime/channel_boot.py`)
@@ -1975,7 +1958,7 @@ Background task approvals (subagent, cron, task runner, and AutoNudge) post appr
 responder, so waiting the interactive approval window on every approval would
 stall cron, heartbeat, task-runner, or AutoNudge turns.
 
-- `_BACKGROUND_APPROVAL_SOURCES = {"cron", "heartbeat", "taskrunner", "autonudge", ""}` (module
+- `_BACKGROUND_APPROVAL_SOURCES = {"cron", "heartbeat", "taskrunner", "autonudge", "app", ""}` (module
   constant in `slack/gateway_runtime/tool_policy.py`, re-exported by `gateway.py`). `is_background = source in _BACKGROUND_APPROVAL_SOURCES`.
 - `subagent` is **NOT** background: subagent approvals route to the dashboard
   where the spawning human is present (via the parent slot), so they keep the long
@@ -2140,7 +2123,7 @@ Config example (remote access via URL):
 ## Security
 
 - Owner-locked via `KIROCREW_OWNER_ID` in `.env` (supports W/U prefix cross-matching)
-- **Shared access** (`slack.shared_access`, off by default; `slack/shared_access.py`): the owner may list Slack member IDs that then act as the owner. An ID counts only once `users.info` confirms it against `auth.test` (same workspace, a person, not deactivated, not the owner); a pass is cached 10 minutes, a refusal 1 minute. `is_allowed_user` stays owner-only; the sites that admit a shared user ask `is_allowed_user(x) or is_shared_user(x)` on purpose (message routing, own tool prompts and review drafts, question cards, Stop, the queued re-check, linked threads), pinned by `test_only_the_named_sites_admit_a_shared_user`, so every other reader refuses shared users by default. Gates that keep shared users out test `is_shared_listed` (listed, or admitted as a shared user earlier in this process), which needs no fresh confirmation and survives a removal, so neither a confirmation ageing out nor the owner removing the person mid-message lets that message past them. Tool prompts carry their requester: a shared user answers only their own and never grants Trust. Refusing the `run` and cron keywords is not containment: the agent's own cron, task and spawn tools still run as the owner in a shared user's turn, a schedule set up that way can keep running as the owner after the person is removed, and the settings warning says so (narrowing them is #30678). Spool replay's pass-local `SlackTransport` also admits the IDs listed at replay time (`shared_access.listed_ids`, empty while the switch is off), so a shared user still listed gets the restart notice for their own refused message in the conversation it came from; replay only sends that notice, so this admits no one to a turn.
+- **Shared access** (`slack.shared_access`, off by default; `slack/shared_access.py`): the owner may list Slack member IDs that then act as the owner. An ID counts only once `users.info` confirms it against `auth.test` (same workspace, a person, not deactivated, not the owner); a pass is cached 10 minutes, a refusal 1 minute. `is_allowed_user` stays owner-only; the sites that admit a shared user ask `is_allowed_user(x) or is_shared_user(x)` on purpose (message routing, own tool prompts and review drafts, question cards, Stop, the queued re-check, linked threads), pinned by `test_only_the_named_sites_admit_a_shared_user`, so every other reader refuses shared users by default. Gates that keep shared users out test `is_shared_listed` (listed, or admitted as a shared user earlier in this process), which needs no fresh confirmation and survives a removal, so neither a confirmation ageing out nor the owner removing the person mid-message lets that message past them. Tool prompts carry their requester: a shared user answers only their own and never grants Trust. Refusing the `run` and cron keywords is not containment: the agent's own cron, task and spawn tools still run as the owner in a shared user's turn, a schedule set up that way can keep running as the owner after the person is removed, and the settings warning says so (narrowing them is an open follow-up). Spool replay's pass-local `SlackTransport` also admits the IDs listed at replay time (`shared_access.listed_ids`, empty while the switch is off), so a shared user still listed gets the restart notice for their own refused message in the conversation it came from; replay only sends that notice, so this admits no one to a turn.
 - **Enterprise Grid validation** (`slack/enterprise.py`): Two-layer defence against data exfiltration to personal/external Slack workspaces:
   1. **Startup gate**: `validate_enterprise()` calls `auth.test` with the bot token, and, when `slack.allowed_enterprise_ids` is set, verifies the workspace's `enterprise_id` (or `team_id`) is on it; with no list configured it is default-open. Caches `team_id` and `enterprise_id` in memory. Clears cache before each validation attempt so re-validation failures are fail-closed. Gateway refuses to connect if validation fails.
   2. **Per-message gate**: `check_message_origin()` compares each incoming event's `team` field against the cached `team_id`. Catches `.env` hot-swap while running. Zero-cost in-memory string comparison, no API call. Deny-by-default: empty `team` field is rejected.
@@ -2327,11 +2310,11 @@ gateway behaves as it does without it.
   answers are not persisted per channel: they go to the feature's process latch
   (see Gate), which a reconnect lifts. Any other error is logged and retried on
   the next turn.
-- **Archive.** Not handled here: removing a channel's worktree when the channel
-  is archived belongs to the code-channel wrap-up change, which owns the archive
-  path. Until it lands, a channel's worktree and its `slack/…` branch stay in the
-  repository until removed by hand (`git worktree remove <path>`; commits stay on
-  the branch).
+- **Archive.** The wrap-up's Archive (`wrapup.py`) hands the worktree to
+  `cleanup.release_channel_workspace`, which runs under the channel lock with no
+  bind in flight (`WorkspaceService.channel_quiet`) and removes it only when
+  nothing can be lost (see *Wrap-up and archive* under the agent surface); a kept
+  tree and its `slack/…` branch stay until removed by hand.
 - **State.** The data home's `routing` directory, `slack-code-channel-workspaces.json`
   (`WORKSPACE_STORE_FILENAME`, beside the code-channel store) holds pointers and
   digests per channel, never repository content. It names the directory the

@@ -17,6 +17,7 @@
 import { installSessionExpiryHandler } from './sessionExpirySignal'
 import { ApiError, friendlyErrText, statusErrText, toApiError, AcceptedBodyUnreadable, isPermissionRefusal } from './apiError'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
+import { retryEdgeThrottle } from './edgeThrottleRetry'
 import {
   STALE_OWNER_SESSION_CODE,
   installStaleOwnerHandler,
@@ -1497,7 +1498,8 @@ async function keepIfRefused(input: string, r: Response, generation: number): Pr
  * (the composer upload's XMLHttpRequest), so it is journaled the same way.
  */
 function jfetch(input: string, init?: RequestInit, send: (input: string, init?: RequestInit) => Promise<Response> = fetch): Promise<Response> {
-  const isRead = (init?.method ?? 'GET').toUpperCase() === 'GET'
+  const method = (init?.method ?? 'GET').toUpperCase()
+  const isRead = method === 'GET'
   const refused = isRead ? refusedReads.get(input) : undefined
   if (refused && Date.now() - refused.at < REFUSAL_KEEP_MS) return Promise.resolve(refused.response.clone())
   if (refused) refusedReads.delete(input)
@@ -1509,14 +1511,17 @@ function jfetch(input: string, init?: RequestInit, send: (input: string, init?: 
   const generation = callerGeneration
   const start = () => (init === undefined ? send(input) : send(input, init))
   // A read takes its turn among the reads that are out, so they cannot hold every
-  // connection the browser has to the gateway; a write goes straight out.
-  const request = isRead ? gatedRead(input, init?.signal, start) : start()
+  // connection the browser has to the gateway; a write goes straight out, and a
+  // retryable one is re-sent if the tunnel edge throttled it (reads retry in the QueryClient).
+  const request = isRead
+    ? gatedRead(input, init?.signal, start)
+    : retryEdgeThrottle(start, { method, url: input, body: init?.body, signal: init?.signal })
   return request.then((r) => (isRead ? keepIfRefused(input, r, generation) : r)).catch((error: unknown) => {
     if (!isDeliberateAbort(error)) {
       const report = recordTransportRejection({
         message: error instanceof Error ? error.message : String(error),
         endpoint: requestPath(input),
-        method: (init?.method ?? 'GET').toUpperCase(),
+        method,
         code: isDeadlineError(error) ? 'timeout' : 'network',
       })
       if (report && typeof error === 'object' && error !== null) attachReport(error as object, report)
@@ -1597,7 +1602,17 @@ const patch = (url: string, body: object, sessionKey?: string, signal?: AbortSig
 // API module on the SAME session-key-authenticated helpers as core methods
 // (inheriting X-Session-Key + auth-recovery + ApiError), instead of forking this
 // file or writing methods on raw fetch. See api/apiTransport.ts.
-installApiTransport({ get, getWithSignal: (url, signal) => get(url, undefined, signal), post, put, del, patch, j, jNullable })
+installApiTransport({
+  get,
+  getWithSignal: (url, signal) => get(url, undefined, signal),
+  post,
+  put,
+  del,
+  patch,
+  j,
+  jNullable,
+  request: (input, init) => jfetch(input, init),
+})
 
 // The Kiro credit-usage wire payload and the view model normalized from it stay
 // defined here, side by side: `KiroAccountModal` and `api/kiroUsage.ts` read

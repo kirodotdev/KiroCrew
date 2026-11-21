@@ -23,8 +23,8 @@ callers import, and neither owner imports it.
 
 The `control_plane/` and `vendors/` subtrees are connector-campaign slices rather
 than this subsystem's OAuth-grant plumbing. Their current contracts include the
-[capability-manifest](connector-capability-manifest.md),
-[conformance](connector-conformance.md), [GitHub](connector-github.md),
+[capability-manifest](connector-capability-manifest.md) (which also holds the
+conformance owner map), [GitHub](connector-github.md),
 [Microsoft Graph](microsoft-graph-runtime.md), and [Zoom](connector-zoom.md)
 specs.
 
@@ -1615,7 +1615,10 @@ or the entry's `dcr_client_name`) once per card in the vault entry
 secret has expired, or after `invalid_client` (the card then asks to reconnect).
 Every authorize, token and refresh call sends `resource`; `offline_access` is
 asked for when listed; the callback's `iss` is checked (one that does not parse
-is a mismatch). All DCR card sign-ins share
+is a mismatch). A pre-registered provider's callback `iss` is checked the same way when its
+`crew_oauth._ENDPOINTS` entry carries the vendor's published `issuer` (Google only: its metadata states that the response carries `iss`); a
+callback without `iss` is refused, and an entry with no `issuer` (GitHub, Asana, Slack) is not checked.
+All DCR card sign-ins share
 the loopback port `registry.DCR_CALLBACK_PORT` (48100, which no pre-registered
 entry may use) and `state` picks the pending sign-in. A gateway with a public
 HTTPS `dashboard.url` (never the request's `Host`) registers
@@ -1648,9 +1651,12 @@ the same call `prepare` registers with), else `{"anyPort": ["http://127.0.0.1",
 "http://localhost"]}` (`registry.REDIRECT_HOSTS`), because then Kiro CLI or the
 KAS engine runs the sign-in on a loopback listener of its own and Crew does not
 choose its port. The card shows it under the prerequisite in
-the triangle beside Connect, as selectable text, and a refused sign-in whose
-code an admin's policy can cause (`access_denied`, `unauthorized_client`,
-`invalid_scope`) links the guide.
+the triangle beside Connect, each value with its own copy button, together with
+a link to the guide; that bubble is a non-modal dialog the icon's Tab moves
+into, and its height is capped to the room beside the icon with scrolling
+inside. A refused sign-in whose code an admin's policy can cause
+(`access_denied`, `unauthorized_client`, `invalid_scope`) has its own line and
+links the guide; every other code reads as the generic `callback_refused` line.
 Moving between the loopback and the public redirect re-registers, by the
 redirect rule above. After a sign-in, KAS's own
 grant for that URL (deleted by name) and kiro-cli's files go when the census

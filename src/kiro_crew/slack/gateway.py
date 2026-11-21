@@ -80,7 +80,9 @@ from kiro_crew.acp.client import AcpError, AcpProcessDied
 from kiro_crew.agent_sdk import AgentTurnUsage
 from kiro_crew.agent_sdk.mcp_problems import (
     UNATTENDED_MCP_WAIT_SECS,
+    declared_mcp_not_ready_change,
     declared_mcp_not_ready_note,
+    declared_mcp_note_change,
     wait_for_declared_mcp,
 )
 from kiro_crew.agents_janitor import sweep_agents_dir
@@ -566,14 +568,11 @@ from kiro_crew.slack.gateway_runtime.process_entry import (
     _live_session_work_dirs,
     _main_stored_as_kiro,
     _reconcile_live_config_with_kiro_verdict,
-    _record_ordinary_mode,
-    _run_boot_io_bounded,
     _run_signing_key_preflight_bounded,
     _start_coder_retention,
     _start_kas_cli_floor,
     _stop_session_environments,
     _sweep_predecessor_session_work_dirs,
-    _write_gateway_mode_bounded,
     run_gateway,
     signing_key_preflight,
 )

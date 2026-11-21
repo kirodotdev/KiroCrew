@@ -274,14 +274,18 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'RemoteCrewPanelCustomType.tsx': 'instances',
   'RemoteCrewPanelSections.tsx': 'instances',
   'RemoteCrewPanelRestartBanner.tsx': 'instances',
+  // Mounted below RemoteCrewPanel (SettingsPage.tsx); its on/off state is the
+  // manual instances.remote-control entry.
+  'RemoteControlCard.tsx': 'instances',
   // Mounted from outside pages/settings, so each is also a root in panelRoots:
   // ImportPanel mounts PortabilityTab, FeaturePreviewsSection the gateway-wide
   // automatic-cards switch.
   'PortabilityTab.tsx': 'imports',
   'AutomaticCardSetting.tsx': DEVELOPER_PREVIEWS,
-  // The built-in KAS engine card, which FeaturePreviewsSection mounts from
-  // pages/developer: its `agent.kas_bundle` switch is a Developer-tab row.
-  'KasBundleCard.tsx': DEVELOPER_PREVIEWS,
+  // The KAS engine choice, which the Agent tab's KAS row mounts from
+  // pages/developer beside OrchestratorMemoryToggle: its `agent.kas_bundle`
+  // choice is an Agent-tab row.
+  'KasBundleCard.tsx': 'agent',
   // The Kiro sign-in card, which the Kiro account tab mounts from pages/developer.
   // It has no extractable primitive; mapped so its hand-written search entry
   // (`kiro-account.kiro-sign-in` in settingsManual.ts) stays anchored to its source.

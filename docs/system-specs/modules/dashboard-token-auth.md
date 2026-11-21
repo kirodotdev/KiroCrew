@@ -119,7 +119,7 @@ graph LR
    [Relay-delivered requests](#relay-delivered-requests)) verifies a request the
    in-process relay client handed over and serves it with every `x-kiro-relay-*`
    header removed, before any other layer reads one; every other request it hands
-   on unchanged. The client-sent strip (`relay_header_strip`,
+   on unchanged. The client-sent strip (`relay_header_strip_middleware`,
    `dashboard/relay_headers.py`) sits just inside it and is the one place a
    client-sent relay header is dropped
 3. The host barriers and CSRF reject a wrong `Host` and a cross-origin mutating
@@ -666,8 +666,9 @@ constructing the middleware chain. Token auth and the LTS gate both receive
 The final, non-API branch of `_deny` returns 403 JSON
 `{"error": reason, "code": code or "forbidden"}` with `X-Auth-Required: true`
 instead of the sign-in page. The `/api/` and Crew API branches are unchanged.
-SSM and direct-tailnet refusals likewise return JSON on a headless app without
-changing their status, headers or admission checks; the closed LTS gate already
+SSM refusals likewise return JSON on a headless app without changing their
+status, headers or admission checks. A headless gateway starts no direct tailnet
+listener, so the direct-tailnet refusal page never answers it; the closed LTS gate already
 returns 403 JSON `lts_gate_closed` when it has no shell callback.
 An ordinary gateway and the reduced `--slack-only` server keep their existing
 sign-in responses. App windows, artifact and sandbox documents, vendor OAuth
@@ -1161,7 +1162,7 @@ person as `x-kiro-relay-user`. `dashboard/kiro_relay/` is the Crew's half of tha
 contract, and `relay_client/` is the relay client that calls it. All of it is behind
 `tunnel.relay_enabled`, **off unless it asks for the relay**
 (`remote_control/hosting.py`: `true`, or unset on a Crew with a team key or a
-workload identity; a personal sign-in is off by default): off, the gateway builds its
+workload identity, a personal sign-in included): off, the gateway builds its
 `RelayIngress` off and starts no relay client. An LTS build ignores that
 local switch with the rest of the `tunnel` control
 ([platform-context § Local switches with no governance key](platform-context.md#local-switches-with-no-governance-key-edition_lockspy)).

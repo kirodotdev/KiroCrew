@@ -90,6 +90,48 @@ def test_any_failed_rule_makes_the_failure_the_authors(pr: dict, kwargs: dict) -
     assert same == {} and own == pr
 
 
+CUT_ON_A_SPACE = "a" * 79 + " tail that the 80 character cut removes"
+OLD_FORM = "a" * 79 + " "
+
+
+def _annotated(message: str) -> dict[str, str]:
+    """What a run's annotations give for one failing test with ``message``."""
+    nodeid = "test/test_a.py::test_x"
+    row = {"annotation_level": "failure", "title": nodeid, "message": f"{nodeid} - {message}"}
+    return watch.parse_annotations([row])
+
+
+def test_a_message_whose_cut_lands_on_a_space_is_still_the_same_as_main() -> None:
+    """Main's record is cleaned again when read; the pull request's message is read fresh."""
+    main = watch.parse_state(_issue_body(failures=_annotated(CUT_ON_A_SPACE)))["failures"]
+    pr = _annotated(CUT_ON_A_SPACE)
+    same, own = mod.classify(pr, main, set(), True)
+    assert same == pr and own == {}
+
+
+@pytest.mark.parametrize("pr_message", [OLD_FORM, OLD_FORM.rstrip()], ids=["old", "new"])
+@pytest.mark.parametrize("main_message", [OLD_FORM, OLD_FORM.rstrip()], ids=["old", "new"])
+def test_a_record_or_a_failure_set_written_with_the_space_still_matches(
+    tmp_path: Path, main_message: str, pr_message: str
+) -> None:
+    """An issue open when the cleaning changed holds the old form; it must keep matching."""
+    nodeid = "test/test_a.py::test_x"
+    state = watch.next_state(None, {nodeid: "x"}, FIRST, 900, RUN_URL)
+    state["failures"] = {nodeid: main_message}
+    (tmp_path / "issue.md").write_text(watch.render_body(state, [], 5), encoding="utf-8")
+    (tmp_path / "pr.json").write_text(json.dumps({nodeid: pr_message}), encoding="utf-8")
+    (tmp_path / "changed.txt").write_text("src/other.py\n", encoding="utf-8")
+    out = tmp_path / "comment.md"
+    argv = ["notice", "--issue-body", str(tmp_path / "issue.md"), "--issue-number", "5"]
+    argv += ["--pr-failures", str(tmp_path / "pr.json"), "--repo", "example/repo"]
+    argv += ["--changed-files", str(tmp_path / "changed.txt"), "--base-ok", "1"]
+    argv += ["--sha", "a" * 40, "--run-url", RUN_URL, "--out", str(out)]
+    assert mod.main(argv) == 0
+    text = out.read_text(encoding="utf-8")
+    assert "Failing here and on main with the same message start:" in text
+    assert "Treat these as yours" not in text
+
+
 def test_a_change_to_another_test_file_does_not_stop_the_match() -> None:
     same, _ = _classify({"test/test_a.py::test_x": "assert 2 == 1"}, changed={"src/x.py"})
     assert same == MAIN

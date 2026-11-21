@@ -1,0 +1,211 @@
+# Identifiers defined OUTSIDE this repository that docs cite on purpose.
+#
+# Read by scripts/docs_lint_fact_checks.py (EXTERNAL_IDENTIFIERS_FILE): the
+# dead-identifier check does not report a name listed here. One name per line;
+# text after `#` is a comment. Every name sits under a comment naming where it is
+# defined, and was checked to be absent from this repo's code before it was added.
+#
+# Never add a name this repo defines or used to define: the list would then hide
+# its rename. A name that is only absent because it is planned belongs in a doc
+# with a `Status: planned` line, not here.
+
+# KAS engine (kiro-team/kiro-agent), cited by the KAS teardown design note
+KiroAgent
+MultiplexStream
+SessionPersistence
+coldHydration
+create_uncreated
+deleteSessionCanonical
+deleteSessionCanonicalExclusive
+disposeSession
+disposeSessionIfCurrent
+evictOldSessions
+hydrate_on_demand
+idleReap
+idleSession
+idleTimeout
+loadSessionAdmitted
+onSessionDestroyed
+onSessionUnsubscribe
+pendingAttach
+purgeSessionDirectory
+quiesceWriteLogs
+reapIdle
+releaseStep
+removeSessionDir
+sessionEviction
+sessionLocations
+sessionPath
+sessionSubscribers
+sessionTtl
+
+# kiro-cli and the Kiro agent protocol
+acp_client_name
+afterFileEdit
+builder_id_callback_token
+registryBaseUrl
+triggeringResource
+
+# Other agent harnesses' plugin APIs (Codex, openclaw, hermes, grok-build),
+# cited by harness-plugin-mapping.md
+ApprovalReviewContributor
+CommandContributor
+ExtensionRegistryBuilder
+PermissionRequest
+PluginContext
+PluginRegistry
+ReplacementCoordinator
+SessionLifecycleContributor
+TrustStore
+TurnInputContributor
+TurnLifecycleContributor
+beforeToolCall
+cliCommands
+definePluginEntry
+diffDeclaredSurfaceWidening
+onCapabilities
+onCommands
+onStartup
+on_session_end
+on_session_start
+plugin_db
+post_llm_call
+post_tool_call
+pre_llm_call
+pre_tool_call
+registerCli
+registerGatewayMethod
+registerHttpRoute
+registerService
+registerTool
+register_cli_command
+register_memory_provider
+register_tool
+
+# Codex and codex-acp
+canUsePermissionFallback
+createMcpElicitationContext
+dangerFullAccess
+externalSandbox
+requestUserInput
+sessionIndex
+thread_history_1
+
+# Claude Code, its SDK and the Anthropic API
+apiKeyHelper
+initialPermissionMode
+permissionMode
+rate_limit_error
+supportsFastMode
+wslInheritsWindowsSettings
+
+# goose and rmcp (Rust)
+AgentManager
+ChildWithCleanup
+TokioChildProcess
+remove_session_if_loaded
+
+# llama.cpp and whisper.cpp
+has_logits
+init_batch
+kv_unified
+llama_context
+llama_kv_cache
+output_all
+output_reserve
+whisper_full_with_state
+
+# AWS (IAM actions, EFS, Transcribe)
+ClientMount
+ClientWrite
+LanguageOptions
+RevokeSecurityGroup
+rootDirectory
+
+# Kubernetes, OpenSSH, OpenTelemetry
+CanonicalDomains
+BatchProcessor
+RuntimeDefault
+localhostProfile
+seccompProfile
+
+# macOS, Windows
+AppCrash
+NumberOfProcesses
+SymbolicLink
+memorystatus_control
+
+# Chromium and the DevTools protocol
+exit_type
+setVirtualTimePolicy
+
+# GitHub (REST API, OAuth errors, the CodeQL action)
+getAnalysisKey
+oauth_application_policy
+runner_group_name
+validateUniqueCategory
+
+# Playwright config, Obsidian, the MCP Apps SDK
+applyDocumentTheme
+applyHostStyleVariables
+attachmentFolderPath
+testIgnore
+testMatch
+useHostStyleVariables
+
+# Python stdlib, pytest, Hypothesis
+AsyncMockMixin
+PytestUnhandledThreadExceptionWarning
+eval_str
+reproduce_failure
+restore_signals
+
+# Slack and Feishu APIs
+agent_content_hash
+bad_redirect_uri
+group_at_msg
+include_bot
+invalid_team_for_non_distributed_app
+send_as_bot
+share_chat
+
+# Google Workspace remote MCP servers, OAuth and IAM
+admin_policy_enforced
+download_file_content
+get_file_metadata
+get_file_permissions
+get_message
+get_spreadsheet
+label_message
+label_thread
+list_drafts
+list_events
+read_file_content
+read_slide_page
+read_slide_page_thumbnail
+redirect_uri_mismatch
+search_events
+suggest_time
+toolUser
+unlabel_message
+unlabel_thread
+
+# Box, Microsoft Entra, HubSpot, Bland, Redmine, WakaTime, Zoom
+BrokerPlugin
+InstalledClient
+account_credentials
+call_bland_api
+force_approve
+get_user_details
+manage_time_entry
+meeting_summary
+past_webinars
+read_heartbeats
+read_logged_time
+redirect_uri_missing
+replyUrlsWithType
+root_readonly
+root_readwrite
+summary_template_id
+tenantId
+write_heartbeats

@@ -697,6 +697,12 @@ describe('SecretsPanel item pane', () => {
     await user.click(await screen.findByRole('button', { name: 'Delete secret my key/1' }))
     expect(screen.getByText(/Permanently delete/)).toBeInTheDocument()
     expect(calls.some(c => c.method === 'DELETE')).toBe(false)
+    // The stock transparent Btn has no edge on the confirm's danger tint until hovered.
+    for (const name of ['Delete', 'Cancel']) {
+      expect(screen.getByRole('button', { name })).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(screen.getByRole('button', { name })).not.toHaveClass('bg-transparent')
+      expect(screen.getByRole('button', { name })).not.toHaveClass('border-border')
+    }
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByText(/Permanently delete/)).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Delete secret my key/1' }))

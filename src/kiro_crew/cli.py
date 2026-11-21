@@ -332,124 +332,13 @@ def _exit_on_pending_save(entry: Callable[[], None]) -> Callable[[], None]:
     return run
 
 
-@_exit_on_pending_save
-def main() -> None:
-    """Entry point — parse args and dispatch to the appropriate subcommand."""
-    # On Windows, force stdout/stderr to UTF-8 BEFORE anything prints — KiroCrew's
-    # non-ASCII output otherwise raises UnicodeEncodeError under the cp1252
-    # default when stdout is a pipe (detached gateway, KiroCrewHub client). On
-    # POSIX, an ASCII-only stdout replaces glyphs instead of raising. Must be the
-    # first statement: the KIROCREW_PORT error below prints non-ASCII glyphs.
-    platform_compat.ensure_utf8_console()
+def add_gateway_arguments(gw_parser: argparse.ArgumentParser) -> None:
+    """Add the ``gateway`` command's arguments to *gw_parser*.
 
-    # Clear any INHERITED sandbox-active marker before any argv-wrapping path
-    # can run. KIROCREW_SANDBOX_ACTIVE tells the sandbox layer that OS isolation
-    # is already active, so it skips re-wrapping (nested-sandbox passthrough).
-    # Its ONLY legitimate setter is the namespace launcher's in-sandbox main()
-    # — a separate process. A real sandboxed child never runs this CLI
-    # entrypoint, so a value present here can only be forged/inherited from the
-    # gateway's own environment; trusting it would let an operator env-inject a
-    # full sandbox bypass for every agent/tool spawn. Drop it so only the
-    # launcher's in-namespace set is ever honored. Its companion tier record
-    # KIROCREW_SANDBOX_LEVEL gets the same treatment: a stale inherited value
-    # would be read as the ACTIVE tier by a descendant's passthrough and
-    # corrupt its downgrade audit.
-    #
-    # Noted first, because the governance tier asks later where this process takes its
-    # ceiling from (``sandbox_launch_mark``). That answer picks a source, not a looser one.
-    sandbox_launch_mark.note()
-    os.environ.pop("KIROCREW_SANDBOX_ACTIVE", None)
-    os.environ.pop("KIROCREW_SANDBOX_LEVEL", None)
-
-    # Validate KIROCREW_PORT early — fail fast before anything else loads.
-    # Range as well as type: an in-range check that lives only in the binder
-    # would let `KIROCREW_PORT=70000 kirocrew service install` bake an
-    # unbindable port into a service definition and report success, leaving a
-    # gateway that dies on every start. Rejecting here keeps ONE policy for
-    # every entry point rather than a second one per consumer.
-    _raw_port = os.environ.get("KIROCREW_PORT")
-    if _raw_port is not None:
-        try:
-            _port_val = int(_raw_port)
-        except ValueError:
-            print(
-                f"❌ KIROCREW_PORT={_raw_port!r} is not a valid integer.\n"
-                f"   Unset it or provide a numeric port (e.g. KIROCREW_PORT=6777).",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        if not 1 <= _port_val <= 65535:
-            print(
-                f"❌ KIROCREW_PORT={_raw_port!r} is outside the valid port range 1-65535.\n"
-                f"   Unset it or provide a bindable port (e.g. KIROCREW_PORT=6777).",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    parser = argparse.ArgumentParser(
-        prog="kirocrew",
-        description="Kiro Crew — personal AI agent",
-        usage=cli_help.TOP_USAGE,
-        epilog=cli_help.render_epilog(),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("--version", action="version", version=version_line())
-    parser.add_argument(
-        "--verbose",
-        "-v",
-        action="count",
-        default=0,
-        help="Increase log verbosity (-v INFO, -vv DEBUG)",
-    )
-    # ``--no-jail`` is shared between the top-level parser and the jailed
-    # subparsers (every command in ``_JAILED_COMMANDS`` —
-    # chat/run/consolidate/eval — gets ``parents=[_jail_opts]``) via a parent
-    # parser, so BOTH ``kirocrew --no-jail <cmd>`` and ``kirocrew <cmd> --no-jail``
-    # are accepted (argparse only matches a flag on the parser that declares it).
-    # The PARENT copy uses ``default=argparse.SUPPRESS`` so that when the flag is
-    # given only at the top level, the subparser does not reset ``no_jail`` back to
-    # False (the classic argparse parent/subparser default-override trap).
-    _jail_opts = argparse.ArgumentParser(add_help=False)
-    _jail_opts.add_argument(
-        "--no-jail",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help="Disable the process-isolation jail for this invocation (no-op on "
-        "the public edition, which has no jail backend).",
-    )
-    parser.add_argument(
-        "--no-jail",
-        action="store_true",
-        help="Disable the process-isolation jail for this invocation (no-op on "
-        "the public edition, which has no jail backend).",
-    )
-
-    # ``help=SUPPRESS`` drops argparse's own flat subcommand block — ~40 commands
-    # in registration order, with the three anybody needs first buried in the
-    # middle — in favour of the grouped listing rendered into ``epilog`` above.
-    # It also drops the placeholder from the usage line, hence the explicit
-    # ``usage=``. ``metavar`` is what an "invalid choice" error names, and
-    # ``prog`` must be pinned because argparse otherwise derives each
-    # subcommand's prog from the parent's ``usage=`` string, which would prefix
-    # every ``kirocrew <cmd> --help`` with the whole top-level usage line.
-    sub = parser.add_subparsers(
-        dest="command",
-        metavar="<command>",
-        help=argparse.SUPPRESS,
-        prog="kirocrew",
-    )
-
-    # Each command's arguments come from a registrar, called here in registration order: a
-    # ``cli_parser_*`` module's, or for ``perf``, ``bench`` and ``desktop`` their own module's.
-    # The ``gateway`` block stays inline (``pod.runtime_boot.target_supports_flag`` reads its
-    # flags from this file's text), and so do the internal ``mcp-*`` servers.
-    cli_parser_agent.register_chat_parser(sub, _jail_opts)
-    cli_parser_gateway.register_doctor_parser(sub)
-    cli_parser_gateway.register_ledger_sweep_parser(sub)
-    cli_parser_gateway.register_tmp_parser(sub)
-
-    # gateway
-    gw_parser = cli_help.add_command(sub, "gateway")
+    The one definition of them: ``main()`` registers the command with it, and the
+    restart reads the running gateway's command line with it
+    (``cli_restart_headless.gateway_parser``), so the two cannot disagree on a flag.
+    """
     gw_parser.add_argument(
         "--slack-only",
         action="store_true",
@@ -559,6 +448,127 @@ def main() -> None:
             "--no-tunnel are forced on by --test-mode and cannot be opted out of."
         ),
     )
+
+
+@_exit_on_pending_save
+def main() -> None:
+    """Entry point — parse args and dispatch to the appropriate subcommand."""
+    # On Windows, force stdout/stderr to UTF-8 BEFORE anything prints — KiroCrew's
+    # non-ASCII output otherwise raises UnicodeEncodeError under the cp1252
+    # default when stdout is a pipe (detached gateway, KiroCrewHub client). On
+    # POSIX, an ASCII-only stdout replaces glyphs instead of raising. Must be the
+    # first statement: the KIROCREW_PORT error below prints non-ASCII glyphs.
+    platform_compat.ensure_utf8_console()
+
+    # Clear any INHERITED sandbox-active marker before any argv-wrapping path
+    # can run. KIROCREW_SANDBOX_ACTIVE tells the sandbox layer that OS isolation
+    # is already active, so it skips re-wrapping (nested-sandbox passthrough).
+    # Its ONLY legitimate setter is the namespace launcher's in-sandbox main()
+    # — a separate process. A real sandboxed child never runs this CLI
+    # entrypoint, so a value present here can only be forged/inherited from the
+    # gateway's own environment; trusting it would let an operator env-inject a
+    # full sandbox bypass for every agent/tool spawn. Drop it so only the
+    # launcher's in-namespace set is ever honored. Its companion tier record
+    # KIROCREW_SANDBOX_LEVEL gets the same treatment: a stale inherited value
+    # would be read as the ACTIVE tier by a descendant's passthrough and
+    # corrupt its downgrade audit.
+    #
+    # Noted first, because the governance tier asks later where this process takes its
+    # ceiling from (``sandbox_launch_mark``). That answer picks a source, not a looser one.
+    sandbox_launch_mark.note()
+    os.environ.pop("KIROCREW_SANDBOX_ACTIVE", None)
+    os.environ.pop("KIROCREW_SANDBOX_LEVEL", None)
+
+    # Validate KIROCREW_PORT early — fail fast before anything else loads.
+    # Range as well as type: an in-range check that lives only in the binder
+    # would let `KIROCREW_PORT=70000 kirocrew service install` bake an
+    # unbindable port into a service definition and report success, leaving a
+    # gateway that dies on every start. Rejecting here keeps ONE policy for
+    # every entry point rather than a second one per consumer.
+    _raw_port = os.environ.get("KIROCREW_PORT")
+    if _raw_port is not None:
+        try:
+            _port_val = int(_raw_port)
+        except ValueError:
+            print(
+                f"❌ KIROCREW_PORT={_raw_port!r} is not a valid integer.\n"
+                f"   Unset it or provide a numeric port (e.g. KIROCREW_PORT=6777).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not 1 <= _port_val <= 65535:
+            print(
+                f"❌ KIROCREW_PORT={_raw_port!r} is outside the valid port range 1-65535.\n"
+                f"   Unset it or provide a bindable port (e.g. KIROCREW_PORT=6777).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    parser = argparse.ArgumentParser(
+        prog="kirocrew",
+        description="Kiro Crew — personal AI agent",
+        usage=cli_help.TOP_USAGE,
+        epilog=cli_help.render_epilog(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--version", action="version", version=version_line())
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="count",
+        default=0,
+        help="Increase log verbosity (-v INFO, -vv DEBUG)",
+    )
+    # ``--no-jail`` is shared between the top-level parser and the jailed
+    # subparsers (every command in ``_JAILED_COMMANDS`` —
+    # chat/run/consolidate/eval — gets ``parents=[_jail_opts]``) via a parent
+    # parser, so BOTH ``kirocrew --no-jail <cmd>`` and ``kirocrew <cmd> --no-jail``
+    # are accepted (argparse only matches a flag on the parser that declares it).
+    # The PARENT copy uses ``default=argparse.SUPPRESS`` so that when the flag is
+    # given only at the top level, the subparser does not reset ``no_jail`` back to
+    # False (the classic argparse parent/subparser default-override trap).
+    _jail_opts = argparse.ArgumentParser(add_help=False)
+    _jail_opts.add_argument(
+        "--no-jail",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Disable the process-isolation jail for this invocation (no-op on "
+        "the public edition, which has no jail backend).",
+    )
+    parser.add_argument(
+        "--no-jail",
+        action="store_true",
+        help="Disable the process-isolation jail for this invocation (no-op on "
+        "the public edition, which has no jail backend).",
+    )
+
+    # ``help=SUPPRESS`` drops argparse's own flat subcommand block — ~40 commands
+    # in registration order, with the three anybody needs first buried in the
+    # middle — in favour of the grouped listing rendered into ``epilog`` above.
+    # It also drops the placeholder from the usage line, hence the explicit
+    # ``usage=``. ``metavar`` is what an "invalid choice" error names, and
+    # ``prog`` must be pinned because argparse otherwise derives each
+    # subcommand's prog from the parent's ``usage=`` string, which would prefix
+    # every ``kirocrew <cmd> --help`` with the whole top-level usage line.
+    sub = parser.add_subparsers(
+        dest="command",
+        metavar="<command>",
+        help=argparse.SUPPRESS,
+        prog="kirocrew",
+    )
+
+    # Each command's arguments come from a registrar, called here in registration order: a
+    # ``cli_parser_*`` module's, or for ``perf``, ``bench`` and ``desktop`` their own module's.
+    # The ``gateway`` arguments stay in this file (``add_gateway_arguments``;
+    # ``pod.runtime_boot.target_supports_flag`` reads its flags from this file's text),
+    # and so do the internal ``mcp-*`` servers.
+    cli_parser_agent.register_chat_parser(sub, _jail_opts)
+    cli_parser_gateway.register_doctor_parser(sub)
+    cli_parser_gateway.register_ledger_sweep_parser(sub)
+    cli_parser_gateway.register_tmp_parser(sub)
+
+    # gateway
+    add_gateway_arguments(cli_help.add_command(sub, "gateway"))
 
     cli_parser_gateway.register_setup_parser(sub)
     cli_parser_gateway.register_manifest_parser(sub)
@@ -1121,7 +1131,10 @@ def main() -> None:
 
         run_computer(getattr(args, "computer_args", []))
     elif args.command == "eval":
+        from kiro_crew.agent_sdk.drivers.acp_vocab import AcpError, AcpRuntimeError
+        from kiro_crew.agent_sdk.host_auth import for_terminal
         from kiro_crew.cli_commands import _eval_run_flag_refusal, _run_eval, _run_eval_tasks
+        from kiro_crew.terminal_safe import safe_terminal_line
 
         _eval_refusal = _eval_run_flag_refusal(args)
         if _eval_refusal:
@@ -1129,7 +1142,15 @@ def main() -> None:
             sys.exit(2)
         if args.scenarios[:1] == ["run"]:
             sys.exit(_run_eval_tasks(args))
-        asyncio.run(_run_eval(args))
+        try:
+            asyncio.run(_run_eval(args))
+        except (AcpError, AcpRuntimeError) as exc:
+            # The backend refused to start a scenario or judge session (a signed-out
+            # kiro-cli, a KAS engine that cannot be installed). Its text names what
+            # failed, so that one line is the output; the traceback is logged at DEBUG.
+            logger.debug("eval: the backend refused to start a session", exc_info=True)
+            print(f"Error: {safe_terminal_line(for_terminal(str(exc)))}", file=sys.stderr)
+            sys.exit(1)
     elif args.command == "security":
         from kiro_crew.cli_commands import _security
 

@@ -32,10 +32,12 @@ import { useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
 import { useRelayTabs } from '../lib/relayCrewPanes'
+import { embeddedTeamCrewsGroups } from './embeddedTeamCrewsGroups'
 import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
 import { hasDashboardPane } from '../utils/remoteCrew'
 import { useSelectInstance } from '../hooks/useSelectInstance'
 import { isRelayHostOffline } from '../utils/relayHostOffline'
+import { useOutageFailure } from '../hooks/useOutageFailure'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { safeSetItem } from '../utils/safeStorage'
@@ -1163,7 +1165,7 @@ function Switcher({
   entries: SwitcherEntry[]
   activeId: string | null
   onSelect: (id: string | null) => void
-  /** Top-level bar only: an embedded pane never gets one (no Team Crew list leaves this computer). */
+  /** The Remote Crews group: the top bar's own, or in an SSH Crew's pane the rows its window relays. */
   extraGroups?: SwitcherExtraGroups
   /** Top-level bar only: an extra group holds something not seen yet. */
   extraNew?: boolean
@@ -1377,6 +1379,7 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
         stableOrder={hostStableOrder}
         onToggleStableOrder={onToggleStableOrder}
         embedded
+        extraGroups={embeddedTeamCrewsGroups(host.relayCrews)}
       />
     </div>
   )
@@ -1399,8 +1402,7 @@ export default function InstanceTabBar({
   /** A notice about those groups, shown where the bar shows its own list failure,
    *  so the top bar sizes it the same way. */
   extraNotice?: ReactNode
-  /** Relay Crews those groups show a row for, with its own × while open: an open one
-   *  gets no second row here. Any other open one keeps its row, so it stays reachable. */
+  /** Relay Crews those groups show a row for: an open one gets no second row here; any other keeps its row. */
   listedRelayCrews?: ReadonlySet<string>
 } = {}) {
   const activeId = useAppSelector(s => s.instances.activeId)
@@ -1413,6 +1415,7 @@ export default function InstanceTabBar({
   const embedded = isEmbeddedPane()
   // Shared with InstancesViewport / InstancesPanel via the React Query cache.
   const instancesQuery = useQuery({ queryKey: ['instances'], queryFn: () => api.listInstances(), enabled: !embedded })
+  const listOutage = useOutageFailure(instancesQuery.isError, instancesQuery.errorUpdatedAt, instancesQuery.refetch)
   // Only the gateway's own `instances_disabled` 403 means "feature off"; a
   // non-owner or Slack-origin 403 is a real failure and shows as one.
   const disabled = isInstancesDisabledError(instancesQuery.error)
@@ -1507,7 +1510,9 @@ export default function InstanceTabBar({
   // which case the bar exists to say so (an empty bar and a failed read used to
   // look identical).
   // The relay's host-offline answer is the offline cover's to say, not this bar's.
-  const listFailure = !disabled && instancesQuery.error && !isRelayHostOffline(instancesQuery.error)
+  // So is a lost gateway: the header's own offline status already says it, and
+  // the failed read's text is the browser's raw "Failed to fetch".
+  const listFailure = !disabled && !listOutage && instancesQuery.error && !isRelayHostOffline(instancesQuery.error)
     ? (errMessage(instancesQuery.error) || i18nT('components.instanceTabBar.instances_load_failed'))
     : null
   // Team Crews keep the bar up on their own, even with the instances feature off.

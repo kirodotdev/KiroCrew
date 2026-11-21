@@ -24,6 +24,7 @@ from kiro_crew.autonudge import (
     AutoNudgeService,
     NudgeLoop,
 )
+from kiro_crew.conductor_patrol import PATROL_MESSAGE
 from kiro_crew.decisions.points import nudge_wake as point
 from kiro_crew.decisions.types import Answer
 from kiro_crew.irq import Outcome, Verdict
@@ -786,6 +787,31 @@ class TestTheDefaultBrief:
             got = asyncio.run(svc._judge_tick_is_quiet(_loop({"wake_when": "RULING"})))
         assert got is True
         assert asked == [("RULING", "")]
+
+    def test_a_default_brief_with_no_readable_target_leaves_the_probe_s_answer(self) -> None:
+        # The gateway's conductor patrol names no session and no pull request, so the
+        # default brief has nothing to read. Firing there turned every quiet probe tick
+        # into a turn once the evidence scope was granted; with no judge applying, the
+        # tick keeps the answer it has with the scope off.
+        svc, asked, _ = self._sees_criteria()
+
+        async def collect(lp: NudgeLoop) -> tuple[list[dict], int, dict]:
+            raise AssertionError("a loop with no readable target must not collect evidence")
+
+        svc._collect_judge_evidence = collect
+        loop = _loop()
+        loop.message = PATROL_MESSAGE
+        assert judge.parse_targets(judge.default_spec(), loop.message) == []
+        assert self._run(svc, loop, asked) is None
+        assert asked == [], "the judge was not asked"
+
+    def test_an_owner_brief_with_no_readable_target_still_fires(self) -> None:
+        # The owner armed a criterion, so a watch that reads nothing spends the turn.
+        svc, asked, _ = self._sees_criteria()
+        loop = _loop({"wake_when": "RULING"})
+        loop.message = PATROL_MESSAGE
+        assert self._run(svc, loop, asked) is False
+        assert asked == []
 
     def test_the_notice_names_the_default_brief(self) -> None:
         svc, asked, sink = self._sees_criteria()

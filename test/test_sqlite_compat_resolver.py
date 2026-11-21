@@ -173,6 +173,9 @@ STDLIB_CONNECT_SITES = {
     ),
     "apps/builtins/personal_shopper/backend/store.py": "the app's own database",
     "apps/builtins/personal_shopper/tests/test_store.py": "test fixtures",
+    "browser_harness/credentials.py": (
+        "Kiro's stopped Chromium's own cookie file, to remove the rows the gateway set"
+    ),
     "builtin_skills/security-conductor/scripts/ledger.py": "the skill's ledger, in its own process",
     "builtin_skills/security-conductor/scripts/scope_check.py": (
         "the skill's ledger, in its own process"

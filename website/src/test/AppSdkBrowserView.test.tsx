@@ -32,6 +32,11 @@
  * off (the gateway's `app_state` frame triggers that re-read in every tab), and a
  * refused take over says why.
  *
+ * stayLive: off by default (the fold waits for Show the live page); on, a turn
+ * that folds with its tab open is streamed again, once per turn, and not for a
+ * closed tab, a hidden view or another app's slot; until the stream is back the
+ * picture is held (no done card, no take over), and a refusal ends the hold.
+ *
  * Focus: Take over (button, frame click, a second takeover, or the first picture
  * arriving during one) puts the keyboard on the page; a hand back or Show the
  * live page puts it on Take over, unless the person had moved elsewhere.
@@ -560,6 +565,183 @@ describe('a hand-back note the agent was not waiting for', () => {
     expect(send).not.toHaveBeenCalled()
     expect(writes.chat).toHaveBeenCalledTimes(1)
     expect(writes.chat).toHaveBeenCalledWith(OWN, 'I signed in')
+  })
+})
+
+describe('stayLive', () => {
+  const stay = <BrowserView slot={OWN} stayLive aria-label="The page" />
+  const liveThenFold = (over: Record<string, unknown> = {}) => {
+    act(() => { browserLiveStore.applyEvent(ev(OWN)) })
+    act(() => { browserLiveStore.applyEvent(ev(OWN, { state: 'done', tab: 'open', ...over })) })
+  }
+
+  it('is off by default: a folded turn waits for Show the live page', async () => {
+    const reopen = vi.fn(async () => ({ ok: true }))
+    browserLiveStore.__setWritesForTests({ reopen })
+    mount(OWN)
+    await act(async () => { liveThenFold() })
+    expect(view().dataset.state).toBe('done')
+    expect(screen.getByTestId('app-browser-view-show-live')).toBeTruthy()
+    expect(reopen).not.toHaveBeenCalled()
+  })
+
+  it('streams the open tab again when the turn folds', async () => {
+    const reopen = vi.fn(async () => ({ ok: true }))
+    browserLiveStore.__setWritesForTests({ reopen })
+    mount(OWN, stay)
+    await act(async () => { liveThenFold() })
+    expect(reopen).toHaveBeenCalledTimes(1)
+    expect(reopen).toHaveBeenCalledWith(OWN, 't1')
+    act(() => { browserLiveStore.applyEvent(ev(OWN, { state: 'live', turn_over: true })) })
+    expect(view().dataset.state).toBe('live')
+  })
+
+  it('stays folded when the tab is closed', async () => {
+    const reopen = vi.fn(async () => ({ ok: true }))
+    browserLiveStore.__setWritesForTests({ reopen })
+    mount(OWN, stay)
+    await act(async () => { liveThenFold({ tab: 'closed' }) })
+    expect(reopen).not.toHaveBeenCalled()
+    expect(view().dataset.state).not.toBe('live')
+  })
+
+  it('reopens once per turn: a refusal or a second fold of that turn does not loop', async () => {
+    const reopen = vi.fn(async () => { throw new Error('busy') })
+    browserLiveStore.__setWritesForTests({ reopen })
+    mount(OWN, stay)
+    await act(async () => { liveThenFold() })
+    expect(reopen).toHaveBeenCalledTimes(1)
+    // The same turn shown and folded again (the person folded it elsewhere).
+    reopen.mockImplementation(async () => ({ ok: true }))
+    await act(async () => { browserLiveStore.applyEvent(ev(OWN, { state: 'live', turn_over: true })) })
+    await act(async () => { browserLiveStore.applyEvent(ev(OWN, { state: 'done', tab: 'open' })) })
+    expect(reopen).toHaveBeenCalledTimes(1)
+    // A later turn that folds gets its own reopen.
+    await act(async () => { browserLiveStore.applyEvent(ev(OWN, { turn_id: 't2' })) })
+    await act(async () => { browserLiveStore.applyEvent(ev(OWN, { turn_id: 't2', state: 'done', tab: 'open' })) })
+    expect(reopen).toHaveBeenCalledTimes(2)
+    expect(reopen).toHaveBeenLastCalledWith(OWN, 't2')
+  })
+
+  it('does not reopen while its host surface is hidden', async () => {
+    const reopen = vi.fn(async () => ({ ok: true }))
+    browserLiveStore.__setWritesForTests({ reopen })
+    mount(OWN, stay, ['view'], false)
+    await act(async () => { liveThenFold() })
+    expect(reopen).not.toHaveBeenCalled()
+  })
+
+  it('defers a hidden document\'s fold until visible, once per turn', async () => {
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    const reopen = vi.fn(async () => ({ ok: true }))
+    browserLiveStore.__setWritesForTests({ reopen })
+    mount(OWN, stay)
+    await act(async () => { liveThenFold() })
+    expect(view().dataset.state).toBe('done')
+    expect(reopen).not.toHaveBeenCalled()
+
+    visibility.mockReturnValue('visible')
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
+    expect(reopen).toHaveBeenCalledTimes(1)
+    expect(reopen).toHaveBeenCalledWith(OWN, 't1')
+
+    visibility.mockReturnValue('hidden')
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
+    visibility.mockReturnValue('visible')
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
+    expect(reopen).toHaveBeenCalledTimes(1)
+  })
+
+  /** A reopen the test answers itself, so the fold can be seen while it is in flight. */
+  const pendingReopen = () => {
+    let answer: (refusal?: Error) => void = () => {}
+    const reopen = vi.fn(() => new Promise<unknown>((resolve, reject) => {
+      answer = (refusal) => { if (refusal) reject(refusal); else resolve({ live: true }) }
+    }))
+    browserLiveStore.__setWritesForTests({ reopen })
+    return { reopen, answer: (refusal?: Error) => answer(refusal) }
+  }
+  const held = () => {
+    expect(screen.queryByTestId('app-browser-view-show-live')).toBeNull()
+    expect(screen.getByTestId('app-browser-view-picture')).toBeTruthy()
+    expect(screen.queryByTestId('app-browser-view-take-over')).toBeNull()
+  }
+
+  it('holds the live picture over the fold until the stream is back', async () => {
+    const { reopen, answer } = pendingReopen()
+    mount(OWN, stay)
+    act(() => { browserLiveStore.applyEvent(ev(OWN)); browserLiveStore.applyFrame(frame(OWN)) })
+    expect(screen.getByTestId('app-browser-view-take-over')).toBeTruthy()
+    act(() => { browserLiveStore.applyEvent(ev(OWN, { state: 'done', tab: 'open' })) })
+    expect(reopen).toHaveBeenCalledTimes(1)
+    held()
+    await act(async () => { answer() })
+    held()
+    act(() => { browserLiveStore.applyEvent(ev(OWN, { state: 'live', turn_over: true })) })
+    expect(view().dataset.state).toBe('live')
+    expect(screen.getByTestId('app-browser-view-take-over')).toBeTruthy()
+  })
+
+  it.each(['separate', 'batched'] as const)('keeps the next turn held when an earlier reopen is refused (%s turn events)', async (events) => {
+    const first = pendingReopen()
+    mount(OWN, stay)
+    act(() => { browserLiveStore.applyEvent(ev(OWN)); browserLiveStore.applyFrame(frame(OWN)) })
+    act(() => { browserLiveStore.applyEvent(ev(OWN, { state: 'done', tab: 'open' })) })
+    expect(first.reopen).toHaveBeenCalledWith(OWN, 't1')
+    held()
+
+    const second = pendingReopen()
+    const start = () => {
+      browserLiveStore.applyEvent(ev(OWN, { turn_id: 't2' }))
+      browserLiveStore.applyFrame(frame(OWN))
+    }
+    if (events === 'separate') act(start)
+    act(() => {
+      if (events === 'batched') start()
+      browserLiveStore.applyEvent(ev(OWN, { turn_id: 't2', state: 'done', tab: 'open' }))
+    })
+    expect(second.reopen).toHaveBeenCalledWith(OWN, 't2')
+    held()
+    await act(async () => { first.answer(new Error('busy')) })
+    held()
+    expect(first.reopen).toHaveBeenCalledTimes(1)
+    expect(second.reopen).toHaveBeenCalledTimes(1)
+    await act(async () => { second.answer() })
+  })
+
+  it('ends the hold on a refused reopen and says why', async () => {
+    const { answer } = pendingReopen()
+    mount(OWN, stay)
+    act(() => { browserLiveStore.applyEvent(ev(OWN)) })
+    act(() => { browserLiveStore.applyEvent(ev(OWN, { state: 'done', tab: 'open' })) })
+    held()
+    await act(async () => { answer(new Error('busy')) })
+    expect(view().dataset.state).toBe('reopen_failed')
+    expect(screen.queryByTestId('app-browser-view-picture')).toBeNull()
+  })
+
+  it('folds a reopened turn the person closes again to the done card', async () => {
+    const { answer } = pendingReopen()
+    mount(OWN, stay)
+    act(() => { browserLiveStore.applyEvent(ev(OWN)) })
+    act(() => { browserLiveStore.applyEvent(ev(OWN, { state: 'done', tab: 'open' })) })
+    held()
+    await act(async () => { answer() })
+    act(() => { browserLiveStore.applyEvent(ev(OWN, { state: 'live', turn_over: true })) })
+    act(() => { browserLiveStore.applyEvent(ev(OWN, { state: 'done', tab: 'open' })) })
+    expect(view().dataset.state).toBe('done')
+    expect(screen.getByTestId('app-browser-view-show-live')).toBeTruthy()
+    expect(screen.queryByTestId('app-browser-view-picture')).toBeNull()
+  })
+
+  it('does not reopen another app\'s slot', async () => {
+    const reopen = vi.fn(async () => ({ ok: true }))
+    browserLiveStore.__setWritesForTests({ reopen })
+    act(() => { browserLiveStore.applyEvent(ev(FOREIGN, { state: 'done', tab: 'open' })) })
+    mount(FOREIGN, <BrowserView slot={FOREIGN} stayLive aria-label="The page" />)
+    await act(async () => {})
+    expect(view().dataset.state).toBe('denied')
+    expect(reopen).not.toHaveBeenCalled()
   })
 })
 

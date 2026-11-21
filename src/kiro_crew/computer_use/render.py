@@ -34,6 +34,7 @@ from kiro_crew.computer_use.types import (
     TREE_INDENT,
     TRUNCATED_NOTE,
     TRUNCATED_WINDOW_NOTE,
+    UNLISTED_APPS_NOTE,
     WINDOW_ORIGIN_NOTE,
     AppRef,
     ElementRec,
@@ -75,6 +76,7 @@ def render_apps(apps: "tuple[AppRef, ...]") -> str:
         if app.window_title:
             line += f' — "{_clip(app.window_title, _APP_FIELD_LIMIT)}"'
         lines.append(line)
+    lines.append(UNLISTED_APPS_NOTE)
     return policy.redact_result("\n".join(lines))
 
 

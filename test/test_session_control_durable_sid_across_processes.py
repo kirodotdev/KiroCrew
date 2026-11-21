@@ -27,10 +27,10 @@ from kiro_crew.crew_log import session_tree_projection as stp
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 #: Run in a FRESH interpreter against the store this module wrote. Drives the RESOLVER
-#: rather than the store reader underneath it: that reader is shared code this change
-#: only calls, so asserting on it alone would pass with this change reverted. Reports
-#: the resolver's answer per slot and, as the control, what the session map holds --
-#: which in a process that has served no turn is nothing at all.
+#: rather than the shared store reader underneath it, because a check on the reader
+#: alone passes even when the resolver ignores the store. Reports the resolver's answer
+#: per slot and, as the control, what the session map holds -- which in a process that
+#: has served no turn is nothing at all.
 #:
 #: ``sessions`` stands in for the live registry, which genuinely does not exist here: no
 #: session is running, so nothing owes replay and no slot HAS a session -- which is why

@@ -147,11 +147,18 @@ export interface TailnetMobileQr {
  * shows the state read-only. The dashboard can only turn it off; turning it on is
  * the terminal command.
  */
+/** The one key of the `/api/remote-control` read (the card and the settings search). */
+export const REMOTE_CONTROL_QUERY_KEY = ['remote-control'] as const
+
 export interface RemoteControlState {
   requested: boolean
   locked: boolean
   running: boolean
+  /** Not connected yet but on its way (starting, or waiting for a host token): no restart needed. */
+  connecting?: boolean
   relayed?: boolean
+  /** Why config keeps a requested relay from starting, in plain words; absent otherwise. */
+  problem?: string
 }
 
 export function createRemoteAccessEndpoints({ get, post, put, j }: ClientTransport) {

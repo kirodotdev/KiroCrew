@@ -57,7 +57,6 @@ Second consumer — port discovery:
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import os
 import sys
@@ -91,111 +90,9 @@ _MAX_START_TOKEN_BYTES = 128
 #: control plane can inspect a pod's isolated home without resolving its own.
 RUN_DIR_NAME = "run"
 
-#: Headless mode publication's deadline, also bounding foreground restart's wait
-#: for an unnamed lock holder. Matches the signing-key preflight's 30-second bound.
-GATEWAY_MODE_WRITE_TIMEOUT_SECS = 30.0
-
 #: The run dir a shell with no ``KIROCREW_HOME`` resolves, bound at import so the
 #: test floor can pin it. A gateway on another data home leaves its pointer here.
 _DEFAULT_RUN_DIR = Path.home() / CONFIG_DIR_NAME / RUN_DIR_NAME
-
-
-def write_gateway_mode(*, headless: bool) -> None:
-    """Publish the home's gateway mode; raises on a failed write.
-
-    The home has one gateway under ``gateway.lock``. Keep its mode across a
-    stop or crash, and overwrite it on EVERY boot, including ordinary boots: a
-    headless boot before it listens (a failure stops that boot), an ordinary
-    boot after its listener is up (a failure only warns).
-    This sidecar leaves the launcher, pid and start-token wire formats intact.
-    """
-    pid = os.getpid()
-    record: dict[str, bool | int | str] = {"headless": headless, "pid": pid}
-    token = pid_start_token(pid)
-    if token:
-        record["start_token"] = token
-    # shortcut: an unreadable start identity leaves pid reuse undetected; use
-    # the token when the platform can supply it for both writer and reader.
-    atomic_write(
-        _run_dir() / "gateway-mode.json",
-        json.dumps(record) + "\n",
-        mode=0o600,
-    )
-
-
-class UnverifiedHeadlessMode(ValueError):
-    """No live gateway can confirm the recorded headless mode."""
-
-
-def gateway_mode_decision(
-    data: object, live_identity: tuple[int, str] | None
-) -> tuple[bool | None, bool]:
-    """Return (headless, stale); a None mode refuses an unverified headless record.
-
-    Headless boot publishes before listening or refuses to start. An unnamed
-    live holder is ordinary only once it listens; foreground restart must settle
-    that boot window before using this pure rule. The service output path uses
-    its own bounded wait. In-app re-exec keeps its argv (and mode), and the
-    successor publishes its own identity at boot.
-    With no live gateway, a headless record cannot be distinguished from one
-    left by an ordinary gateway whose mode write failed.
-    """
-    if data is None:
-        return False, False
-    if not isinstance(data, dict):
-        raise ValueError("gateway mode must be an object")
-    headless = data.get("headless", False)
-    if type(headless) is not bool:
-        raise ValueError("gateway headless mode must be a boolean")
-    pid = data.get("pid")
-    if "pid" in data and (type(pid) is not int or pid <= 0):
-        raise ValueError("gateway mode pid must be a positive integer")
-    token = data.get("start_token", "")
-    if not isinstance(token, str):
-        raise ValueError("gateway mode start token must be a string")
-    stale = live_identity is not None and (
-        pid != live_identity[0] or bool(token and live_identity[1] and token != live_identity[1])
-    )
-    if live_identity is None and headless:
-        return None, False
-    return (False if stale else headless), stale
-
-
-def read_gateway_mode() -> dict[str, object] | None:
-    """The parsed record, or ``None`` when absent; unreadable or damaged raises."""
-    try:
-        raw = read_bytes_with_retry(config_dir() / RUN_DIR_NAME / "gateway-mode.json")
-    except FileNotFoundError:
-        return None
-    data = json.loads(raw)
-    if not isinstance(data, dict):
-        raise ValueError("gateway mode must be an object")
-    return data
-
-
-def gateway_headless_from(
-    data: dict[str, object] | None, live_identity: tuple[int, str] | None
-) -> bool:
-    """Decide the mode from a parsed record (``None``: absent, so ordinary).
-
-    A stale record is ignored. It is reported only when it said headless,
-    because only then does ignoring it change the outcome.
-    """
-    headless, stale = gateway_mode_decision(data, live_identity)
-    if headless is None:
-        raise UnverifiedHeadlessMode("no live gateway can confirm the headless record")
-    if stale and data is not None and data.get("headless") is True:
-        print("⚠️ Gateway mode record is stale and was ignored.", file=sys.stderr)
-    return headless
-
-
-def read_gateway_headless(*, live_identity: tuple[int, str] | None = None) -> bool:
-    """Read the restart mode; only absent legacy data defaults to ordinary.
-
-    A present but damaged record raises rather than dropping ``--headless``.
-    The record supplies no argv: its only effect is to add that fixed flag.
-    """
-    return gateway_headless_from(read_gateway_mode(), live_identity)
 
 
 def pid_file_name(port: int) -> str:

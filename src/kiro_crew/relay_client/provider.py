@@ -26,9 +26,15 @@ import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional
 
-from kiro_crew.relay_client.client import STATE_CONNECTED, STATE_ERROR, RelayClient
+from kiro_crew.relay_client.client import (
+    STATE_CONNECTED,
+    STATE_ERROR,
+    STATE_STOPPED,
+    RelayClient,
+)
 from kiro_crew.relay_client.ingress import CrewIngress, LoopbackIngress
 from kiro_crew.relay_client.lease import (
+    DEFAULT_LEASE_REGION,
     SECRET_URI_PREFIX,
     SIGN_IN_CREDENTIAL,
     TOKEN_TYPE_API_KEY,
@@ -44,7 +50,7 @@ from kiro_crew.relay_client.protocol import (
     is_loopback_host,
 )
 from kiro_crew.relay_client.token_source import HostTokenSource, UnavailableHostTokenSource
-from kiro_crew.remote_control.hosting import relay_requested
+from kiro_crew.remote_control.hosting import personal_by_default, relay_requested
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.kiro_relay.ingress import RelayIngress as GatewayRelayIngress
@@ -60,6 +66,10 @@ _CREW_DOMAIN_MAX_CHARS = 189
 
 class RelaySettingsError(ValueError):
     """A relay setting that cannot be used; the message names the setting."""
+
+
+class RelayBindUnreachable(RelaySettingsError):
+    """The gateway is bound to one non-loopback address, which the relay cannot hand to."""
 
 
 @dataclass(frozen=True)
@@ -83,6 +93,12 @@ class RelaySettings:
     lease_credential: str = field(default="", repr=False)
     #: The lease call's ``TokenType`` header; empty sends none.
     lease_token_type: str = ""
+    #: The built-in lease service's Region for a Crew whose credential names none.
+    lease_region: str = ""
+    #: A personal Crew that hosts only by default: a bind the relay cannot reach
+    #: leaves it stopped with a WARNING, not an error
+    #: (``remote_control.hosting.personal_by_default``).
+    personal_default: bool = False
 
     @classmethod
     def from_config(cls, cfg: Any) -> "RelaySettings":
@@ -91,11 +107,13 @@ class RelaySettings:
             # A stand-in config object answers any attribute truthily, so only the
             # one rule's answer turns it on.
             enabled=relay_requested(tunnel),
+            personal_default=personal_by_default(tunnel),
             host_url="",
             crew_domain="",
             lease_url=_setting_text(tunnel, "relay_lease_url"),
             lease_credential=_setting_text(tunnel, "relay_lease_credential"),
             lease_token_type=_setting_text(tunnel, "relay_lease_token_type"),
+            lease_region=_setting_text(tunnel, "relay_lease_region"),
         )
 
     def validate(self) -> None:
@@ -172,6 +190,44 @@ class RelaySettings:
                     "tunnel.relay_lease_token_type must be empty or one of "
                     + ", ".join(sorted(TOKEN_TYPES))
                 )
+            if not signs_in:
+                self.built_in_lease_url()
+
+    def built_in_lease_url(self) -> str:
+        """The built-in lease URL off the sign-in (whose profile names its own): ``""`` there.
+
+        Every other Crew, a crew key or a JWT-SVID lease alike, leases from
+        ``relay_lease_region``, else us-east-1. Refused: a Region outside the table.
+        """
+        if not self.uses_built_in_lease or self.uses_sign_in:
+            return ""
+        from kiro_crew.auth.login.control_plane import (
+            CONTROL_PLANE_REGIONS,
+            known_control_plane_url,
+        )
+
+        region, name = self.lease_region, "tunnel.relay_lease_region"
+        if not region:
+            # shortcut: the built-in default, so a Crew set up before the setting keeps
+            # leasing as it did; a key from another Region fails there until the setting
+            # names it. Refuse an empty one once every such Crew names its Region.
+            region = DEFAULT_LEASE_REGION
+        url = known_control_plane_url(region)
+        if not url:
+            # The value is not echoed, like the token type's: a pasted credential stays out.
+            raise RelaySettingsError(
+                f"{name} names no Region the built-in lease service covers "
+                f"({', '.join(CONTROL_PLANE_REGIONS)}): name one, or set tunnel.relay_lease_url"
+            )
+        return url
+
+    def lease_region_problem(self) -> Optional[str]:
+        """Why :meth:`built_in_lease_url` refuses, or ``None``; for a status to show."""
+        try:
+            self.built_in_lease_url()
+        except RelaySettingsError as exc:
+            return str(exc)
+        return None
 
     @property
     def uses_built_in_lease(self) -> bool:
@@ -304,7 +360,7 @@ def gateway_listener() -> tuple[str, int]:
         address = None
     if address is not None and is_loopback_host(host):
         return str(address), int(raw)
-    raise RelaySettingsError(
+    raise RelayBindUnreachable(
         f"the relay hands requests over loopback, but the gateway is bound to {host!r}"
     )
 
@@ -334,6 +390,9 @@ IngressFactory = Callable[[], CrewIngress]
 class RelayTunnelProvider:
     """The ``TunnelProvider`` that holds this Crew's host connection to the Kiro relay."""
 
+    #: Marks the Kiro relay's provider for readers that must not import this module.
+    kiro_relay = True
+
     def __init__(
         self,
         settings: RelaySettings,
@@ -353,6 +412,9 @@ class RelayTunnelProvider:
         self._on_connect: Optional[Callable[[str], Awaitable[None]]] = None
         self._on_disconnect: Optional[Callable[[], Awaitable[None]]] = None
         self._error = ""
+        #: The status state a start refusal reports: an error, or stopped for a bind
+        #: a default personal Crew cannot host on yet.
+        self._error_state = STATE_ERROR
 
     @property
     def settings(self) -> RelaySettings:
@@ -381,8 +443,17 @@ class RelayTunnelProvider:
             self._settings.validate()
             ingress = self._ingress_factory() if self._ingress_factory else self._loopback()
         except RelaySettingsError as exc:
-            logger.error("Remote Control relay not started: %s", exc)
+            # Nobody chose to host a default personal Crew, so a bind the relay
+            # cannot reach leaves it stopped, said as a WARNING; the next start with
+            # a loopback or wildcard bind hosts. Every other refusal is an error.
+            quiet = self._settings.personal_default and isinstance(exc, RelayBindUnreachable)
+            logger.log(
+                logging.WARNING if quiet else logging.ERROR,
+                "Remote Control relay not started: %s",
+                exc,
+            )
             self._error = str(exc)
+            self._error_state = STATE_STOPPED if quiet else STATE_ERROR
             return
         self._error = ""
         self._ingress = ingress
@@ -429,7 +500,13 @@ class RelayTunnelProvider:
         if self._client is not None:
             return self._client.snapshot()
         if self._error:
-            return {"state": STATE_ERROR, "url": "", "error": self._error}
+            return {
+                "state": self._error_state,
+                "url": "",
+                "error": self._error,
+                # Only the quiet bind refusal is a wait on this Crew, not a fault.
+                "cannot_host_yet": self._error_state == STATE_STOPPED,
+            }
         return None
 
     async def ensure_available(self, *, install: bool = True) -> str:
@@ -458,7 +535,7 @@ def _crew_version() -> str:
 def lease_token_source(settings: RelaySettings) -> Optional[HostTokenSource]:
     """The lease client for *settings*, or ``None`` when an edition names the relay.
 
-    An empty ``lease_url`` leases from the built-in URL, which each call reads.
+    An empty ``lease_url`` leases from the built-in URL for the Crew's Region.
     Construction does no I/O: the credential, the instance ID and the first call
     all wait for the relay client's first request for a host token.
     """
@@ -472,6 +549,7 @@ def lease_token_source(settings: RelaySettings) -> Optional[HostTokenSource]:
             credential=settings.lease_credential,
             crew_version=_crew_version(),
             workload=True,
+            built_in_url="" if settings.lease_region_problem() else settings.built_in_lease_url(),
         )
     return LeaseHostTokenSource(
         lease_url=settings.lease_url,
@@ -480,6 +558,8 @@ def lease_token_source(settings: RelaySettings) -> Optional[HostTokenSource]:
         # An unknown type is refused by validate() when the provider starts, so the
         # composition root, which builds this before any start, never raises here.
         token_type=settings.lease_token_type if settings.lease_token_type in TOKEN_TYPES else None,
+        # A refused Region: "", and every call stops before the credential goes out.
+        built_in_url="" if settings.lease_region_problem() else settings.built_in_lease_url(),
     )
 
 

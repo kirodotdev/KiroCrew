@@ -600,7 +600,7 @@ def safe_read_prefix(
         os.close(fd)
 
 
-def safe_copy_file_nolink(raw: str, dest_dir: str) -> str | None:
+def safe_copy_file_nolink(raw: str, dest_dir: str, *, links_only: bool = False) -> str | None:
     """Copy a file into *dest_dir* with the full descriptor-pinned validation
     chain; return the private copy's path, or None if the source is rejected.
 
@@ -626,13 +626,17 @@ def safe_copy_file_nolink(raw: str, dest_dir: str) -> str | None:
     ``os.open`` follows a reparse point at the name AND hands back a CRT descriptor
     in text mode, which truncates a binary payload at its first ``0x1A``. Media
     files — what this function exists for — are exactly the payloads that carry one.
+
+    *links_only* (Windows only) refuses only a reparse point that is a link, so a
+    regular file carrying another tag (a cloud-files placeholder) opens: the read a
+    person-chosen file such as an upload needs. A link or junction is still refused.
     """
     path = validate_file_path(raw)
     if path is None:
         return None
 
     try:
-        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
+        fd = platform_compat.open_file_no_reparse(path, nonblocking=True, links_only=links_only)
     except OSError:
         return None
     tmp_fd = -1

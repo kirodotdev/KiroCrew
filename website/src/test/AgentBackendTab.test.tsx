@@ -67,7 +67,8 @@ vi.mock('../pages/developer/KiroAccountStatusLine', () => ({
 
 // Same sentinel treatment for the engine card under it: its behaviour is pinned in
 // KasBundleCard.test.tsx, and the real card would need the kas-bundle API.
-vi.mock('../pages/developer/KasBundleCard', () => ({
+vi.mock('../pages/developer/KasBundleCard', async importOriginal => ({
+  ...(await importOriginal<typeof import('../pages/developer/KasBundleCard')>()),
   KasBundleCard: () => <div data-testid="kas-bundle-card" />,
 }))
 
@@ -1064,6 +1065,10 @@ describe('AgentBackendTab status strip', () => {
     expect(panel().getByText('Install Kiro CLI on the gateway host.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull()
     expect(screen.queryByText('Install command')).toBeNull()
+    // With no command, the card links Kiro CLI's install guide (Bug Bash row 66).
+    const guide = panel().getByRole('link', { name: /Open Kiro CLI setup/ })
+    expect(guide).toHaveAttribute('href', 'https://kiro.dev/cli/')
+    expect(guide).toHaveAttribute('target', '_blank')
   })
 
   it('leaves the switch ENABLED when the install check could not be completed', async () => {

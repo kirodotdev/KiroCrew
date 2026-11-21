@@ -247,6 +247,9 @@ _REVIEWED_EDITABLE = frozenset(
         # Which tier a lesson from a turn no person sent lands in; an enum whose
         # opt-in values only tighten that, so it is not a reach or run boundary.
         "memory.lesson_origin_gate",
+        # Whether a pref.* / user.* fact from a turn no person sent is written; an
+        # enum whose opt-in values only hold writes back.
+        "memory.fact_origin_gate",
         # Which tier a lesson from consolidation is stored in, and the order the
         # session-start rule block lists rules in: memory previews, not a reach or
         # run boundary.
@@ -494,13 +497,13 @@ async def test_patch_stores_a_null_on_a_nullable_int(tmp_config, path) -> None:
 
 async def test_patch_writes_a_generic_enum_and_refuses_a_value_outside_it(tmp_config) -> None:
     assert _editable_config_spec("memory.kind_routing")["generic"] is True
-    status, body = await _send({"path": "memory.kind_routing", "value": "shadow"})
+    status, body = await _send({"path": "memory.kind_routing", "value": "off"})
     assert status == 200, body
-    assert _stored(tmp_config)["memory"]["kind_routing"] == "shadow"
+    assert _stored(tmp_config)["memory"]["kind_routing"] == "off"
 
     status, body = await _send({"path": "memory.kind_routing", "value": "loud"})
     assert status == 400, body
-    assert _stored(tmp_config)["memory"]["kind_routing"] == "shadow"
+    assert _stored(tmp_config)["memory"]["kind_routing"] == "off"
 
 
 @pytest.mark.parametrize("value", [True, "300", 1.5, None])

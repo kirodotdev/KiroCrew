@@ -40,6 +40,7 @@ from kiro_crew.agent_sdk.kas_tool_view import (
     builtin_allow_tool,
     permission_allow_derivable,
     permissions_block_readable,
+    permissions_block_refusal,
     spec_unjudged_denies,
     tools_settings_family,
     tools_settings_unenforced,
@@ -186,6 +187,15 @@ def _layer_hooks(target: dict[str, Any], hooks: Any, lost: list[str]) -> None:
     target["hooks"] = merged
 
 
+def _named_permissions(*blocks: Any) -> str:
+    """``permissions`` with why KAS refuses the first of *blocks* it refuses whole."""
+    for block in blocks:
+        why = permissions_block_refusal(block)
+        if why:
+            return f"permissions ({why})"
+    return "permissions"
+
+
 def _layer_permissions(
     target: dict[str, Any], perms: Any, lost: list[str], *, worker: bool = False
 ) -> None:
@@ -196,7 +206,7 @@ def _layer_permissions(
     ):
         # A block KAS would refuse whole (a named bundle, an unknown key, a rule
         # it cannot parse) carries none of its denies either.
-        lost.append("permissions")
+        lost.append(_named_permissions(perms))
         return
     have = _dicts(target.get("permissions"))
     rules = list(have.get("rules") or []) if isinstance(have.get("rules"), list) else []
@@ -207,7 +217,9 @@ def _layer_permissions(
             seen.add(_canon(rule))
     merged = {**copy_json_document(have), "rules": rules}
     if not permissions_block_readable(merged):
-        lost.append("permissions")
+        # The template's own block first, so a rule index in the reason is the
+        # template's numbering; the merged block only when the template reads alone.
+        lost.append(_named_permissions(perms, merged))
         return
     allowed_tools = target.get("allowedTools")
     if worker and isinstance(allowed_tools, list):

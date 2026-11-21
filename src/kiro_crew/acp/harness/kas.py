@@ -39,6 +39,7 @@ from kiro_crew import build_reuse
 from kiro_crew import sandbox as sandbox_mod
 from kiro_crew import session_head
 from kiro_crew.acp import kas_agents as kas_agents_mod
+from kiro_crew.acp import kas_build_default
 from kiro_crew.acp import kas_route as kas_route_mod
 from kiro_crew.acp._dispatch import advertised_mode_origin
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
@@ -788,6 +789,9 @@ class KasHarness(MembershipHarness):
     #: The sign-in messages for THIS runtime read it, never the process-wide
     #: ``kas_route.last_spawn_route``, which another chat's spawn may have moved.
     spawn_route: kas_route_mod.KasRoute | None = None
+    #: The notice that this chat runs on kiro-cli because the build default's first
+    #: move to Crew's engine failed (``kas_build_default``); "" otherwise.
+    engine_fallback_notice = ""
 
     # ── Seam 1: spawn ──
 
@@ -828,6 +832,7 @@ class KasHarness(MembershipHarness):
         self.spawn_sandbox_mode = ctx.sandbox_mode
         self.bundle_engine_version = ""
         self.untested_version_notice = ""
+        self.engine_fallback_notice = ""
         # The route reason of this spawn's bundle plan ("" on the relay): the
         # runtime reads it when the start fails (``runtime_spawn_entry``).
         self.spawn_route_reason = ""
@@ -839,6 +844,7 @@ class KasHarness(MembershipHarness):
         # chat placed as shared before a fallback never lands on a queueing engine.
         self.spawn_engine_shares_chats: bool | None = None
         self._sharing_preview_on = await asyncio.to_thread(_chat_sharing_preview_on)
+        preview_failed = False
         if await asyncio.to_thread(_bundle_route_selected):
             return await self._bundle_spawn_plan(
                 ctx, kas_route_mod.KasRoute(bundle=True, reason=kas_route_mod.REASON_CONFIGURED)
@@ -866,12 +872,19 @@ class KasHarness(MembershipHarness):
                 return plan
             except AcpRuntimeError as exc:
                 self.bundle_engine_version = ""
+                preview_failed = True
                 kas_route_mod.note_preview_bundle_failed(str(exc))
                 logger.warning(
                     "chat-runtime-sharing: Crew's KAS engine could not start (%s); this "
                     "chat takes the default KAS route on its own process",
                     exc,
                 )
+
+        if not preview_failed:
+            # Rule 1b: a packaged build prefers Crew's engine (``kas_build_default``).
+            plan = await kas_build_default.build_default_plan(self, ctx)
+            if plan is not None:
+                return plan
 
         kas_bin = await _resolve_kiro_bin_for_spawn(environ=dict(ctx.environ), home=ctx.home)
         # Read only when the route is still open: a stored Kiro CLI pick, the
@@ -1240,6 +1253,7 @@ class KasHarness(MembershipHarness):
         handle.kas_agent_prompt_applied = self.agent_prompt_applied
         handle.kas_bundle_engine_version = self.bundle_engine_version
         handle.kas_untested_version_notice = self.untested_version_notice
+        handle.kas_engine_fallback_notice = self.engine_fallback_notice
 
     async def session_extras(
         self,

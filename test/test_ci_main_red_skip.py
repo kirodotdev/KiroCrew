@@ -9,6 +9,8 @@ so a change to its format fails here rather than silently running nothing.
 
 from __future__ import annotations
 
+import email.message
+import functools
 import importlib.util
 import io
 import json
@@ -256,22 +258,6 @@ def decide_env(tmp_path: Path, **extra: str) -> dict[str, str]:
     return env
 
 
-def test_an_api_error_runs_everything_with_a_warning(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    def refuse(*_args: Any, **_kwargs: Any) -> Any:
-        raise urllib.error.HTTPError("u", 403, "rate limit", None, io.BytesIO(b""))  # type: ignore[arg-type]
-
-    monkeypatch.setattr(SKIP.urllib.request, "urlopen", refuse)
-    assert SKIP.cmd_decide(decide_env(tmp_path)) == 0
-    assert (tmp_path / "out").read_text() == "main_red_skip=\n"
-    assert (
-        "::warning::Could not read the main-red issue (HTTPError: HTTP Error 403: rate limit)"
-        in capsys.readouterr().out
-    )
-    assert "full suite" in (tmp_path / "summary").read_text()
-
-
 def test_a_non_list_api_answer_runs_everything(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -306,6 +292,355 @@ def test_a_push_run_never_calls_the_api(tmp_path: Path, monkeypatch: pytest.Monk
 def test_changed_paths_refuses_a_non_sha_base() -> None:
     assert SKIP.changed_paths("") is None
     assert SKIP.changed_paths("HEAD; id") is None
+
+
+# -- the issue read: rate limits, the bounded wait, and the fail-open after it --
+
+NOW = 1_800_000_000
+TOKEN = "synthetic-token-value"
+PRIMARY = {"x_ratelimit_remaining": "0", "x_ratelimit_reset": str(NOW + 120)}
+
+
+def answer(status: int, body: Any = "", **headers: str) -> tuple[int, dict[str, str], bytes]:
+    raw = body if isinstance(body, str) else json.dumps(body)
+    return status, {name.replace("_", "-"): value for name, value in headers.items()}, raw.encode()
+
+
+def refused(status: int = 403, /, **headers: str) -> tuple[int, dict[str, str], bytes]:
+    """A refusal with the given headers, or a spent primary limit that resets in 120 s."""
+    return answer(status, "", **(headers or PRIMARY))
+
+
+class FakeApi:
+    """Scripted answers, one queue per identity; no network and no real clock."""
+
+    def __init__(self, token: list[Any], anonymous: list[Any] | None = None) -> None:
+        self.queues = {"token": list(token), "anonymous": list(anonymous or [refused()])}
+        self.calls: list[str] = []
+        self.now = NOW
+        self.sleeps: list[float] = []
+        self.logs: list[str] = []
+
+    def send(self, url: str, token: str) -> Any:
+        assert url.startswith(f"https://api.github.com/repos/{REPO}/issues?")
+        who = "token" if token else "anonymous"
+        assert token in ("", TOKEN)
+        self.calls.append(who)
+        reply = self.queues[who].pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += int(seconds)
+
+    def fetch(self) -> list[Any]:
+        result: list[Any] = SKIP.fetch_open_issues(
+            REPO,
+            TOKEN,
+            send=self.send,
+            clock=lambda: self.now,
+            sleep=self.sleep,
+            log=self.logs.append,
+        )
+        return result
+
+    def decide(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> tuple[str, str]:
+        """Run the whole step over this API: ``(the step output value, its log)``."""
+        wired = functools.partial(
+            SKIP.fetch_open_issues,
+            send=self.send,
+            clock=lambda: self.now,
+            sleep=self.sleep,
+            log=self.logs.append,
+        )
+        monkeypatch.setattr(SKIP, "fetch_open_issues", wired)
+        monkeypatch.setattr(SKIP, "changed_paths", lambda _sha: set())
+        assert SKIP.cmd_decide(decide_env(tmp_path, GH_TOKEN=TOKEN)) == 0
+        out = (tmp_path / "out").read_text(encoding="utf-8")
+        assert out.startswith("main_red_skip=") and out.count("\n") == 1
+        log = capsys.readouterr().out + "\n".join(self.logs)
+        assert TOKEN not in log + (tmp_path / "summary").read_text(encoding="utf-8")
+        return out[len("main_red_skip=") :].strip(), log
+
+
+OK = answer(200, [issue(THREE)])
+PLAN = {"issue": 900, "nodeids": THREE}
+
+
+def test_a_spent_limit_then_a_good_read_applies_the_skip_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    api = FakeApi([refused(), OK])
+    value, log = api.decide(tmp_path, monkeypatch, capsys)
+    assert json.loads(value) == PLAN
+    assert api.calls == ["token", "anonymous", "token"]
+    assert api.sleeps == [120 + SKIP.RESET_MARGIN_SECONDS]
+    assert "primary rate limit; waiting 125s" in log
+
+
+def test_a_read_without_the_token_is_tried_before_any_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    api = FakeApi([refused()], anonymous=[OK])
+    value, log = api.decide(tmp_path, monkeypatch, capsys)
+    assert json.loads(value) == PLAN
+    assert api.calls == ["token", "anonymous"]
+    assert api.sleeps == []
+    assert "primary rate limit on the token; read without it" in log
+
+
+def test_a_reset_past_the_budget_runs_everything_without_waiting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    far = refused(x_ratelimit_remaining="0", x_ratelimit_reset=str(NOW + 740))
+    api = FakeApi([far])
+    value, log = api.decide(tmp_path, monkeypatch, capsys)
+    assert value == ""
+    assert api.sleeps == []
+    assert (
+        "::warning::Could not read the main-red issue (RateLimited: primary rate limit resets "
+        "in 745s, past what is left of the 300s wait budget (0s used); the read without a "
+        "token got HTTP 403): full suite." in log
+    )
+    assert "full suite" in (tmp_path / "summary").read_text(encoding="utf-8")
+
+
+def test_a_limit_that_outlasts_the_waits_runs_everything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    short = refused(retry_after="100")
+    api = FakeApi([short, short, short, OK])
+    value, log = api.decide(tmp_path, monkeypatch, capsys)
+    assert value == ""
+    assert api.calls == ["token", "anonymous", "token", "token"]
+    assert api.sleeps == [100, 100]
+    assert "RateLimited: secondary rate limit still set after 3 reads and 200s" in log
+
+
+def test_the_waits_of_one_run_share_one_budget() -> None:
+    long = refused(retry_after="200")
+    api = FakeApi([long, long, OK])
+    with pytest.raises(SKIP.RateLimited, match=r"budget \(200s used\)"):
+        api.fetch()
+    assert api.sleeps == [200]
+    assert sum(api.sleeps) <= SKIP.MAX_WAIT_SECONDS
+
+
+@pytest.mark.parametrize(
+    "denied",
+    [answer(403), answer(403, {"message": "Resource not accessible by integration"})],
+    ids=["bare", "permission-message"],
+)
+def test_a_403_that_names_no_rate_limit_fails_open_at_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    denied: tuple[int, dict[str, str], bytes],
+) -> None:
+    api = FakeApi([denied, OK], anonymous=[OK])
+    value, log = api.decide(tmp_path, monkeypatch, capsys)
+    assert value == ""
+    assert api.calls == ["token"]
+    assert api.sleeps == []
+    assert "IssueReadError: HTTP 403 that names no rate limit, so not retried" in log
+
+
+@pytest.mark.parametrize("status", [401, 404, 500, 502])
+def test_another_http_error_is_not_retried(status: int) -> None:
+    api = FakeApi([answer(status, x_ratelimit_remaining="0", retry_after="1"), OK])
+    with pytest.raises(SKIP.IssueReadError, match=f"HTTP {status}"):
+        api.fetch()
+    assert api.calls == ["token"] and api.sleeps == []
+
+
+def test_a_429_waits_for_its_retry_after() -> None:
+    api = FakeApi([refused(429, retry_after="30"), OK])
+    assert api.fetch() == [issue(THREE)]
+    assert api.sleeps == [30]
+
+
+@pytest.mark.parametrize(
+    ("first", "sleeps"),
+    [
+        (refused(x_ratelimit_remaining="0", x_ratelimit_reset=str(NOW - 3600)), [5]),
+        (refused(x_ratelimit_remaining="0", x_ratelimit_reset=str(NOW)), [5]),
+        (refused(retry_after="0"), [1]),
+        (refused(retry_after="soon"), [60]),
+        (refused(retry_after="-5"), [60]),
+        (answer(429), [60]),
+        (answer(403, {"message": "You have exceeded a secondary rate limit."}), [60]),
+        (answer(403, {"message": "API rate limit exceeded for installation."}), [60]),
+    ],
+    ids=[
+        "reset-long-past",
+        "reset-now",
+        "retry-after-zero",
+        "retry-after-words",
+        "retry-after-negative",
+        "bare-429",
+        "secondary-in-body",
+        "primary-in-body-only",
+    ],
+)
+def test_an_odd_rate_limit_answer_waits_a_bounded_time(
+    first: tuple[int, dict[str, str], bytes], sleeps: list[int]
+) -> None:
+    api = FakeApi([first, OK])
+    assert api.fetch() == [issue(THREE)]
+    assert api.sleeps == sleeps
+    assert 0 < sleeps[0] <= SKIP.MAX_WAIT_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("headers", "why"),
+    [
+        ({"x_ratelimit_reset": str(10**11)}, "past what is left"),
+        ({"x_ratelimit_reset": "the whole budget away"}, "past what is left"),
+        ({"x_ratelimit_reset": "9" * 40}, "no readable reset time"),
+        ({"x_ratelimit_reset": "tomorrow"}, "no readable reset time"),
+        ({"x_ratelimit_reset": "-1"}, "no readable reset time"),
+        ({"x_ratelimit_reset": "1e9"}, "no readable reset time"),
+        ({}, "no readable reset time"),
+        ({"retry_after": "86400"}, "past what is left"),
+    ],
+    ids=[
+        "absurdly-far",
+        "one-margin-over",
+        "too-long",
+        "words",
+        "negative",
+        "float",
+        "absent",
+        "retry-after-a-day",
+    ],
+)
+def test_an_unusable_reset_time_fails_open_without_waiting(
+    headers: dict[str, str], why: str
+) -> None:
+    if "retry_after" not in headers:
+        headers = {"x_ratelimit_remaining": "0", **headers}
+    if headers.get("x_ratelimit_reset") == "the whole budget away":
+        # The margin added to a reset puts this one just past the budget.
+        headers["x_ratelimit_reset"] = str(NOW + SKIP.MAX_WAIT_SECONDS)
+    api = FakeApi([refused(**headers), OK])
+    with pytest.raises(SKIP.RateLimited, match=why):
+        api.fetch()
+    assert api.sleeps == []
+    assert api.calls == ["token", "anonymous"]
+
+
+PARTIAL = [
+    answer(200, json.dumps([issue(THREE)])[:-40]),
+    answer(200, {"message": "ok", "items": [issue(THREE)]}),
+    answer(200, [issue(THREE)], link='<https://api.github.com/x?page=2>; rel="next"'),
+    answer(200, ""),
+    (200, {}, b"\xff\xfe["),
+]
+PARTIAL_IDS = ["truncated-json", "not-a-list", "a-second-page", "empty", "not-utf8"]
+
+
+@pytest.mark.parametrize("partial", PARTIAL, ids=PARTIAL_IDS)
+@pytest.mark.parametrize("path", ["first-read", "after-a-wait", "without-token"])
+def test_a_partial_answer_on_any_read_runs_everything(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    partial: tuple[int, dict[str, str], bytes],
+    path: str,
+) -> None:
+    api = {
+        "first-read": FakeApi([partial, OK], anonymous=[OK]),
+        "after-a-wait": FakeApi([refused(), partial, OK]),
+        "without-token": FakeApi([refused(), OK], anonymous=[partial]),
+    }[path]
+    value, log = api.decide(tmp_path, monkeypatch, capsys)
+    assert value == ""
+    assert "Could not read the main-red issue (" in log and "full suite" in log
+    # A partial answer ends the read: no later answer is asked for.
+    assert api.queues["token"][-1] is OK
+
+
+def test_an_issue_without_its_state_record_after_a_wait_runs_everything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bare = answer(200, [issue(THREE, body="- `test/test_alpha.py::test_one`")])
+    value, log = FakeApi([refused(), bare]).decide(tmp_path, monkeypatch, capsys)
+    assert value == ""
+    assert "No open main-red issue" in log
+
+
+def test_a_network_error_is_not_retried_and_runs_everything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    api = FakeApi([urllib.error.URLError("no route"), OK])
+    value, log = api.decide(tmp_path, monkeypatch, capsys)
+    assert value == ""
+    assert api.calls == ["token"] and api.sleeps == []
+    assert "Could not read the main-red issue (URLError:" in log
+
+
+def test_a_failed_read_without_the_token_still_waits_for_the_token() -> None:
+    api = FakeApi([refused(), OK], anonymous=[TimeoutError("slow")])
+    assert api.fetch() == [issue(THREE)]
+    assert api.calls == ["token", "anonymous", "token"]
+    assert api.sleeps == [125]
+
+
+def test_an_empty_token_or_an_odd_repo_never_calls_the_api() -> None:
+    api = FakeApi([OK])
+    with pytest.raises(SKIP.IssueReadError, match="GH_TOKEN is empty"):
+        SKIP.fetch_open_issues(REPO, "", send=api.send)
+    with pytest.raises(ValueError, match="unexpected shape"):
+        SKIP.fetch_open_issues("a/b/../c", TOKEN, send=api.send)
+    assert api.calls == []
+
+
+def _http_error(status: int, headers: dict[str, str] | None, body: bytes) -> urllib.error.HTTPError:
+    message = None
+    if headers is not None:
+        message = email.message.Message()
+        for name, value in headers.items():
+            message[name] = value
+    return urllib.error.HTTPError("u", status, "Forbidden", message, io.BytesIO(body))  # type: ignore[arg-type]
+
+
+def test_the_transport_reports_a_refusal_and_sends_the_token_only_when_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Any] = []
+
+    def refuse(request: Any, **_kwargs: Any) -> Any:
+        seen.append(request)
+        raise _http_error(403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "12"}, b"spent")
+
+    monkeypatch.setattr(SKIP.urllib.request, "urlopen", refuse)
+    url = "https://api.github.com/repos/o/r/issues"
+    reply = SKIP._send(url, TOKEN)
+    assert reply == (403, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "12"}, b"spent")
+    assert SKIP.rate_limit(reply, 0) == ("primary", 12 + SKIP.RESET_MARGIN_SECONDS)
+    SKIP._send(url, "")
+    assert seen[0].get_header("Authorization") == f"Bearer {TOKEN}"
+    assert seen[1].get_header("Authorization") is None
+
+
+def test_a_refusal_with_no_headers_runs_everything_with_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def refuse(*_args: Any, **_kwargs: Any) -> Any:
+        raise _http_error(403, None, b"")
+
+    monkeypatch.setattr(SKIP.urllib.request, "urlopen", refuse)
+    assert SKIP.cmd_decide(decide_env(tmp_path)) == 0
+    assert (tmp_path / "out").read_text(encoding="utf-8") == "main_red_skip=\n"
+    assert (
+        "::warning::Could not read the main-red issue (IssueReadError: HTTP 403 that names no "
+        "rate limit, so not retried): full suite." in capsys.readouterr().out
+    )
+    assert "full suite" in (tmp_path / "summary").read_text(encoding="utf-8")
 
 
 # -- the pytest plugin half -------------------------------------------------
@@ -475,6 +810,18 @@ def test_the_changes_job_reads_the_issue_once_and_fails_open() -> None:
     # Untrusted text reaches the script only as env values.
     assert "${{" not in step["run"]
     assert step["env"]["PR_BODY"] == "${{ github.event.pull_request.body }}"
+
+
+def test_the_wait_budget_fits_the_changes_job() -> None:
+    changes = _ci()["jobs"]["changes"]
+    step = next(step for step in changes["steps"] if step.get("id") == "main-red")
+    # The script bounds its own wait; the step sets no timeout that could end it early.
+    assert "timeout-minutes" not in step
+    reads = SKIP.MAX_TOKEN_READS + 1
+    longest = SKIP.MAX_WAIT_SECONDS + reads * SKIP.REQUEST_TIMEOUT
+    # At least half the job's timeout is left for its full-history checkout.
+    assert longest <= changes["timeout-minutes"] * 60 // 2
+    assert SKIP.SECONDARY_WAIT_SECONDS + SKIP.RESET_MARGIN_SECONDS <= SKIP.MAX_WAIT_SECONDS
 
 
 @pytest.mark.parametrize("job", ["backend-test", "backend-test-windows"])

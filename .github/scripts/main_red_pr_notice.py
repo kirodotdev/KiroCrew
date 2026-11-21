@@ -165,7 +165,11 @@ def cmd_notice(args: argparse.Namespace) -> int:
         print("The open issue has no readable main-red record; writing nothing.")
         return NOTHING_TO_SAY
     main_failures: dict[str, str] = {str(k): str(v) for k, v in state["failures"].items()}
-    pr_failures = json.loads(_read_text(args.pr_failures) or "{}")
+    # Both sides in one form: the record is cleaned as it is read, so are these.
+    pr_failures = {
+        watch.clean(str(nodeid), 200): watch.clean(str(message), watch.MESSAGE_CHARS)
+        for nodeid, message in json.loads(_read_text(args.pr_failures) or "{}").items()
+    }
     if not set(pr_failures) & set(main_failures):
         print("No failing test of this pull request is red on main; writing nothing.")
         return NOTHING_TO_SAY

@@ -432,3 +432,45 @@ def test_a_steered_nudge_row_does_not_open_the_interrupted_turn():
 
     assert "build the report" in preamble
     assert "[Steered mid-turn]" in preamble
+
+
+class TestRequeuedAutomationSteerWire:
+    """The requeued card is marked automation on the wire, live and listed.
+
+    A crewmate chat draws an unmarked queue card as the person's own bubble, so a
+    wake the turn never took drew as words the person typed until its drain.
+    """
+
+    def _requeue(self, tmp_path, monkeypatch, *, automation: bool):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = state.get_or_create_slot("test")
+        slot._pending_steers = [WAKE]
+        if automation:
+            slot._steer_automation = {WAKE: dict(NUDGE)}
+        _requeue_unconsumed_steers(state, slot)
+        pushes = [c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "queue_push"]
+        return slot, pushes
+
+    def test_the_live_card_is_marked_automation(self, tmp_path, monkeypatch):
+        _slot_, pushes = self._requeue(tmp_path, monkeypatch, automation=True)
+
+        assert len(pushes) == 1
+        assert pushes[0]["meta"]["automationSteer"] is True
+        assert pushes[0]["meta"]["requeuedSteer"] is True
+
+    def test_the_listed_entry_is_marked_automation(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_delivery import queue_entry_view
+
+        slot, _pushes = self._requeue(tmp_path, monkeypatch, automation=True)
+
+        assert queue_entry_view(slot._queue[0])["meta"]["automationSteer"] is True
+
+    def test_a_persons_requeued_steer_carries_no_mark(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_delivery import queue_entry_view
+
+        slot, pushes = self._requeue(tmp_path, monkeypatch, automation=False)
+
+        assert "automationSteer" not in pushes[0]["meta"]
+        assert "automationSteer" not in (queue_entry_view(slot._queue[0]).get("meta") or {})

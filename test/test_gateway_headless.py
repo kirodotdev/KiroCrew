@@ -689,7 +689,7 @@ async def test_local_authorization_never_uses_headless_signin_fallbacks(
 async def test_signin_refusal_body_changes_only_for_headless(
     tmp_path, monkeypatch, headless
 ) -> None:
-    from kiro_crew.dashboard import ssm_gate, tailnet_direct
+    from kiro_crew.dashboard import ssm_gate
     from kiro_crew.dashboard.token_auth_paths import _403_HTML, _deny
 
     monkeypatch.setattr(startup.srv, "warm_own_host_names", lambda: None)
@@ -713,14 +713,12 @@ async def test_signin_refusal_body_changes_only_for_headless(
                 else:
                     assert response.content_type == "text/html"
                     assert response.text == _403_HTML.format(reason="Token required")
-            for module, reason in (
-                (ssm_gate, ssm_gate.REFUSE_NOT_INVITED),
-                (tailnet_direct, tailnet_direct.REFUSE_NOT_ALLOWED),
-            ):
-                response = module.refusal_response(request, reason)
-                assert response.status == 403
-                assert response.content_type == ("application/json" if headless else "text/html")
-                assert "Location" not in response.headers
+            # The SSM site also runs on a headless gateway. The direct tailnet
+            # listener does not, so its refusal page never meets a headless request.
+            response = ssm_gate.refusal_response(request, ssm_gate.REFUSE_NOT_INVITED)
+            assert response.status == 403
+            assert response.content_type == ("application/json" if headless else "text/html")
+            assert "Location" not in response.headers
             # The reduced server has no headless marker and retains its exact sign-in page.
             reduced = make_mocked_request(method, "/oauth/token", app=web.Application())
             assert _deny(reduced, "Token required").text == _403_HTML.format(

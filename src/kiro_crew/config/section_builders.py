@@ -75,6 +75,7 @@ from kiro_crew.config.memory_sections import (
     _read_auto_add_documents,
     dream_mode_from,
     extraction_instructions_from,
+    fact_origin_gate_mode_from,
     kind_routing_mode_from,
     lesson_fold_mode_from,
     lesson_origin_gate_mode_from,
@@ -404,6 +405,7 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         lesson_fold=lesson_fold_mode_from(section.get("lesson_fold")),
         lesson_origin_gate=lesson_origin_gate_mode_from(section.get("lesson_origin_gate")),
         lesson_tier_policy=lesson_tier_policy_mode_from(section.get("lesson_tier_policy")),
+        fact_origin_gate=fact_origin_gate_mode_from(section.get("fact_origin_gate")),
         rule_authority_order=rule_authority_order_mode_from(section.get("rule_authority_order")),
         member_lesson_dedup=member_lesson_dedup_mode_from(section.get("member_lesson_dedup")),
         relevance_rule=relevance_rule_mode_from(section.get("relevance_rule")),
@@ -669,12 +671,21 @@ def _build_tunnel_config(tunnel_data: dict) -> TunnelConfig:
         relay_lease_url=str(section.get("relay_lease_url") or ""),
         relay_lease_credential=str(section.get("relay_lease_credential") or ""),
         relay_lease_token_type=str(section.get("relay_lease_token_type") or ""),
+        # A value the person did not give (absent, null, empty or blank) leases from
+        # us-east-1; any value they gave must be a known Region, or the relay refuses
+        # and sends nothing.
+        relay_lease_region=_text_or_empty(section.get("relay_lease_region")),
         relay_handle_email_domains=_handle_email_domains(section.get("relay_handle_email_domains")),
         # Only the JSON boolean ``true`` turns the viewer's dev settings on: a string
         # or a number left by a hand edit keeps them off rather than reading as truthy.
         relay_viewer_enabled=section.get("relay_viewer_enabled") is True,
         **_relay_viewer_targets(section),
     )
+
+
+def _text_or_empty(raw: object) -> str:
+    """``""`` for absent or null, else the value as text, so a given ``false`` is refused."""
+    return "" if raw is None else str(raw)
 
 
 def _relay_enabled(raw: object) -> bool | None:
@@ -798,6 +809,7 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         tracking_channels=_validate_tracking_channels(section.get("tracking_channels")),
         open_channels=[c for c in section.get("open_channels") if isinstance(c, str)],
         command=section.get("command"),
+        setup_guide_url=str(section.get("setup_guide_url") or "").strip(),
         forward_to_agent_callback=str(
             section.get("forward_to_agent_callback") or section.default("forward_to_agent_callback")
         ).strip(),
@@ -838,6 +850,8 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         agent_sessions=section.read("agent_sessions", _safe_bool),
         code_channel_dispatch=section.read("code_channel_dispatch", _safe_bool),
         code_channels=section.read("code_channels", _safe_bool),
+        # Default False: an unparseable value must never add user scopes or PKCE.
+        slack_mcp=section.read("slack_mcp", _safe_bool),
         code_channel_defaults=_build_code_channel_defaults(slack_data.get("code_channel_defaults")),
         shared_access=_build_shared_access(slack_data.get("shared_access")),
     )

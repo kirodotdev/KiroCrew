@@ -111,7 +111,7 @@ outstanding still returns immediately.
 
 ## 3. Event vocabulary
 
-`kiro_crew.eventlog.types` is the closed vocabulary; `MemberLog.append()` rejects any other type.
+`kiro_crew.eventlog.types` is the built-in vocabulary; `MemberLog.append()` rejects any other type except a contributed `<app>/<action>` whose namespace is not one of the reserved `member`, `activity`, `slot` and `patrol`.
 
 | event | data | appended by |
 |---|---|---|

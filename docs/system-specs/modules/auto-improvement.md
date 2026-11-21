@@ -20,10 +20,6 @@ and every *proposal* is an agent: the agent writes candidate fixes, and the gate
 measurer, keeper, and PR pipeline decide what survives. The agent never grades its
 own work.
 
-The app's origin as a port of an upstream app, and the design decisions the port
-made, are recorded in
-[`PORT_PLAN.md`](../../../src/kiro_crew/apps/builtins/auto_improvement/docs/PORT_PLAN.md).
-
 ## Routes
 
 All routes live under `/api/apps/auto-improvement/` and are registered by
@@ -1082,7 +1078,7 @@ path separators before the key is ever sent, so the two gates agree.
 
 **Pinned invariants.**
 
-- `GET /findings/{fp}` joins evidence by the target's BASENAME slug (`mod_py_sym`, matching `proposer._short`), so a nested target like `src/pkg/sub/mod.py::Sym` shows its `signature`/`hypothesis`. (D-1)
+- `GET /findings/{fp}` joins evidence by the target's BASENAME slug (`mod_py_Sym`, matching `proposer._short`), so a nested target like `src/pkg/sub/mod.py::Sym` shows its `signature`/`hypothesis`. (D-1)
 - The direct-commit queue copy writes `<fp>.pr.md`, the name every reader opens; a structural test pins that no non-test source writes `.cr.md`. (D-24)
 - `results.tsv` cells collapse tab, CR and LF to a space (`_cell`); the unaltered value is kept in `candidates.jsonl`. (D-35)
 - Workspace keys include a digest of the repository identity, so repositories that slug alike (`owner/a-b`, `owner/a_b`) get distinct workspaces, while `origin/main` and `main` still share one. (D-85)

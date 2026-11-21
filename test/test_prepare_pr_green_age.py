@@ -171,6 +171,21 @@ def test_same_file_edited_on_both_sides_is_stale(mod, monkeypatch, pair, capsys)
     ]
 
 
+def test_a_non_ascii_sibling_is_stale_and_named_by_its_real_name(
+    mod, monkeypatch, pair, capsys
+) -> None:
+    """Line output C-quotes ``kïnds.py`` with a leading double quote, so its
+    directory never matched the PR's and a real collision read as fresh."""
+    pair.branch_changes({"src/kiro_crew/ledger/store.py": "VALUE = 2\n"})
+    pair.base_gains({"src/kiro_crew/ledger/kïnds.py": "KINDS = ('a',)\n"})
+
+    code = _run_main(mod, monkeypatch, pair)
+    payload = _summary(mod)
+
+    assert code == mod.EXIT_STALE
+    assert [o["moved"] for o in payload["overlap"]] == ["src/kiro_crew/ledger/kïnds.py"]
+
+
 def test_a_sibling_in_the_same_directory_is_stale(mod, monkeypatch, pair, capsys) -> None:
     """Two files in one module directory are one module's internals."""
     pair.branch_changes({"src/kiro_crew/ledger/store.py": "VALUE = 2\n"})
@@ -550,6 +565,52 @@ def test_the_arming_template_carries_the_in_flight_guard() -> None:
     thirty = template.split("green_age 30:", 1)[1].split("pr_status 10:", 1)[0]
     assert "wait a cycle" in thirty
     assert "cancel" not in thirty.lower()
+
+
+def test_a_clean_re_check_keeps_the_rebase_local() -> None:
+    """Exit 30 is a reason to test, not to push.
+
+    With strict up-to-date checks off, a push that only moves the base buys no
+    mergeability, re-runs CI on an unchanged patch and dismisses approvals. Only a
+    re-check that conflicts or goes red earns a push, and both the skill and the
+    arming template (the only copy a woken cycle reads) must say so. The re-check
+    runs in a throwaway worktree so a red one leaves the measured HEAD on the
+    published head: otherwise the next cycle reads 0 and the red is never pushed.
+    """
+    skill = " ".join((_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+    thirty = (
+        " ".join(_template_text().split()).split("green_age 30:", 1)[1].split("pr_status 10:")[0]
+    )
+
+    assert "**Green: do NOT push**" in skill
+    assert "Green: do NOT push" in thirty
+    assert "conflict or a red" in thirty
+    assert "When main is red" in thirty
+    assert "throwaway detached worktree" in skill
+    assert "throwaway detached worktree" in thirty
+    assert "still reads 30" in thirty
+
+
+def test_phase_four_pushes_a_rebase_only_on_a_conflict() -> None:
+    """Landing keeps the exit-30 rule: being behind base alone earns no push.
+
+    A push in Phase 4 clears auto-merge, may dismiss approvals and re-runs CI on
+    an unchanged patch, which is what the exit-30 rule exists to stop. So the
+    Phase 4 loop, in the skill and in the arming template's ``Exit 0`` clause,
+    rebases and pushes only on a conflict and sends a clean behind-base rebase
+    through the exit-30 re-check.
+    """
+    skill = " ".join((_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+    phase4 = skill.split("### Phase 4", 1)[1].split("### When main is red", 1)[0]
+    exit0 = " ".join(_template_text().split()).split("Exit 0:", 1)[1].split("Merged,", 1)[0]
+
+    assert "Conflict or behind base" not in phase4
+    assert "**Conflict** → Phase 1 rebase" in phase4
+    behind = phase4.split("**Behind base, no conflict**", 1)[1].split("- **", 1)[0]
+    assert "exit-30 rule" in behind
+    assert "green re-check pushes nothing" in behind
+    assert "on a conflict rebase, push" in exit0
+    assert "behind" not in exit0.lower()
 
 
 # --- the helpers the classes are built from ----------------------------------

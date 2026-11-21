@@ -37,3 +37,42 @@ test("a background dashboard window's theme push is dropped while another dashbo
   chrome.setThemeMode("light", bContents);
   assert.equal(nativeTheme.themeSource, "light", "with no focused window the push applies");
 });
+
+// data-mode can carry a Remote Crew's lent mode; on focus the Windows caption
+// buttons still take the person's own mode, which the preference pins.
+test("a focus re-sync paints the caption buttons in the own mode, not a lent data-mode", async () => {
+  const nativeTheme = {
+    themeSource: "system",
+    get shouldUseDarkColors() { return this.themeSource === "dark"; },
+  };
+  const symbols = [];
+  const view = {
+    webContents: {
+      isDestroyed: () => false,
+      getZoomFactor: () => 1,
+      executeJavaScript: (code) => Promise.resolve(
+        code.startsWith("JSON.stringify") ? JSON.stringify({ pref: "light", mode: "dark" }) : undefined,
+      ),
+    },
+  };
+  const win = {
+    _mcView: view,
+    isDestroyed: () => false,
+    setTitleBarOverlay: (opts) => symbols.push(opts.symbolColor),
+  };
+  const chrome = createWindowChrome({
+    BaseWindow: { getAllWindows: () => [win], getFocusedWindow: () => win },
+    nativeTheme,
+    screen: {},
+    store: { get: () => null, set: () => {} },
+    log: () => {},
+    isMac: false,
+    isWindows: true,
+    windowForWebContents: () => win,
+  });
+
+  chrome.syncNativeTheme(view, win);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(nativeTheme.themeSource, "light");
+  assert.deepEqual(symbols, ["#211d28"], "light own mode: dark glyphs, not the lent dark mode's light ones");
+});

@@ -1125,7 +1125,9 @@ async def start_oauth_mint(
                 # raises and makes no request for a URL refused for any other reason.
                 await approve_discovered_oauth_endpoint(mcp_server_alias(slug), oauth_url)
             credential_bearing = (
-                await asyncio.to_thread(oauth_url_contains_credential, oauth_url)
+                await asyncio.to_thread(
+                    oauth_url_contains_credential, oauth_url, mcp_server_alias(slug)
+                )
                 if oauth_url
                 else False
             )

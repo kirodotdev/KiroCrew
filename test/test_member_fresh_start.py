@@ -7,6 +7,7 @@ changes, because monitor loops, the work ledger and the crew log are bound to it
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -245,6 +246,19 @@ def _held_entry(slot, queue_id: str, content: str, *, written: bool) -> None:
         )
 
 
+class _PendingWindow:
+    """A restored row's deferred window: ``read`` is the disk read, the call applies it."""
+
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+
+    def read(self, slot) -> tuple[list[dict], list]:
+        return list(self._rows), []
+
+    def __call__(self, slot, messages=None, claims=None) -> None:
+        slot._messages = list(messages if messages is not None else self._rows)
+
+
 class TestHeldQueue:
     """A held restored message never sends on its own, so it does not refuse a reset."""
 
@@ -278,6 +292,59 @@ class TestHeldQueue:
             "queue_cancel", {"slot": slot.key, "queue_id": "q-written"}
         )
         assert any(row.get("content") == "am I prepped?" for row in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_a_restored_row_loads_its_window_off_the_loop(self, tmp_path, fast_waits, caplog):
+        """The held-entry check reads the window's rows; a pending row loads them
+        on a worker thread, not inline on the event loop."""
+        state = _make_state(tmp_path)
+        slot = _bound_slot(state)
+        _held_entry(slot, "q-written", "am I prepped?", written=True)
+        rows = list(slot._messages)
+        slot._messages = []
+        slot._lazy_window = _PendingWindow(rows)
+        _record_discard(state, [])
+        with caplog.at_level(logging.WARNING):
+            status, body = await _press(state)
+        assert status == 200, body
+        assert not slot.window_pending
+        assert slot._queue == [], "the written entry was seen in the loaded rows"
+        assert not [r for r in caplog.records if "on the event loop" in r.getMessage()]
+
+    @pytest.mark.asyncio
+    async def test_a_restored_row_with_no_queue_loads_its_window_off_the_loop(
+        self, tmp_path, fast_waits, caplog
+    ):
+        """An idle restored thread has no queue, and the /clear reply still appends a row."""
+        state = _make_state(tmp_path)
+        slot = _bound_slot(state)
+        slot._lazy_window = _PendingWindow(list(slot._messages))
+        _record_discard(state, [])
+        with caplog.at_level(logging.WARNING):
+            status, body = await _press(state)
+        assert status == 200, body
+        assert body["outcome"] == "cleared"
+        assert not slot.window_pending
+        assert not [r for r in caplog.records if "on the event loop" in r.getMessage()]
+
+    @pytest.mark.asyncio
+    async def test_a_slot_replaced_during_the_load_is_not_reset(self, tmp_path, fast_waits):
+        """The load awaits, so the binding is read again before anything acts on it."""
+        state = _make_state(tmp_path)
+        slot = _bound_slot(state)
+        _held_entry(slot, "q-held", "am I prepped?", written=False)
+        replacement = MagicMock()
+
+        class _ReplacedDuringRead(_PendingWindow):
+            def read(self, slot):
+                state._slots[slot.key] = replacement
+                return super().read(slot)
+
+        slot._lazy_window = _ReplacedDuringRead(list(slot._messages))
+        state.sessions.discard_conversation = AsyncMock(return_value=True)
+        status, _ = await _press(state)
+        assert status == 404
+        state.sessions.discard_conversation.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_queued_reset_keeps_the_held_message(self, tmp_path, fast_waits):

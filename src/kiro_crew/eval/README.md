@@ -99,7 +99,10 @@ exit code are what they were.
 
 The command exits 0 only when every scenario passes. It exits 1 when any
 scenario fails (the report is still written first) or when a scenario name is
-unknown (nothing runs), so `kirocrew eval && next` stops on a failure.
+unknown (nothing runs), so `kirocrew eval && next` stops on a failure. A backend
+that refuses to start a session (a signed-out kiro-cli, for one) also exits 1:
+it prints the refusal's own message as one line and writes no report or
+`--junit` file.
 
 ## Task cases across harnesses
 

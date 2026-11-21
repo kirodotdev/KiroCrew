@@ -4006,13 +4006,22 @@ dashboard token auth.
   answers `/kirocrew` and every `/kirocrew-<alias>` as they are, and a caller
   that passes `?alias=` saves the returned name as `slack.command` (live, no
   restart) so a later no-alias render keeps it. Settings →
-  Messaging Channels → Slack passes no alias, so its one-click app registers
-  `/kirocrew`.
+  Messaging Channels → Slack's own form passes no alias, so its one-click app
+  registers `/kirocrew`; the setup wizard passes the alias the user typed and
+  saves the returned `command`.
+  The body also carries `org_guide_url`: `slack.setup_guide_url` when it is
+  a bounded `https://` URL with no whitespace (the server check), else
+  `null`; the dashboard renders it only after its own stricter check (a
+  parsed `https:` URL with a host and no credentials).
 - `GET /api/slack/manifest/status` — whether the installed app is current:
   compares the bot scopes `auth.test` reports for the stored bot token with the
   manifest the saved Slack Code switches render, and names the app so Settings
   can link its App Manifest page (`?refresh=1` skips the short cache). Reads
   only, never echoes the token, and is readable from a remote session.
+  The body also returns `app_basic_info_url` (the app's Basic Information
+  page, where app-level tokens are generated) and `app_dm_url`
+  (`https://slack.com/app_redirect?app=<A>[&team=<T>]`, the bot's DM), both
+  built only from regex-checked ids and `null` without a bot token.
 - `GET /api/slack/code-channel-agents?folder=` — the agents a Slack Code
   defaults save accepts with that default folder (empty = the auto folder), so
   the picker can follow a folder picked but not yet saved; `{"agents": null}`
@@ -4443,7 +4452,7 @@ the placement rules and the logger names.
 
 An inbound resume binding lives on the bound session's `session_map.json` row. A recycle, restart prune, or dashboard unlink can destroy that row and the only evidence the channel was attached, so the resolver silently falls back to its DM session; the expectation record makes that loss reportable.
 
-**Store.** `$KIROCREW_HOME/trust/discord_resume_expectations.json` holds channel-id → `{key, title, version, retired}` rows under agent-blocked `trust/`, with an owner-only directory and `restrict_to_owner` file write because modes do not protect files on Windows. `retired` defaults false when loading an older row. Every filesystem step, including `config_dir()`, runs in a worker; an `asyncio.Lock` serializes read-modify-write without spanning Discord I/O.
+**Store.** `$KIROCREW_HOME/trust/<channel>_resume_expectations.json` (`store_filename("discord")` here) holds channel-id → `{key, title, version, retired}` rows under agent-blocked `trust/`, with an owner-only directory and `restrict_to_owner` file write because modes do not protect files on Windows. `retired` defaults false when loading an older row. Every filesystem step, including `config_dir()`, runs in a worker; an `asyncio.Lock` serializes read-modify-write without spanning Discord I/O.
 
 **Refuse before route.** `DiscordSessionResume.route` returns one `RoutingDecision` containing either the session key or a refusal. Plain turns and session-targeting commands use that decision once; drained turns keep their enqueue-time native decision. `!new`/`!unlink` release every exact-channel binding, `!sessions`/`!help` remain reachable for recovery, and tool approval dispatches no turn while retaining its nonce-keyed visible failure path. Four states run: no owner/no record; no owner/retired record; one owner/no record (bootstrap); one matching owner/active record. Four refuse: active record without owner (lost link, retire after notice), any owner different from the active record or present beside a retired record (announce and adopt after delivery), multiple owners, or a resolution that keeps changing. The owner it refuses against is the third copy of `discord.allowed_user_ids`: `DiscordDispatcher.reconfigure` calls `DiscordSessionResume.reconfigure(self._allowed)` on every reload, re-deriving `owner_id` by the same one-identity rule as construction, so an operator who adds a second identity loses `!sessions` on that reload rather than at the next restart (the Telegram sibling does the same).
 

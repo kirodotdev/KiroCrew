@@ -1,7 +1,8 @@
 """``dashboard_save`` and a package's ``widgets``: kept when left out, replaced when sent.
 
 Split from ``test_dashboard_save_tool.py`` to keep that file under the line cap. The
-helpers and the ``store`` fixture are that file's.
+helpers and the ``store`` fixture are that file's. Every test here runs with the
+``widgets`` preview on; ``test_widgets_preview.py`` pins the off behaviour.
 """
 
 from __future__ import annotations
@@ -15,6 +16,13 @@ from test_dashboard_save_tool import _client, _flip, _package_body, _save, _Stor
 from kiro_crew.artifact_store.dashboard_package import parse_package
 
 __all__ = ["store"]  # the fixture, imported so pytest finds it here
+
+
+@pytest.fixture(autouse=True)
+def _preview_on(_floor_monkeypatch):
+    from kiro_crew import widgets_preview
+
+    _floor_monkeypatch.setattr(widgets_preview, "widgets_enabled", lambda: True)
 
 
 def _give_stored_package_widgets(store: _Store) -> str:

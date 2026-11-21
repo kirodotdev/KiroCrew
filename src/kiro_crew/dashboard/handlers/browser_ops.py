@@ -83,10 +83,13 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import browser_host_trust
 from kiro_crew.apps import browser_sites
 from kiro_crew.apps.browser_sites import app_browser_sites, browser_call_url, url_matches
 from kiro_crew.browser_harness import ops as harness_ops
-from kiro_crew.browser_harness import run_budget, session_contexts, url_gate
+from kiro_crew.browser_harness import run_budget, session_contexts
+from kiro_crew.browser_harness import sign_in as browser_sign_in
+from kiro_crew.browser_harness import url_gate
 from kiro_crew.browser_harness.budgets import (
     CHANGE_REPORT_S,
     DECISION_HEADROOM_S,
@@ -95,6 +98,7 @@ from kiro_crew.browser_harness.budgets import (
     HOLD_TIMEOUT_S,
     LOCK_WAIT_S,
     OP_TIMEOUT_S,
+    SIGN_IN_WORST_S,
     SLOW_OP_TIMEOUT_S,
 )
 from kiro_crew.browser_harness.decide import BrowserDecisions
@@ -391,6 +395,7 @@ def build_context(
         agent_targets=_agent_targets,
         screenshot_dir=harness_ops.screenshot_dir(config_dir()),
         staging_dir=config_dir() / IPC_LEAF / "shots",
+        upload_dir=config_dir() / IPC_LEAF / "uploads",
         sleep=asyncio.sleep,
         url_allowed=committed_url_allowed if not sites else _site_gate(sites),
         loop=_loop,
@@ -402,10 +407,12 @@ def build_context(
 
 
 def _op_budget(op: str, ctx: harness_ops.OpContext) -> float:
-    """The route's budget for *op*: its own, the decision hooks', and the change report's."""
+    """The route's budget for *op*: its own, the hooks', the change report's, a sign-in's."""
     own = SLOW_OP_TIMEOUT_S if op in harness_ops.SLOW_OPS else OP_TIMEOUT_S
     report = CHANGE_REPORT_S if ctx.report_changes and op in harness_ops.REPORT_OPS else 0.0
-    return own + DECISION_HEADROOM_S + report
+    # A navigate may go on to finish an edition sign-in (``browser_harness.sign_in``).
+    sign_in = SIGN_IN_WORST_S if op == "navigate" else 0.0
+    return own + DECISION_HEADROOM_S + report + sign_in
 
 
 def _report_changes() -> bool:
@@ -842,10 +849,13 @@ _PAGE_TARGETED_OPS = frozenset(
         "drag",
         "scroll",
         "type",
+        "fill",
         "paste",
         "press_key",
+        "dispatch_key",
         "hover",
         "select_option",
+        "upload",
         "dialog",
         "reflex",
     }
@@ -862,15 +872,17 @@ _TAB_MOVE_HINTS = {
 
 
 def _refused_for_tab_move(
-    hub: LiveHub, key: str, op: str, args: dict[str, Any]
+    hub: LiveHub, key: str, op: str, args: dict[str, Any], *, app: bool = False
 ) -> dict[str, Any] | None:
     """The refusal for a page-targeted op while a tab move is unreported, or ``None``.
 
     The ref or point the agent sent was read off the page it was on before a popup
     moved its tab, so it would land on an unrelated element. Ops that do not point
-    into the page (``navigate``, ``snapshot``, unscoped ``read``, ...) run.
+    into the page (``navigate``, ``snapshot``, unscoped ``read``, ...) run. The Bot
+    and the slot's *app* each have their own pending move, so each is told once and
+    telling one never lifts the other's refusal.
     """
-    pending = hub.pending_tab_move(key)
+    pending = hub.pending_app_tab_move(key) if app else hub.pending_tab_move(key)
     page_targeted = op in _PAGE_TARGETED_OPS or (op == "read" and args.get("ref") is not None)
     if not page_targeted or not pending:
         return None
@@ -885,16 +897,19 @@ def _refused_for_tab_move(
     )
 
 
-def _with_tab_move(hub: LiveHub, key: str, answer: Any) -> Any:
+def _with_tab_move(hub: LiveHub, key: str, answer: Any, *, take: bool = True) -> Any:
     """Report the unreported tab move on *answer*, success or refusal alike.
 
     Taking it clears it, so the agent is told exactly once. A non-answer (the
-    person holds the browser, or a claim cut the op short) leaves it pending.
+    person holds the browser, or a claim cut the op short) leaves it pending. With
+    *take* false (an app's op) the app's own pending move is reported and cleared,
+    and the Bot's stays pending, since its next ref would otherwise land on the page
+    it left; the Bot taking its own leaves the app's in place the same way.
     """
     if not isinstance(answer, dict) or answer.get("code") == DENIED_CODE:
         # A governance deny is shown as fixed text, so the move waits for the next answer.
         return answer
-    notice = hub.take_tab_move(key)
+    notice = hub.take_tab_move(key) if take else hub.take_app_tab_move(key)
     if not notice:
         return answer
     out = dict(answer)
@@ -1027,8 +1042,14 @@ async def api_browser_op(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "session_key required", "code": "session_key_required"}, status=400
         )
+    approval = body.get("approval")
     answer, status = await run_browser_op(
-        session_key, op, args, state=_request_state(request), caller=request
+        session_key,
+        op,
+        args,
+        state=_request_state(request),
+        caller=request,
+        approval=approval if isinstance(approval, str) else "",
     )
     if status == 403:
         # The one answer that is not 200: a browse deny before the op started.
@@ -1074,6 +1095,7 @@ async def run_browser_op(
     *,
     state: Any = None,
     caller: Any = None,
+    approval: str = "",
 ) -> tuple[dict[str, Any], int]:
     """Run one browser op for *session_key* through every gate; ``(answer, http_status)``.
 
@@ -1090,12 +1112,18 @@ async def run_browser_op(
     *session_key* is the caller's runtime session key (``dashboard:<slot>`` for a
     dashboard slot), which governance binds on. *state* is the dashboard state, read
     for the slot's owning app. *caller* is the audit identity: the route's request,
-    or a :class:`GatewayCaller`. Answers are the route's own bodies; the status is
-    403 only for a browse deny before the op started, else 200.
+    or a :class:`GatewayCaller`. *approval* is the answered card a ``js``, ``cdp``
+    or ``http_get`` call runs under (:mod:`browser_card_ask`). Answers are the
+    route's own bodies; the status is 403 only for a browse deny before the op
+    started, else 200.
     """
     # The audit identity every helper below reads (``_audit`` takes a request's shape).
     request: Any = caller if caller is not None else GatewayCaller("gateway")
-    if op not in harness_ops.OPS or not isinstance(args, dict):
+    # ``APP_OPS`` are an app's read ops: an in-gateway caller's only, never the route's.
+    known = op in harness_ops.OPS or (
+        op in harness_ops.APP_OPS and isinstance(request, GatewayCaller)
+    )
+    if not known or not isinstance(args, dict):
         return {"error": "unknown op", "code": "bad_op"}, 400
     # The shim asked (and audited) the same row before posting; this is the
     # gateway's own check, which a direct POST cannot skip and which fails closed.
@@ -1184,6 +1212,13 @@ async def run_browser_op(
         # ``/api/browser/handback`` until the person lets go, then posts the op
         # again. Nothing waits here, so other chats keep browsing meanwhile.
         return _held(request, hub, key, op, interrupted=False)
+    from kiro_crew.dashboard.handlers import browser_card_ask
+
+    carded = await browser_card_ask.gate(state, session_key, op, args, approval)
+    if carded is not None:
+        code = str(carded.get("code") or "")
+        _audit(request, "pending" if code == "needs_approval" else "denied", code)
+        return carded, 200
     try:
         await asyncio.wait_for(_OP_LOCK.acquire(), timeout=LOCK_WAIT_S)
     except asyncio.TimeoutError:
@@ -1238,6 +1273,11 @@ async def run_browser_op(
     # A note left for a parked poll that never came back to take it reaches this op.
     # The note is the person's word to the Bot: an app's op leaves it for the Bot.
     said = None if isinstance(request, GatewayCaller) else hub.take_handback(key)
+    if result.get("ok") and sites and sites != browser_sites.NO_PAGES:
+        # An app's own agent browsed: its backend may ask to hear when the media ends.
+        from kiro_crew.dashboard.handlers import browser_media_watch  # noqa: PLC0415
+
+        browser_media_watch.ensure_watch(state, key)
     if result.get("ok"):
         answer: dict[str, Any] = {"ok": True, "result": result}
         if said is not None:
@@ -1384,7 +1424,7 @@ async def _fenced_op(
         # A quick ask's text is its outcome alone (``mcp_tools.browser._ask_text``),
         # so the move would be cleared without being shown: it waits for the next op.
         return answer
-    return _with_tab_move(hub, key, answer)
+    return _with_tab_move(hub, key, answer, take=not isinstance(request, GatewayCaller))
 
 
 async def _run_fenced_op(
@@ -1463,10 +1503,14 @@ async def _bound_op(
     try:
         await asyncio.wait_for(_bind(), timeout=OP_TIMEOUT_S)
         bound = True
-        moved = _refused_for_tab_move(hub, key, op, args)
+        moved = _refused_for_tab_move(hub, key, op, args, app=isinstance(request, GatewayCaller))
         if hub.in_control(key):
             # A claim landed during the bind; the op has not touched the page yet.
+            # Its host-grant note stays for the same call the shim re-posts.
             return _HELD
+        # The call's own host-grant note, taken once whatever this op's answer, so
+        # a later identical call never inherits it.
+        noted_host = browser_host_trust.take_host_approval(key, op, args)
         if op == "ask":
             # A quick ask binds to the card's own stream: make sure one runs on the
             # tab just bound, then put the ask on the card (it never runs ``run_op``).
@@ -1487,8 +1531,13 @@ async def _bound_op(
         if moved is not None:
             # The ref or point the agent sent belongs to the page it left.
             result = moved
+        elif off_host := await browser_host_trust.recheck(noted_host, op, args, ctx.helper):
+            # Approved by a host grant, but the tab is on another host now.
+            _audit(request, "denied", browser_host_trust.SCOPE_CHANGED_CODE)
+            result = off_host
         else:
-            max_ops, max_repeats = _run_limits()
+            # An app's op is not one of the chat's steps: ``browser.run`` counts the Bot's.
+            max_ops, max_repeats = (0, 0) if isinstance(request, GatewayCaller) else _run_limits()
             if max_ops or max_repeats:
                 sess = hub.get(key)
                 if sess is not None:
@@ -1498,7 +1547,7 @@ async def _bound_op(
                     if stopped is not None:
                         _audit(request, "denied", run_budget.CODE)
                         return stopped
-            task = asyncio.ensure_future(harness_ops.run_op(op, args, ctx))
+            task = asyncio.ensure_future(browser_sign_in.run_op(op, args, ctx, supervisor))
             hub.op_started(key, task)
             try:
                 result = await asyncio.wait_for(task, timeout=budget)

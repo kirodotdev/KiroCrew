@@ -306,6 +306,7 @@ The `slots()` method lists only this app's slots.
   slot="myapp-123"                 // required, this app's slot key
   tabId?: string                   // a tab of that slot; default is the current tab
   interactive?: boolean            // may the user take over; default true
+  stayLive?: boolean               // reopen the open tab when the turn folds; default false
   onTakeover?: () => void
   onHandBack?: (note?: string) => void
   onNavigate?: (e: { url: string; title: string }) => void

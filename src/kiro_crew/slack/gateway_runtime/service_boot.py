@@ -55,12 +55,10 @@ if TYPE_CHECKING:
         Task,
         TaskRunner,
         _live_session_work_dirs,
-        _record_ordinary_mode,
         _run_signing_key_preflight_bounded,
         _session_work_dir,
         _start_coder_retention,
         _sweep_predecessor_session_work_dirs,
-        _write_gateway_mode_bounded,
         build_dashboard_url,
         build_provider_factory,
         cautious_boot,
@@ -915,13 +913,6 @@ async def run(self: GatewayOrchestrator) -> None:
         print(f"❌ Cannot run the signing key preflight: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
-    # A headless start records its mode before anything listens, on a daemon with
-    # the preflight's deadline. A failed write stops the boot: a record still saying
-    # "not headless" would let a CLI restart bring a crashed headless gateway back
-    # with the dashboard. An ordinary start records it after the listener is up.
-    if self._headless:
-        await _write_gateway_mode_bounded()
-
     # An update a person armed applies HERE, at the start, before the listeners bind
     # and before any session is restored: nothing is serving, so nothing is cut. A
     # successful apply re-execs and does not return; a failure leaves the old
@@ -1149,17 +1140,6 @@ async def run(self: GatewayOrchestrator) -> None:
     try:
         from kiro_crew.instances import run_marker
 
-        if not self._headless:
-            # The ordinary start's mode record, on the same kind of tracked task.
-            # A failure only warns: the stale record it leaves can only say
-            # "headless". The record is written while this process holds
-            # gateway.lock, so a write still pending at exit cannot land on a
-            # later gateway's record.
-            # The default executor is joined before gateway.lock is released,
-            # keeping a late write off a later gateway's record.
-            _mode_task = asyncio.create_task(_record_ordinary_mode())
-            self._background_tasks.add(_mode_task)
-            _mode_task.add_done_callback(self._background_tasks.discard)
         if self._dashboard_port:
             _marker_task = asyncio.create_task(
                 asyncio.to_thread(self._write_marker_worker, run_marker, self._dashboard_port)

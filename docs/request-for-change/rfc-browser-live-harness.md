@@ -100,9 +100,12 @@ The problems that follow:
 
 - **Browser Use's cloud, proxy or agent library.** The cloud runs the page on a
   third party's machine. The agent library is an LLM agent inside ours.
-- **Arbitrary code through Harness.** Its `run.py`, `browser_js`, `browser_cdp`
-  and `http_get` stay unreachable. The agent gets the tool's ops and nothing
-  else.
+- **Harness's own runner and MCP server.** Its `run.py` and its MCP server
+  stay unreachable. The agent gets the tool's ops and nothing else. Since
+  2026-11-19 those ops include Harness's own `js`, `cdp` and `http_get` helpers,
+  each asking a person on a card every call (the owner's decision,
+  `docs/decisions/2026-11-19-the-browser-tool-runs-harness-js-cdp-and-http-get.md`,
+  reversing this non-goal's earlier "stay unreachable" for those three).
 - **Replacing the Playwright library.** The E2E suite and the recording skills
   keep using it. Only the `playwright-cli` agent path goes.
 - **A password manager.** The sheet does not read or fill a saved password.
@@ -278,7 +281,8 @@ address) is not seen, because names are not resolved. D1 and D5 above.
 - **Fix the native panel.** It still has no logins and no headless or remote
   mode, and the agent keeps two stacks.
 - **Harness's own MCP server.** It exposes `browser_js`, `browser_cdp` and
-  `http_get`, which bypass the approval model.
+  `http_get` outside the approval model. The `browser` tool's `js`, `cdp` and
+  `http_get` ops call the same helpers inside it.
 - **Frames from Harness's event buffer.** That buffer is shared and emptied on
   each read; frames would push out the events Harness waits on. Hence the
   relay's private sessions.

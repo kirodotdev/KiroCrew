@@ -7,16 +7,18 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import * as React from 'react'
 import { act, render, screen, waitFor, cleanup, within } from '@testing-library/react'
+import { KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
+import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from './NavigationLeaveGuard'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
-import { Router, UNSAFE_createMemoryHistory as createMemoryHistory } from 'react-router-dom'
+import { Router, UNSAFE_createMemoryHistory as createMemoryHistory, useLocation } from 'react-router-dom'
 import { ThemeProvider } from '../hooks/useTheme'
 import { api, ApiError, type InstanceView, type RelayCrewEntry, type SsoStatus } from '../api/client'
 import TeamCrewsSwitcher, { relayRowState } from './TeamCrewsGroup'
 import { setCrewPins, setStableOrder } from './InstanceTabBar'
 import { RELAY_VIEWER_CREWS_KEY, openRelayCrewTab, relayRefusalText } from '../hooks/useRelayViewerCrews'
-import { relayPaneClosed, setActiveId } from '../store/instancesSlice'
+import { setActiveId } from '../store/instancesSlice'
 import { timeAgo } from '../utils/timeAgo'
 import { renderWithProviders, createTestStore } from '../test/helpers'
 
@@ -275,8 +277,8 @@ describe('TeamCrewsGroup', () => {
     // Team rows are plain items, not destinations: no radio, no pin.
     expect(within(group).queryAllByRole('menuitemradio')).toHaveLength(0)
     expect(within(group).queryAllByRole('menuitemcheckbox')).toHaveLength(0)
-    // The row's one visible action is a small Connect, and only a click runs it.
-    expect(within(group).getByTestId('relay-crew-connect').textContent).toBe('Connect')
+    // A Crew not open yet says so as a state, not as a second action (row 70).
+    expect(within(group).getByTestId('relay-crew-not-connected').textContent).toBe('Not connected')
   })
 
   it('names My Crews only when SSH Crews are listed', async () => {
@@ -485,10 +487,9 @@ describe('TeamCrewsGroup', () => {
     main.remove()
   })
 
-  it('shows a × on an open Crew\'s row only while it is open, and the × closes its pane', async () => {
+  it('gives no row a ×, open or not, and marks the Crew in front current (row 70)', async () => {
     const openPane = vi.fn(async () => ({ ok: true }))
-    const closePane = vi.fn(async () => ({ ok: true }))
-    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open: vi.fn(), openPane, closePane, onPaneEvent: () => () => {} }
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open: vi.fn(), openPane, closePane: vi.fn(), onPaneEvent: () => () => {} }
     vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({ endpointId: 'ep-9', name: 'Lab' }), crew({})] })
     vi.spyOn(api, 'listInstances').mockResolvedValue(listResp([]))
     const store = createTestStore({ instances: { warm: {}, activeId: null, mru: [], unread: {} } })
@@ -499,23 +500,18 @@ describe('TeamCrewsGroup', () => {
     await u.click(row('Lab'))
     await waitFor(() => expect(store.getState().instances.relayActive).toBe('ep-9'))
     await openGroup(u)
-    const x = await screen.findByTestId('relay-crew-close-ep-9')
-    expect(x.getAttribute('aria-label')).toBe('Close Lab')
     // The Crew in front is marked current, with no action word (#39332, row 70).
     const lab = screen.getByRole('menuitemradio', { name: 'Lab' })
     expect(lab.getAttribute('aria-checked')).toBe('true')
     expect(within(lab).getByTestId('relay-crew-current')).toBeTruthy()
-    expect(within(lab).queryByTestId('relay-crew-connect')).toBeNull()
+    expect(within(lab).queryByTestId('relay-crew-not-connected')).toBeNull()
     expect(within(lab).queryByTestId('relay-crew-connected')).toBeNull()
-    // The Crew that is not open still reads Connect.
-    expect(screen.getByRole('menuitem', { name: `Connect ${crew({}).name}` })).toBeTruthy()
-    expect(screen.queryByTestId(`relay-crew-close-${crew({}).endpointId}`)).toBeNull()
-    await u.click(x)
-    expect(closePane).toHaveBeenCalledWith('ep-9')
-    // The pane's `closed` event drops the tab, and the × with it.
-    act(() => { store.dispatch(relayPaneClosed('ep-9')) })
-    await waitFor(() => expect(screen.queryByTestId('relay-crew-close-ep-9')).toBeNull())
-    expect(row('Lab')).toBeTruthy()
+    // The Crew that is not open reads Not connected, and choosing it connects.
+    const other = screen.getByRole('menuitem', { name: `Connect ${crew({}).name}` })
+    expect(within(other).getByTestId('relay-crew-not-connected')).toBeTruthy()
+    const group = screen.getByTestId('team-crews-group')
+    expect(within(group).queryByRole('menuitem', { name: /^Close / })).toBeNull()
+    expect(group.querySelector('[data-testid^="relay-crew-close-"]')).toBeNull()
   })
 
   // The five row states of the PR's table, each rendered: dimmed, end mark, action.
@@ -523,7 +519,7 @@ describe('TeamCrewsGroup', () => {
     { state: 'current', open: true, front: true, online: true, dimmed: false, end: 'relay-crew-current', role: 'menuitemradio', name: 'Lab', picks: 'show' },
     { state: 'connected', open: true, front: false, online: true, dimmed: false, end: 'relay-crew-connected', role: 'menuitem', name: 'Lab', picks: 'show' },
     { state: 'openOffline', open: true, front: false, online: false, dimmed: false, end: null, role: 'menuitem', name: 'Lab', picks: 'show' },
-    { state: 'connect', open: false, front: false, online: true, dimmed: false, end: 'relay-crew-connect', role: 'menuitem', name: 'Connect Lab', picks: 'open' },
+    { state: 'connect', open: false, front: false, online: true, dimmed: false, end: 'relay-crew-not-connected', role: 'menuitem', name: 'Connect Lab', picks: 'open' },
     { state: 'current', open: true, front: true, online: false, dimmed: false, end: 'relay-crew-current', role: 'menuitemradio', name: 'Lab', picks: 'show' },
     { state: 'unavailable', open: false, front: false, online: false, dimmed: true, end: null, role: 'menuitem', name: 'Lab', picks: 'none' },
   ] as const)('the $state row (online: $online)', async ({ state, open, front, online, dimmed, end, role, name, picks }) => {
@@ -544,7 +540,7 @@ describe('TeamCrewsGroup', () => {
     await openGroup(u)
     const item = await screen.findByRole(role, { name })
     expect(item.className.includes('opacity-40')).toBe(dimmed)
-    for (const id of ['relay-crew-current', 'relay-crew-connected', 'relay-crew-connect']) {
+    for (const id of ['relay-crew-current', 'relay-crew-connected', 'relay-crew-not-connected']) {
       expect(!!within(item).queryByTestId(id)).toBe(id === end)
     }
     if (state === 'openOffline') {
@@ -552,14 +548,14 @@ describe('TeamCrewsGroup', () => {
       expect(document.getElementById(item.getAttribute('aria-describedby') ?? '')?.textContent).toMatch(/offline|reconnecting/i)
       expect(item.getAttribute('title')).toBeNull()
     }
-    expect(screen.queryByTestId('relay-crew-close-ep-9') !== null).toBe(open)
+    expect(screen.queryByTestId('relay-crew-close-ep-9')).toBeNull()
     await u.click(item)
     if (picks === 'open') expect(openPane).toHaveBeenCalled()
     else expect(openPane).not.toHaveBeenCalled()
     if (picks === 'show') expect(store.getState().instances.relayActive).toBe('ep-9')
   })
 
-  it('says Connected on an open Crew that is not in front, with its ×', async () => {
+  it('says Connected on an open Crew that is not in front', async () => {
     ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open: vi.fn(), openPane: vi.fn(), closePane: vi.fn(), onPaneEvent: () => () => {} }
     vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({ endpointId: 'ep-9', name: 'Lab' }), crew({})] })
     vi.spyOn(api, 'listInstances').mockResolvedValue(listResp([]))
@@ -572,7 +568,6 @@ describe('TeamCrewsGroup', () => {
     const lab = await screen.findByRole('menuitem', { name: 'Lab', description: 'Connected' })
     expect(lab.getAttribute('aria-checked')).toBeNull()
     expect(within(lab).getByTestId('relay-crew-connected').textContent).toBe('Connected')
-    expect(screen.getByTestId('relay-crew-close-ep-9')).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: `Connect ${crew({}).name}` })).toBeTruthy()
   })
 
@@ -613,7 +608,7 @@ describe('TeamCrewsGroup', () => {
     ['REMOTE_ACCESS_DISABLED', 'Remote access is turned off for this account.'],
     ['CREW_OFFLINE', 'This Crew is offline.'],
     ['THROTTLED', 'Too many requests. Try again in a minute.'],
-    ['SIGNED_OUT', 'Sign in to Kiro to see your Shared Crews.'],
+    ['SIGNED_OUT', 'Sign in to Kiro to open this Crew.'],
     ['NOT_SET_UP', "Shared Crews over the relay aren't set up."],
     ['INVALID_REQUEST', "Couldn't open this Crew."],
     ['SERVICE_ERROR', "Couldn't open this Crew."],
@@ -630,6 +625,45 @@ describe('TeamCrewsGroup', () => {
     await u.click(row('Build box'))
     expect((await screen.findByTestId('relay-crew-refusal')).textContent).toContain(text)
     expect(screen.getByTestId('team-crews-group')).toBeTruthy()
+  })
+
+  it('tells a signed-out Open as a status with no alert or hand-off (Bug Bash row 62)', async () => {
+    withBridge(vi.fn(async () => ({ ok: false, error: 'SIGNED_OUT' })))
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
+    mount()
+    const u = userEvent.setup()
+    const group = await openGroup(u)
+    await u.click(row('Build box'))
+    expect(await within(group).findByTestId('relay-crew-refusal')).toHaveAttribute('role', 'status')
+    expect(within(group).queryByRole('alert')).toBeNull()
+    expect(within(group).queryByRole('menuitem', { name: 'Ask the agent' })).toBeNull()
+    // The way forward is in the menu itself (UX review): the Kiro account tab.
+    expect(within(group).getByRole('menuitem', { name: /Go to Kiro account/ })).toBeInTheDocument()
+  })
+
+  it('asks the leave guard before the signed-out sign-in item navigates away', async () => {
+    withBridge(vi.fn(async () => ({ ok: false, error: 'SIGNED_OUT' })))
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
+    const guard = vi.fn(() => false)
+    function Guarded() {
+      useRegisterNavigationLeaveGuard(guard)
+      return null
+    }
+    function Where() {
+      return <span data-testid="where">{useLocation().pathname}</span>
+    }
+    const store = createTestStore({ instances: { warm: {}, activeId: null, mru: [], unread: {} } })
+    vi.spyOn(api, 'listInstances').mockResolvedValue(listResp([]))
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><Guarded /><TeamCrewsSwitcher variant="inline" /><Where /></NavigationLeaveGuardProvider>,
+      { store },
+    )
+    const u = userEvent.setup()
+    const group = await openGroup(u)
+    await u.click(row('Build box'))
+    await u.click(await within(group).findByRole('menuitem', { name: /Go to Kiro account/ }))
+    expect(guard).toHaveBeenCalled()
+    expect(screen.getByTestId('where').textContent).not.toBe(KIRO_SIGN_IN_PATH.split('?')[0])
   })
 
   it('offers Ask the agent as a menu item tied to a row refusal, one per refused row', async () => {

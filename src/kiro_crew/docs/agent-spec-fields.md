@@ -551,7 +551,10 @@ itself:
   in Crew first, else kiro-cli's own "Trust this workspace?" record for the
   folder (`kiro_cli_workspace_trust.py`, read only, never written), else off.
   A Crew Turn off beats kiro-cli's trust, and a missing, unreadable or unknown
-  kiro-cli record reads as off. The choice lives in `project_hooks_consent.json`
+  kiro-cli record reads as off. A Crew Turn on covers the hooks the folder's
+  agent files declared when it was given: once any of them changes (a pull, or
+  another repository cloned at the same path) they stop and the notice asks
+  again, and kiro-cli's trust does not start them. The choice lives in `project_hooks_consent.json`
   on the keystone floor, so no agent can write it. Crew fires the hooks on the
   chat, sub-agent, task-runner and channel turns (a scheduled cron run fires only
   the user-level spec's hooks, never a folder agent's own; a message you type into
@@ -1310,6 +1313,9 @@ ref writes one `mcp_tools_added` SEL record. Slash-containing names use the
 concrete mount alias in refs; the offered record keeps the edition's original name.
 A same-named entry in `~/.kiro/settings/mcp.json` never replaces such a server's
 `command`, `args` or `env`; only its `timeout` and `disabled` reach the spec.
+A same-named entry in `~/.kiro/crew/mcp.json` never replaces its `command` or
+`args` either. Its other keys reach the spec, and its `env` keys win over the
+edition's while the edition's other keys stay.
 
 
 What you may safely hand-edit: a spec you authored yourself; a conductor spec's

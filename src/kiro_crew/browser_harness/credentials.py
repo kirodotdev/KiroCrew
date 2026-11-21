@@ -19,10 +19,23 @@ the daemon starts, so no agent op runs before they land. Every relaunch goes thr
 the same start. Before an agent ``navigate`` (or new tab) the supervisor re-pulls
 when the provider's ``fingerprint()`` or the ``browser.credentials`` settings moved
 since the last apply: a sign-in the person re-ran, or a switch they flipped, reaches
-the next page. A cookie a re-pull omits stays until the browser closes.
+the next page. It also re-pulls once the earliest ``expires`` the provider gave for a
+cookie it set has passed (:meth:`PlacedCookies.next_expiry`).
 
-**Session cookies.** Every cookie is set without ``expires``, so nothing is written
-into Kiro's profile on disk and all of it is gone when the browser closes.
+**Stale cookies go.** :class:`PlacedCookies` remembers, per browser context, which
+provider cookies the gateway set and their ``expires``; never a value. At each
+re-apply a remembered cookie whose ``expires`` passed, or that a pull which succeeded
+leaves out, is overwritten with a past ``expires``, which deletes it. Only
+cookies the gateway set are touched.
+
+**Session cookies.** Every cookie is set without ``expires``. Chromium still
+writes a session cookie into the profile's ``Cookies`` file, and a delete it has
+not yet committed is lost when it stops, so the supervisor deletes every cookie it
+set before it stops Kiro's Chromium (:meth:`PlacedCookies.delete_all`) and, once
+the browser is gone, removes their rows from the file itself
+(:func:`purge_from_profile`). shortcut: a browser that crashes or is killed while
+the gateway is down keeps them on disk until the next start's apply overwrites or
+drops them.
 
 **Where never.** The user's own Chrome or Edge: those are the person's profile. A
 start on either records ``skipped`` and applies nothing.
@@ -45,6 +58,7 @@ import re
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol
 
 from kiro_crew.browser_harness.budgets import CREDENTIAL_FINGERPRINT_S
@@ -112,6 +126,8 @@ class CredentialStatus:
     applied_domains: tuple[str, ...] = ()
     #: Cookies landed per context written, in the order asked; one entry per context.
     applied_per_context: tuple[int, ...] = ()
+    #: Cookies this apply deleted, over every context: expired, or left out.
+    removed: int = 0
     applied_at: float | None = None
     provider_status: dict[str, Any] | None = None
 
@@ -124,6 +140,7 @@ class CredentialStatus:
             "reason": self.reason,
             "applied": self.applied,
             "applied_per_context": list(self.applied_per_context),
+            "removed": self.removed,
             "applied_at": self.applied_at,
             "provider_status": self.provider_status,
         }
@@ -280,10 +297,93 @@ async def _provider_status(provider: Any) -> dict[str, Any] | None:
     }
 
 
+def _expires(raw: Any) -> float | None:
+    """A provider cookie's ``expires`` (unix seconds), or ``None`` for none."""
+    got = raw.get("expires") if isinstance(raw, Mapping) else None
+    if isinstance(got, (int, float)) and not isinstance(got, bool) and got > 0:
+        return float(got)
+    return None
+
+
+_CookieKey = tuple[str, str, str]
+
+
+def _key(cookie: Mapping[str, Any]) -> _CookieKey:
+    return cookie["name"], cookie["domain"], cookie["path"]
+
+
+class PlacedCookies:
+    """The provider cookies the gateway set in one browser, per context. Holds no value.
+
+    Each entry keeps the cookie's CDP params minus ``value``, which is what deleting
+    it needs, and the ``expires`` the provider gave (``None`` for none). Lives as
+    long as the browser it describes: a new browser starts with a new one.
+    """
+
+    def __init__(self) -> None:
+        self._by_context: dict[str, dict[_CookieKey, tuple[dict[str, Any], float | None]]] = {}
+        #: An expired cookie was deleted and the pull that would renew it has not
+        #: finished (it timed out or was cancelled): the next navigation re-pulls.
+        self._renewal_due = False
+
+    def retain(self, contexts: Iterable[str]) -> None:
+        """Forget the contexts not in *contexts*: a closed chat's context is gone."""
+        keep = set(contexts)
+        self._by_context = {c: v for c, v in self._by_context.items() if c in keep}
+
+    def next_expiry(self) -> float | None:
+        """When the next re-pull is due: the earliest ``expires`` of any remembered
+        cookie, ``0.0`` while a renewal is owed, or ``None``."""
+        if self._renewal_due:
+            return 0.0
+        times = [e for held in self._by_context.values() for _, e in held.values() if e]
+        return min(times) if times else None
+
+    def _expired(self, context: str, now: float) -> list[_CookieKey]:
+        held = self._by_context.get(context, {})
+        return [k for k, (_, e) in held.items() if e is not None and e <= now]
+
+    def _omitted(self, context: str, supplied: set[_CookieKey]) -> list[_CookieKey]:
+        return [k for k in self._by_context.get(context, {}) if k not in supplied]
+
+    async def _delete(self, relay: _Relay, context: str, keys: list[_CookieKey]) -> int:
+        """Delete *keys* from *context*; forget each only once its delete landed.
+
+        A past ``expires`` deletes the cookie, and nothing is written to disk. A
+        delete Chromium refused stays remembered, so the next apply tries again.
+        """
+        held = self._by_context.get(context, {})
+        gone = [{**held[k][0], "value": "", "expires": 1} for k in keys]
+        landed = await _set_cookies(relay, gone, context)
+        for cookie in landed:
+            held.pop(_key(cookie), None)
+        return len(landed)
+
+    def keys(self) -> list[_CookieKey]:
+        """Every remembered cookie, as ``(name, domain, path)``, in any context."""
+        return sorted({k for held in self._by_context.values() for k in held})
+
+    async def delete_all(self, relay: _Relay) -> int:
+        """Delete every remembered cookie in every context: the browser is stopping."""
+        removed = 0
+        for context in list(self._by_context):
+            removed += await self._delete(relay, context, list(self._by_context[context]))
+        return removed
+
+    def _record(
+        self, context: str, landed: list[dict[str, Any]], expires: dict[_CookieKey, float | None]
+    ) -> None:
+        held = self._by_context.setdefault(context, {})
+        for cookie in landed:
+            params = {k: v for k, v in cookie.items() if k != "value"}
+            held[_key(cookie)] = (params, expires.get(_key(cookie)))
+
+
 async def _provider_cookies(
     provider: Any, target: Any, settings: CredentialSettings
-) -> tuple[list[dict[str, Any]], str | None]:
-    """The provider's cookies both lists allow, as session cookies; and an error code."""
+) -> tuple[list[tuple[dict[str, Any], float | None]], str | None]:
+    """The provider's cookies both lists allow, as session cookies with the ``expires``
+    the provider gave; and an error code."""
     try:
         declared = normalize_declared_domains(
             await asyncio.wait_for(asyncio.to_thread(provider.domains), PROVIDER_TIMEOUT_SECS)
@@ -305,8 +405,8 @@ async def _provider_cookies(
         return [], "provider_bad_shape"
     now = time.time()
     kept = [
-        c
-        for c in (normalize_cookie(item, now) for item in raw)
+        (c, _expires(item))
+        for c, item in ((normalize_cookie(item, now), item) for item in raw)
         # BOTH lists: what the edition says it serves AND what the owner allowed.
         if c is not None
         and domain_allowed(c["domain"], declared)
@@ -348,13 +448,20 @@ async def apply(
     target: Target,
     settings: CredentialSettings,
     contexts: Sequence[str] = ("",),
+    placed: PlacedCookies | None = None,
 ) -> CredentialStatus:
     """Write the provider's cookies into the browser behind *relay*, if enabled.
 
     *contexts* are the browser contexts to fill, ``""`` being the default one and
     any other a per-chat context (``browser.isolation``); the provider is asked
     ONCE and the same cookies go into each. ``applied`` counts the first context's
-    landing; ``applied_per_context`` keeps every context's. Never raises for a provider or a CDP failure: the browser is still
+    landing; ``applied_per_context`` keeps every context's. With *placed*, each
+    context's landed cookies are remembered there. The ones it already held whose
+    ``expires`` passed are deleted first, before the provider is asked, and so even
+    while the switch is off; after a pull that succeeded, the ones it leaves out are
+    deleted too (``removed``). A failed pull deletes nothing more: a hiccup must not
+    sign anyone out.
+    Never raises for a provider or a CDP failure: the browser is still
     useful without the cookies, so the outcome is a status, not an exception.
     Cancellation propagates.
     """
@@ -365,17 +472,37 @@ async def apply(
         return status
     if name is None:
         return status
+    if placed is not None:
+        # Before the pull, from memory alone: a slow provider or a switched-off one
+        # never keeps an expired cookie in the browser.
+        now = time.time()
+        for context in contexts:
+            status.removed += await placed._delete(relay, context, placed._expired(context, now))
+        placed._renewal_due = placed._renewal_due or (bool(status.removed) and settings.enabled)
     if not settings.enabled:
         status.state, status.reason = STATE_DISABLED, "disabled"
         return status
-    cookies, error = await _provider_cookies(provider, target, settings)
+    pulled, error = await _provider_cookies(provider, target, settings)
+    cookies = [c for c, _ in pulled]
+    expires = {_key(c): e for c, e in pulled}
+    # ``source_expired`` is a pull that worked and found nothing still valid.
+    supplied = set(expires) if error in (None, "source_expired") else None
     landed: list[dict[str, Any]] = []
     per_context: list[int] = []
     for index, context in enumerate(contexts):
-        placed = await _set_cookies(relay, cookies, context)
-        per_context.append(len(placed))
+        here = await _set_cookies(relay, cookies, context)
+        per_context.append(len(here))
         if index == 0:
-            landed = placed
+            landed = here
+        if placed is not None:
+            if supplied is not None:
+                omitted = placed._omitted(context, supplied)
+                status.removed += await placed._delete(relay, context, omitted)
+            placed._record(context, here, expires)
+    if placed is not None and supplied is not None and "" in contexts:
+        # Paid only by a pull that worked across the whole browser: a failed pull,
+        # or one chat's new context being seeded, still owes it.
+        placed._renewal_due = False
     status.applied = len(landed)
     status.applied_per_context = tuple(per_context)
     status.applied_domains = tuple(sorted({cookie_host(c["domain"]) for c in landed}))
@@ -390,13 +517,21 @@ async def apply(
         status.state = STATE_APPLIED
     # Logs an exception class name or a state and two counts, never a cookie value.
     # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
-    logger.info("browser credentials: %s (%d/%d)", status.state, status.applied, len(cookies))
+    logger.info(
+        "browser credentials: %s (%d/%d, %d removed)",
+        status.state,
+        status.applied,
+        len(cookies),
+        status.removed,
+    )
     return status
 
 
 __all__ = [
+    "purge_from_profile",
     "CredentialSettings",
     "CredentialStatus",
+    "PlacedCookies",
     "Target",
     "apply",
     "cookie_host",
@@ -407,3 +542,42 @@ __all__ = [
     "provider_fingerprint",
     "provider_name",
 ]
+
+
+#: Where Chromium keeps the profile's cookie database, by release.
+_COOKIE_FILES = (("Default", "Cookies"), ("Default", "Network", "Cookies"))
+
+
+def purge_from_profile(profile: Path, keys: Iterable[_CookieKey]) -> int:
+    """Remove *keys*' rows from Kiro's stopped Chromium's cookie files; the rows removed.
+
+    Only with the browser gone: Chromium holds the file open while it runs. A row
+    matches on name, path and host, with or without the domain cookie's leading
+    dot. A file that is missing, a link or not a cookie database is left alone.
+    """
+    import sqlite3
+
+    wanted = [
+        (name, path, cookie_host(domain), "." + cookie_host(domain)) for name, domain, path in keys
+    ]
+    removed = 0
+    if not wanted:
+        return 0
+    for parts in _COOKIE_FILES:
+        db = profile.joinpath(*parts)
+        if db.is_symlink() or not db.is_file():
+            continue
+        try:
+            conn = sqlite3.connect(str(db), timeout=1)
+            try:
+                with conn:
+                    for name, path, host, dotted in wanted:
+                        removed += conn.execute(
+                            "DELETE FROM cookies WHERE name = ? AND path = ? AND host_key IN (?, ?)",
+                            (name, path, host, dotted),
+                        ).rowcount
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            logger.warning("browser: could not clear the provider cookies from %s", db.name)
+    return removed

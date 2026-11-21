@@ -346,6 +346,7 @@ from kiro_crew.metrics import inventory_gauges
 from kiro_crew.platform import bootstrap as platform_bootstrap
 from kiro_crew.platform import context as platform_context
 from kiro_crew.platform import governance
+from kiro_crew.relay_client import provider as relay_provider
 from kiro_crew.security import paths as security_paths
 from kiro_crew.testing import fake_acp_backend
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, finished
@@ -871,6 +872,9 @@ def _reset_home_bound_globals() -> None:
     dashboard_updates._auto_effect_task = None
     dashboard_updates._shape_effect = None
     update_next_start._differs_memo = None
+    # The ingress a boot publishes for the relay provider belongs to that
+    # boot's app; the next boot publishes its own.
+    relay_provider.publish_gateway_ingress(None)
     # Cleared in place, never rebound: the security facade re-exports
     # ``_path_resolve_degraded`` by identity, and the second-boot witness
     # compares each container's identity.

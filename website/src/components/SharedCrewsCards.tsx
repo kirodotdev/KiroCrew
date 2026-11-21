@@ -22,12 +22,13 @@ import { useInRouterContext } from 'react-router-dom'
 import { ArrowRight, ExternalLink, Users } from 'lucide-react'
 import type { RelayCrewEntry } from '../api/client'
 import {
-  clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText, relayRefusalText, useRelayViewerCrews,
+  clearRelayCrewsUnseen, isRelayCrewOnline, isSignedOutRefusal, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText, relayRefusalText, useRelayViewerCrews,
 } from '../hooks/useRelayViewerCrews'
 import { useAppDispatch } from '../store'
 import { relayPaneBridge } from '../lib/relayCrewPanes'
 import { Card, PanelSectionHeader } from './ui'
 import ErrorNotice from './ErrorNotice'
+import StatusNotice from './StatusNotice'
 import { i18nT } from '../i18n/t'
 import { KIRO_SIGN_IN_TARGET } from '../pages/developer/kiroSignInLink'
 import { SettingsLink } from './SettingsLink'
@@ -36,11 +37,6 @@ import { accountProviderLabel } from './kasProviderLabel'
 /** The AWS Management Console home. A reviewer call: no Kiro or Amazon Q
  *  Developer console link exists in the codebase to reuse. */
 const AWS_CONSOLE_URL = 'https://console.aws.amazon.com/'
-
-/** A refusal that says the person is signed out: the way to sign in. */
-function signedOut(code: string | undefined): boolean {
-  return (code || '').toUpperCase() === 'SIGNED_OUT'
-}
 
 /** The way from a signed-out refusal to the Kiro account tab, where the sign-in is. */
 function KiroAccountLink() {
@@ -107,12 +103,13 @@ function SharedCrewRow({ crew, refusal, onOpen }: {
           </span>
         )}
       </button>
-      {refusal && (
+      {refusal && (isSignedOutRefusal(refusal.code) ? (
+        <StatusNotice tone="info" message={refusal.text} className="mx-2 mb-1" testId="shared-crew-refusal" footer={<div className="mt-1"><KiroAccountLink /></div>} />
+      ) : (
         // askAgent on: this tab's only unsaved inputs (the add-crew and edit-crew
         // forms) live in the store, so the hand-off's navigation loses nothing.
         <ErrorNotice variant="inline" message={refusal.text} className="px-2 pb-1" testId="shared-crew-refusal" askAgent />
-      )}
-      {signedOut(refusal?.code) && <div className="px-2 pb-1"><KiroAccountLink /></div>}
+      ))}
     </li>
   )
 }

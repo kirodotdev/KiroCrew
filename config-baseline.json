@@ -62,6 +62,7 @@
         "apps_builtin_adoption": {},
         "apps_builtin_adoption_nav": {},
         "apps_ui_stream_timeout_secs": 30,
+        "apps_ui_protected_copy": false,
         "jail": "auto",
         "dangerously_skip_permissions": false,
         "yolo_duration": "6h",
@@ -452,7 +453,7 @@
       "sensitive": false,
       "tags": [],
       "label": "KAS: run Kiro Crew's own engine bundle",
-      "help": "When true, the 'kas' backend spawns the @kiro/agent build that 'kirocrew kas install' laid down under the data home (engines/kas/) with its own Node runtime, instead of reaching the engine through kiro-cli's ACP relay. kiro-cli is not needed on this route, and the engine always takes its credential from Kiro Crew's own sign-in (the dashboard's Sign in), never from kiro-cli's store. With nothing installed the gateway installs the pinned engine at the first spawn. With false, KAS still takes this route when kiro-cli's relay cannot run on the host (no kiro-cli, or one that is not signed in). When unset, a Nightly build turns it on and every other build leaves it off (config.loader_document.kas_bundle_build_default(), read from the build's own stamp, not the update channel). A saved value always wins, and save() leaves the key off disk until it is set. This dataclass default stays false so the committed config-schema snapshot is the same for every build.",
+      "help": "When true, the 'kas' backend spawns the @kiro/agent build that 'kirocrew kas install' laid down under the data home (engines/kas/) with its own Node runtime, instead of reaching the engine through kiro-cli's ACP relay. kiro-cli is not needed on this route, and the engine always takes its credential from Kiro Crew's own sign-in (the dashboard's Sign in), never from kiro-cli's store. With nothing installed the gateway installs the pinned engine at the first spawn. With false, KAS still takes this route when kiro-cli's relay cannot run on the host (no kiro-cli, or one that is not signed in). When unset, a packaged build (desktop app, wheel or image, not a source checkout) prefers the built-in engine: KAS runs on it once Kiro Crew's own sign-in is usable, and a host signed in only to kiro-cli keeps kiro-cli until then (acp.kas_build_default). If that first move to the engine fails, the chat runs on kiro-cli. A saved value always wins, and save() leaves the key off disk until it is set. This dataclass default stays false so the committed config-schema snapshot is the same for every build.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false,
@@ -1045,6 +1046,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 30
+    },
+    {
+      "path": "agent.apps_ui_protected_copy",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Serve App UI Scripts From the Protected Copy",
+      "help": "When on, the /apps/{name}/ui/ route serves an app's .js and .mjs files from the copy the gateway took when it installed, updated or registered the app, kept where no sandboxed process can write, instead of from the app's own folder. A script edited in the app's folder then keeps serving as installed, and an app the gateway never installed has its scripts not found. Off by default: scripts are read from the app's folder.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "agent.jail",
@@ -2991,12 +3006,13 @@
         "writes_enabled": true,
         "lesson_extraction_enabled": true,
         "repeated_failures_notice": false,
-        "kind_routing": "off",
+        "kind_routing": "enforce",
         "extraction_instructions": "",
         "lesson_origin_gate": "off",
+        "fact_origin_gate": "off",
         "lesson_tier_policy": "off",
-        "lesson_fold": "off",
-        "rule_authority_order": "off",
+        "lesson_fold": "enforce",
+        "rule_authority_order": "enforce",
         "member_lesson_dedup": "off",
         "relevance_rule": "off",
         "dream": "off",
@@ -3594,14 +3610,13 @@
       "sensitive": false,
       "tags": [],
       "label": "Consolidation Kind Routing",
-      "help": "Whether consolidation tags each project.* fact with a kind (fact, event or state) and what it does with it. 'off' (default) keeps today's prompt and writes. 'shadow' writes every fact as before and only logs, within fixed size caps, what routing would do. 'enforce' skips a state item (the status of tracked work, such as a code change under review, a ticket, a CI run or a branch, or a next step, a count or a worktree path) and writes facts and events as before. Stored facts are never changed.",
+      "help": "Whether consolidation tags each project.* fact with a kind (fact, event or state) in one small extra model call and what it does with it. 'enforce' (default) skips a state item (the status of tracked work, such as a code change under review, a ticket, a CI run or a branch, or a next step, a count or a worktree path) and writes facts and events as before. 'off' makes no extra call and writes every fact. A stored 'shadow' reads as 'enforce'. Stored facts are never changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
-        "shadow",
         "enforce"
       ],
-      "defaultValue": "off"
+      "defaultValue": "enforce"
     },
     {
       "path": "memory.extraction_instructions",
@@ -3627,6 +3642,24 @@
       "tags": [],
       "label": "Lesson Origin Gate",
       "help": "Whether a lesson learned from turns no person sent (another session's message, an auto-nudge, a cron or heartbeat run) may become a standing rule. 'off' (default) keeps today's prompt and writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, what the gate would demote. 'enforce' stores such a lesson as an on_topic finding instead, and gives an agent-triggered learn_add its own source. Stored lessons are never changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.fact_origin_gate",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Fact Origin Gate",
+      "help": "Whether facts about you (pref.* and user.* keys, and the preferences file) may be learned from turns no person sent (another session's message, an auto-nudge, a cron or heartbeat run). 'off' (default) keeps today's prompt and writes. 'shadow' writes every fact as before and only counts, within fixed size caps, what the gate would hold back. 'enforce' does not write or delete those facts, or change the preferences file, from such turns. Project facts, episodes and stored facts are never changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
@@ -3662,14 +3695,13 @@
       "sensitive": false,
       "tags": [],
       "label": "Lesson Fold",
-      "help": "Whether the session-start rule block leaves out near-duplicate rules (same scope and tier, and the same text or stored vectors at cosine 0.95 or more). 'off' (default) keeps today's block. 'shadow' keeps today's block and only records, in the injection receipt and within fixed size caps, which rule ids would fold into which. 'enforce' keeps the first copy of each rule (yours first, then newest) and says how many were folded; learn_list still shows all. Rules you taught are never folded and no stored lesson is changed.",
+      "help": "Whether the session-start rule block leaves out near-duplicate rules (same scope and tier, and the same text or stored vectors at cosine 0.95 or more). 'enforce' (default) keeps the first copy of each rule (yours first, then newest) and says how many were folded; learn_list still shows all. 'off' keeps every copy. A stored 'shadow' reads as 'enforce'. Rules you taught are never folded and no stored lesson is changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
-        "shadow",
         "enforce"
       ],
-      "defaultValue": "off"
+      "defaultValue": "enforce"
     },
     {
       "path": "memory.rule_authority_order",
@@ -3680,14 +3712,13 @@
       "sensitive": false,
       "tags": [],
       "label": "Rule Authority Order",
-      "help": "How the session-start rule block orders its rules. 'off' (default) keeps today's block. 'shadow' keeps today's block and only records, in the injection receipt and within fixed size caps, which rule ids the new order would add or drop. 'enforce' lists rules saved as yours (learn_add, dashboard, CLI) first, then rules inferred from sessions; inside each group the current order holds. Keep memory.lesson_origin_gate at 'enforce' too, or a learn_add an agent made on its own counts as yours. The rule budget is unchanged and no stored lesson is changed.",
+      "help": "How the session-start rule block orders its rules. 'enforce' (default) lists rules saved as yours (learn_add, dashboard, CLI) first, then rules inferred from sessions; inside each group the relevance order holds. 'off' keeps the relevance order. A stored 'shadow' reads as 'enforce'. Set memory.lesson_origin_gate to 'enforce' too, or a learn_add an agent made on its own counts as yours. The rule budget is unchanged and no stored lesson is changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
-        "shadow",
         "enforce"
       ],
-      "defaultValue": "off"
+      "defaultValue": "enforce"
     },
     {
       "path": "memory.member_lesson_dedup",
@@ -7743,6 +7774,7 @@
         "tracking_channels": [],
         "open_channels": [],
         "command": "kirocrew",
+        "setup_guide_url": "",
         "forward_to_agent_callback": "",
         "trusted_bot_ids": [],
         "trusted_bot_turn_limit": 5,
@@ -7761,6 +7793,7 @@
         "agent_sessions": false,
         "code_channel_dispatch": false,
         "code_channels": false,
+        "slack_mcp": false,
         "code_channel_defaults": {
           "folder": null,
           "agent": null,
@@ -7872,6 +7905,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "kirocrew"
+    },
+    {
+      "path": "slack.setup_guide_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Setup Guide URL",
+      "help": "Your organization's own Slack setup guide (for example, how to get a workspace you may install apps in). The Slack setup wizard links it on its first step. https:// only; any other value is ignored. Empty = no link.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "slack.forward_to_agent_callback",
@@ -8186,6 +8235,22 @@
       ],
       "label": "Code Channels",
       "help": "Let the agent open a Slack code channel for coding work: a channel that is one session, with a context bar and a diff tab. Adds features.code_channels and the code-channel scopes (code_channels:manage, chat:write.customize, canvases:write, channels:write.invites, groups:write.invites, pins:write) to the generated app manifest; an installed app needs that update and a reinstall, and the workspace must have Slack code channels enabled. Until both hold, Slack behaves as before. Off by default; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "slack.slack_mcp",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Slack Tools For Your Agents",
+      "help": "Let the same Slack app serve Slack's MCP server, so each person can connect their agents to Slack as themselves. Adds settings.is_mcp_enabled, oauth_config.pkce_enabled and the redirect URL http://localhost:48106/callback to the generated app manifest, and replaces its user scopes with the read-only ones Slack's MCP server needs (search, history, channel and user lists, files, canvases, lists); off, the manifest is unchanged. PKCE cannot be turned off again in Slack without Slack support, the app must stay internal (not publicly distributed), each person still connects on the Slack card under Settings > Connections with the app's Client ID and Client Secret, and Slack ends those sign-ins after 30 days. The settings page shows this switch only while Connections offers the Slack card, or while it is on. The gateway runs nothing for it. Off by default; no restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -11114,6 +11179,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.widgets",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: widgets",
+      "help": "Turn on the 'widgets' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.worker_grill",
       "kind": "core",
       "type": "boolean",
@@ -12757,6 +12836,7 @@
         "name_override": "",
         "relay_enabled": null,
         "relay_lease_url": "",
+        "relay_lease_region": "",
         "relay_lease_credential": "",
         "relay_lease_token_type": "",
         "relay_handle_email_domains": [],
@@ -12824,7 +12904,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Kiro Relay",
-      "help": "Let this Crew dial the Kiro relay and serve the requests it delivers, with the caller named by the relay. Unset (the default) turns it on only for a team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity whose Relay Lease Credential names its credential; a Crew on a personal sign-in stays off until you run kirocrew remote-control on. True is on and false is off, whatever the Crew's credential. It holds a lease (from Relay Lease Service URL, or the built-in one when that is empty) on Relay Lease Credential, or on a personal Crew's own Kiro sign-in when that is empty. A team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity connects only when Relay Lease Credential names its credential: without it no relay client starts and the tunnel status names the missing setting. While it is off, Crew starts no relay client, strips every x-kiro-relay-* header from every request and trusts none of them. To reach the relay and the lease service through a proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment variables (ALL_PROXY when HTTPS_PROXY is unset), so a proxy set only in macOS System Settings is not used.",
+      "help": "Let this Crew dial the Kiro relay and serve the requests it delivers, with the caller named by the relay. Unset (the default) turns it on for a Crew on a personal sign-in (Relay Lease Credential empty or kiro-sign-in, no Relay Lease Token Type, no workload identity), and for a team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity whose Relay Lease Credential names its credential; kirocrew remote-control off turns it off. True is on and false is off, whatever the Crew's credential. It holds a lease (from Relay Lease Service URL, or the built-in one when that is empty) on Relay Lease Credential, or on a personal Crew's own Kiro sign-in when that is empty. A team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity connects only when Relay Lease Credential names its credential: without it no relay client starts and the tunnel status names the missing setting. While it is off, Crew starts no relay client, strips every x-kiro-relay-* header from every request and trusts none of them. To reach the relay and the lease service through a proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment variables (ALL_PROXY when HTTPS_PROXY is unset), so a proxy set only in macOS System Settings is not used.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null,
@@ -12840,9 +12920,29 @@
       "sensitive": false,
       "tags": [],
       "label": "Relay Lease Service URL",
-      "help": "The base URL of the lease service this Crew calls RenewCrewLease on, to hold its lease and get host tokens. Empty (the default) uses the built-in Kiro control plane URL: the one for the sign-in profile's region on the Kiro sign-in, and us-east-1 otherwise. Must be https:// (http:// only for a loopback port-forward).",
+      "help": "The base URL of the lease service this Crew calls RenewCrewLease on, to hold its lease and get host tokens. Empty (the default) uses the built-in Kiro control plane URL for the Crew's Region: the sign-in profile's on the Kiro sign-in, and Relay Lease Region otherwise, us-east-1 when that is empty. Must be https:// (http:// only for a loopback port-forward).",
       "hasChildren": false,
       "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_lease_region",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Lease Region",
+      "help": "The built-in lease service's Region for a Crew on a stored credential, such as a team Crew's crew API key, which names no Region. Empty (the default) uses us-east-1; a Crew registered in another Region must name it, with kirocrew config set tunnel.relay_lease_region <Region>. Ignored on the Kiro sign-in. A workload identity's JWT-SVID lease uses it too.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "eu-central-1",
+        "eu-west-1",
+        "us-east-1"
+      ],
       "defaultValue": "",
       "requiresRestart": true
     },

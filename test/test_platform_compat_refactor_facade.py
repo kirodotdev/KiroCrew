@@ -255,7 +255,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         process_is_sandboxed process_can_read_under_sandbox ProcessIdentitySource
         _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS _WINDOWS_EXIT_FILETIME_POLL_SECS
         _windows_process_handle_identity process_matches process_image_name
-        _win_process_image_name process_argv_matches_exact process_argv_fingerprint
+        _win_process_image_name process_argv process_argv_matches_exact process_argv_fingerprint
         linux_process_name process_cgroups_match process_command_line process_owner_uid
         effective_uid _START_TIME_PS_TIMEOUT _process_lstart process_start_time
         process_start_id_for_source _OWN_START_TIME _linux_boot_id _own_identity_token

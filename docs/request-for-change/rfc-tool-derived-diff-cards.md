@@ -37,11 +37,11 @@ through two channels of very different reliability:
    (`make_unified_diff` in `surfaced_text.py`) and attaches it to the tool-call
    event as `tool_input`. The frontend renders it — but only inside the
    tool-call row's expanded details panel, which is collapsed by default
-   (`ToolCallLine.tsx:174`), and turns with more than two working steps fold
+   (`ToolCallLine` in `ToolCallLine.tsx`), and turns with more than two working steps fold
    the row further into a "Worked through N steps" group (`TurnBlock.tsx`).
 2. **A prompt-mandated prose channel.** The agent prompt (`config/prompt.md:5`,
    `config/prompt-orchestrator.md:5`) and the `_CRITICAL_RULES` block
-   (`context.py:963`) order the model to hand-write a ```` ```diff ```` code
+   ([`context.py` at db31495bc8](https://github.com/kirodotdev/KiroCrew/blob/db31495bc8d6d6890206bdf05631fd52bd040605/src/kiro_crew/context.py#L1129)) order the model to hand-write a ```` ```diff ```` code
    block after ANY file change, "No exceptions". The frontend then re-parses
    that prose: the block assembler classifies it (`useBlockAssembler.ts::isDiffContent`),
    `DiffBlock.tsx` regex-extracts the file path from `+++`/`---` headers
@@ -58,7 +58,7 @@ The prose channel is the *prominent* one, and it is the weaker one:
   format compliance in long sessions, and the renderer's path extraction
   degrades to heuristics when they do.
 - **It is display-only sugar.** No backend consumer parses model-authored diff
-  fences (verified: `voice_reply.py::strip_markdown._code_block` and `preview_text.py:5` only *strip*
+  fences (verified: `voice_reply.py::strip_markdown._code_block` and `preview_text.py` (per its module docstring) only *strip*
   them; history compression, artifacts, and session summaries never extract
   them). The Activity panel's Files tab reads `GET /api/file-diff` (live
   `git diff HEAD`), and file-change chips read the `file_changes` snapshot

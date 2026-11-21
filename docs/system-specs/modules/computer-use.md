@@ -433,10 +433,14 @@ ring trim orders by name. If descriptor adoption or the write fails, each writer
 removes its invocation-owned partial frame before degrading; it never sweeps a
 neighbouring capture owned by another call or process.
 
-**`computer_list_apps` only omits an app it cannot name.** There is no per-app
+**`computer_list_apps` omits only what the target policy refuses and what it cannot
+name.** `policy.check_app` drops Kiro Crew, any window titled Kiro Crew, and the apps
+the operator's `extra_denied_apps` and `allowed_apps` exclude. There is no per-app
 governance axis, so `gate.app_is_disclosable` is a shape check: an app with neither a
 bundle id nor a display name is dropped because there is nothing to show. Terminals
-and password managers appear in the list like everything else.
+and password managers appear in the list like everything else. Every listing ends
+with `UNLISTED_APPS_NOTE`, so neither a short list nor an empty one reads as every
+app that is open; the note names no hidden app and counts none.
 
 ### Result shape: text only, by construction
 
@@ -1492,7 +1496,8 @@ create the app element, immediately
 mandatory, because ctypes releases the GIL around the C call and a genuinely hung
 target app would otherwise park the worker thread indefinitely — read
 `AXWindows`, and on `-25204` set the opt-in, poll for up to
-`ELECTRON_OPT_IN_WAIT_SECS` in 0.25s steps, retry **once**, then raise naming the
+`ELECTRON_OPT_IN_WAIT_SECS` in 0.25s steps, retry **once** (the largest walk is kept,
+but a secure field that any walk saw still sets `has_secure`), then raise naming the
 raw AX code so a support thread is diagnosable. The first `computer_get_state`
 on an Electron app is inherently slow; the skill says so, so a model does not
 read it as a hang.

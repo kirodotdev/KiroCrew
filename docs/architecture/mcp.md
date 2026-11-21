@@ -2002,6 +2002,16 @@ route. The normalized spelling is a rewriter fingerprint input, so a cached over
 carrying another spelling is regenerated. Stub argv and the daemon target map therefore consume the same
 command string.
 
+The two Windows launchers that start a server child themselves, the KAS MCP
+launcher (`kas_env_shim`) and the stub's direct-exec fallback
+(`stub_fallback.py`), share `kas_env_shim.windows_child_command`. A bare name is
+looked up by full path only in the absolute entries of the server env's `PATH`
+(`PATHEXT` still applies), because a bare-name `shutil.which` and
+`CreateProcess` both try the current directory first. A name found nowhere
+starts nothing: the launcher exits unstartable and the fallback raises
+`FileNotFoundError`. A command with a directory part is used as given, and
+POSIX keeps `os.execvpe`.
+
 ### Stub argument transport
 
 Generated overlays carry backend arguments as a base64url-encoded UTF-8 JSON

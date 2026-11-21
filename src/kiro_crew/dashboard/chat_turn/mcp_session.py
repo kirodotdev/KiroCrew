@@ -691,7 +691,7 @@ def _emit_mcp_oauth_request(
             },
         )
         return
-    if oauth_url_contains_credential(oauth_url):
+    if oauth_url_contains_credential(oauth_url, server_name):
         # Two distinct causes reach this branch and the user cannot tell them
         # apart from the banner alone:
         #   1. A genuinely bogus URL — legitimate OAuth consent URLs carry

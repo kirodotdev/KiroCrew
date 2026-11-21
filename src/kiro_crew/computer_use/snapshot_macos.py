@@ -35,7 +35,7 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterator
 
 from kiro_crew.computer_use import macos_ffi
@@ -206,7 +206,7 @@ def build_snapshot(app: AppRef, req: SnapshotRequest) -> Snapshot:
 
                 if _needs_manual_accessibility(window, err, stats):
                     retried, err, elements, stats = _retry_with_manual_accessibility(
-                        app_elem, app, req, err, focused=focused
+                        app_elem, app, req, err, focused=focused, saw_secure=stats.saw_secure
                     )
                     if retried is not window:
                         # The retry selected a different window element; release the
@@ -517,6 +517,7 @@ def _retry_with_manual_accessibility(
     previous_err: int,
     *,
     focused: object = None,
+    saw_secure: bool = False,
 ) -> "tuple[object | None, int, tuple[ElementRec, ...], WalkStats]":
     """Set ``AXManualAccessibility``, poll, and re-walk ONCE.
 
@@ -525,6 +526,10 @@ def _retry_with_manual_accessibility(
     one retry — never a loop that could hold a worker thread on an app that will
     never answer. The best result seen across the polls is kept, so a partially
     populated tree is better than nothing if the app is still warming up.
+
+    The returned ``saw_secure`` covers every walk, not only the kept one: a
+    password field that a dropped walk saw, or that the caller's walk before the
+    retry saw (*saw_secure*), must still suppress the screenshot.
 
     Failure to SET the attribute is not fatal and not even a warning: a native app
     that has no such attribute answers with an error, which simply means "this was
@@ -558,9 +563,15 @@ def _retry_with_manual_accessibility(
             elements, stats, _ = _walk(
                 window, req, window_bounds=_window_bounds(window), focused=focused
             )
+            saw_secure = saw_secure or stats.saw_secure
             if stats.visited >= ELECTRON_STUB_NODE_THRESHOLD:
                 macos_ffi.release_all([best_window] if best_window is not None else [])
-                return window, macos_ffi.AX_ERR_SUCCESS, elements, stats
+                return (
+                    window,
+                    macos_ffi.AX_ERR_SUCCESS,
+                    elements,
+                    replace(stats, saw_secure=saw_secure),
+                )
             if stats.visited > best_stats.visited:
                 macos_ffi.release_all([best_window] if best_window is not None else [])
                 best_window, best_elements, best_stats = window, elements, stats
@@ -568,7 +579,7 @@ def _retry_with_manual_accessibility(
                 macos_ffi.release_all([window])
         if time.monotonic() >= deadline:
             break
-    return best_window, err, best_elements, best_stats
+    return best_window, err, best_elements, replace(best_stats, saw_secure=saw_secure)
 
 
 def _walk(

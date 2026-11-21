@@ -14,6 +14,7 @@ import { isChordLetter, terminalChord } from '../utils/terminalFullscreen'
 import { getTerminalFont } from '../hooks/useTerminalFont'
 
 import { i18nT } from '../i18n/t'
+import { apiTransport } from '../api/apiTransport'
 /** Debounce between the last keystroke and the completion request. Short enough
  *  to feel instant, long enough that holding a key down issues one request. */
 const DEBOUNCE_MS = 70
@@ -293,7 +294,7 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
     refetchOnWindowFocus: false,
     queryFn: async ({ signal }): Promise<CompleteResponse | null> => {
       if (!req) return null
-      const r = await fetch('/api/terminal/complete', {
+      const r = await apiTransport.request('/api/terminal/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

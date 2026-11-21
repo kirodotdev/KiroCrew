@@ -78,7 +78,31 @@ concurrency:
 permissions: {}
 
 jobs:
+  # A pull request that changes nothing but prose docs gives CodeQL no code to
+  # scan, so Analyze skips and PR Readiness lists CodeQL as not applicable to
+  # it, by the same rule (.github/scripts/docs_only.py). Every other event, and
+  # any failure here (`!cancelled()` below), scans.
+  docs-only:
+    name: Decide docs-only scope
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      docs_only: ${{ steps.scope.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+      - id: scope
+        uses: ./.github/actions/docs-only-scope
+        with:
+          token: ${{ github.token }}
+
   analyze:
+    needs: [docs-only]
     name: Analyze (${{ matrix.language }})
     # Skip everything until the switchover (above). Then skip a draft PR
     # (re-run on `ready_for_review`), and a fork PR: a fork's token cannot
@@ -86,7 +110,9 @@ jobs:
     # pr-readiness lists CodeQL as not eligible for them. Only the PR
     # Readiness status is required, so a skipped Analyze job blocks nothing.
     if: >-
+      !cancelled() &&
       vars.CODEQL_ADVANCED_SETUP == 'true' &&
+      needs.docs-only.outputs.docs_only != 'true' &&
       (github.event_name != 'pull_request' ||
        (!github.event.pull_request.draft &&
         github.event.pull_request.head.repo.full_name == github.repository))

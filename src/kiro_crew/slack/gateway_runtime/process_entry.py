@@ -22,7 +22,6 @@ if TYPE_CHECKING:
     import logging
     import sys
     import threading
-    from collections.abc import Callable
 
     from kiro_crew.slack.gateway import (
         Any,
@@ -102,55 +101,6 @@ async def _run_signing_key_preflight_bounded(timeout: float | None = None) -> No
     ``TimeoutError`` at the deadline, and ``RuntimeError`` when no thread can be
     started.
     """
-    await _run_boot_io_bounded(
-        signing_key_preflight, name="kc-signing-key-preflight", timeout=timeout
-    )
-
-
-async def _record_ordinary_mode() -> None:
-    """Record ordinary mode on the default executor; failure only warns."""
-    from kiro_crew.instances import run_marker
-
-    try:
-        await asyncio.to_thread(run_marker.write_gateway_mode, headless=False)
-    except Exception as exc:
-        logger.warning(
-            "Could not record this gateway's mode in gateway-mode.json (%s). "
-            "A record left by an earlier headless start stays, so a later "
-            "`kirocrew restart` refuses if no live gateway can confirm it, or "
-            "if the record cannot be read.",
-            exc,
-        )
-
-
-async def _write_gateway_mode_bounded(timeout: float | None = None) -> None:
-    """Publish the mode on a daemon; headless boot refuses a missed deadline."""
-    from kiro_crew.instances import run_marker
-
-    def _write() -> None:
-        run_marker.write_gateway_mode(headless=True)
-
-    seconds = run_marker.GATEWAY_MODE_WRITE_TIMEOUT_SECS if timeout is None else timeout
-    try:
-        await _run_boot_io_bounded(_write, name="kc-gateway-mode", timeout=seconds)
-    except (TimeoutError, asyncio.TimeoutError) as exc:
-        message = (
-            f"The gateway mode record could not be written within {seconds:g} seconds. "
-            "Check that the data home is reachable."
-        )
-        logger.critical("%s Refusing to start.", message)
-        print(f"❌ {message}", file=sys.stderr)
-        raise SystemExit(1) from exc
-    except RuntimeError as exc:
-        logger.critical("Cannot run the gateway mode write; refusing to start: %s", exc)
-        print(f"❌ Cannot run the gateway mode write: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
-
-
-async def _run_boot_io_bounded(
-    work: Callable[[], None], *, name: str, timeout: float | None = None
-) -> None:
-    """Bound filesystem work without a default-executor join holding up exit."""
     loop = asyncio.get_running_loop()
     outcome: asyncio.Future[BaseException | None] = loop.create_future()
 
@@ -161,7 +111,7 @@ async def _run_boot_io_bounded(
     def _worker() -> None:
         result: BaseException | None = None
         try:
-            work()
+            signing_key_preflight()
         except BaseException as exc:  # noqa: BLE001 - re-raised on the loop
             result = exc
         try:
@@ -169,7 +119,7 @@ async def _run_boot_io_bounded(
         except RuntimeError:
             pass  # the loop already closed: the boot gave up on this thread
 
-    threading.Thread(target=_worker, name=name, daemon=True).start()
+    threading.Thread(target=_worker, name="kc-signing-key-preflight", daemon=True).start()
     exc = await asyncio.wait_for(
         outcome, _SIGNING_KEY_PREFLIGHT_TIMEOUT_SECS if timeout is None else timeout
     )
@@ -273,10 +223,16 @@ def _start_kas_cli_floor(cfg: KiroCrewConfig) -> "asyncio.Task[None]":
     explicit choices before probing. Defaulted roles wait for the verdict
     (bounded) instead of starting KAS on a kiro-cli that rejects it. Boot itself
     never waits for either the declaration read or the probe.
+
+    A stored Kiro CLI pick whose verdict stayed unknown is asked about again after
+    each ``kas_floor_wait.KIRO_PICK_VERDICT_RETRY_SECS`` delay, until the verdict is
+    known or the stored pick changes. The first verdict releases the spawn
+    gate, so no spawn waits for those asks; the task ends when they do.
     """
     global _KAS_CLI_FLOOR_TASK
     from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
     from kiro_crew.agent_sdk import kas_floor_wait
+    from kiro_crew.agent_sdk.backends import kiro_cli_pick_verdict_open
 
     async def _run() -> None:
         try:
@@ -303,6 +259,21 @@ def _start_kas_cli_floor(cfg: KiroCrewConfig) -> "asyncio.Task[None]":
                 kiro_selected=kiro_selected,
             )
             await _reconcile_live_config_with_kiro_verdict()
+            # An unknown verdict (a probe that timed out on a busy host, a run the
+            # sandbox launcher ended) says nothing about kiro-cli, so the floor
+            # asks again while a Kiro CLI pick still runs the v2 launch.
+            for delay in kas_floor_wait.KIRO_PICK_VERDICT_RETRY_SECS if kiro_selected else ():
+                if not kiro_cli_pick_verdict_open():
+                    break
+                # This boot's verdict has landed: no spawn waits for a later ask.
+                kas_floor_wait.release_kas_floor_wait(task, main=True, member=True)
+                await asyncio.sleep(delay)
+                if not await asyncio.to_thread(_main_stored_as_kiro):
+                    break
+                await asyncio.to_thread(
+                    apply_kas_cli_floor, cfg, kas_defaulted=kas_defaulted, kiro_selected=True
+                )
+                await _reconcile_live_config_with_kiro_verdict()
         except Exception:
             logging.getLogger(__name__).warning(
                 "KAS kiro-cli floor check failed; continuing", exc_info=True

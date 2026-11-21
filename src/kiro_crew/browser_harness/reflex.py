@@ -57,6 +57,7 @@ from typing import Any
 from kiro_crew.browser_harness import decide as _decide
 from kiro_crew.browser_harness import ops as _ops
 from kiro_crew.browser_harness import reflex_space as _space
+from kiro_crew.browser_harness.keys import NAMED_KEYS
 from kiro_crew.browser_harness.reflex_space import Move, Space
 
 logger = logging.getLogger(__name__)
@@ -242,7 +243,7 @@ def parse(args: dict[str, Any]) -> Plan | dict[str, Any]:
     for key in _strings(args.get("keys")):
         if key == "Space":
             key = " "
-        if key not in _ops._NAMED_KEYS and len(key) != 1:
+        if key not in NAMED_KEYS and len(key) != 1:
             return _ops.refusal("bad_key", f"unknown key in `keys`: {key!r}")
         name = "Space" if key == " " else key
         moves.append(

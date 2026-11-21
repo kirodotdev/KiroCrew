@@ -277,6 +277,31 @@ async def test_an_op_past_its_budget_is_timeout(monkeypatch: pytest.MonkeyPatch)
     assert body["ok"] is False and body["code"] == "timeout"
 
 
+@pytest.mark.asyncio
+async def test_a_navigate_runs_through_the_sign_in_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The route hands a navigate's task to ``browser_harness.sign_in`` with its own
+    supervisor, so an edition's ``complete_sign_in`` is reachable from the agent's op."""
+    from kiro_crew.browser_harness import sign_in
+
+    sup = _Supervisor()
+    _install(monkeypatch, sup)
+    seen: list[tuple[str, Any]] = []
+
+    async def _wrapped(op: str, args: dict[str, Any], ctx: Any, supervisor: Any) -> dict[str, Any]:
+        seen.append((op, supervisor))
+        return {"ok": True, "url": "https://example.com/", "title": "", "sign_in": {"outcome": "x"}}
+
+    monkeypatch.setattr(sign_in, "run_op", _wrapped)
+    resp = await mod.api_browser_op(
+        _request({"op": "navigate", "args": {"url": "https://example.com/"}, "session_key": "k"})
+    )
+    body = json.loads(resp.body)
+    assert seen == [("navigate", sup)]
+    assert body["ok"] is True and body["result"]["sign_in"] == {"outcome": "x"}
+
+
 def test_build_context_binds_the_live_hub_and_relay() -> None:
     hub = hub_mod.LiveHub()
     hub.turn_started("held", "t1")
@@ -1349,6 +1374,9 @@ def test_the_shims_budget_outlasts_the_routes_worst_case() -> None:
 
     worst_fast = mod.ENSURE_TIMEOUT_S + mod.LOCK_WAIT_S + mod.OP_TIMEOUT_S + mod.OP_TIMEOUT_S
     worst_slow = mod.ENSURE_TIMEOUT_S + mod.LOCK_WAIT_S + mod.OP_TIMEOUT_S + mod.SLOW_OP_TIMEOUT_S
+    # A navigate may go on to finish an edition sign-in inside its own budget.
+    worst_slow += mod.SIGN_IN_WORST_S
+    assert mod.LOCK_WAIT_S >= mod.SLOW_OP_TIMEOUT_S + mod.SIGN_IN_WORST_S
     # The hold is the shim's, in slices, never in one HTTP call: the gateway's
     # hand-back poll waits far less than the shim's step budget.
     assert mod.HOLD_TIMEOUT_S == 10 * 60

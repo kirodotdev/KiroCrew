@@ -143,35 +143,28 @@ def acp_backend_stored_runs_kas() -> bool:
 
 
 def acp_backend_bundle_route() -> bool:
-    """Whether the stored ``agent.kas_bundle`` is on (the bundled KAS engine route).
+    """Whether a SAVED ``agent.kas_bundle`` is ``true`` (the bundled KAS engine route).
 
     Reads the documents (overlay winning) like :func:`acp_backend_stored_as_kiro`.
     On the bundle route a Kiro CLI pick stays on kiro-cli: KAS there spawns Crew's
     own bundled engine, which kiro-cli's own v3 support says nothing about, so the
     gateway floor and the per-process probe both decline to promote the pick.
-    An absent key reads :func:`kas_bundle_build_default`, as the loader does.
-    A stored value that is not a bool reads the same default, as the loader's
-    ``_safe_bool`` does, so the two readers agree.
+    An absent key is ``False``, as the loader reads it: a packaged build only
+    PREFERS the engine for an unset key (``acp.kas_build_default``), which leaves
+    a Kiro CLI pick where it was. A stored value that is not a bool reads ``False``
+    too, as the loader's ``_safe_bool`` does, so the two readers agree.
     """
     stored = _stored_agent_value("kas_bundle")
-    return stored if isinstance(stored, bool) else kas_bundle_build_default()
+    return stored if isinstance(stored, bool) else False
 
 
-def kas_bundle_build_default() -> bool:
-    """What an UNDECLARED ``agent.kas_bundle`` resolves to in this build.
+def kas_bundle_declared() -> bool:
+    """Whether ``config.json`` or the overlay names ``agent.kas_bundle`` at all.
 
-    True only in a build the nightly pipeline stamped (``_build_info.BUILD_CHANNEL
-    == "nightly"``, :mod:`kiro_crew.build_channel`), so the nightly lane runs the
-    bundled engine by default while stable, insider and source builds keep the
-    relay. A fact about the build's bytes, never the ``channel`` file a user can
-    switch before the update lands. Like :func:`unsandboxed_exec_platform_default`
-    it is resolved into the loaded value, and ``save()`` leaves the key off disk
-    while it is undeclared, so a nightly install that later takes a stable build
-    goes back to the stable default instead of keeping a value nobody chose.
+    A saved value always wins over the build's preference
+    (``acp.kas_build_default``), so the route asks this before applying it.
     """
-    from kiro_crew.build_channel import is_nightly_build
-
-    return is_nightly_build()
+    return _agent_key_declared("kas_bundle")
 
 
 #: The ``agent`` keys whose absent value is resolved from the host or the build,
