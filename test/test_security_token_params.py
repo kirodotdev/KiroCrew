@@ -28,20 +28,25 @@ _KNOWN_GAPS = (
     "https://h/p?token&#0000061;{v}",
     "https://h/p?token&equals;{v}",
     "https://h/p?token&#61;;{v}",
-    "https://h/p?a=1&AMP;token={v}",
-    "https://h/p?a=1&#38;token={v}",
-    "https://h/p?a=1&#x26;token={v}",
     "https://h/p&quest;token={v}",
-    "https://h/p&#63;token={v}",
-    "https://h/p&#x3F;token={v}",
     "https://h/p?t&#111;ken={v}",
     "https://h/p?&#x74;oken={v}",
     "https://h/p?&percnt;74oken={v}",
     "https://h/p?&#x25;74oken={v}",
     "https://h/p?&#X025;74oken={v}",
     "https://h/p?%&#55;&#52;oken={v}",
-    "https://h/p?token%3D{v}",
-    "?token%3D{v}",
+)
+
+#: A ``token=`` after an entity-spelled separator, or a ``token%3D`` run, is read as the
+#: named key ``token``: the value is masked there although the URL reader does not read it.
+_MASKED_BY_NAME = (
+    ("https://h/p?a=1&AMP;token={v}", "https://h/p?a=1&AMP;token=[REDACTED: credential]"),
+    ("https://h/p?a=1&#38;token={v}", "https://h/p?a=1&#38;token=[REDACTED: credential]"),
+    ("https://h/p?a=1&#x26;token={v}", "https://h/p?a=1&#x26;token=[REDACTED: credential]"),
+    ("https://h/p&#63;token={v}", "https://h/p&#63;token=[REDACTED: credential]"),
+    ("https://h/p&#x3F;token={v}", "https://h/p&#x3F;token=[REDACTED: credential]"),
+    ("https://h/p?token%3D{v}", "https://h/p?[REDACTED: encoded credential]"),
+    ("?token%3D{v}", "?[REDACTED: encoded credential]"),
 )
 
 
@@ -65,6 +70,13 @@ def test_a_parameter_after_an_escaped_separator_is_masked_at_the_value(shape: st
 def test_stays_visible_known_gap(shape: str) -> None:
     text = shape.format(v="Xk9fQ2mP4nR7sT1v")
     assert redact_credentials(text) == (text, [])
+
+
+@pytest.mark.parametrize(("shape", "expected"), _MASKED_BY_NAME)
+def test_a_token_name_after_an_entity_separator_is_masked_at_the_value(
+    shape: str, expected: str
+) -> None:
+    assert redact_credentials(shape.format(v="Xk9fQ2mP4nR7sT1v"))[0] == expected
 
 
 class TestTokenParamValueRedaction:
@@ -385,14 +397,11 @@ class TestTokenParamValueRedaction:
         """Near entities, double encodings, and later-stage escapes stay data."""
         texts = (
             f"&amptoken={self._OPAQUE}",
-            f"&Amp;token={self._OPAQUE}",
             f"&questtoken={self._OPAQUE}",
             f"?token&equals{self._OPAQUE}",
-            f"&amp;amp;token={self._OPAQUE}",
             f"%26token={self._OPAQUE}",
             f"&#382token={self._OPAQUE}",
             f"?token&#61123abc{self._OPAQUE}",
-            f"&#{'0' * 9}38;token={self._OPAQUE}",
             f"?&percnt74oken={self._OPAQUE}",
             f"?&#{'0' * 9}116;oken={self._OPAQUE}",
             f"&ampToken={self._OPAQUE}",
@@ -401,6 +410,12 @@ class TestTokenParamValueRedaction:
             result, warnings = redact_credentials(text)
             assert result == text, text
             assert warnings == [], text
+
+    def test_a_literal_token_name_after_a_near_entity_is_masked_at_the_value(self) -> None:
+        """The named key ``token`` reads the value even where the URL reader reads none."""
+        for prefix in ("&Amp;", "&amp;amp;", f"&#{'0' * 9}38;"):
+            result, _ = redact_credentials(f"{prefix}token={self._OPAQUE}")
+            assert result == f"{prefix}token=[REDACTED: credential]", prefix
 
     def test_source_and_doc_templates_not_matched(self) -> None:
         """A token-URL TEMPLATE in source or docs must survive.

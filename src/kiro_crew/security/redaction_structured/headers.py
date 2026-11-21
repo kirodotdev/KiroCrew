@@ -16,6 +16,7 @@ scheme, the cookie name, the flag, the keyword and every other field stay.
   client prompt, and the next word names a database) and ``--password=<password>``;
 - ``docker_login``: ``-p <password>`` and ``--password <password>`` (or ``=``) of a
   ``login`` subcommand;
+- ``bearer``: ``Bearer <token>`` with no ``Authorization`` name before it;
 - ``netrc``: ``password <value>`` in a ``.netrc`` entry, after ``machine <host>`` or
   ``default`` with only ``login`` and ``account`` pairs between, on one line or across
   lines.
@@ -72,6 +73,7 @@ _DOCKER_SUBCOMMAND = "login"
 _LINE_MAX = 512
 _COMMAND_STOPS = "\r\n|;&"
 _NETRC_KEYWORD = "password"
+_BEARER_WORD = "bearer"
 _NETRC_ENTRY = "machine"
 _NETRC_DEFAULT = "default"
 _NETRC_PAIRS = frozenset({"login", "account"})
@@ -613,6 +615,37 @@ def _netrc(text: str, at: int, row: HeaderRow, final: bool) -> Hit | None:
     return _word_value(text, i, row, final, "netrc")
 
 
+def _bearer_bare(text: str, at: int, row: HeaderRow, final: bool) -> Hit | None:
+    """``Bearer <token>`` where no ``Authorization`` name leads it (module docstring)."""
+    i = at + len(_BEARER_WORD)
+    if i >= len(text):
+        if not final:
+            raise _Open
+        return None
+    k = _skip(text, i, _ASCII_BLANKS)
+    if k == i:
+        return None
+    end = _value(text, k, None, final)
+    # A percent escape (``%2F``) is part of the token: stopping at it would leave the tail of
+    # an encoded credential visible.
+    while end < len(text) and text[end] == "%":
+        end = _value(text, end + 1, None, final)
+    value = text[k:end]
+    if not _keep(text, k, end, row) or reads_as_words(value) or _capitalised_word(value):
+        return None
+    if row.allow_values and value.rsplit(".", 1)[0] in row.allow_values:
+        return None
+    return Hit(k, end, row.id, row.tier, "header", "known_key")
+
+
+def _capitalised_word(value: str) -> bool:
+    """Letters only, upper case at most in the first place or throughout (``Credentials``,
+    ``AUTHORIZATION``): prose after the word ``bearer``, not a token."""
+    if not value.isalpha() or not value.isascii():
+        return False
+    return not any(ch.isupper() for ch in value[1:]) or value.isupper()
+
+
 _Reader = Callable[[str, int, HeaderRow, bool], "Hit | None"]
 #: Readers that anchor on their own fixed literals, and those literals. ``curl_user`` also
 #: anchors on its flags but shares a :class:`_Walk`, so ``detect_headers`` calls it itself.
@@ -620,6 +653,7 @@ _FIXED: dict[str, tuple[tuple[str, ...], _Reader]] = {
     "mysql_password": (_MYSQL_FLAGS, _mysql_password),
     "docker_login": (_DOCKER_FLAGS, _docker_login),
     "netrc": ((_NETRC_KEYWORD,), _netrc),
+    "bearer": ((_BEARER_WORD,), _bearer_bare),
 }
 #: Readers that share one :class:`_Walk` between the anchors of a row's name.
 _WALKED = frozenset({"header", "cookie", "curl_user"})
