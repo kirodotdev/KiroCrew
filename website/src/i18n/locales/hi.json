@@ -18161,6 +18161,27 @@
         "provider": "प्रोवाइडर",
         "provider_2": "प्रोवाइडर:"
       },
+      "planLimits": {
+        "title": "प्लान सीमाएँ",
+        "intro": "हर एजेंट प्रदाता तुम्हारे खाते के लिए जो उपयोग विंडो बताता है। नीचे दिए टोकन और लागत के योग केवल इस इंस्टॉल के टर्न गिनते हैं।",
+        "window_hours": "{{hours}}-घंटे",
+        "window_days": "{{days}}-दिन",
+        "window_minutes": "{{minutes}}-मिनट",
+        "window_label": "{{window}} विंडो",
+        "summary_window": "{{window}} {{used}}",
+        "summary_no_reading": "अभी कोई रीडिंग नहीं",
+        "summary_no_limits": "कोई प्लान सीमा नहीं",
+        "used_left": "{{used}} उपयोग · {{left}} शेष",
+        "resets_at": "{{time}} पर रीसेट",
+        "reset_passed": "{{time}} पर रीसेट हुआ, इस रीडिंग के बाद। अभी कोई नई रीडिंग नहीं।",
+        "reset_unknown": "प्रदाता ने रीसेट का समय नहीं बताया।",
+        "reported_at": "{{relative}} रिपोर्ट किया गया",
+        "reported_unknown": "रिपोर्ट का समय अज्ञात",
+        "source_codex": "Codex इस मशीन पर जो सत्र लॉग लिखता है, उनसे।",
+        "no_reading_codex": "ChatGPT साइन-इन पर हर टर्न के बाद Codex अपने सत्र लॉग में प्लान सीमाएँ लिखता है। इस मशीन के किसी लॉग में अभी ये नहीं हैं।",
+        "no_windows_codex": "Codex बताता है कि उसके मौजूदा साइन-इन की कोई प्लान सीमा नहीं है। API कुंजी या किसी अन्य मॉडल प्रदाता वाले साइन-इन की कोई सीमा नहीं होती।",
+        "details_label": "{{provider}} प्लान सीमाएँ"
+      },
       "usageTab": {
         "avg_messages_session": "औसत संदेश/सत्र",
         "billing": "बिलिंग",

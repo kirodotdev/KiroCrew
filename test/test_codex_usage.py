@@ -195,6 +195,57 @@ def test_an_older_block_in_a_kept_log_does_not_replace_a_newer_reading(codex_hom
     assert read_codex_rate_limits()["five_hour"]["used_percent"] == 95
 
 
+def test_a_windowless_block_that_names_a_plan_does_not_hide_an_older_reading(
+    codex_home: Path,
+) -> None:
+    _rollout(codex_home, "2026/11/05", "old", [_token_count("2026-11-05T10:00:00Z", 30, 40)], 1000)
+    gap = _token_count("2026-11-06T10:00:00Z", 0, 0)
+    gap["payload"]["rate_limits"].update({"primary": None, "secondary": None, "plan_type": "plus"})
+    _rollout(codex_home, "2026/11/06", "new", [gap], 2000)
+
+    reading = read_codex_rate_limits()
+
+    assert reading is not None
+    assert reading["five_hour"]["used_percent"] == 30
+    assert reading["captured_at"] == "2026-11-05T10:00:00Z"
+
+
+def test_a_newest_block_with_no_windows_is_not_replaced_by_an_older_one(
+    codex_home: Path,
+) -> None:
+    _rollout(codex_home, "2026/11/05", "old", [_token_count("2026-11-05T10:00:00Z", 90, 95)], 1000)
+    no_plan = _token_count("2026-11-06T10:00:00Z", 0, 0)
+    no_plan["payload"]["rate_limits"].update({"primary": None, "secondary": None})
+    newest = _rollout(codex_home, "2026/11/06", "new", [no_plan], 2000)
+
+    assert read_codex_rate_limits() == {
+        "five_hour": None,
+        "weekly": None,
+        "captured_at": "2026-11-06T10:00:00Z",
+        "source_mtime": newest.lstat().st_mtime,
+    }
+
+
+#: A real ``token_count`` line from Codex CLI 0.164.0 on the amazon-bedrock model
+#: provider. That sign-in writes ``rate_limits`` with no windows and no plan.
+_LIVE_NO_WINDOWS = (
+    Path(__file__).parent / "fixtures/codex_rollout/token-count-no-windows-live.jsonl"
+)
+
+
+def test_a_live_block_from_another_provider_reads_as_no_windows(codex_home: Path) -> None:
+    _rollout(codex_home, "2026/10/23", "old", [_token_count("2026-10-23T10:00:00Z", 90, 95)], 1000)
+    line = _LIVE_NO_WINDOWS.read_text(encoding="utf-8").strip()
+    newest = _rollout(codex_home, "2026/10/24", "live", [line], 2000)
+
+    assert read_codex_rate_limits() == {
+        "five_hour": None,
+        "weekly": None,
+        "captured_at": "2026-10-24T23:09:08.881Z",
+        "source_mtime": newest.lstat().st_mtime,
+    }
+
+
 def test_a_window_past_its_reset_is_stale(codex_home: Path) -> None:
     _rollout(
         codex_home,

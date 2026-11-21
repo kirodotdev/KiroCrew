@@ -103,7 +103,7 @@ def _window(raw: object, now: float) -> dict[str, Any] | None:
 
 
 def _reading(line: bytes, now: float) -> dict[str, Any] | None:
-    """The windows one rollout line carries, or ``None`` when it carries none."""
+    """The windows one rollout line carries, or ``None`` when it carries no reading."""
     if _RATE_LIMITS_KEY not in line:
         return None
     try:
@@ -117,7 +117,14 @@ def _reading(line: bytes, now: float) -> dict[str, Any] | None:
     five_hour = _window(limits.get("primary"), now)
     weekly = _window(limits.get("secondary"), now)
     if five_hour is None and weekly is None:
-        return None
+        # A sign-in with no plan limits (another model provider, an API key) writes a block
+        # with no windows and no plan type. That block is Codex's newest word, so an older
+        # block from a different sign-in must not stand in for it: both windows come back
+        # ``None``. A block that names a plan but no window says nothing about the windows,
+        # so the search goes on to an older block.
+        plan_type = limits.get("plan_type")
+        if isinstance(plan_type, str) and plan_type:
+            return None
     captured_at = record.get("timestamp")
     return {
         "five_hour": five_hour,
@@ -164,7 +171,8 @@ def read_codex_rate_limits() -> dict[str, Any] | None:
     """The newest windows Codex recorded locally, or ``None`` when there is no reading.
 
     ``five_hour`` is the block's ``primary`` window and ``weekly`` its ``secondary``; either
-    is ``None`` when the block lacks it. ``source_mtime`` is the log's modification time.
+    is ``None`` when the block lacks it, and both are when the newest block has no windows and
+    no plan type. ``source_mtime`` is the log's modification time.
     A disposable Codex session deletes its rollout at teardown, so the last reading found for
     the same store is held in memory only. It is returned when none of the newest logs holds
     a block that was recorded after it.

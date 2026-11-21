@@ -1,5 +1,6 @@
 import { api } from '../../api/client'
 import { apiErrorCode } from '../../api/apiError'
+import { parsePlanLimits } from '../../api/planLimits'
 import modelTokensRaw from '../../model_tokens.json'
 import { markModelsDegraded, markModelsAuthRequired, modelHealthKey } from '../modelListHealth'
 import { isPricedMultiplier } from '../modelList'
@@ -405,6 +406,7 @@ export class AcpAdapter implements ProviderAdapter {
       } : null,
       ...tokenUsage(data.tokens),
       localDay: typeof data.local_day === 'string' ? data.local_day : undefined,
+      planLimits: parsePlanLimits(data),
     }
   }
 

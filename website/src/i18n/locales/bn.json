@@ -18161,6 +18161,27 @@
         "provider": "প্রোভাইডার",
         "provider_2": "প্রোভাইডার:"
       },
+      "planLimits": {
+        "title": "প্ল্যানের সীমা",
+        "intro": "প্রতিটি এজেন্ট প্রদানকারী তোমার অ্যাকাউন্টের জন্য যে ব্যবহারের উইন্ডো জানায়। নিচের টোকেন ও খরচের মোট শুধু এই ইনস্টলের টার্ন গোনে।",
+        "window_hours": "{{hours}}-ঘণ্টা",
+        "window_days": "{{days}}-দিন",
+        "window_minutes": "{{minutes}}-মিনিট",
+        "window_label": "{{window}} উইন্ডো",
+        "summary_window": "{{window}} {{used}}",
+        "summary_no_reading": "এখনো কোনো রিডিং নেই",
+        "summary_no_limits": "কোনো প্ল্যান সীমা নেই",
+        "used_left": "{{used}} ব্যবহৃত · {{left}} বাকি",
+        "resets_at": "{{time}}-এ রিসেট",
+        "reset_passed": "{{time}}-এ রিসেট হয়েছে, এই রিডিংয়ের পরে। এখনো নতুন কোনো রিডিং নেই।",
+        "reset_unknown": "প্রদানকারী রিসেটের সময় জানায়নি।",
+        "reported_at": "{{relative}} জানানো হয়েছে",
+        "reported_unknown": "জানানোর সময় অজানা",
+        "source_codex": "Codex এই মেশিনে যে সেশন লগ লেখে, তা থেকে।",
+        "no_reading_codex": "ChatGPT সাইন-ইনে প্রতিটি টার্নের পরে Codex তার সেশন লগে প্ল্যানের সীমা লেখে। এই মেশিনের কোনো লগে এখনো তা নেই।",
+        "no_windows_codex": "Codex জানাচ্ছে যে তার বর্তমান সাইন-ইনের কোনো প্ল্যান সীমা নেই। API কী বা অন্য মডেল প্রদানকারীর সাইন-ইনের কোনো সীমা থাকে না।",
+        "details_label": "{{provider}} প্ল্যানের সীমা"
+      },
       "usageTab": {
         "avg_messages_session": "প্রতি সেশনে গড় বার্তা",
         "billing": "বিলিং",

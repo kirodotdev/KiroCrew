@@ -18631,6 +18631,27 @@
         "provider": "Provedor",
         "provider_2": "Provedor:"
       },
+      "planLimits": {
+        "title": "Limites do plano",
+        "intro": "As janelas de uso que cada provedor de agentes informa para a sua conta. Os totais de tokens e custo abaixo contam apenas os turnos desta instalação.",
+        "window_hours": "{{hours}} horas",
+        "window_days": "{{days}} dias",
+        "window_minutes": "{{minutes}} minutos",
+        "window_label": "Janela de {{window}}",
+        "summary_window": "{{window}}: {{used}}",
+        "summary_no_reading": "Ainda sem leitura",
+        "summary_no_limits": "Sem limites do plano",
+        "used_left": "{{used}} usado · {{left}} restante",
+        "resets_at": "Renova {{time}}",
+        "reset_passed": "Renovado às {{time}}, depois desta leitura. Ainda não há uma leitura mais recente.",
+        "reset_unknown": "O provedor não informou o horário de renovação.",
+        "reported_at": "Informado {{relative}}",
+        "reported_unknown": "Horário do informe desconhecido",
+        "source_codex": "Dos logs de sessão que o Codex grava nesta máquina.",
+        "no_reading_codex": "Com um login do ChatGPT, o Codex grava os limites do plano nos logs de sessão depois de cada turno. Nenhum log desta máquina os tem ainda.",
+        "no_windows_codex": "O Codex informa que o login atual não tem limites do plano. Um login com chave de API ou com outro provedor de modelos não tem limites.",
+        "details_label": "Limites do plano do {{provider}}"
+      },
       "usageTab": {
         "avg_messages_session": "Média de mensagens/sessão",
         "billing": "Faturamento",

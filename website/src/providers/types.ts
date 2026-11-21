@@ -1,3 +1,5 @@
+import type { PlanLimits } from '../api/planLimits'
+
 // KiroCrew is KiroACP-only — kiro-cli over ACP is the sole provider. This is a
 // single-member union so the adapter interface below still type-checks for its
 // many consumers.
@@ -97,6 +99,8 @@ export interface NormalizedUsage {
   tokenProviderModels?: Record<string, string[]>
   /** The gateway's local calendar day (`YYYY-MM-DD`), the key `tokenDailyHistory` files days under. */
   localDay?: string
+  /** The plan windows Codex reports for its account; absent when the route sends none. */
+  planLimits?: PlanLimits
 }
 
 export interface NormalizedProviderHook {

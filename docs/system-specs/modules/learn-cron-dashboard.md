@@ -154,9 +154,32 @@ this gateway process already read a block from the same `sessions/` directory: a
 disposable Codex session deletes its rollout at teardown, so the last reading is
 kept in memory and returned with `stale` judged again. The kept reading also wins
 over a block that a surviving log recorded before it, compared by `captured_at`, or
-by `source_mtime` when either reading has no `captured_at`. Only
-`rollout-*.jsonl` files are opened and a link at that name is refused, so `auth.json`
-is not read.
+by `source_mtime` when either reading has no `captured_at`. The newest block wins
+even when it holds neither window and names no `plan_type`: that is what a sign-in
+with no plan limits writes (an API key, another model provider), so both windows
+come back `null` instead of an older block from a different sign-in. A window-less
+block that names a `plan_type` says nothing about the windows and is skipped like a
+line with no block. Only `rollout-*.jsonl` files are opened and a link at that name
+is refused, so `auth.json` is not read.
+
+The Usage view renders that reading in its **Plan Limits** card
+(`website/src/pages/overview/PlanLimitsCard.tsx`, parsed by `api/planLimits.ts`):
+a Codex row when `codex` holds a reading or Codex is the default harness, so a
+Kiro-only install shows no card. A row shows each window's used share by the
+window's own length, colored by the shared `metricColor` thresholds, so a window at
+or near its limit shows in the danger color; a window whose reset time has passed
+shows a dash. The card compares reset times with the browser clock when a report
+arrives and every 30 seconds while a detail card is open, so a row whose refreshes
+fail after a reset keeps its old share until the next report. A
+reading with no window says "No plan limits". Hover (after the shared
+hover-intent delay) or keyboard focus shows a detail card as a tooltip; a click or tap
+pins it as a non-modal dialog that takes focus and closes on Escape (focus returns to
+the row), an outside press, a resize, or a scroll that moves the row (a scroll inside
+the card keeps it). The card gives used and left, the reset time, and the reading's
+age and source. When a report refresh fails, the Usage view's page-level
+`ErrorNotice` reports it, and the card keeps the last reading with its age. The card
+adds no request and no timer: it rides on the Usage report's own fetch, and its clock
+ticks only while a detail card is open.
 
 `/api/usage/kiro` also carries `tokens`: the usage shards' 30-day token and
 dollar-cost history from `usage_history._parse_token_history` (totals, the

@@ -18631,6 +18631,27 @@
         "provider": "Proveedor",
         "provider_2": "Proveedor:"
       },
+      "planLimits": {
+        "title": "Límites del plan",
+        "intro": "Las ventanas de uso que cada proveedor de agentes informa para tu cuenta. Los totales de tokens y coste de abajo cuentan solo los turnos de esta instalación.",
+        "window_hours": "{{hours}} horas",
+        "window_days": "{{days}} días",
+        "window_minutes": "{{minutes}} minutos",
+        "window_label": "Ventana de {{window}}",
+        "summary_window": "{{window}}: {{used}}",
+        "summary_no_reading": "Aún sin lectura",
+        "summary_no_limits": "Sin límites del plan",
+        "used_left": "{{used}} usado · {{left}} restante",
+        "resets_at": "Se restablece {{time}}",
+        "reset_passed": "Se restableció a las {{time}}, después de esta lectura. Aún no hay una lectura más reciente.",
+        "reset_unknown": "El proveedor no informó la hora de restablecimiento.",
+        "reported_at": "Informado {{relative}}",
+        "reported_unknown": "Hora del informe desconocida",
+        "source_codex": "De los registros de sesión que Codex escribe en esta máquina.",
+        "no_reading_codex": "Con un inicio de sesión de ChatGPT, Codex escribe los límites del plan en sus registros de sesión después de cada turno. Ningún registro de esta máquina los tiene todavía.",
+        "no_windows_codex": "Codex informa que su inicio de sesión actual no tiene límites del plan. Un inicio de sesión con una clave de API o con otro proveedor de modelos no los tiene.",
+        "details_label": "Límites del plan de {{provider}}"
+      },
       "usageTab": {
         "avg_messages_session": "Media de mensajes/sesión",
         "billing": "Facturación",
