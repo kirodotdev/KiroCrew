@@ -10,7 +10,7 @@ and a patch of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_abandoned_prompt_id``, ``_announced_subagent_roster``,
 ``_awaiting_permission``, ``_between_turn_credits``, ``_cancel_ts``, ``_cancel_unacked``,
 ``_cancelled``, ``_compaction_terminal_seen``, ``_goose_active_run_id``,
-``_goose_steers``, ``_input_wait_emitted``,
+``_goose_steers``, ``_held_steers_unanswered``, ``_input_wait_emitted``,
 ``_kas_compact_turn``, ``_kas_subagent_roster``, ``_last_stop_reason``, ``_legacy_subagent_tool_ids``,
 ``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``,
 ``_native_child_overflow``, ``_native_child_sids``,
@@ -538,6 +538,7 @@ async def _run_turn(
     self._turn_steering_denied = False
     self._steers_proven = []
     self._steers_accepted = []
+    self._held_steers_unanswered = set()
     # A goose steer still unechoed was discarded with its run; its caller already
     # queued the text on the turn's teardown (``steer_needs_loss_recovery``).
     self._goose_steers = []

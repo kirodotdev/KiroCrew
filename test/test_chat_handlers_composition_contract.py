@@ -1438,7 +1438,7 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, frozenset[str]] = {
     r"safety_override\(\)\.activate": frozenset({"slot_approval"}),
     r"\._queue\.clear\(\)": frozenset({"turn_stop"}),
     r'_turn_kwargs\["_turn_actor"\]': frozenset({"chat_send"}),
-    r"warn_if_not_durable\(slot\._queue, qid, slot\.key\)": frozenset({"chat_send"}),
+    r"warn_if_not_durable\(slot\.durable_source\(\), qid, slot\.key\)": frozenset({"chat_send"}),
     r"(?m)^def _unblock_pending_waits\(": frozenset({"chat_handlers"}),
     r"(?m)^async def _reset_slot_session\(": frozenset({"chat_handlers"}),
     r"(?m)^def _orphan_in_current_turn\(": frozenset({"chat_handlers"}),

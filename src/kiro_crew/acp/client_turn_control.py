@@ -760,7 +760,19 @@ async def _steer_via_steering_request(self: AcpClient, text: str) -> bool:
         self._last_steer_monotonic = time.monotonic()
         self._release_held_steers()
         return True
-    return await self._send_steering_request(aimed_at, text) is True
+    # Registered before the write, as for a held steer: a turn that ends while the
+    # write is in flight finds the text in :attr:`held_steers_possibly_delivered`.
+    possibly_delivered = self._held_steer_writes()
+    possibly_delivered.add(text)
+    try:
+        delivered = await self._send_steering_request(aimed_at, text)
+    except Exception as exc:
+        if getattr(exc, "ambiguous_delivery", False) is not True:
+            possibly_delivered.discard(text)
+        raise
+    if delivered is not None:
+        possibly_delivered.discard(text)
+    return delivered is True
 
 
 def _held_steers(self: AcpClient) -> list[tuple[int, str]]:
@@ -784,6 +796,17 @@ def _held_steer_writes(self: AcpClient) -> set[str]:
         writes = set()
         self._held_steers_unanswered = writes
     return writes
+
+
+def _held_steer_unsent(self: AcpClient) -> set[str]:
+    """The held steers of this turn the adapter never took: dropped from the buffer
+    unwritten, or written and refused (:attr:`held_steers_unsent`). Created on first
+    use so a client built without ``__init__`` (test doubles) has one."""
+    unsent = getattr(self, "_held_steers_unsent", None)
+    if unsent is None:
+        unsent = set()
+        self._held_steers_unsent = unsent
+    return unsent
 
 
 def _release_held_steers(self: AcpClient) -> None:
@@ -814,7 +837,9 @@ async def _send_held_steers(self: AcpClient) -> None:
     consumed, so the caller queues each. A steer whose write is in flight,
     stalled, unanswered, or answered ``injected`` after its turn ended stays in
     :attr:`held_steers_possibly_delivered` until the next turn starts, so the
-    caller queues it as possibly delivered rather than as fresh text.
+    caller queues it as possibly delivered rather than as fresh text. A dropped
+    steer, and one not written or refused, is named in
+    :attr:`held_steers_unsent` instead: it never reached the turn.
     """
     while held := self._held_steers():
         steer = held[0]
@@ -825,6 +850,7 @@ async def _send_held_steers(self: AcpClient) -> None:
             or self._cancelled
             or getattr(self, "_stdin_stalled", False)
         ):
+            self._held_steer_unsent().update(text for _, text in held)
             held.clear()
             return
         if self._active_tool_calls.possibly_open or self._parked_on_permission:
@@ -841,9 +867,13 @@ async def _send_held_steers(self: AcpClient) -> None:
             logger.debug("held steer not sent: %s", type(exc).__name__)
             if getattr(exc, "ambiguous_delivery", False) is not True:
                 possibly_delivered.discard(text)
+                self._held_steer_unsent().add(text)
         else:
             if delivered is not None:
                 possibly_delivered.discard(text)
+            if delivered is False:
+                # Not written, or refused: the adapter runs nothing of it.
+                self._held_steer_unsent().add(text)
         # Read again: a turn that ended during the send started a new list.
         current = self._held_steers()
         if current and current[0] == steer:
@@ -952,10 +982,11 @@ def _release_accepted_steers(self: AcpClient, req_id: int, reason: str, refusal:
     stops taking steers here, before its terminal is yielded, so a steer
     answered after this point is not accepted into a turn that has ended. A
     steer still held here was never sent, so it is dropped and queued the same
-    way.
+    way, and named in :attr:`held_steers_unsent`.
     """
     accepted = getattr(self, "_steers_accepted", None) or []
     self._steers_accepted = []
+    self._held_steer_unsent().update(text for _, text in self._held_steers())
     self._steers_held = []
     if self._steering_turn_req == req_id:
         self._steering_turn_req = None

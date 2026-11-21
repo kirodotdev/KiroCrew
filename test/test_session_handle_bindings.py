@@ -409,6 +409,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "session_handle_model_selection",
     ),
     "has_unfinished_turn": ("property", False, "a6632a57e602", "session_handle_class"),
+    "held_steers_possibly_delivered": ("property", False, "602c14087aa8", "session_handle_class"),
     "inflight_interactive": ("property", False, "7949c1538a15", "session_handle_class"),
     "is_responsive": ("function", False, "4b2fc7c136b8", "session_handle_watchdog"),
     "is_turn_active": ("property", False, "a6632a57e602", "session_handle_class"),

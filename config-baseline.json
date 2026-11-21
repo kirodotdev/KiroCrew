@@ -1976,7 +1976,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Peer Steer Loss Recovery",
-      "help": "Let a steer that is not typed into the session's own composer (another session's session_send or session_broadcast steer, or an automation's) cut into a running Claude Code, Codex, Goose, Pi or OpenCode turn. Those harnesses can drop a steer they accepted, so it counts as delivered only when the turn ends cleanly; a turn that is cancelled, fails or loses it to a denied approval puts it back as a queue card that runs as the next turn, so it can run twice. While it is on, a hard stop that drops another session's pending steer, on any harness, tells that session the steer may not have run. Off by default: such a steer queues for the next turn, and only the composer steers these harnesses.",
+      "help": "Off (the default): a session_send or session_broadcast steer into a running Claude Code, Codex, Goose, Pi or OpenCode turn is held and goes in at that turn's next tool step, or runs as its next turn if the turn ends first; an automation's steer is not held. On: both cut into the running turn at once. Those harnesses can drop a steer they accepted, so with it on the steer counts as delivered only when the turn ends cleanly; a turn that is cancelled, fails or loses it to a denied approval puts it back as a queue card that runs as the next turn, so it can run twice. With it on, a hard stop that drops another session's pending steer, on any harness, tells that session the steer may not have run. With it off, a held steer cannot run twice on Claude Code and Codex; on the other harnesses a steer taken just as the turn ended can run once more from the queue.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
