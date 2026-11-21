@@ -1037,7 +1037,7 @@ class TestUnresolvedIdleCompactionThreshold:
 
         notices: list[tuple[bool, str]] = []
 
-        async def _cb(_key, _pct, *, success, outcome):
+        async def _cb(_key, _pct, *, success, outcome, method="native"):
             notices.append((success, outcome))
 
         async with _managed(cfg, clock, _provider_factory()) as mgr:
@@ -1351,7 +1351,7 @@ class TestUnsettledIdleCompaction:
         notices: list[tuple[bool, str]] = []
         marked: list[tuple[Any, float]] = []
 
-        async def _cb(_key, _pct, *, success, outcome):
+        async def _cb(_key, _pct, *, success, outcome, method="native"):
             notices.append((success, outcome))
 
         monkeypatch.setattr(
@@ -1435,7 +1435,7 @@ class TestUnsettledIdleCompaction:
     async def test_a_session_replaced_during_the_drain_is_left_alone(self, cfg, clock, monkeypatch):
         notices: list[tuple[bool, str]] = []
 
-        async def _cb(_key, _pct, *, success, outcome):
+        async def _cb(_key, _pct, *, success, outcome, method="native"):
             notices.append((success, outcome))
 
         async with _managed(cfg, clock, _provider_factory()) as mgr:
@@ -1470,7 +1470,7 @@ class TestUnsettledIdleCompaction:
     ):
         notices: list[tuple[bool, str]] = []
 
-        async def _cb(_key, _pct, *, success, outcome):
+        async def _cb(_key, _pct, *, success, outcome, method="native"):
             notices.append((success, outcome))
 
         async with _managed(cfg, clock, _provider_factory()) as mgr:
@@ -1507,7 +1507,7 @@ class TestUnsettledIdleCompaction:
     async def test_a_threshold_restart_still_reports_recycled(self, cfg, clock):
         notices: list[tuple[bool, str]] = []
 
-        async def _cb(_key, _pct, *, success, outcome):
+        async def _cb(_key, _pct, *, success, outcome, method="native"):
             notices.append((success, outcome))
 
         async with _managed(cfg, clock, _provider_factory()) as mgr:
