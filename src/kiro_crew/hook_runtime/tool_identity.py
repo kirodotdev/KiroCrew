@@ -14,6 +14,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from kiro_crew.hooks import (
@@ -236,6 +237,9 @@ class ToolCall:
     #: deny target, so a rule on ``web_fetch`` binds claude's WebFetch, and the
     #: claude half of the read-only built-in proof. Never a grant.
     harness_builtin_tool: str = ""
+    #: The URL of a proven web fetch (:func:`proven_fetch_url`), which the path rule
+    #: does not resolve. Empty for every other call.
+    fetch_url: str = ""
     #: ``AcpEvent.deepseek_tool_name``: the DeepSeek Harness tool a call is for, as
     #: its tool_call frame stated it. Read by the gate on a ``classifier_only``
     #: (READ_ONLY) turn only: a deny target and a governance identity under both
@@ -319,6 +323,7 @@ class ToolCall:
                 getattr(event, "spec_granted_read_paths", None)
             ),
             "harness_builtin_tool": getattr(event, "harness_builtin_tool", "") or "",
+            "fetch_url": proven_fetch_url(event),
             "deepseek_tool_name": getattr(event, "deepseek_tool_name", "") or "",
             "spawn_target": getattr(event, "spawn_target", "") or "",
         }
@@ -356,9 +361,14 @@ class ToolCall:
             "spec_granted_paths": self.spec_granted_paths,
             "spec_granted_read_paths": self.spec_granted_read_paths,
             "harness_builtin_tool": self.harness_builtin_tool,
+            "fetch_url": self.fetch_url,
             "deepseek_tool_name": self.deepseek_tool_name,
             "spawn_target": self.spawn_target,
         }
+
+    def names_fetch_url(self, text: str) -> bool:
+        """*text* is this call's proven fetch URL (:attr:`fetch_url`) or ``Fetch <url>``."""
+        return is_fetch_url_text(text, self.fetch_url)
 
 
 def _granted_names(value: object) -> frozenset[str]:
@@ -907,6 +917,43 @@ def mcp_identity_ref(mcp_server_name: str, mcp_tool_name: str) -> str:
     if not mcp_tool_name:
         return f"@{mcp_server_name}"
     return f"@{mcp_server_name}/{mcp_tool_name}"
+
+
+def proven_fetch_url(event: object) -> str:
+    """The URL a proven web-fetch call opens over the network, or ``""``.
+
+    Proven by ``harness_tool_id``, the name the harness itself stamped on the
+    preceding ``tool_call`` frame (claude: ``claude#WebFetch``), never by this
+    frame's ``tool_kind``, which the payload can forge (Antigravity alone names an
+    unnamed call from its kind, ``ANTIGRAVITY_TOOL_ID_BY_KIND``); no table row
+    names an MCP tool. The URL is the trusted params' ``url``, and only a whole
+    ``http(s)`` URL with a host.
+    On any other tool a URL-shaped string is still a path to resolve:
+    ``https://.aws/credentials`` reaches a credential file through a planted
+    ``https:`` link.
+    """
+    # Imported at call time: an owner's own imports are inert for its functions
+    # (:mod:`kiro_crew.hook_runtime`), and the ``hooks`` facade does not import the SDK.
+    from kiro_crew.agent_sdk import is_harness_web_fetch
+
+    if not is_harness_web_fetch(_plain_str(getattr(event, "harness_tool_id", ""))):
+        return ""
+    if getattr(event, "raw_params_trusted", False) is not True:
+        return ""
+    params = getattr(event, "raw_tool_params", None)
+    url = params.get("url") if isinstance(params, dict) else None
+    if not isinstance(url, str):
+        return ""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return ""
+    return url if parts.scheme in ("http", "https") and parts.hostname else ""
+
+
+def is_fetch_url_text(text: str, fetch_url: str) -> bool:
+    """*text* is the proven fetch URL, or the ``Fetch <url>`` title claude gives it."""
+    return bool(fetch_url) and text in (fetch_url, f"Fetch {fetch_url}")
 
 
 def title_is_trusted_mcp_identity(

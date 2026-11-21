@@ -582,6 +582,18 @@ MCP_DOCUMENT_BODY_FIELDS: Mapping[tuple[str, str], frozenset[str]] = MappingProx
     }
 )
 
+#: Top-level arguments of a proven web fetch, besides its ``url``, that are never
+#: opened as a local file, by ``harness_tool_id``. A row is added only for an
+#: argument set a captured frame vets: claude's WebFetch sends exactly ``url`` and
+#: ``prompt`` (``test/fixtures/acp_frames/claude/builtins-bash-edit-webfetch-live.jsonl``,
+#: its ``session/request_permission`` frame), and the prompt goes to a model that
+#: answers over the fetched page (the ``toolResponse`` on the frame after it). The
+#: resolver reads a row only once ``hooks.proven_fetch_url`` proves the call. Additive
+#: only: a fetch with no row spares its ``url`` alone.
+FETCH_PATH_FREE_FIELDS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {"claude#WebFetch": frozenset({"prompt"})}
+)
+
 #: The path step that means "each item of the list under the previous key".
 _EACH_ITEM = "[]"
 
