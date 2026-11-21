@@ -257,6 +257,17 @@ _CANCEL_GRACE_SECS = 10.0  # grace window for cooperative cancel ack
 # several times over and is not sized to outlast the slow exit: a child still
 # running at the deadline is killed.
 _EOF_EXIT_GRACE_SECS = 2.0
+# After a rejected permission on a backend that aborts the turn on any reject
+# but may hold its prompt result for a live background shell
+# (``ACP_BACKENDS_REJECT_HOLDS_TURN``), this much backend silence means the turn
+# is over and only waiting on that shell: send ``session/cancel`` so it ends now
+# and refusal recovery runs, instead of when the shell exits (or never). An
+# unheld turn ends milliseconds after the reject, so this is pure margin.
+_REJECTED_TURN_SETTLE_SECS = 15.0
+# A tracked attached shell can hold a stale turn's result. This silence
+# budget excludes consumer park time and only applies after the stale-turn
+# oracle permits recovery: WORKING, sampling and open tools still defer it.
+_SHELL_HELD_TURN_SETTLE_SECS = _STALE_TURN_TIMEOUT
 # Absolute safety cap for _wait_for_response's activity-based deadline. The
 # per-call deadline resets on every received frame (so a long session/load
 # replay that streams the whole transcript as notifications is not killed),

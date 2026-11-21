@@ -11,11 +11,12 @@ and a patch of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_active_run_id``, ``_cancel_grace_secs``, ``_cancel_ts``,
 ``_cancelled``, ``_last_activity``, ``_orphan_steers``, ``_orphan_steers_process``,
 ``_permission_options``, ``_steer_answers``, ``_steer_turn``, ``_steering_waiter_map``,
-``_steers_awaiting_echo``, ``_turn_permission_denied``.
+``_steers_awaiting_echo``.
 
 Instance fields read: ``_active_tool_calls``, ``_agent``, ``_background_launches``,
 ``_batch_window``, ``_last_stop_reason``, ``_permission_gate_events``, ``_process``,
-``_session_id``, ``_session_key``, ``_stdin_stalled``, ``_turn_done``, ``_turn_lock``.
+``_session_id``, ``_session_key``, ``_stdin_stalled``, ``_turn_done``, ``_turn_lock``,
+``_turn_permission_denied``.
 """
 
 from __future__ import annotations
@@ -1186,7 +1187,6 @@ async def _dispatch_prompt_events(
     released there. Its steers stay owed, and ``_settle_orphan_steers``
     cancels and drains them under the lock before the next prompt.
     """
-    self._turn_permission_denied = False
     turn = _ConcurrentSteerTurn()
     self._steer_turn = turn
     pi_steer_turn.open_turn(self, req_id)

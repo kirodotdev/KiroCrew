@@ -516,6 +516,7 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_COMPACTION_SUMMARY": (
         "standard ACP: compaction_summary_chunk and a completed compaction_update's summary"
     ),
+    "ACP_BACKENDS_REJECT_HOLDS_TURN": "standard ACP: session/prompt result timing after a reject",
     "ACP_BACKENDS_SERIAL_SESSION_STARTS": "standard ACP timing; changes only error text",
     "ACP_BACKENDS_EFFORT_OVERLAY": "off the wire: workspace cli.json at spawn",
     "ACP_BACKENDS_TOOL_SEARCH_OVERLAY": "off the wire: workspace cli.json at spawn",
