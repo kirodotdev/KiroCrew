@@ -146,6 +146,16 @@ parent for the same fenced block whatever the transcript holds, and records no
 On these dispatch paths, a reply in a dashboard-linked thread and a Slack-born
 session with prior turns fetch and record nothing.
 
+A reply typed in a dashboard-linked thread still names that thread on every
+turn, as a Slack-born turn does (`slack/handler_runtime/turn.py`):
+`dashboard/chat_turn/prompt_assembly.py` hands `build_message` the slot's
+`channel_id` and `thread_ts` with `include_channel_history=False` and no
+`thread_parent_text`, so the prompt's `[SLACK THREAD CONTEXT]` block names the
+thread and the agent can read it with the Slack tools. Only a turn whose words
+came from that linked channel gets the ids; a turn typed in the dashboard, or in
+another channel, gets none. A first turn that still holds a pending thread
+parent keeps the parent block instead.
+
 A NEW dashboard session can also join a thread it did not start: the challenge
 link's re-open flow posts `slack-link` with the thread's `thread_ts` and the
 challenge token's `msg_ts` (the reply that hit the challenge). When `msg_ts`
