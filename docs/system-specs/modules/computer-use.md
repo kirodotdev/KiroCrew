@@ -1496,7 +1496,8 @@ create the app element, immediately
 mandatory, because ctypes releases the GIL around the C call and a genuinely hung
 target app would otherwise park the worker thread indefinitely — read
 `AXWindows`, and on `-25204` set the opt-in, poll for up to
-`ELECTRON_OPT_IN_WAIT_SECS` in 0.25s steps, retry **once**, then raise naming the
+`ELECTRON_OPT_IN_WAIT_SECS` in 0.25s steps, retry **once** (the largest walk is kept,
+but a secure field that any walk saw still sets `has_secure`), then raise naming the
 raw AX code so a support thread is diagnosable. The first `computer_get_state`
 on an Electron app is inherently slow; the skill says so, so a model does not
 read it as a hang.
