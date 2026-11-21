@@ -428,13 +428,20 @@ def _is_anchored(path: str, *, require_drive: bool = False, pathmod: ModuleType 
     different files, and it is not anchored there. ``pathmod`` is the path module
     the check reads (``os.path`` in production; a test passes ``ntpath`` to pin
     the Windows reading on any host).
+
+    Every reading must be anchored: this host's, and the tool's, which keeps a
+    Windows ``%VAR%`` literal (``paths_resolver._tool_expandvars``). A
+    ``%USERPROFILE%\\..\\x`` the host reads as absolute is relative to the tool,
+    which writes it under the session's cwd, a file no gate here judges.
     """
-    expanded = pathmod.expanduser(pathmod.expandvars(path))
-    if not pathmod.isabs(expanded):
-        return False
-    if require_drive and pathmod is ntpath:
-        drive, _ = ntpath.splitdrive(expanded)
-        return bool(drive)
+    from kiro_crew.security.paths_resolver import _tool_expandvars
+
+    for expand in (pathmod.expandvars, _tool_expandvars):
+        expanded = pathmod.expanduser(expand(path))
+        if not pathmod.isabs(expanded):
+            return False
+        if require_drive and pathmod is ntpath and not ntpath.splitdrive(expanded)[0]:
+            return False
     return True
 
 
