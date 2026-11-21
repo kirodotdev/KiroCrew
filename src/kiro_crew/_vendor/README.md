@@ -39,6 +39,14 @@ What was changed relative to the upstream wheel:
   theirs runs on our CPU-only ggml. `.text` and `.rodata` stay byte-identical
   to the unpatched files; patchelf moves the dynamic strings into an added load
   segment.
+- The Windows `ggml.dll`, `ggml-base.dll` and `ggml-cpu.dll` carry private names
+  for the same reason: each file is renamed `<stem>-<hash>.dll` and the import
+  tables of `llama.dll` and the ggml DLLs name the new files (see "Private ggml
+  names on Windows" below). Windows resolves a DLL's imports by module name
+  against the modules already loaded, so under upstream's names whichever
+  `ggml.dll` loaded first served both runtimes. Every existing section keeps
+  its bytes except the import descriptors' 4-byte name fields; the new names
+  sit in one added read-only section.
 - `llama_cpp.llama_cache`'s module-level `import diskcache` is satisfied by a
   `sys.modules` stub installed in `kiro_crew.embeddings._install_diskcache_stub`
   (KiroCrew never uses disk-backed LLM state caching; a real installed
@@ -256,12 +264,69 @@ every upgrade):
 
 The `libgomp` files keep their names and bytes.
 
+### Private ggml names on Windows
+
+Applied to `win_amd64/` after the closure is extracted, with
+`scripts/rename_vendored_win_dlls.py` (standard library only; it parses and
+rewrites the files and never loads them, so it runs on any host). The new name
+is the scheme the Linux files use, which is also what `delvewheel` gives a
+Windows wheel's DLLs: `<stem>-<first 8 hex of the sha256 of the UNPATCHED
+file>.dll`. `llama.dll` keeps its file name (ctypes opens it by base name).
+From the repository root:
+
+```
+python scripts/rename_vendored_win_dlls.py
+```
+
+It renames `ggml.dll`, `ggml-base.dll` and `ggml-cpu.dll`, and in each DLL that
+imports one of them (`llama.dll`, the ggml DLL and the ggml-cpu DLL: five
+import descriptors in all) it appends one read-only section, `.kcname`, holding
+the new names and points those descriptors' name fields at it. The old name
+strings stay in `.rdata`, unreferenced, and the export tables are untouched, so
+the step is undone exactly:
+
+```
+python scripts/rename_vendored_win_dlls.py --restore-to <empty dir>
+```
+
+writes the four files as they were, under upstream's names, and prints their
+sha256s, which equal the Before column below. The script refuses a file it was
+not written for: one with an Authenticode signature (upstream's are unsigned),
+bound or delay-load imports, or data after the last section. Two runs from the
+same inputs give byte-identical files. `test/test_vendored_windows_dll_names.py`
+parses the committed files on every platform and fails if an upstream ggml name
+comes back as a file name or in an import table, if an import names a file the
+directory lacks, if the exports differ from the restored files', or if
+restoring does not give the Before hashes; on Windows it also loads the
+restored files as a second, upstream-named set beside the vendored one, in both
+orders, and checks which files the process maps.
+
+Windows looks an imported DLL up by module name among the modules already
+loaded before it searches any directory, and does so even when the importing
+DLL was opened by full path, so no loader flag or search-path call separates
+two sets that share names; only the names do. The step assumes every ggml file
+is reached through an import table: a runtime that adds a ggml DLL, or uses
+ggml's dynamically loaded backends (`GGML_BACKEND_DL`), needs it revisited.
+
+sha256 before and after the rename (the after column equals the manifest;
+re-record both columns on every upgrade):
+
+| Before | After |
+|--------|-------|
+| `llama.dll` 4de986137563abb682ef339dadd86768368ded12aa76ee9f41450c195741f209 | `llama.dll` dadc4c07be552c06734dc11a1e5215f5f88415e75cd76d1e0c3f00dd03c69f75 |
+| `ggml.dll` fd531597881fc6a070dcc70756648d37e19177f72c338c932ae8b99ad31f3ace | `ggml-fd531597.dll` 4ab4ac294723a42abf32e0cb4fe49f2167c844d70413daec2686bb21442354bb |
+| `ggml-base.dll` ff7c22159b5f261f787d8b7c3f4b6bfad7e576ad78c7f549b45a3ad9a9d8a790 | `ggml-base-ff7c2215.dll` ff7c22159b5f261f787d8b7c3f4b6bfad7e576ad78c7f549b45a3ad9a9d8a790 |
+| `ggml-cpu.dll` e54cfb14e37e68a9144685c5cea158d83cd7aad1833f3e305e00861ba213641f | `ggml-cpu-e54cfb14.dll` addcce71522af39a84d4cd7c0c8689d1756e0f8ffc407cfc53af15b1e10605aa |
+
+The `ggml-base` file has no ggml import, so only its name changes.
+
 To upgrade: download the four wheels for the new version (plus rebuild
 `macos_x86_64/` from the new sdist with the CMAKE_ARGS above, and
 `linux_aarch64_dotprod/` with the recipe above), re-extract the
 same closure (`libllama` + `libggml*` + vendored `libgomp` on Linux; top-level
 dylibs on macOS), apply the rename step in "Private ggml names on Linux" to the
-three Linux directories and update their names in `_REQUIRED_VENDORED_LIBS`,
+three Linux directories and the one in "Private ggml names on Windows" to
+`win_amd64/`, update their names in `_REQUIRED_VENDORED_LIBS`,
 replace `llama_cpp/` with the new wheel's Python code (minus
 `lib/` and `server/`), re-mirror the cache-less architecture set (below), and
 re-run the embedding smoke test in `test/test_embeddings.py`.
@@ -295,8 +360,9 @@ The upgrade step above replaces `llama_cpp/` wholesale with the new wheel's
 Python code, which would silently drop the patches below. Each is marked in
 source with a `kiro_crew DIVERGENCE FROM UPSTREAM` comment, so
 `grep -rn 'kiro_crew DIVERGENCE' llama_cpp/` lists what must be re-applied.
-That grep cannot find a binary patch: the Linux ggml rename is re-applied by
-the step in "Private ggml names on Linux".
+That grep cannot find a binary patch: the Linux and Windows ggml renames are
+re-applied by the steps in "Private ggml names on Linux" and "Private ggml
+names on Windows".
 
 - `llama_cpp/llama.py`, `Llama.__init__` — the eager `self.scores` per-token
   logits buffer is allocated with **zero rows** when the model is opened in

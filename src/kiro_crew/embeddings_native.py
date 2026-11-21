@@ -70,8 +70,8 @@ _LINUX_AARCH64_DOTPROD_DIRNAME = "linux_aarch64_dotprod"
 #: Redistributable, and a clean Windows install may carry none of them.
 #:
 #: Read off the PE import tables of the four DLLs in ``win_amd64`` rather than
-#: guessed: ``llama.dll`` and ``ggml.dll`` need the first three, and
-#: ``ggml-base.dll``/``ggml-cpu.dll`` additionally pull ``VCOMP140.DLL``, the MSVC
+#: guessed: ``llama.dll`` and the ``ggml`` DLL need the first three, and the
+#: ``ggml-base`` and ``ggml-cpu`` DLLs additionally pull ``VCOMP140.DLL``, the MSVC
 #: OpenMP runtime. Both Linux payloads DO vendor their equivalent
 #: (``libgomp-*.so.1.0.0``), which is what makes this an omission on the Windows
 #: lane rather than a deliberate asymmetry. Redistributing the runtime is

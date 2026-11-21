@@ -56,7 +56,7 @@ _BUNDLED_LIBS_PATH_TAIL = ("kiro_crew", "_vendor", _LIBS_DIR_NAME)
 # BLAS backend in its Linux CPU wheels (macOS gets `libggml-blas` only because
 # it links the system Accelerate framework). The Linux `libggml-cpu` carries the
 # optimized GEMM/repack kernels instead, so the CPU path is complete without it.
-# The Linux ggml names are private sonames (`_vendor/README.md`).
+# The Linux and Windows ggml names are private ones (`_vendor/README.md`).
 _REQUIRED_VENDORED_LIBS: dict[str, tuple[str, ...]] = {
     "linux_x86_64": (
         "libllama.so",
@@ -100,9 +100,9 @@ _REQUIRED_VENDORED_LIBS: dict[str, tuple[str, ...]] = {
     ),
     "win_amd64": (
         "llama.dll",
-        "ggml.dll",
-        "ggml-base.dll",
-        "ggml-cpu.dll",
+        "ggml-fd531597.dll",
+        "ggml-base-ff7c2215.dll",
+        "ggml-cpu-e54cfb14.dll",
     ),
 }
 
