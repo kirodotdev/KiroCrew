@@ -931,6 +931,7 @@ class TestSsmTransportSelection:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             return "SSH_TOKEN"
@@ -1042,6 +1043,7 @@ class TestSsmTransportSelection:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             seen["timeout_secs"] = timeout_secs

@@ -1036,6 +1036,7 @@ def token_auth_middleware(
         if not from_cookie:
             _link_nonce = ""
             _embed_parent_port = ""
+            _embed_forward_port = ""
             _no_refresh = False
             _owner_minted = False
             _session_peer_key = ""
@@ -1054,6 +1055,11 @@ def token_auth_middleware(
                 _epp = data.get("embed_parent_port")
                 if isinstance(_epp, str) and _epp:
                     _embed_parent_port = _epp
+                # The pane's own forward port, which binds the app web origin
+                # record below (apps/pane_ports.py) to the port the hub minted for.
+                _efp = data.get("embed_forward_port")
+                if isinstance(_efp, str) and _efp:
+                    _embed_forward_port = _efp
                 # A link minted for a device this dashboard does not control (the
                 # tailnet phone-access QR) says so with this claim, and the
                 # promise it encodes is an EXPIRY: that session ends when its
@@ -1100,6 +1106,8 @@ def token_auth_middleware(
                 _carried: dict[str, str] = {}
                 if _embed_parent_port:
                     _carried["embed_parent_port"] = _embed_parent_port
+                if _embed_forward_port:
+                    _carried["embed_forward_port"] = _embed_forward_port
                 _token_boot = str(data.get("boot", ""))
                 if _token_boot:
                     _carried["boot"] = _token_boot
@@ -1233,6 +1241,12 @@ def token_auth_middleware(
         # the claimless enrollment link would let the child silently drop the
         # just-established device scope.
         request["auth_token"] = session_token
+        if not app_name:
+            # A Remote Crew pane's forward port, recorded from this signed token's
+            # embed-parent claim so app web origins are served on it too.
+            from kiro_crew.apps.pane_ports import note_pane_request
+
+            await note_pane_request(request, session_token)
         # POSITIVE dashboard-user signal for the WS scope gate (see above).
         request["is_dashboard_user"] = not app_name
         # WHICH credential authenticated: the ``?token=`` the caller presented,
@@ -1385,6 +1399,7 @@ def token_auth_middleware(
                         peer_key=_refresh_peer_key,
                         owner_mint=_owner_minted,
                         embed_parent_port=_embed_parent_port,
+                        embed_forward_port=_embed_forward_port,
                     )
                     refresh_remaining = int(refresh_exp - time.time())
                     if refresh_remaining > 0:

@@ -88,7 +88,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_mint_superseded": ("function", False, "2885ca508f03", "ssh_tunnel_manager_tokens"),
     "_mint_through_parent": ("function", True, "5cfb48467004", "ssh_tunnel_manager_transport"),
     "_mint_timeout_for": ("function", False, "4c89c0af9684", "ssh_tunnel_manager_transport"),
-    "_mint_token_with_parent_port": ("function", True, "94e525cb401a", "ssh_tunnel_manager_tokens"),
+    "_mint_token_with_parent_port": ("function", True, "f98a80030142", "ssh_tunnel_manager_tokens"),
     "_minted_ttl": ("function", False, "438b16f4eb67", "ssh_tunnel_manager_tokens"),
     "_on_tunnel_exit": ("function", False, "eebcbb982c22", "ssh_tunnel_manager_self_heal"),
     "_on_tunnel_healthy": ("function", False, "eebcbb982c22", "ssh_tunnel_manager_self_heal"),

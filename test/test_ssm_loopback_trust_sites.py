@@ -92,6 +92,10 @@ PREDICATE_SITES = {
     # set its mark yet and the predicate alone would pass an SSM request. The
     # router refuses by listener first (``SsmGate.owns``, the socket's local port).
     "apps/app_web_origin.py": 1,
+    # Recording a Remote Crew pane port runs inside token auth, after the SSM gate
+    # has marked what it admits, so the predicate refuses an SSM request here. The
+    # router that serves the recorded port still refuses by listener first.
+    "apps/pane_ports.py": 1,
     "dashboard/file_api/desktop.py": 1,
     "dashboard/handlers/core.py": 2,
     "dashboard/handlers/external_terminal.py": 1,
