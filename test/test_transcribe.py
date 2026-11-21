@@ -21,6 +21,7 @@ import importlib.machinery
 import importlib.util
 import os
 import sys
+import threading
 import types
 import wave
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -32,13 +33,17 @@ from transcribe_helpers import (
     _write_wav,
 )
 
-from kiro_crew import stt, transcribe
+from kiro_crew import stt, transcribe, transcribe_local
 from kiro_crew.config.loader import SttConfig
 from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.transcribe import availability_detail, find_brew, is_available, transcribe_audio
 
 #: A GitHub token with a valid checksum; a bare 40-character run stays visible.
 _TOKEN = github_classic(seed=321)
+
+#: The multichannel slice budget the fold tests run under, small enough that
+#: crossing a slice boundary costs kilobytes rather than tens of MiB.
+_SLICE_BYTES = 4096
 
 
 def _stub_recogniser_importable(monkeypatch) -> None:
@@ -384,17 +389,24 @@ class TestPcmFromWav:
         assert pcm.size == frames
         np.testing.assert_allclose(pcm, np.full(frames, 2_000 / 32768.0, dtype=np.float32))
 
-    def test_multichannel_folding_is_sliced_and_exact_across_the_slice_boundary(self, tmp_path):
+    def test_multichannel_folding_is_sliced_and_exact_across_the_slice_boundary(
+        self, tmp_path, monkeypatch
+    ):
         """A whole-file multichannel read holds the interleaved int16 buffer
         AND its float32 conversion at once — ~1.5 GiB for a four-channel hour,
         an OOM on an input the import byte cap admits (GPT review r23). The
         fold therefore runs in byte-bounded slices (8 MiB of raw int16 per
         slice — GPT review r34: bounding by SECONDS let the channel count
         scale the transient without limit); this file spans the slice boundary
-        and must fold to exactly the same per-frame mean as a whole-file fold."""
+        and must fold to exactly the same per-frame mean as a whole-file fold.
+
+        The budget is shrunk to 4 KiB so the boundary is crossed with kilobytes
+        of audio: under the real 8 MiB budget, crossing it needs about 49 MiB
+        of buffers (tracemalloc peak) on the xdist worker."""
+        monkeypatch.setattr(transcribe_local, "_WAV_SLICE_BYTES", _SLICE_BYTES)
         channels = 4
-        # One slice is (8 MiB // (channels * 2)) frames; cross it by a second.
-        frames = (8 * 1024 * 1024) // (channels * 2) + transcribe.stt.SAMPLE_RATE_HZ
+        # One slice is (budget // (channels * 2)) frames; cross it by a few hundred.
+        frames = _SLICE_BYTES // (channels * 2) * 2 + 300
         rng = np.random.default_rng(23)
         interleaved = rng.integers(-30_000, 30_000, frames * channels, dtype=np.int16)
         audio = tmp_path / "quad.wav"
@@ -406,17 +418,34 @@ class TestPcmFromWav:
         expected = (interleaved.astype(np.float32) / 32768.0).reshape(-1, channels).mean(axis=1)
         np.testing.assert_allclose(pcm, expected, rtol=0, atol=1e-7)
 
-    def test_slice_byte_budget_is_channel_count_independent(self, tmp_path):
+    def test_slice_byte_budget_is_channel_count_independent(self, tmp_path, monkeypatch):
         """GPT review r34: a valid 256-channel WAV under the import size cap
         must not make one slice allocate hundreds of MiB. The slice frame
         count shrinks with the channel count, so the raw bytes read per
-        ``readframes`` call stay bounded — pinned here by folding a
-        256-channel file whose whole-file read would be ~50 MiB while each
-        slice stays at 8 MiB, and checking exactness end to end."""
+        ``readframes`` call stay within the byte budget — pinned here by
+        recording every read of a 256-channel file that spans three slices,
+        and checking exactness end to end. The budget is shrunk to 4 KiB for
+        the same reason as the four-channel test: under 8 MiB it needs about
+        83 MiB of buffers (tracemalloc peak)."""
+        monkeypatch.setattr(transcribe_local, "_WAV_SLICE_BYTES", _SLICE_BYTES)
         channels = 256
-        # One slice for 256 channels is (8 MiB // 512) = 16384 frames; span
+        reads: list[int] = []
+        real_readframes = wave.Wave_read.readframes
+        test_thread = threading.get_ident()
+
+        def recording_readframes(wav, nframes):
+            raw = real_readframes(wav, nframes)
+            # Only this test's own 256-channel read counts, not another
+            # reader the worker happens to run meanwhile.
+            if threading.get_ident() == test_thread and wav.getnchannels() == channels:
+                reads.append(len(raw))
+            return raw
+
+        monkeypatch.setattr(wave.Wave_read, "readframes", recording_readframes)
+        # One slice for 256 channels is (4 KiB // 512) = 8 frames; span
         # three slices so the loop and the boundary are both exercised.
-        frames = 16384 * 2 + 1000
+        slice_frames = _SLICE_BYTES // (channels * 2)
+        frames = slice_frames * 2 + 3
         rng = np.random.default_rng(34)
         interleaved = rng.integers(-30_000, 30_000, frames * channels, dtype=np.int16)
         audio = tmp_path / "many.wav"
@@ -424,6 +453,9 @@ class TestPcmFromWav:
 
         pcm = transcribe._pcm_from_wav(str(audio))
 
+        assert len(reads) == 3
+        assert all(size <= _SLICE_BYTES for size in reads)
+        assert reads[0] == _SLICE_BYTES
         assert pcm is not None and pcm.size == frames
         expected = (interleaved.astype(np.float32) / 32768.0).reshape(-1, channels).mean(axis=1)
         np.testing.assert_allclose(pcm, expected, rtol=0, atol=1e-7)

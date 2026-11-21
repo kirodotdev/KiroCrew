@@ -59,6 +59,11 @@ _WAV_SUFFIXES = (".wav", ".wave")
 #: forever), not to limit a real voice memo, which is seconds to minutes long.
 _MAX_AUDIO_SECS = 3600
 
+#: Raw int16 bytes read per slice when :func:`_pcm_from_wav` folds a
+#: multichannel WAV to mono. A module constant so a test can cross the slice
+#: boundary with kilobytes of audio instead of tens of MiB per worker.
+_WAV_SLICE_BYTES = 8 * 1024 * 1024
+
 
 def _whisper_language(language_code: str) -> str:
     """Reduce a BCP-47 tag to the bare language whisper wants (``en-US`` -> ``en``).
@@ -113,7 +118,7 @@ def _pcm_from_wav(audio_path: str, max_audio_secs: int = _MAX_AUDIO_SECS) -> np.
             # the same: the per-frame mean is local to each frame, and
             # ``readframes`` counts whole frames, so no frame is ever split
             # across slices.
-            chunk_frames = max(1, (8 * 1024 * 1024) // (channels * 2))
+            chunk_frames = max(1, _WAV_SLICE_BYTES // (channels * 2))
             folded = []
             remaining = frames_total
             while remaining > 0:
