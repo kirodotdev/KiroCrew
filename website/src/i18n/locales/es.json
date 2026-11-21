@@ -18347,6 +18347,7 @@
         "import_templates_missing": "Algunos equipos usan una plantilla de agente que no está en esta máquina (equipo → plantilla): {{crews}}. Copia las plantillas que faltan en ~/.kiro/agents antes de usar estos equipos.",
         "import_items_refused": "Algunos elementos no se pudieron importar y se dejaron sin cambios: {{names}}.",
         "import_settings_kept": "Esta instalación conservó sus propios ajustes: {{files}}. Para usar los del archivo, cambia Combinar a Reemplazar junto a Elegir archivo e importa de nuevo. Reemplazar primero hace una copia de seguridad de esta instalación y después sobrescribe sus ajustes con los del archivo.",
+        "import_skills_held": "Habilidades no instaladas: {{names}}. Combinar nunca instala las habilidades de un archivo. Reemplazar sí las instalaría, pero tras una copia de seguridad cambia toda esta instalación (memoria, crons, espacio de trabajo y habilidades) por la del archivo.",
         "import_reloading_display_settings": "Importación completada: recargando para aplicar tus ajustes de visualización…",
         "import_complete_restart_gateway_one": "Importación completa ({{count}} elemento). Para aplicar todos los cambios, reinicia el gateway: Configuración → Acerca de → Reiniciar la pasarela.",
         "import_complete_restart_gateway_many": "Importación completa ({{count}} elementos). Para aplicar todos los cambios, reinicia el gateway: Configuración → Acerca de → Reiniciar la pasarela.",

@@ -18347,6 +18347,7 @@
         "import_templates_missing": "Algumas crews usam um modelo de agente que esta máquina não tem (crew → modelo): {{crews}}. Copie os modelos que faltam para ~/.kiro/agents antes de usar essas crews.",
         "import_items_refused": "Alguns itens não puderam ser importados e ficaram inalterados: {{names}}.",
         "import_settings_kept": "Esta instalação manteve as próprias configurações: {{files}}. Para usar as do arquivo, mude Mesclar para Substituir ao lado de Escolher arquivo e importe novamente. Substituir primeiro faz um backup desta instalação e depois sobrescreve as configurações dela com as do arquivo.",
+        "import_skills_held": "Habilidades não instaladas: {{names}}. Mesclar nunca instala as habilidades de um arquivo. Substituir as instalaria, mas, depois de um backup, troca toda esta instalação (memória, crons, espaço de trabalho e habilidades) pela do arquivo.",
         "import_reloading_display_settings": "Importação concluída — recarregando para aplicar suas configurações de exibição…",
         "import_complete_restart_gateway_one": "Importação concluída ({{count}} item). Para aplicar todas as alterações, reinicie o gateway: Configurações → Sobre → Reiniciar o gateway.",
         "import_complete_restart_gateway_many": "Importação concluída ({{count}} itens). Para aplicar todas as alterações, reinicie o gateway: Configurações → Sobre → Reiniciar o gateway.",
