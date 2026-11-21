@@ -13604,6 +13604,8 @@
         "resource_wake_budget_paused": "{{server}} のリソース購読 {{subscription}} は {{day}}（UTC）の起動上限 {{limit}} 回に達したため、次の UTC 日まで一時停止しています。その間の更新は、停止明けに 1 回の起動にまとめられます。"
       },
       "turnBlock": {
+        "agent_started": "エージェントが開始",
+        "agent_started_tooltip": "エージェントが自ら応答しました。たとえば、開始したバックグラウンドタスクが完了したときです。",
         "earlier_step_other": "以前の {{count}} ステップ",
         "hide_earlier_steps": "以前のステップを非表示",
         "hide_tool_calls": "ツール呼び出しを非表示",

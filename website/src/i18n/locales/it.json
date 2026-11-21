@@ -14272,6 +14272,8 @@
         "resource_wake_budget_paused": "L’abbonamento alla risorsa {{subscription}} su {{server}} ha raggiunto i suoi {{limit}} risvegli per il {{day}} (UTC) ed è in pausa fino al prossimo giorno UTC. Gli aggiornamenti nel frattempo vengono riuniti in un unico risveglio dopo la pausa."
       },
       "turnBlock": {
+        "agent_started": "Avviato dall'agente",
+        "agent_started_tooltip": "L'agente ha risposto da solo, per esempio dopo la fine di un'attività in background che aveva avviato.",
         "earlier_step_many": "{{count}} passaggi precedenti",
         "earlier_step_one": "{{count}} passaggio precedente",
         "earlier_step_other": "{{count}} passaggi precedenti",

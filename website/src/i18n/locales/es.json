@@ -14272,6 +14272,8 @@
         "resource_wake_budget_paused": "La suscripción al recurso {{subscription}} en {{server}} alcanzó sus {{limit}} activaciones del {{day}} (UTC) y queda en pausa hasta el siguiente día UTC. Las actualizaciones de mientras tanto se agrupan en una sola activación después de la pausa."
       },
       "turnBlock": {
+        "agent_started": "Iniciado por el agente",
+        "agent_started_tooltip": "El agente respondió por su cuenta, por ejemplo cuando terminó una tarea en segundo plano que había iniciado.",
         "earlier_step_many": "{{count}} pasos anteriores",
         "earlier_step_one": "{{count}} paso anterior",
         "earlier_step_other": "{{count}} pasos anteriores",

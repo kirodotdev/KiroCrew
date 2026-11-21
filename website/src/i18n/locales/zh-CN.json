@@ -13604,6 +13604,8 @@
         "resource_wake_budget_paused": "{{server}} 上的资源订阅 {{subscription}} 已达到 {{day}}（UTC）的 {{limit}} 次唤醒上限，将暂停到下一个 UTC 日。期间的更新会在暂停结束后合并为一次唤醒。"
       },
       "turnBlock": {
+        "agent_started": "由助手主动发起",
+        "agent_started_tooltip": "助手主动作答，例如它启动的后台任务完成之后。",
         "earlier_step_other": "之前的 {{count}} 个步骤",
         "hide_earlier_steps": "隐藏之前的步骤",
         "hide_tool_calls": "隐藏工具调用",

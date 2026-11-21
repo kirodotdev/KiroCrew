@@ -14272,6 +14272,8 @@
         "resource_wake_budget_paused": "L’abonnement à la ressource {{subscription}} sur {{server}} a atteint ses {{limit}} réveils pour le {{day}} (UTC) et reste en pause jusqu’au jour UTC suivant. Les mises à jour d’ici là sont regroupées en un seul réveil après la pause."
       },
       "turnBlock": {
+        "agent_started": "Lancé par l'agent",
+        "agent_started_tooltip": "L'agent a répondu de lui-même, par exemple après la fin d'une tâche en arrière-plan qu'il avait lancée.",
         "earlier_step_many": "{{count}} étapes précédentes",
         "earlier_step_one": "{{count}} étape précédente",
         "earlier_step_other": "{{count}} étapes précédentes",
