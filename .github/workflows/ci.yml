@@ -1754,8 +1754,13 @@ jobs:
           # one worker per 2 GiB after 2 GiB for the host, capped at the core
           # count: 6 on the 15 GiB fleet runner, 4 on a 4-core hosted runner.
           # The step prints its peak memory after the run.
+          #
+          # Under coverage.py's sys.monitoring core a worker holds more: the same
+          # 1/32 of the suite peaked at 8,309 MiB over six workers against 4,446
+          # with the C tracer, and at 6 workers every shard reached the runner's
+          # 15 GiB. So one worker per 3 GiB here: 4 on the fleet runner.
           mem_mib=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)
-          by_mem=$(( (mem_mib - 2048) / 2048 ))
+          by_mem=$(( (mem_mib - 2048) / 3072 ))
           WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
           [ "$WORKERS" -ge 1 ] || WORKERS=1
           echo "pytest workers: $WORKERS"
@@ -1904,6 +1909,25 @@ jobs:
           # upload-artifact v4 excludes dotfiles unless this is set.
           include-hidden-files: true
           if-no-files-found: error
+
+      # A red shard's data, to be read by hand. Under a name Coverage Combine
+      # does not download, so the gate never reads it.
+      - name: Stage the coverage data of a red shard
+        if: ${{ failure() && steps.scope.outputs.reduced != 'true' }}
+        shell: /usr/local/bin/ci-shell {0}
+        run: |
+          coverage combine 2>/dev/null || true
+          if [ -f .coverage ]; then mv .coverage ".coverage.red-${{ matrix.group }}"; else echo "no coverage data"; fi
+
+      - name: Upload the coverage data of a red shard
+        if: ${{ failure() && steps.scope.outputs.reduced != 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-red-shard-${{ matrix.group }}
+          path: .coverage.red-${{ matrix.group }}
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
 
   # Windows regression line: the backend supports Windows natively via
   # kiro_crew.platform_compat (see docs/guides/windows-install.md for the
