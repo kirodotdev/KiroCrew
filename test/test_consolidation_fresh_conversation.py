@@ -312,11 +312,124 @@ async def test_a_provider_without_new_conversation_falls_back_to_reset():
     assert sessions.calls[-2:] == [("reset", CONSOLIDATE_KEY, True), ("release", CONSOLIDATE_KEY)]
 
 
+class _CodexLikeClient:
+    """A provider whose live process cannot swap conversations, as on codex.
+
+    Each reset moves it onto a new session id, the way the next job's cold start
+    does; ``cleanup_session`` is the provider's delete of one native record.
+    """
+
+    def __init__(self, calls: list) -> None:
+        self.last_prompt_stats = None
+        self._calls = calls
+        self._n = 1
+        self.session_id = "thread-1"
+
+    async def new_conversation(self) -> None:
+        self._calls.append("new_conversation")
+        raise NotImplementedError("needs a new process")
+
+    async def cleanup_session(self, session_id: str) -> None:
+        self._calls.append(("cleanup", session_id))
+
+    def next_session(self) -> None:
+        self._n += 1
+        self.session_id = f"thread-{self._n}"
+
+
+class _CodexLikeSessions(_Sessions):
+    def __init__(self, *, reset_fails: bool = False) -> None:
+        super().__init__()
+        self.client = _CodexLikeClient(self.calls)
+        self._reset_fails = reset_fails
+
+    async def reset(self, key: str, **kw: object) -> bool:
+        await super().reset(key, **kw)
+        if self._reset_fails:
+            raise RuntimeError("shutdown failed")
+        self.client.next_session()
+        return True
+
+
+@pytest.mark.asyncio
+async def test_each_reset_job_deletes_only_its_own_conversation_record():
+    sessions = _CodexLikeSessions()
+    for _ in range(3):
+        await _one_turn(sessions)
+    cleanups = [c for c in sessions.calls if isinstance(c, tuple) and c[0] == "cleanup"]
+    assert cleanups == [("cleanup", "thread-1"), ("cleanup", "thread-2"), ("cleanup", "thread-3")]
+    # Deleted after the reset retired the process, before the permit is released.
+    assert sessions.calls[-3:] == [
+        ("reset", CONSOLIDATE_KEY, True),
+        ("cleanup", "thread-3"),
+        ("release", CONSOLIDATE_KEY),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_reset_keeps_the_record_of_a_process_that_may_still_run():
+    sessions = _CodexLikeSessions(reset_fails=True)
+    await _one_turn(sessions)
+    assert not [c for c in sessions.calls if isinstance(c, tuple) and c[0] == "cleanup"]
+
+
+@pytest.mark.asyncio
+async def test_a_raising_record_delete_still_releases_the_permit(caplog):
+    sessions = _CodexLikeSessions()
+    sessions.client.cleanup_session = AsyncMock(side_effect=OSError("store unreadable"))
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.llm_helpers"):
+        await _one_turn(sessions)
+    sessions.client.cleanup_session.assert_awaited_once_with("thread-1")
+    assert sessions.calls[-1] == ("release", CONSOLIDATE_KEY)
+    assert any(
+        r.levelno == logging.WARNING and "thread-1" in r.getMessage() for r in caplog.records
+    )
+
+
+def _rollout(codex_home: Path, thread_id: str) -> Path:
+    day = codex_home / "sessions" / "2026" / "11" / "21"
+    day.mkdir(parents=True, exist_ok=True)
+    path = day / f"rollout-2026-11-21T10-00-00-{thread_id}.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
+    return path
+
+
+@pytest.mark.asyncio
+async def test_codex_consolidation_passes_leave_no_rollout_and_keep_the_chats(tmp_path):
+    """The provider's real codex delete, on rollout files under a private ``CODEX_HOME``.
+
+    Rollout-cleanup coverage only: no Codex process runs, so neither what a Codex
+    client lists nor a resume of the kept chat is exercised here.
+    """
+    import types
+
+    from kiro_crew.providers import acp_lifecycle
+
+    codex_home = tmp_path / "codex"
+    helpers = [f"0000000{n}-0000-4000-8000-000000000000" for n in range(1, 4)]
+    chat = _rollout(codex_home, "11111111-1111-4111-8111-111111111111")
+    helper_rollouts = [_rollout(codex_home, sid) for sid in helpers]
+
+    sessions = _CodexLikeSessions()
+    client = sessions.client
+    client._client = SimpleNamespace(_extra_env={"CODEX_HOME": str(codex_home)})
+    client.is_kas_backend = client.is_claude_backend = client.is_opencode_backend = False
+    client.is_codex_backend = True
+    client.cleanup_session = types.MethodType(acp_lifecycle.cleanup_session, client)
+    for sid in helpers:
+        client.session_id = sid
+        await _one_turn(sessions)
+
+    assert not [p for p in helper_rollouts if p.exists()]
+    assert chat.exists()
+
+
 @pytest.mark.asyncio
 async def test_without_the_flag_the_key_is_recycled_as_before():
-    sessions = _Sessions()
+    sessions = _CodexLikeSessions()
     await _one_turn(sessions, fresh=False)
     assert "new_conversation" not in sessions.calls
+    assert not [c for c in sessions.calls if isinstance(c, tuple) and c[0] == "cleanup"]
     assert sessions.calls[-1] == ("recycle", CONSOLIDATE_KEY)
 
 
@@ -330,6 +443,51 @@ async def test_a_bg_provider_that_cannot_swap_in_place_is_recycled_not_reset():
     assert "new_conversation" not in sessions.calls
     assert not [c for c in sessions.calls if c[0] == "reset"]
     assert sessions.calls[-1] == ("recycle", "_bg")
+
+
+class _MemberSessions:
+    def __init__(self, calls: list, *, remove_fails: bool = False) -> None:
+        self.calls = calls
+        self._remove_fails = remove_fails
+
+    async def remove(self, key: str) -> None:
+        self.calls.append(("remove", key))
+        if self._remove_fails:
+            raise RuntimeError("still running")
+
+    async def destroy(self, key: str) -> None:
+        self.calls.append(("destroy", key))
+
+
+class _MemberLog:
+    def __init__(self, calls: list) -> None:
+        self.calls = calls
+
+    def delete_memory_consolidation_session(self, key: str, store: str) -> None:
+        self.calls.append(("delete_log", key))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remove_fails", [False, True])
+async def test_a_member_consolidation_cleanup_deletes_the_record_once_retired(remove_fails):
+    from kiro_crew.llm_helpers_parts.background_turns import (
+        _cleanup_memory_consolidation_session,
+    )
+
+    calls: list = []
+    client = _CodexLikeClient(calls)
+    await _cleanup_memory_consolidation_session(
+        _MemberSessions(calls, remove_fails=remove_fails), "k", "store", _MemberLog(calls), client
+    )
+    if remove_fails:
+        assert calls == [("remove", "k")]
+    else:
+        assert calls == [
+            ("remove", "k"),
+            ("cleanup", "thread-1"),
+            ("destroy", "k"),
+            ("delete_log", "k"),
+        ]
 
 
 # ── _call_llm ──
