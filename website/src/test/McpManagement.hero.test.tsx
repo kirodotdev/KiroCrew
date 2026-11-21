@@ -86,7 +86,7 @@ const footprintSettled = () =>
     { timeout: 5000 },
   )
 
-const findSharing = () => screen.findByRole('switch', { name: M('hero_title') }, { timeout: 5000 })
+const findSharing = () => screen.findByRole('switch', { name: M('share_switch_label') }, { timeout: 5000 })
 
 beforeEach(() => {
   vi.restoreAllMocks()

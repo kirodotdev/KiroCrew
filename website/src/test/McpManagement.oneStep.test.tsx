@@ -410,7 +410,7 @@ describe('the page-wide switch', () => {
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server({ can_stub: false })] } as never)
 
     mount()
-    const sharing = await screen.findByRole('switch', { name: M('hero_title') }, { timeout: 5000 })
+    const sharing = await screen.findByRole('switch', { name: M('share_switch_label') }, { timeout: 5000 })
     await waitFor(() => expect((sharing as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
     expect(sharing.getAttribute('aria-checked')).toBe('true')
   })
@@ -433,7 +433,7 @@ describe('the page-wide switch', () => {
     const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({ ok: true, name: 'alpha-mcp', stub: false } as never)
 
     mount()
-    const sharing = await screen.findByRole('switch', { name: M('hero_title') }, { timeout: 5000 })
+    const sharing = await screen.findByRole('switch', { name: M('share_switch_label') }, { timeout: 5000 })
     await waitFor(() => expect((sharing as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
     fireEvent.click(sharing)
     const dialog = await screen.findByRole('dialog', undefined, { timeout: 5000 })
@@ -505,7 +505,7 @@ describe('the page-wide switch', () => {
     } as never)
 
     mount()
-    const sharing = await screen.findByRole('switch', { name: M('hero_title') }, { timeout: 5000 })
+    const sharing = await screen.findByRole('switch', { name: M('share_switch_label') }, { timeout: 5000 })
     await waitFor(() => expect((sharing as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
     fireEvent.click(sharing)
     const dialog = await screen.findByRole('dialog', undefined, { timeout: 5000 })
@@ -531,7 +531,7 @@ describe('the page-wide switch', () => {
     } as never)
 
     mount()
-    const sharing = await screen.findByRole('switch', { name: M('hero_title') }, { timeout: 5000 })
+    const sharing = await screen.findByRole('switch', { name: M('share_switch_label') }, { timeout: 5000 })
     await waitFor(() => expect((sharing as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
     fireEvent.click(sharing)
     const dialog = await screen.findByRole('dialog', undefined, { timeout: 5000 })
@@ -552,7 +552,7 @@ describe('the page-wide switch', () => {
       .mockImplementation(async (name: string) => launch({ name }) as never)
 
     mount()
-    const sharing = await screen.findByRole('switch', { name: M('hero_title') }, { timeout: 5000 })
+    const sharing = await screen.findByRole('switch', { name: M('share_switch_label') }, { timeout: 5000 })
     await waitFor(() => expect((sharing as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
     fireEvent.click(sharing)
     const dialog = await screen.findByRole('dialog', undefined, { timeout: 5000 })
@@ -599,7 +599,7 @@ describe('the page-wide switch', () => {
     const enable = vi.spyOn(api, 'mcpGatewayEnable').mockResolvedValue({ ping_ok: true } as never)
 
     mount()
-    const sharing = await screen.findByRole('switch', { name: M('hero_title') }, { timeout: 5000 })
+    const sharing = await screen.findByRole('switch', { name: M('share_switch_label') }, { timeout: 5000 })
     await waitFor(() => expect((sharing as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
     fireEvent.click(sharing)
     const dialog = await screen.findByRole('dialog', undefined, { timeout: 5000 })
@@ -618,7 +618,7 @@ describe('the page-wide switch', () => {
     } as never)
 
     mount()
-    const sharing = await screen.findByRole('switch', { name: M('hero_title') }, { timeout: 5000 })
+    const sharing = await screen.findByRole('switch', { name: M('share_switch_label') }, { timeout: 5000 })
     await waitFor(() => expect((sharing as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
     fireEvent.click(sharing)
     // Named at the decision point, before the press that turns sharing on.
