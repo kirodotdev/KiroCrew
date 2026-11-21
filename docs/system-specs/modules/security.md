@@ -4648,19 +4648,23 @@ credentials or network access.
 The controller passes credential authority through the provider protocol on every
 probe. Each monitor persists its descriptive creation surface (`dashboard`,
 `channel`, or fail-closed `unknown`) separately from its storage binding. The surface
-does not grant credentials: the dashboard mutation boundary reserves an exact loop id
-and prepares a pending grant in the sandbox-hidden encrypted-vault directory before
-persistence, then activates that grant only after the monitor commit. Updates rebind
-the grant to the exact provider kind and target, and deletion or replacement revokes
-it. Revocation first persists the id in a separate protected tombstone record and
-only then removes the active grant. A failed grant cleanup therefore remains denied
-after restart; an unreadable or malformed tombstone record denies all grants. A
-failed tombstone write also places the id on an immediate process-local deny set, and
-the removal is refused before the agent-writable row disappears. Later credential
-checks retry until the durable denial lands. A later authenticated prepare or rebind
-clears its id only after the replacement identity is protected. A generic AutoNudge
-removal cancels and quiesces its timer before awaiting the durable denial, restoring
-the active timer if that denial fails, so the off-loop trust write opens no fire window.
+does not grant credentials: the owner-authenticated dashboard mutation boundary,
+either the REST owner gate or the owner mark on a user-origin session directive,
+reserves an exact loop id and prepares a pending grant in the sandbox-hidden
+encrypted-vault directory before persistence, then activates that grant only after
+the monitor commit. Non-owner dashboard users, channel turns, and unattended turns
+cannot record a grant. Updates rebind the grant to the exact provider kind and target
+only when the owner started the turn and the monitor already held the exact prior
+grant; deletion or replacement revokes it. Revocation first persists the id in a
+separate protected tombstone record and only then removes the active grant. A failed
+grant cleanup therefore remains denied after restart; an unreadable or malformed
+tombstone record denies all grants. A failed tombstone write also places the id on an
+immediate process-local deny set, and the removal is refused before the agent-writable
+row disappears. Later credential checks retry until the durable denial lands. A
+later authenticated prepare or rebind clears its id only after the replacement
+identity is protected. A generic AutoNudge removal cancels and quiesces its timer
+before awaiting the durable denial, restoring the active timer if that denial fails,
+so the off-loop trust write opens no fire window.
 It snapshots whether the exact row held a provider grant before revocation; if the
 subsequent monitor-store write fails, rollback restores that exact grant with the
 durable row before re-arming its timer.

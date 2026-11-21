@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import autonudge_provider_trust as trust
 from kiro_crew.autonudge import (
     APPROVAL_STALL_REASON,
     CONSECUTIVE_FAILURE_REASON,
@@ -36,7 +37,30 @@ from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 
 @pytest.mark.asyncio
-async def test_channel_origin_survives_a_linked_dashboard_monitor_binding(tmp_path):
+@pytest.mark.parametrize(
+    (
+        "producer_is_user_facing",
+        "producer_is_channel",
+        "turn_owner_sent",
+        "creation_surface",
+    ),
+    [
+        pytest.param(
+            True, False, False, MonitorCreationSurface.DASHBOARD, id="non_owner_dashboard"
+        ),
+        pytest.param(True, True, True, MonitorCreationSurface.CHANNEL, id="linked_channel"),
+        pytest.param(False, False, True, MonitorCreationSurface.DASHBOARD, id="unattended"),
+    ],
+)
+async def test_non_owner_origins_get_no_monitor_owner_credentials(
+    tmp_path,
+    monkeypatch,
+    producer_is_user_facing,
+    producer_is_channel,
+    turn_owner_sent,
+    creation_surface,
+):
+    monkeypatch.setattr(trust, "data_home", lambda: tmp_path)
     service = AutoNudgeService(base_dir=tmp_path)
     state = SimpleNamespace(
         _slots={"chat-1": SimpleNamespace(workspace="default", is_closing=False)},
@@ -49,7 +73,7 @@ async def test_channel_origin_survives_a_linked_dashboard_monitor_binding(tmp_pa
     ):
         result = await apply_session_directive(
             state,
-            SimpleNamespace(key="chat-1", _app=""),
+            SimpleNamespace(key="chat-1", _app="", _turn_owner_sent=turn_owner_sent),
             "dashboard:chat-1",
             "monitor_watch",
             {
@@ -63,19 +87,25 @@ async def test_channel_origin_survives_a_linked_dashboard_monitor_binding(tmp_pa
                 "max_provider_errors": 2,
                 "wake_instructions": "Check CI.",
             },
-            producer_is_user_facing=True,
-            producer_is_channel=True,
+            producer_is_user_facing=producer_is_user_facing,
+            producer_is_channel=producer_is_channel,
         )
 
     assert "started" in result
     loop = service.get_by_slot("chat-1")
     assert loop is not None and loop.monitor is not None
-    assert loop.monitor.creation_surface is MonitorCreationSurface.CHANNEL
+    assert loop.monitor.creation_surface is creation_surface
+    assert not trust.is_monitor_owner_credentials_recorded(
+        loop.id, loop.slot_key, loop.monitor.kind, loop.monitor.target
+    )
     service.stop()
 
 
 @pytest.mark.asyncio
-async def test_channel_origin_retarget_downgrades_dashboard_monitor_credentials(tmp_path):
+async def test_channel_origin_retarget_downgrades_dashboard_monitor_credentials(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(trust, "data_home", lambda: tmp_path)
     service = AutoNudgeService(base_dir=tmp_path)
     loop = await service.add_monitor(
         slot_key="chat-1",
@@ -85,6 +115,13 @@ async def test_channel_origin_retarget_downgrades_dashboard_monitor_credentials(
         cadence_secs=60,
         budgets=MonitorBudgets(),
         creation_surface=MonitorCreationSurface.DASHBOARD,
+    )
+    assert loop.monitor is not None
+    trust.record_monitor_owner_credentials(
+        loop.id, loop.slot_key, loop.monitor.kind, loop.monitor.target
+    )
+    assert trust.is_monitor_owner_credentials_recorded(
+        loop.id, loop.slot_key, loop.monitor.kind, loop.monitor.target
     )
     state = SimpleNamespace(
         _slots={"chat-1": SimpleNamespace(workspace="default", is_closing=False)},
@@ -112,6 +149,9 @@ async def test_channel_origin_retarget_downgrades_dashboard_monitor_credentials(
     assert monitor is not None
     assert monitor.target == "https://bitbucket.org/acme/widgets/pull-requests/11"
     assert monitor.creation_surface is MonitorCreationSurface.CHANNEL
+    assert not trust.is_monitor_owner_credentials_recorded(
+        loop.id, loop.slot_key, monitor.kind, monitor.target
+    )
 
 
 @pytest.mark.asyncio
@@ -378,7 +418,7 @@ async def test_watch_update_and_stop_are_authoritative_and_owned(tmp_path):
         sessions=None,
         channel_transports={},
     )
-    slot = SimpleNamespace(key="chat-1", _app="")
+    slot = SimpleNamespace(key="chat-1", _app="", _turn_owner_sent=True)
     audit = MagicMock()
     load_hosts = AsyncMock(return_value=frozenset())
     with (
@@ -405,10 +445,14 @@ async def test_watch_update_and_stop_are_authoritative_and_owned(tmp_path):
                 "max_provider_errors": 2,
                 "wake_instructions": "Check CI.",
             },
+            producer_is_user_facing=True,
         )
         assert "started" in created
         loop = service.get_by_slot("chat-1")
         assert loop is not None and loop.monitor is not None
+        assert trust.is_monitor_owner_credentials_recorded(
+            loop.id, loop.slot_key, loop.monitor.kind, loop.monitor.target
+        )
         loop.monitor.last_observation = {"head_revision": "old"}
         loop.monitor.last_fingerprint = "old-fp"
         loop.monitor.last_wake_fingerprint = "old-wake"
@@ -426,6 +470,7 @@ async def test_watch_update_and_stop_are_authoritative_and_owned(tmp_path):
                     "wake_instructions": f"Check {SAMPLE_SLACK_BOT_TOKEN} review threads.",
                 }
             },
+            producer_is_user_facing=True,
         )
         assert "updated" in baseline
         assert loop.monitor.last_fingerprint == "old-fp"
@@ -439,8 +484,12 @@ async def test_watch_update_and_stop_are_authoritative_and_owned(tmp_path):
             "dashboard:chat-1",
             "monitor_update",
             {"patch": {"target": "https://github.com/acme/widgets/pull/8"}},
+            producer_is_user_facing=True,
         )
         assert "updated" in reset
+        assert trust.is_monitor_owner_credentials_recorded(
+            loop.id, loop.slot_key, loop.monitor.kind, loop.monitor.target
+        )
         assert loop.monitor.last_fingerprint == ""
         assert loop.monitor.last_observation == {}
         assert loop.monitor.last_wake_fingerprint == ""
