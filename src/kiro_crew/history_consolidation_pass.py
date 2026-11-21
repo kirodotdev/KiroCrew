@@ -833,27 +833,11 @@ async def _consolidate(
                 if private_policy
                 else '"delete": false}. '
             )
-            from kiro_crew.memory_kind_routing import (
-                MODE_ENFORCE,
-                configured_kind_routing_mode,
-                kind_rules_for,
-            )
+            from kiro_crew.memory_kind_routing import configured_kind_routing_mode
 
+            # The prompt asks for no kind under any mode: enforce labels the items
+            # in one separate call.
             routing_mode = configured_kind_routing_mode()
-            # Only enforce asks for the tag. Under off and shadow the prompt is
-            # today's, word for word; shadow labels the items in a later call.
-            kind_field = (
-                '"kind": "fact" | "event" | "state", ' if routing_mode == MODE_ENFORCE else ""
-            )
-            kind_rules = kind_rules_for(routing_mode)
-            # Only under enforce: in shadow the keys the model writes must stay
-            # what they are today, or the shadow log would not measure today.
-            key_naming = (
-                "Name keys by topic, never by the number of a code change, ticket, "
-                "issue or round. "
-                if routing_mode == MODE_ENFORCE
-                else ""
-            )
             deletion_policy = (
                 'To propose removal of a stale/invalidated key, set "delete": true. '
                 "Changes to existing values and deletions require owner review; confidence does not authorize overwrites. "
@@ -864,7 +848,6 @@ async def _consolidate(
             keys.append(
                 '"semantic": Array of structured facts to remember long-term. '
                 'Each: {"key": "<dotted.key>", "value": <json_value>, "confidence": 0.0-1.0, '
-                + kind_field
                 + semantic_fields
                 + "Rules: keys must start with pref.*, project.*, or user.* "
                 "(e.g. pref.color, user.favorite_language, project.name). "
@@ -876,8 +859,6 @@ async def _consolidate(
                 "IMPORTANT: Check existing semantic memory above. If a key already covers "
                 "the same topic, UPDATE that key instead of creating a new one. "
                 "Do NOT create near-duplicate keys (e.g. project.x.approach AND project.x.refined). "
-                + key_naming
-                + kind_rules
                 + deletion_policy
                 + f"Max {_MAX_SEMANTIC_PER_CONSOLIDATION} items."
             )
@@ -1039,6 +1020,19 @@ async def _consolidate(
         # lessons path's dedup and checks instead of a duplicate semantic row.
         result = _reroute_lesson_semantic_keys(result, self._logger)
 
+        # Kind routing's enforce labels: one label call on the fenced items,
+        # before the writes and before the write-boundary check below, so a
+        # transcript that moved during the call still discards the whole pass.
+        from kiro_crew import memory_kind_routing as _kinds
+
+        if vector_store is not None and routing_mode == _kinds.MODE_ENFORCE:
+            label_kw = {"memory_store": store_name} if member_memory else {}
+            result = await _kinds.label_enforce_kinds(
+                result,
+                _withhold_unseen_deletes(result, semantic_visible, None)[0],
+                lambda prompt: self._call_llm(prompt, session_key=key, **label_kw),
+            )
+
         # A pending model result cannot authorize writes from a deleted or
         # edited transcript, or outrank a newer user turn. Appended assistant
         # replies may remain unconsolidated without invalidating the original
@@ -1073,21 +1067,6 @@ async def _consolidate(
             result, _prompt_rows(chunk), tier_mode, session_key=key
         )
         result = tier.result
-
-        # Kind routing's shadow: the routed items and what the store held for them, read
-        # before any write. Both write paths then run as under off; the items are
-        # labelled once they are done.
-        from kiro_crew import memory_kind_routing as _kinds
-
-        shadow_kinds = None
-        # The mode the prompt was built under, so the prompt and the log agree.
-        if vector_store is not None and routing_mode == _kinds.MODE_SHADOW:
-            fenced, _ = _withhold_unseen_deletes(result, semantic_visible, None)
-            routed = _kinds.route_semantic_by_kind(fenced, _kinds.MODE_SHADOW)
-            if routed.decisions:
-                shadow_kinds = await _run_in_memory_background_pool(
-                    _kinds.capture_prior, vector_store, routed
-                )
 
         if member_memory:
             stage = "member memory"
@@ -1363,21 +1342,6 @@ async def _consolidate(
                         publication.mark_committed()
 
             await _run_in_memory_background_pool(_record_tier)
-
-        # Kind routing's shadow labels, after the pass's last memory write so the call
-        # widens no write's window: one small call on the items already written,
-        # never the transcript, feeding only the log (memory_kind_routing.log_shadow_kinds).
-        if shadow_kinds is not None and vector_store is not None:
-            stage = "kind labels"
-            store_kw = {"memory_store": store_name} if member_memory else {}
-            await _kinds.log_shadow_kinds(
-                shadow_kinds,
-                vector_store,
-                lambda prompt: self._call_llm(prompt, session_key=key, **store_kw),
-                lambda: self._publication_hold_checked(key, commit_state),
-                f"consolidation:{key}",
-                session_key=key,
-            )
 
         # Auto skill detection — a SEPARATE LLM pass over the full-session
         # window (see _run_skill_detection), not the incremental tail. Runs

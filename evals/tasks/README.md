@@ -55,6 +55,12 @@ that changed any case, check or `lib/` file is VOID and the batch stops.
 
 ## Scoring
 
+The seed asks the agent only to commit on `trunk`; no arm pushes. Before each
+check (the 60 s samples and the final one) the runner fetches the repo's `trunk`
+into the local origin, and the check judges that origin. Each run directory keeps
+the arm's whole stdout and, for a Crew arm, every chat transcript and
+background-agent record under `crew/`.
+
 A run is **VOID** (rerun, never counted) when the harness could not start, the
 arm is not built, or its output names this suite's path. Otherwise it is
 **FAILED** on any ask of a person, on passing the wall or spend cap, on any

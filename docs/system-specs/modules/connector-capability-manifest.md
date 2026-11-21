@@ -636,6 +636,35 @@ runs is folded into the required set immediately, not deferred to a future
 round — deferring a same-day miss is how a snapshot gets mistaken for a
 ceiling.
 
+## Conformance responsibilities and who owns each
+
+No code on `main` validates a `ConformanceRun` or an `EvidenceReceipt` yet, and no
+conformance runner exists. Each conformance responsibility still has one owner, so
+none is dropped while the work is spread over streams. The `W00` connector-manifest
+validator is the single enforcer of the structural rows: a second validator would be
+a second decision point on the same fields.
+
+| Responsibility | Owner | State on `main` |
+|---|---|---|
+| `ConformanceRun` structure (required fields, types, immutable `tested_sha`, `verdict` enum, `response_summary` object) | `W00` connector-manifest validator | Specified above; not enforced |
+| `EvidenceReceipt` structure (`receipt_id`, `conformance_run_ref`, `claim`, `runtime_verified`, `negative_test_refs`, cleanup fields) | `W00` connector-manifest validator | Specified above; not enforced |
+| Per-effect cleanup rules ("Per-effect verification and cleanup") | `W00` connector-manifest validator | Specified above; not enforced |
+| `readback_result` shape and rules | `W00` connector-manifest validator | Specified above; not enforced |
+| Three-way reference identity between `verification_contract`, the run and the receipt ("Immutable ref binding"), plus orphan-evidence and path-safety scans | `W00` connector-manifest validator | Specified above; not enforced |
+| Credential custody: a run binds through `account_binding_ref`, never a raw credential | kiro-cli owns the OAuth chain and token custody ([connections.md](connections.md)) | `OperationContext.binding_ref` (`src/kiro_crew/connections/control_plane/context.py`) carries the credential-free reference; resolving it to a live credential inside kiro-cli is not built |
+| A live run that produces a receipt with `runtime_verified: true` | The conformance runner plus authorized-account evidence (`W15`) | Not built; `runtime_verified` stays `false`, and no fixture-account owner is named |
+
+The serialization format and in-repo path of a manifest entry, a `ConformanceRun` and
+an `EvidenceReceipt` stay open, as the conformance section above says.
+
+**`evidence_tier` is a pending contract item.** The campaign contract (outside this
+repository) lists an `evidence_tier` field on `EvidenceReceipt`. The receipt table
+above has no such field, and this spec governs on conflict, so no validator checks
+it. The contract's own comment for the field breaks off before naming its fourth
+state. The campaign-contract owner decides: amend the contract to match this spec,
+or scope a real `evidence_tier` field into a later stream. `evidence_tier` is never
+an alias of `source_status`, which is a different field with a different value set.
+
 ## What this spec deliberately does not contain
 
 - No validator implementation for the manifest schema above (the schema is

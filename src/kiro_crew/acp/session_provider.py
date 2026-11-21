@@ -472,6 +472,7 @@ class AcpSessionProvider(LLMProvider):
     kas_agent_prompt_notice = _handle_str("kas_agent_prompt_notice")
     kas_bundle_engine_version = _handle_str("kas_bundle_engine_version")
     kas_untested_version_notice = _handle_str("kas_untested_version_notice")
+    kas_engine_fallback_notice = _handle_str("kas_engine_fallback_notice")
     kas_telemetry_notice = _handle_str("kas_telemetry_notice")
     kas_withheld_credentials_notice = _handle_str("kas_withheld_credentials_notice")
 

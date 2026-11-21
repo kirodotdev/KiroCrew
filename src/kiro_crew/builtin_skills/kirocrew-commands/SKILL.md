@@ -88,7 +88,7 @@ transcripts.
 | `kirocrew logs` | Show gateway logs (last 100 lines) |
 | `kirocrew logs -f` | Follow (tail) live log output |
 | `kirocrew logs -n 50` | Show last N lines |
-| `kirocrew tmp` | Remove your idle, unused leftovers from /tmp and /var/tmp |
+| `kirocrew tmp reclaim PATH…` | Remove each named /tmp or /var/tmp entry of yours once it is idle and unused (`--dry-run` removes nothing) |
 
 ## Pods (Isolated Worktree Test Instances)
 
@@ -159,7 +159,7 @@ type a reply to the agent instead. Anything else denies.
 ## Browsing (`browser` MCP tool)
 
 Browsing is not a `kirocrew` subcommand. It is the **`browser` MCP tool**:
-`op=navigate|back|snapshot|read|click|drag|scroll|type|paste|press_key|hover|select_option|wait_for|console|screenshot|tabs|dialog|reflex|ask`.
+`op=navigate|back|snapshot|read|click|drag|scroll|type|fill|paste|press_key|dispatch_key|hover|select_option|upload|wait_for|wait_for_element|wait_for_network_idle|console|screenshot|tabs|dialog|reflex|js|cdp|http_get|iframe_target|ask`.
 It drives one browser the gateway owns (the user's own Chrome where there is
 one, Edge on Windows without Chrome, otherwise Kiro's headless Chromium), and the
 user watches the page live in the chat, where one click takes over. It opens
@@ -173,6 +173,7 @@ public `http(s)` URLs only, plus loopback origins the user listed under
 | `read {ref?, offset?}` | Read the page's text, not only the screen; `ref` scopes it to one element and a long page names the next `offset`. An unselected tab or a closed section (`details`) is left out, so click the tab or open the section first. |
 | `click {ref \| x,y}` / `type {ref?, text, submit?}` | Act on an element from a snapshot; `type` refuses a password field. `type {ref?, steps: [{text} \| {key, modifiers?}]}` runs ordered text and key steps in one call |
 | `paste {ref?, text, html?}` | Put rich content (a table, headings, lists) into the field as a clipboard paste would, without touching the user's clipboard; refused where `type` is |
+| `upload {ref, path}` | Put local files into a file field the snapshot marks `[file]`: `path` is one absolute path, or a list of up to 10 when the field takes several |
 | `screenshot` | Write a PNG, return its absolute path; show it with `![..](path)` |
 | `tabs {action: list\|switch\|new}` | The tabs the agent opened, and only those |
 

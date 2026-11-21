@@ -94,7 +94,7 @@ Why the opt-in exists in this direction: an edition build compiles that edition'
 proprietary sources into `website/dist`, and that `dist` is staged into the public
 OSS wheel. A published release cannot be unpublished, so contamination is a
 one-way door. With the opt-in as the gate, every pipeline (release, publish, and
-the backend `setup.py` to `build-frontend.sh` path) is protected **by default**: a
+the runtime rebuild below) is protected **by default**: a
 stray or inherited `KIROCREW_EDITION_DIR` fails the build instead of silently
 compiling edition sources into a public artifact. Only the edition's own build
 script sets the opt-in. Forgetting it fails safe before any artifact is emitted;

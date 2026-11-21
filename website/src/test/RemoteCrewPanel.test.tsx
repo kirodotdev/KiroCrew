@@ -1452,6 +1452,28 @@ describe('RemoteCrewPanel', () => {
       expect(prompt).toContain('Nimbus')
     })
 
+    it('drops the diagnosis note and the remove warning once the crew is removed (Bug Bash row 53)', async () => {
+      sessionStorage.clear()
+      ;vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [BROKEN] } as never)
+      ;vi.mocked(api.instanceStatus).mockResolvedValue(DIAGNOSED as never)
+      ;vi.mocked(api.disconnectInstance).mockResolvedValue({} as never)
+      ;vi.mocked(api.removeInstance).mockResolvedValue({} as never)
+      const u = userEvent.setup()
+      renderWithProviders(<RemoteCrewPanel />)
+      await screen.findByText('Nimbus')
+      await openRowMenu(u)
+      await u.click(await screen.findByRole('button', { name: /Diagnose Nimbus/i }))
+      await screen.findByText(/c1: Remote dashboard down/i)
+      ;vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] } as never)
+      // The row's Remove asks first; the confirm button carries the same name.
+      await u.click(await screen.findByRole('button', { name: /Remove Nimbus/ }))
+      await screen.findByText(/Remove only takes it off this list/)
+      await u.click(await screen.findByRole('button', { name: /Remove Nimbus/ }))
+      await waitFor(() => expect(api.removeInstance).toHaveBeenCalled())
+      await waitFor(() => expect(screen.queryByText(/c1: Remote dashboard down/i)).toBeNull())
+      expect(screen.queryByText(/Remove only takes it off this list/)).toBeNull()
+    })
+
     it('keeps the typed add-form values across that hand-off', async () => {
       // The navigation unmounts this whole panel, the add form included, and a
       // first-time user has just typed the crew by hand. The values are held in the

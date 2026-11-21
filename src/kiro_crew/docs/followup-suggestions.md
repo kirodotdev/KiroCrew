@@ -40,7 +40,7 @@ items:
     {
       "title": "Add rate limiting to the upload endpoint",
       "description": "POST /api/upload is unbounded — a single client can saturate the worker pool.",
-      "prompt": "In src/kiro_crew/dashboard/handlers/files.py, add a per-caller token-bucket limiter to api_file_upload ... (full standalone instruction)",
+      "prompt": "In src/kiro_crew/dashboard/file_api/desktop.py, add a per-caller token-bucket limiter to api_upload ... (full standalone instruction)",
       "branch": "feat/upload-rate-limit"
     }
   ]

@@ -213,6 +213,7 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
     "safe_reads": ("screen_windows_linked_ancestors",),
     "script_hooks": ("_script_hook_enabled_from",),
     "tool_identity": ("ToolCall",),
+    "hook_dispatch": ("hook_tool_input",),
 }
 
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every moved name,
@@ -229,6 +230,9 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: ``fire_tool_hooks`` a trailing ``session_model=None`` and
 #: ``permission_pre_tool_block`` a trailing ``acp_session_id=None``, so their
 #: callers fit too.
+#: ``fire_tool_hooks`` and ``permission_pre_tool_block`` take a trailing
+#: ``raw_tool_params=None`` (the structured params the hook payload's ``tool_input``
+#: is built from), so their callers fit too.
 #: ``safe_read_file`` and ``_opened_file_matches_validated_path`` take a keyword-only
 #: ``canonical_gate=False`` (the agent snapshot scan's inline gate), so theirs fit as well.
 #: ``safe_read_file_bytes_nolink`` and ``validate_file_path`` take the same keyword (the
@@ -241,7 +245,9 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: ``session_key=None`` keyword (the channel session governance judges a bot turn
 #: by), so every existing caller still fits. ``fire_tool_hooks`` also takes a
 #: trailing ``tool_match_names=None`` keyword (``None`` keeps title matching).
-_BASE_SHAPE_DIGEST = "99a8550367a8fe7af43162aedfa9cbe5c47b961e41df01ef8ed89e68a4f72342"
+#: ``safe_copy_file_nolink`` takes a keyword-only ``links_only=False`` (the browser
+#: upload's read of a cloud-files placeholder on Windows), so its callers fit too.
+_BASE_SHAPE_DIGEST = "4f800391db8fe8cf0c7db83ec28af558812e0ea03dc14f557de05ec6d7334b49"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in

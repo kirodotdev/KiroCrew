@@ -879,6 +879,7 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
         "withheld_credentials_notice",
         "telemetry_unconfirmed_notice",
         "kiro_cli_model_notice",
+        "engine_fallback_notice",
         "mode_pinned_notice",
         "zero_tool_ban_notice",
     ):

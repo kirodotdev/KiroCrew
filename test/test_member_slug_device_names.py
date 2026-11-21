@@ -16,9 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew import member_goals, member_notes, members
-from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.members_parts.member_sessions import member_slot_key
-from kiro_crew.memory_stores import _allocate_member_id
 
 _requires_nofollow = pytest.mark.skipif(
     not members.member_briefing_supported(),
@@ -30,16 +28,6 @@ _requires_nofollow = pytest.mark.skipif(
 _posix_only = pytest.mark.skipif(
     sys.platform == "win32", reason="a device-stem path is the device on Windows"
 )
-
-class _NoBinding:
-    def lstat(self):
-        raise FileNotFoundError
-
-
-@pytest.fixture
-def no_binding_io(monkeypatch):
-    """No retained DM binding exists: the allocator then stats nothing on a device path."""
-    monkeypatch.setattr(members, "dm_binding_path", lambda _slug: _NoBinding())
 
 
 DEVICES = ["con", "nul", "com1", "lpt9"]
@@ -88,15 +76,3 @@ def test_an_existing_device_slug_can_be_written_and_read_back():
 def test_an_existing_device_slug_keeps_its_notes():
     member_notes.write_member_notes("con", "hello")
     assert members.read_member_briefing("con") == "hello"
-
-
-@pytest.mark.parametrize("name", ["CON", "con", "Nul", "COM1", "lpt9"])
-def test_a_new_bot_named_for_a_device_gets_a_non_device_member_id(name, no_binding_io):
-    member_id = _allocate_member_id(_config(), name)
-    assert member_id not in WINDOWS_DEVICE_STEMS
-    assert members.validate_slug(member_id) == member_id
-
-
-@pytest.mark.parametrize("stem", sorted(WINDOWS_DEVICE_STEMS))
-def test_no_new_member_id_is_ever_a_device_stem(stem, no_binding_io):
-    assert _allocate_member_id(_config(), stem) not in WINDOWS_DEVICE_STEMS

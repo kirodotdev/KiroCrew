@@ -487,10 +487,11 @@ class BrowserCredentialTarget:
 
     ``kind`` is always ``"kiro_chromium"`` when the provider is called (the core
     never asks for the person's own Chrome or Edge); ``headless`` says whether it
-    has a window; ``reason`` is ``"start"`` (a launch or relaunch) or
+    has a window; ``reason`` is ``"start"`` (a launch or relaunch),
     ``"source_changed"`` (an agent navigation found
     :meth:`BrowserCredentialProvider.fingerprint` or ``browser.credentials``
-    changed since the last apply).
+    changed since the last apply), ``"context"`` (a chat's new browser context) or
+    ``"sign_in"`` (the optional ``complete_sign_in`` is asked about a landed page).
     """
 
     kind: str
@@ -506,7 +507,8 @@ class BrowserCredentialProvider(Protocol):
     session for its own sites supplies it here. WIRED:
     ``browser_harness.supervisor.HarnessSupervisor`` (the gateway, outside every
     sandbox) calls it at each start of Kiro's Chromium and before an agent
-    navigation when :meth:`fingerprint` or the settings changed, then writes the
+    navigation when :meth:`fingerprint` or the settings changed, or a cookie it
+    supplied has reached its ``expires``, then writes the
     cookies with CDP ``Storage.setCookies`` on the gateway's own connection to the
     browser -- never through the agent's ``browser`` tool -- before the daemon (and
     so any agent op) is up. Never called for the person's own Chrome or Edge.
@@ -529,6 +531,25 @@ class BrowserCredentialProvider(Protocol):
     A raise or a timeout is reduced to a fixed reason code and the browser starts
     without the cookies: never put a secret in an exception message, and never
     log a value yourself.
+
+    OPTIONAL ``complete_sign_in(target, url) -> Optional[str]``: not a member of
+    this Protocol, so a provider without it (the public Default has none) still
+    satisfies it; the gateway reads it with ``getattr`` and a missing,
+    non-callable or raising one means "no completion". v1 addition (no
+    ``CONTRACT_VERSION`` bump). WIRED: ``browser_harness.sign_in``, after an agent
+    ``navigate`` committed on an ``https`` page whose host is in BOTH
+    :meth:`domains` and ``browser.credentials.domains`` (same opt-in and same
+    browser as the cookies; ``target.reason`` is ``"sign_in"``), at most once per
+    op, in a worker thread bounded at 15 s (``budgets.SIGN_IN_PROVIDER_S``). *url*
+    is the page the tab landed on. Answer ``None`` when it is not your sign-in page
+    or you cannot finish it, and answer that from memory: it is asked on every such
+    landing. Otherwise answer a URL that finishes the sign-in when opened in that
+    tab: ``https``, on a host in :meth:`domains`, and SINGLE-USE (the secret it
+    carries is spent by the site on first load), because the tab's address,
+    history and later ``tabs`` listings are the page's to show. The gateway opens
+    it only past the browser's URL gate and both domain lists, and never shows it
+    to the agent or writes it to the SEL. A raise or a timeout is a fixed code;
+    never put a secret in an exception message.
 
     The agent must not be able to read whatever this provider reads from. The
     provider runs in the gateway, so its own files need no sandbox access; the
@@ -562,7 +583,9 @@ class BrowserCredentialProvider(Protocol):
         seconds) has passed, or with a control character or a non-boolean flag, is
         dropped, not the batch. Each is set as a SESSION cookie (``expires``
         removed, so nothing reaches the profile on disk and it is gone when the
-        browser closes). Raise
+        browser closes). The gateway remembers ``expires`` in memory and deletes
+        the cookie from the browser once it passes, and deletes one that a later
+        call that succeeded leaves out. Raise
         ``browser_harness.credential_files.CredentialSourceError`` for a missing or
         refused source: it becomes the status code, ``needs_refresh`` for a
         missing one.

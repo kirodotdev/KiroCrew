@@ -10,13 +10,13 @@ Every lesson row gets an authority level from data it already carries:
 
 ``memory.rule_authority_order`` picks the mode:
 
-* ``off`` (default) -- the rule block is today's, byte for byte.
-* ``shadow`` -- the block is today's; the injection receipt records the rule ids
-  the authority order would add to it and drop from it.
-* ``enforce`` -- the block lists L1, then L2, then L3. Inside a level the
+* ``off`` -- the rule block keeps the relevance order.
+* ``enforce`` (default) -- the block lists L1, then L2, then L3. Inside a level the
   shipped order holds: authored ``always`` rules before untagged rows, each by
   request relevance. The cap, the omission line and the findings block are
   unchanged.
+
+``shadow`` is not one of these modes, so a stored one reads as the default.
 
 L1 is only as clean as ``source``: with ``memory.lesson_origin_gate`` below
 ``enforce``, an agent-triggered ``learn_add`` still stores ``user_explicit`` and
@@ -36,7 +36,6 @@ from kiro_crew.config.memory_sections import rule_authority_order_mode_from
 logger = logging.getLogger(__name__)
 
 MODE_OFF: Final = "off"
-MODE_SHADOW: Final = "shadow"
 MODE_ENFORCE: Final = "enforce"
 
 #: Bump when what decides a level, or the order inside one, changes, so receipts

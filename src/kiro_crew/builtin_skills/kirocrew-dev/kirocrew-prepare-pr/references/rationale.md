@@ -384,8 +384,8 @@ The same observed incident has a writer-side half, and it is the half that actua
 broke. The PR that waited ten hours TIGHTENED a contract: it made a ledger entry's
 `data` validate against a registry, so a payload that main accepted before now
 raises. That is a `Breaking:` change, and the writers it broke are exactly the ones
-the two PRs merging in between added -- `test/test_ledger_kinds.py`,
-`test/test_ledger_retention.py` and `test/test_remove_slot_for_history_key.py` all
+the two PRs merging in between added -- `test/test_crew_log_kinds.py`,
+`test/test_crew_log_retention.py` (then `test_ledger_*`) and `test/test_remove_slot_for_history_key.py` all
 hand-write payloads without the new required fields. A writer sweep taken when that
 PR opened would have found none of them, because none of them existed yet. So the
 rule is not symmetry with the tests-side check: it is the same expiry, on the same
@@ -567,7 +567,10 @@ The other condition stands on its own, and does not depend on the order. When th
 regenerated body is byte-identical there is nothing to publish, so the call is skipped.
 Publishing it anyway wastes a request for certain, and a whole fan-out if GitHub raises
 `edited` for a PATCH that changes nothing. Which of those it is has not been measured
-here, so skip the call but do not quote a saving for it.
+here, so skip the call but do not quote a saving for it. Compare against
+`gh pr view <n> --json body --template '{{.body}}'`: `--jq .body` appends a newline
+of its own, so a raw comparison with it reports a difference every round and the
+condition skips nothing.
 
 Which lanes sit in which group is a property of the workflows and changes with them,
 so read it from the `on:` blocks in `.github/workflows/` and the reviewer table in

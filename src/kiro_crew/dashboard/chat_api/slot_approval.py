@@ -33,7 +33,6 @@ if TYPE_CHECKING:
         deny_app_session_control,
         deny_non_dashboard_caller,
         effective_session_key,
-        exact_trust_pattern,
         grant_deadline,
         logger,
         native_resolution_target,
@@ -1428,13 +1427,18 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 return _deny_trust_pattern(name, request_id, original_action, "pattern_underivable")
             if pattern != expected:
                 return _deny_trust_pattern(name, request_id, original_action, "approval_superseded")
+            from kiro_crew.browser_host_trust import grant_pattern, is_host_key
+
+            if grant_ttl is not None and is_host_key(trust_key):  # a site grant has no lifetime
+                return _deny_trust_pattern(name, request_id, original_action, "ttl_unsupported")
             # ``_trusted_patterns`` is the existing fnmatch store.  Escape every
             # metacharacter so an exact grant for ``rm *.tmp`` cannot authorize
-            # ``rm secret.tmp``.
+            # ``rm secret.tmp``; a browser host ``act`` key alone also covers reads
+            # on its host (``browser_host_trust.grant_pattern``).
             record_trust_grant(
                 owner._trusted_patterns,
                 owner._trusted_pattern_deadlines,
-                (exact_trust_pattern(trust_key),),
+                (grant_pattern(trust_key),),
                 _grant_deadline(grant_ttl),
             )
         action = "approved"

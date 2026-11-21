@@ -649,7 +649,11 @@ test("a late answer for a renewal stopped by a hand close changes nothing", asyn
 // --- The window's notices: an offline host, lost access, Check again ---
 
 const UNAVAILABLE_TEXT = {
-  title: "Team Crew is currently unavailable", body: "", check: "Check again", close: "Close",
+  title: "Team Crew is currently unavailable",
+  // Says why and what to do (Bug Bash row 46): the body used to be empty.
+  body: "The machine running it is offline, or Kiro Crew is not running there. Once it is back, press Check again.",
+  check: "Check again",
+  close: "Close",
 };
 const NO_ACCESS_TEXT = {
   title: "You no longer have access to Team Crew.",

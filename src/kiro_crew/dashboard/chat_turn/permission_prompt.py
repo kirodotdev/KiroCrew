@@ -27,7 +27,7 @@ from kiro_crew.dashboard.turn_dispatch import (
     format_approval_no_budget_card,
     format_approval_timeout_card,
 )
-from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE
+from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, hook_tool_input
 from kiro_crew.safety_override import yolo_policy_permits
 from kiro_crew.security.readonly_bash import (
     command_invokes_git,
@@ -259,6 +259,11 @@ async def _on_permission_prompt(
         )
         if _grant_path:
             _path_scope_trusted = not await asyncio.to_thread(path_trust_unresolved, _grant_path)
+    # The chat's own browser call: its grant is the host of the page it acts on.
+    # Imported here: this body runs on the chat runner module's globals.
+    from kiro_crew import browser_host_trust
+
+    _browser_page = browser_host_trust.page_url_for(event, session_key, client, state)
     _trust_key = approval_command(
         event.tool_input or "",
         is_shell=event.is_shell,
@@ -266,7 +271,10 @@ async def _on_permission_prompt(
         mcp_server_name=event.mcp_server_name,
         raw_tool_params=event.raw_tool_params,
         path_scope_trusted=_path_scope_trusted,
+        browser_page_url=_browser_page,
     )
+    # Read before the card is answered: only a grant made by the answer is checked.
+    _site_granted_before = browser_host_trust.site_grant_covers(_trust_key, slot)
     _display_command = approval_display_command(
         event.tool_input or "",
         is_shell=event.is_shell,
@@ -274,6 +282,7 @@ async def _on_permission_prompt(
         mcp_server_name=event.mcp_server_name,
         raw_tool_params=event.raw_tool_params,
         path_scope_trusted=_path_scope_trusted,
+        browser_page_url=_browser_page,
     )
     _full = _extract_full_command(_display_command)
     _safe_full, _ = redact_exfiltration_urls(_full)
@@ -306,6 +315,9 @@ async def _on_permission_prompt(
         # them so two different pairs cannot share a durable grant.
         perm_meta["trust_command_key"] = _trust_key
         perm_meta["trust_command_grantable"] = "1"
+        if browser_host_trust.is_host_key(_trust_key):
+            # The card words the row as a site grant, read or act, not a command.
+            perm_meta["browser_trust_class"] = _trust_key.rsplit(":", 1)[1]
     # A broad per-slot Trust click is still a durable grant, so it
     # carries an explicit server proof: an alternate approval
     # surface must not offer it merely because it received a
@@ -948,10 +960,7 @@ async def _on_permission_prompt(
         # runs, so those calls fire them here.
         pre_hook_results: list[str] = []
         if not turn._pre_tool_hooks_fired:
-            try:
-                _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-            except Exception:
-                _parsed_input = None
+            _parsed_input = hook_tool_input(event.raw_tool_params, event.tool_input)
             try:
                 pre_hook_results = await _fire(
                     turn,
@@ -1019,6 +1028,13 @@ async def _on_permission_prompt(
                 if _override_offer is not None
                 else _deny_waiver_kwargs(turn)
             )
+            # This click made the site grant (none covered the call when the card
+            # was drawn, one does now): the op route checks the tab is still on
+            # that host. A plain approval runs as it always has.
+            if not _site_granted_before and browser_host_trust.site_grant_covers(_trust_key, slot):
+                browser_host_trust.note_host_approval(
+                    session_key, _trust_key, event.raw_tool_params
+                )
             approval_sent = await client.approve_tool(event.request_id, **_floor_waivers)
             if approval_sent is False:
                 _audit_approve_refused(

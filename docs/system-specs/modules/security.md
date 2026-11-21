@@ -1515,6 +1515,44 @@ Security properties:
   route and that check share `_managed_name_owned` and `_remote_channel_reserved`,
   so each rule is written once). One SEL row per vault fill and per save
   names the item and the origin.
+- **Browser upload reads ordinary files inside the gateway.** The browser's
+  `upload {ref, path}` op (`browser_harness/upload.py`; see [browser](browser.md),
+  Security) runs in the gateway, outside the agent's sandbox, so the path is
+  judged there and not trusted from the sandbox: the gate's `param-paths` tier
+  reads `args.path` (one path or a list, each judged), and the gateway refuses each again when it is relative, not a
+  regular file, a final link, or over 25 MiB. It copies the file with
+  `hooks.safe_copy_file_nolink`, the same descriptor-pinned copy other gateway
+  readers use: one open without following a final link, a regular file with one
+  link, and `is_sensitive_path` on the real path of the OPENED descriptor, so a
+  folder link flipped between the check and the open is refused. An app's
+  `browserSites` grant never approves it. The browser receives that copy, in the
+  hidden IPC leaf, never the agent's path, so a file or link swapped in after the
+  check never reaches the page. One
+  SEL row per file names the path and size, never the content.
+- **Browser `js`, `cdp` and `http_get` run Harness's own helpers in the gateway.**
+  The owner opened them
+  (`docs/decisions/2026-11-19-the-browser-tool-runs-harness-js-cdp-and-http-get.md`;
+  see [browser](browser.md), "The tool" and Security). They are acting ops, approved
+  on a card every call (the owner's ruling "改成这三个每次都弹卡"). The op route opens
+  that card itself, an Allow / Deny agent ask bound to the call's digest and spent
+  by one run (`dashboard/handlers/browser_card_ask.py`), because the default spec's
+  `@kirocrew-core` grant in `allowedTools` means the host raises no permission
+  request for a `browser` call. No site grant, "Trust all tools", trust-reads,
+  YOLO, trusted pattern or app `browserSites` grant answers it, since every call
+  reaches that route whatever let the tool call through; the card shows the whole
+  call, and a session with nobody to ask refuses it.
+  Behind `capabilities.browse`; a
+  tab they name must be the caller's (a `js` target's own URL passes the navigate
+  gate too), `cdp` takes no session id, and a `cdp` method that hands the browser a
+  local path (a file input, a drag's files, a `file:` fetch, a download folder) is
+  refused, since the browser runs outside the agent's sandbox. `http_get` is
+  plain HTTP from the helper worker, outside the agent's sandbox, so its URL passes
+  the navigate gate (public http(s) only) in the shim, the route and the op; a
+  redirect is answered, not followed, so its target is gated as a new call; no
+  `file:` URL is read. SEL records the op, a `cdp` method or an `http_get` URL
+  without its query, never the script, params, headers or result. A `cdp`
+  command that names no tab reaches the whole browser (every site's cookies in
+  the user's own Chrome included); that is the owner's accepted residual.
 - **Sandbox-hidden.** The `.vault` directory sits under the crew data home,
   which the OS-level sandbox bind-mounts away from the agent subprocess tree,
   so the agent cannot read the ciphertext off disk either. On Linux a mount
@@ -3719,7 +3757,12 @@ auto-approves only when `command` is present and
 `security.readonly_bash.is_read_only_bash(command)` is True (deny-by-default: rejects
 output redirects, substitution, backgrounding, and variable-assigning
 expansions (`$[...]`, or any `=` after a `${`, which assign a variable every
-later segment sees); input redirects/comments are
+later segment sees), and a `${` expansion whose result is re-evaluated
+(`_runs_through_expansion`: indirection `${!`, a subscript `[` or an `@`
+transformation after the first `${`, a `:` there that is not `:-`/`:+`/`:?`
+(a substring offset is arithmetic), and the bash 5.3 command forms `${ ` and
+`${|`); plain `$VAR`/`${VAR}` and the default, alternate, length and strip forms
+still pass); input redirects/comments are
 refused for the position- or mode-sensitive verbs where a shell-elided word can
 change the verdict). Help/version syntax does not create read-only authority:
 the command must already match the explicit read-only command table, otherwise it
@@ -5197,12 +5240,60 @@ must equal the server-derived field on the still-pending approval. Missing,
 underivable, redaction-changing, or stale/mismatched patterns return a typed 400
 without resolving the approval and are SEL-audited. Exact-command grants escape
 fnmatch metacharacters before storage, so trusting the literal command
-`rm *.tmp` does not also trust `rm secret.tmp`. Base grants are also derived
+`rm *.tmp` does not also trust `rm secret.tmp`. The escape (`_escape_glob`,
+shared by the exact and base tiers) covers the whole string, a Windows drive or
+UNC prefix included, so the `?` of `\\?\C:\Tools\x.exe` stays literal; it is not
+`glob.escape`, which leaves that prefix unescaped on Windows. Matching uses
+`fnmatch.fnmatchcase` on lowered strings, the same case-insensitive language on
+every host: `fnmatch.fnmatch` would fold `/` into `\` on Windows, so a grant for
+`del /q foo` would approve `del \q foo`. Base grants are also derived
 server-side; assignment-prefixed bases such as `FOO=bar` are refused rather than
 becoming broad globs. Command parsing and matching live in the shared
 `trust_patterns.py` module so another approval surface consumes a command-shaped
 API instead of importing dashboard runner internals or fabricating a
 `Running: ...` title.
+
+**A browser site grant** (`browser_host_trust.py`). The `browser` tool's card
+offers the `trust_command` tier as a grant on ONE site: the host of the page the
+call acts on, with its port when the URL names one, for one op class
+(`browser_harness/op_classes.py`). `read` covers opening and reading that host's
+pages; `act` covers clicking, typing and picking there too, and is stored as the
+host's key prefix plus `*`, so it also covers `read` on that host and nothing
+else. `ask`, `reflex` and every call of `op_classes.card_only` (`upload`, `js`,
+`cdp`, `http_get` and `tabs close`, which reach past one host's pages) never get
+a key, and neither does an op the
+classifier does not name. The host is the URL a `navigate` or `tabs new` opens
+and otherwise the chat's current page as the live hub last saw it; a Unicode
+host is named in punycode, as Chromium reports it, and a host the `idna` codec
+cannot encode, or one longer than a DNS name, gets no key. The key is
+`browser-trust:v1:<hex host>:<class>`, and that prefix is a namespace of its
+own (`trust_patterns.HOST_TRUST_KEY_PREFIX`): a host key matches only a pattern
+in it, so neither `*` nor a command grant approves a browser call, and a shell
+command naming the prefix gets no key, so its "Trust this command" cannot store
+a site grant. Only the chat's own call gets one: a
+verified `@kirocrew-core/browser` identity with harness-cached params (a Tool
+Search `tool_id`/`arguments` envelope is read by its inner call, only when the
+`tool_id` names the browser tool), no `sub_session_id` and not a native KAS
+child call, on a harness listed in `_host_trust_backends` (KAS, Kiro CLI), and
+no operator `confirm_tools` pattern naming it. Anything else keeps the card as
+it was. A site grant lasts this session only: the approve route refuses a
+`ttl_seconds` on a host key (`ttl_unsupported`), so it is never a timed grant;
+"Trust all tools" stays on the card. The page can move between the
+approval and the op, so a call approved by a host grant (by the trusted-pattern
+rung, or on its card by the click that made the grant: no live grant covered
+the call when the card was drawn and one does once it is answered) is noted
+against a SHA-256 digest of that call's op and arguments
+(`note_host_approval`; at most 16 notes per session, 4096 sessions). A plain
+"Allow once" is never noted, so it runs as before. Once `_bound_op` has bound
+the tab, the route takes the note of the call in front of it, once and before
+any refusal, so a call refused there (a tab move) leaves nothing for a later
+identical call; a call the person's hold parks keeps its note for the same call
+the shim re-posts. Before the op runs, the route reads the tab's real address
+for a noted call (`recheck`). Off that host, or with the address
+unreadable, the op is refused with `trust_scope_changed` and never touches the
+page; the agent's retry gets a card unless that host is trusted too. An op with
+no note of its own runs unchecked, so a note left by a call that never reached
+the route refuses nothing but an identical call.
 
 **A program grant does not cover a write redirect.** A shell segment that sends
 output through a redirect to a real target (`> file`, `>> file`, `&> file`,

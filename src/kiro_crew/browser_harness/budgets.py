@@ -38,13 +38,21 @@ DECISION_HEADROOM_S = DECISION_PRE_OP_S + DECISION_POST_OP_S
 CHANGE_BEFORE_S = 4.0
 CHANGE_AFTER_S = 8.0
 CHANGE_REPORT_S = CHANGE_BEFORE_S + CHANGE_AFTER_S
+#: Finishing a sign-in after a ``navigate`` landed on the edition's sign-in page
+#: (``browser_harness.sign_in``): the provider's ``complete_sign_in()`` call, then
+#: the navigation to the URL it returned. The route adds their sum to every
+#: ``navigate``'s budget, so a slow provider never turns a landed page into a timeout.
+SIGN_IN_PROVIDER_S = 15.0
+SIGN_IN_NAV_S = OP_TIMEOUT_S
+SIGN_IN_WORST_S = SIGN_IN_PROVIDER_S + SIGN_IN_NAV_S
 #: How long an op waits for the browser to come up (Kiro's Chromium launch, or
 #: the owner's Allow click) before answering ``browser_error``.
 ENSURE_TIMEOUT_S = 60.0
 #: How long an op waits for another chat's op to leave the gateway-wide lock
 #: before answering ``browser_busy``. One slow op's worth, so a fast op behind a
-#: navigate is served; two would push the total past the shim's budget.
-LOCK_WAIT_S = SLOW_OP_TIMEOUT_S + DECISION_HEADROOM_S
+#: navigate (and the sign-in it may finish) is served; two would push the total past
+#: the shim's budget.
+LOCK_WAIT_S = SLOW_OP_TIMEOUT_S + SIGN_IN_WORST_S + DECISION_HEADROOM_S
 #: Added to the gateway's worst case so the shim always hears the gateway's
 #: answer rather than inventing its own.
 SHIM_MARGIN_S = 10.0
@@ -116,6 +124,7 @@ GATEWAY_SLOW_WORST_S = (
     + CREDENTIAL_WORST_S
     + OP_TIMEOUT_S
     + SLOW_OP_TIMEOUT_S
+    + SIGN_IN_WORST_S
     + DECISION_HEADROOM_S
 )
 
@@ -153,6 +162,9 @@ __all__ = [
     "SHIM_FAST_TIMEOUT_S",
     "SHIM_MARGIN_S",
     "SHIM_SLOW_TIMEOUT_S",
+    "SIGN_IN_NAV_S",
+    "SIGN_IN_PROVIDER_S",
+    "SIGN_IN_WORST_S",
     "SLOW_OP_TIMEOUT_S",
     "TAKEOVER_IDLE_S",
 ]

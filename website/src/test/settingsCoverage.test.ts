@@ -97,11 +97,12 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'SsmInvite.tsx': 'the SSM tab of the People invite dialog and its row in the People list: a one-time link form with its own create and remove routes; no setting and no control writes a config path',
   'TailscaleInvites.tsx': 'the People invite dialog: a one-time invite form and the Tailscale credential connect field, both actions with their own Connect and Disconnect routes; no setting and no control writes a config path',
   'PostureDisclosure.tsx': "read-only disclosure rows for SecurityPanel's posture section (manual entry security.live-security-posture)",
-  'RemoteControlCard.tsx': "the Remote Crew tab's personal Remote Control status and its one-click Turn off; it writes only an explicit off through its own route, holding no searchable setting",
   'AboutPanelUpdateChanges.tsx': "read-only list of the changes an available update brings, under About > Updates; zero controls",
   'RemoteCrewWindowsNotice.tsx': "the Remote Crew Set-up tab's Windows-gateway notice in place of the AWS checklist; text and a guide link, zero controls",
   'ReportProblemCard.tsx': 'feedback action card, no settings',
   'SettingsSearch.tsx': 'the settings search box itself — indexing it would be self-referential',
+  'SlackSetupWizard.tsx': "the Slack setup wizard: one-time steps that write the same slack.* fields the Slack panel's own form (indexed) holds, so it adds no searchable setting",
+  'SlackWizardDiagram.tsx': "the setup wizard's non-interactive pictures of where to click in Slack; no controls",
   'SlackManifestUpdate.tsx': "the Slack Code section's update-your-Slack-app panel (install status, copy manifest, App Manifest link, Check again); it reports and acts on the installed app and holds no setting",
   'SlackOwnerClaim.tsx': "the Slack Identity & access card's Claim in Slack block (open window, candidates, This is me, Clear owner); it acts on the owner the Owner Slack member ID setting beside it already indexes, and holds no setting of its own",
   'SttRetentionNote.tsx': "read-only \"Is my audio kept?\" line under SttSettings' provider picker; an info tip and a docs link, zero controls",
@@ -355,6 +356,12 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
   'SettingsSearch.tsx': {
     counts: { input: 1 },
     reason: 'the settings search box itself',
+  },
+  'SlackSetupWizard.tsx': {
+    counts: { Input: 4 },
+    reason:
+      'transient: the setup wizard\'s alias, bot token, app-level token and member-ID entries; ' +
+      'each is a one-time step whose stored field the Slack panel form below indexes',
   },
   'SlackCodeChannelDefaults.tsx': {
     counts: { SimpleSelect: 4 },

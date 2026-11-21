@@ -278,7 +278,7 @@ async def test_outline_is_cut_to_its_budget_and_screenshot_hands_back_bytes(monk
             return {"ok": True, "url": "u", "title": "t", "snapshot": "x" * 50}
         return {"ok": True, "path": shown["path"]}
 
-    monkeypatch.setattr(PagePort, "_op", _op)
+    monkeypatch.setattr(PagePort, "_op_raw", _op)
     port = _port()
     out = await port.outline(budget=10)
     assert out["snapshot"] == "x" * 10 and out["truncated"] is True
@@ -310,7 +310,7 @@ async def test_a_link_planted_where_the_screenshot_was_is_never_followed(monkeyp
     async def _op(self: PagePort, verb: str, op: str, args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "path": str(png)}
 
-    monkeypatch.setattr(PagePort, "_op", _op)
+    monkeypatch.setattr(PagePort, "_op_raw", _op)
     assert (await _port().screenshot())["code"] == "screenshot_error"
 
 

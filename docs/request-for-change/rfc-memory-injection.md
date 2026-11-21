@@ -16,8 +16,15 @@ superseded-by: []
 
 - Status: partial. A maintainer has signed R1 only (Signed scope, below); R1's
   authority order is on main from #35222. Shadow-first code for other stages is
-  also on main, each default off and unsigned (#34260, #35194, #35211, #35231,
-  #35460, #35461, #35789); those stages are not decided. Checked at `0c5d8bd5f3`.
+  also on main (#34260, #35194, #35211, #35231, #35460, #35461, #35789). On
+  2026-11-20 the owner made R1 (`memory.rule_authority_order`), R4
+  (`memory.lesson_fold`) and kind routing (`memory.kind_routing`, from
+  [rfc-memory-hygiene.md](rfc-memory-hygiene.md)) default `enforce` on early
+  shadow data, before the 14-day, 200-session bar in section 5.2; `off` is the
+  rollback. Once that landed, the owner removed `shadow` from those three flags
+  ahead of the 30-day retirement in P6: each takes `off` or `enforce`, a stored
+  `shadow` reads as `enforce`, and `kirocrew memory shadow report` no longer
+  lists them. The other stages stay default off and are not decided. Checked at `0c5d8bd5f3`.
 - Author: iamwhatever
 - Created: 2026-11-09
 - Code is cited by symbol and file at `79bff1f741`; the docs lint keeps line
@@ -140,7 +147,7 @@ private consolidation ───> private store: memory_items ──────�
 | `learn_add` and dashboard | both | the caller's `applies`; source `user_explicit` | cosine > 0.85, same scope, authority-aware | `api_lessons_create` (`dashboard/handlers/cron_lessons.py`) -> `write_lesson` (`vector_memory_runtime/lesson_write.py`) |
 | Consolidation | default | model output; unstated stays untagged | same as above (`write_lesson`) | `_save_lessons` (`history_consolidation_memory.py`) |
 | Consolidation | private | model output; unstated stays untagged | exact key `_lesson_key(rule, scope)`; no vector at write time | `apply_consolidation` (`vector_memory_member.py`) |
-| Consolidation facts | both | kind routing, `off` by default | per key | `route_semantic_by_kind` (`memory_kind_routing.py`), `kind_routing` field (`config/memory_sections.py`) |
+| Consolidation facts | both | kind routing, `enforce` by default since 2026-11-20 | per key | `route_semantic_by_kind` (`memory_kind_routing.py`), `kind_routing` field (`config/memory_sections.py`) |
 
 Write-side facts that matter for later sections:
 
@@ -334,7 +341,9 @@ standing rule applies whatever the topic.
   existing row, so no rollback needs a data migration.
 - A flag is retired when its `enforce` has been the default for 30 days with no
   rollback: one follow-up pull request deletes the flag, its `off` and `shadow`
-  code and its receipt fields.
+  code and its receipt fields. R1, R4 and kind routing are the exception the
+  Status line records: their `shadow` code went early, by the owner's decision,
+  and their `off` stays as the rollback.
 
 ### 4.3 The stages, as instances of the primitives
 
@@ -477,7 +486,8 @@ by the same revert path Maintain uses.
 Each stage is one pull request, independently shippable and abandonable.
 
 **Signed scope.** A maintainer has signed R1 only (authority order, flag
-`memory.rule_authority_order`, default off, shadow first). R3's quote check and
+`memory.rule_authority_order`, shadow first). On 2026-11-20 the owner made R1
+and R4 default `enforce` on early shadow data, before the bar in section 5.2. R3's quote check and
 tier policy wait for shadow counts of how many would-be demotions the user
 repeats. R0a, R2 and R4 to R6 are proposals; each needs its own sign-off.
 
@@ -485,10 +495,10 @@ repeats. R0a, R2 and R4 to R6 are proposals; each needs its own sign-off.
 |---|---|---|---|---|---|
 | R0 | Receipt fields and caps | none (fields written only under a stage's `shadow`) | n/a | receipts stay under every cap in a test that writes past them; off-mode lines unchanged byte for byte | revert the PR |
 | R0a | Admit: provenance and origin gate | provenance: none (additive metadata, always on); gate: `memory.lesson_origin_gate` | per day: passes, passes with no person-sent turn, lessons read, rule-tier lessons, would-be demotions, for consolidation and `learn_add` apart; shadow also keeps the would-be demoted lesson keys | re-teach rate of demoted rows <= control; zero demotions in a span with a person-sent turn; zero L1 rows from a person's own turn demoted | provenance: revert the PR (old rows stay valid); gate: flag off, rows already written `on_topic` stay findings and stay retrievable |
-| R1 | Select: authority order | `memory.rule_authority_order` | ids that enter and leave the rule block | L1 coverage up; miss rate of dropped L3 rows <= control | flag off |
+| R1 | Select: authority order | `memory.rule_authority_order` (default `enforce` since 2026-11-20) | ids that enter and leave the rule block | L1 coverage up; miss rate of dropped L3 rows <= control | flag off |
 | R2 | Select: shared matcher | `memory.relevance_rule` | rows admitted only under the old gate | miss rate <= control | flag off |
 | R3 | Admit: tier policy | `memory.lesson_tier_policy` | new keys that would be stored `on_topic`; quote check pass and fail counts | re-teach rate of would-be `on_topic` rows <= control | flag off; rows already written keep their tier and stay retrievable through findings and recall |
-| R4 | Identify: render fold | `memory.lesson_fold` | (leader, folded) id pairs | no L1 folded; miss rate <= control | flag off |
+| R4 | Identify: render fold | `memory.lesson_fold` (default `enforce` since 2026-11-20) | (leader, folded) id pairs | no L1 folded; miss rate <= control | flag off |
 | R5 | Identify: private write and backfill | `memory.member_lesson_dedup` | would-be merges; default store 0.85-0.95 merge count | miss rate <= control; zero L1 merges | flag off; revert retired rows from revisions |
 | R6 | Maintain: Dreaming | `memory.dream: off \| propose` | approval lists, refusals, wake-check results | section 7.9 | flag off; revert any run |
 
@@ -594,7 +604,7 @@ produce the counts that sign-off waits for. Its rules:
   `learn_add` counts only when the person sent the chat's latest turn. That count over the
   would-be demotions is the R3 pass metric.
 
-R4's rules, as built (`memory_lesson_fold.py`; R4 is not signed):
+R4's rules, as built (`memory_lesson_fold.py`; default `enforce` since 2026-11-20 by the owner's decision on early shadow data):
 
 - **Where.** The rule block of the session-start render and its post-compaction
   copy, on the default and private stores. Explicit recall and the JSONL stores
@@ -603,10 +613,10 @@ R4's rules, as built (`memory_lesson_fold.py`; R4 is not signed):
   P2 level, then newest first; each is compared only with kept leaders. An L1
   row is always a leader. A row with a NOT-clause its leader lacks stays a
   leader, so no clause leaves the prompt.
-- **Modes.** `shadow` renders today's block and records `(leader, folded)` id
-  pairs in the receipt field `lesson_fold`. `enforce` drops folded rows before
-  the 37,000 budget is fitted and prints the fold line; the omission line counts
-  only rows that did not fit.
+- **Modes.** `off` renders today's block. `enforce` records `(leader, folded)` id
+  pairs in the receipt field `lesson_fold`, drops folded rows before the 37,000
+  budget is fitted and prints the fold line; the omission line counts only rows
+  that did not fit. The `shadow` mode it shipped with is removed (Status line).
 - **Fixture.** The golden test embedder gives each topic-less row its own vector.
 
 R1 comes next because it fixes S2 on existing stores without rewriting a row.

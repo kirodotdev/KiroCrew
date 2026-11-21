@@ -23,6 +23,7 @@
     "python3 scripts/check_file_line_cap.py --test",
     "python3 scripts/check_file_line_cap.py",
     "python3 scripts/check_lockdown_before_publish.py",
+    "python3 scripts/ci_guard_tier_membership.py",
     "isort --check-only src/kiro_crew test",
     "flake8 src/kiro_crew test",
     "mypy src/kiro_crew/",

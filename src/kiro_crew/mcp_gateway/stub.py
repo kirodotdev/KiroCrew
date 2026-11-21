@@ -244,6 +244,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     # an owner reads now, from their home modules.
     from kiro_crew import platform_compat  # noqa: F401
     from kiro_crew.json_line import parse_json_object_line  # noqa: F401
+    from kiro_crew.kas_env_shim import windows_child_command  # noqa: F401
     from kiro_crew.mcp_caller import (  # noqa: F401
         CallerContext,
         _parent_pid,

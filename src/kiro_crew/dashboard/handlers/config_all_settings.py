@@ -247,12 +247,9 @@ _OWNING_PAGES: dict[str, dict[str, str]] = {
     "memory.repeated_failures_notice": {"tab": "overview"},
     # Settings -> Developer -> Logs: the level picker (POST /api/logs/level).
     "agent.log_level": {"tab": "developer", "sub": "logs"},
+    # Settings -> Agent Harness, the KAS row's engine choice.
+    "agent.kas_bundle": {"tab": "agent", "highlight": "agent.engine"},
     # Settings -> Developer -> Feature Previews.
-    "agent.kas_bundle": {
-        "tab": "developer",
-        "sub": "feature-previews",
-        "highlight": "developer.run-kas-on-kiro-crew-s-own-engine",
-    },
     "dashboard.crewmate_threads": {
         "tab": "developer",
         "sub": "feature-previews",
