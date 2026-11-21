@@ -36,6 +36,7 @@ from kiro_crew.dashboard.origin import (
     is_loopback,
     is_proxied_request,
     mark_audit_claimed,
+    public_path_prefix,
 )
 from kiro_crew.dashboard.refresh_tokens import (
     MAX_REFRESH_TTL_SECS,
@@ -1361,7 +1362,7 @@ def token_auth_middleware(
                     refresh_cookie_name(_cookie_port_from_host(request, port)),
                     "",
                     max_age=0,
-                    path=REFRESH_COOKIE_PATH,
+                    path=public_path_prefix(request) + REFRESH_COOKIE_PATH,
                 )
             else:
                 try:
@@ -1428,7 +1429,7 @@ def token_auth_middleware(
                             httponly=True,
                             samesite="Lax",
                             secure=is_https_request(request),
-                            path=REFRESH_COOKIE_PATH,
+                            path=public_path_prefix(request) + REFRESH_COOKIE_PATH,
                             max_age=min(refresh_remaining, MAX_REFRESH_TTL_SECS),
                         )
                         # Audit the initial-mint event so forensics can trace any

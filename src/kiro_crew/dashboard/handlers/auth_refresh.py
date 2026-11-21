@@ -20,7 +20,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.dashboard.origin import check_origin, is_https_request
+from kiro_crew.dashboard.origin import check_origin, is_https_request, public_path_prefix
 from kiro_crew.dashboard.refresh_tokens import (
     MAX_REFRESH_TTL_SECS,
     REFRESH_COOKIE_PATH,
@@ -277,9 +277,14 @@ def _set_refresh_cookie(
         samesite="Lax",
         # See _set_access_cookie for the conditional-Secure rationale.
         secure=is_https_request(request),
-        path=REFRESH_COOKIE_PATH,
+        path=_refresh_cookie_path(request),
         max_age=max_age,
     )
+
+
+def _refresh_cookie_path(request: web.Request) -> str:
+    """``/api/auth`` as the browser sees it, behind a sub-path proxy included."""
+    return public_path_prefix(request) + REFRESH_COOKIE_PATH
 
 
 def _clear_refresh_cookie(
@@ -288,7 +293,7 @@ def _clear_refresh_cookie(
 ) -> None:
     port = request.app.get("port", 7777)
     cookie_name = refresh_cookie_name(_cookie_port_from_host(request, port))
-    resp.set_cookie(cookie_name, "", max_age=0, path=REFRESH_COOKIE_PATH)
+    resp.set_cookie(cookie_name, "", max_age=0, path=_refresh_cookie_path(request))
 
 
 def _expire_foreign_port_cookies(
@@ -311,7 +316,7 @@ def _expire_foreign_port_cookies(
         return
     port = request.app.get("port", 7777)
     current = _cookie_port_from_host(request, port)
-    for name, path in foreign_port_cookies(request.cookies, current):
+    for name, path in foreign_port_cookies(request.cookies, current, public_path_prefix(request)):
         resp.set_cookie(name, "", max_age=0, path=path)
 
 

@@ -1225,6 +1225,7 @@ Note: Loopback is accepted by `origin.check_origin()`'s no-Origin CSRF branch, s
 - Name: `mc_refresh_{port}` (e.g. `mc_refresh_5476`)
 - Value: the refresh token string
 - Attributes: `HttpOnly`, `SameSite=Lax`, `Path=/api/auth` (sent to both `/api/auth/refresh` and `/api/auth/logout`)
+- Behind a prefix-stripping reverse proxy (the dashboard built with `KIROCREW_BASE_PATH=/kirocrew`, the proxy stripping `/kirocrew`), the path is `<prefix>/api/auth`, read from `origin.public_path_prefix(request)`: the `X-Forwarded-Prefix` header from a **loopback** peer, same trust rule as `X-Forwarded-Proto`. Traefik's `stripPrefix` sets the header itself; nginx needs `proxy_set_header X-Forwarded-Prefix /kirocrew;`. An absent, untrusted or malformed header (anything but `/segment` parts of URL-path-safe characters) leaves the path at `/api/auth`. The other-port cookie cleanup expires refresh cookies at the same prefixed path
 - `Secure`: conditional on `is_https_request(request)`, same rule as the access cookie
 - `max_age`: remaining seconds from the refresh `session_exp`, bounded by refresh-token validation (`test_tr_u_04_session_exp_within_max`).
 
