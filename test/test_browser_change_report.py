@@ -499,7 +499,7 @@ def test_the_route_budget_counts_the_report_only_while_it_is_on() -> None:
     assert browser_ops._op_budget("click", off) == plain
     assert browser_ops._op_budget("hover", on) == plain
     assert browser_ops._op_budget("navigate", on) == budgets.SLOW_OP_TIMEOUT_S + (
-        budgets.DECISION_HEADROOM_S
+        budgets.DECISION_HEADROOM_S + budgets.SIGN_IN_WORST_S
     )
     for op in ops.REPORT_OPS:
         assert browser_ops._op_budget(op, on) == plain + budgets.CHANGE_REPORT_S

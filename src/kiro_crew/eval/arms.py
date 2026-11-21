@@ -59,6 +59,11 @@ class ArmOutcome:
     cost_unit: str = ""
     agent: dict[str, Any] | None = None
     note: str = ""
+    #: When ``cost`` is unknown (None): the spend counted so far, a lower bound.
+    cost_floor: float | None = None
+    #: Tool calls the harness refused on the spot (Claude Code ``dontAsk``): nobody
+    #: was asked, so they are not asks; kept apart so a run record still shows them.
+    denials: list[dict[str, Any]] = field(default_factory=list)
 
 
 class Arm:
@@ -129,11 +134,15 @@ class CrewChatArm(Arm):
             return ArmOutcome("error", note=f"no --json result (exit {returncode})")
         status = str(payload.get("status") or "error")
         events = payload.get("ask_events")
+        # A chat the CLI could not close never saved its last turn's usage, so the
+        # credits it counted are a floor, not the run's spend: unknown, not a number.
+        unclosed = payload.get("unclosed")
         outcome = ArmOutcome(
             "void" if status in _CREW_VOID_STATUSES else status,
             asks=int(payload.get("asks") or 0),
             ask_events=list(events) if isinstance(events, list) else [],
-            cost=_number(payload.get("credits")),
+            cost=None if unclosed else _number(payload.get("credits")),
+            cost_floor=_number(payload.get("credits")) if unclosed else None,
             cost_unit=self.cost_unit,
             agent=payload.get("agent") if isinstance(payload.get("agent"), dict) else None,
             note=str(payload.get("error") or ("" if status == "done" else status))[:500],
@@ -217,10 +226,13 @@ class ClaudeCodeArm(Arm):
                 asks=len(events),
                 note=f"no result line (exit {returncode})",
             )
+        # In dontAsk mode a tool outside the allowed set is refused at once and the
+        # agent carries on; no person is waited on, so a denial is not an ask.
         denials = result.get("permission_denials")
-        for denial in denials if isinstance(denials, list) else []:
-            tool = denial.get("tool_name") if isinstance(denial, dict) else ""
-            events.append({"kind": "approval", "text": str(tool or "denied")})
+        refused = [
+            {"tool": str((d.get("tool_name") if isinstance(d, dict) else "") or "denied")}
+            for d in (denials if isinstance(denials, list) else [])
+        ]
         subtype = str(result.get("subtype") or "")
         if subtype == "error_max_budget_usd":
             status = "budget"
@@ -235,6 +247,7 @@ class ClaudeCodeArm(Arm):
             cost=_number(result.get("total_cost_usd")),
             cost_unit=self.cost_unit,
             note="" if status == "done" else subtype,
+            denials=refused,
         )
 
 

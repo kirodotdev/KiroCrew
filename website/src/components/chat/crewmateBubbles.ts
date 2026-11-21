@@ -150,7 +150,8 @@ export function filterCrewmateChat(messages: ChatMessage[]): ChatMessage[] {
  *  ones), every other queued row is dropped. A queued entry whose send already
  *  has its row -- a steer the turn did not take, requeued for the next one --
  *  is that same message, so it draws no second bubble. An injected entry (a
- *  cron notification, an MCP-App message) is not the person's speech either:
+ *  cron notification, an MCP-App message, a requeued work-ledger wake) is not
+ *  the person's speech either:
  *  its drained row is machinery this chat hides, so it draws no bubble. Same
  *  array identity back when `all` holds no queued row. */
 export function withQueuedAsBubbles(all: ChatMessage[], queued: ChatMessage[]): ChatMessage[] {
@@ -169,11 +170,12 @@ export function withQueuedAsBubbles(all: ChatMessage[], queued: ChatMessage[]): 
 /** A queued row the gateway injected rather than the person typed. Read from
  *  the structured tags the server writes at enqueue time, never from the text:
  *  the live row carries its `cls` labels (`cronLabel`, `appLabel`), the queue
- *  hydration carries the entry's `kind` (`queue.ts`). The person's own send
- *  has none of them, matching the backend's kind-only `is_system_injection_item`. */
+ *  hydration carries the entry's `kind` (`queue.ts`). A requeued automation
+ *  steer carries `automationSteer` on both. The person's own send has none of
+ *  them, matching the backend's kind-only `is_system_injection_item`. */
 function isInjectedQueued(m: ChatMessage): boolean {
   const meta = m.meta
-  return !!(meta?.kind || meta?.cronLabel || meta?.appLabel || meta?.injectKind)
+  return !!(meta?.kind || meta?.cronLabel || meta?.appLabel || meta?.injectKind || meta?.automationSteer)
 }
 
 /** Whether the person's send `sendId` is still waiting on the crewmate: its

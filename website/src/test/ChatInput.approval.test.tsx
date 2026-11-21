@@ -595,6 +595,47 @@ describe('ChatInput approval flow', () => {
     expect(buttons.some(b => /Trust any .+ command/.test(b.textContent || ''))).toBe(false)
   })
 
+  /** A browser call's card whose command grant is a site grant of *cls*. */
+  function browserCard(cls: 'read' | 'act') {
+    const state = stateWithApproval()
+    const meta = state.chat!.messages[1].meta!
+    Object.assign(meta, {
+      tool_input: '{"op":"click","args":{"ref":"e3"}}',
+      tool_title: 'Drive browser',
+      is_shell: '',
+      is_read_only: '',
+      full_command: 'www.example.com',
+      browser_trust_class: cls,
+    })
+    delete meta.base_command
+    delete meta.trust_base_grantable
+    return state
+  }
+
+  it('words a browser site grant by site and class, beside Trust all tools', () => {
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(browserCard('act')) })
+    fireEvent.click(screen.getByText('Trust'))
+    const rows = screen.getAllByRole('menuitem').map(b => b.textContent || '')
+    expect(rows[0]).toBe('Trust reading, clicking and typing on www.example.com for this session')
+    // A site grant has one lifetime: no hour or midnight row for it.
+    expect(rows.filter(r => r.endsWith(' on www.example.com for this session'))).toHaveLength(1)
+    expect(rows).toContain('Trust all tools for this session')
+    // Still one Trust control on the bar: no fourth button.
+    expect(barControls()).toEqual(['Allow once', 'Trust', 'Reject'])
+  })
+
+  it('sends a read site grant as the command tier, for the session', async () => {
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(browserCard('read')) })
+    fireEvent.click(screen.getByText('Trust'))
+    const row = screen.getAllByRole('menuitem').find(b => b.textContent === 'Trust reading pages on www.example.com for this session')!
+    fireEvent.click(row)
+    await waitFor(() => {
+      expect(api.approveChatSlot).toHaveBeenCalledWith(
+        'slot-1', 'trust_command', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123', pattern: 'www.example.com' }
+      )
+    })
+  })
+
   it('keeps the session tier when the server cannot prove a command scope', () => {
     // A redacted or uncanonicalizable command withholds the tiers that NAME
     // that command. The session grant names none, so it stays: the whole menu

@@ -1325,6 +1325,19 @@ jobs:
       - name: Check lockdown-before-publish (secret writers)
         run: python3 scripts/check_lockdown_before_publish.py
 
+      # The guard tier (`scripts/ci_test_map.py guard-tier`) is the floor under
+      # diff-based test selection, and a test file is in it because of its own
+      # text, so an edit can take one out unseen. This compares the tier of the
+      # merge commit with the tier of its first parent, the base: a file that
+      # joins is listed in the job summary, and a file that leaves while it
+      # still exists fails unless it carries a `# guard-tier: not a member`
+      # line. Both sides come from this pull request and its own base, so no
+      # other change can alter the verdict. Pull requests only: a push or a
+      # merge group has no single change to explain.
+      - name: Check guard-tier membership (gate)
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/ci_guard_tier_membership.py --summary "$GITHUB_STEP_SUMMARY"
+
   # The optional native credential pre-filter (native/kc_native) is used by
   # default wherever it is installed, and a wrong False from it would let a
   # credential skip redaction. Its equivalence suite skips itself when the

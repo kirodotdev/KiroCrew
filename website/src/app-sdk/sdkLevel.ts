@@ -10,6 +10,7 @@
  * Level 11 adds `BrowserView`, `useBrowserView` and `useBrowserCoords`: the live view of
  * the app's own chat slot, with take over and hand back, behind `app_browser_sdk`; and
  * `appWebOriginStatus`. Level 12 adds `permissions.kiroOperations`: the gateway calls
- * the Kiro operations the owner approved for the app, with the person's Kiro sign-in.
+ * the Kiro operations the owner approved for the app, with the person's Kiro sign-in;
+ * and `SessionChanges` and `DiffView`.
  */
 export const APP_SDK_LEVEL = 12

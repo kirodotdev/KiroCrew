@@ -215,7 +215,7 @@ def test_member_store_writes_no_person_fact_under_enforce(tmp_path, monkeypatch)
 
 async def _run_pass(monkeypatch, mode: str, rows: list[dict]) -> dict[str, Any]:
     """One history pass on a V1 install; returns what each writer was handed."""
-    from kiro_crew import consolidation_write_offload, executors
+    from kiro_crew import consolidation_write_offload, executors, memory_kind_routing
 
     log = lease_aware_log()
     log.snapshot_for_consolidation.return_value = (rows, len(rows), 0, 0)
@@ -240,6 +240,10 @@ async def _run_pass(monkeypatch, mode: str, rows: list[dict]) -> dict[str, Any]:
         return _answer()
 
     monkeypatch.setattr(executors, "run_in_memory_background_pool", inline)
+    # Every other consolidation setting is pinned off, so the writer is handed
+    # exactly what the fact gate returned: kind routing's default labels each
+    # project.* item with an extra model call, which would add a "kind" key.
+    monkeypatch.setattr(memory_kind_routing, "configured_kind_routing_mode", lambda: "off")
     monkeypatch.setattr(mog, "configured_mode", lambda: "off")
     monkeypatch.setattr(mfg, "configured_mode", lambda: mode)
     monkeypatch.setattr(

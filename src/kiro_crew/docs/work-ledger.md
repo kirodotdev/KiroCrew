@@ -109,7 +109,10 @@ else's already-green pull request.
 Limits: 32 open items per conductor (an item in a terminal state -- accepted,
 rejected, abandoned -- does not count toward the open cap). There is no limit on
 how many items a board creates over its life. Every item stays on the board, listed
-and readable. The crew log's fold, which feeds a crew's status and the pipeline
+and readable. In a conductor mode chat's Milestones list you can hide a milestone
+that was not done (the Hide button on its row): that hides its row in your browser
+only, the list's count and Recap still count it, "Show again" under the list brings
+it back, and the board itself keeps the item. The crew log's fold, which feeds a crew's status and the pipeline
 board, keeps open items and
 the 32 most recently closed items whole and only counts older closed ones, so it is
 bounded by what is open, not by history. Those counts (the conductor header's

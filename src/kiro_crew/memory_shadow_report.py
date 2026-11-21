@@ -101,8 +101,8 @@ STAGES: Final[tuple[Stage, ...]] = (
         "kind_routing",
         "memory_kind_log:",
         _modes.kind_routing_mode_from,
-        "shadow adds kind text to the consolidation prompt, "
-        "so these days are not a clean off baseline",
+        "rules version 3 and later label in a separate call after the writes; "
+        "samples of version 2 and before were tagged inside the consolidation prompt",
     ),
     Stage("lesson_origin_gate", "memory_origin_log:", _modes.lesson_origin_gate_mode_from),
     Stage(

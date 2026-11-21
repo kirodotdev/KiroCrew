@@ -225,7 +225,8 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     writes, and a crash between them left a job missing its agent.
 
     Job kind is exactly one of agent (the default), ``--script`` or
-    ``--command``; schedule is exactly one of ``--every``, ``--cron`` or
+    ``--command``; a ``--script`` job may name a Bot with ``--agent``, which binds
+    the job to that Bot; schedule is exactly one of ``--every``, ``--cron`` or
     ``--at``. Schedule/timeout coupling is split by who can see it: when both
     ``--timeout`` and ``--timeout-secs`` are given, ``_build_job`` at the
     persistence owner validates the pair and the CLI surfaces its
@@ -278,8 +279,8 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     # ── Job kind: exactly one of agent / script / command ──
     if script and command:
         _cron_add_fail("--script and --command are mutually exclusive")
-    if agent and (script or command):
-        _cron_add_fail("--agent cannot be combined with --script or --command")
+    if agent and command:
+        _cron_add_fail("--agent cannot be combined with --command")
     zero_token = bool(script or command)
     if not message and not zero_token:
         _cron_add_fail("message is required for an agent job (only --script/--command may omit it)")
@@ -297,6 +298,15 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     from kiro_crew.cron_service.identity import split_cron_agent_member
 
     agent, member_id = split_cron_agent_member(agent, "")
+    # A script job launches no agent, so with --script the name must be a Bot: the
+    # job is bound to it (``member_id``) and its ``ctx.crew_log_append`` records land
+    # on that Bot's page, as a ``cron_add`` call with ``member_id`` binds one. A name
+    # left in ``agent`` is a template the script would never use.
+    if script and agent:
+        _cron_add_fail(
+            f"--agent {agent!r} is not a Bot; with --script, --agent must name a Bot "
+            "to bind the job to"
+        )
     if timeout is not None:
         if not zero_token:
             _cron_add_fail("--timeout applies only to a --script or --command job")
@@ -735,6 +745,8 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 detail += f"  managed by: {j.managed_by}"
             if j.project_path:
                 detail += f"  project: {j.project_path}"
+            if j.member_id:
+                detail += f"  bot: {safe_terminal_line(j.member_id)}"
             print(f"      {detail}")
 
     elif action == "adopt":

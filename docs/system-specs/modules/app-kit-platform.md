@@ -1508,7 +1508,7 @@ the first source that holds the name:
 |---|---|
 | the agent's own `mcpServers`: its template, the app's own `<app>:<server>` entries, a materialized managed ref | the app declared it |
 | `managed_mcp_spec_entry(name, include_opt_in=True)` | no scope may overwrite a managed name, on the default agent either |
-| a built-in app only: the default agent's spec (`<kiro agents dir>/kirocrew.json`, read by `_mounted_mcp_servers`), minus every installed app's own servers (`_app_owned_mcp_keys`) | what `agent.rebuild_agent_config` wrote: the MCP Management store, registry installs, edition servers and provider globals merged over the Kiro global `mcp.json`, the store winning a tie. Another app's server is that app's, never a grant's to copy |
+| a built-in app only: the default agent's spec (`<kiro agents dir>/kirocrew.json`, read by `_mounted_mcp_servers`), minus every installed app's own servers (`_app_owned_mcp_keys`) | what `agent.rebuild_agent_config` wrote: the MCP Management store, registry installs, edition servers and provider globals merged over the Kiro global `mcp.json`, the store winning a tie, except that an edition server keeps the edition's `command` and `args`. Another app's server is that app's, never a grant's to copy |
 | the Kiro global `~/.kiro/settings/mcp.json` | a server the default agent's spec does not hold: no rebuild has run yet, or its command did not resolve here |
 
 A copied entry that is muted is withheld: turned off in MCP Management, a registry
@@ -6240,6 +6240,48 @@ Writers: `apps/app_web_origin.py`, `apps/pane_ports.py`, `dashboard/token_auth.p
 Tests: `test/test_app_web_origin.py`, `test/test_app_web_origin_panes.py`,
 `website/src/app-sdk/webOrigin.test.ts`.
 
+## 18l. A session's changed files and their diffs reach an app through the SDK, behind the declared reads
+
+`SessionChanges` on `@kirocrew/app-sdk` (`website/src/app-sdk/SessionChanges.tsx`) is
+the chat window's own `pages/chat/SessionFilesList` (the Files tab's Edited view) beside
+`components/DiffPanel` showing the change picked in it, offered to an app page.
+`DiffView` (`website/src/app-sdk/DiffView.tsx`) is `components/DiffPanel` alone: it
+takes both texts, sends no request and renders the same under any identity. Both are
+App Kit seam level 12. The list and the diff read through one injected client
+(`pages/chat/sessionFilesClient.tsx`, two members); with no provider in context they
+use the dashboard's `api`, and no dashboard surface provides one.
+
+Which client `SessionChanges` hands them is decided by the identity the host published,
+the way §18g chooses the pull-request client:
+
+- **external**: a client over the app's scoped transport (`scopedSessionFilesClient`),
+  each member sending the query the dashboard client sends. The list mounts once
+  `apiPathAllowed` admits `/api/project/session-files`; without it the export renders an
+  `ErrorNotice` naming the path, with the agent hand-off on, and mounts nothing, so no
+  request is sent. The diff of a picked file needs `/api/project/session-file-diff`;
+  without it the diff's place shows the same refusal naming that path and the diff is
+  never mounted. The two paths are siblings at a slash boundary, so neither declaration
+  admits the other, and the scoped transport still checks each request.
+- **builtin**: the dashboard's client, as §18g keeps it for a builtin page.
+- **none**: the external answer with nothing declared, the refusal.
+
+This grants nothing the app does not have already: both reads are the ones `useAppApi()`
+would send for the same declaration, and each handler refuses an app token's foreign slot
+(`dashboard/session_files.py`, `_gated_slot`). The list's `onBrowse` and its file-open
+hand-off are not offered: they open tabs in the chat window's side panel. Picking a row,
+or its Show changes control, shows that file's recorded change; the diff query's key
+carries the row's change time, so a newer edit reads the diff again. The list and diff
+load behind one `React.lazy` boundary, and `DiffView` behind its own, so the shell chunk
+every app loads carries neither. `AppSdkSessionChanges.test.tsx` pins the three answers,
+the per-path refusals, that the dashboard client is untouched under an external app, and
+the request queries.
+
+Writers: `website/src/app-sdk/SessionChanges.tsx`, `website/src/app-sdk/SessionChangesBody.tsx`,
+`website/src/app-sdk/DiffView.tsx`, `website/src/app-sdk/index.ts`,
+`website/public/vendor/kirocrew-app-sdk.mjs`, `website/src/pages/chat/sessionFilesClient.tsx`,
+`website/src/pages/chat/SessionFilesList.tsx`, `website/src/app-sdk/sdkLevel.ts`,
+`apps/app_sdk_level.py`.
+
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
 Spec Builder's backend carries more orchestration than a typical app: agent turns
@@ -7710,7 +7752,7 @@ on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 `useBrowserMedia` (§45), and `ctx.embed`'s batch members; level 11 adds the SDK's `BrowserView`,
 `useBrowserView` and `useBrowserCoords` (RFC app-sdk-browser, step 1c) and the SDK's
 `appWebOriginStatus` (§18k); level 12 adds `permissions.kiroOperations`, its route and
-`ctx.kiro_call` (§47). Several seams share level 7,
+`ctx.kiro_call` (§47), and the SDK's `SessionChanges` and `DiffView` (§18l). Several seams share level 7,
 three share level 8, and the open batch that level 10 starts shares level 10, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
@@ -8851,8 +8893,11 @@ the dashboard window's credential chain, the same answer shape Crew Companion's 
 reads: only an app the gateway did not skip at boot is served, and an app switched off
 on this computer's gateway only from a crew (below). It opens each `openOnEnable`
 window, registers each shortcut, and closes and releases everything for an app that is
-disabled, gone, or whose declaration changed. A probe that is refused is
-re-resolved once; one that cannot be answered leaves every window and shortcut as it is.
+disabled, gone, or whose declaration changed. A cached link token is re-resolved
+once it is 240 s old, before the gateway's 300 s link window refuses it
+(`website/electron/link-token-age.js`); a borrowed session cookie is never aged out.
+A probe that is refused is still re-resolved once; one that cannot be answered leaves
+every window and shortcut as it is.
 An update install suspends the host with Crew Companion and resumes it if the install
 does not proceed. A shortcut is never given to an app when the shell's own owners
 (the summon hotkey, Mochi) are configured for it, held right now or not: each records

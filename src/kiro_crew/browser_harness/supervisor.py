@@ -54,6 +54,7 @@ from kiro_crew.browser_harness import HARNESS_VERSION, budgets, credentials, dis
 from kiro_crew.browser_harness import governance as browse_governance
 from kiro_crew.browser_harness import install
 from kiro_crew.browser_harness.env import daemon_env
+from kiro_crew.browser_harness.helper_table import HELPERS
 from kiro_crew.browser_harness.relay import (
     CdpRelay,
     PipeUpstream,
@@ -76,35 +77,6 @@ CONNECTED = "connected"
 WAITING_ALLOW = "waiting_allow"
 DISCONNECTED = "disconnected"
 ERROR = "error"
-
-#: The helpers :meth:`HarnessSupervisor.call` will forward, with the keyword
-#: arguments each accepts. Mirrors ``helper_worker._ALLOWLIST``; ``js`` exists only
-#: for the gateway's own accessibility walker (``browser_harness/snapshot_walker.js``),
-#: and ``js_isolated`` runs that walker's screenshot-guard counts in an isolated world.
-HELPERS: Mapping[str, tuple[str, ...]] = {
-    "goto": ("url",),
-    "click": ("x", "y", "button", "clicks"),
-    "mouse_move": ("x", "y"),
-    "drag": ("x", "y", "to_x", "to_y"),
-    "type_text": ("text",),
-    "press_key": ("key", "modifiers"),
-    "scroll": ("x", "y", "dy", "dx"),
-    "screenshot": ("path", "full", "max_dim"),
-    "screenshot_clip": ("path", "x", "y", "width", "height", "max_dim", "magnify"),
-    "page_info": (),
-    "dialog": ("action", "text"),
-    "wait_for_load": ("timeout",),
-    "new_tab": ("url",),
-    "switch_tab": ("target", "activate"),
-    "list_tabs": ("include_chrome",),
-    "close_tab": ("target",),
-    "current_tab": (),
-    "js": ("expression", "target_id"),
-    "js_isolated": ("expression",),
-    "frame_owner_count": (),
-    "closed_secret_count": (),
-    "page_clock": ("state",),
-}
 
 #: The daemon's instance name. Not ``default``: a named daemon creates its own tab
 #: instead of attaching to the first page it finds, which on the user's Chrome would
@@ -283,6 +255,8 @@ class HarnessSupervisor:
         #: The relay the last apply wrote through; its outcome is shown only while
         #: that browser is still the connected one.
         self._credentials_relay: CdpRelay | None = None
+        #: The provider cookies the gateway set in the browser behind that relay.
+        self._placed = credentials.PlacedCookies()
         #: The provider's ``fingerprint()`` and the settings at the last apply; a
         #: navigation re-pulls when either differs.
         self._applied_key: tuple[str | None, credentials.CredentialSettings] | None = None
@@ -741,14 +715,19 @@ class HarnessSupervisor:
         # Read BEFORE the cookies, so a source that changes during the pull is seen
         # as changed at the next navigation rather than missed.
         key = await self._credential_key(provider)
+        if relay is not self._credentials_relay:  # a new browser holds none of them
+            self._placed = credentials.PlacedCookies()
         # One pull for the default context and every open per-chat context: the
         # whole apply runs under one navigation budget (``NAV_REFRESH_BUDGET_SECS``).
+        contexts = ("", *relay.session_context_ids())
+        self._placed.retain(contexts)
         self._credentials = await credentials.apply(
             relay,
             provider=provider,
             target=target,
             settings=key[1],
-            contexts=("", *relay.session_context_ids()),
+            contexts=contexts,
+            placed=self._placed,
         )
         self._applied_key = key
         self._credentials_relay = relay
@@ -796,10 +775,12 @@ class HarnessSupervisor:
             target=target,
             settings=settings,
             contexts=(browser_context_id,),
+            placed=self._placed if relay is self._credentials_relay else None,
         )
 
     async def refresh_credentials_if_source_changed(self) -> bool:
-        """Before an agent navigation: re-pull when the source or the settings moved.
+        """Before an agent navigation: re-pull when the source or the settings moved,
+        or a cookie the gateway set has reached its ``expires``.
 
         Cheap when nothing changed (one bounded ``fingerprint()`` call and a config
         read; nothing at all without a provider). The re-pull is bounded by
@@ -818,7 +799,9 @@ class HarnessSupervisor:
             return False
         fingerprint, settings = await self._credential_key(provider)
         # A ``None`` fingerprint means "cannot tell" (a slow stat): not a change.
-        if (fingerprint or self._applied_key[0], settings) == self._applied_key:
+        expiry = self._placed.next_expiry()
+        due = expiry is not None and expiry <= time.time()
+        if not due and (fingerprint or self._applied_key[0], settings) == self._applied_key:
             return False
         if not await self._acquire_briefly():
             return False
@@ -873,8 +856,19 @@ class HarnessSupervisor:
         await self._stop_handle(handle, close_tabs=not retry)
 
     async def _stop_handle(self, handle: HarnessHandle, *, close_tabs: bool) -> None:
+        # The provider cookies this browser holds, read before the deletes forget them.
+        placed = self._placed.keys() if handle.relay is self._credentials_relay else []
         try:
             if close_tabs and not handle.relay.closed:
+                if handle.relay is self._credentials_relay:
+                    # Chromium can keep session cookies in the profile on disk; the
+                    # ones the gateway set go before it stops.
+                    try:
+                        await asyncio.wait_for(
+                            self._placed.delete_all(handle.relay), _TAB_CLOSE_SECS
+                        )
+                    except (RelayClosed, Exception):  # noqa: BLE001 - best effort at teardown
+                        pass
                 try:
                     await asyncio.wait_for(handle.relay.close_agent_targets(), _TAB_CLOSE_SECS)
                 except (RelayClosed, Exception):  # noqa: BLE001 - best effort at teardown
@@ -884,6 +878,9 @@ class HarnessSupervisor:
             await _stop_process(handle.daemon)
             await handle.relay.close()
             await _stop_browser(handle.browser, self.profile_dir)
+            if placed and handle.choice.kind == "kiro_chromium":
+                # A delete Chromium had not committed is lost at its exit.
+                await asyncio.to_thread(credentials.purge_from_profile, self.profile_dir, placed)
         except BaseException:
             # Cut before its last stop: the next teardown (the gateway's exit
             # path, the next stop or ensure) stops the children this one never
@@ -1224,12 +1221,12 @@ _AUDIT_DOMAINS = 20
 
 
 def _audit_injection(status: credentials.CredentialStatus, reason: str) -> None:
-    """One SEL row per apply that set a cookie: provider, count, domains. Never a value.
+    """One SEL row per apply that set or removed a cookie: provider, counts, domains.
 
     With per-chat contexts the row also carries each context's landed count, so a
     chat's context the cookies missed is visible in the audit.
     """
-    if not status.applied and not any(status.applied_per_context):
+    if not status.applied and not any(status.applied_per_context) and not status.removed:
         return
     contexts = ""
     if len(status.applied_per_context) > 1:
@@ -1249,6 +1246,7 @@ def _audit_injection(status: credentials.CredentialStatus, reason: str) -> None:
             resources=(
                 f"provider={status.provider or '-'} reason={reason} cookies={status.applied} "
                 f"domains={shown}{contexts}"
+                + (f" removed={status.removed}" if status.removed else "")
             ),
         )
     except Exception:  # noqa: BLE001 - an audit failure never stops the browser

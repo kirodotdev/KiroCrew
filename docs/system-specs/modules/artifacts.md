@@ -1860,7 +1860,8 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   Custom colour is open. On desktop the selection toolbar stays inside the canvas
   horizontally, opens below the selection when there is more room there, and
   right-aligns panels that would cross the right edge, clamping them at the left
-  edge when needed.
+  edge when needed; in a pane narrower than a panel it caps the panel's width so
+  its rows wrap.
 - **Zoom is one menu.** Its trigger shows the zoom; zoom in, zoom out, 100% and
   fit are its items, as in FigJam's corner control.
 - **Read-only where a save could do harm.** A past version opens pan-and-zoom

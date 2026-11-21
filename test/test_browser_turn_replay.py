@@ -681,10 +681,11 @@ def test_a_refused_key_press_keeps_no_character() -> None:
         ({"text": "hunter2-SECRET", "ref": "e2"}, {"ok": False, "code": "password_field"}),
     ],
 )
-async def test_a_secret_type_keeps_its_length_only(tmp_path: Path, args, result) -> None:
+@pytest.mark.parametrize("op", ["type", "fill"])
+async def test_a_secret_type_keeps_its_length_only(tmp_path: Path, args, result, op) -> None:
     rec, store, _clock = make_recorder(tmp_path)
     rec.turn_started(KEY, TURN)
-    rec.event(KEY, rc.agent_event("type", args, result, ts=1, label="", url="", scale=1))
+    rec.event(KEY, rc.agent_event(op, args, result, ts=1, label="", url="", scale=1))
     rec.turn_ended(KEY)
     await rec.flush()
     (event,) = store.turn_detail(KEY, TURN)["events"]

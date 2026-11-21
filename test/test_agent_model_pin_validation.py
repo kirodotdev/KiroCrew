@@ -930,3 +930,61 @@ class TestNoCatalogRefusesAPinKiroHasNoIdFor:
         reason = _validate_role_model("claude-fable-5.1", SimpleNamespace(app={}), backend=backend)
 
         assert reason is None
+
+
+class TestCrewmateCreateCardModelPin:
+    """A ``crewmate.create`` card with a ``model`` makes a Bot already pinned to it.
+
+    The card's first apply step is posted to the real create route, so the pin is
+    judged by the same check a Bot create runs and lands on the stored record.
+    """
+
+    @staticmethod
+    async def _apply_create_step(params: dict) -> tuple[int, dict]:
+        from kiro_crew import change_card_catalog as catalog
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig.load()
+        cfg.agent.acp_backend = ACP_BACKEND_KAS
+        cfg.save()
+        p = catalog.validate_params("crewmate.create", params)
+        create = catalog.build_preview("crewmate.create", p, {"exists": False}, {})["apply"][0]
+        assert (create["method"], create["path"]) == ("POST", "/api/agents")
+        app = _crud_app()
+        app["state"] = SimpleNamespace(
+            sessions=SimpleNamespace(
+                active_providers=lambda: [_catalog_provider(ACP_BACKEND_KAS, "served-model")]
+            )
+        )
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(create["path"], json=create["body"])
+            return resp.status, await resp.json()
+
+    @pytest.mark.asyncio
+    async def test_a_served_model_is_pinned_at_creation(self):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        status, _ = await self._apply_create_step(
+            {"name": "pinned", "goal": "g", "model": "served-model"}
+        )
+        assert status == 200
+        assert KiroCrewConfig.load().agents["pinned"].model == "served-model"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("extra", [{}, {"model": ""}, {"model": "auto"}])
+    async def test_no_pin_creates_the_bot_as_before(self, extra):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        status, _ = await self._apply_create_step({"name": "plain", "goal": "g", **extra})
+        assert status == 200
+        assert KiroCrewConfig.load().agents["plain"].model == ""
+
+    @pytest.mark.asyncio
+    async def test_an_unserved_model_fails_the_step_and_makes_no_bot(self):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        status, body = await self._apply_create_step(
+            {"name": "broken", "goal": "g", "model": "not-a-served-model"}
+        )
+        assert status == 400 and body["code"] == "invalid_model"
+        assert "broken" not in KiroCrewConfig.load().agents

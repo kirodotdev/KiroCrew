@@ -70,6 +70,11 @@
     "projectPicker": {
       "not_declared": "This app can't show the project picker: its permissions don't declare {{path}}."
     },
+    "sessionChanges": {
+      "not_declared": "This app can't show this chat's changes: its permissions don't declare {{path}}.",
+      "pick_a_file": "Pick a file to see its changes.",
+      "diff_unavailable": "This chat didn't record the whole file before and after this change, so there's no diff to show."
+    },
     "issues": {
       "assigned_to": "Assigned to {{names}}",
       "assigned_to_me": "Assigned to me",

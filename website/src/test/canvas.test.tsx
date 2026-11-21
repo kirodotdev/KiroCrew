@@ -107,6 +107,79 @@ describe('canvas model', () => {
     expect(connectorRoute(a, b, { line: 'curve' }).d).toContain(' C')
   })
 
+  it('an elbow between aligned shapes whose sides do not face goes round both, never through them', () => {
+    const a: Shape = { ...sticky('a', 0, 0), kind: 'rect', w: 100, h: 100 }
+    const b: Shape = { ...sticky('b', 200, 0), kind: 'rect', w: 100, h: 100 }
+    // a's left to b's right, side by side at the same height: over the top of both.
+    expect(connectorRoute(a, b, { fromSide: 'left', toSide: 'right' }).points).toEqual([
+      { x: 0, y: 50 }, { x: -24, y: 50 }, { x: -24, y: -24 }, { x: 324, y: -24 }, { x: 324, y: 50 }, { x: 300, y: 50 },
+    ])
+    // Both on their right sides: out past b, then back into b's right side from outside.
+    expect(connectorRoute(a, b, { fromSide: 'right', toSide: 'right' }).points).toEqual([
+      { x: 100, y: 50 }, { x: 124, y: 50 }, { x: 124, y: -24 }, { x: 324, y: -24 }, { x: 324, y: 50 }, { x: 300, y: 50 },
+    ])
+    // Beside a taller shape that reaches higher, the detour takes the shorter way round: below.
+    const tall: Shape = { ...b, y: -60, h: 160 }
+    expect(connectorRoute(a, tall, { fromSide: 'left', toSide: 'right' }).points).toEqual([
+      { x: 0, y: 50 }, { x: -24, y: 50 }, { x: -24, y: 124 }, { x: 324, y: 124 }, { x: 324, y: 20 }, { x: 300, y: 20 },
+    ])
+    // Stacked at the same x, top to bottom: round the side of both.
+    const c: Shape = { ...a, y: 200 }
+    expect(connectorRoute(a, c, { fromSide: 'top', toSide: 'bottom' }).points).toEqual([
+      { x: 50, y: 0 }, { x: 50, y: -24 }, { x: -24, y: -24 }, { x: -24, y: 324 }, { x: 50, y: 324 }, { x: 50, y: 300 },
+    ])
+    // Not aligned: the route between them is unchanged.
+    const far: Shape = { ...b, y: 200 }
+    expect(connectorRoute(a, far, { fromSide: 'left', toSide: 'right' }).points).toEqual([
+      { x: 0, y: 50 }, { x: -24, y: 50 }, { x: -24, y: 150 }, { x: 324, y: 150 }, { x: 324, y: 250 }, { x: 300, y: 250 },
+    ])
+    // A shaped route that doubles back keeps the turn, so its last leg still enters b from outside.
+    const shaped = connectorRoute(a, b, { fromSide: 'left', toSide: 'right', route: [{ x: -24, y: 50 }, { x: 324, y: 50 }] })
+    expect(shaped.points).toEqual([{ x: 0, y: 50 }, { x: -24, y: 50 }, { x: 324, y: 50 }, { x: 300, y: 50 }])
+  })
+
+  it('facing elbows keep their turns inside a narrow gap, including touching shapes', () => {
+    const a: Shape = { ...sticky('a', 0, 0), kind: 'rect', w: 100, h: 100 }
+    const b: Shape = { ...a, id: 'b', x: 112 }
+    expect(connectorRoute(a, b, {}).points).toEqual([{ x: 100, y: 50 }, { x: 112, y: 50 }])
+
+    const offset: Shape = { ...b, y: 40 }
+    const turned = connectorRoute(a, offset, { fromSide: 'right', toSide: 'left' })
+    expect(turned.points).toEqual([
+      { x: 100, y: 50 }, { x: 106, y: 50 }, { x: 106, y: 90 }, { x: 112, y: 90 },
+    ])
+    for (const s of [a, offset]) {
+      expect(turned.points.some(p => p.x > s.x && p.x < s.x + s.w && p.y > s.y && p.y < s.y + s.h)).toBe(false)
+    }
+
+    const stacked: Shape = { ...b, x: 0, y: 112 }
+    expect(connectorRoute(a, stacked, {}).points).toEqual([{ x: 50, y: 100 }, { x: 50, y: 112 }])
+    expect(connectorRoute(a, { ...b, x: 100 }, {}).d).toMatch(/^M/)
+
+    const crossesInterior = (s: Shape, p: { x: number; y: number }, q: { x: number; y: number }) =>
+      p.x === q.x
+        ? p.x > s.x && p.x < s.x + s.w && Math.max(p.y, q.y) > s.y && Math.min(p.y, q.y) < s.y + s.h
+        : p.y > s.y && p.y < s.y + s.h && Math.max(p.x, q.x) > s.x && Math.min(p.x, q.x) < s.x + s.w
+    for (const [from, to, side] of [[a, b, 'right'], [b, a, 'left'], [a, stacked, 'bottom']] as const) {
+      const route = connectorRoute(from, to, { fromSide: side, toSide: side })
+      for (const s of [from, to]) {
+        expect(route.points.some(p => p.x > s.x && p.x < s.x + s.w && p.y > s.y && p.y < s.y + s.h)).toBe(false)
+        expect(route.points.some((p, i) => i > 0 && crossesInterior(s, route.points[i - 1], p))).toBe(false)
+      }
+    }
+    // A point being dragged has no interior across the ray, so it never limits the stub.
+    expect(connectorRoute(a, { ...b, y: 50, w: 0, h: 0 }, { fromSide: 'right', toSide: 'right' }).points).toEqual([
+      { x: 100, y: 50 }, { x: 136, y: 50 }, { x: 112, y: 50 },
+    ])
+
+    // At and above two full stubs, facing ends keep their existing route.
+    for (const x of [148, 200]) {
+      expect(connectorRoute(a, { ...offset, x }, { fromSide: 'right', toSide: 'left' }).points).toEqual([
+        { x: 100, y: 50 }, { x: (100 + x) / 2, y: 50 }, { x: (100 + x) / 2, y: 90 }, { x, y: 90 },
+      ])
+    }
+  })
+
   it('dragging an elbow segment reshapes it; an end segment keeps a stub on its shape and adds a jog', () => {
     const a: Shape = { ...sticky('a', 0, 0), w: 200, h: 100 }
     const b: Shape = { ...sticky('b', 400, 200), w: 200, h: 100 }
@@ -669,6 +742,32 @@ describe('the canvas', () => {
       await act(async () => { fireEvent.click(screen.getByLabelText(label)) })
       const reopened = label === 'Colour' || label === 'Border' ? screen.getByTestId('swatch-panel') : screen.getByRole('menu', { name: label })
       expect(Number.parseFloat(reopened.style.left)).toBe(0)
+    } finally {
+      measured.mockRestore()
+      rects.mockRestore()
+    }
+  })
+
+  it.each(['Shape', 'Colour', 'Border', 'Text size'])('desktop panel fits a narrow canvas pane: %s', async label => {
+    // A ~320px canvas pane beside companion chat; the colour panel is ~346px wide.
+    const panelWidth = label === 'Colour' || label === 'Border' ? 346 : 180
+    const measured = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function () {
+      return this.dataset.testid === 'canvas-toolbar-place' ? 280 : panelWidth
+    })
+    const rects = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+    try {
+      const shape: Shape = { ...sticky('r', 100, 300, 'Text'), kind: 'rect', w: 40, h: 120 }
+      render(<Harness initial={{ ...emptyCanvas(), shapes: [shape] }} />)
+      Object.defineProperty(canvas(), 'clientWidth', { configurable: true, value: 320 })
+      press(120, 360)
+      release(120, 360)
+      rects.mockImplementation(function () {
+        return this.dataset.testid === 'canvas-editor' ? new DOMRect(80, 0, 320, 600) : new DOMRect(80 + 200, 0, 40, 30)
+      })
+      await act(async () => { fireEvent.click(screen.getByLabelText(label)) })
+      const panel = label === 'Colour' || label === 'Border' ? screen.getByTestId('swatch-panel') : screen.getByRole('menu', { name: label })
+      // Never wider than the canvas less both 12px edges; the rows inside wrap.
+      expect(panel.style.maxWidth).toBe('296px')
     } finally {
       measured.mockRestore()
       rects.mockRestore()
