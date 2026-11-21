@@ -1,12 +1,12 @@
 ---
 title: Local conductor dispatches sessions to a remote crew
-status: draft
+status: implemented
 author: zejiangg
 created: 2026-10-06
 last-audited: 2026-11-20
-audited-at: 0c5d8bd5f3
+audited-at: c4078c90e5
 doc-pr: 17273
-implementation-prs: [25524, 25548, 25556, 26651, 26897, 26940, 26956, 26976, 34782, 37673, 37910, 37913, 39150]
+implementation-prs: [25524, 25546, 25548, 25556, 26651, 26897, 26940, 26956, 26976, 27564, 29479, 31960, 34782, 36725, 37489, 37500, 37673, 37787, 37910, 37913, 37924, 38417, 38911, 38914, 38920, 38925, 38937, 39097, 39150, 39519, 40043]
 tracking-issues: [13476]
 supersedes: []
 superseded-by: []
@@ -14,14 +14,7 @@ superseded-by: []
 
 # RFC: Local conductor dispatches sessions to a remote crew
 
-**Status:** `draft`. No maintainer acceptance (wave 0) is recorded, but most
-waves are on main behind the default-off `work_ledger.remote_dispatch` Feature
-Preview, through the PRs in `implementation-prs` (#25556 and #34782 carry
-maintainer iamwhatever's first-principles overrides for their own shape)
-(`remote_dispatch.py`, `work_ledger_remote.py`,
-`dashboard/handlers/remote_ingest.py`, `dashboard/handlers/remote_batch_pull.py`,
-and `reply` in `WORK_WAKE_STATUSES` in `work_vocab.py`). Re-checked at
-`0c5d8bd5f3`. The baseline below was measured against main `c6789799df`.
+**Status:** `implemented`. The owner (maintainer iamwhatever) accepted the design on 2026-11-20 after a design review of what shipped, recorded in [the closing comment on #39528](https://github.com/kirodotdev/KiroCrew/pull/39528#issuecomment-7047290408). Waves 1 to 9 are on main behind the default-off `work_ledger.remote_dispatch` Feature Preview, through the PRs in `implementation-prs` (#25556 and #34782 carry maintainer iamwhatever's first-principles overrides for their own shape): `remote_dispatch.py`, `work_ledger_remote.py`, `dashboard/remote_dispatch_headroom.py`, `dashboard/handlers/remote_ingest.py`, `dashboard/handlers/remote_batch_pull.py`, `dashboard/handlers/remote_crew_list.py`, and `reply` in `WORK_WAKE_STATUSES` in `work_vocab.py`. The gaps the owner accepted are listed under "Known gaps" at the end. Re-checked at `c4078c90e5`. The baseline below was measured against main `c6789799df`.
 Builds on the accepted [rfc-remote-crew-sidebar.md](rfc-remote-crew-sidebar.md):
 a session on a crew is owned by the peer, and this machine is only a window onto
 it through `/api/instances/{id}/proxy/...`.
@@ -50,6 +43,8 @@ The pull runs on the conductor's work-ledger patrol tick instead (§2 "Pull on
 the patrol tick", open question 1): the 30 s had no measured basis, and it cost
 one peer call per board every 30 s whether or not anyone was patrolling.
 
+**Revision 2026-11-20.** Owner decision after a design review: remote reports reach the hub only by the patrol-tick pull (§2) and by `work_ledger_read`. A long-poll pull ([#39528](https://github.com/kirodotdev/KiroCrew/pull/39528)) was closed unmerged, because the patrol pull already delivers every report at the next tick. Worker write-back to the hub is not planned: it would open a new peer-to-hub trust boundary, which §4 rules out. The same revision records what shipped since 2026-11-15 (`crew_list`, `agent_kind` on a crew create, the hub receive time, the stale rule for a crew gone away, placement past a duplicate item, the close of a closed item's peer worker, `since` on crew reads, the per-crew batch pull, `patrol=` on the create reply), moves the status to `implemented`, and lists the known gaps.
+
 ## Summary
 
 A conductor on this gateway can only dispatch workers onto this gateway. This
@@ -61,8 +56,7 @@ Six decisions:
 
 1. The five session tools gain one argument, `crew=`. The hub carries each call
    to routes the peer already serves under `api/chat`. No new proxy prefix.
-2. The worker reports to the **peer's** ledger. The hub **pulls** those reports
-   when the conductor reads its own ledger. The peer never pushes.
+2. The worker reports to the **peer's** ledger. The hub **pulls** those reports on each work-ledger patrol tick and when the conductor reads its own ledger. The peer never pushes, and nothing long-polls.
 3. A remote session is born bound: `session_create(crew=, work_item=)` creates
    the peer slot and its binding in one call.
 4. The conductor picks the crew by headroom. The peer is the real gate and
@@ -171,7 +165,7 @@ The tunnel only opens hub → peer, so the peer cannot call the hub back.
 - `spawn_run` on a crew ([#12821](https://github.com/kirodotdev/KiroCrew/pull/12821)).
 - Reading arbitrary peer history ([#6874](https://github.com/kirodotdev/KiroCrew/pull/6874)).
 - A remote **conductor** (a sub-conductor on the peer). Leaf workers only.
-- Pushing anything from the peer to the hub, or any new transport.
+- Pushing anything from the peer to the hub, or any new transport. This includes a long-poll pull and a worker writing back to the hub (owner decision 2026-11-20).
 - Uploading source to the peer, or moving any large file between machines. The
   worker clones from the repo URL in its seed.
 - Sending any credential from the hub, or the hub running a login check of its
@@ -231,6 +225,8 @@ as the window view's create does. Omitting `agent` sends nothing, so the peer
 applies its own default; the local "inherit the caller's agent" fallback does
 not cross.
 
+`agent_kind` crosses with its one local value, `template`, and only beside an explicit `agent`, so a `kirocrew-worker` lands on the peer's shared template even where a crew member carries that name (`invalid_agent_kind` and `agent_kind_requires_agent` otherwise; `_CREATE_FIELDS` in `dashboard/handlers/remote_dispatch_routes.py`). Any other local create field (`folder`, `reasoning_effort`, `autocompact_pct`, `dry_run`) is refused, not dropped. One caller holds at most 64 crew sessions at once (`MAX_CREW_SLOTS_PER_CALLER`, refused `crew_dispatch_limit`).
+
 ### 2. Work ledger: where remote reports land
 
 The worker's MCP server talks to its own gateway, so its reports land on the
@@ -266,6 +262,7 @@ How (a) works:
   nothing. From there `accept`, wakes from the crew log, and
   `work_ledger_rebuild` work as they do for a local report. A failed fetch keeps
   the last ingested state.
+- **Hub receive time.** An ingested report keeps the peer's own stamp as `last_report_at`, the dedup key and the rebuild check. The hub also stamps `received_at`, its own clock at filing, on the item and on the report's crew-log entry. Only the duration rules (stale, quiet, decided-after-report) read it, through `_report_clock` in `work_ledger_rules.py`, so a peer clock ahead of the hub cannot hide a later `decide` or keep an item from going stale. A local item never sets it.
 - **Pull on the patrol tick.** The same pull also runs on the hub with no model
   turn at the start of each work-ledger patrol tick, for that conductor's own
   board and only when it holds an open crew-bound item, so the tick's hold and
@@ -383,6 +380,8 @@ peer's current snapshot:
 of `api/chat`; the reply runs `_redact_peer_payload`. It carries numbers and
 status words only.
 
+**`crew_list`, the conductor's roster.** A read-only MCP tool, `crew_list` (`mcp_crew_list.py`, served by `GET /api/session-control/crews` in `dashboard/handlers/remote_crew_list.py`), answers one row per registered crew before any create: id, name, `crew_state`, version and `version_match`, the headroom snapshot, `open_workers`, `tags`, the open bindings this hub holds there (`bound_here`, placement's reservations), and the agent and model names from the crew's capabilities. It takes the `crew=` verbs' gates in their order and makes only the peer reads placement and the crew window already make. `logins: true` adds each crew's login states (`?logins=1` on the headroom read); a plain read never waits on a login check. It is a snapshot; the peer gate still decides.
+
 **Reservation ledger on the hub.** The hub keeps the latest snapshot per crew in
 memory and refreshes it from every create reply and from `api/chat/headroom`
 on patrol. Reservations are not stored; they are derived from the work ledger.
@@ -399,6 +398,8 @@ rank crews; the peer gate alone admits or refuses. The hub picks the crew whose
 scarcer resource has the most headroom after reservations. On `crew_busy` it stores
 the reply's snapshot and tries the next crew. When no crew admits the item, the
 item stays open and unbound to any crew, and the next patrol tries again.
+
+A crew that already holds a session for the item (a bound create whose reply was lost) refuses a retry with 409 `duplicate_item` before it makes anything. The hub reads that as `DuplicateItemError`, tries the next crew, and names the skipped crew under `skipped` in the reply and in `crew_none_available` (`dashboard/handlers/remote_placement.py`). The orphan session on that crew is left alone (Known gaps).
 
 ### 2c. Self-contained workers
 
@@ -442,7 +443,7 @@ Flags for a remote item:
 | Flag | Derived from |
 |---|---|
 | `orphaned` | Unchanged. The conductor is local. |
-| `stale` | `worker_running` = the peer slot's `running` (`read_peer_slots`, already parsed in `_PEER_SLOT_BOOL_FIELDS`); `worker_closed` = the slot missing from a successful read. Both answers are stored with the last ingest. `ledger_wake.worker_running` / `worker_closed` answer an item with `worker_instance_id` from that stored state and never call the peer, so the read rows and the wake gate agree. |
+| `stale` | `worker_running` = the peer slot's `running` (`read_peer_slots`, already parsed in `_PEER_SLOT_BOOL_FIELDS`); `worker_closed` = the slot missing from a successful read. Both answers are stored with the last ingest. `ledger_wake.worker_running` / `worker_closed` answer an item with `worker_instance_id` from that stored state and never call the peer, so the read rows and the wake gate agree. A stored `running` counts only while the crew is up and the last pull that reached it is within `REMOTE_PULL_FRESH_SECS` (`_crew_seen_recently` in `work_ledger_remote.py`), so a worker last seen running on a crew that went away reads not running and goes stale (#40043). |
 | peer unreachable | Both answers keep the last ingested values, as every other field does. With no ingest yet, both read `False`. The row adds `crew_state` (from `TunnelState`) and `crew_down_since`, so the conductor can tell "quiet" from "crew down", and §5b can time the retire. |
 
 The row also carries the peer slot's `pending_approval`, so "waiting on a person"
@@ -718,6 +719,8 @@ nothing that passes today.
    local files, sending the DELETE only to a crew already connected. Left open:
    with no conductor patrolling anywhere, a crew that comes back after boot is
    closed at the next boot or patrol tick.
+
+   **Amended 2026-11-20 (owner decision).** The patrol-tick pull and `work_ledger_read` are the only paths a remote report takes to the hub. A long-poll pull ([#39528](https://github.com/kirodotdev/KiroCrew/pull/39528)) was closed unmerged after a design review: the patrol pull already files every report at the next tick, so holding a request open per crew bought no wake the conductor needs. A worker writing its report back to the hub is not planned either, because it would need a peer-to-hub route and a hub credential on the peer, the trust boundary §4 rules out. Since #39150 the pull reads each crew once per tick (`POST api/chat/work-items/pull`, `dashboard/handlers/remote_batch_pull.py`), at most 32 items per read (`MAX_ITEMS_PER_READ`) within 6 s (`READ_DEADLINE_SECS`); an item a crew did not answer, or flagged `more`, is read on its own.
 2. **Folder on the peer.** Should `session_create(crew=)` accept `folder` and file
    the worker into a peer folder? Proposed: no in wave 1; the crew group already
    says where it is.
@@ -747,3 +750,10 @@ nothing that passes today.
 8. **`reply` on an accepted item.** §3b keeps A's item open while A is kept open.
    Should `reply` instead be admitted on an accepted item, so the conductor can
    accept early? Proposed: no; keeping the item open needs no store change.
+
+## Known gaps
+
+The owner accepted these on 2026-11-20 with the `implemented` status. None is fixed on main. Section 5c names two more for closing a remote item: a turn started between the idle check and the DELETE is cut off, and a wake close never seen idle and `done` waits for the owner.
+
+1. **Slower Trust revoke with no patrol.** A conductor that leaves Trust revokes its remote worker's grant only on the next pull (§4). With no patrol running and no `work_ledger_read`, the worker keeps the grant until it expires (`agent.yolo_duration`, default 6 h) or its slot closes. Accepted; revisit later by re-applying the Trust check on another path.
+2. **A lost create reply can leave a peer session.** When a bound create's reply is lost, the crew keeps the session it made. A retry there is refused `duplicate_item` and placement moves on (§2b), but nothing closes that session. Parked; the planned fix is a simpler idempotent create that returns the existing session.
