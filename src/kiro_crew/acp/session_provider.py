@@ -935,6 +935,12 @@ class AcpSessionProvider(LLMProvider):
         return float(getattr(self._handle, "last_steer_monotonic", 0.0) or 0.0)
 
     @property
+    def held_steers_possibly_delivered(self) -> frozenset[str]:
+        """See ``AcpSessionHandle.held_steers_possibly_delivered``."""
+        value = getattr(getattr(self, "_handle", None), "held_steers_possibly_delivered", None)
+        return value if isinstance(value, frozenset) else frozenset()
+
+    @property
     def supports_steer(self) -> bool:
         """True when the backing handle takes a user's mid-turn steer."""
         return self._handle.supports_steer

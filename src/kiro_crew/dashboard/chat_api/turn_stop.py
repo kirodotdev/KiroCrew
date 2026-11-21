@@ -646,11 +646,24 @@ async def stop_slot_turn(
 
         _config = live.snapshot()
         _peer_recovery = _config is not None and _config.agent.peer_steer_loss_recovery
+        from kiro_crew.dashboard import deferred_steer
+
+        _injected = set(slot._deferred_steer_injected.values())
+        _still_held = {held.text for held in slot._deferred_steers}
         for _discarded in slot._pending_steers:
             # With the key on a peer steer can wait for its turn's clean end, so a hard stop tells
-            # its sender; one still in its RPC will answer unavailable and be queued instead.
+            # its sender; one still in its RPC will answer unavailable and be queued instead. A
+            # held steer injected at a boundary, marked or not, is told too whatever the key says,
+            # and its receipt stops reading delivered. One still held is told by `discard_all`.
             _admission = slot._steer_admissions.get(_discarded)
-            if _peer_recovery and _admission and _discarded not in slot._steer_rpc_in_flight:
+            _was_injected = _discarded in _injected and _discarded not in _still_held
+            if _was_injected:
+                deferred_steer.mark_unconfirmed(slot, _discarded)
+            if (
+                (_peer_recovery or _was_injected)
+                and _admission
+                and _discarded not in slot._steer_rpc_in_flight
+            ):
                 notify_send_origin_discarded(
                     state,
                     entry_meta=_admission,
@@ -674,6 +687,23 @@ async def stop_slot_turn(
             slot._steer_possibly_delivered.discard(_discarded)
             crew_steer_discarded(slot, _discarded)
         slot._pending_steers.clear()
+        # A hard stop discards held peer steers with the rest of the turn's pending work.
+        # Each was never injected, so its sender is told it will not run, as a queued
+        # delivery's sender is, and its receipt reads "discarded".
+        deferred_steer.discard_all(
+            slot,
+            lambda held: notify_send_origin_discarded(
+                state,
+                entry_meta=held.origin_meta,
+                target_slot=slot,
+                text=held.text,
+                cause=(
+                    SEND_DISCARD_HARD_STOP_STEER
+                    if held.steer_id in slot._deferred_steer_delivered
+                    else SEND_DISCARD_HARD_STOP
+                ),
+            ),
+        )
         state.push_slots_update()
         logger.info("Stop (force): hard-killing session for slot %s", name)
 

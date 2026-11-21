@@ -374,6 +374,11 @@ class AcpSessionHandle:
         # consumption report can never clear a pending entry whose row does
         # not exist yet. Matched by identity (``_release_proven_steers``).
         self._steers_accepted: list[str] = []
+        # The text of each codex steer of the running or last turn whose write
+        # may have reached the adapter with no answer read, or was answered
+        # ``injected`` after its turn ended, until the next turn starts. Read
+        # through ``held_steers_possibly_delivered``, as on ``AcpClient``.
+        self._held_steers_unanswered: set[str] = set()
         # goose's ``_goose/unstable/session/steer`` (``_steer_via_goose_request``):
         # the run id goose announced for the running prompt, and each accepted
         # steer's answer with its wrapped text, until goose echoes it.
@@ -1160,6 +1165,17 @@ class AcpSessionHandle:
     def last_steer_monotonic(self) -> float:
         """Monotonic time of the last steer written to the backend (0.0 if none)."""
         return self._last_steer_monotonic
+
+    @property
+    def held_steers_possibly_delivered(self) -> frozenset[str]:
+        """Steer texts whose delivery remains unresolved (``AcpClient``'s twin).
+
+        A stalled write (``ambiguous_delivery``), no answer before the turn
+        ended or the bound passed, or ``injected`` after the turn ended may run
+        without being reported consumed. The dashboard reads this so it does
+        not run such a steer again. Reset when the next turn starts.
+        """
+        return frozenset(getattr(self, "_held_steers_unanswered", ()))
 
     @property
     def supports_steer(self) -> bool:

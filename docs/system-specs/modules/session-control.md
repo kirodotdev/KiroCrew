@@ -419,11 +419,35 @@ after it lands. The result names the outcome: `steered` for an injection,
 
 A harness that can drop a steer it accepted (`steer_needs_loss_recovery`:
 codex, claude, goose, pi and opencode) takes a peer's steer only when
-`agent.peer_steer_loss_recovery` is on; otherwise the steer arm answers
-unavailable and the message queues. With the key on, the peer's steer is held
+`agent.peer_steer_loss_recovery` is on; otherwise the send-time steer arm answers
+unavailable and the gateway holds the message as a pending steer
+(`dashboard/deferred_steer.py`). The stream loop retries it at each tool boundary
+of the same turn; the held attempt skips the key's refusal, marks the steer
+delivered before the injection (`slot._deferred_steer_delivered`), and the turn's
+teardown requeue skips a marked steer. On the Claude Code and Codex paths it is
+therefore injected at most once and never queued back; on the Goose, request and
+concurrent-prompt (Pi, OpenCode) paths a steer the adapter took just as its turn
+ended is reported False and can run once more from the queue. A turn that ends
+first hands the unmarked held steers to the queue, and the next turn starts in the
+same hand-off. They join the HEAD of the queue, ahead of messages queued meanwhile and
+in send order, as an unconsumed steer does; a held steer that a boundary of a later
+turn finds is queued at the head too. A held steer that a later re-check
+refuses, at a boundary (the gate refuses the sender, or the key resolves to another
+session) or when its turn ends and the queue fallback refuses it, reads
+`refused@<time>`, and its sender gets one `SEND_DISCARD_REFUSED_STEER` notice that
+it was not delivered and will not run; a steer a hard stop discarded first keeps the
+stop's one notice. With the key on, the peer's steer is held
 as the composer's is: it counts as delivered only when its turn ends cleanly,
 and the turn's teardown otherwise requeues it as a queue card that runs as the
 next turn, so it can run twice.
+
+While the key is off, a held peer steer injected into one of those harnesses can
+still be dropped by the harness: its sender is told it may not have run and its
+receipt reads `unconfirmed@<time>`, and the delivered mark
+that stops a second run also stops a retry. Held steers live in memory only, so
+a gateway restart drops them although the sender saw `pending-steer`. Admission
+closes at the start of each turn hand-off, so a steer sent while a turn ends is
+queued for the next turn instead of held.
 
 Two properties keep the steer arm from being a hole in the queued arm's checks.
 The delivery happens NOW rather than later, which removes the queue's waiting

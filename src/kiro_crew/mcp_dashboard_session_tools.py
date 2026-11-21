@@ -740,8 +740,8 @@ def _session_tools() -> tuple[Tool, ...]:
                             "thing it is working on is already done. Ignored when "
                             "the target is idle (the message starts a turn either "
                             "way), and when mid-turn injection is unavailable the "
-                            "message falls back to the queue rather than being "
-                            "dropped. Default false."
+                            "message is held and injected at its next tool boundary. "
+                            "Default false."
                         ),
                     },
                 },
@@ -878,9 +878,8 @@ def _session_tools() -> tuple[Tool, ...]:
                             "current turn ends (an idle one starts immediately). "
                             "`steer`: cut into the turn already running so the "
                             "target reads it mid-work; on an idle target it starts "
-                            "a turn either way, and where mid-turn injection is "
-                            "unavailable that target falls back to its queue "
-                            "rather than being dropped. No default — say which."
+                            "a turn either way, and where injection is unavailable "
+                            "it is held for the next tool boundary. No default — say which."
                         ),
                     },
                     "targets": {
