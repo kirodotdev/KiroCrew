@@ -1134,7 +1134,12 @@
         : disabledEl(el) ? "disabled"
         : !visible(el) ? "not_visible" : "";
       if (node) return code ? null : el;
-      return code ? { ok: false, code: code } : { ok: true, multiple: !!el.multiple };
+      return code ? { ok: false, code: code }
+        : {
+          ok: true,
+          multiple: !!el.multiple,
+          directory: !!el.webkitdirectory || el.hasAttribute("webkitdirectory"),
+        };
     },
 
     textPresent: function (text) {

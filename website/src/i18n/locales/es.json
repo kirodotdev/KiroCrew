@@ -10124,7 +10124,7 @@
       "trust_all_base_today": "Confiar en cualquier comando <mono/> hasta la medianoche ({{time}})",
       "trust_all_tools": "Confiar en todas las herramientas de esta sesión",
       "trust_all_tools_channel": "Confiar en todas las herramientas de este canal — persiste tras reiniciar",
-      "trust_site_act_session": "Confiar en leer, hacer clic y escribir en <mono/> durante esta sesión",
+      "trust_site_act_session": "Confiar en leer, hacer clic, escribir y subir archivos en <mono/> durante esta sesión",
       "trust_site_read_session": "Confiar en la lectura de páginas de <mono/> durante esta sesión",
       "trust_this_command": "Confiar en <mono/>",
       "trust_this_command_channel": "Confiar en <mono/> para @{{role}} — hasta que {{productName}} se reinicie",

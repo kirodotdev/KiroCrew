@@ -54,7 +54,7 @@ def _call(op: str, **args: object) -> dict:
         ("back", {}, "act"),
         ("ask", {}, ""),
         ("reflex", {}, ""),
-        ("upload", {}, ""),
+        ("upload", {}, "act"),
         ("some_future_op", {}, ""),
     ],
 )
@@ -703,7 +703,6 @@ async def test_a_call_refused_for_a_tab_move_takes_its_own_note(route):
         ("cdp", {"method": "Storage.getCookies"}),
         ("js", {"expression": "1"}),
         ("http_get", {"url": "https://example.com/"}),
-        ("upload", {"ref": "e3", "path": "/tmp/a.txt"}),
     ],
 )
 def test_a_call_that_reaches_past_one_site_gets_no_site_key(op: str, args: dict) -> None:

@@ -45,4 +45,6 @@ HELPERS: Mapping[str, tuple[str, ...]] = {
     "closed_secret_count": (),
     "page_clock": ("state",),
     "set_files": ("expression", "files"),
+    "chooser_files": ("x", "y", "files"),
+    "drop_files": ("x", "y", "files"),
 }

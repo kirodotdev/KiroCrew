@@ -66,15 +66,17 @@ describe('fileInput', () => {
       '<label>CV <input id="f" type="file"></label>' +
         '<label>Name <input id="t" type="text"></label>' +
         '<label>Off <input id="d" type="file" disabled></label>' +
-        '<label>Many <input id="m" type="file" multiple></label>',
+        '<label>Many <input id="m" type="file" multiple></label>' +
+        '<label>Dir <input id="w" type="file" webkitdirectory></label>',
     )
     const w = walker()
     const nodes = w.snapshot().nodes
     expect(nodes.find((n) => n.name === 'CV')?.state?.file).toBe(true)
     expect(nodes.find((n) => n.name === 'Name')?.state?.file).toBeUndefined()
     const refs = refsOf()
-    expect(w.fileInput(refs.CV)).toEqual({ ok: true, multiple: false })
-    expect(w.fileInput(refs.Many)).toEqual({ ok: true, multiple: true })
+    expect(w.fileInput(refs.CV)).toEqual({ ok: true, multiple: false, directory: false })
+    expect(w.fileInput(refs.Many)).toEqual({ ok: true, multiple: true, directory: false })
+    expect(w.fileInput(refs.Dir)).toEqual({ ok: true, multiple: false, directory: true })
     expect(w.fileInput(refs.CV, true)).toBe(document.getElementById('f'))
     expect(w.fileInput(refs.Name)).toEqual({ ok: false, code: 'not_file_input' })
     expect(w.fileInput(refs.Name, true)).toBeNull()
