@@ -1508,6 +1508,7 @@ class KasHarness(MembershipHarness):
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
                 governance_app=governance_app,
                 scope_muted=scope_muted,
+                work_dir=session_cwd or work_dir,
             )
             if agent == MATE_WORKER_AGENT:
                 # A Bot's worker: the `deniedCommands` entries nobody can judge

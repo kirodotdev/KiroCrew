@@ -471,6 +471,7 @@ def _project_target(
         engine_features=engine_features,
         forward_ssh_auth_sock=forward_ssh_auth_sock,
         scope_muted=scope_muted,
+        work_dir=settings_dir,
     )
     if _gate_only_limits(entry):
         # The launch files this projection wrote belong to no registered entry.

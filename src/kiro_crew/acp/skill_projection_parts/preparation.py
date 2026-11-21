@@ -249,6 +249,7 @@ def project_agent_view(
     crew_home_id: str,
     inherits_skills: bool,
     per_session_element: bool,
+    work_dir: object | None = None,
     registry_ceiling: bool | None = None,
 ) -> tuple[dict[str, Any] | None, bool, str | None]:
     """*spec*'s native skill view: ``(view, is_search_agent, refusal)``.
@@ -257,6 +258,7 @@ def project_agent_view(
     ``kirocrew-core``'s ``skill_search`` instead; every other field is the spec's own.
     *source* is the spec's file, which a relative ``file://`` prompt is anchored to.
     *inherits_skills* says the agent's workspace lends it inherited skill trees.
+    *work_dir* names the workspace whose inherited MCP settings apply.
     Under the registry ceiling (:func:`session_mcp.registry_withholds_control_plane`:
     the control plane is marked for the admin's catalog and the security policy
     does not set ``mcp_registry_local_control_plane``) the agent is left as
@@ -277,6 +279,13 @@ def project_agent_view(
     # nested hundreds of levels deep, and a recursive copy of it would
     # raise ``RecursionError`` out of the projection.
     view = copy_json_document(spec)
+    from kiro_crew.platform.governance import withhold_prompt_only_wildcards
+
+    prompt_only_withheld = withhold_prompt_only_wildcards(view, work_dir=work_dir)
+    if prompt_only_withheld:
+        from kiro_crew import agent as agent_mod
+
+        agent_mod.report_prompt_only_withheld(agent_name, prompt_only_withheld)
     _strip_alias_display_text(view)
     # The ONE display field a view carries, replacing the authored one: it
     # tells a reader that lists the agents directory (the Kiro IDE) what the
@@ -328,8 +337,9 @@ def project_agent_view(
         # so does this. A restriction authored in the spec refuses the view:
         # the view would drop this agent's skill resources on the promise of
         # an element the mount can never mount for it. The settings files are
-        # deliberately NOT read here -- see the note above the loop -- so a
-        # spec that is clean gets its view whatever the files say today, and
+        # deliberately NOT read for this ``kirocrew-core`` mount decision -- see
+        # the note above the loop -- so a spec that is clean gets its view
+        # whatever the files say today, and
         # the mount asks the full question over the files at every session
         # start. A broker stub ``session/new`` would mount ahead of the
         # element is not a source either: a stub element carries a
@@ -612,8 +622,8 @@ def prepare_native_skill_projection(
     # are written while a runtime is warm (the dashboard's tool toggle) and are
     # shared by every agent of the process, so a restriction there refuses the
     # search agent's SESSIONS, one at a time, naming the file -- never the spawn,
-    # which every other agent's sessions ride on. This module reads no settings
-    # file: the mount is their one reader.
+    # which every other agent's sessions ride on. This ``kirocrew-core`` mount
+    # decision reads no settings file here: the mount is their one reader.
     aliases: dict[str, str] = {}
     specs: dict[str, dict[str, Any]] = {}
     sources: dict[str, str] = {}
@@ -731,6 +741,7 @@ def prepare_native_skill_projection(
             crew_home_id=crew_home_id,
             inherits_skills=bool(inherited_globs),
             per_session_element=per_session_element,
+            work_dir=work_dir,
             registry_ceiling=registry_ceiling,
         )
         if view is None:

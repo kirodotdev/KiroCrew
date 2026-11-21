@@ -30,6 +30,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     EVENT_TOOL_RESULT,
 )
 from kiro_crew.acp.types import AcpEvent as LLMEvent  # noqa: F401
+from kiro_crew.agent_sdk.prompted_calls import PromptedCallLaunch
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.essential_delivery import EssentialDelivery
 
@@ -545,6 +546,14 @@ class LLMProvider(ABC):
     def cwd(self) -> str:
         """Working directory the provider operates in. Default: empty string."""
         return ""
+
+    def prompted_call_launch(self) -> PromptedCallLaunch | None:
+        """Launch fact that authorizes prompt-only server dispatch.
+
+        ``None`` is the fail-closed default for providers that cannot prove whether
+        the live session started on a Crew-minted copy.
+        """
+        return None
 
     def set_work_dir_claim_probe(
         self,

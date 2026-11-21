@@ -235,6 +235,9 @@ class AcpClient:
         # inside the other's (``acp.launch_tuning``).
         self._launch_tuning_lock = asyncio.Lock()
         self._agent = agent
+        # The exact `--agent` value handed to the live process. Set at spawn and
+        # kept fixed for prompt-only dispatch even if another projection is built.
+        self._prompted_call_launch_name: str | None = None
         self._sandbox_mode = sandbox_mode
         self.memory_mode = "persistent"
         self._acp_backend = acp_backend
@@ -1445,6 +1448,7 @@ class AcpClient:
     ensure_ready = _client_start.ensure_ready
     _harness_read_back = _client_start._harness_read_back
     _adapter_session_mcp_servers = _client_start._adapter_session_mcp_servers
+    prompted_call_launch = _client_start.prompted_call_launch
     # Run an ``AcpClient`` prompt turn and dispatch the frames it reads: ``kiro_crew.acp.client_turn``.
     _process_message = _client_turn._process_message
     _defer_mimocode_shell_permission = _client_turn._defer_mimocode_shell_permission

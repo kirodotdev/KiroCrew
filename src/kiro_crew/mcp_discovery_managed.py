@@ -30,6 +30,7 @@ _MANAGED_SERVER_SUBCOMMANDS = {
     "kirocrew-panel": "mcp-panel",
     "kirocrew-guide": "mcp-guide",
     "kirocrew-mate": "mcp-mate",
+    "kirocrew-apps": "mcp-apps",
     "kirocrew-secrets": "mcp-secrets",
 }
 _MANAGED_SERVER_NAMES = set(_MANAGED_SERVER_SUBCOMMANDS)
@@ -48,6 +49,7 @@ _MANAGED_SERVER_TOOL_MODULES = {
     "kirocrew-panel": "kiro_crew.mcp_panel",
     "kirocrew-guide": "kiro_crew.mcp_guide",
     "kirocrew-mate": "kiro_crew.mcp_mate",
+    "kirocrew-apps": "kiro_crew.mcp_apps",
     "kirocrew-secrets": "kiro_crew.mcp_secrets",
 }
 
@@ -95,6 +97,7 @@ _MANAGED_SERVERS_CALLER_AWARE: frozenset[str] = frozenset(
         "kirocrew-guide",
         "kirocrew-mate",
         "kirocrew-secrets",
+        "kirocrew-apps",
     }
 )
 

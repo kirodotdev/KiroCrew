@@ -170,6 +170,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "note_user_message": ("function", False, "ce7410240196", "acp"),
     "process_instance": ("property", False, "bb418bb7ece8", "acp"),
     "prompt_timeout_for_deadline": ("function", False, "b97d05f9c710", "acp"),
+    "prompted_call_launch": ("function", False, "240a7dd88209", "acp"),
     "prompts_written": ("property", False, "8dc15be1dfda", "acp"),
     "reapply_live_effort": ("function", True, "581451d2b011", "acp_model_effort"),
     "reject_tool": ("function", True, "8f224062db90", "acp"),

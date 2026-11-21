@@ -127,6 +127,7 @@ from kiro_crew.providers.base import (  # noqa: F401
     CancelOutcome,
     LLMEvent,
     LLMProvider,
+    PromptedCallLaunch,
     SessionMcpReport,
     resolve_billing_stats,
 )
@@ -640,6 +641,14 @@ class AcpProvider(LLMProvider):
         with no ``cwd``, so the fallback reads its ``_work_dir``.
         """
         return str(getattr(self._client, "cwd", "") or self._client._work_dir)
+
+    def prompted_call_launch(self) -> PromptedCallLaunch | None:
+        """Return the launch fact recorded by the live ACP client."""
+        client = self._client
+        try:
+            return client.prompted_call_launch()
+        except (AttributeError, TypeError, ValueError):
+            return None
 
     @property
     def session_activity_at(self) -> float | None:

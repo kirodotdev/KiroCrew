@@ -109,6 +109,72 @@ class AcpRuntimeStdinStalled(AcpRuntimeDead):
 AcpRuntimeStdinStalled.__module__ = "kiro_crew.acp.runtime"
 
 
+def _record_prompted_call_launch(
+    runtime: AcpRuntime,
+    params: dict[str, Any],
+    *,
+    launched_on_crew_copy: bool,
+) -> tuple[str, bool] | None:
+    """Record the exact mode name a set-mode send carried; return the stored record."""
+    session_id = params.get("sessionId")
+    launch_name = params.get("modeId")
+    if not isinstance(session_id, str) or not isinstance(launch_name, str) or not launch_name:
+        return None
+    launches = getattr(runtime, "_prompted_call_launches", None)
+    if launches is None:
+        launches = runtime._prompted_call_launches = {}
+    record = (launch_name, launched_on_crew_copy)
+    launches[session_id] = record
+    return record
+
+
+def _await_prompted_call_launch(
+    runtime: AcpRuntime,
+    req_id: int,
+    params: dict[str, Any],
+    *,
+    launched_on_crew_copy: bool,
+) -> "asyncio.Future[dict[str, Any]]":
+    """Record a set-mode send as not on a Crew copy until kiro-cli accepts it.
+
+    A rejected switch leaves the session on its authored spec, so the record
+    claims the Crew copy only from the answer: the returned future is resolved
+    by the reader like any awaited request, and only a success answer to THIS
+    send commits *launched_on_crew_copy*. An error answer, no answer, or the
+    runtime's death leaves the fail-closed record in place.
+    """
+    sent = _record_prompted_call_launch(runtime, params, launched_on_crew_copy=False)
+    session_id = params.get("sessionId")
+    future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+
+    def _commit(answer: "asyncio.Future[dict[str, Any]]") -> None:
+        if answer.cancelled() or answer.exception() is not None:
+            return
+        launches = getattr(runtime, "_prompted_call_launches", {})
+        # Identity, not equality: once a later send, a commit or the session's
+        # teardown replaces the record, this answer describes a stale one.
+        if sent is not None and launches.get(session_id) is sent:
+            launches[session_id] = (sent[0], launched_on_crew_copy)
+
+    future.add_done_callback(_commit)
+    runtime._pending_requests[req_id] = future
+    return future
+
+
+def _forget_mode_answer(
+    runtime: AcpRuntime, req_id: int, future: "asyncio.Future[dict[str, Any]] | None"
+) -> None:
+    """Drop a set-mode answer wait whose frame failed to go out."""
+    if future is None:
+        return
+    runtime._pending_requests.pop(req_id, None)
+    if future.done():
+        if not future.cancelled():
+            future.exception()
+    else:
+        future.cancel()
+
+
 async def send_request(
     self: AcpRuntime,
     method: str,
@@ -136,6 +202,7 @@ async def send_request(
         raise AcpRuntimeDead("runtime is dead")
 
     projection = getattr(self, "_native_skill_projection", None)
+    requested_mode = params.get("modeId") if method == METHOD_SET_MODE else None
     if method == METHOD_SET_MODE and self._launch_agent and params.get("modeId") == self._agent:
         # Re-selecting this runtime's own agent mid-session names its launch
         # copy, never a view the projection built by name lookup.
@@ -145,9 +212,25 @@ async def send_request(
     req_id = self._next_id
     self._next_id += 1
 
-    # Register for session routing so the response goes to the right queue
+    # Register for session routing so the response goes to the right queue. A
+    # set-mode answer is awaited instead: it decides the prompted-call record.
     session_id = params.get("sessionId")
-    if session_id and session_id in self._session_queues:
+    mode_answer: asyncio.Future[dict[str, Any]] | None = None
+    if method == METHOD_SET_MODE:
+        launch_name = params.get("modeId")
+        mode_answer = _await_prompted_call_launch(
+            self,
+            req_id,
+            params,
+            launched_on_crew_copy=bool(
+                isinstance(launch_name, str)
+                and (
+                    (self._launch_agent and launch_name == self._launch_agent)
+                    or (projection is not None and launch_name != requested_mode)
+                )
+            ),
+        )
+    elif session_id and session_id in self._session_queues:
         self._routed_requests[req_id] = session_id
     if on_reserved is not None:
         on_reserved(req_id)
@@ -168,12 +251,14 @@ async def send_request(
             await self._write_request_bounded(data, req_id, method, before_write=before_write)
     except (BrokenPipeError, ConnectionResetError) as exc:
         self._routed_requests.pop(req_id, None)
+        _forget_mode_answer(self, req_id, mode_answer)
         self._mark_dead(f"pipe broken: {exc}")
         raise AcpRuntimeDead(f"pipe broken: {exc}") from exc
     except Exception:
         # Any failure out of the write (a death, a ``before_write`` refusal) leaves
         # nobody waiting on this id.
         self._routed_requests.pop(req_id, None)
+        _forget_mode_answer(self, req_id, mode_answer)
         raise
 
     self._last_activity = time.monotonic()

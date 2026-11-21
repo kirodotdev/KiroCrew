@@ -15,8 +15,9 @@ Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
 ``_kill_sent``, ``_last_activity``, ``_last_substitution_model``, ``_mode_frame_awaited``,
 ``_mode_frame_superseded``, ``_native_skill_projection``, ``_pid``, ``_process``,
 ``_process_adapter``, ``_process_instance``, ``_process_tree_confirmed_dead``,
-``_resume_session_id``, ``_resumed``, ``_scope_unit``, ``_session_id``,
-``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_work_dir_ready``.
+``_prompted_call_launch_name``, ``_resume_session_id``, ``_resumed``, ``_scope_unit``,
+``_session_id``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``,
+``_work_dir_ready``.
 
 Instance fields read: ``_agent``, ``_available_mode_ids``, ``_batch_window``,
 ``_channel_id``, ``_extra_env``, ``_model``, ``_modes_advertised``, ``_sandbox_mode``,
@@ -136,6 +137,7 @@ from kiro_crew.startup_deadline import cancel_outcome
 
 if TYPE_CHECKING:
     from kiro_crew.acp.client import AcpClient
+    from kiro_crew.agent_sdk.prompted_calls import PromptedCallLaunch
 
 #: The client's own logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.client")
@@ -204,6 +206,16 @@ _PROTOCOL_VERSION_BY_BACKEND: dict[str, int | str] = {
     # its own release cadence, and none has a launch record to read.
     **{backend: record.protocol_version for backend, record in sorted(ACP_BACKEND_LAUNCH.items())},
 }
+
+
+def prompted_call_launch(self: AcpClient) -> PromptedCallLaunch | None:
+    """Return the launch-time fact used by prompt-only MCP dispatch."""
+    from kiro_crew.agent_sdk.prompted_calls import PromptedCallLaunch
+
+    launch_name = getattr(self, "_prompted_call_launch_name", None)
+    if not isinstance(launch_name, str) or not launch_name:
+        return None
+    return PromptedCallLaunch(launch_name != self._agent, self.backend)
 
 
 def _roster_of(client: AcpClient, wire_servers: Any) -> Any:
@@ -306,6 +318,8 @@ async def _spawn(self: AcpClient) -> None:
                 session=self,
             )
         )
+        # An own-process harness is handed the authored agent, never a Crew copy.
+        self._prompted_call_launch_name = self._agent
     else:
         # Pin ONE reading of the environment for both the search and the
         # message that reports it. The previous code resolved against the live
@@ -418,6 +432,7 @@ async def _spawn(self: AcpClient) -> None:
             if self._native_skill_projection is not None
             else self._agent
         )
+        self._prompted_call_launch_name = launch_name
         # A harness that may read the spec file's own grants is refused on a
         # crew-bound spec Crew does not own that the ceiling would narrow: Crew never
         # rewrites such a file. Judged on the name kiro-cli is handed: a skill view is

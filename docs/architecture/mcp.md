@@ -243,11 +243,11 @@ same text. A fork already at `false` records nothing.
 
 ### Managed servers
 
-`agent._MANAGED_MCP_SERVERS` holds the eleven servers the gateway owns end to
+`agent._MANAGED_MCP_SERVERS` holds the twelve servers the gateway owns end to
 end: the always-on `kirocrew-cron`, `kirocrew-core`, `kirocrew-guide` and
 `kirocrew-mate`, the gated `kirocrew-computer`, and the opt-in
 `kirocrew-dashboard`, `kirocrew-work`, `kirocrew-crew-log`, `kirocrew-debug`,
-`kirocrew-panel` and `kirocrew-secrets`. Every emitted or
+`kirocrew-panel`, `kirocrew-secrets` and `kirocrew-apps`. Every emitted or
 explicitly granted entry is refreshed on every rebuild by
 `_refresh_dynamic_fields()` (through `managed_mcp.refresh_managed_servers`), which
 rewrites `command`/`args` from the live `kirocrew` binary, strips stale
@@ -2625,6 +2625,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-guide` | `kirocrew mcp-guide` (`mcp_guide.py`) | `guide_list_actions`, `guide_start`, `guide_status`, `guide_cancel`, `list_change_kinds`, `find_setting`, `get_member_capabilities`, `diagnose_settings`, `propose_change`, `get_change_status`, `search_docs`, `find_ui` |
 | `kirocrew-mate` | `kirocrew mcp-mate` (`mcp_mate.py`) | `update_self`, `set_model`, `set_approval_mode`, `find_capabilities`, `request_capabilities`, `goal_read`, `set_goal`, `set_key_results`, `set_check_ins`, `offer_dashboard_page`, `key_result_progress`, `save_goal_report`, `save_notes` |
 | `kirocrew-secrets` | `kirocrew mcp-secrets` (`mcp_secrets.py`) | `call_api_with_secret` |
+| `kirocrew-apps` | `kirocrew mcp-apps` (`mcp_apps.py`) | the tools installed third-party apps declare in their manifest `agentTools` block; none on an install without one |
 
 `kirocrew-guide` is a platform capability: it is always emitted (not `opt_in`),
 so the default `kirocrew` template, every Bot built from it, the worker
@@ -3442,8 +3443,8 @@ answers `tools/list` from):
 - **App-declared tools (credentialed, app-served):** the `app_tools` domain
   (`mcp_tools/app_tools.py`, the last in `DOMAIN_MODULES`) lists each tool a
   first-party app declares in its manifest `agentTools` block (a third-party app
-  would inherit this server's whole-server auto-approval, so its block lists
-  nothing; app-kit-platform.md section 30.1), validates a call
+  would inherit this server's whole-server auto-approval, so its block is listed
+  by `kirocrew-apps` instead, below; app-kit-platform.md section 30.1), validates a call
   against the declared schema, and posts `{tool, arguments}` to the strict
   internal route `POST /api/app-tools/call`. The gateway checks the call again
   against the declaration and hands it to the declaring app's own route, through
@@ -3458,6 +3459,24 @@ answers `tools/list` from):
   the (method, path) allowlist of the app's SOP routes, the query and body rules, the
   inbound scrub and the channel-agent hold of `POST /rotation/arm`. See
   [app-kit-platform § 30.1](../system-specs/modules/app-kit-platform.md#301-an-apps-agent-tools-are-declared-in-its-manifest-and-served-by-the-app)
+
+- **Third-party app tools (prompted, app-served):** `kirocrew-apps`
+  (`mcp_apps.py`, an opt-in set: only a spec granted `@kirocrew-apps` mounts it)
+  lists the `agentTools` of every installed app that is not first party
+  (`app_agent_tools.third_party_tools`), each description led by the app's name.
+  No `allowedTools` grants the server, so kiro-cli asks before every call and the
+  PreToolUse gate sees each one. KAS also preserves that per-call approval. The
+  prompted route refuses every other harness because its own settings can pre-approve
+  the server. A call is validated against the declaration and posted, with the calling
+  session's strict session key, to the strict internal route
+  `POST /api/app-tools/prompted-call`; a call with no strict
+  identity is refused before anything is posted. The route resolves third-party
+  declarations only, refuses a session another app owns (`cross_app`), and then
+  decides the call exactly as `/api/app-tools/call` does. The reader takes no
+  third-party block that states a `namespace` other than the app's own or
+  declares a `strictSession` tool, and drops any name a first-party app declares.
+  `kirocrew doctor` never adds the server to `allowedTools`, and a scoped app
+  agent has it withheld whole. See the same section 30.1.
 
 ### Server instructions travel with the server
 

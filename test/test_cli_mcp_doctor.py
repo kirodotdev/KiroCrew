@@ -420,6 +420,29 @@ class TestDoctorMcpTools:
         assert not [t for t in updated["allowedTools"] if t.startswith("@kirocrew-secrets/")]
         assert "@kirocrew-core" in updated["allowedTools"]
 
+    def test_auto_fix_never_blanket_allows_third_party_app_tools(self, tmp_path, capsys):
+        """Doctor never pre-approves ``@kirocrew-apps``, even when it is granted.
+
+        It lists third-party app tools, each asked before it runs: an ``allowedTools``
+        entry would approve every call inside kiro-cli and skip ``hooks.on_tool_call``
+        for third-party code. The server is opt-in, so the fixture grants it the way
+        an owner would (``tools`` ref present) and checks doctor leaves it un-approved.
+        """
+        from kiro_crew.cli_doctor import _NO_BLANKET_ALLOW_MCPS, _doctor_mcp_tools
+
+        assert "kirocrew-apps" in _NO_BLANKET_ALLOW_MCPS
+        agent_path = tmp_path / "kirocrew.json"
+        _healthy_agent_file(agent_path)
+        data = json.loads(agent_path.read_text(encoding="utf-8"))
+        data["tools"] = [*data.get("tools", []), "@kirocrew-apps"]
+        data["allowedTools"] = []
+        agent_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        with self._mock_probe({}):
+            _doctor_mcp_tools(agent_path, [])
+        updated = json.loads(agent_path.read_text(encoding="utf-8"))
+        assert not [t for t in updated["allowedTools"] if t.startswith("@kirocrew-apps")]
+        assert "@kirocrew-core" in updated["allowedTools"]
+
     def test_auto_fix_never_blanket_allows_the_guide_set(self, tmp_path, capsys):
         """The guide set is always on but granted per tool, so doctor mounts its
         ref and never mints the whole-server grant: that would pre-approve a tool

@@ -96,6 +96,33 @@ def _settings_servers(work_dir: str | Path | None) -> list[Mapping[str, Any]]:
     return []
 
 
+def settings_may_mount_server(name: str, work_dir: object | None = None) -> bool:
+    """Whether any native settings source may enable *name*.
+
+    The source reader is the one kiro-cli session projection already trusts. An
+    unreadable source returns ``True`` so a caller withholding auto-approval fails
+    closed. Entries with another case spelling still name the same MCP server.
+    """
+    from kiro_crew.acp.session_mcp import NativeSettingsUnreadable, native_settings_sources
+
+    try:
+        sources = native_settings_sources(work_dir)  # type: ignore[arg-type]
+    except NativeSettingsUnreadable:
+        return True
+    except Exception:
+        logger.debug("mcp.json reach: settings read failed", exc_info=True)
+        return True
+    folded = name.casefold()
+    return any(
+        isinstance(server, str)
+        and server.casefold() == folded
+        and isinstance(entry, Mapping)
+        and not mcp_entries_muted((entry,))
+        for source in sources
+        for server, entry in source.servers.items()
+    )
+
+
 def mcp_json_server_names(
     spec: Any, backend: str, work_dir: str | Path | None = None
 ) -> tuple[str, ...]:

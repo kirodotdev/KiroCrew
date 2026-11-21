@@ -16,7 +16,7 @@ Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_kas_served_token_digest``, ``_kas_telemetry_sent``, ``_mcp_gateway_overlay``,
 ``_mcp_switched_off``, ``_model``, ``_open_mcp_report``, ``_park_in_start_agent``, ``_pid``,
 ``_pool_lookup``, ``_record_keeping_sessions``, ``_record_tree_in_background``,
-``_refuse_over_ceiling_start``,
+``_record_unmoded_prompted_call_launch``, ``_refuse_over_ceiling_start``,
 ``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
 ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``, ``can_release``,
 ``kas_spawn_route``, ``release_session``.
@@ -855,6 +855,8 @@ async def load_session(
     # beside the session, as create_session's does, and every kill waits for it.
     self._record_tree_in_background()
 
+    if not set_mode_ran:
+        self._record_unmoded_prompted_call_launch(resume_sid, active_agent)
     logger.info("Resumed session %s on runtime PID %d", resume_sid, self._pid or 0)
     return handle
 

@@ -967,6 +967,7 @@ class SubagentManager:
     _write_tombstone = staticmethod(_terminal_surface._write_tombstone)
 
     # subagent_parts/run_surface.py
+    get_live_shared_provider = _run_surface.get_live_shared_provider
     has_live_shared_session = _run_surface.has_live_shared_session
     get = _run_surface.get
     is_queued = _run_surface.is_queued

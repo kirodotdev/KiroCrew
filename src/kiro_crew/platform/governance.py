@@ -230,6 +230,120 @@ def _ruleset_has_an_opinion(rules: object) -> bool:
     return True
 
 
+PROMPT_ONLY_MCP_SERVERS = frozenset({"kirocrew-apps"})
+
+
+def config_mounts_prompt_only_server(
+    config: Mapping[str, object],
+    *,
+    work_dir: object | None = None,
+    any_workspace: bool = False,
+) -> bool:
+    """Whether an agent config mounts a server whose every call must prompt.
+
+    A server is mounted when an enabled declaration in ``mcpServers`` is selected
+    by ``tools``. A local declaration shadows a same-named settings entry, so a
+    muted one mounts nothing. Without a local declaration, a literal ``@server`` /
+    ``@server/tool`` selector counts as mounted, and a ``*`` selector can
+    inherit an enabled declaration from the global or workspace
+    ``settings/mcp.json``. Explicitly disabling ``includeMcpJson`` prevents the
+    inherited case. An absent settings file declares nothing. An existing file
+    that cannot be read safely is treated as possibly mounting the prompt-only
+    server, so auto-approval is withheld. *any_workspace* also treats a wildcard
+    opt-in as mounted because a copy shared by every workspace cannot inspect each
+    workspace's settings. Malformed hand-edited config values do not count and
+    never break sanitization.
+    """
+    if not isinstance(config, Mapping):
+        return False
+    from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
+    from kiro_crew.mcp_cleanup import include_mcp_json, mcp_entry_is_muted
+
+    tools = config.get("tools")
+    grant_all, tool_servers = parse_tools_refs(tools)
+    selected = {server.casefold() for server in tool_servers}
+    selects_all = grant_all or tools == "*"
+    servers = config.get("mcpServers")
+    declared_prompt_only = False
+    if isinstance(servers, dict):
+        for server, entry in servers.items():
+            if not isinstance(server, str) or server.casefold() not in PROMPT_ONLY_MCP_SERVERS:
+                continue
+            declared_prompt_only = True
+            if (
+                isinstance(entry, dict)
+                and not mcp_entry_is_muted(entry)
+                and (selects_all or server.casefold() in selected)
+            ):
+                return True
+        if declared_prompt_only:
+            return False
+
+    if any(server.casefold() in PROMPT_ONLY_MCP_SERVERS for server in selected):
+        return True
+    if not grant_all and tools != "*":
+        return False
+    if include_mcp_json(config) is False:
+        return False
+    if any_workspace:
+        return True
+    from kiro_crew.agent_sdk.mcp_json_reach import settings_may_mount_server
+
+    return any(settings_may_mount_server(server, work_dir) for server in PROMPT_ONLY_MCP_SERVERS)
+
+
+def ref_covers_prompt_only_server(ref: str, *, include_patterns: bool = False) -> bool:
+    """Whether an approval ref can match a server whose every call must prompt.
+
+    A ref naming such a server outright always counts. A pattern (``*``, ``@*``,
+    ``@kirocrew-*``) counts only with *include_patterns*: a writer that knows the
+    agent mounts such a server passes it, while the context-free
+    :func:`may_skip_gate` cannot tell, and refusing the pattern there would make
+    every server it covers prompt on agents that never mount one.
+    """
+    if not isinstance(ref, str):
+        return False
+    if ref == "*":
+        return include_patterns
+    if not ref.startswith("@"):
+        return False
+    server_ref = ref.partition("/")[0]
+    if server_ref[1:].casefold() in PROMPT_ONLY_MCP_SERVERS:
+        return True
+    if not include_patterns:
+        return False
+    from kiro_crew.agent_sdk.mcp_refs import entry_reaches
+
+    return any(entry_reaches(server_ref, f"@{server}") for server in PROMPT_ONLY_MCP_SERVERS)
+
+
+def withhold_prompt_only_wildcards(
+    config: MutableMapping[str, object],
+    *,
+    work_dir: object | None = None,
+    any_workspace: bool = False,
+) -> list[str]:
+    """Remove approval refs that cover a mounted prompt-only MCP server.
+
+    Returns the removed refs in authored order. A missing or malformed
+    ``allowedTools`` value is left unchanged.
+    """
+    allowed = config.get("allowedTools")
+    if not isinstance(allowed, list) or not config_mounts_prompt_only_server(
+        config, work_dir=work_dir, any_workspace=any_workspace
+    ):
+        return []
+    kept: list[object] = []
+    withheld: list[str] = []
+    for ref in allowed:
+        if isinstance(ref, str) and ref_covers_prompt_only_server(ref, include_patterns=True):
+            withheld.append(ref)
+        else:
+            kept.append(ref)
+    config["allowedTools"] = kept
+    return withheld
+
+
 def may_skip_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
     """Whether an auto-approve entry may bypass the PreToolUse gate.
 
@@ -263,7 +377,9 @@ def may_skip_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
     the builtin floor never inspects, so on an ungoverned host an ``@server``
     keeps its grant and ONLY a ceiling's argument-derived scopes
     (``filesystem.*`` / ``network.egress``) constrain it — there is no
-    ceiling-independent floor to bypass for a server. Returns False on an
+    ceiling-independent floor to bypass for a server. The one server exception is
+    :data:`PROMPT_ONLY_MCP_SERVERS`, whose contract is a prompt on every call, so
+    no grant naming it may stand on any host. Returns False on an
     evaluator ERROR: not being able to tell cannot mean "skip the control",
     because there is no later checkpoint on that path — the cost of asking is one
     permission prompt, and no capability is lost.
@@ -273,6 +389,8 @@ def may_skip_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
     # than crash on ref.startswith() below. The list writers also discard such
     # entries, but this keeps the predicate safe for any caller.
     if not isinstance(ref, str):
+        return False
+    if ref_covers_prompt_only_server(ref):
         return False
     # A builtin whose MANDATORY, ceiling-INDEPENDENT floor lives at the
     # PreToolUse gate must NEVER be auto-approved: auto-approve is the one path

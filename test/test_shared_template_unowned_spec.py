@@ -153,6 +153,119 @@ def test_a_start_on_an_unbound_spec_is_not_checked(
     fork_refresh.require_shared_template_within_ceiling("loose", ACP_BACKEND_KIRO)
 
 
+def test_an_unbound_prompt_only_wildcard_starts_untouched(bound_spec: Path) -> None:
+    loose = bound_spec.parent / "loose.json"
+    raw = json.dumps(
+        {
+            "name": "loose",
+            "allowedTools": ["@*"],
+            "mcpServers": {"kirocrew-apps": {"command": "apps-mcp"}},
+        }
+    )
+    loose.write_text(raw, encoding="utf-8")
+
+    fork_refresh.require_shared_template_within_ceiling("loose", ACP_BACKEND_KIRO)
+
+    assert loose.read_text(encoding="utf-8") == raw
+
+
+def test_an_unbound_wildcard_without_a_prompt_only_server_is_not_refused(
+    bound_spec: Path,
+) -> None:
+    loose = bound_spec.parent / "loose.json"
+    loose.write_text(
+        json.dumps(
+            {
+                "name": "loose",
+                "allowedTools": ["@*"],
+                "mcpServers": {"ordinary": {"command": "ordinary-mcp"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fork_refresh.require_shared_template_within_ceiling("loose", ACP_BACKEND_KIRO)
+
+
+def test_an_unbound_prompt_only_server_with_non_covering_refs_is_not_refused(
+    bound_spec: Path,
+) -> None:
+    loose = bound_spec.parent / "loose.json"
+    loose.write_text(
+        json.dumps(
+            {
+                "name": "loose",
+                "allowedTools": ["@ordinary/read", "web_search"],
+                "mcpServers": {"kirocrew-apps": {"command": "apps-mcp"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fork_refresh.require_shared_template_within_ceiling("loose", ACP_BACKEND_KIRO)
+
+
+def test_an_unbound_prompt_only_wildcard_launched_through_a_view_is_not_refused(
+    bound_spec: Path,
+) -> None:
+    loose = bound_spec.parent / "loose.json"
+    loose.write_text(
+        json.dumps(
+            {
+                "name": "loose",
+                "allowedTools": ["@*"],
+                "mcpServers": {"kirocrew-apps": {"command": "apps-mcp"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fork_refresh.require_shared_template_within_ceiling(
+        "loose",
+        ACP_BACKEND_KIRO,
+        launch_name="kirocrew-skill-view-000000000000000000000000",
+    )
+
+
+def test_a_project_prompt_only_spec_still_starts(bound_spec: Path, tmp_path: Path) -> None:
+    loose = bound_spec.parent / "loose.json"
+    loose.write_text(
+        json.dumps(
+            {
+                "name": "loose",
+                "allowedTools": ["@*"],
+                "mcpServers": {"kirocrew-apps": {"command": "apps-mcp"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    checkout = tmp_path / "checkout"
+    project_spec = checkout / ".kiro" / "agents" / "loose.json"
+    project_spec.parent.mkdir(parents=True)
+    project_spec.write_text(
+        json.dumps({"name": "loose", "allowedTools": ["@ordinary/read"]}),
+        encoding="utf-8",
+    )
+
+    fork_refresh.require_shared_template_within_ceiling(
+        "loose", ACP_BACKEND_KIRO, work_dir=checkout
+    )
+
+    project_spec.write_text(
+        json.dumps(
+            {
+                "name": "loose",
+                "allowedTools": ["@*"],
+                "mcpServers": {"kirocrew-apps": {"command": "apps-mcp"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    fork_refresh.require_shared_template_within_ceiling(
+        "loose", ACP_BACKEND_KIRO, work_dir=checkout
+    )
+
+
 def test_a_crew_owned_spec_is_left_to_its_own_writer(
     bound_spec: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

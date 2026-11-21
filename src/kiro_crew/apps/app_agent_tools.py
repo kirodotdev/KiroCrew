@@ -29,9 +29,11 @@ MCP server. Only a FIRST-PARTY app's block is read, in one of two ways:
 
 The tools are listed under ``kirocrew-core``, which the default agent auto-approves as
 a whole server, so a tool listed there skips the permission prompt; a third-party
-app's tools have no such grant, and any other installed or registry app's block is
-therefore ignored here until a listing path exists that asks before each call. Such an
-app can still ship its own ``mcpServers`` entry, which is approved per call.
+app's tools have no such grant. Any other installed app's block is read by
+:func:`third_party_tools` instead, for the ``kirocrew-apps`` server (``mcp_apps.py``),
+which no agent's ``allowedTools`` grants, so each call asks first. That read is
+narrower: from the data-home ``app.json``, with no stated ``namespace`` other than the
+app's own, no ``strictSession`` tool, and no name a first-party or core tool has.
 
 The reader keeps a tool only when the app's whole block parsed cleanly, its name is in
 the app's namespace, and no other app declares the same name. A name a core tool
@@ -279,6 +281,80 @@ def shipped_tools() -> tuple[DeclaredTool, ...]:
 def declared_tool(name: str) -> DeclaredTool | None:
     """The declared tool called *name*, or ``None``."""
     for tool in declared_tools():
+        if tool.name == name:
+            return tool
+    return None
+
+
+_third_party_cache: tuple[tuple[Any, ...], tuple[DeclaredTool, ...]] | None = None
+
+
+def _installed_manifest(name: str) -> AppManifest | None:
+    """*name*'s data-home ``app.json``: the copy a third-party app was installed from."""
+    from kiro_crew.apps.manager import app_dir
+
+    try:
+        return AppManifest.from_json_file(app_dir(name) / "app.json")
+    except Exception:  # noqa: BLE001 - an unreadable manifest declares nothing
+        logger.warning("app %s: manifest unreadable; agentTools ignored", name)
+        return None
+
+
+def _third_party_manifest(name: str) -> AppManifest | None:
+    """The block of *name* when it may list on the prompted server, else ``None``.
+
+    A third-party block names tools in the app's own namespace only: ``namespace``
+    keeps a former core tool's name for a first-party app, and no third-party app has
+    one. A ``strictSession`` tool acts as the calling session, and ``kirocrew-apps``
+    resolves no strict identity, so a block that declares one lists nothing.
+    """
+    manifest = _installed_manifest(name)
+    if manifest is None:
+        return None
+    block = manifest.agentTools
+    if block.namespace and block.namespace != name.replace("-", "_"):
+        logger.warning("app %s: agentTools namespace %r ignored", name, block.namespace)
+        return None
+    if any(tool.strict_session for tool in block.tools):
+        logger.warning("app %s: strictSession agentTools are first-party only", name)
+        return None
+    return manifest
+
+
+def third_party_tools() -> tuple[DeclaredTool, ...]:
+    """Every tool an installed app that is not first party declares, enabled or not.
+
+    These are listed by ``kirocrew-apps``, never by ``kirocrew-core``. A name a
+    first-party app declares, installed or shipped, stays the first-party app's, and a
+    name two third-party apps declare is neither's.
+    """
+    global _third_party_cache
+    from kiro_crew.apps.manager import apps_dir
+
+    rows = _fingerprint(str(apps_dir()))
+    if not rows:
+        return ()
+    installed = [row[0] for row in rows[1:]]
+    trusted = _first_party_apps()
+    adopted = _adopted_first_party_apps(installed, trusted)
+    shipped = frozenset(_shipped_first_party_roots())
+    key = (rows, trusted, adopted, shipped)
+    with _cache_lock:
+        if _third_party_cache is not None and _third_party_cache[0] == key:
+            return _third_party_cache[1]
+    names = [n for n in installed if n not in trusted and n not in adopted and n not in shipped]
+    first_party = {t.name for t in shipped_tools()} | {t.name for t in declared_tools()}
+    tools = tuple(
+        t for t in _collect(names, read=_third_party_manifest) if t.name not in first_party
+    )
+    with _cache_lock:
+        _third_party_cache = (key, tools)
+    return tools
+
+
+def third_party_tool(name: str) -> DeclaredTool | None:
+    """The third-party tool called *name*, or ``None``."""
+    for tool in third_party_tools():
         if tool.name == name:
             return tool
     return None

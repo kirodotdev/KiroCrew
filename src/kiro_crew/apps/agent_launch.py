@@ -382,6 +382,13 @@ def publish_app_agent_launch(app_name: str, agent: str) -> str:
         launch, search = _skill_view(
             app_name, agent, source, registered_spec_path(app_name, agent, agents_dir)
         )
+        from kiro_crew.platform.governance import withhold_prompt_only_wildcards
+
+        withheld = withhold_prompt_only_wildcards(launch, any_workspace=True)
+        if withheld:
+            from kiro_crew import agent as agent_mod
+
+            agent_mod.report_prompt_only_withheld(agent, withheld)
         launch["name"] = name
         launch["description"] = (
             f"{OWNER_MARKER} of {app_name}/{agent}; written before each turn, do not edit."

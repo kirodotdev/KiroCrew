@@ -1147,6 +1147,7 @@ class TestRuntimeSuppliesTheStubbedSet:
             forward_ssh_auth_sock=False,
             governance_app=None,
             scope_muted=None,
+            work_dir=None,
         ):
             seen.append(stub_server_names)
             return [{"id": agent}]
@@ -1177,6 +1178,7 @@ class TestRuntimeSuppliesTheStubbedSet:
             forward_ssh_auth_sock=False,
             governance_app=None,
             scope_muted=None,
+            work_dir=None,
         ):
             seen.append((session_key, member_dispatch))
             return [{"id": agent}]

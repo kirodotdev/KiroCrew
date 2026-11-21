@@ -10,7 +10,8 @@ Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
 of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_session_start_timeout``, ``_start_collect_timeout``.
+Instance fields written: ``_prompted_call_launches``, ``_session_start_timeout``,
+``_start_collect_timeout``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_bound_workspace_fd``, ``_child_env_names``, ``_expect_mcp_reports``,
@@ -384,6 +385,20 @@ def _refuse_if_loader_unreachable(self: AcpRuntime, active_agent: str, kas_agent
         f"(spawned for {self._agent!r}) runs with MCP Tool Search deferral on; "
         "its MCP tools would be unreachable -- create a runtime for the agent"
     )
+
+
+def _record_unmoded_prompted_call_launch(
+    self: AcpRuntime, session_id: str, active_agent: str
+) -> None:
+    """Record a successful start for a backend whose grants do not come from a spec file."""
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_SPEC_FILE_GRANTS
+
+    if self.acp_backend in ACP_BACKENDS_SPEC_FILE_GRANTS:
+        return
+    launches = getattr(self, "_prompted_call_launches", None)
+    if launches is None:
+        launches = self._prompted_call_launches = {}
+    launches.setdefault(session_id, (active_agent, False))
 
 
 async def _refuse_over_ceiling_start(self: AcpRuntime, active_agent: str | None) -> None:

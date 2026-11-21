@@ -18,7 +18,8 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``,
 ``_member_stub_allowlist``, ``_mimocode_governed_stop``, ``_oauth_emitted_servers``,
 ``_pending_oauth_requests``, ``_pi_mcp_handoff``, ``_pi_mcp_server_names``, ``_pid``,
 ``_process``, ``_process_adapter``, ``_process_instance``, ``_process_tree_confirmed_dead``,
-``_prompt_or_tool_seen``, ``_resume_session_id``, ``_resumed``, ``_sandbox_cleanup``,
+``_prompt_or_tool_seen``, ``_prompted_call_launch_name``, ``_resume_session_id``,
+``_resumed``, ``_sandbox_cleanup``,
 ``_scope_unit``, ``_session_agent_spec``, ``_session_harness_deny_rules``, ``_session_id``,
 ``_session_key``,
 ``_session_mcp_cache``, ``_session_mcp_snapshot``, ``_session_mcp_unhonoured``,
@@ -719,6 +720,7 @@ def _reset_state(self: AcpClient) -> None:
     # mints its own, so nothing may keep answering with this one in between.
     self._process_instance = ""
     self._scope_unit = ""
+    self._prompted_call_launch_name = None
     # A walk wedged on the dead PID's /proc entry can never speak for the
     # replacement process, so release it with the oracle it sampled into.
     self._retire_liveness_state()

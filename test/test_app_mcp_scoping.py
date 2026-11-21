@@ -479,6 +479,80 @@ class TestCeilingProbesFailClosed:
         assert gmod.may_skip_gate("@srv", None) is True
         assert gmod.may_skip_gate("web_fetch", None) is True
 
+    @pytest.mark.parametrize(
+        "ref",
+        [
+            "@kirocrew-apps",
+            "@kirocrew-apps/list_notes",
+            "@KIROCREW-APPS",
+            "@kirocrew-apps/*",
+        ],
+    )
+    def test_prompt_only_server_grants_cannot_skip_the_gate(self, ref: str) -> None:
+        from kiro_crew.platform import governance as gmod
+
+        assert gmod.may_skip_gate(ref, None) is False
+
+    @pytest.mark.parametrize("ref", ["*", "@*", "@*/list_notes", "@kirocrew-*", "@ordinary-server"])
+    def test_a_grant_naming_no_prompt_only_server_keeps_the_ungoverned_answer(
+        self, ref: str
+    ) -> None:
+        from kiro_crew.platform import governance as gmod
+
+        assert gmod.may_skip_gate(ref, None) is True
+
+    @pytest.mark.parametrize("ref", ["*", "@*", "@*/list_notes", "@kirocrew-*"])
+    def test_a_pattern_covers_the_server_once_the_writer_knows_it_mounts(self, ref: str) -> None:
+        from kiro_crew.platform import governance as gmod
+
+        assert gmod.ref_covers_prompt_only_server(ref) is False
+        assert gmod.ref_covers_prompt_only_server(ref, include_patterns=True) is True
+        assert (
+            gmod.ref_covers_prompt_only_server("@ordinary-server", include_patterns=True) is False
+        )
+
+    @pytest.mark.parametrize(
+        "ref",
+        [
+            "*",
+            "@*",
+            "@**",
+            "@kirocrew-*",
+            "@kirocrew-apps",
+            "@kirocrew-apps/x",
+            "@KIROCREW-APPS",
+            "@KIROcrew-Apps/x",
+            "@kirocrew-app?",
+            "@[k]irocrew-apps",
+            "@[K]irocrew-apps",
+            "@[a-z]irocrew-apps",
+            "@*/x",
+            "@*-apps/x",
+            "@kirocrew-app",
+            "@kirocrew-appsx",
+            "@",
+            "@/x",
+            "plain",
+            "@ordinary",
+            "@ordinary/x",
+            "@kirocrew-????",
+            "@kirocrew-[a]pps",
+            "@kirocrew-[A]pps",
+            "@kirocrew-apps/*",
+            "@KIROCREW-*/x",
+            "@?irocrew-apps",
+            "@kirocrew-apps?",
+        ],
+    )
+    def test_pattern_matching_delegates_to_entry_reaches(self, ref: str) -> None:
+        from kiro_crew.agent_sdk.mcp_refs import entry_reaches
+        from kiro_crew.platform import governance as gmod
+
+        expected = ref == "*" or (
+            ref.startswith("@") and entry_reaches(ref.partition("/")[0], "@kirocrew-apps")
+        )
+        assert gmod.ref_covers_prompt_only_server(ref, include_patterns=True) is expected
+
 
 def _doctor_source() -> str:
     """``cli_doctor``'s text joined with its ``cli_doctor_parts`` owners, whose functions

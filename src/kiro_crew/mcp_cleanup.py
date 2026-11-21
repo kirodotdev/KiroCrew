@@ -407,6 +407,7 @@ ALWAYS_ON_BIN_MCP_SERVERS = (
 )
 OPT_IN_BIN_MCP_SERVERS = (
     "kirocrew-secrets",
+    "kirocrew-apps",
     "kirocrew-dashboard",
     "kirocrew-work",
     "kirocrew-crew-log",

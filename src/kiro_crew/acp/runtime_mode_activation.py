@@ -9,7 +9,7 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_native_skill_projection``, ``_skill_projection_generation``,
 ``_skill_projection_issued``, ``_skill_projection_lock_obj``,
-``_skill_projection_unadopted``, ``_switched_models``.
+``_prompted_call_launches``, ``_skill_projection_unadopted``, ``_switched_models``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_launch_agent``, ``_refuse_over_ceiling_mode``,
 ``_spawn_skill_projection``,
@@ -779,6 +779,17 @@ async def _activate_mode_bracketed(
                 await asyncio.to_thread(announce_alias, exc.mode_id)
                 await asyncio.sleep(delay)
                 continue
+            launch_name = str(wire.get("modeId") or mode_agent)
+            launches = getattr(self, "_prompted_call_launches", None)
+            if launches is None:
+                launches = self._prompted_call_launches = {}
+            launches[session_id] = (
+                launch_name,
+                bool(
+                    (getattr(self, "_launch_agent", "") and launch_name == self._launch_agent)
+                    or (sent_alias is not None and launch_name != mode_agent)
+                ),
+            )
             break
         if sent_alias is not None:
             # Wait out any preparation already running: one that began before

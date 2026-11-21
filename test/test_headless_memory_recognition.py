@@ -197,20 +197,27 @@ async def test_shared_handle_recognition_ends_at_unregister(tmp_path):
             )
             assert (reads is not None) == (mode == "temporary")
         info.memory_mode = "persistent"
+        assert manager.get_live_shared_provider("subagent:forged") is None
+        assert manager.get_live_shared_provider(info.parent_session_key) is None
         assert not manager.has_live_shared_session("subagent:forged")
         assert not manager.has_live_shared_session(info.parent_session_key)
         info.done = True
+        assert manager.get_live_shared_provider(key) is None
         assert not manager.has_live_shared_session(key)
         info.done = False
         info.reaped = True
+        assert manager.get_live_shared_provider(key) is None
         assert not manager.has_live_shared_session(key)
         info.reaped = False
         runtime._dead = True
+        assert manager.get_live_shared_provider(key) is None
         assert not manager.has_live_shared_session(key)
         runtime._dead = False
         runtime._session_queues[handle.session_id] = asyncio.Queue()
+        assert manager.get_live_shared_provider(key) is None
         assert not manager.has_live_shared_session(key)
         runtime._session_queues[handle.session_id] = queue
+        assert manager.get_live_shared_provider(key) is provider
         assert manager.has_live_shared_session(key)
         # Runtime liveness alone cannot keep a destroyed child authorized.
         await provider.shutdown()
