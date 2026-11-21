@@ -6,7 +6,7 @@ created: 2026-10-06
 last-audited: 2026-11-20
 audited-at: c4078c90e5
 doc-pr: 17273
-implementation-prs: [25524, 25548, 25556, 26651, 26897, 26940, 26956, 26976, 34782, 36725, 37489, 37673, 37910, 37913, 37924, 38417, 38911, 38914, 38920, 38925, 38937, 39097, 39150, 39519, 40043]
+implementation-prs: [25524, 25546, 25548, 25556, 26651, 26897, 26940, 26956, 26976, 27564, 29479, 31960, 34782, 36725, 37489, 37500, 37673, 37787, 37910, 37913, 37924, 38417, 38911, 38914, 38920, 38925, 38937, 39097, 39150, 39519, 40043]
 tracking-issues: [13476]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Local conductor dispatches sessions to a remote crew
 
-**Status:** `implemented`. The owner (maintainer iamwhatever) accepted the design on 2026-11-20 after a design review of what shipped, recorded by the approving review of the pull request that carries this status. Waves 1 to 9 are on main behind the default-off `work_ledger.remote_dispatch` Feature Preview, through the PRs in `implementation-prs` (#25556 and #34782 carry maintainer iamwhatever's first-principles overrides for their own shape): `remote_dispatch.py`, `work_ledger_remote.py`, `dashboard/remote_dispatch_headroom.py`, `dashboard/handlers/remote_ingest.py`, `dashboard/handlers/remote_batch_pull.py`, `dashboard/handlers/remote_crew_list.py`, and `reply` in `WORK_WAKE_STATUSES` in `work_vocab.py`. The gaps the owner accepted are listed under "Known gaps" at the end. Re-checked at `c4078c90e5`. The baseline below was measured against main `c6789799df`.
+**Status:** `implemented`. The owner (maintainer iamwhatever) accepted the design on 2026-11-20 after a design review of what shipped, recorded in [the closing comment on #39528](https://github.com/kirodotdev/KiroCrew/pull/39528#issuecomment-7047290408). Waves 1 to 9 are on main behind the default-off `work_ledger.remote_dispatch` Feature Preview, through the PRs in `implementation-prs` (#25556 and #34782 carry maintainer iamwhatever's first-principles overrides for their own shape): `remote_dispatch.py`, `work_ledger_remote.py`, `dashboard/remote_dispatch_headroom.py`, `dashboard/handlers/remote_ingest.py`, `dashboard/handlers/remote_batch_pull.py`, `dashboard/handlers/remote_crew_list.py`, and `reply` in `WORK_WAKE_STATUSES` in `work_vocab.py`. The gaps the owner accepted are listed under "Known gaps" at the end. Re-checked at `c4078c90e5`. The baseline below was measured against main `c6789799df`.
 Builds on the accepted [rfc-remote-crew-sidebar.md](rfc-remote-crew-sidebar.md):
 a session on a crew is owned by the peer, and this machine is only a window onto
 it through `/api/instances/{id}/proxy/...`.
@@ -753,8 +753,7 @@ nothing that passes today.
 
 ## Known gaps
 
-The owner accepted these on 2026-11-20 with the `implemented` status. None is fixed on main.
+The owner accepted these on 2026-11-20 with the `implemented` status. None is fixed on main. Section 5c names two more for closing a remote item: a turn started between the idle check and the DELETE is cut off, and a wake close never seen idle and `done` waits for the owner.
 
 1. **Slower Trust revoke with no patrol.** A conductor that leaves Trust revokes its remote worker's grant only on the next pull (§4). With no patrol running and no `work_ledger_read`, the worker keeps the grant until it expires (`agent.yolo_duration`, default 6 h) or its slot closes. Accepted; revisit later by re-applying the Trust check on another path.
 2. **A lost create reply can leave a peer session.** When a bound create's reply is lost, the crew keeps the session it made. A retry there is refused `duplicate_item` and placement moves on (§2b), but nothing closes that session. Parked; the planned fix is a simpler idempotent create that returns the existing session.
-3. **A pull backlog past 64 entries is unverified.** No test or code read in this audit checks what a pull does when a worker's backlog since the last pull runs past 64 entries. Not verified either way.
