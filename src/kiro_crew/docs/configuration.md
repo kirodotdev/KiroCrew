@@ -532,6 +532,7 @@ saved by hand to a harness not on that list still shows, marked unavailable.
 | `slack.tracking_channels` | Channels to monitor for new members | `[]` |
 | `slack.open_channels` | Ignored for access (Slack is owner-only); an entry is only a record kept in config | `[]` |
 | `slack.command` | Slash-command name | `"kirocrew"` |
+| `slack.setup_guide_url` | Your organization's own Slack setup guide (for example, how to get a workspace you may install apps in). The Settings Slack setup wizard links it on its first step. `https://` only; any other value is ignored. Empty means no link | `""` |
 | `slack.reactions` | Override the status reaction emojis: `queued` (the ack shown while answering where Slack shows no native thread status) and `error`; set a value to `null` to suppress it | `{}` |
 | `slack.reactions_enabled` | Show the status reaction (ack / error) on Slack messages | `true` |
 | `slack.dm_single_session` | Treat each 1:1 DM as one continuous session, threaded replies included, instead of one per message. Applies only on the default messaging transport (`messaging.use_transport`, on by default) and never in a DM set to `review` mode | `false` |

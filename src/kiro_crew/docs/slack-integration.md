@@ -335,7 +335,11 @@ bot posts publicly.
 ## Setting Up Your Slack App
 
 Kiro Crew connects to Slack as a Socket Mode app that you create and install in
-your own workspace.
+your own workspace. The dashboard's **Settings → Messaging Channels → Slack →
+Setup wizard** walks the same steps one screen at a time, from the generated
+manifest to a test message, with no restart; see
+[the Slack setup guide](../../../docs/guides/slack-setup.md#the-setup-wizard-in-settings).
+The steps below are the manual path.
 
 1. **Create a Slack app** at https://api.slack.com/apps and enable **Socket Mode**. Generate an app-level token (`xapp-`) with the `connections:write` scope.
 2. **Add a bot user** with these Bot Token Scopes:
