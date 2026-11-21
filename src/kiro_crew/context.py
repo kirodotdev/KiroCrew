@@ -1077,8 +1077,8 @@ def _project_steering_delivered(
     ``build_message``, but only for the Kiro Crew default agent: that load
     sends nothing for a custom *agent*, so there the folder still carries the
     trees (``None`` is the default agent); KAS reports ``native_steering`` on
-    its session provider. Every other harness -- Goose, DeepSeek and
-    the rest -- has NO path for those trees today, so a folder that declares one
+    its session provider. Every other harness -- Goose, DeepSeek, Copilot and
+    Strands -- has NO path for those trees today, so a folder that declares one
     of them must deliver its documents itself rather than skip them as "already
     delivered" with nothing arriving in their place. A harness that is not
     named (``None``) is not assumed to be kiro-cli: it matches no path here, so
