@@ -20,7 +20,7 @@ import tempfile
 import uuid
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import pinned_fs
 from kiro_crew.acp import client_claude_seed as _client_claude_seed
@@ -30,6 +30,9 @@ from kiro_crew.acp import client_new_conversation as _client_new_conversation
 from kiro_crew.acp import client_seed_ownership as _client_seed_ownership
 from kiro_crew.acp.client_class import AcpClient, logger
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+
+if TYPE_CHECKING:
+    from kiro_crew.acp.claude_project_mcp import ProjectMcpGate
 
 
 class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
@@ -85,6 +88,10 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
         # The chat notice when the exclusion runs a requested ``auto`` in
         # ``default`` (_exclude_foreign_local_settings); "" otherwise.
         self.claude_mode_pinned_notice = ""
+        # The writer's read of the project .mcp.json files (None until one finishes),
+        # and the last notice logged about it.
+        self._claude_project_mcp_gate: ProjectMcpGate | None = None
+        self._claude_project_mcp_logged: tuple[Any, ...] | None = None
         # The exact bytes this session last wrote to that path, held as the str
         # whose utf-8 encoding IS those bytes -- the writer emits binary so no
         # newline translation can come between the two on any platform. Creating

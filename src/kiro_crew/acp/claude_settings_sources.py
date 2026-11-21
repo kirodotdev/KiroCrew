@@ -9,6 +9,9 @@ writing one.
 Whether one decides thinking (turns it off, sets its budget or chooses its display):
 the claude launch asks before it sets a thinking display, which would otherwise
 override that choice (:func:`a_source_decides_thinking`).
+
+It also reads the user's own settings file for the project MCP approvals in it
+(:func:`read_user_settings`).
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from kiro_crew import platform_compat
 from kiro_crew.user_json import loads_user_json
@@ -25,11 +28,33 @@ from kiro_crew.user_json import loads_user_json
 CLAUDE_SETTINGS_MAX_BYTES = 1 << 20
 
 
+def claude_home(environ: Mapping[str, str]) -> Path | None:
+    """The home directory of a ``claude`` process started with *environ*, or None.
+
+    None when no home resolves, or when the variable is set but empty or relative: the
+    ``claude`` process resolves that against its own working directory, a session's work
+    dir, as it does a relative ``CLAUDE_CONFIG_DIR``. Only an absent variable falls back
+    to the account's home.
+    """
+    name = "USERPROFILE" if os.name == "nt" else "HOME"
+    if name in environ:
+        # Set, even to "": the child uses the value, and "" reads as relative (".").
+        home = Path(environ[name])
+    else:
+        try:
+            home = Path.home()
+        except RuntimeError:
+            return None
+    return home if home.is_absolute() else None
+
+
 def claude_config_dir() -> Path | None:
     """The user's Claude config directory, or None when no home directory resolves.
 
     The resolution the ``claude`` CLI itself makes (``CLAUDE_CONFIG_DIR``, else
     ``~/.claude``), read in the gateway because the child inherits its environment.
+    The project MCP gate reads approvals through the stricter
+    :func:`child_claude_config_dir` instead.
     """
     override = os.environ.get("CLAUDE_CONFIG_DIR")
     if override:
@@ -38,6 +63,23 @@ def claude_config_dir() -> Path | None:
         return Path.home() / ".claude"
     except RuntimeError:
         return None
+
+
+def child_claude_config_dir(environ: Mapping[str, str]) -> Path | None:
+    """The config directory a ``claude`` process started with *environ* reads.
+
+    ``CLAUDE_CONFIG_DIR`` when it is set, else ``.claude`` in the home directory
+    (:func:`claude_home`). None when no home resolves, or when the value is empty or
+    relative: Claude Code keeps an empty one as its config root and resolves it, like a
+    relative one, against its own working directory, a session's work dir, so it is no
+    config directory of the user's that Crew can name.
+    """
+    if "CLAUDE_CONFIG_DIR" in environ:
+        # Set, even to "": Claude Code keeps an empty value as its config root.
+        path = Path(environ["CLAUDE_CONFIG_DIR"])
+        return path if path.is_absolute() else None
+    home = claude_home(environ)
+    return home / ".claude" if home is not None else None
 
 
 def read_claude_settings_bytes(path: Path, *, follow_links: bool) -> bytes | None:
@@ -111,6 +153,15 @@ def _settings_object(path: Path, *, follow_links: bool = True) -> dict[str, Any]
     except (ValueError, RecursionError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def read_user_settings(config_dir: Path) -> dict[str, Any] | None:
+    """The ``settings.json`` object in Claude Code config directory *config_dir*, or None.
+
+    None when there is none to use. The file may be a symlinked dotfile, so a link is
+    followed.
+    """
+    return _settings_object(config_dir / "settings.json", follow_links=True)
 
 
 def _defines_available_models(path: Path, *, follow_links: bool = True) -> bool:

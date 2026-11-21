@@ -330,6 +330,7 @@ def test_a_claude_worker_asks_for_the_built_ins_a_held_limit_covers(ledger, monk
     from types import SimpleNamespace
 
     from kiro_crew import execution_context, members
+    from kiro_crew.acp.claude_project_mcp import ProjectMcpGate
     from kiro_crew.acp.client_claude_session import (
         _claude_session_meta,
         _prepare_claude_held_asks,
@@ -347,6 +348,8 @@ def test_a_claude_worker_asks_for_the_built_ins_a_held_limit_covers(ledger, monk
             memory_mode="persistent",
             _session_key="k",
             _session_mcp_cache=[{"name": "gh"}, {"name": "dot.probe"}],
+            # As after the launch's read of the project .mcp.json files, which found none.
+            _claude_project_mcp_gate=ProjectMcpGate([], False),
         )
         # The ledger is read off the loop before the envelope is built.
         asyncio.run(_prepare_claude_held_asks(client))
