@@ -15,6 +15,8 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.messaging import (
+        _PERSISTED_LISTING_REPORT_SCOPES,
+        _PERSISTED_LISTING_SCOPE_MAX_LEN,
         _SPAWN_STATUS_MAX_GREP_LEN,
         _SPAWN_STATUS_MAX_LINES,
         INVALID_WAIT_CODE,
@@ -29,6 +31,7 @@ if TYPE_CHECKING:
         _app_token_caller,
         _audit_allow,
         _audit_deny,
+        _persisted_listing_reports,
         _queue_unreadable,
         _queued_lookup,
         _queued_run_payload,
@@ -580,7 +583,7 @@ async def api_spawn_list(request: web.Request) -> web.Response:
         )
     except Exception:
         logger.debug("Persisted spawn listing failed", exc_info=True)
-        persisted = PanelRecords([], 0, False)
+        persisted = PanelRecords([], 0, False, unread=True)
     for record in persisted.records:
         parent = str(record["parent_session"])
         agent_id = str(record["id"])
@@ -626,25 +629,60 @@ async def api_spawn_list(request: web.Request) -> web.Response:
         # reading that gets work dispatched twice. Present only when true; the
         # bridge logs the transition once.
         payload["queued_truncated"] = True
-    if persisted.overflow or persisted.overflow_is_lower_bound:
-        # Said out loud once per listing, to the operator rather than the client:
-        # a listing of 50 of 51 eligible runs otherwise reads exactly like a
-        # listing of all 50 there were. The WARNING carries the count, and it is
-        # the whole report: a truncation refuses nobody, so it is not a permission
-        # decision and does not belong in the SEL deny stream beside the ownership
-        # refusals an operator has to be able to see there. No client reads a
-        # count it cannot act on, so it stays out of the payload too.
-        # A saturated scan window reports even at a count of zero, because that
-        # is the case where the count itself cannot see what was left out.
-        logger.warning(
-            "persisted spawn listing truncated: %s%d eligible run(s) past the %d cap%s",
-            "at least " if persisted.overflow_is_lower_bound else "",
+    if not persisted.unread:
+        # A listing that could not be read says nothing about truncation, so it
+        # leaves the last report standing rather than announcing a recovery.
+        _report_persisted_truncation(
             persisted.overflow,
-            PERSISTED_SUBAGENT_REPLAY_KEEP,
-            (
-                " (scan window saturated, older admissible runs may be uninspected)"
-                if persisted.overflow_is_lower_bound
-                else ""
-            ),
+            persisted.overflow_is_lower_bound,
+            scope=None if internal else caller_app,
         )
     return web.json_response(payload)
+
+
+def _report_persisted_truncation(overflow: int, lower_bound: bool, *, scope: str | None) -> None:
+    """Tell the operator, once per change, that the persisted listing was cut short.
+
+    Addressed to the operator rather than the client: a listing of 50 of 51
+    eligible runs otherwise reads exactly like a listing of all 50 there were. The
+    log line carries the count, and it is the whole report: a truncation refuses
+    nobody, so it is not a permission decision and does not belong in the SEL deny
+    stream beside the ownership refusals an operator has to be able to see there.
+    No client reads a count it cannot act on, so it stays out of the payload too.
+    A saturated scan window reports even at a count of zero, because that is the
+    case where the count itself cannot see what was left out.
+
+    The dashboard polls this listing, so a steady truncated state would repeat
+    the WARNING every poll. For a remembered *scope* (the owner, ``""``, or one
+    app) it is a WARNING when truncation starts or the scan window first
+    saturates, DEBUG while it holds, and one INFO line when the listing is whole
+    again. An internal caller (*scope* ``None``) lists its own session's runs, and
+    remembering those would let two sessions end each other's report, so it is
+    said at WARNING on every truncated listing. So is a scope longer than
+    ``_PERSISTED_LISTING_SCOPE_MAX_LEN``, which is never kept.
+    """
+    truncated = bool(overflow) or lower_bound
+    if scope is not None and len(scope) > _PERSISTED_LISTING_SCOPE_MAX_LEN:
+        scope = None
+    if scope is None:
+        prior: tuple[bool, bool] | None = None
+    else:
+        prior = _persisted_listing_reports.pop(scope, (False, False))
+        if truncated:
+            # Re-inserted at the end, so the dict's order is recency and the
+            # first key is the one to forget.
+            _persisted_listing_reports[scope] = (True, lower_bound)
+            while len(_persisted_listing_reports) > _PERSISTED_LISTING_REPORT_SCOPES:
+                del _persisted_listing_reports[next(iter(_persisted_listing_reports))]
+    if not truncated:
+        if prior is not None and prior[0]:
+            logger.info("persisted spawn listing complete again")
+        return
+    changed = prior is None or not prior[0] or (lower_bound and not prior[1])
+    (logger.warning if changed else logger.debug)(
+        "persisted spawn listing truncated: %s%d eligible run(s) past the %d cap%s",
+        "at least " if lower_bound else "",
+        overflow,
+        PERSISTED_SUBAGENT_REPLAY_KEEP,
+        " (scan window saturated, older admissible runs may be uninspected)" if lower_bound else "",
+    )
