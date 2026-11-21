@@ -488,17 +488,22 @@ def _display_redactor(text: str) -> str:
     return redact_credentials(text)[0]
 
 
-# Mapping of bang commands to their /kirocrew slash equivalents.
-_BANG_TO_SLASH: dict[str, str] = {
+# The bang commands, each mapped to the /kirocrew slash command a deprecation
+# notice names as its replacement. A value is a sub-command of
+# ``events_slash.SLASH_REGISTRY``. None: the bang acts on the thread it is typed
+# in, and a slash command arrives with no thread, so there is no replacement and
+# the bang is not deprecated. ``!ta`` sets this thread's agent, while
+# ``/kirocrew agent`` sets the default agent for every conversation.
+_BANG_TO_SLASH: dict[str, str | None] = {
     "!yolo": "/kirocrew yolo",
-    "!stop": "/kirocrew stop",
+    "!stop": None,
     "!voice": "/kirocrew voice",
     "!agent": "/kirocrew agent",
     "!dashboard": "/kirocrew dashboard",
-    "!ta": "/kirocrew agent",
+    "!ta": None,
     # "!allowlist" removed — multi-user access disabled for security
-    "!channel": "/kirocrew channel",
-    "!link-to-dashboard": "/kirocrew link-to-dashboard",
+    "!channel": "/kirocrew channels",
+    "!link-to-dashboard": None,
     "!restart": "/kirocrew restart",
 }
 

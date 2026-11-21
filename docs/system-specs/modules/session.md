@@ -3024,7 +3024,7 @@ idle sweep expires it. `test_sandbox_tier_recycle.py` pins each case.
 
 ## Stop Orchestration
 
-`stop_turn()` is the shared orchestration layer for every stop surface (dashboard Stop button, Slack `/kirocrew stop`, transport stop verbs). Sequence:
+`stop_turn()` is the shared orchestration layer for every stop surface (dashboard Stop button, Slack `!stop`, transport stop verbs). Sequence:
 
 0. Decline a cooperative stop while the session's own automatic `/compact` turn
    holds it (`key in _compacting`, `force=False`): return `"compacting"` before

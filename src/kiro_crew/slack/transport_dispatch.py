@@ -505,7 +505,7 @@ async def handle_message_transport(
 
     # ── Linked thread intercept: route to a linked dashboard slot if any ──
     # Shared with native handle_message so a thread linked via
-    # /kirocrew link-to-dashboard routes into its dashboard slot (with the same
+    # !link-to-dashboard routes into its dashboard slot (with the same
     # auth recheck + bang fall-through) instead of spawning a fresh session.
     # A shared user (slack.shared_access) sends no harness `/` command and no
     # privacy modifier; refused before the linked-thread hand-off, as on native.
