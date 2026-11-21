@@ -502,6 +502,41 @@ class TestFileShards(unittest.TestCase):
         with self.assertRaises(pytest.UsageError):
             FileShards(root, 2, 1, None, [PureWindowsPath("D:/elsewhere/test_x.py")], weights)
 
+    def test_shard_indices_split_a_target_list_with_no_gap_and_no_file_owned_twice(self):
+        root = PurePosixPath("/checkout")
+        plans = (
+            (DEFAULT_WEIGHTS["linux"], "ci_file_shard_pins.txt"),
+            (DEFAULT_WEIGHTS["windows"], "ci_file_shard_pins_windows.txt"),
+        )
+        for weights_path, pin_name in plans:
+            weights = read_weights(weights_path)
+            pins = read_pins(ROOT / "scripts" / pin_name, 8)
+            measured = sorted(weights)
+            pinned = sorted(pins)
+            for seed, size in enumerate((1, 1, 2, 3, 5, 7, 8, 9, 16, 50, 200, 800) * 3):
+                rng = random.Random(seed)
+                # Measured files, pinned ones, and files no run has measured.
+                chosen = rng.sample(measured, size) + rng.sample(pinned, rng.randint(0, size))
+                chosen += [f"test/unmeasured/test_{rng.randint(0, 10**6)}.py" for _ in range(size)]
+                names = set(rng.sample(chosen, size))
+                listed = sorted(names) + rng.sample(sorted(names), (size + 1) // 2)
+                rng.shuffle(listed)
+                with self.subTest(weights=weights_path.name, seed=seed, size=size):
+                    owned = []
+                    digests = set()
+                    for index in range(1, 9):
+                        plugin = FileShards(
+                            root, 8, index, pins, [root / name for name in listed], weights
+                        )
+                        digests.add(plugin.digest)
+                        owned.append({n for n in names if plugin.owner(root / n) == index})
+                    self.assertEqual(set().union(*owned), names)
+                    self.assertEqual(sum(len(part) for part in owned), len(names))
+                    self.assertEqual(digests, {targets_digest(names)})
+                    if size <= 8:
+                        # More shards than targets: no shard holds two while one is empty.
+                        self.assertLessEqual(max(len(part) for part in owned), 1)
+
     def test_no_targets_list_leaves_every_file_on_its_pin_or_hash_shard(self):
         rng = random.Random(7)
         names = [f"test/d{i % 5}/test_{i}.py" for i in range(200)]
