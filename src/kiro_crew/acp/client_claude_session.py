@@ -1033,9 +1033,10 @@ async def _retry_after_model_substitution(
     (``_substitution_retry_model``). This sets ``self._model`` to that model,
     re-seeds ``settings.local.json`` with it (the adapter builds a fresh
     SettingsManager per ``session/new``, so it takes effect), rebuilds the array
-    and the envelope, and re-issues. When the seed already names that model,
-    the backend refused it as named and a retry cannot help: *session_resp* is
-    returned unchanged. When the retry named the pin and the backend refuses that
+    and the envelope, and re-issues. A pin adopted in an earlier start and refused
+    now is not named again (that helper names *substitute*). When the seed
+    already names *substitute*, the backend refused it as named and a retry
+    cannot help: *session_resp* is returned unchanged. When the retry named the pin and the backend refuses that
     too, it falls back ONCE to the model the second advisory offers. Returns the
     last response, which the caller still treats as a failure when it carries no
     sessionId.
