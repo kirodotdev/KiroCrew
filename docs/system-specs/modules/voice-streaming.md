@@ -399,8 +399,12 @@ Configuration is stored under `voice_reply` in the Crew configuration file.
 `slack.handler.load_voice_reply_config()` (defined in `slack/handler_runtime/voice.py`)
 loads the live `_VoiceConfig`, which stays module state of `slack/handler.py`, at
 boot, and the live config watcher re-applies it on every change under `voice_reply`
-in config.json (`apply_voice_reply_change`, with config.local.json merged over it;
-an edit to config.local.json alone applies at restart; see [config](config.md)). A
+in config.json (`apply_voice_reply_change`, with config.local.json merged over it).
+The watcher fingerprints both files, but for a section config.json has, the live
+view keeps config.json's own value (`base_shadow`), so an edit to
+config.local.json alone applies at restart; when config.json has no
+`voice_reply` section, the overlay's section is carried as an unknown section
+(`_extra_sections`) and its edit applies live (see [config](config.md)). A
 `PUT /api/voice/config` validates the whole patch first, then persists it as a
 locked delta read-modify-write (`run_config_write` → `update_config_locked`)
 that sets only the named keys inside `voice_reply`, so voice settings owned by
