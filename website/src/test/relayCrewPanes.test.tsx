@@ -149,9 +149,8 @@ describe('relay Crew panes in the main window', () => {
     setThemeAccent.mockClear()
     emit({ type: 'loaded', endpointId: 'r1', index: -1 })
     await waitFor(() => expect(document.documentElement.dataset.mode).toBe(flip ? 'dark' : 'light'))
-    // Every reader of the context's mode (top-bar art) follows too. The Windows caption
-    // buttons keep the person's own mode: following a lent mode is #40254.
-    expect(setTitleBarOverlayTheme).not.toHaveBeenCalledWith(flip ? 'dark' : 'light')
+    // Every reader of the context's mode (top-bar art) follows too, the Windows caption buttons included.
+    await waitFor(() => expect(setTitleBarOverlayTheme).toHaveBeenLastCalledWith(flip ? 'dark' : 'light'))
     expect(screen.getByTestId('theme-probe').textContent).toBe(flip ? 'dark' : 'light')
     // The shell saves the accent for the next launch's splash: not the borrowed mode's.
     await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
@@ -159,6 +158,7 @@ describe('relay Crew panes in the main window', () => {
     expect(localStorage.getItem('mc-theme')).toBeNull()
     act(() => { store.dispatch(setActiveId(null)) })
     await waitFor(() => expect(document.documentElement.dataset.mode).toBe(own))
+    expect(setTitleBarOverlayTheme).toHaveBeenLastCalledWith(own)
     act(() => { store.dispatch(relayPaneOpened({ id: 'r1', name: 'R1' })) })
     await waitFor(() => expect(document.documentElement.dataset.mode).toBe(flip ? 'dark' : 'light'))
     emit({ type: 'closed', endpointId: 'r1', index: -1 })

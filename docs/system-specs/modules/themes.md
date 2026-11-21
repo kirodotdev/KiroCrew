@@ -26,7 +26,10 @@ and where to use this hint; it does not change the page's colours.
 A relay Crew's pane fills the desktop window under the local top bar, so the
 local dashboard around it (the top bar, the rail, anything docked, menus) takes
 that Crew's mode while it is in front, as an SSH Crew's header does by being the
-pane's own. The Windows caption buttons keep the person's own mode (#40254). The shell reads the pane page's `data-mode`
+pane's own. The Windows caption buttons follow it too: the dashboard pushes its
+painted mode, and the shell stores it on that window alone, so every repaint of
+that window's caption buttons (a zoom step, a focus re-sync) reads it before the
+native theme and no other window changes. The shell reads the pane page's `data-mode`
 when the pane shows and again on each theme colour change
 (`did-change-theme-color`; the colour itself, a palette's background, is not
 read as a mode), and tells the dashboard only whether it is dark;

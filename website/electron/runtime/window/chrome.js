@@ -4,10 +4,7 @@ const { resolveThemeSource } = require("../../native-theme");
 const { clampZoomFactor, stepZoomFactor } = require("../../zoom");
 const { applyFocusModeChrome } = require("../../focus-chrome");
 const { createFocusCursorWatch } = require("../../focus-cursor");
-const {
-  paintTitleBarOverlay,
-  paintAllTitleBarOverlays,
-} = require("../../windows-titlebar");
+const { paintTitleBarOverlay } = require("../../windows-titlebar");
 
 const HEADER_CSS_PX = 42;
 const TRAFFIC_LIGHT_NATIVE_H = 12;
@@ -104,15 +101,20 @@ function createWindowChrome({
         return;
       }
       nativeTheme.themeSource = resolveThemeSource(pref, mode);
-      // data-mode can be a Remote Crew's lent mode; the caption buttons keep the
-      // person's own, which themeSource now holds (#40254).
+      // The caption buttons take the mode this window's renderer pushed (which
+      // can be a Remote Crew's lent one), not data-mode read here.
       if (mode === "dark" || mode === "light") updateWindowsTitleBarOverlay(win);
     }).catch(() => {});
   }
 
+  // Every painter reads the window's own caption mode, stored by
+  // setTitlebarMode, before falling back to the process-wide native theme, so a
+  // zoom step or a focus re-sync never repaints a borrowed mode back.
   function updateWindowsTitleBarOverlay(win, mode) {
     if (!IS_WINDOWS) return;
-    const resolvedMode = mode || (nativeTheme.shouldUseDarkColors ? "dark" : "light");
+    const resolvedMode = mode
+      || (win && win._mcTitlebarMode)
+      || (nativeTheme.shouldUseDarkColors ? "dark" : "light");
     paintTitleBarOverlay(win, resolvedMode, HEADER_CSS_PX);
     pushWinCaptionReserve(win);
   }
@@ -223,18 +225,14 @@ function createWindowChrome({
     }
   }
 
-  function setTitlebarMode(mode) {
+  // The renderer's painted mode belongs to its sender's window alone: another
+  // window may paint a different (own or lent) mode, so only this one repaints.
+  function setTitlebarMode(mode, sender) {
     if (!IS_WINDOWS) return;
-    const resolvedMode = mode === "dark" || mode === "light"
-      ? mode
-      : (nativeTheme.shouldUseDarkColors ? "dark" : "light");
-    // Continue past framed modal windows that cannot accept an overlay; the
-    // helper catches per-window so one dialog cannot strand siblings.
-    paintAllTitleBarOverlays(
-      BaseWindow.getAllWindows(),
-      resolvedMode,
-      HEADER_CSS_PX,
-    );
+    const win = windowForWebContents(sender);
+    if (!win) return;
+    win._mcTitlebarMode = mode === "dark" || mode === "light" ? mode : null;
+    updateWindowsTitleBarOverlay(win);
   }
 
   // Re-centre the native caption controls in the 42px header after a zoom

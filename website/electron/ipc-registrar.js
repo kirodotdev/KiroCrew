@@ -958,8 +958,8 @@ function createIpcRegistrar({
     });
     ipcMain.on("theme-mode-changed", (event, pref) =>
       windows.chrome.setThemeMode(pref, event.sender));
-    ipcMain.on("titlebar-overlay-theme", (_event, mode) =>
-      windows.chrome.setTitlebarMode(mode));
+    ipcMain.on("titlebar-overlay-theme", (event, mode) =>
+      windows.chrome.setTitlebarMode(mode, event.sender));
 
     // Electron no-ops setBadgeCount on unsupported platforms. Keep the clamp in
     // the trusted process so a malformed renderer value cannot set an absurd
