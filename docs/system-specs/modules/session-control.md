@@ -424,7 +424,11 @@ unavailable and the gateway holds the message as a pending steer
 (`dashboard/deferred_steer.py`). The stream loop retries it at each tool boundary
 of the same turn; the held attempt skips the key's refusal, marks the steer
 delivered before the injection (`slot._deferred_steer_delivered`), and the turn's
-teardown requeue skips a marked steer. On the Claude Code and Codex paths it is
+teardown requeue skips a marked steer. A marked steer the Claude Code client only
+buffered behind an open tool call, then dropped unwritten or had refused
+(`held_steers_unsent`), loses its mark when the turn releases its client: the
+teardown queues it and its receipt reads `queued@<time>`, and a hard stop tells its
+sender it will not run. On the Claude Code and Codex paths it is
 therefore injected at most once and never queued back; on the Goose, request and
 concurrent-prompt (Pi, OpenCode) paths a steer the adapter took just as its turn
 ended is reported False and can run once more from the queue. A turn that ends
@@ -444,10 +448,16 @@ next turn, so it can run twice.
 While the key is off, a held peer steer injected into one of those harnesses can
 still be dropped by the harness: its sender is told it may not have run and its
 receipt reads `unconfirmed@<time>`, and the delivered mark
-that stops a second run also stops a retry. Held steers live in memory only, so
-a gateway restart drops them although the sender saw `pending-steer`. Admission
+that stops a second run also stops a retry. A save writes each held steer that
+is not marked delivered into the saved queue (`deferred_steer.saved_queue_entries`)
+as the plain queued peer send the teardown would make of it, at the head in send
+order, so a gateway restart hands it back as that queue card; a marked steer is
+left out, so a restart never runs it twice. The live slot keeps its held list, and
+a hold starts the queue write as a queued send does. Admission
 closes at the start of each turn hand-off, so a steer sent while a turn ends is
-queued for the next turn instead of held.
+queued for the next turn instead of held. A running target whose client cannot
+steer (`supports_steer` false) queues the steer as a plain send; a target whose
+turn has published no client yet holds it.
 
 Two properties keep the steer arm from being a hole in the queued arm's checks.
 The delivery happens NOW rather than later, which removes the queue's waiting

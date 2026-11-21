@@ -2,9 +2,10 @@
 
 ``session_send(steer=true)`` and ``session_broadcast(mode=steer)`` ask for a message to
 cut into the target's RUNNING turn. When injection is unavailable at the instant of the
-send (no steer-capable client yet, no prompt in flight, a /compact turn, an identical
+send (no client yet, no prompt in flight, a /compact turn, an identical
 steer in flight, the pending cap), the gateway holds the message here instead of
-queueing it behind the whole turn.
+queueing it behind the whole turn. A target whose client cannot steer has no
+boundary to wait for, so its steer is queued as a plain send is.
 
 * The stream loop calls :func:`flush_at_boundary` after every tool result. Each held
   steer is retried there, every boundary, until it is delivered.
@@ -76,6 +77,9 @@ class DeferredSteer:
     #: stop or a refusal owes the sender.
     origin_meta: dict = field(default_factory=dict, repr=False)
     text: str = field(default="", repr=False)
+    #: The cross-session sender (``meta.relay``) a queued peer send carries; the saved
+    #: queue entry (:func:`saved_queue_entries`) carries it too.
+    relay_meta: dict = field(default_factory=dict, repr=False)
     attempts: int = 0
 
 
@@ -119,6 +123,7 @@ def hold(
     to_queue: Callable[..., Awaitable[bool]],
     origin_meta: dict | None = None,
     text: str = "",
+    relay_meta: dict | None = None,
 ) -> str:
     """Hold a steer for the next boundary; return ``HELD`` or why it was not held.
 
@@ -147,6 +152,7 @@ def hold(
             to_queue=to_queue,
             origin_meta=dict(origin_meta or {}),
             text=text,
+            relay_meta=dict(relay_meta or {}),
         )
     )
     slot._deferred_steer_receipts.pop(steer_id, None)
@@ -204,9 +210,60 @@ def mark_unconfirmed(slot: "_ChatSlot", text: str) -> None:
     harness took it but never confirmed it, and it is not queued back. Every marked
     steer is recorded injected too, so the injected record names both kinds.
     """
+    restamp(slot, text, "unconfirmed")
+
+
+def restamp(slot: "_ChatSlot", text: str, state: str) -> None:
+    """Re-settle the receipt of every held steer injected as *text* to *state*."""
     for steer_id, marked_text in slot._deferred_steer_injected.items():
         if marked_text == text:
-            slot._deferred_steer_receipts[steer_id] = {"state": _stamp("unconfirmed")}
+            slot._deferred_steer_receipts[steer_id] = {"state": _stamp(state)}
+
+
+def unsent_injected(slot: "_ChatSlot", client: object) -> set[str]:
+    """The pending injected held steers that *client* reports it never sent.
+
+    A claude client buffers an injection behind an open tool call
+    (``AcpClient.held_steers_unsent``). Each pending text is compared through its
+    wire form, as the client was handed it; a client without the view names none.
+    """
+    unsent = getattr(client, "held_steers_unsent", None)
+    if not unsent or not isinstance(unsent, (set, frozenset)):
+        return set()
+    from kiro_crew.dashboard import responsive_chat
+
+    wires = responsive_chat.turn_state(slot).steers
+    injected = set(slot._deferred_steer_injected.values())
+    return {
+        message
+        for message in slot._pending_steers
+        if message in injected and (wires.get(message, message) or "").strip() in unsent
+    }
+
+
+def saved_queue_entries(slot: "_ChatSlot") -> list[dict[str, Any]]:
+    """The held steers of *slot* as the queue entries a save writes ahead of its queue.
+
+    A held steer lives in memory only, so a gateway restart would lose it. Each one
+    not marked delivered is saved as the plain queued peer send
+    :func:`requeue_all` would make of it, in send order, so a restore hands it back
+    as that queue card. A marked steer may have reached the harness and is left
+    out, so a restart never runs it a second time. The live slot is unchanged:
+    only the saved queue differs.
+    """
+    from kiro_crew.dashboard.session_control_parts.delivery_containment import (
+        SESSION_SEND_QUEUED_META,
+    )
+
+    entries: list[dict[str, Any]] = []
+    for held in list(slot._deferred_steers):
+        if held.steer_id in slot._deferred_steer_delivered:
+            continue
+        meta: dict[str, Any] = {**held.origin_meta, SESSION_SEND_QUEUED_META: True}
+        if held.relay_meta:
+            meta["relay"] = dict(held.relay_meta)
+        entries.append({"id": held.steer_id, "content": held.text, "kind": "", "meta": meta})
+    return entries
 
 
 def receipts(slot: "_ChatSlot") -> list[dict[str, str]]:

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew._facade_bindings import own_methods
 from kiro_crew.approval_mode_policy import session_mode_permitted
+from kiro_crew.dashboard import deferred_steer
 from kiro_crew.dashboard import run_clock as _run_clock
 from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.side_state import SideState
@@ -1068,16 +1069,23 @@ class _ChatSlot:
             self._retry_deferred_release()
 
     def durable_queue_entries(self) -> list[dict[str, Any]]:
-        """The queued user prompts a metadata writer may persist right now."""
-        return durable_queue_entries(self._queue)
+        """The queued user prompts a metadata writer may persist right now.
+
+        The held peer steers come first (``deferred_steer.saved_queue_entries``),
+        each as the queued peer send the turn's end would make of it, so a restart
+        hands it back as a queue card. The drift check reads this too, so a hold
+        or a settle owes a save as a queue change does.
+        """
+        return durable_queue_entries(deferred_steer.saved_queue_entries(self) + self._queue)
 
     def durable_queue_view(self) -> tuple[list[dict[str, Any]], int]:
         """Persistable queued prompts and the candidate count, from one read.
 
         Used where the two are SUBTRACTED (the save's over-cap report), so the
-        difference describes one observation of the queue rather than two.
+        difference describes one observation of the queue rather than two. The
+        held peer steers lead, as in :meth:`durable_queue_entries`.
         """
-        return durable_queue_view(self._queue)
+        return durable_queue_view(deferred_steer.saved_queue_entries(self) + self._queue)
 
     @property
     def queue_persist_pending(self) -> bool:

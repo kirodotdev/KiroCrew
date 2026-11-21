@@ -1142,10 +1142,11 @@ async def _consumed_then_resent(state, caller, target, client):
     target._pending_steers.remove(injected)
     target._steer_delivery_ids.pop(injected, None)
 
-    client.supports_steer = False
+    target._acp_client = None  # no client at this instant: the resend is held
     second = await _send(state, caller)
     assert second["steer_id"] == first["steer_id"]
     assert second.get("pending_steer") is True, "a settled steer's resend is a fresh held one"
+    target._acp_client = client
     return first, second
 
 
@@ -1291,20 +1292,20 @@ async def test_a_broadcast_of_an_injected_unmarked_held_steer_is_not_held_again(
 
     state = _make_state(tmp_path)
     caller, target, client = _keep_every_target(state)
-    client.supports_steer = False
+    target._acp_client = None  # no client at this instant: the send is held
     first = await _send(state, caller)
     assert first["pending_steer"] is True
-    client.supports_steer = True
+    target._acp_client = client
     await deferred_steer.flush_at_boundary(state, target)
     client.steer.assert_awaited_once()
     assert not target._deferred_steer_delivered, "keeps every steer: no mark"
-    client.supports_steer = False  # the immediate path is unavailable at this instant
+    target._acp_client = None  # the immediate path is unavailable at this instant
 
     row = await _broadcast(state, caller)
 
     assert row.get("steer_state") == "steering" and row["pending_steer"] is False, row
     assert not target._deferred_steers
-    client.supports_steer = True
+    target._acp_client = client
     await deferred_steer.flush_at_boundary(state, target)
     client.steer.assert_awaited_once()
 
@@ -1317,7 +1318,7 @@ async def test_a_broadcast_during_the_hand_off_of_a_pending_steer_runs_it_once(t
     state = _make_state(tmp_path)
     caller, target, client = _keep_every_target(state)
     await _send(state, caller)  # steered, pending, unmarked
-    client.supports_steer = False
+    target._acp_client = None  # no client at this instant: the send is held
     other = await _send(state, caller, message="and also run the tests")
     assert other["pending_steer"] is True  # so the hand-off awaits requeue_all
     real = deferred_steer.requeue_all
@@ -1401,10 +1402,10 @@ async def test_a_hard_stop_of_an_injected_unmarked_held_steer_tells_its_sender(
         monkeypatch.setattr(module, "sel", lambda fake=fake: fake)
     monkeypatch.setattr(sc, "_sel_off_loop", lambda write, what: write())
     caller, target, client = _keep_every_target(state)
-    client.supports_steer = False
+    target._acp_client = None  # no client at this instant: the send is held
     first = await _send(state, caller)
     assert first["pending_steer"] is True
-    client.supports_steer = True
+    target._acp_client = client
     await deferred_steer.flush_at_boundary(state, target)
     assert any(TEXT in text for text in target._pending_steers), "injected, not consumed"
     assert not target._deferred_steer_delivered, "keeps every steer: no mark"
@@ -1902,3 +1903,293 @@ async def test_a_cancelled_flush_starts_no_follow_up_pass(tmp_path, monkeypatch)
     assert task.cancelled()
     assert target._deferred_flush_task is task, "no new task after the cancel"
     client.steer.assert_awaited_once()
+
+
+async def _buffered_by_a_real_claude_client(state, spawned):
+    """Hold a peer steer for a real claude client and run a boundary while a call is open.
+
+    The client buffers the injection behind the still-open call and answers True with
+    nothing written, so the steer is marked delivered but never left the gateway.
+    Returns the caller, the target, the client, its wire, the running turn and the
+    send reply.
+    """
+    from test_claude_steering_request import (
+        _client,
+        _close_tool,
+        _open_tool,
+        _start_turn,
+        _wait_closed,
+        _Wire,
+    )
+
+    from kiro_crew.dashboard import deferred_steer
+    from kiro_crew.testing.wait import async_wait_until
+
+    caller = _slot(state, "chat-1")
+    target = _running(_peer_target(state, "chat-2", caller))
+    client = _client()
+    wire = _Wire(client)
+    turn = await _start_turn(client, spawned)
+    target._acp_client = client
+
+    out = await _send(state, caller)
+    assert out.get("pending_steer") is True, "refused at send time on claude, so held"
+
+    # Two parallel tool calls; the first one's result is the boundary.
+    wire.inbound.put_nowait(_open_tool("tc1"))
+    wire.inbound.put_nowait(_open_tool("tc2"))
+    await async_wait_until(lambda: len(client._active_tool_calls) == 2)
+    wire.inbound.put_nowait(_close_tool("tc1"))
+    await _wait_closed(client, "tc1")
+    await deferred_steer.flush_at_boundary(state, target)
+    assert target._deferred_steer_delivered, "marked before the client answered"
+    assert client._steers_held, "the client buffered it behind the open call"
+    assert wire.steering_frames() == []
+    return caller, target, client, wire, turn, out
+
+
+@pytest.mark.asyncio
+async def test_a_steer_a_real_claude_client_only_buffered_is_queued_when_the_turn_stops(tmp_path):
+    """A held steer that never left the gateway runs as the next turn.
+
+    The turn is stopped before the open call closes, which drops the client's buffer
+    unwritten. The delivered mark must not keep the text out of the queue.
+    """
+    from test_claude_steering_request import _Tasks
+
+    from kiro_crew.dashboard.chat_turn.steer_queue import _mark_held_steers_possibly_delivered
+    from kiro_crew.testing.wait import await_until
+
+    state = _make_state(tmp_path)
+    async with _Tasks() as spawned:
+        caller, target, client, wire, turn, out = await _buffered_by_a_real_claude_client(
+            state, spawned
+        )
+        wire.end_turn("cancelled")
+        await await_until(turn, what="the turn")
+        assert wire.steering_frames() == [], "nothing was ever written"
+        # The turn's release reads the client before it drops the ref.
+        _mark_held_steers_possibly_delivered(target, client)
+        target._acp_client = None
+
+        run_chat = MagicMock(return_value=MagicMock())
+        try:
+            with (
+                patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()) as spawn,
+                patch.object(chat_runner, "_run_chat", new=run_chat),
+            ):
+                await chat_runner._hand_off_queue(
+                    state, target, drain=True, allow_automatic_successor=False
+                )
+        finally:
+            if target.task is not None:
+                target.task.cancel()
+
+    assert spawn.call_count == 1, "the steer runs as the next turn"
+    assert any(TEXT in str(call) for call in run_chat.call_args_list)
+    assert target._deferred_steer_receipts[out["steer_id"]]["state"].startswith("queued@")
+    assert not any("may not have run" in notice for notice in _sender_notices(caller))
+
+
+@pytest.mark.asyncio
+async def test_a_hard_stop_of_a_steer_a_real_claude_client_only_buffered_says_it_will_not_run(
+    tmp_path, monkeypatch
+):
+    """The text never left the gateway, so the sender hears it will not run."""
+    from test_claude_steering_request import _Tasks
+
+    from kiro_crew.dashboard import chat_handlers as ch
+
+    state = _make_state(tmp_path)
+    fake = MagicMock()
+    for module in (sc, ch):
+        monkeypatch.setattr(module, "sel", lambda fake=fake: fake)
+    monkeypatch.setattr(sc, "_sel_off_loop", lambda write, what: write())
+    async with _Tasks() as spawned:
+        caller, target, _client, _wire, _turn, out = await _buffered_by_a_real_claude_client(
+            state, spawned
+        )
+        state.sessions.stop_turn = AsyncMock(return_value="cancelled")
+        await ch.stop_slot_turn(state, target)
+        await ch.stop_slot_turn(state, target)
+
+    notices = _sender_notices(caller)
+    assert len(notices) == 1, notices
+    assert "It was not delivered and will not run." in notices[0]
+    assert target._deferred_steer_receipts[out["steer_id"]]["state"].startswith("discarded@")
+
+
+@pytest.mark.asyncio
+async def test_a_boundary_during_a_flush_runs_no_pass_once_the_hand_off_began(
+    tmp_path, monkeypatch
+):
+    """The hand-off reads the held list once the flush is settled: no pass may follow it."""
+    from kiro_crew.dashboard import deferred_steer
+
+    state = _make_state(tmp_path)
+    caller, target, client, release, started = _gated_target(state)
+    assert (await _send(state, caller)).get("pending_steer") is True
+    target._acp_client = client
+    passes = []
+    real = deferred_steer.flush_at_boundary
+
+    async def _counted(*args):
+        passes.append(True)
+        await real(*args)
+
+    monkeypatch.setattr(deferred_steer, "flush_at_boundary", _counted)
+
+    deferred_steer.schedule_flush(state, target)
+    task = target._deferred_flush_task
+    await asyncio.wait_for(started.wait(), _AWAIT_SECS)
+    deferred_steer.schedule_flush(state, target)  # a boundary while the flush awaits
+    # The hand-off starts before the pass ends (`_hand_off_queue`'s first step).
+    target._deferred_steer_ended_gen = target._turn_generation
+    release.set()
+    try:
+        await asyncio.wait_for(task, _AWAIT_SECS)
+    finally:
+        target.task.cancel()
+
+    assert len(passes) == 1, "no pass after the hand-off began"
+    assert target._deferred_flush_dirty is False
+
+
+@pytest.mark.asyncio
+async def test_a_steer_to_a_client_that_cannot_steer_is_queued_not_held(tmp_path):
+    """No boundary injection can happen, so the steer queues as a plain send would.
+
+    Past the held-steer cap too: each one is queued, none is refused.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _running(_peer_target(state, "chat-2", caller))
+    client = _steerable(accepted=True)
+    client.supports_steer = False
+    target._acp_client = client
+    from kiro_crew.dashboard import deferred_steer
+
+    try:
+        replies = [
+            await _send(state, caller, message=f"{TEXT} ({n})")
+            for n in range(deferred_steer.MAX_DEFERRED_STEERS + 1)
+        ]
+    finally:
+        target.task.cancel()
+
+    assert not any(reply.get("pending_steer") for reply in replies), replies
+    assert not target._deferred_steers
+    assert len(target._queue) == deferred_steer.MAX_DEFERRED_STEERS + 1
+    client.steer.assert_not_awaited()
+
+
+def _saveable(slot):
+    """*slot* with a transcript row, so a save writes its metadata line."""
+    slot.append("user", "the running turn")
+    slot.drain()
+    return slot
+
+
+async def _saved_queue(state, target):
+    """Save *target* as the gateway does and return the ``queued_prompts`` it wrote.
+
+    The queue writer a send started runs first, so this save is not refused as
+    stale behind it.
+    """
+    from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+    from kiro_crew.testing.wait import async_wait_until
+
+    await async_wait_until(lambda: not target._queue_persist_inflight)
+    _save_slot_to_history(state, target, closed=False)
+    meta = state.conversation_log._read_metadata(_key(target))
+    return (meta or {}).get("queued_prompts") or []
+
+
+def _restart(state, target):
+    """Restore *target* from its saved line into a fresh slot, as a gateway restart does."""
+    from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
+
+    del state._slots[target.key]
+    restored = _rehydrate_slot_from_history(state, target.key)
+    assert restored is not None
+    return restored
+
+
+@pytest.mark.asyncio
+async def test_a_held_steer_survives_a_restart_as_a_queued_peer_message(tmp_path):
+    """A held steer is saved as a plain queue entry, so a restart hands it back as the
+    same card a queued peer send restores as, at the head of the queue."""
+    from kiro_crew.dashboard.session_control_parts.delivery_containment import (
+        SEND_ORIGIN_META_KEY,
+        SESSION_SEND_QUEUED_META,
+    )
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _saveable(_running(_peer_target(state, "chat-2", caller)))
+    plain = "a plain note queued before the steer"
+    try:
+        assert (await _send_plain(state, caller, plain))["started"] is False
+        held = await _send(state, caller)
+        assert held.get("pending_steer") is True
+        saved = await _saved_queue(state, target)
+    finally:
+        target.task.cancel()
+
+    assert [TEXT in e["content"] for e in saved] == [True, False], saved
+    assert saved[0]["meta"][SEND_ORIGIN_META_KEY], "the sender stamp is saved"
+    assert len(target._deferred_steers) == 1, "the live slot keeps its held steer"
+    assert len(target._queue) == 1, "the save does not touch the live queue"
+
+    restored = _restart(state, target)
+    card, queued = restored._queue
+    assert TEXT in card["content"] and plain in queued["content"]
+    assert card["kind"] == "" and queued["kind"] == ""
+    assert card["meta"].keys() == queued["meta"].keys(), (card["meta"], queued["meta"])
+    assert card["meta"][SESSION_SEND_QUEUED_META] is True
+    assert card["meta"]["relay"]["senderKey"] == queued["meta"]["relay"]["senderKey"]
+    assert not restored._deferred_steers
+
+
+@pytest.mark.asyncio
+async def test_a_marked_or_settled_held_steer_is_not_saved(tmp_path):
+    """A steer marked delivered may have reached the harness, and a settled one is gone:
+    neither is saved, so a restart never runs either a second time."""
+    from kiro_crew.dashboard import deferred_steer
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _saveable(_running(_peer_target(state, "chat-2", caller)))
+    marked, settled = "the marked steer", "the settled steer"
+    try:
+        first = await _send(state, caller, message=marked)
+        second = await _send(state, caller, message=settled)
+        assert (await _send(state, caller)).get("pending_steer") is True
+        target._deferred_steer_delivered[first["steer_id"]] = marked
+        deferred_steer.settle_held(target, second["steer_id"], deferred_steer.DELIVERED)
+        saved = await _saved_queue(state, target)
+    finally:
+        target.task.cancel()
+
+    contents = [e["content"] for e in saved]
+    assert len(contents) == 1 and TEXT in contents[0], contents
+
+
+@pytest.mark.asyncio
+async def test_several_held_steers_are_saved_in_send_order_at_the_head(tmp_path):
+    """The saved order is the order the turn's end would queue them in."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _saveable(_running(_peer_target(state, "chat-2", caller)))
+    plain, second = "a plain note queued first", "and run the full gate after the rebase"
+    try:
+        assert (await _send_plain(state, caller, plain))["started"] is False
+        assert (await _send(state, caller)).get("pending_steer") is True
+        assert (await _send(state, caller, message=second)).get("pending_steer") is True
+        saved = await _saved_queue(state, target)
+    finally:
+        target.task.cancel()
+
+    contents = [e["content"] for e in saved]
+    assert len(contents) == 3, contents
+    assert TEXT in contents[0] and second in contents[1] and plain in contents[2], contents

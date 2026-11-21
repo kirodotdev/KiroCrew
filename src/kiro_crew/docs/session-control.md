@@ -180,13 +180,15 @@ id and a state, never the text, and `session_status` lists only the sessions the
 caller itself manages. Sending the same steer again returns the same pending
 steer instead of delivering a second copy. A hard stop of the target discards its
 held steers: each sender gets the discard notice a queued message gets and its
-receipt reads `discarded@<time>`. Held steers live in memory only, so a gateway
-restart drops them although the sender saw `pending-steer`. While
+receipt reads `discarded@<time>`. A held steer survives a gateway restart as a
+queue card at the head of the target's queue, unless it was already handed to
+the harness, so a restart never runs it twice. While
 `agent.peer_steer_loss_recovery` is off, a held peer steer injected into a Claude
 Code, Codex, Goose, Pi or OpenCode turn can still be dropped by that harness; its
 sender is told it may not have run and the receipt reads `unconfirmed@<time>`. A
 steer sent while the target's turn is ending is queued
-for its next turn, not held. `steer` is ignored on an idle target, because
+for its next turn, not held, and so is a steer to a target whose harness cannot
+take one. `steer` is ignored on an idle target, because
 the message starts a turn either way.
 
 A queued message is checked again just before it runs. If the target gained a

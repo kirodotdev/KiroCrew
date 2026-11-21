@@ -280,7 +280,10 @@ def _mark_held_steers_possibly_delivered(slot: "_ChatSlot", client: object) -> N
     :func:`_requeue_unconsumed_steers` stamps such an entry as possibly
     delivered. The client knows the text it was handed, so each raw entry is
     compared through its wire form; a client without the accessor marks nothing.
+    A pending held steer the client reports unsent loses its delivered mark here
+    too (:func:`_unmark_unsent_held_steers`).
     """
+    _unmark_unsent_held_steers(slot, client)
     unanswered = getattr(client, "held_steers_possibly_delivered", None)
     if not unanswered or not isinstance(unanswered, (set, frozenset)):
         return
@@ -290,6 +293,23 @@ def _mark_held_steers_possibly_delivered(slot: "_ChatSlot", client: object) -> N
     for message in slot._pending_steers:
         if (wires.get(message, message) or "").strip() in unanswered:
             slot._steer_possibly_delivered.add(message)
+
+
+def _unmark_unsent_held_steers(slot: "_ChatSlot", client: object) -> None:
+    """Drop the delivered mark of each pending held steer *client* never sent.
+
+    A claude client buffers a steer behind an open tool call and answers True, so
+    the mark is set for text the turn may never see; a stopped turn drops that
+    buffer unwritten. Unmarked, the teardown queues the text as main does. Read
+    with :func:`_mark_held_steers_possibly_delivered`, before the turn drops its
+    client.
+    """
+    from kiro_crew.dashboard import deferred_steer
+
+    for message in deferred_steer.unsent_injected(slot, client):
+        for steer_id, text in list(slot._deferred_steer_delivered.items()):
+            if text == message:
+                slot._deferred_steer_delivered.pop(steer_id, None)
 
 
 def _tell_sender_unconfirmed(state: "DashboardState", slot: "_ChatSlot", steer_msg: str) -> None:
@@ -356,7 +376,7 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
     steer_retract.on_turn_ending(state, slot)
     if not slot._pending_steers:
         return
-    from kiro_crew.dashboard import responsive_chat
+    from kiro_crew.dashboard import deferred_steer, responsive_chat
 
     requeued = slot._pending_steers[:]
     slot._pending_steers.clear()
@@ -370,6 +390,9 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             _tell_sender_unconfirmed(state, slot, steer_msg)
             _release_delivered_peer_steer(slot, steer_msg)
             continue
+        # An injected held steer that is not marked runs from the queue: its receipt
+        # says so.
+        deferred_steer.restamp(slot, steer_msg, deferred_steer.QUEUED)
         # The turn is over and never confirmed this steer, so the row persisted at
         # write time is now WRONG if it still reads as a successful injection.
         # Correct it before the queue card goes out, so the transcript and the card

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.context_assembly.markers import _apply_marker_spans, _marker_spans
 from kiro_crew.dashboard import deferred_steer, session_managers
-from kiro_crew.dashboard.chat_delivery import sanitize_outbound
+from kiro_crew.dashboard.chat_delivery import sanitize_outbound, start_queue_persist
 from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_CODE,
     RELAY_ARCHIVE_ERROR,
@@ -889,9 +889,13 @@ async def send_to_target(
                 # this turn (an overlapping send of the same steer). Holding this one
                 # would inject the text a second time at the next boundary.
                 return _same_steer()
-            if slot.running:
+            _client = getattr(slot, "_acp_client", None)
+            if slot.running and (_client is None or getattr(_client, "supports_steer", False)):
                 # Never a plain queue for a steer: hold it for the next tool
-                # boundary of this turn. A turn that ended during the RPC leaves
+                # boundary of this turn. A turn whose client cannot steer has no
+                # boundary injection to wait for, so its steer queues below; one
+                # with no client yet may still publish a steer-capable one.
+                # A turn that ended during the RPC leaves
                 # `slot.running` False, and the queue-or-run arm below starts it.
                 # The turn the steer is held for is the one running at the hold:
                 # the RPC and the re-gate await, and a hand-off during them can
@@ -906,6 +910,7 @@ async def send_to_target(
                     to_queue=_queue_after_orphaned_unavailable,
                     origin_meta=send_origin_meta(state, caller_key),
                     text=prompt,
+                    relay_meta=relay_meta,
                 )
                 if hold_result == deferred_steer.FULL:
                     raise SessionControlError(
@@ -920,6 +925,10 @@ async def send_to_target(
                 # ENDED: the turn is in its hand-off, so nothing would hand a held
                 # steer on; the queue-or-run arm below queues it for the next turn.
                 pending_steer = hold_result == deferred_steer.HELD
+                if pending_steer:
+                    # A held steer is saved as a queue entry: start that write as
+                    # the queue arm's admission does, so a restart keeps it.
+                    start_queue_persist(state, slot)
 
     if steered or requeued or pending_steer:
         # No arm starts a turn: a steer runs inside one that is already going, a

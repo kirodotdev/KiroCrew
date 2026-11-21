@@ -1509,10 +1509,11 @@ class AgentConfig:
         default=False,
         metadata=_meta(
             "Peer Steer Loss Recovery",
-            "Off (the default): a steer from another session or an automation into "
+            "Off (the default): a session_send or session_broadcast steer into "
             "a running Claude Code, Codex, Goose, Pi or OpenCode turn is held and "
             "goes in at that turn's next tool step, or runs as its next turn if "
-            "the turn ends first. On: it cuts into the running turn at once. Those "
+            "the turn ends first; an automation's steer is not held. "
+            "On: both cut into the running turn at once. Those "
             "harnesses can drop a steer they accepted, so with it on the steer "
             "counts as delivered only when the turn ends cleanly; a turn that is "
             "cancelled, fails or loses it to a denied approval puts it back as a "
