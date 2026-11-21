@@ -72,7 +72,7 @@ const num = (re: RegExp, src: string): number => {
 describe('composer dock clearance', () => {
   it('pads the scroller by the measured dock height plus the px clearance', () => {
     expect(CHAT_PAGE).toMatch(/scrollerStyle=\{\{ paddingBottom: dockH \+ DOCK_CLEARANCE_PX,/)
-    expect(CHAT_PANE).toMatch(/scrollerStyle: \{ paddingTop: 12 \+ topInset, paddingBottom: dockH \+ DOCK_CLEARANCE_PX,/)
+    expect(CHAT_PANE).toMatch(/scrollerStyle: \{ paddingTop: 12 \+ topInset \+ findBarH, paddingBottom: dockH \+ DOCK_CLEARANCE_PX,/)
     expect(num(/export const DOCK_CLEARANCE_PX = (\d+)/, DOCK)).toBeGreaterThan(0)
     // One clearance for both hosts: neither re-declares its own number.
     for (const src of [CHAT_PAGE, CHAT_PANE_WITH_OWNERS]) expect(src).not.toMatch(/const DOCK_CLEARANCE_PX =/)
@@ -80,7 +80,7 @@ describe('composer dock clearance', () => {
   })
 
   it('a pane brings a focused control clear of the floating header and the dock', () => {
-    expect(CHAT_PANE).toMatch(/scrollPaddingTop: 12 \+ topInset, scrollPaddingBottom: dockH \+ DOCK_CLEARANCE_PX \}/)
+    expect(CHAT_PANE).toMatch(/scrollPaddingTop: 12 \+ topInset \+ findBarH, scrollPaddingBottom: dockH \+ DOCK_CLEARANCE_PX \}/)
   })
 
   it('measures the dock root from a callback ref through a ResizeObserver', () => {
