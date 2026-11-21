@@ -19,7 +19,7 @@ import os
 #: Bound on the ancestry walk. A shell is a handful of hops below the Session
 #: Manager worker even after a sudo/su switch; the cap stops a cycle or a long
 #: chain from stalling the caller.
-SSM_ANCESTRY_MAX_DEPTH = 20
+_SSM_ANCESTRY_MAX_DEPTH = 20
 
 #: The kernel caps a process ``comm`` at 15 visible characters, so the worker
 #: ``ssm-session-worker`` shows as its 15-character prefix.
@@ -50,7 +50,7 @@ def is_ssm_session() -> bool:
 
     try:
         pid: int | None = os.getpid()
-        for _ in range(SSM_ANCESTRY_MAX_DEPTH):
+        for _ in range(_SSM_ANCESTRY_MAX_DEPTH):
             if pid is None or pid <= 1:
                 break
             if linux_process_name(pid) == _SSM_WORKER_COMM:

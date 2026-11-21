@@ -2,23 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-
 import pytest
 
 from kiro_crew import cli_doctor, platform_compat, shell_origin
 from kiro_crew.auth.shape import InstallShape, detect_shape
 from kiro_crew.doctor_checks import services
-
-
-@pytest.fixture(autouse=True)
-def _fresh_ssm_answer() -> Iterator[None]:
-    """The ancestry answer is cached per process; each test walks its own table,
-    and a faked answer never leaks into a later test on the same worker."""
-    cached = shell_origin.is_ssm_session
-    cached.cache_clear()
-    yield
-    cached.cache_clear()
 
 
 @pytest.fixture
@@ -74,6 +62,16 @@ def test_no_session_manager_ancestor_is_not_ssm(monkeypatch: pytest.MonkeyPatch)
     assert shell_origin.is_ssm_session() is False
 
 
+def test_the_walk_stops_at_pid_1_and_never_reads_its_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # init (pid 1) is never a Session Manager worker; the walk stops before it.
+    _process_table(
+        monkeypatch, {500: ("python3", 400), 400: ("bash", 1), 1: ("ssm-session-wor", 0)}
+    )
+    assert shell_origin.is_ssm_session() is False
+
+
 def test_a_cyclic_process_table_stops_at_the_depth_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     _process_table(monkeypatch, {500: ("python3", 400), 400: ("bash", 500)})
     walked: list[int] = []
@@ -85,7 +83,7 @@ def test_a_cyclic_process_table_stops_at_the_depth_cap(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(platform_compat, "linux_process_name", counted)
     assert shell_origin.is_ssm_session() is False
-    assert len(walked) == shell_origin.SSM_ANCESTRY_MAX_DEPTH
+    assert len(walked) == shell_origin._SSM_ANCESTRY_MAX_DEPTH
 
 
 def test_an_unreadable_process_table_is_not_ssm(monkeypatch: pytest.MonkeyPatch) -> None:
