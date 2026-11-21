@@ -102,7 +102,7 @@
       "loading": "Loading issues…",
       "loading_more": "Loading…",
       "more_people": "+{{n}}",
-      "not_declared": "This app can't show issues: its permissions don't declare {{path}}.",
+      "not_declared": "This app can't show issues. This app's developer hasn't allowed it: the app's permissions don't declare {{path}}. Only the app's developer can change this.",
       "open_in": "Open in {{provider}}",
       "opened_by": "Opened by {{name}}",
       "priority": "Priority: {{priority}}",

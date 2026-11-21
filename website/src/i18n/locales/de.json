@@ -395,7 +395,7 @@
       "loading": "Issues werden geladen…",
       "loading_more": "Wird geladen…",
       "more_people": "+{{n}}",
-      "not_declared": "Diese App kann keine Issues anzeigen – ihre Berechtigungen deklarieren {{path}} nicht.",
+      "not_declared": "Diese App kann keine Issues anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Nur der Entwickler der App kann das ändern.",
       "open_in": "In {{provider}} öffnen",
       "opened_by": "Erstellt von {{name}}",
       "priority": "Priorität: {{priority}}",

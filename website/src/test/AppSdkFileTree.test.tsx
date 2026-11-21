@@ -46,6 +46,8 @@ let fetchMock: ReturnType<typeof vi.fn>
 let treeStatus = 200
 let statusStatus = 200
 let treeBody: object = TREE
+// A folder whose own listing (`?dir=`) answers 500.
+let failDir: string | null = null
 let appSeq = 0
 
 function pathOf(call: unknown[]): string {
@@ -60,8 +62,13 @@ beforeEach(() => {
   treeStatus = 200
   statusStatus = 200
   treeBody = TREE
+  failDir = null
   fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-    const path = new URL(String(input), 'http://localhost').pathname
+    const url = new URL(String(input), 'http://localhost')
+    const path = url.pathname
+    if (path === FILE_TREE_PATHS.tree && failDir && url.searchParams.get('dir') === failDir) {
+      return new Response(JSON.stringify({ error: 'deadline exceeded' }), { status: 500 })
+    }
     if (path === FILE_TREE_PATHS.tree && treeStatus !== 200) {
       return new Response(JSON.stringify({ error: 'boom' }), { status: treeStatus })
     }
@@ -485,6 +492,61 @@ describe('the App SDK FileTree', () => {
       </QueryClientProvider>,
     )
     expect(await screen.findByTestId('workspace-tree-unreadable-notice', {}, LAZY_TREE)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
+  })
+
+  it("offers no agent hand-off from a folder's failed listing on an external app's page", async () => {
+    const cut = { ...TREE, paths: ['README.md'], directories: ['big'], truncated: true, truncatedDirectories: ['big'] }
+    const openBig = async () => {
+      await waitFor(() => expect(treeMock.last().calls.resetPaths.length).toBeGreaterThan(0))
+      act(() => {
+        treeMock.last().simulateExpanded(['big'])
+        treeMock.last().simulateVisibleRows([{ kind: 'directory', path: 'big/', isExpanded: true }])
+      })
+    }
+    treeBody = cut
+    failDir = 'big'
+    const { unmount } = render(externalApp([FILE_TREE_PATHS.tree], <FileTree projectDir={ROOT} />))
+    expect(await screen.findByTestId('file-tree', {}, LAZY_TREE)).toBeInTheDocument()
+    await openBig()
+    expect(await screen.findByTestId('workspace-tree-folder-listing-retry')).toHaveTextContent('big')
+    expect(screen.queryByRole('button', { name: 'Ask the agent' })).toBeNull()
+    unmount()
+
+    // Control: a builtin page keeps the hand-off on the same notice.
+    mockApi.projectTree.mockImplementation(async (_p: string, dir?: string) => {
+      if (dir === 'big') throw new Error('deadline exceeded')
+      return cut
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <AppIdentityProvider appId="files-app" origin="builtin"><FileTree projectDir={ROOT} /></AppIdentityProvider>
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByTestId('file-tree', {}, LAZY_TREE)).toBeInTheDocument()
+    await openBig()
+    expect(await screen.findByTestId('workspace-tree-folder-listing-retry')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
+  })
+
+  it("offers no agent hand-off from an unreadable root on an external app's page", async () => {
+    const unreadableRoot = { ...TREE, paths: [], directories: [], unreadableDirectories: ['.'] }
+    treeBody = unreadableRoot
+    const { unmount } = render(externalApp([FILE_TREE_PATHS.tree], <FileTree projectDir={ROOT} />))
+    expect(await screen.findByTestId('workspace-tree-root-unreadable', {}, LAZY_TREE)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Ask the agent' })).toBeNull()
+    unmount()
+
+    // Control: a builtin page keeps the hand-off.
+    mockApi.projectTree.mockResolvedValue(unreadableRoot)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <AppIdentityProvider appId="files-app" origin="builtin"><FileTree projectDir={ROOT} /></AppIdentityProvider>
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByTestId('workspace-tree-root-unreadable', {}, LAZY_TREE)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
   })
 

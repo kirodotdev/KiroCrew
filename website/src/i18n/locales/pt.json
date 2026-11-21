@@ -414,7 +414,7 @@
       "loading": "Carregando issues…",
       "loading_more": "Carregando…",
       "more_people": "+{{n}}",
-      "not_declared": "Este app não pode mostrar issues: suas permissões não declaram {{path}}.",
+      "not_declared": "Este app não pode mostrar issues. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso.",
       "open_in": "Abrir no {{provider}}",
       "opened_by": "Aberta por {{name}}",
       "priority": "Prioridade: {{priority}}",

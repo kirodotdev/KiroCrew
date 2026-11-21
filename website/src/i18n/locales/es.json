@@ -414,7 +414,7 @@
       "loading": "Cargando incidencias…",
       "loading_more": "Cargando…",
       "more_people": "+{{n}}",
-      "not_declared": "Esta app no puede mostrar incidencias: sus permisos no declaran {{path}}.",
+      "not_declared": "Esta app no puede mostrar incidencias. El desarrollador de esta app no lo ha permitido: los permisos de la app no declaran {{path}}. Solo el desarrollador de la app puede cambiarlo.",
       "open_in": "Abrir en {{provider}}",
       "opened_by": "Abierta por {{name}}",
       "priority": "Prioridad: {{priority}}",

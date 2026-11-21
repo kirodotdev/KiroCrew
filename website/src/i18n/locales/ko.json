@@ -376,7 +376,7 @@
       "loading": "이슈를 불러오는 중…",
       "loading_more": "불러오는 중…",
       "more_people": "+{{n}}",
-      "not_declared": "이 앱은 이슈를 표시할 수 없습니다. 권한에 {{path}}이(가) 선언되어 있지 않습니다.",
+      "not_declared": "이 앱은 이슈를 표시할 수 없습니다. 이 앱의 개발자가 허용하지 않았습니다. 권한에 {{path}}이(가) 선언되어 있지 않습니다. 이 설정은 앱 개발자만 변경할 수 있습니다.",
       "open_in": "{{provider}}에서 열기",
       "opened_by": "작성자: {{name}}",
       "priority": "우선순위: {{priority}}",

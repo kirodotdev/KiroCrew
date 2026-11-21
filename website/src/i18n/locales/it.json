@@ -414,7 +414,7 @@
       "loading": "Caricamento delle issue…",
       "loading_more": "Caricamento…",
       "more_people": "+{{n}}",
-      "not_declared": "Questa app non può mostrare issue: i suoi permessi non dichiarano {{path}}.",
+      "not_declared": "Questa app non può mostrare issue. Lo sviluppatore di questa app non l'ha consentito: le autorizzazioni dell'app non dichiarano {{path}}. Solo lo sviluppatore dell'app può cambiarlo.",
       "open_in": "Apri in {{provider}}",
       "opened_by": "Aperta da {{name}}",
       "priority": "Priorità: {{priority}}",

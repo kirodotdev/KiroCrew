@@ -1117,7 +1117,8 @@ The tree reads through your app's scoped client and needs `/api/project/tree` in
 manifest's `permissions.api`. Without it, or outside an app, the tree renders a refusal
 naming the path and sends nothing. `/api/project/git/status` is a separate entry:
 declare it to colour changed files, or leave it out and the rows are drawn plain and no
-status request is sent (`/api/project` declares both). When a declared status read
+status request is sent. Declare the two exact entries; the `/api/project` prefix would cover
+both, but it also grants the diff, log and session file reads. When a declared status read
 fails, a notice above the rows says why the colours are missing. A failed tree read takes the
 tree's place only before anything is listed; a failed refresh keeps the listed tree, its open
 folders and selection under the same notice with its Retry. No notice in your app's tree

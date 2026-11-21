@@ -376,7 +376,7 @@
       "loading": "Issue を読み込み中…",
       "loading_more": "読み込み中…",
       "more_people": "+{{n}}",
-      "not_declared": "このアプリは Issue を表示できません。権限で {{path}} が宣言されていません。",
+      "not_declared": "このアプリは Issue を表示できません。このアプリの開発者が許可していません。権限に {{path}} が宣言されていません。これを変更できるのはアプリの開発者だけです。",
       "open_in": "{{provider}} で開く",
       "opened_by": "作成者: {{name}}",
       "priority": "優先度: {{priority}}",
