@@ -47,8 +47,8 @@ _VALUES = ("", "0", "1", "standalone", "Test", "/some/where", "left-by-the-test"
 def _expect_absent(patcher, name: str) -> None:
     """Remove *name* for the test, and at undo whatever the test left in it.
 
-    The floor's patcher has a method for it. A plain ``MonkeyPatch`` gets the two
-    writes the floor used to make: ``delenv`` on an absent variable records nothing,
+    The floor's patcher has a method for it. A plain ``MonkeyPatch`` needs two
+    writes for the same record: ``delenv`` on an absent variable records nothing,
     so the variable is set to ``""`` first, which leaves the record "was absent".
     """
     if isinstance(patcher, floor._FloorMonkeyPatch):
