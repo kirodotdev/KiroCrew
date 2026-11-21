@@ -179,6 +179,7 @@ Go to **Features → OAuth & Permissions → Bot Token Scopes** and add:
 | `files:read` | Read uploaded files |
 | `files:write` | Upload screenshots |
 | `users:read` | Profile lookups (`users.info`) resolve a sender's real name. Without it the lookup fails and is caught: the display name falls back to the matching `slack.allowed_users` entry, then to the raw Slack member ID |
+| `users:read.email` | **Share Slack access** adds a person by their email (`users.lookupByEmail`). Without it that lookup is refused with a reinstall hint, and adding by member ID still works |
 | `commands` | Slash commands |
 
 The `emoji:read` bot scope is deliberately **not** in the shipped manifest.

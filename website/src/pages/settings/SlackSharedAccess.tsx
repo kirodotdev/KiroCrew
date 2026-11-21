@@ -24,10 +24,30 @@ function isSlackUserId(v: string): boolean {
   return true
 }
 
+/** An email address as the server takes it: one `@`, no spaces, a dotted domain. */
+const EMAIL = /^[^@\s]{1,64}@[^@\s.]+(\.[^@\s.]+)+$/
+
+/**
+ * What the owner typed, as the add route takes it: an email, a member ID, or the
+ * member ID in a Slack profile link (`https://<workspace>.slack.com/team/U0123ABC456`,
+ * from Copy link to profile). `null` when it is none of them.
+ */
+export function parseAddInput(raw: string): { user_id: string } | { email: string } | null {
+  const v = raw.trim()
+  if (EMAIL.test(v) && v.length <= 254) return { email: v }
+  if (isSlackUserId(v)) return { user_id: v }
+  let url: URL
+  try { url = new URL(v) } catch { return null }
+  const host = url.hostname.toLowerCase()
+  if (url.protocol !== 'https:' || !(host === 'slack.com' || host.endsWith('.slack.com'))) return null
+  const m = /^\/team\/([^/]+)\/?$/.exec(url.pathname)
+  return m && isSlackUserId(m[1]) ? { user_id: m[1] } : null
+}
+
 /** The refusal codes the shared-access routes answer with that name a reason. */
 const REASON_CODES = new Set([
   'user_not_found', 'bot_user', 'deactivated', 'other_workspace', 'owner', 'malformed_id',
-  'unverifiable', 'not_applied',
+  'unverifiable', 'not_applied', 'owner_unset', 'email_not_found', 'email_lookup_unavailable',
 ])
 
 /** The plain-words reason Slack did not confirm an id, from the server's code. */
@@ -40,6 +60,10 @@ function reasonText(code: string): string {
     case 'owner': return i18nT('pages.settings.slackSharedAccess.reason_owner')
     case 'malformed_id': return i18nT('pages.settings.slackSharedAccess.reason_malformed')
     case 'not_applied': return i18nT('pages.settings.slackSharedAccess.not_applied')
+    case 'owner_unset': return i18nT('pages.settings.slackSharedAccess.reason_owner_unset')
+    case 'email_not_found': return i18nT('pages.settings.slackSharedAccess.reason_email_not_found')
+    // The scope is a literal the owner pastes into the Slack app, so no catalog carries it.
+    case 'email_lookup_unavailable': return i18nT('pages.settings.slackSharedAccess.reason_email_unavailable', { scope: 'users:read.email' })
     default: return i18nT('pages.settings.slackSharedAccess.reason_unverifiable')
   }
 }
@@ -223,10 +247,10 @@ export function SlackSharedAccess() {
       i18nT(enabled ? 'pages.settings.slackSharedAccess.not_applied_on' : 'pages.settings.slackSharedAccess.not_applied_off'))(e),
   })
   const addMut = useMutation({
-    mutationFn: (id: string) => api.addSlackSharedUser(id),
+    mutationFn: (target: { user_id: string } | { email: string }) => api.addSlackSharedUser(target),
     onSuccess: () => { setDraft(''); setSwitchHint(''); done() },
-    onError: (e, id) => fail(i18nT('pages.settings.slackSharedAccess.save_failed'),
-      i18nT('pages.settings.slackSharedAccess.not_applied_add', { name: id }))(e),
+    onError: (e, target) => fail(i18nT('pages.settings.slackSharedAccess.save_failed'),
+      i18nT('pages.settings.slackSharedAccess.not_applied_add', { name: 'email' in target ? target.email : target.user_id }))(e),
   })
   const removeMut = useMutation({
     mutationFn: (id: string) => api.removeSlackSharedUser(id),
@@ -329,8 +353,9 @@ export function SlackSharedAccess() {
     const v = draft.trim()
     // Enter reaches here even while the buttons are disabled.
     if (!v || busy) return
-    if (!isSlackUserId(v)) { setHint(reasonText('malformed_id')); return }
-    addMut.mutate(v)
+    const target = parseAddInput(v)
+    if (!target) { setHint(reasonText('malformed_id')); return }
+    addMut.mutate(target)
   }
 
   return (
@@ -373,7 +398,7 @@ export function SlackSharedAccess() {
           )}
         {!ro && (
           <div className="flex items-center gap-2">
-            <Input value={draft} placeholder={i18nT('pages.settings.slackPanel.u0123abc456')} className="min-w-0 flex-1 font-mono"
+            <Input value={draft} placeholder={i18nT('pages.settings.slackSharedAccess.add_placeholder')} className="min-w-0 flex-1"
               aria-label={i18nT('pages.settings.slackSharedAccess.add_label')}
               aria-describedby={hint ? 'slack-shared-access-hint' : undefined}
               onChange={e => { setDraft(e.target.value); setError(''); setHint('') }}

@@ -741,9 +741,11 @@ async def manifest_status(cfg: Any, bot_token: str, *, refresh: bool = False) ->
     """
     enabled = slack_features.manifest_features(cfg)
     required = slack_manifest.requirements(enabled)
+    # An optional scope missing from an older install is not drift (OPTIONAL_BOT_SCOPES).
+    needed_scopes = required.bot_scopes - slack_manifest.OPTIONAL_BOT_SCOPES
     body: dict[str, Any] = {
         "features": [f for f in slack_manifest.FEATURES if f in enabled],
-        "required_scopes": sorted(required.bot_scopes),
+        "required_scopes": sorted(needed_scopes),
         "required_events": sorted(required.bot_events),
         "required_features": sorted(required.features),
         "feature_changes": feature_changes(),
@@ -775,8 +777,9 @@ async def manifest_status(cfg: Any, bot_token: str, *, refresh: bool = False) ->
             slack_features.clear_private_latches()
         status = await scope_probe.probe_manifest_status(
             client,
-            required.bot_scopes,
-            known_scopes=_known_scopes(),
+            needed_scopes,
+            # Nor a removable leftover: an install that holds it keeps add-by-email.
+            known_scopes=_known_scopes() - slack_manifest.OPTIONAL_BOT_SCOPES,
             probe_code_channels=slack_manifest.CODE_CHANNELS in enabled,
         )
         install = status.as_dict()

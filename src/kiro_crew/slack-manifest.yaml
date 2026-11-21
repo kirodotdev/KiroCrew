@@ -80,6 +80,8 @@ oauth_config:
       - pins:write  #@code_channels
       - reactions:write
       - users:read
+      # users.lookupByEmail: Share Slack access adds a person by their email.
+      - users:read.email
       # Optional: uncomment for custom workspace emojis in Secretary emoji picker
       # - emoji:read
     # Slack MCP: with it on, the user scopes are exactly the read-only set the  #@slack_mcp
