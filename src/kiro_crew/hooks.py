@@ -201,6 +201,7 @@ from kiro_crew.hook_runtime.script_hooks import (  # noqa: F401
     ScriptHookStore,
     _hook_subprocess_env,
     _script_hook_enabled_from,
+    _windows_command_limit,
     run_script_hook,
 )
 from kiro_crew.hook_runtime.script_validation import (  # noqa: F401
@@ -1441,6 +1442,9 @@ _HOOK_REAP_SECS = 5.0
 # Marker appended to a decoded stream when its raw bytes exceeded the cap, so
 # truncation is visible rather than silent.
 _HOOK_TRUNCATION_MARKER = "\n…[output truncated]"
+# cmd.exe's limit on the line it runs. On Windows a script hook runs as
+# ``%ComSpec% /c "<command>"``; cmd.exe refuses a longer line without running it.
+_WINDOWS_CMD_LINE_MAX = 8191
 
 
 # ── Script Hook Store (persistence) ──
