@@ -80,7 +80,7 @@ across one very broad class and tested mostly through its private surface.
 ### 2.2 Persistence records evidence, not a canonical execution ledger
 
 Every run currently gets a folder containing `state.json`, `result.txt`, and,
-when terminal, `tombstone.json` (`src/kiro_crew/subagent_persistence.py:1-7`).
+when terminal, `tombstone.json` (the module docstring of `src/kiro_crew/subagent_persistence.py`).
 Folder creation writes a running snapshot (`create_agent_folder`),
 updates rewrite that JSON (`update_state`), output appends to `result.txt`
 (`write_result_chunk`), and terminal classification writes a tombstone

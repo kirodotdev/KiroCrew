@@ -48,7 +48,7 @@ are as measured at `5ec356d5` unless marked *(at `f6ec5834`)*; the live locale l
 is `website/src/i18n/languages.ts`, and the live `localeCompare` ceiling is the
 `BASELINE` in `website/src/i18n/localeFormatting.test.ts`.
 
-Stack: `i18next@26.3.6` + `react-i18next@17.0.11` (`website/package.json:61,68`).
+Stack: `i18next@26.3.6` + `react-i18next@17.0.11` ([`website/package.json` at 8652708cec](https://github.com/kirodotdev/KiroCrew/blob/8652708cecdf48e55e5e01cd907a71d78fb00bd3/website/package.json#L61-L68)).
 No ICU. At audit time, ten authored locales — `en, zh-CN, hi, es, fr, bn, pt, ru, de, it` — plus
 the `en-XA` pseudolocale. `SUPPORTED_LANGUAGES` in `website/src/i18n/languages.ts`
 lists twelve authored locales today (`ja` and `ko` added), so the ten-locale
@@ -111,7 +111,7 @@ one registry site.
 
 **The pseudolocale implements a monotonic adaptation of the IBM/W3C
 expansion-by-length curve**, not the flat 40% heuristic:
-`website/scripts/gen-pseudolocale.mjs:78-84` gives ≤10-char strings
+`expansionRatio` in `website/scripts/gen-pseudolocale.mjs` gives ≤10-char strings
 2.5× and >70-char strings 1.3×. That is the correct shape — short labels in
 fixed-width chrome are where expansion actually breaks. It also brackets every
 value so a codemod-split sentence renders as two visible fragments, and preserves
@@ -184,7 +184,7 @@ system* (Arabic-Indic vs Latin digits) independently of `dir`.
 
 **All ten authored catalogs were eagerly bundled** at audit time — 12 static imports, zero
 dynamic, in `website/src/i18n/index.ts` — and
-`website/vite.config.ts:426-427` returns early for
+the `manualChunks` callback in [`website/vite.config.ts` at 8652708cec](https://github.com/kirodotdev/KiroCrew/blob/8652708cecdf48e55e5e01cd907a71d78fb00bd3/website/vite.config.ts#L426-L427) returned early for
 non-`node_modules` ids so no locale is ever split out. *(At `f6ec5834`: 940 KB
 gzip on the critical path, of which 877 KB — 91% — is unreadable by any single
 user.)* The file's own header sets the threshold at "roughly 6+ languages";
@@ -207,9 +207,9 @@ template literals that no catalog value can reach. `i18n-plural-codemod.mjs
 regression; it does not reach strings that were never catalog keys. Some of the
 40 construct LLM prompt text and fall outside the rule's scope, which governs
 user-facing strings (`formatArtifactCommentsMessage` in `website/src/components/CommentOverlay.tsx`),
-but user-visible ones are not — `website/src/App.tsx:499`, `website/src/App.tsx:619`,
+but user-visible ones are not — [`website/src/App.tsx` L499](https://github.com/kirodotdev/KiroCrew/blob/8652708cecdf48e55e5e01cd907a71d78fb00bd3/website/src/App.tsx#L499), [`website/src/App.tsx` L619](https://github.com/kirodotdev/KiroCrew/blob/8652708cecdf48e55e5e01cd907a71d78fb00bd3/website/src/App.tsx#L619),
 `website/src/components/InlineCommentOverlay.tsx::InlineCommentOverlay`,
-`website/src/components/ArtifactFolderDeleteDialog.tsx:41`.
+[`website/src/components/ArtifactFolderDeleteDialog.tsx` L41](https://github.com/kirodotdev/KiroCrew/blob/8652708cecdf48e55e5e01cd907a71d78fb00bd3/website/src/components/ArtifactFolderDeleteDialog.tsx#L41) (all at 8652708cec).
 
 **Message format is i18next's native dialect, not ICU.** Among the React i18n
 stacks surveyed below it is the non-ICU option, and it is the expensive decision
@@ -221,7 +221,7 @@ is expressible only by hand-enumerating context keys.
 
 **No Cyrillic script-fallback alias.** `ru` is the only shipped non-Latin locale
 with no entry in `--script-fallbacks` (`website/src/styles/design-tokens.css`), and
-`website/src/i18n/scriptFonts.test.ts:51-56` is structurally incapable of noticing, because it
+the `ALIASES` list in [`website/src/i18n/scriptFonts.test.ts` at 8652708cec](https://github.com/kirodotdev/KiroCrew/blob/8652708cecdf48e55e5e01cd907a71d78fb00bd3/website/src/i18n/scriptFonts.test.ts#L51-L56) is structurally incapable of noticing, because it
 validates only the four aliases that exist.
 
 **One global `line-height: 1.55` and zero `:lang()` rules** in the entire
@@ -254,7 +254,7 @@ in `website/electron/ipc-registrar.js`).
 - A stored or server-provided tag that is not an exact `SUPPORTED_CODES` member is
   **discarded** rather than negotiated (`website/src/i18n/detect.ts::resolveLanguage`), while the
   backend accepts any tag matching its own **conservative BCP-47 subset**
-  (`src/kiro_crew/dashboard/handlers/core.py:299-307,377`). `dashboard.language='de-AT'`
+  (`_LANGUAGE_TAG_RE`, checked by `api_theme_config` in `src/kiro_crew/dashboard/handlers/core.py`). `dashboard.language='de-AT'`
   silently becomes browser-detected.
 - Script subtags are ignored: `zh-Hant` resolves to `zh-CN` (Simplified).
 - `pt` is Brazilian content — 96 `arquivo` and 72 `você` occurrences across 71
@@ -317,8 +317,8 @@ ever on the roadmap.
 replace the other 4 with byte comparisons.** Those four compare ISO timestamps,
 where collation is the wrong tool entirely —
 `website/src/components/SessionGridView.tsx::PlaceholderPane`,
-`website/src/pages/ArtifactDetailPage.tsx:49`, and both branches at
-`website/src/pages/ChatSidebar.tsx:560`. Pure adoption otherwise: the seam is
+[`website/src/pages/ArtifactDetailPage.tsx` L49](https://github.com/kirodotdev/KiroCrew/blob/8652708cecdf48e55e5e01cd907a71d78fb00bd3/website/src/pages/ArtifactDetailPage.tsx#L49), and both branches at
+[`website/src/pages/ChatSidebar.tsx` L560](https://github.com/kirodotdev/KiroCrew/blob/8652708cecdf48e55e5e01cd907a71d78fb00bd3/website/src/pages/ChatSidebar.tsx#L560) (both at 8652708cec). Pure adoption otherwise: the seam is
 built and tested with zero consumers. Note `localeFormatting.test.ts` is
 exact-in-both-directions, so the same change **must** lower `BASELINE`
 — as written at audit time, a migration PR that left it at 97 failed CI.
@@ -346,7 +346,7 @@ translation gaps — pair it with a `resolvedLanguage` check.
   Tailwind ships the full logical-utility set (`ms-*`/`me-*`, `ps-*`/`pe-*`,
   `start-*`/`end-*`, `text-start`/`text-end`) and `rtl:`/`ltr:` variants whose
   variants. Both resolve against a `[dir]` attribute on this repo's Tailwind —
-  declared `^3.4.19` at `website/package.json:108` and locked to 3.4.19 — whereas
+  declared `^3.4.19` in [`website/package.json` at 8652708cec](https://github.com/kirodotdev/KiroCrew/blob/8652708cecdf48e55e5e01cd907a71d78fb00bd3/website/package.json#L108) and locked to 3.4.19 — whereas
   matching the CSS `:dir()` pseudo-class arrives in v4, so a migration should
   confirm the emitted selector against the installed version rather than trusting
   either this RFC or current Tailwind docs. (`@tailwindcss/browser@4.1.13` in the
