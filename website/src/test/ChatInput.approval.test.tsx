@@ -572,7 +572,7 @@ describe('ChatInput approval flow', () => {
     expect(rows.filter(r => r.endsWith(' on www.example.com for this session'))).toHaveLength(1)
     expect(rows).toContain('Trust all tools for this session')
     // Still one Trust control on the bar: no fourth button.
-    expect(barControls()).toEqual(['Allow once', 'Trust', 'Reject'])
+    expect(barControls()).toEqual(['Reject', 'Trust', 'Allow once'])
   })
 
   it('sends a read site grant as the command tier, for the session', async () => {
