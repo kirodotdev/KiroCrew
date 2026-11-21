@@ -69,8 +69,12 @@ def test_build_cli_reads_parts_and_refuses_an_empty_directory(tmp_path: Path) ->
         encoding="utf-8",
     )
     out = tmp_path / "map.json"
-    assert ctm.main(["build", "--parts", str(tmp_path), "--out", str(out), "--commit", "c"]) == 0
-    assert ctm.load_map(out)["files"] == {"src/kiro_crew/a.py": [0]}
+    argv = ["--root", str(tmp_path), "build", "--parts", str(tmp_path), "--out", str(out)]
+    assert ctm.main([*argv, "--commit", "c"]) == 0
+    built = ctm.load_map(out)
+    assert built["files"] == {"src/kiro_crew/a.py": [0]}
+    # A root with no src/ or test/ tree builds no OS table: absent, never empty.
+    assert "os_sensitive" not in built and "windows_targeting" not in built
     (tmp_path / "empty").mkdir()
     assert ctm.main(["build", "--parts", str(tmp_path / "empty"), "--out", str(out)]) == 2
 
