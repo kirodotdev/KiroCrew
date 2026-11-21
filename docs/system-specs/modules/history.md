@@ -1998,6 +1998,17 @@ no longer destroy older turns.
   system notice on disk and after a reload, so the next Regenerate's scan,
   in the handler and in the frontend, passes over it to the reply that was
   kept, and a later success keeps that reply as a version.
+  The handler's scan also passes over a row the chat page draws as nothing
+  (`hidden_reply.is_hidden_reply_at`, the twin of the dashboard's
+  `isHiddenReplyAt`): an invisible-only reply, or a `[STEERING …]` note-only
+  reply when a tool-blocked inject sits between it and the nearest user row
+  (which may be several turn-opening injects back) and that user row is not a
+  steer. It judges the rows as `_prepare_messages` sends them
+  (`wire_rows.WireRows`), with the dashboard's own whitespace set, note grammar
+  and truthiness, and `test/fixtures/hidden_reply_rows.json` holds both twins
+  to one verdict per row. So Regenerate re-runs the reply the button sits on and
+  keeps it as a version. A turn whose replies are all hidden is refused
+  `no_assistant_message`, after the refusals that answer first.
 - **Swap-won guard** (`write_guards.swap_basis` / `snapshot_predates_swap`):
   every save reads the slot's swap epoch before it copies the window, and a
   committed Regenerate swap publishes itself inside the transcript lock

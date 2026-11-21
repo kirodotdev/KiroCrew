@@ -26,6 +26,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     variant_from_row,
 )
+from kiro_crew.dashboard.hidden_reply import is_hidden_reply_at
 from kiro_crew.dashboard.kiro_readiness import (
     refuse_rerun_after_signed_out_turn,
     reject_if_kiro_unverified,
@@ -41,6 +42,7 @@ from kiro_crew.dashboard.slot_ownership import (
 )
 from kiro_crew.dashboard.state import TURN_OPENING_INJECT_KINDS, DashboardState, _ChatSlot
 from kiro_crew.dashboard.system_notices import is_system_notice
+from kiro_crew.dashboard.wire_rows import WireRows
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -142,6 +144,13 @@ def _destructive_history_busy(slot: "_ChatSlot") -> web.Response | None:
 _RERUN_INJECT_KINDS = frozenset({*GATEWAY_PROMPT_INJECT_KINDS.values(), "synthesis"})
 
 
+def _no_assistant_message() -> web.Response:
+    return web.json_response(
+        {"error": "no assistant message to regenerate", "code": "no_assistant_message"},
+        status=400,
+    )
+
+
 def _turn_opening_inject_kind(row: dict) -> str | None:
     """The ``injectKind`` of an ``inject`` row that opened a turn of its own
     (``TURN_OPENING_INJECT_KINDS``: a cron notification, an app message, an
@@ -212,7 +221,13 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             return _crew_paused_response()
 
         msgs = slot.messages
+        # Rows as the dashboard receives them, projected only where the scan reads.
+        wire = WireRows(msgs)
         ai_idx = -1
+        # The newest reply the dashboard draws as nothing. With no drawn reply in
+        # the turn it stands in for the target until the refusals below have run,
+        # so each answers exactly as it did before this skip existed.
+        hidden_idx = -1
         for i in range(len(msgs) - 1, -1, -1):
             role = msgs[i].get("role")
             # A taken-back steer keeps its row, text cleared, inside the turn it
@@ -233,15 +248,22 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             # frontend's Regenerate scan runs the same skip.
             if is_system_notice("assistant", msgs[i].get("meta")):
                 continue
+            # A row the dashboard draws as nothing (``isHiddenReplyAt``: an
+            # invisible-only reply, or a [STEERING …] note in a policy-block turn)
+            # does not carry the Regenerate button; the row above it does. Taking
+            # it as the target would keep it as the variant and drop the reply on
+            # screen.
+            if is_hidden_reply_at(wire, i):
+                if hidden_idx < 0:
+                    hidden_idx = i
+                continue
             ai_idx = i
             break
-        if ai_idx < 0:
-            return web.json_response(
-                {"error": "no assistant message to regenerate", "code": "no_assistant_message"},
-                status=400,
-            )
+        anchor = ai_idx if ai_idx >= 0 else hidden_idx
+        if anchor < 0:
+            return _no_assistant_message()
         u_idx = -1
-        for i in range(ai_idx - 1, -1, -1):
+        for i in range(anchor - 1, -1, -1):
             if (
                 msgs[i].get("role") == "user" and not is_retracted_steer_row(msgs[i])
             ) or _turn_opening_inject_kind(msgs[i]):
@@ -282,6 +304,9 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "empty user message", "code": "empty_user_message"}, status=400
             )
+        if ai_idx < 0:
+            # The turn holds replies, but none the dashboard shows.
+            return _no_assistant_message()
 
         ai_msg = msgs[ai_idx]
         _rv = ai_msg.get("variants")

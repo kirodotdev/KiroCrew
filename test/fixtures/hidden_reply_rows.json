@@ -1,0 +1,563 @@
+{
+  "_comment": "Wire-shaped rows (as _prepare_messages sends them) and one verdict per row for isHiddenReplyAt (website/src/app-sdk/turnPolicyBlock.ts) and its backend twin kiro_crew.dashboard.hidden_reply.is_hidden_reply_at. Both sides check every row; a change to either rule needs a row here.",
+  "cases": [
+    {
+      "name": "plain visible reply",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        }
+      ],
+      "hidden": [
+        false,
+        false
+      ]
+    },
+    {
+      "name": "bare U+200B",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "assistant",
+          "content": "\u200b"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        true
+      ]
+    },
+    {
+      "name": "U+200B, spaces and U+FEFF",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "assistant",
+          "content": " \u200b \ufeff\n"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        true
+      ]
+    },
+    {
+      "name": "empty content",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "assistant",
+          "content": ""
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        true
+      ]
+    },
+    {
+      "name": "U+0085 is not JavaScript whitespace",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "assistant",
+          "content": "\u0085"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "name": "U+001C is not JavaScript whitespace",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "assistant",
+          "content": "\u001c"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "name": "invisible content with file changes",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "assistant",
+          "content": "\u200b",
+          "meta": {
+            "file_changes": [
+              {
+                "path": "notes.md"
+              }
+            ]
+          }
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "name": "invisible content with one visible variant",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "assistant",
+          "content": "\u200b",
+          "variants": [
+            {
+              "content": "\u200b"
+            },
+            {
+              "content": "An earlier answer."
+            }
+          ]
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "name": "invisible content whose variants are all invisible",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "assistant",
+          "content": "\u200b",
+          "variants": [
+            {
+              "content": "\u200b"
+            },
+            {
+              "content": ""
+            }
+          ]
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        true
+      ]
+    },
+    {
+      "name": "note-only reply after a tool-blocked inject",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "inject",
+          "content": "[Tool blocked \u2014 reason sent to the agent] The command was denied by policy."
+        },
+        {
+          "role": "assistant",
+          "content": "[STEERING steer-0a1b2c3d: Stopped retrying the blocked command.]"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false,
+        true
+      ]
+    },
+    {
+      "name": "note-only reply with no block in the turn",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "assistant",
+          "content": "[STEERING steer-0a1b2c3d: Stopped retrying the blocked command.]"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "name": "note-only reply after a block in a turn that holds a person steer",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "inject",
+          "content": "[Tool blocked \u2014 reason sent to the agent] The command was denied by policy."
+        },
+        {
+          "role": "user",
+          "content": "Only cover the EU stage.",
+          "meta": {
+            "steer": true
+          }
+        },
+        {
+          "role": "assistant",
+          "content": "[STEERING steer-0a1b2c3d: Stopped retrying the blocked command.]"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "name": "note-only reply after a block in a turn that holds a taken-back steer",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "inject",
+          "content": "[Tool blocked \u2014 reason sent to the agent] The command was denied by policy."
+        },
+        {
+          "role": "user",
+          "content": "",
+          "meta": {
+            "steer": true,
+            "steerState": "retracted"
+          }
+        },
+        {
+          "role": "assistant",
+          "content": "[STEERING steer-0a1b2c3d: Stopped retrying the blocked command.]"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "name": "note followed by prose after a block",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "inject",
+          "content": "[Tool blocked \u2014 reason sent to the agent] The command was denied by policy."
+        },
+        {
+          "role": "assistant",
+          "content": "[STEERING steer-0a1b2c3d: Stopped retrying the blocked command.]\n\nThe read-only check passed."
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "name": "non-hex steer id after a block",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "inject",
+          "content": "[Tool blocked \u2014 reason sent to the agent] The command was denied by policy."
+        },
+        {
+          "role": "assistant",
+          "content": "[STEERING steer-xyz: ok]"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false,
+        true
+      ]
+    },
+    {
+      "name": "lower-case marker after a block (the dashboard does not strip it)",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "inject",
+          "content": "[Tool blocked \u2014 reason sent to the agent] The command was denied by policy."
+        },
+        {
+          "role": "assistant",
+          "content": "[steering steer-0a1b: ok]"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "name": "marker with no colon after a block",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "inject",
+          "content": "[Tool blocked \u2014 reason sent to the agent] The command was denied by policy."
+        },
+        {
+          "role": "assistant",
+          "content": "[STEERING steer-0a1b]"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "name": "marker with an empty summary after a block",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "inject",
+          "content": "[Tool blocked \u2014 reason sent to the agent] The command was denied by policy."
+        },
+        {
+          "role": "assistant",
+          "content": "[STEERING steer-0a1b: ]"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false,
+        true
+      ]
+    },
+    {
+      "name": "note-only reply in a later inject-opened turn, block in the earlier turn",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "inject",
+          "content": "[Tool blocked \u2014 reason sent to the agent] The command was denied by policy."
+        },
+        {
+          "role": "inject",
+          "content": "Summarize what the sub-agents found.",
+          "meta": {
+            "injectKind": "synthesis"
+          }
+        },
+        {
+          "role": "assistant",
+          "content": "[STEERING steer-0a1b2c3d: Stopped retrying the blocked command.]"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false,
+        false,
+        true
+      ]
+    },
+    {
+      "name": "a non-assistant row",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan."
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "inject",
+          "content": "[Tool blocked \u2014 reason sent to the agent] The command was denied by policy."
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "name": "note-only reply after a block when the turn's user row has steer {}",
+      "rows": [
+        {
+          "role": "user",
+          "content": "Draft the rollout plan.",
+          "meta": {
+            "steer": {}
+          }
+        },
+        {
+          "role": "assistant",
+          "content": "Stage one ships to beta on Monday."
+        },
+        {
+          "role": "inject",
+          "content": "[Tool blocked \u2014 reason sent to the agent] The command was denied by policy."
+        },
+        {
+          "role": "assistant",
+          "content": "[STEERING steer-0a1b2c3d: Stopped retrying the blocked command.]"
+        }
+      ],
+      "hidden": [
+        false,
+        false,
+        false,
+        false
+      ]
+    }
+  ]
+}

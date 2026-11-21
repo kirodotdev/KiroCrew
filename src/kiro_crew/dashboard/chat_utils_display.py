@@ -204,19 +204,24 @@ def _variant_for_emit(variant: dict) -> dict:
     redaction records rebuilt through their bounded constructors, and the
     blocked-link records of that text. Runs inside the same allowed-host scope as
     the row it belongs to, so a variant shows the links its row shows."""
-    from kiro_crew.security.blocked_links import restore_legacy_blocked_links
-
     bounded = with_bounded_redaction_records(variant)
     out = {
         **{k: v for k, v in bounded.items() if k not in RETIRED_RECORD_KEYS},
-        "content": redact_display_content(
-            restore_legacy_blocked_links(bounded.get("content", ""), variant)
-        ),
+        "content": display_variant_content(bounded.get("content", ""), variant),
     }
     # The page reads a reply's stats from its row, which a switch updates; the
     # variant's copy is only there for the switch to put back.
     out.pop("turn_stats", None)
     return with_blocked_links(with_bounded_redaction_records(out), out["content"])
+
+
+def display_variant_content(content: Any, holder: object) -> str:
+    """A variant's text as the client receives it (:func:`_variant_for_emit`):
+    legacy blocked-link placeholders put back from *holder*'s records, then
+    display-redacted. Always a string."""
+    from kiro_crew.security.blocked_links import restore_legacy_blocked_links
+
+    return redact_display_content(restore_legacy_blocked_links(content, holder))
 
 
 def adopt_variant_text(row: dict, variant: dict) -> None:
@@ -1287,6 +1292,45 @@ def _prepare_messages(
         return _prepare_messages_scoped(messages, running, live_child=live_child)
 
 
+def display_row_content(m: dict) -> str | None:
+    """A stored row's ``content`` as the client receives it, or ``None`` for a row
+    with no ``content`` key, which the wire sends without one.
+
+    Gate is `!= "user"`, NOT `not in ("user", "system")`. This is the
+    display-time redaction boundary for everything the slot detail endpoint
+    returns — including the frozen-prefix lines read straight off disk — so it
+    must cover every non-user role. The load path does not redact on load, and
+    `system` content is written to disk unredacted (see _build_message_entry's
+    gate), so excluding it here would emit raw stored bytes. User-authored
+    content stays raw: the user typed it and is the only one who sees it back.
+    Content may be structured (a legacy or hand-edited row):
+    redact_display_content recurses into it rather than raising.
+    """
+    if "content" not in m:
+        return None
+    text = m["content"]
+    if m.get("role", "") != "user" and text:
+        # An older build's suspicious-URL placeholder goes back as the address its
+        # records kept, so the chip, an allowed host and the masks decide it now.
+        from kiro_crew.security.blocked_links import restore_legacy_blocked_links
+
+        return redact_display_content(restore_legacy_blocked_links(text, m.get("meta")))
+    # The wire-string invariant covers EVERY row, not just the redacted ones: a
+    # structured user row or a falsy container serializes to text (without
+    # redaction) instead of shipping a raw container the client render chokes on.
+    return serialize_wire_content(text)
+
+
+def display_meta(m: dict) -> object:
+    """The ``meta`` a stored row's wire meta is built from: the parsed JSON ``cls``
+    whenever it is a dict (an empty one included), else the stored ``meta``. The
+    branch condition of :func:`_prepare_messages_scoped`; the redaction it then
+    applies rewrites string values only, so a key's presence and a list's
+    emptiness read the same before and after it."""
+    parsed = parse_cls_meta(m.get("cls", ""))
+    return parsed if parsed is not None else m.get("meta")
+
+
 def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child: str) -> list[dict]:
     """:func:`_prepare_messages` inside its allowed-host scope."""
     out: list[dict] = []
@@ -1316,33 +1360,9 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
                     row["meta"] = shown
                 out.append(row)
             continue
-        text = m.get("content", "")
-        # Gate is `!= "user"`, NOT `not in ("user", "system")`. This is the
-        # display-time redaction boundary for everything the slot detail
-        # endpoint returns — including the frozen-prefix lines read straight
-        # off disk — so it must cover every non-user role. The load path does
-        # not redact on load, and `system` content is written to disk
-        # unredacted (see _build_message_entry's gate), so excluding it here
-        # would emit raw stored bytes.
-        # User-authored content stays raw: the user typed it and is the only
-        # one who sees it back.
-        # Content may be structured (a legacy or hand-edited row):
-        # redact_display_content recurses into it rather than raising.
-        if role != "user" and text:
-            # An older build's suspicious-URL placeholder goes back as the address its
-            # records kept, so the chip, an allowed host and the masks decide it now.
-            from kiro_crew.security.blocked_links import restore_legacy_blocked_links
-
-            text = restore_legacy_blocked_links(text, m.get("meta"))
-            m = {**m, "content": redact_display_content(text)}
-        else:
-            # The wire-string invariant covers EVERY row, not just the
-            # redacted ones: a structured user row or a falsy container
-            # serializes to text (without redaction) instead of shipping a
-            # raw container the client render chokes on.
-            wire = serialize_wire_content(text)
-            if wire is not text:
-                m = {**m, "content": wire}
+        wire_content = display_row_content(m)
+        if wire_content is not None and wire_content is not m.get("content"):
+            m = {**m, "content": wire_content}
         msg_out = without_unknown_row_fields(m)
         if msg_out.get("variants"):
             # Snapshot for the same reason as _redact_meta — this runs in a
