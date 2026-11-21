@@ -5299,6 +5299,16 @@ listed file with no weight gets the file's median, so new files spread too. The
 weights only move a listed file between shards; a stale one costs balance, never
 a test.
 
+A placement holds only if every shard of a run is given the same set of targets:
+a hash owner did not depend on the list, a placement does, and shards given
+different sets could each leave a file to another. No shard can see another's
+list, so each prints `file-shard targets: <N> file(s), sha256 <digest>; shard
+<i>/<n> owns <k>` in its terminal summary; the counts and digests of one run's
+shards must match. `--file-shard-targets-sha256=<digest>` turns that into a
+refusal: a shard whose list has another digest stops before collecting. No
+workflow passes it yet, because the reduced scope computes its list on each
+shard; passing one digest computed once per run is what closes the gap.
+
 Before the Linux and Windows full-suite test step, `scripts/ci_rewrite_prewarm.py`
 writes pytest's assertion-rewrite pyc for the shard's test files (same hash and
 pin file) and every `conftest.py` loaded during collection, in parallel and without importing them, under
