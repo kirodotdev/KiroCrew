@@ -256,7 +256,7 @@ class TestTheRefusalNamesTheRule:
             "q",
             approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
             retry_transient=False,
-            on_tool_gate=lambda t, a, b, r: seen.append((t, a, b, r)),
+            on_tool_gate=lambda t, a, b, r, _h: seen.append((t, a, b, r)),
         )
         assert len(seen) == 1
         _title, approved, blocked, reason = seen[0]

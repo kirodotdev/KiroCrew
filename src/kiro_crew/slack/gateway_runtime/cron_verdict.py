@@ -60,19 +60,22 @@ class _GateTally:
     rather than a defect in the job — and a job's failure counter drives
     auto-pause, which is durable. Such calls are counted in ``unresolved`` and
     the first few kept with their reasons in ``unresolved_calls``, so a run in
-    which none of them ran can name them.
+    which none of them ran can name them. A call blocked because a policy
+    refused to run a spec hook is one of them, and is also counted in
+    ``hook_refused`` and kept in ``hook_refused_calls``: that hook never ran,
+    so it blocks the same calls on every run however the model adapts.
 
     A refusal is reported whether or not other calls got through. The prose
     a run returns is the model's account of what it did, and a model whose
     final write was refused still reports the write as done: the refused
     call's work simply never happened, and the only record of it was the SEL
-    audit row. ``all_blocked`` decides the FAILURE budget; ``partially_blocked``
-    and ``none_approved`` decide whether the run's status and its delivery name
-    the refusal.
+    audit row. ``all_blocked`` decides the FAILURE budget; ``partially_blocked``,
+    ``none_approved`` and ``hook_refused_some`` decide whether the run's status
+    and its delivery name the refusal.
     """
 
-    # How many refused and how many unresolved calls are kept by name: the
-    # number ``refusal_summary`` names. The counts stay exact past it.
+    # How many calls of each kind (refused, unresolved, refused hook) are kept
+    # by name: the number ``refusal_summary`` names. The counts stay exact past it.
     _NAMED_CALLS = 3
     # How much of a long title ``refusal_summary`` keeps beside a long rule.
     _TITLE_FLOOR = 40
@@ -87,13 +90,23 @@ class _GateTally:
         self.unresolved = 0
         # (title, first reason line) of the first unresolved calls.
         self.unresolved_calls: list[tuple[str, str]] = []
+        # Unresolved calls blocked because a policy refused to run a spec hook.
+        self.hook_refused = 0
+        self.hook_refused_calls: list[tuple[str, str]] = []
         # An approved call whose bare tool name is ``send_message``. Titles
         # arrive as ``Running: @server/send_message`` (kiro-cli) or
         # ``mcp__server__send_message`` (ACP); ``_bare_tool_name`` strips
         # either wrapper so the comparison is on the name alone.
         self.delivered = False
 
-    def note(self, title: str, approved: bool, security_blocked: bool, reason: str = "") -> None:
+    def note(
+        self,
+        title: str,
+        approved: bool,
+        security_blocked: bool,
+        reason: str = "",
+        hook_refused: bool = False,
+    ) -> None:
         if approved:
             self.approved += 1
             if _bare_tool_name(title) == "send_message":
@@ -104,6 +117,9 @@ class _GateTally:
         else:
             self.unresolved += 1
             self._keep(self.unresolved_calls, title, reason)
+            if hook_refused:
+                self.hook_refused += 1
+                self._keep(self.hook_refused_calls, title, reason)
 
     def _keep(self, calls: list[tuple[str, str]], title: str, reason: str) -> None:
         """Keep one refused call by name, within the bounds the summary reads.
@@ -196,6 +212,15 @@ class _GateTally:
         a job that cannot work, so it spends nothing from the failure budget."""
         return bool(self.unresolved) and self.approved == 0 and not self.refused
 
+    @property
+    def hook_refused_some(self) -> bool:
+        """At least one call was blocked because a policy refused to run a spec
+        hook, another call was approved, and none was security-blocked. That
+        hook gave no verdict, so the same calls are lost on every run: the run
+        is reported, but a policy state is not evidence of a job that cannot
+        work, so it spends nothing from the failure budget."""
+        return bool(self.hook_refused) and self.approved > 0 and not self.refused
+
     def refusal_summary(self) -> str:
         """One redacted, capped line naming what the gate refused.
 
@@ -221,7 +246,12 @@ class _GateTally:
         tell which rule fired or whether it was the right one. A run in which
         no call was approved (``none_approved``) names its unresolved calls
         the same way, with "not approved" for a rejected or timed-out approval,
-        which records no reason.
+        which records no reason. A run that lost calls to a hook a policy
+        refused to run while another call ran (``hook_refused_some``) names
+        those calls alone, each with the hook and the refusal. A partially
+        blocked run that also lost such calls names them after its
+        security-gate part, under the hook head without its "of M". The two
+        parts share the line so that neither head is cut.
 
         Each named call gets an equal share of the cap. A title too long for
         its share keeps its start and its end around a cut, and gives way
@@ -238,23 +268,45 @@ class _GateTally:
             kept_rule = keep_ends(rule, width - len(" ()") - min(len(name), self._TITLE_FLOOR))
             return f"{keep_ends(name, width - len(' ()') - len(kept_rule))} ({kept_rule})"
 
-        def _summary(head: str, calls: list[tuple[str, str]], count: int) -> str:
+        def _summary(
+            head: str, calls: list[tuple[str, str]], count: int, cap: int = _CRON_FAILURE_DETAIL_CAP
+        ) -> str:
             more = f", and {count - len(calls)} more" if count > len(calls) else ""
-            room = _CRON_FAILURE_DETAIL_CAP - len(head) - len(more)
+            room = cap - len(head) - len(more)
             share = (room - len(", ") * (len(calls) - 1)) // max(len(calls), 1)
             named = ", ".join(_named(t, r, share) for t, r in calls)
-            return (head + named)[: _CRON_FAILURE_DETAIL_CAP - len(more)] + more
+            return (head + named)[: cap - len(more)] + more
 
+        hook_head = "tool call(s) blocked because policy refused to run a hook: "
         if self.none_approved:
             head = f"none of {self.unresolved} tool call(s) ran, all refused or not approved: "
             calls = [(t, r or "not approved") for t, r in self.unresolved_calls]
             return _summary(head, calls, self.unresolved)
+        if self.hook_refused_some:
+            head = f"{self.hook_refused} of {self.approved + self.unresolved} {hook_head}"
+            return _summary(head, self.hook_refused_calls, self.hook_refused)
         if self.all_blocked:
             head = f"all {self.refused} tool call(s) blocked by the security gate: "
         else:
             total = self.approved + self.unresolved + self.refused
             head = f"{self.refused} of {total} tool call(s) blocked by the security gate: "
-        return _summary(head, self.refused_calls, self.refused)
+        if not self.hook_refused:
+            return _summary(head, self.refused_calls, self.refused)
+
+        def _hooks(cap: int) -> str:
+            hooks = f"{self.hook_refused} {hook_head}"
+            return _summary(hooks, self.hook_refused_calls, self.hook_refused, cap)
+
+        # Each part keeps at least half the line when both are long; a short
+        # one leaves the rest to the other. The room leaves out the ". " between.
+        # The hook part is redrawn only when it does not fit: a smaller cap
+        # re-divides its shares and would cut a call that fitted.
+        room = _CRON_FAILURE_DETAIL_CAP - len(". ")
+        hooks = _hooks(room)
+        gate = _summary(head, self.refused_calls, self.refused, max(room // 2, room - len(hooks)))
+        if len(gate) + len(hooks) > room:
+            hooks = _hooks(room - len(gate))
+        return f"{gate}. {hooks}"
 
 
 def _annotate_partial_block(result_text: str, tally: _GateTally) -> str:
@@ -265,11 +317,13 @@ def _annotate_partial_block(result_text: str, tally: _GateTally) -> str:
     what puts the refused call in front of the user beside the prose that may
     claim the work was done. A run in which no call was approved and none was
     security-blocked (``none_approved``) is prefixed the same way, naming its
-    unresolved calls. A fully blocked run is not annotated: its verdict is a
+    unresolved calls, and so is a run that lost calls to a hook a policy refused
+    to run while another call ran (``hook_refused_some``), naming those calls.
+    A fully blocked run is not annotated: its verdict is a
     failure alert in its own right, and a tool-free or clean run has nothing
     to name.
     """
-    if not (tally.partially_blocked or tally.none_approved):
+    if not (tally.partially_blocked or tally.none_approved or tally.hook_refused_some):
         return result_text
     return f"Blocked: {tally.refusal_summary()} — that work did not happen.\n\n{result_text}"
 

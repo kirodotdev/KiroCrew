@@ -247,7 +247,10 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: trailing ``tool_match_names=None`` keyword (``None`` keeps title matching).
 #: ``safe_copy_file_nolink`` takes a keyword-only ``links_only=False`` (the browser
 #: upload's read of a cloud-files placeholder on Windows), so its callers fit too.
-_BASE_SHAPE_DIGEST = "4f800391db8fe8cf0c7db83ec28af558812e0ea03dc14f557de05ec6d7334b49"
+#: ``permission_pre_tool_block`` takes a trailing ``on_policy_refused=None`` keyword
+#: (a cron turn learns that a policy refused to run the hook that blocks), so every
+#: existing caller still fits.
+_BASE_SHAPE_DIGEST = "08222590dadabebe33f2cbba83ed26580b0258cb3147c98ab84b7e206ac07473"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in
