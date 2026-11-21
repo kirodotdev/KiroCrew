@@ -12,6 +12,7 @@ from kiro_crew.dashboard.agent_welcome import welcome_preview
 from kiro_crew.dashboard.slot_preparing import is_preparing, preparing_caption
 from kiro_crew.dashboard.slot_queue_repository import is_held_queue_entry
 from kiro_crew.dashboard.slot_row_memo import memo_redacted, memo_row_summary, summarize_rows
+from kiro_crew.dashboard.waiting_on_you import slot_payload as waiting_on_you_payload
 from kiro_crew.history_schema import transcript_sort_key
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.session_lifecycle import STOP_DECLINED_ESCALATION_SECS
@@ -622,6 +623,9 @@ class SlotProjection:
             "unread_failed": slot.mode != "member" and summary.unread_failed,
             "waiting_for_input": waiting_for_input,
             "needs_input": needs_input,
+            # What the agent pinned for the person with ``waiting_on_you``, oldest
+            # first. Read from its own store, so ``needs_input`` stays unchanged.
+            "waiting_on_you": waiting_on_you_payload(slot.key),
             "interrupted": interrupted,
             "interrupted_stale": interrupted_stale,
             "interrupted_by_sign_in": interrupted_by_sign_in,

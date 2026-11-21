@@ -39,6 +39,7 @@ vi.mock('../components/ErrorNotice', () => ({ default: () => null }))
 vi.mock('../components/KiroSignInPrompt', () => ({ default: () => null }))
 vi.mock('../components/FollowUpCard', () => ({ default: (p: Captured) => { seen.followUp = p; return null } }))
 vi.mock('../components/PendingQuestionCard', () => ({ default: () => null }))
+vi.mock('../components/waitingOnYou/LazyWaitingOnYouStack', () => ({ default: (p: Captured) => { seen.waitingOnYou = p; return null } }))
 vi.mock('../components/FlyingQuote', () => ({ default: () => null }))
 vi.mock('../components/QueueStack', () => ({ default: () => null, SubagentDeliveryProgress: () => null }))
 vi.mock('../components/MemoryModeChip', () => ({ MemoryModeChip: () => null }))
@@ -109,6 +110,15 @@ describe('ComposerDockView', () => {
     expect(inject).toHaveBeenCalledWith(picked)
     act(() => { (seen.knowledge!.onSkip as () => void)() })
     expect(clearResults).toHaveBeenCalled()
+  })
+
+  it('mounts the waiting-card stack for the active slot, with no hand-off to the composer', () => {
+    const view = render(<ComposerDockView {...dockProps()} />)
+    expect(seen.waitingOnYou!.slotKey).toBe('slot-a')
+    expect(seen.waitingOnYou).not.toHaveProperty('onReturnToComposer')
+
+    view.rerender(<ComposerDockView {...dockProps({ activeSlot: 'slot-b', currentSlot: { key: 'slot-b' } as never })} />)
+    expect(seen.waitingOnYou!.slotKey).toBe('slot-b')
   })
 
   it('skips one follow-up item on its own card', () => {

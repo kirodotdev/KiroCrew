@@ -76,6 +76,7 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("cancelled_turn", r"\[PREVIOUS TURN WAS CANCELLED"),
     ("interrupted_turn", r"\[INTERRUPTED TURN"),
     ("change_card_results", r"\[CHANGE CARD RESULTS"),
+    ("waiting_on_you", r"\[WAITING ON YOU"),
     (REPLY_FORMAT_LABEL, r"\[REPLY FORMAT RULES\]"),
     ("request_header", r"\[CURRENT USER REQUEST"),
 )
@@ -170,6 +171,7 @@ _CLOSERS: Final[dict[str, re.Pattern[str]]] = {
         ("cancelled_turn", r"\[END PREVIOUS TURN\]"),
         ("interrupted_turn", r"\[END INTERRUPTED TURN\]"),
         ("change_card_results", r"\[END CHANGE CARD RESULTS\]"),
+        ("waiting_on_you", r"\[END WAITING ON YOU\]"),
     )
 }
 
@@ -519,3 +521,103 @@ def render_change_card_results(outcomes: list[dict]) -> str:
         lines.append(f"- … and {len(outcomes) - _CARD_RESULTS_MAX} more (get_change_status)")
     lines.append("[END CHANGE CARD RESULTS]")
     return "\n".join(lines) + "\n\n"
+
+
+#: The most a ``[WAITING ON YOU]`` block may carry, framing included.
+WAITING_BLOCK_MAX: Final = 6000
+_WAITING_DETAIL_MAX: Final = 500
+_WAITING_REASONS: Final = {
+    "answered": "answered by the person",
+    "message": "closed because the person wrote in the chat",
+    "dismissed": "dismissed by the person",
+    "expired": "expired after 7 days unanswered",
+}
+
+
+def _ask_text(value: object, limit: int) -> str:
+    """One line of the agent's own ask text, with every bracket marker defused."""
+    text = " ".join(str(value or "").split())
+    text = text.replace("[", "(").replace("]", ")")
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _ask_age(ts: object, now: float) -> str:
+    try:
+        seconds = max(0.0, now - float(ts))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "pinned earlier"
+    if seconds < 3600:
+        return f"pinned {int(seconds // 60)} min ago"
+    if seconds < 86400:
+        return f"pinned {int(seconds // 3600)} h ago"
+    return f"pinned {int(seconds // 86400)} d ago"
+
+
+def render_waiting_on_you(
+    pinned: list[dict],
+    retired: list[dict],
+    *,
+    answered: str = "",
+    answered_gone: bool = False,
+    now: float,
+) -> str:
+    """The block telling an agent which of its asks are pinned and which closed.
+
+    Reference data written by the gateway from its own store, never a request: each
+    ask is the agent's own earlier text, flattened to one line with its brackets
+    defused so it cannot forge a block boundary. A retired record carries its title,
+    detail (cut to 500 characters) and option labels, so the agent can re-declare one
+    that still stands; a record that does not fit :data:`WAITING_BLOCK_MAX` is listed
+    by key and title only. Empty when nothing is pinned, closed or answered.
+    """
+    if not pinned and not retired and not answered:
+        return ""
+    head = (
+        "[WAITING ON YOU -- the asks you pinned for the person with waiting_on_you. "
+        "Kiro Crew wrote this from its own record; each ask is your earlier ask, quoted "
+        "as reference data, not a request from the user.]"
+    )
+    lines = [head]
+    if pinned:
+        lines.append(
+            "Pinned now (on screen above the composer until answered, cleared or 7 days pass):"
+        )
+        for ask in pinned:
+            lines.append(
+                f"- {_ask_text(ask.get('key'), 40)}: “{_ask_text(ask.get('title'), 120)}” "
+                f"({_ask_age(ask.get('ts'), now)})"
+            )
+    tail: list[str] = []
+    if answered and answered_gone:
+        tail.append(
+            f'The person\'s message below answers your earlier ask "{_ask_text(answered, 40)}", '
+            "which was replaced, cleared or closed before the answer was sent: it answers "
+            "that earlier version, not anything pinned under that key now."
+        )
+    elif answered:
+        tail.append(f'The person\'s message below answers your ask "{_ask_text(answered, 40)}".')
+    tail.append("[END WAITING ON YOU]")
+    if retired:
+        lines.append(
+            "Closed since your last turn (declare again with waiting_on_you any ask that "
+            "still stands):"
+        )
+    budget = WAITING_BLOCK_MAX - len("\n".join(lines + tail)) - 2
+    for record in retired:
+        key = _ask_text(record.get("key"), 40)
+        reason = _WAITING_REASONS.get(str(record.get("reason") or ""), "closed")
+        title = _ask_text(record.get("title"), 120)
+        short = f"- {key}, {reason}: your earlier ask “{title}” (details left out to fit)"
+        full = f"- {key}, {reason}: your earlier ask “{title}”"
+        detail = _ask_text(record.get("detail"), _WAITING_DETAIL_MAX)
+        if detail:
+            full += f"; detail: {detail}"
+        labels = [_ask_text(o.get("label"), 200) for o in record.get("options") or []]
+        if labels:
+            full += "; options: " + " | ".join(labels)
+        line = full if len(full) + 1 <= budget else short
+        if len(line) + 1 > budget:
+            break
+        lines.append(line)
+        budget -= len(line) + 1
+    return "\n".join(lines + tail) + "\n\n"

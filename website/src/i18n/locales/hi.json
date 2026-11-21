@@ -10475,7 +10475,8 @@
       "status_running": "काम चल रहा है",
       "status_unread": "अपठित",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "यह टैब अनपिन करो। पिन किया गया टैब बंद नहीं किया जा सकता।"
+      "unpin_tab_hint": "यह टैब अनपिन करो। पिन किया गया टैब बंद नहीं किया जा सकता।",
+      "status_action": "तुम्हारे लिए काम · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "अपने फ़ोन पर {{productName}} इस्तेमाल करें",
@@ -11829,6 +11830,35 @@
       "zoom_in": "ज़ूम इन करो",
       "zoom_out": "ज़ूम आउट करो",
       "zoom_percent": "{{percent}}%"
+    },
+    "waitingOnYou": {
+      "header": "तुम्हारे लिए काम",
+      "stack_label": "एजेंट को तुमसे जो चाहिए",
+      "pinned_ago": "{{time}} पिन किया",
+      "show_fewer": "कम दिखाएँ",
+      "show_more": "और दिखाएँ",
+      "show_less": "कम दिखाएँ",
+      "done": "हो गया",
+      "note_label": "एजेंट के लिए नोट",
+      "note_placeholder": "नोट जोड़ो (वैकल्पिक)",
+      "dismiss_aria": "यह अनुरोध हटाओ",
+      "read_only": "सिर्फ़ सेशन का मालिक इसका जवाब दे सकता है।",
+      "closed": "यह अनुरोध बंद हो गया।",
+      "closed_draft": "तुम्हारा नोट नहीं भेजा गया।",
+      "discard": "छोड़ो",
+      "answer_failed": "तुम्हारा जवाब सेशन तक नहीं पहुँचा। फिर से कोशिश करो।",
+      "answer_queued": "तुम्हारा जवाब कतार में है और एजेंट का काम पूरा होने पर भेजा जाएगा।",
+      "answer_refused": "सेशन ने जवाब नहीं लिया, इसलिए अनुरोध पिन रहेगा।",
+      "dismiss_failed": "यह अनुरोध हटाया नहीं जा सका। फिर से कोशिश करो।",
+      "status_line": "तुम्हारे लिए काम · {{title}}",
+      "history_pinned": "पिन किया गया: {{title}}",
+      "history_answered": "उत्तर दिया गया: {{title}}",
+      "history_dismissed": "खारिज किया गया: {{title}}",
+      "history_withdrawn": "वापस लिया गया: {{title}}",
+      "history_expired": "समाप्त हो गया: {{title}}",
+      "history_closed": "बंद किया गया: {{title}}",
+      "more_count_one": "+{{n}} अन्य",
+      "more_count_other": "+{{n}} अन्य"
     }
   },
   "hooks": {

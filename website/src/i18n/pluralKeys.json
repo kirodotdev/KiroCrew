@@ -585,5 +585,6 @@
   "pages.settings.slackSharedAccess.confirm_label",
   "components.globalChatSearch.more_matches",
   "pages.settings.slackPanel.slackCode.box_slack_mcp",
-  "pages.mcpManagement.share_diagram_copies"
+  "pages.mcpManagement.share_diagram_copies",
+  "components.waitingOnYou.more_count"
 ]

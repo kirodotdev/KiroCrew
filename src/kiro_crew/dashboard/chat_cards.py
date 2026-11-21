@@ -41,6 +41,8 @@ SURFACE_GUIDE = "guide"
 SURFACE_SELF = "self"
 #: A lesson the agent just saved (``learn_add``), with a link to review it.
 SURFACE_LESSON = "lesson"
+#: A waiting-on-you ask pinned, answered, dismissed, cleared or expired.
+SURFACE_WAITING = "waiting"
 
 #: The status a proposal is born with, per surface.
 _PROPOSED = {SURFACE_CHANGE: "pending", SURFACE_GUIDE: "offered"}
@@ -498,3 +500,28 @@ def record_lesson_saved(state: Any, slot_key: str, rule: Any, outcome: Any) -> N
         _append_row(slot, f"Lesson {'updated' if status == 'enriched' else 'saved'}: {text}", meta)
     except Exception:
         logger.warning("could not record a saved lesson in its conversation", exc_info=True)
+
+
+def record_waiting(state: Any, slot_key: str, status: str, verb: str, ask: dict[str, Any]) -> None:
+    """One line of history for a waiting-on-you ask: "Pinned: <title>". Never raises.
+
+    The live ask is the store's (``dashboard/waiting_on_you.py``); this row only
+    records when it came and went, so nothing is read back from it.
+    """
+    try:
+        slot = _get_slot(state, slot_key)
+        title = _clean(ask.get("title"), _TITLE_MAX)
+        item_id = str(ask.get("ask_id") or "")
+        if slot is None or not title or not item_id:
+            return
+        meta = _row_meta(
+            SURFACE_WAITING,
+            item_id,
+            slot_key,
+            key=str(ask.get("key") or ""),
+            title=title,
+            status=status,
+        )
+        _append_row(slot, f"{verb}: {title}", meta)
+    except Exception:
+        logger.warning("could not record a waiting-on-you row in its conversation", exc_info=True)

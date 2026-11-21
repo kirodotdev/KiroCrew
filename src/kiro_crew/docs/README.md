@@ -40,6 +40,7 @@ organized for someone browsing the repository.
 | [dashboard.md](dashboard.md) | The web dashboard: multi-session chat, memory management, live metrics. |
 | [issue-radar-pipeline.md](issue-radar-pipeline.md) | Which step of automated triage every issue is sitting in, how long it has been there, and what each agent session cost. |
 | [agent-questions.md](agent-questions.md) | Letting an agent pause mid-turn to ask a clickable question. |
+| [waiting-on-you.md](waiting-on-you.md) | Letting an agent pin what it needs from you above the composer until you answer it. |
 | [followup-suggestions.md](followup-suggestions.md) | Agent-proposed next steps above the composer. |
 | [feature-tips.md](feature-tips.md) | Personalized tips pointing at features you have not used. |
 | [feature-videos.md](feature-videos.md) | Short intro clips for features this install has not used yet. |

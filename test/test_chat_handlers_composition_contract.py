@@ -668,8 +668,8 @@ slot_settings | api_chat_slot_color | async function
 chat_send | _sweep_stale_permissions | function
 chat_send | _send_binds_agent | function
 chat_send | _send_harness_command | async function
-chat_send | steer_is_auto | function
-chat_send | decided_message_handling | async function
+chat_send_steer | steer_is_auto | function
+chat_send_steer | decided_message_handling | async function
 chat_send | api_chat | async function
 sse_write | write_sse_or_abort | async function
 app_admission | _app_slot_acquisition_denial | async function

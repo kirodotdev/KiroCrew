@@ -10716,7 +10716,8 @@
       "status_running": "en cours",
       "status_unread": "non lu",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "Désépingle cet onglet. Un onglet épinglé ne peut pas être fermé."
+      "unpin_tab_hint": "Désépingle cet onglet. Un onglet épinglé ne peut pas être fermé.",
+      "status_action": "action pour toi · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "Utiliser {{productName}} sur votre téléphone",
@@ -12100,6 +12101,36 @@
       "zoom_in": "Zoom avant",
       "zoom_out": "Zoom arrière",
       "zoom_percent": "{{percent}} %"
+    },
+    "waitingOnYou": {
+      "header": "Action pour toi",
+      "stack_label": "Ce dont l’agent a besoin de toi",
+      "pinned_ago": "Épinglé {{time}}",
+      "show_fewer": "Afficher moins",
+      "show_more": "Afficher plus",
+      "show_less": "Afficher moins",
+      "done": "C’est fait",
+      "note_label": "Note pour l’agent",
+      "note_placeholder": "Ajoute une note (facultatif)",
+      "dismiss_aria": "Ignorer cette demande",
+      "read_only": "Seul le propriétaire de la session peut répondre.",
+      "closed": "Cette demande a été fermée.",
+      "closed_draft": "Ta note n’a pas été envoyée.",
+      "discard": "Supprimer",
+      "answer_failed": "Ta réponse n’est pas arrivée à la session. Réessaie.",
+      "answer_queued": "Ta réponse est en attente et sera envoyée quand l’agent aura terminé.",
+      "answer_refused": "La session n’a pas accepté la réponse, la demande reste donc épinglée.",
+      "dismiss_failed": "Impossible d’ignorer cette demande. Réessaie.",
+      "status_line": "Action pour toi · {{title}}",
+      "history_pinned": "Épinglé : {{title}}",
+      "history_answered": "Répondu : {{title}}",
+      "history_dismissed": "Ignoré : {{title}}",
+      "history_withdrawn": "Retiré : {{title}}",
+      "history_expired": "Expiré : {{title}}",
+      "history_closed": "Fermé : {{title}}",
+      "more_count_one": "+{{n}} de plus",
+      "more_count_many": "+{{n}} de plus",
+      "more_count_other": "+{{n}} de plus"
     }
   },
   "hooks": {

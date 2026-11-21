@@ -53,7 +53,13 @@ const RemoteGitPanel = lazyRetry(() => import('./RemoteGitPanel'), {
   scope: 'remote-git',
   askAgent: false,
 })
-import SessionSummaryTab from './SessionSummaryTab'
+// The summary fetches and renders only after its tab is selected. Keep that
+// report out of the dashboard's first load, as the other optional tabs are.
+const SessionSummaryTab = lazyRetry(() => import('./SessionSummaryTab'), {
+  layout: 'page',
+  title: () => i18nT('components.errorBoundary.something_went_wrong'),
+  scope: 'session-summary',
+})
 import { i18nT } from '../../i18n/t'
 import { isNeverStarted, neverStartedKind, queuedWaitText } from './subagentQueuedReason'
 import GitReposPanel from '../../components/GitReposPanel'
@@ -1511,7 +1517,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
 
       {/* Session summary — the goal-level view of this session, so returning to
           it does not mean re-reading the transcript. */}
-      {effectiveTab === 'summary' && <SessionSummaryTab key={slot} slot={slot} />}
+      {effectiveTab === 'summary' && <SessionSummaryTab key={slot} slot={slot} loading={<ContentSkeleton rows={6} />} />}
 
       {/* Pinned messages — the user's own bookmarks in this transcript. Grouped
           with Summary rather than given its own dock: both are ways back into

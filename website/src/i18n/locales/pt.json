@@ -10716,7 +10716,8 @@
       "status_running": "trabalhando",
       "status_unread": "não lida",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "Desafixa esta aba. Uma aba fixada não pode ser fechada."
+      "unpin_tab_hint": "Desafixa esta aba. Uma aba fixada não pode ser fechada.",
+      "status_action": "ação para você · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "Usar o {{productName}} no seu telefone",
@@ -12100,6 +12101,36 @@
       "zoom_in": "Ampliar",
       "zoom_out": "Reduzir",
       "zoom_percent": "{{percent}}%"
+    },
+    "waitingOnYou": {
+      "header": "Ação para você",
+      "stack_label": "O que o agente precisa de você",
+      "pinned_ago": "Fixado {{time}}",
+      "show_fewer": "Mostrar menos",
+      "show_more": "Mostrar mais",
+      "show_less": "Mostrar menos",
+      "done": "Feito",
+      "note_label": "Nota para o agente",
+      "note_placeholder": "Adicione uma nota (opcional)",
+      "dismiss_aria": "Dispensar este pedido",
+      "read_only": "Só o dono da sessão pode responder.",
+      "closed": "Este pedido foi encerrado.",
+      "closed_draft": "Sua nota não foi enviada.",
+      "discard": "Descartar",
+      "answer_failed": "Sua resposta não chegou à sessão. Tente novamente.",
+      "answer_queued": "Sua resposta está na fila e será enviada quando o agente terminar.",
+      "answer_refused": "A sessão não aceitou a resposta, então o pedido continua fixado.",
+      "dismiss_failed": "Não foi possível dispensar este pedido. Tente novamente.",
+      "status_line": "Ação para você · {{title}}",
+      "history_pinned": "Fixado: {{title}}",
+      "history_answered": "Respondido: {{title}}",
+      "history_dismissed": "Dispensado: {{title}}",
+      "history_withdrawn": "Retirado: {{title}}",
+      "history_expired": "Expirado: {{title}}",
+      "history_closed": "Fechado: {{title}}",
+      "more_count_one": "+{{n}} mais",
+      "more_count_many": "+{{n}} mais",
+      "more_count_other": "+{{n}} mais"
     }
   },
   "hooks": {

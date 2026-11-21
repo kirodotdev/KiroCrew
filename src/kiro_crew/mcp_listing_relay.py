@@ -138,6 +138,7 @@ _LISTING_IMPORTS = (
     "sel.py",
     "session_directive.py",
     "session_ledger.py",
+    "session_surface.py",
     "slack/__init__.py",
     "slack/features.py",
     "spawn_label.py",
@@ -150,6 +151,7 @@ _LISTING_IMPORTS = (
     "validation_parts/field_engine.py",
     "validation_parts/input_bounds.py",
     "validation_parts/wire_envelopes.py",
+    "waiting_on_you_contract.py",
 )
 #: The package's own marker and this module, which is what the two sides agree by.
 _STAMPED_BESIDES = ("__init__.py", "mcp_listing_relay.py")

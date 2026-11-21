@@ -348,6 +348,7 @@ _BLOCK_ORDER_OMITTED = {
     "temporary_session": "dashboard chat_utils session-mode prefix",
     "interrupted_turn": "context_assembly/replay.py restore notice",
     "change_card_results": "change-card outcome block for the next turn",
+    "waiting_on_you": "the pinned waiting-on-you asks, prefixed by turn_dispatch_gates",
 }
 
 

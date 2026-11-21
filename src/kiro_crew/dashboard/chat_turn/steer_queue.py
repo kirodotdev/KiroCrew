@@ -14,6 +14,7 @@ from kiro_crew.dashboard.chat_delivery import (
     knowledge_meta,
     queued_text_for_display,
     quote_meta,
+    waiting_on_you_answer_view,
 )
 from kiro_crew.dashboard.chat_utils import (
     AUTOMATION_NOTICE_KIND,
@@ -534,6 +535,7 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
                 # person's own bubble (`queue_entry_view` tags a listed entry alike).
                 _push_meta[AUTOMATION_STEER_WIRE_KEY] = True
             _push["meta"] = _push_meta
+            _push.update(waiting_on_you_answer_view(_meta))
             from kiro_crew.dashboard import responsive_chat as _rc
 
             _rc.mark_written_on_push(slot, qid, _push)

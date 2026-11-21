@@ -10234,7 +10234,8 @@
       "status_running": "正在处理",
       "status_unread": "未读",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "取消置顶此标签页。已置顶的标签页无法关闭。"
+      "unpin_tab_hint": "取消置顶此标签页。已置顶的标签页无法关闭。",
+      "status_action": "待你操作 · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "在手机上使用 {{productName}}",
@@ -11558,6 +11559,34 @@
       "zoom_in": "放大",
       "zoom_out": "缩小",
       "zoom_percent": "{{percent}}%"
+    },
+    "waitingOnYou": {
+      "header": "待你操作",
+      "stack_label": "代理需要你处理的事项",
+      "pinned_ago": "{{time}}固定",
+      "show_fewer": "收起",
+      "show_more": "展开更多",
+      "show_less": "收起",
+      "done": "完成",
+      "note_label": "给代理的备注",
+      "note_placeholder": "添加备注（可选）",
+      "dismiss_aria": "关闭这项请求",
+      "read_only": "只有会话所有者可以回答。",
+      "closed": "这项请求已关闭。",
+      "closed_draft": "你的备注没有发送。",
+      "discard": "丢弃",
+      "answer_failed": "回答没有送达会话。再试一次。",
+      "answer_queued": "你的回答已排队，将在代理完成后发送。",
+      "answer_refused": "会话没有接受这个回答，请求仍然固定。",
+      "dismiss_failed": "无法关闭这项请求。再试一次。",
+      "status_line": "待你操作 · {{title}}",
+      "history_pinned": "已置顶：{{title}}",
+      "history_answered": "已回答：{{title}}",
+      "history_dismissed": "已忽略：{{title}}",
+      "history_withdrawn": "已撤回：{{title}}",
+      "history_expired": "已过期：{{title}}",
+      "history_closed": "已关闭：{{title}}",
+      "more_count_other": "另外 {{n}} 个"
     }
   },
   "hooks": {

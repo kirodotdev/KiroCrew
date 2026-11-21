@@ -54,12 +54,9 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
-import hmac
 import importlib as _importlib
 import json
 import logging
-import os
 import secrets
 import sys as _sys
 import time
@@ -72,7 +69,6 @@ from kiro_crew import change_card_catalog as catalog
 from kiro_crew.dashboard.change_cards_records import (
     _INTERRUPTED_MESSAGE,
     _MAC_FIELD,
-    _MAC_RE,
     _MESSAGE_MAX,
     _PRIVATE_KEYS,
     CARD_RECORD_MAX,
@@ -99,7 +95,6 @@ from kiro_crew.dashboard.change_cards_records import (
     STORE_MAC_PURPOSE,
     CardError,
     _jsonable,
-    canonical,
     derived_fields,
     rebuild_record,
     valid_card_id,
@@ -145,21 +140,18 @@ class CardStore:
     def _store_key(self) -> bytes:
         """The MAC key for the persisted records (a vault subkey). Raises on failure."""
         if self._mac_key is None:
-            if self._key_source is not None:
-                key = self._key_source()
-            else:
-                from kiro_crew.secrets import SecretVault
+            from kiro_crew.dashboard.signed_json_store import store_key
 
-                assert self._path is not None
-                key = SecretVault(self._path.parent).derive_subkey(STORE_MAC_PURPOSE)
-            if not isinstance(key, bytes) or len(key) < 16:
-                raise ValueError("change card store key unavailable")
-            self._mac_key = key
+            self._mac_key = store_key(
+                self._path, STORE_MAC_PURPOSE, self._key_source, "change card store"
+            )
         return self._mac_key
 
     @staticmethod
     def _mac(key: bytes, rec: dict[str, Any]) -> str:
-        return hmac.new(key, canonical(rec).encode("utf-8"), hashlib.sha256).hexdigest()
+        from kiro_crew.dashboard.signed_json_store import record_mac
+
+        return record_mac(key, rec)
 
     def _ensure_loaded(self) -> None:
         """Load the persisted cards once; ``503 store_unavailable`` while it cannot.
@@ -251,16 +243,13 @@ class CardStore:
         """*item* as the gateway wrote it with its derived fields rebuilt, or ``None``."""
         if not isinstance(item, dict) or not valid_card_id(item.get("id")):
             return None
+        from kiro_crew.dashboard.signed_json_store import mac_matches
+
         rec = dict(item)
         mac = rec.pop(_MAC_FIELD, None)
-        # Only a lowercase hex SHA-256 digest can be a MAC this store wrote;
-        # anything else (a non-ASCII string makes ``compare_digest`` raise) is
-        # one unverifiable record, never a reason to stop loading the rest.
-        if not isinstance(mac, str) or not _MAC_RE.fullmatch(mac):
+        if not mac_matches(key, rec, mac):
             return None
         try:
-            if not hmac.compare_digest(mac, self._mac(key, rec)):
-                return None
             return rebuild_record(rec)
         except Exception:
             logger.debug("change card record could not be verified", exc_info=True)
@@ -950,17 +939,9 @@ def _coerce_int(value: object) -> object:
 
 
 def _write_locked(path: Path, payload: str) -> None:
-    from kiro_crew.atomic_write import atomic_write
-    from kiro_crew.platform_compat import file_lock, open_create_or_existing
+    from kiro_crew.dashboard.signed_json_store import write_locked
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_name(path.name + ".lock")
-    fd = open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
-    try:
-        with file_lock(fd, exclusive=True):
-            atomic_write(path, payload, restrict_to_owner=True)
-    finally:
-        os.close(fd)
+    write_locked(path, payload)
 
 
 def card_store_for(state: Any) -> CardStore:
@@ -1043,9 +1024,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ALL_STATUSES,
         _CARD_ID_RE,
         _DERIVED_KEYS,
+        _MAC_RE,
         _PRE_APPLY_STATUSES,
         _param_text_refusal,
         _same,
+        canonical,
         check_param_text,
         clean_reason,
     )

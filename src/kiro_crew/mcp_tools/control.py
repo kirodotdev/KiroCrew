@@ -52,6 +52,7 @@ from kiro_crew.mcp_tools.control_parts.monitor import (
     monitor_update,
     monitor_watch,
 )
+from kiro_crew.mcp_tools.control_parts.waiting import waiting_on_you, waiting_on_you_clear
 from kiro_crew.security import (
     redact_and_truncate,
     redact_credentials,
@@ -638,6 +639,8 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], "str | DeferredTool"]] = {
     "register_hook": register_hook,
     "autonudge_stop": autonudge_stop,
     "ask_question": ask_question,
+    "waiting_on_you": waiting_on_you,
+    "waiting_on_you_clear": waiting_on_you_clear,
     "nothing_to_do": nothing_to_do,
     "monitor_start": monitor_start,
     "monitor_watch": monitor_watch,
@@ -661,11 +664,13 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], "str | DeferredTool"]] = {
 #   ``control_parts.schemas`` -- every control descriptor and the two config reads that shape one.
 #   ``control_parts.directive`` -- the directive emitter and the tools whose effect is one directive.
 #   ``control_parts.mcp_wait`` -- waiting for one of the session's MCP servers to finish starting.
+#   ``control_parts.waiting`` -- pinning and clearing a waiting-on-you ask.
 #   ``control_parts.monitor`` -- the monitoring-loop tools: arm, inspect, update and stop a loop.
 _OWNERS = (
     "kiro_crew.mcp_tools.control_parts.schemas",
     "kiro_crew.mcp_tools.control_parts.directive",
     "kiro_crew.mcp_tools.control_parts.mcp_wait",
+    "kiro_crew.mcp_tools.control_parts.waiting",
     "kiro_crew.mcp_tools.control_parts.monitor",
 )
 for _owner in _OWNERS:
@@ -712,6 +717,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ending_clause,
         _prefers_structured_arming,
         schemas,
+    )
+    from kiro_crew.mcp_tools.control_parts.waiting import (  # noqa: F401
+        _STAYS,
+        WAITING_NOT_DASHBOARD,
+        _caller,
+        _pinned_line,
+        _refused,
     )
 if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still served here
     from kiro_crew import autonudge, session_directive  # noqa: F401
@@ -760,4 +772,11 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
         SET_PROJECT_SCHEMA,
         SUGGEST_FOLLOWUP_SCHEMA,
         validate_judge_spec,
+    )
+    from kiro_crew.waiting_on_you_contract import (  # noqa: F401
+        CODE_TOO_MANY_ASKS,
+        WAITING_ON_YOU_CLEAR_SCHEMA,
+        WAITING_ON_YOU_SCHEMA,
+        AskError,
+        validate_declaration,
     )

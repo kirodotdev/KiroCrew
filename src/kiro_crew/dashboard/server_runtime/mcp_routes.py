@@ -787,6 +787,11 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/agent-ask/open", api_agent_ask_open)
     app.router.add_post("/api/agent-ask/{ask_id}/wait", api_agent_ask_wait)
     app.router.add_post("/api/agent-ask/{ask_id}/withdraw", api_agent_ask_withdraw)
+    # Waiting-on-you asks: the agent's set / clear (strict internal, attested
+    # session) and the owner's dismiss, plus the store's expiry sweep.
+    from kiro_crew.dashboard.handlers import waiting_on_you as waiting_on_you_routes
+
+    waiting_on_you_routes.register_routes(app)
 
     # Artifacts — persistent, versioned LLM-generated UI
     app.router.add_get("/api/artifacts", api_artifacts_list)

@@ -39,6 +39,8 @@ import type { ChatSlot } from '../../types'
 import { crewApprovalDecidableHere } from '../../lib/crewMode'
 import { offeredReplyOptions } from '../chat/command-center/model'
 import { parseOptions } from '../../app-sdk/protocol'
+import WaitingOnYouStack from '../../components/waitingOnYou/LazyWaitingOnYouStack'
+import { pinnedAsks } from '../../lib/waitingOnYou'
 import { approvalKey, collectAsks, lastAssistantText, pickRecap, slotNeedsMe, type CardQuestion, type NeedsMeAsk } from './needsMeCard'
 
 /** The pointer must rest this long on a row before the card opens. */
@@ -230,9 +232,10 @@ function NeedsMeCard({ identity, drafts, inFlight, row, focusReply, cardRef, dra
   const reply = useMemo(() => options.length ? { text: parseOptions(lastAssistantText(detail.data?.messages ?? [])).text, options } : undefined, [options, detail.data])
   // The one crew rule: a Crew Mode worker's approval is decided on its conductor's card only.
   const decidable = crewApprovalDecidableHere(slot, 'sidebar_hover_card')
+  const waiting = pinnedAsks(slot)
   const asks = useMemo(
-    () => collectAsks(detail.data?.messages ?? [], questions, { settled, reply }),
-    [detail.data, questions, settled, reply],
+    () => collectAsks(detail.data?.messages ?? [], questions, { settled, reply, waiting }),
+    [detail.data, questions, settled, reply, waiting],
   )
   const recap = pickRecap(summary.data, reply ? undefined : slot?.last_message)
   const openApproval = decidable && asks.some(a => a.kind === 'approval' && !outcomes[approvalKey(a.requestId, a.requestMid)] && !a.resolved)
@@ -330,7 +333,9 @@ function NeedsMeCard({ identity, drafts, inFlight, row, focusReply, cardRef, dra
         {/* No hand-off: the card's quick-reply draft sits below this notice. */}
         {detail.isError && <ErrorNotice variant="inline" message={t('pages.chatSidebar.needsMeCard.asks_failed')} className="mb-1.5" />}
         <ul className="list-none m-0 p-0 flex flex-col gap-1.5 overflow-y-auto min-h-0" data-testid="needs-me-asks">
-          {asks.map((a, i) => (
+          {asks.map((a, i) => a.kind === 'waiting' ? (
+            <li key="waiting" data-testid="needs-me-ask" data-kind="waiting"><WaitingOnYouStack slotKey={slotKey} asks={a.asks} agent={slot.agent} layout="list" /></li>
+          ) : (
             <AskRow key={a.kind === 'approval' ? approvalKey(a.requestId, a.requestMid) : `${a.kind}-${i}`} ask={a}
               outcome={a.kind === 'approval' ? outcomes[approvalKey(a.requestId, a.requestMid)] : undefined}
               decidable={decidable} onDecide={decide} />
@@ -352,7 +357,7 @@ function AskMarkdown({ text, className = '' }: { text: string; className?: strin
 
 const PILL_CLS = 'inline-flex items-center gap-1 shrink-0 rounded-full px-1.5 text-[10px] leading-[14px] font-semibold'
 
-function KindPill({ kind, muted = false }: { kind: NeedsMeAsk['kind']; muted?: boolean }) {
+function KindPill({ kind, muted = false }: { kind: Exclude<NeedsMeAsk['kind'], 'waiting'>; muted?: boolean }) {
   const { t } = useTranslation()
   if (kind === 'approval') return <span className={`${PILL_CLS} ${muted ? 'text-muted bg-bg' : 'text-warn-text bg-warn-subtle'}`}><ShieldCheck size={10} aria-hidden />{t('pages.chatSidebar.needsMeCard.kind_approval')}</span>
   if (kind === 'question') return <span className={`${PILL_CLS} text-info-text bg-info-subtle`}><MessageCircleQuestionMark size={10} aria-hidden />{t('pages.chatSidebar.needsMeCard.kind_question')}</span>
@@ -361,7 +366,7 @@ function KindPill({ kind, muted = false }: { kind: NeedsMeAsk['kind']; muted?: b
 }
 
 function AskRow({ ask, outcome, decidable, onDecide }: {
-  ask: NeedsMeAsk
+  ask: Exclude<NeedsMeAsk, { kind: 'waiting' }>
   decidable: boolean
   outcome: Outcome | undefined
   onDecide: (a: Extract<NeedsMeAsk, { kind: 'approval' }>, approve: boolean) => void

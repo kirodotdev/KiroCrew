@@ -10475,7 +10475,8 @@
       "status_running": "arbeitet",
       "status_unread": "ungelesen",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "Löst diesen Tab. Ein angepinnter Tab kann nicht geschlossen werden."
+      "unpin_tab_hint": "Löst diesen Tab. Ein angepinnter Tab kann nicht geschlossen werden.",
+      "status_action": "Aktion für dich · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "{{productName}} auf dem Telefon nutzen",
@@ -11829,6 +11830,35 @@
       "zoom_in": "Vergrößern",
       "zoom_out": "Verkleinern",
       "zoom_percent": "{{percent}} %"
+    },
+    "waitingOnYou": {
+      "header": "Aktion für dich",
+      "stack_label": "Was der Agent von dir braucht",
+      "pinned_ago": "Angepinnt {{time}}",
+      "show_fewer": "Weniger anzeigen",
+      "show_more": "Mehr anzeigen",
+      "show_less": "Weniger anzeigen",
+      "done": "Erledigt",
+      "note_label": "Notiz für den Agenten",
+      "note_placeholder": "Notiz hinzufügen (optional)",
+      "dismiss_aria": "Diese Anfrage schließen",
+      "read_only": "Nur der Besitzer der Sitzung kann antworten.",
+      "closed": "Diese Anfrage wurde geschlossen.",
+      "closed_draft": "Deine Notiz wurde nicht gesendet.",
+      "discard": "Verwerfen",
+      "answer_failed": "Deine Antwort ist nicht bei der Sitzung angekommen. Versuche es erneut.",
+      "answer_queued": "Deine Antwort ist in der Warteschlange und wird gesendet, sobald der Agent fertig ist.",
+      "answer_refused": "Die Sitzung hat die Antwort nicht angenommen, deshalb bleibt die Anfrage angepinnt.",
+      "dismiss_failed": "Diese Anfrage konnte nicht geschlossen werden. Versuche es erneut.",
+      "status_line": "Aktion für dich · {{title}}",
+      "history_pinned": "Angeheftet: {{title}}",
+      "history_answered": "Beantwortet: {{title}}",
+      "history_dismissed": "Verworfen: {{title}}",
+      "history_withdrawn": "Zurückgezogen: {{title}}",
+      "history_expired": "Abgelaufen: {{title}}",
+      "history_closed": "Geschlossen: {{title}}",
+      "more_count_one": "+{{n}} mehr",
+      "more_count_other": "+{{n}} mehr"
     }
   },
   "hooks": {

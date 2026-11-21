@@ -10957,7 +10957,8 @@
       "status_running": "работает",
       "status_unread": "не прочитано",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "Открепляет эту вкладку. Закреплённую вкладку нельзя закрыть."
+      "unpin_tab_hint": "Открепляет эту вкладку. Закреплённую вкладку нельзя закрыть.",
+      "status_action": "действие для тебя · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "{{productName}} на вашем телефоне",
@@ -12371,6 +12372,37 @@
       "zoom_in": "Увеличить",
       "zoom_out": "Уменьшить",
       "zoom_percent": "{{percent}}%"
+    },
+    "waitingOnYou": {
+      "header": "Действие для тебя",
+      "stack_label": "Что агенту нужно от тебя",
+      "pinned_ago": "Закреплено {{time}}",
+      "show_fewer": "Свернуть",
+      "show_more": "Показать больше",
+      "show_less": "Свернуть",
+      "done": "Готово",
+      "note_label": "Заметка для агента",
+      "note_placeholder": "Добавь заметку (необязательно)",
+      "dismiss_aria": "Скрыть этот запрос",
+      "read_only": "Ответить может только владелец сессии.",
+      "closed": "Этот запрос закрыт.",
+      "closed_draft": "Твоя заметка не отправлена.",
+      "discard": "Отбросить",
+      "answer_failed": "Ответ не дошёл до сессии. Попробуй ещё раз.",
+      "answer_queued": "Ответ в очереди и будет отправлен, когда агент закончит работу.",
+      "answer_refused": "Сессия не приняла ответ, поэтому запрос остаётся закреплённым.",
+      "dismiss_failed": "Не удалось скрыть этот запрос. Попробуй ещё раз.",
+      "status_line": "Действие для тебя · {{title}}",
+      "history_pinned": "Закреплено: {{title}}",
+      "history_answered": "Отвечено: {{title}}",
+      "history_dismissed": "Отклонено: {{title}}",
+      "history_withdrawn": "Отозвано: {{title}}",
+      "history_expired": "Истекло: {{title}}",
+      "history_closed": "Закрыто: {{title}}",
+      "more_count_one": "ещё {{n}}",
+      "more_count_few": "ещё {{n}}",
+      "more_count_many": "ещё {{n}}",
+      "more_count_other": "ещё {{n}}"
     }
   },
   "hooks": {

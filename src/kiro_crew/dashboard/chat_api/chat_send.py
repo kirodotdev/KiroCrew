@@ -1,6 +1,4 @@
-"""The send path: ``POST /api/chat`` and the steer-or-queue decision a busy slot's
-human send asks for.
-"""
+"""The send path: ``POST /api/chat``."""
 
 from __future__ import annotations
 
@@ -20,7 +18,6 @@ if TYPE_CHECKING:
         CHAT_BANNER_META_KEY,
         HUMAN_TURN_META_KEY,
         RESERVED_ROW_META_KEYS,
-        STEER_AUTO,
         STEER_REQUEUED,
         STEER_STEERED,
         TURN_ACTOR_META_KEY,
@@ -56,6 +53,7 @@ if TYPE_CHECKING:
         crew_steer_discarded,
         cron_creator_admission,
         cron_slot_creator,
+        decided_message_handling,
         deny_app_session_control,
         drained_to_thread,
         effective_session_key,
@@ -93,6 +91,7 @@ if TYPE_CHECKING:
         spawn_guarded_turn,
         start_queue_persist,
         steer_into_running_turn,
+        steer_is_auto,
         string_field_error,
         subagents_hold_user_messages,
         teardown_hold_active,
@@ -160,69 +159,6 @@ async def _send_harness_command(message: str, state: DashboardState, slot: _Chat
     key = effective_session_key(slot)
     forwarded = await _forwards_harness_command(state, key, first_word, cc_provider=cc_provider)
     return first_word if forwarded else ""
-
-
-def steer_is_auto(value: object) -> bool:
-    """Whether a send's ``steer`` flag asks Jev to choose the path.
-
-    Only the exact string, case- and space-insensitively. A boolean ``True`` is a
-    MANUAL steer and must never read as auto: that flag is what every existing
-    client sends, and reading it as a request to decide would put an oracle on a
-    path the sender already answered.
-    """
-    return isinstance(value, str) and value.strip().lower() == STEER_AUTO
-
-
-async def decided_message_handling(slot: Any, message: str) -> tuple[bool, dict | None]:
-    """Ask ``message.steer`` whether *message* queues instead of steering.
-
-    Returns ``(queues, record)``: whether to take the QUEUE path, and the decision
-    row to stamp on the persisted user row (``None`` when nothing was decided, or
-    when the row itself was refused).
-
-    A BOOLEAN rather than the point's choice string, so the caller holds no copy of
-    that vocabulary and cannot drift from it: every refusal -- the seam off, the
-    session unsampled, a timeout, an answer outside the two options, a failed
-    import -- is ``False``, which is the steer path a manual Steer and the
-    composer's default have always taken.
-
-    Called for a send the dashboard's own human made while a turn is running, and
-    nowhere else (the busy branch's ``_person_send`` conjunct): an app token, an
-    integration or a cron has nobody watching the reply, and every such send
-    already falls through to the fail-closed queue; an agent-origin send takes the
-    manual steer path as a non-person steer. Consent and sampling are the
-    seam's own gates, re-checked inside ``decide``.
-
-    Never raises except cancellation. The seam may cost an observation and must
-    never cost a send.
-    """
-    try:
-        # Imported HERE, not at module scope: this module is on the gateway's boot
-        # path and the decisions package is optional, off by default, and pulls the
-        # config loader in behind it.
-        from kiro_crew.decisions.points import message_steer
-
-        session_key = effective_session_key(slot)
-        decided = await message_steer.steer_or_queue(
-            message,
-            session_key=session_key,
-            # The live list, sliced and read off the loop by the point; nothing is
-            # written back.
-            rows=getattr(slot, "messages", ()) or (),
-        )
-        if decided is None:
-            return False, None
-        # The row is written BEFORE the path is taken, and the receipt is stamped
-        # only when it landed: the strip's thumbs POST this turn id, so a receipt
-        # from a row `append` refused would invite a verdict about a decision the
-        # log does not hold. Off the loop -- the append locks a file.
-        record = await asyncio.to_thread(message_steer.record_outcome, session_key, decided)
-        return decided.get("choice") == message_steer.CHOICE_QUEUE, record
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.debug("message.steer: taking the shipped default", exc_info=True)
-        return False, None
 
 
 def _send_id_of(user_meta: dict | None) -> str:
@@ -329,7 +265,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     background (``record_crew_steer_later``), and a failed one reaches the composer
     over the socket, so it never shows a recorded steer that was only delivered.
     """
-    resp = await _api_chat_send(request)
+    from kiro_crew.dashboard.waiting_on_you_events import RESERVATION_REQUEST_KEY, release_answer
+
+    try:
+        resp = await _api_chat_send(request)
+    finally:
+        release_answer(request.get(RESERVATION_REQUEST_KEY))
     pending = request.get(_CREW_PERSON_STEER)
     # Only an accepted send is a steer; its receipt is always a plain 200.
     if not pending or resp.status != 200:
@@ -386,6 +327,10 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     """The send itself; :func:`api_chat` adds the Crew Mode worker steer record."""
     # Imported here: this module's bodies run in the chat_handlers namespace.
     from kiro_crew.dashboard import card_send, channel_prompt, redaction_audience
+    from kiro_crew.dashboard.waiting_on_you_events import admit_answer as _wy_admit
+    from kiro_crew.dashboard.waiting_on_you_events import answer_claim as _wy_claim
+    from kiro_crew.dashboard.waiting_on_you_events import queued_send_meta as _wy_queued
+    from kiro_crew.dashboard.waiting_on_you_events import stale_answer_reason as _wy_stale
 
     _timing_t0 = turn_timing.now()
     state: DashboardState = request.app["state"]
@@ -501,9 +446,21 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # (on its ``_run_chat`` call or its queue entry) -- the one mark a crew-scoped
     # session read accepts. Decided once, here, so the three delivery paths below cannot
     # disagree about it.
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import (
+        is_host_owner_dashboard_request,
+        is_owner_dashboard_request,
+    )
 
     _owner_sent = _person_send and is_owner_dashboard_request(request)
+    # Only the machine owner can answer a card, the person whose own row retires its
+    # ask: a teammate's claim is dropped here, before it changes how the send is
+    # delivered, or it would hold the ask as answered while retiring nothing.
+    if (
+        user_meta
+        and _wy_claim(user_meta)
+        and not (_person_send and is_host_owner_dashboard_request(request))
+    ):
+        user_meta = {k: v for k, v in user_meta.items() if not _wy_claim({k: v})} or None
     if _requested_key and (_guide_tab or _ui_lang) and _owner_sent:
         from kiro_crew.dashboard.guide_observe import note_chat_sender
 
@@ -718,6 +675,12 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # like any send: it never steers a running turn.
     if body.get("send_now") is True:
         steer = None
+    # A waiting-on-you answer queues behind a running turn: the turn its row opens is
+    # the one told which ask it answers.
+    if _wy_claim(user_meta):
+        steer = None
+        if (_wy_refused := await _wy_admit(request, state, slot, user_meta)) is not None:
+            return _wy_refused
     if not may_configure:
         # The dedicated agent route refuses an app on a slot it does not own, and
         # persona consent is the user's own grant from the consent modal. Refused
@@ -1055,8 +1018,14 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     _crew_paused = crew_pause.holds_slot(slot)
     _responsive_eligible = False
     # The responsive path records its send as the person's own
-    # (`directive_user_origin=True`), so only a person's send may take it.
-    if _person_send and not _crew_paused and (body.get("responsive") is True or steer):
+    # (`directive_user_origin=True`), so only a person's send may take it. A card
+    # answer never does: that path carries no claim, so its ask would stay unmarked.
+    if (
+        _person_send
+        and not _crew_paused
+        and not _wy_claim(user_meta)
+        and (body.get("responsive") is True or steer)
+    ):
         _responsive_eligible = responsive_chat.eligible(
             request,
             slot,
@@ -1270,6 +1239,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _closed := await _sc_entry.refuse_if_slot_closed(state, slot, _queued_admission)
         ) is not None:
             return _closed
+        # Checked again here, with no await before the append: another window's answer
+        # to the same ask may have been queued while this send was being admitted.
+        if _stale := _wy_stale(state, slot, user_meta):
+            await _sc_entry.cancel_admitted(_queued_admission)
+            return web.json_response({"error": _stale, "code": "waiting_on_you_stale"}, status=409)
         qid = queue_for_next_turn(
             state,
             slot,
@@ -1292,6 +1266,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             quote=quote_meta(user_meta).get("quote"),
             banner=banner,
             knowledge=knowledge_meta(user_meta),
+            waiting_on_you=_wy_claim(user_meta),
             # The receipt travels whichever way the send went, including the one
             # case where the two disagree: `auto` answered steer and the steer was
             # UNAVAILABLE, so this path runs with a record saying steer. That is the
@@ -1394,6 +1369,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         _hold_meta.update(quote_meta(user_meta))
         _hold_knowledge = knowledge_meta(user_meta)
         _hold_meta.update(_hold_knowledge)
+        _hold_meta.update(_wy_queued(state, slot.key, user_meta, owner_sent=_owner_sent))
         if banner:
             _hold_meta[CHAT_BANNER_META_KEY] = banner
         if request_app or cron_creator or _agent_origin:
@@ -1424,6 +1400,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             from kiro_crew.dashboard.chat_utils import COMPOSER_SEND_META
 
             _hold_meta[COMPOSER_SEND_META] = True
+        if _stale := _wy_stale(state, slot, user_meta):
+            await _sc_entry.cancel_admitted(_held_admission)
+            return web.json_response({"error": _stale, "code": "waiting_on_you_stale"}, status=409)
         qid = slot.queue_append(
             message,
             meta=_hold_meta,
@@ -1463,6 +1442,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _hold_push.setdefault("meta", {})["durable"] = False
         if _hold_knowledge:
             _hold_push.setdefault("meta", {}).update(_hold_knowledge)
+        from kiro_crew.dashboard.chat_delivery import waiting_on_you_answer_view
+
+        _hold_push.update(waiting_on_you_answer_view(_hold_meta))
         from kiro_crew.dashboard import responsive_chat as _rc
 
         _rc.mark_written_on_push(slot, qid, _hold_push)
@@ -1653,13 +1635,19 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                 {"error": "This crew is paused. Resume it from the Board.", "code": "crew_paused"},
                 status=409,
             )
+        # A card answer's ask may have been dismissed, cleared or replaced during the
+        # admission awaits; checked again with no await before the row is appended.
+        if _stale := _wy_stale(state, slot, user_meta):
+            slot._has_reader = False
+            await turn_admission.abandon()
+            return web.json_response({"error": _stale, "code": "waiting_on_you_stale"}, status=409)
 
         # A dashboard's busy snapshot can suppress its optimistic user bubble even
         # when this send starts a turn. Echo correlated sends BEFORE starting the
         # reply so every pane sees the user row in order, independently of when the
         # HTTP receipt arrives. sendId/mid reconcile an existing optimistic bubble;
         # callers without a correlation id keep their existing delivery contract.
-        _user_row_meta = _redact_meta(user_meta) if user_meta else {}
+        _user_row_meta = {**(_redact_meta(user_meta) if user_meta else {}), **_wy_claim(user_meta)}
         if (
             user_meta
             and _person_send

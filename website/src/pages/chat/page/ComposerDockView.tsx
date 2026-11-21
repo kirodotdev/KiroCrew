@@ -64,6 +64,8 @@ import KiroSignInPrompt from '../../../components/KiroSignInPrompt'
 import { pinIsWithheld } from '../../../lib/model'
 import FollowUpCard, { type FollowupStartMode } from '../../../components/FollowUpCard'
 import PendingQuestionCard from '../../../components/PendingQuestionCard'
+import WaitingOnYouStack from '../../../components/waitingOnYou/LazyWaitingOnYouStack'
+import { pinnedAsks } from '../../../lib/waitingOnYou'
 import FlyingQuote from '../../../components/FlyingQuote'
 import QueueStack, { SubagentDeliveryProgress } from '../../../components/QueueStack'
 import McpLoadingBar from '../McpLoadingBar'
@@ -562,6 +564,13 @@ export default function ComposerDockView({
                     onFallbackSend={keepQuestionAnswer}
                     onDirectSend={answerQuestionCard}
                   />
+                </div>
+              )}
+              {/* Below the question card, which takes keyboard focus first. Keyed by
+                  slot so one session's unsent notices never show in another's. */}
+              {activeSlot && (
+                <div className="px-4 pb-2 mx-auto w-full empty:hidden" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+                  <WaitingOnYouStack key={activeSlot} slotKey={activeSlot} asks={pinnedAsks(currentSlot)} agent={agentOrDefaultLabel(currentSlot?.agent, defaultAgent, currentSlot?.agent_kind)} />
                 </div>
               )}
               {pendingFollowup && activeSlot && (

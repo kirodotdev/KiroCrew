@@ -4240,7 +4240,8 @@
       "status_running": "working",
       "status_unread": "unread",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "Unpin this tab. A pinned tab cannot be closed."
+      "unpin_tab_hint": "Unpin this tab. A pinned tab cannot be closed.",
+      "status_action": "action for you · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "Use {{productName}} on your phone",

@@ -132,8 +132,13 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
             },
             status=409,
         )
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import (
+        is_host_owner_dashboard_request,
+        is_owner_dashboard_request,
+    )
+    from kiro_crew.dashboard.waiting_on_you_events import stamp_edited_entry
 
+    words_before_edit = queued.get("content") if queued is not None else None
     if not slot.queue_edit_by_id(
         queue_id,
         content,
@@ -146,6 +151,10 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
     # renumbered when the edit dropped one), so the row and the broadcast echo
     # the ENTRY, not the request body.
     entry = next((i for i in slot._queue if i["id"] == queue_id), None)
+    if entry is not None and entry.get("content") != words_before_edit:
+        # Only the machine owner answers a card: a teammate who passed the owner
+        # gate is still not the person the asks wait on.
+        stamp_edited_entry(state, name, entry, owner_edit=is_host_owner_dashboard_request(request))
     stored = entry.get("content") if entry is not None else None
     if isinstance(stored, str):
         content = stored
@@ -164,6 +173,9 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
     _edit_attachments = attachment_meta(entry.get("meta")) if entry is not None else {}
     if _edit_attachments:
         frame["meta"] = _edit_attachments
+    from kiro_crew.dashboard.chat_delivery import waiting_on_you_answer_view
+
+    frame.update(waiting_on_you_answer_view(entry.get("meta") if entry is not None else None))
     edit_rev = entry.get("edit_rev") if entry is not None else None
     if isinstance(edit_rev, int):
         frame["editRev"] = edit_rev
