@@ -389,23 +389,6 @@ _isolation_dirs.seq = 0  # type: ignore[attr-defined]
 _HOME_PIN_ARMED = pytest.StashKey[bool]()
 
 
-def _expect_absent(monkeypatch, name: str) -> None:
-    """Remove *name* for the test, and at undo whatever the test left in it.
-
-    Through the floor's own patcher when that is what was handed in. A plain
-    ``MonkeyPatch``, which the floor's tests drive this with, has no such record to
-    leave, so it gets the two writes that produce one.
-    """
-    expect_absent = getattr(monkeypatch, "expect_absent", None)
-    if expect_absent is not None:
-        expect_absent(name)
-    elif name in os.environ:
-        monkeypatch.delenv(name)
-    else:
-        monkeypatch.setenv(name, "")  # the undo for this entry is "was absent"
-        monkeypatch.delenv(name)
-
-
 class _EnvUndo:
     """What ``MonkeyPatch.undo`` restores an environment variable through, without
     writing when the variable already is what the undo wants.
@@ -627,7 +610,7 @@ def _isolate_kirocrew_home(request, _isolation_dirs, _floor_monkeypatch):
         "KIROCREW_STRICT_ON_LOOP_PERSIST",
         "KIROCREW_SCRATCH_ROOT",
     ):
-        _expect_absent(monkeypatch, _name)
+        monkeypatch.expect_absent(_name)
     _reset_path_resolver_degradation(monkeypatch)
     paths = sys.modules.get("kiro_crew.config.paths")
     if paths is not None:
