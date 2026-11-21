@@ -260,8 +260,10 @@ def assess(
     cards = pending_approval_holders(orchestrator)
     queued = work_holders.total(waiting)
     approvals = work_holders.total(cards)
-    # Named only when something is counted: the counts above decide, the
-    # names describe them.
+    # Named only when something is counted, by a second read of the census in
+    # this same synchronous step: an orchestrator may answer the counts itself
+    # (a stub, an edition's own), so the counts above decide and the names
+    # describe them.
     busy = turns + background + queued + approvals > 0
     holders = (
         work_holders.summarize([*_work_holders(orchestrator), *waiting, *cards]) if busy else ()

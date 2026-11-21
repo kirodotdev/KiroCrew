@@ -765,9 +765,14 @@ take the hold in `cli.main` after argument parsing.
   or an approval probe that raises, the typed-reply prompts included) counts as
   one waiting item, so the answer fails toward busy.
 - **The census names what it counts, for the host only.** `_in_flight_work_census`
-  is the one walk: it returns a `work_holders.Holder` (`kind`, `name`,
-  `since_secs`, `count`) for every item, and `_in_flight_work_counts` is the sum
-  over those holders, so a number and the names behind it cannot disagree.
+  is the one definition of what is counted: it returns a `work_holders.Holder`
+  (`kind`, `name`, `since_secs`, `count`) for every item, and
+  `_in_flight_work_counts` is the sum over the holders of one walk.
+  `quiescence.assess` reads it twice in one synchronous step, the counts first
+  (an orchestrator may answer those itself) and the names second, with no await
+  between, so on the event loop both reads see the same state; work another
+  thread starts or ends between the two reads can appear in one and not the
+  other, which changes a name and never the decision.
   `quiescence.assess` adds the queue and approval holders
   (`queued_message_holders`, `pending_approval_holders`) and, only when
   something is counted, puts the merged list on `Quiescence.holders`: one entry

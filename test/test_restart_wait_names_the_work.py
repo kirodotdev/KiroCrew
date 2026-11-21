@@ -498,9 +498,14 @@ def test_the_cli_masks_a_credential_a_gateway_did_not(at_a_terminal):
 def test_a_credential_longer_than_the_name_cap_is_not_shown_in_part():
     token = synthetic_credentials.github_classic()
 
-    name = quiescence.Holder("script", "x" * 50 + " TOKEN=" + token).name
+    # Most of the token sits before the cut, so a cut made first would show it.
+    raw = "x" * 30 + " " + token
+    assert len(raw) > quiescence.work_holders.NAME_MAX_CHARS
+    assert token[:24] in raw[: quiescence.work_holders.NAME_MAX_CHARS - 3]
 
-    assert token[:8] not in name
+    name = quiescence.Holder("script", raw).name
+
+    assert name == "x" * 30 + " [REDACTED: credential]"
 
 
 def test_a_captured_cli_run_prints_the_counts_alone(monkeypatch):

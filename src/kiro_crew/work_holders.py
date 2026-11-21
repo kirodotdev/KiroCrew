@@ -2,8 +2,10 @@
 
 The in-flight census (``GatewayOrchestrator._in_flight_work_census``) and the
 queue and approval probes of :mod:`kiro_crew.quiescence` describe every item
-they count as a :class:`Holder`; the counts a restart is judged on are sums over
-those same holders, so a number and the names behind it cannot disagree.
+they count as a :class:`Holder`, and each count is the sum over the holders of
+one walk. ``quiescence.assess`` reads the census twice in one synchronous step,
+once for the counts that decide and once for the names, which describe them and
+decide nothing.
 
 A holder's ``name`` is one of two identifiers its one reader is already listed:
 a dashboard slot key (``GET /api/chat/slots``) or a cron job name

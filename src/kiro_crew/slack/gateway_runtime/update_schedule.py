@@ -60,7 +60,7 @@ _UPDATE_STOP_GRACE_SECS = 3.0
 def _in_flight_work_census(self: GatewayOrchestrator) -> list[work_holders.Holder]:
     """Everything a restart would interrupt, one holder per counted item.
 
-    The single walk behind ``_in_flight_work_counts``: a holder says what kind
+    The one definition ``_in_flight_work_counts`` sums: a holder says what kind
     of work it is and, where the gateway keys it, which one and since when.
     Unknown provider state is classified as background so a mandatory
     cooperative turn drain never cancels work whose ownership is unclear.
