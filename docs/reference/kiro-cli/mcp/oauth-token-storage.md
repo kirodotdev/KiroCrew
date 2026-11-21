@@ -220,8 +220,10 @@ sign-in. Two shipped paths store grants elsewhere:
   not written. With `agent.kas_persist_mcp_sign_in` on (the default) the engine
   hands its tokens and client registration to Kiro Crew, which keeps them in an
   encrypted vault under `<data home>/kas/mcp-grants/`
-  (`acp/kas_secret_storage.py`); with it off the sign-in lives in the engine's
-  memory only.
+  (`acp/kas_secret_storage.py`). The same vault keeps the engine's
+  organization (identity provider) sign-in from an `identityProvider` block in
+  `mcp.json`, under the key `kiro.mcp.idp.<sha256 hex>.session`. With the
+  setting off, the sign-in lives in the engine's memory only.
 - **MCP sign-in by Kiro Crew** (the `dashboard.feature_previews.crew_oauth`
   feature preview, off by default). The gateway runs the Connections OAuth chain
   itself (`connections/crew_oauth.py`) and stores the token pair in the user
