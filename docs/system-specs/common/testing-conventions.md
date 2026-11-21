@@ -4993,6 +4993,24 @@ it with a negative control that runs a literal found in nearly every file and
 asserts the widest bar refuses it -- that is the regression the check exists to
 catch. `TestFiltersStillNarrowTheTree` in `test/test_source_corpus.py` has both.
 
+### A pipeline test that reads the live default of a stage it is not about
+
+The consolidation-pass tests in `test/test_memory_fact_origin_gate.py` drive the whole
+`HistoryConsolidator._consolidate` pass and compare what the writer is handed with the
+model's answer. They pinned the stages they knew about (the lesson origin gate, the fact
+gate) but read `memory.kind_routing` from its live default. A branch that turned kind
+routing on by default merged after them: the pass now labels each `project.*` item with
+an extra model call and adds `"kind": "fact"`, so both tests red on every later head,
+while each branch was green alone. Rerunning cannot fix it; it looks like a flake only
+because heads cut before the default changed still pass.
+
+A test that runs a multi-stage pipeline and asserts its output pins every stage it is
+not about, not just the ones that existed when it was written. Bad: patch only the
+gates the test names and leave `configured_kind_routing_mode()` (or any
+`configured_mode()`) reading config. Good: `monkeypatch.setattr(memory_kind_routing,
+"configured_kind_routing_mode", lambda: "off")` beside the other pins in the pass
+helper, so a default flip in another stage cannot change what this test compares.
+
 ### A CI wait that runs out is infrastructure, not a red test
 
 A job that waits on another system (a gate run, the API quota) must size its wait
