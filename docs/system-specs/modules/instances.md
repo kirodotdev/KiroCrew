@@ -391,6 +391,10 @@ strip.
    frontend mirrors the same 0.8 threshold, comparing `token_ttl_remaining` with
    the status field `token_ttl_total` (the minted token's full TTL), and skips
    the *active* pane, so a reload never interrupts the pane in use.
+   A teardown or reconfiguration cancels the loop and awaits its unwinding
+   before the coordinates change (`_cancel_token_refresh_and_wait`); a loop
+   that is already done is not awaited, since CPython 3.14's `asyncio.gather`
+   refuses a finished task created on an earlier, closed event loop.
 6. **Stored-token liveness probe.** A token can go stale while the tunnel stays
    CONNECTED (a failed self-heal re-mint, or a remote `kirocrew restart` that
    invalidates tokens). An iframe loaded with a stale token gets a
