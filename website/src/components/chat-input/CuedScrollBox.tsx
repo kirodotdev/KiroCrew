@@ -27,14 +27,18 @@ export function edgeAttrs(edges: ScrollEdgesY) {
 /** A scrolling `div` with the edge cues. A caller that needs the element (a
  *  `<pre>` the menu measures, say) uses the hook with `edgeMask` directly.
  *  `data-cued-scroll` is what `pageScrollBox` finds it by. */
-export function CuedScrollBox({ className, testId, children }: { className: string; testId?: string; children: ReactNode }) {
+/** `label` makes the box a named, focusable region, so a keyboard user can
+ *  reach it and scroll it with the arrow keys (Safari does not focus a
+ *  scroller that has no `tabIndex`). Not for a box inside a menu row, where the
+ *  row holds focus and `pageScrollBox` pages the box. */
+export function CuedScrollBox({ className, testId, label, children }: { className: string; testId?: string; label?: string; children: ReactNode }) {
   const [attach, edges, , attachContent] = useScrollEdgesY<HTMLDivElement>()
   const ref = useCallback((node: HTMLDivElement | null) => { attach(node) }, [attach])
   // The content is observed too: a box already at its cap does not resize when
   // what it holds changes (a Raw/Formatted flip), and its cue must follow.
   const contentRef = useCallback((node: HTMLDivElement | null) => { attachContent(node) }, [attachContent])
   return (
-    <div ref={ref} data-testid={testId} data-cued-scroll="" {...edgeAttrs(edges)} className={`${className} overflow-y-auto ${edgeMask(edges)}`}>
+    <div ref={ref} data-testid={testId} data-cued-scroll="" {...(label ? { tabIndex: 0, role: 'region', 'aria-label': label } : {})} {...edgeAttrs(edges)} className={`${className} overflow-y-auto ${edgeMask(edges)}`}>
       <div ref={contentRef}>{children}</div>
     </div>
   )

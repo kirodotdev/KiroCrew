@@ -61,20 +61,30 @@ export function settleMotion(reduced: boolean) {
  *  they can read what it allows. `inert` holds both, and is set before the first
  *  paint. Under reduced motion there is no fade, so nothing waits. A card
  *  fading out takes no input either, and one that comes back before its fade-out
- *  ends (the next request lands within it) fades in again and waits again. */
-export function ApprovalCardMotion({ reduced, children }: { reduced: boolean; children: ReactNode }) {
+ *  ends (the next request lands within it) fades in again and waits again.
+ *  So does a queued request that takes the card in place when the one on it is
+ *  answered (`requestKey` changes while the card stays mounted): the second
+ *  click of a double click must not approve a request nobody has read yet. */
+export function ApprovalCardMotion({ reduced, requestKey, children }: { reduced: boolean; requestKey: string; children: ReactNode }) {
   const isPresent = useIsPresent()
   const [settled, setSettled] = useState(reduced)
   const [wasPresent, setWasPresent] = useState(isPresent)
+  const [shownKey, setShownKey] = useState(requestKey)
   if (wasPresent !== isPresent) {
     setWasPresent(isPresent)
     if (isPresent) setSettled(reduced)
+  }
+  if (shownKey !== requestKey) {
+    setShownKey(requestKey)
+    setSettled(reduced)
   }
   const live = settled && isPresent
   const [el, setEl] = useState<HTMLDivElement | null>(null)
   useLayoutEffect(() => { if (el) el.inert = !live }, [el, live])
   return (
-    <motion.div ref={setEl} data-testid="approval-card-motion" data-settling={live ? undefined : ''} {...settleMotion(reduced)} onAnimationComplete={() => { if (isPresent) setSettled(true) }}>
+    // Keyed per request, so a request that takes the card in place fades in
+    // from the start and its `onAnimationComplete` ends its own hold.
+    <motion.div key={requestKey} ref={setEl} data-testid="approval-card-motion" data-settling={live ? undefined : ''} {...settleMotion(reduced)} onAnimationComplete={() => { if (isPresent) setSettled(true) }}>
       {children}
     </motion.div>
   )
@@ -116,6 +126,47 @@ export function ApprovalReceipt({ kind, slot, request, children }: { kind: 'gran
 }
 
 const CHIP_CLASS = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-[11px] leading-4'
+
+/** The card's heading: the title and, with simplified names off, the agent's
+ *  description under it, each clamped to two lines. When either is cut, a
+ *  "Show more" button (a real button, so Tab and Enter reach it) opens both
+ *  whole: the title may be the only place the tool's name shows. Clamping is
+ *  measured on every resize, so the button appears only when text is hidden. */
+function ApprovalHeading({ title, purpose }: { title: string; purpose: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const [clamped, setClamped] = useState(false)
+  const [box, setBox] = useState<HTMLSpanElement | null>(null)
+  const id = useId()
+  useLayoutEffect(() => {
+    if (!box || expanded) return
+    const measure = () => setClamped([...box.querySelectorAll<HTMLElement>('[data-clamp]')].some(el => el.scrollHeight > el.clientHeight + 1))
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(box)
+    return () => ro.disconnect()
+  }, [box, expanded, title, purpose])
+  const clamp = expanded ? '' : 'line-clamp-2'
+  return (
+    <span ref={setBox} id={id} className="flex-1 min-w-0 pt-px flex flex-col items-start">
+      <span data-testid="approval-title" data-clamp="" className={`self-stretch text-[13px] leading-5 font-body font-medium text-text break-words ${clamp}`}>{title}</span>
+      {/* Simplified names off: the agent's description of the call, under the label. */}
+      {purpose && <span data-testid="approval-purpose" data-clamp="" className={`self-stretch text-[12px] leading-5 font-body text-muted break-words ${clamp}`}>{purpose}</span>}
+      {(clamped || expanded) && (
+        <button
+          type="button"
+          data-testid="approval-title-toggle"
+          aria-expanded={expanded}
+          aria-controls={id}
+          onClick={() => setExpanded(v => !v)}
+          className="mt-0.5 p-0 bg-transparent border-0 text-[12px] leading-4 font-body text-accent cursor-pointer hover:underline"
+        >
+          {i18nT(expanded ? 'components.chatInput.approval_title_less' : 'components.chatInput.approval_title_more')}
+        </button>
+      )}
+    </span>
+  )
+}
 
 /** The site-grant row's label, per class (#39990). A site grant lasts this session only. */
 const BROWSER_SITE_KEYS = {
@@ -167,7 +218,10 @@ export function ToolApprovalCard({ approval, activeSlot, approvalMode }: {
   const toolName = approvalIsShell || approvalToolName === approvalTitle ? '' : approvalToolName
   const canShowInChat = showGhost && !!approvalToolCallId
   // An override card states the refused command in its own warning below.
-  const command = approvalDenyRule ? '' : approvalFullCommand
+  // A browser site grant's `full_command` is the site's host, the grant's
+  // scope, not what Allow once runs: the call itself is its input, below, and
+  // the Trust row names the host.
+  const command = approvalDenyRule || siteKey ? '' : approvalFullCommand
   // The string the card already shows whole, in the command box or the
   // override warning, and so leaves out of the payload.
   const shownCommand = approvalDenyRule ? approvalDenyCommand : command
@@ -206,11 +260,8 @@ export function ToolApprovalCard({ approval, activeSlot, approvalMode }: {
         <ApprovalStatusPill state="waiting" layoutId={approvalPillLayoutId(activeSlot, approvalKey)} />
         {/* Prose, so the body face: the command itself is below, in the one
             place it is set in mono. */}
-        <span className="flex-1 min-w-0 pt-px flex flex-col">
-          <span data-testid="approval-title" className="text-[13px] leading-5 font-body font-medium text-text break-words line-clamp-2">{approvalTitle}</span>
-          {/* Simplified names off: the agent's description of the call, under the label. */}
-          {approvalPurposeLine && <span data-testid="approval-purpose" className="text-[12px] leading-5 font-body text-muted break-words line-clamp-2">{approvalPurposeLine}</span>}
-        </span>
+        {/* Keyed per request, so the next one opens clamped again. */}
+        <ApprovalHeading key={approvalKey} title={approvalTitle} purpose={approvalPurposeLine} />
         <RaisedBy name={approvalRaisedBy} />
       </div>
       <div
@@ -246,7 +297,9 @@ export function ToolApprovalCard({ approval, activeSlot, approvalMode }: {
                   onClick={showInChat}
                   title={i18nT('components.chatInput.show_pending_tool_call_in_chat')}
                   aria-label={i18nT('components.chatInput.show_pending_tool_call_in_chat')}
-                  className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-transparent border border-border text-muted text-[11px] leading-4 cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-colors"
+                  // A live control at the weight of the card's other buttons;
+                  // muted text read as switched off (UX review).
+                  className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-bg-elevated border border-border-strong text-text font-body font-medium text-[11px] leading-4 cursor-pointer hover:bg-bg-hover transition-colors"
                 >
                   <Target size={11} className="shrink-0" />
                   {i18nT('components.chatInput.show_in_chat')}
@@ -275,7 +328,7 @@ export function ToolApprovalCard({ approval, activeSlot, approvalMode }: {
             </div>
           )}
           {payload && (
-            <CuedScrollBox key={approvalKey} className="max-h-[160px] [&>div]:my-0" testId="approval-input">
+            <CuedScrollBox key={approvalKey} className="max-h-[160px] [&>div]:my-0" testId="approval-input" label={i18nT('components.chatInput.approval_input_label')}>
               <FormattedPayloadCard text={payload}>
                 <pre className={`m-0 px-2 py-2 rounded-md border border-border bg-bg-elevated text-[12px] leading-5 font-mono whitespace-pre-wrap ${COMMAND_WRAP}`}><CommandText text={payload} /></pre>
               </FormattedPayloadCard>
@@ -316,7 +369,7 @@ export function ToolApprovalCard({ approval, activeSlot, approvalMode }: {
               // A browser site grant: the command row names the site and what is
               // trusted on it, and has one lifetime, so it keeps the plain menu.
               trustCommandLabelKey={siteKey}
-              scopeIsHost={!!siteKey}
+              confirmTrustAll
               trustReadsLabelKey={approvalIsReadOnly ? 'components.chatInput.trust_reads' : undefined}
               showTrustAll={approvalTrustAllGrantable || approvalTrustCommandGrantable}
               disabled={approvalSubmitting || cramped}

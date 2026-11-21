@@ -119,6 +119,27 @@ const SCENES: Record<string, { content: string; meta: Record<string, unknown> }>
       trust_command_grantable: '1', trust_base_grantable: '1', trust_grantable: '1',
     },
   },
+  // A browser call whose command grant is a SITE grant (#39990): `full_command`
+  // is the host, and the card keeps the plain, session-only Trust menu.
+  site: {
+    content: 'Drive browser',
+    meta: {
+      tool_purpose: 'Click the sign-in button on the placeholder site',
+      tool_input: JSON.stringify({ op: 'click', args: { ref: 'e3' } }), is_shell: '', is_read_only: '',
+      tool_title: 'Drive browser', full_command: 'www.example.com', browser_trust_class: 'act',
+      trust_command_grantable: '1', trust_grantable: '1',
+    },
+  },
+  // A description longer than the heading's two lines, so it clamps.
+  'long-purpose': {
+    content: 'Running: find, head',
+    meta: {
+      tool_purpose: 'Find every agent-platform file under the workspace and the crew folder, skipping node_modules, so the next step can compare the two copies and report which placeholder settings differ between them',
+      tool_input: JSON.stringify({ command: SHELL }), is_shell: '1', is_read_only: '',
+      full_command: SHELL, base_command: 'find,head',
+      trust_command_grantable: '1', trust_base_grantable: '1', trust_grantable: '1',
+    },
+  },
   // An unattended source: no standing grant can be recorded for it.
   none: {
     content: '[cron] Running: ls',
