@@ -25,7 +25,6 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import os
 import shutil
 import tempfile
 from contextlib import contextmanager
@@ -38,7 +37,7 @@ from typing import Any, Iterator
 # live only in that module, so each is read off it at call time and a patch on
 # ``onboarding_import.<name>`` reaches this module too.
 from kiro_crew import onboarding_scan
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.config.loader import ConfigReadError, update_config_locked
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.onboarding_plan import _SAFE_NAME_RE, _merge_missing
@@ -540,7 +539,9 @@ def _install_skill_tree(destination: Path, files: dict[str, str], data_home: Pat
             return "rejected"
         if destination.exists() or onboarding_scan._is_link_like(destination):
             return "conflict"
-        os.replace(staging, destination)
+        # The files were written a moment ago, so a scanner or indexer may still hold
+        # one; on Windows that refuses the folder rename until it lets go.
+        replace_with_retry(staging, destination)
         return "imported"
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -638,7 +639,7 @@ def _write_skill(
                 # 99 leftovers means something is badly wrong; refuse rather than
                 # delete someone else's copy.
                 return _WriteOutcome("conflict")
-            os.replace(destination, retired)
+            replace_with_retry(destination, retired)
         except OSError:
             logger.warning(
                 "Could not move the skill being replaced out of the way; " "refusing to overwrite",
@@ -650,7 +651,7 @@ def _write_skill(
             # Put the original back so a failed replace is a no-op, not data loss.
             with contextlib.suppress(OSError):
                 if not destination.exists():
-                    os.replace(retired, destination)
+                    replace_with_retry(retired, destination)
 
         try:
             status = _install_skill_tree(destination, files, data_home)
