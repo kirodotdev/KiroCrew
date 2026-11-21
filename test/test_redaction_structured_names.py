@@ -314,3 +314,10 @@ def _repeat(unit: str) -> object:
 )
 def test_the_new_anchors_stay_linear(unit: str) -> None:
     assert_linear_work(_repeat(unit), redact)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("lead", ["query,", "q ", "q;", "q("])
+def test_a_fixed_shape_key_after_an_opener_with_a_blank_after_the_equals_is_masked(lead: str) -> None:
+    secret = aws_secret(1)
+    out = redact(f"{lead}SecretAccessKey= {secret}")[0]
+    assert secret not in out

@@ -392,7 +392,11 @@ def _read(rd: _Reader, ks: int, ke: int, key: str, row: KnownKeyRow) -> tuple[in
     # ``KEY=value`` glued after a blank, a shell separator, a comma or an opening quote
     # or bracket.
     if prev in _INLINE_BEFORE and nxt == "=" and rd.at(ke + 1) != "=":
-        return _value_after_sep(rd, ke + 1, gate, key, _LITERAL if prev == ";" else _INLINE)
+        found = _value_after_sep(rd, ke + 1, gate, key, _LITERAL if prev == ";" else _INLINE)
+        if found is not None:
+            return found
+        # No value glued to the ``=``: the later readers (``KEY = value``, a fixed-shape
+        # ``KEY=`` mid-line) still get their turn.
     # ``aws configure set <key> <value>``: the CLI's own way to write a key.
     if prev in _BLANKS and prev and text[max(0, ks - 64) : ks].rstrip().endswith("configure set"):
         j = rd.blanks(ke, at_least=1)
