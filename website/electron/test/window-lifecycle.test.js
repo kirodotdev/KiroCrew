@@ -1910,7 +1910,7 @@ describe("main window close action", () => {
     lifecycle.syncTray();
     assert.deepEqual(
       menus[0].map((item) => item.label || item.type),
-      ["Show Kiro Crew", "separator", "New Connection Window…", "separator", "Open Config File", "separator", "Quit"],
+      ["Show Kiro Crew", "separator", "New Connection Window…", "separator", "Open Config File", "separator", "Quit Kiro Crew"],
     );
   });
 });

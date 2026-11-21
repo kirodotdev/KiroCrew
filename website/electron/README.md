@@ -408,8 +408,14 @@ left as the user set it.
   gateway and authentication origin, but does not copy the current session,
   project, draft, or context.
 - Closing the window hides it and keeps the app running, reachable from the tray
-  icon, the Dock on macOS, or a relaunch. Right-click the tray icon and choose
-  Quit, or press Cmd+Q / Ctrl+Q, to quit. To make the close button quit instead,
+  icon, the Dock on macOS, or a relaunch. The first time this happens a system
+  notification says so and names the setting below; clicking it opens that
+  setting. It is shown once: the `closeHideNoticeShown` key is written when the
+  system reports the notification shown (on Linux, once it is sent; at once where
+  notifications are unsupported), so one the
+  system dropped comes back on the next launch (`close-hide-notice.js`). Right-click the tray icon and choose
+  **Quit Kiro Crew** (**Quit Kiro Crew and Stop Its Gateway** while the app runs
+  a gateway it started), or press Cmd+Q / Ctrl+Q, to quit. To make the close button quit instead,
   turn off **Keep running in the background after closing the window** in Settings → Display → View →
   Desktop app. The row appears in the main window only, local or remote
   gateway alike, because it controls that window's close button (connection

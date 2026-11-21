@@ -1654,7 +1654,11 @@ it), and `user-restart.js` (Settings → About's Restart gateway).
 - [`window-lifecycle.js`](../../website/electron/window-lifecycle.js) hides the
   app to the tray on window close, or quits through the same path as the Quit
   menu item when the user chose that (`closeAction` in the app's own config,
-  decided by [`close-action.js`](../../website/electron/close-action.js)), and
+  decided by [`close-action.js`](../../website/electron/close-action.js)), shows
+  a one-time notice on the first such hide and words the tray quit item so it
+  names a gateway the app started, rebuilt whenever the supervisor's spawned
+  child starts or goes away (both in
+  [`close-hide-notice.js`](../../website/electron/close-hide-notice.js)), and
   creates or removes the tray icon to match `showTrayIcon` (decided by
   [`tray-icon.js`](../../website/electron/tray-icon.js), which keeps the icon on
   Windows and Linux while the close button hides the window), and hides a

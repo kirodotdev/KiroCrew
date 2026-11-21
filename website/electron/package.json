@@ -148,6 +148,7 @@
     "files": [
       "main.js",
       "gateway-supervisor.js",
+      "boot-reveal.js",
       "shell-bundle-watch.js",
       "runtime/gateway/launch-preflight.js",
       "runtime/gateway/port-holders.js",
@@ -235,6 +236,7 @@
       "local-token.js",
       "local-gateway.js",
       "close-action.js",
+      "close-hide-notice.js",
       "tray-icon.js",
       "minimize-to-tray.js",
       "wsl-detection.js",

@@ -21,6 +21,7 @@ const {
   getCloseAction,
   setCloseAction,
 } = require("./close-action");
+const { createCloseHideWiring } = require("./close-hide-notice");
 const { getTrayIcon, setTrayIcon } = require("./tray-icon");
 const { createMinimizeToTray } = require("./minimize-to-tray");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
@@ -155,6 +156,7 @@ function createWindowLifecycle(options) {
     fetchRemoteToken,
     isQuitting = () => false,
     requestQuit,
+    stopsGatewayOnQuit = () => false, // a gateway this app started is running
     connectWindow,
     // Re-apply the launch port's managed-tunnel choice after a save here, so
     // ticking or un-ticking it takes effect without a relaunch.
@@ -1022,6 +1024,7 @@ function createWindowLifecycle(options) {
             fullScreenWatch ? fullScreenWatch.exitSettlingFor() : Infinity
           ),
         });
+        closeHide.noticeOnHide(); // once per install (close-hide-notice.js)
       },
       persist: () => {
         if (saveTimer) {
@@ -1088,10 +1091,14 @@ function createWindowLifecycle(options) {
     return true;
   }
 
+  const showFromTray = () => { showMainWindow({ focus: true }); }; // tray Show item and icon click
+  const closeHide = createCloseHideWiring({
+    app, Menu, Notification: electron.Notification, store, platform, log: glog, stopsGatewayOnQuit,
+    getMainWindow: () => mainWindow, getTray: () => tray, showMainWindow, onShow: showFromTray, onQuit: requestQuit,
+    onNewConnection: () => openNewConnectionWindow(), onOpenConfig: () => openPathHardened(shell, store.path),
+  });
+
   function createTray() {
-    const showFromTray = () => {
-      showMainWindow({ focus: true });
-    };
     const nightly = identityFamily(app.getVersion()) === "nightly";
     const iconFile = nightly && fs.existsSync(path.join(__dirname, "icon-nightly.png"))
       ? "icon-nightly.png"
@@ -1113,15 +1120,7 @@ function createWindowLifecycle(options) {
     }
     tray = new Tray(icon);
     tray.setToolTip(app.name);
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: `Show ${app.name}`, click: showFromTray },
-      { type: "separator" },
-      { label: "New Connection Window…", click: () => openNewConnectionWindow() },
-      { type: "separator" },
-      { label: "Open Config File", click: () => openPathHardened(shell, store.path) },
-      { type: "separator" },
-      { label: "Quit", click: requestQuit },
-    ]));
+    closeHide.refreshTrayMenu();
     tray.on("click", showFromTray);
     return tray;
   }
@@ -1837,6 +1836,7 @@ function createWindowLifecycle(options) {
       set: setCloseActionAndLog,
     },
     syncTray,
+    refreshTrayMenu: closeHide.refreshTrayMenu, closeHideNavigation: closeHide.navigation,
     trayIcon: {
       get: () => getTrayIcon(store, { isMac: IS_MAC }),
       set: setTrayIconAndLog,
