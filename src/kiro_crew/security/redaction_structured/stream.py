@@ -15,6 +15,9 @@ unit that is decided while still running (an unterminated private-key block past
 ``max_block``; a session-token run, or an encoded run with a text head, past 4 KiB) is
 replaced and the stream discards input to that unit's own end: the end of the text, or
 the end of the run.
+The private-key scan of each window starts where the last committed block's END
+line ended, as whole text resumes it, so a BEGIN inside a block whose own BEGIN
+has left the look-behind is not read as a new header.
 Chunked output and spans therefore equal the whole-text result at every split.
 """
 
@@ -63,6 +66,8 @@ class StreamRedactor:
         self._pad = 0
         self._open_span: tuple[int, str, str] | None = None
         self._closed = False
+        # Input offset where the last committed private-key block's END line ends.
+        self._armour_from = 0
 
     @property
     def spans(self) -> list[Span]:
@@ -117,11 +122,19 @@ class StreamRedactor:
             if h.start >= lo and h.end <= hi:
                 self._spans.append((h.start + offset, h.end + offset, h.rule_id, h.tier))
 
+    def _note_blocks(self, blocks: tuple[tuple[int, int], ...], cut: int, offset: int) -> None:
+        """Keep where whole text resumes its private-key scan after a committed BEGIN."""
+        for begin, end in blocks:
+            if begin < cut:
+                self._armour_from = max(self._armour_from, end + offset)
+
     def _commit(self, final: bool) -> str:
         window = self._ctx + self._pending
         base = len(self._ctx)
         offset = self._pos - base
-        result = scan(window, final=final, origin=base)
+        result = scan(
+            window, final=final, origin=base, armour_from=max(0, self._armour_from - offset)
+        )
         resolved = resolve([h for h in result.hits if h.start >= base])
         n = len(window)
         if final:
@@ -133,6 +146,7 @@ class StreamRedactor:
             if tail_hit is not None and (
                 result.open_from is None or result.open_from >= tail_hit.start
             ):
+                self._note_blocks(result.armour_blocks, tail_hit.start, offset)
                 return self._start_discard(window, base, offset, resolved, tail_hit)
             cut = n - TAIL
             if result.open_from is not None:
@@ -150,6 +164,7 @@ class StreamRedactor:
                         moved = True
         out = render(window, resolved, base, cut)
         self._record(resolved, base, cut, offset)
+        self._note_blocks(result.armour_blocks, cut, offset)
         self._ctx = window[:cut][-CONTEXT:]
         self._pending = window[cut:]
         self._pos += cut - base

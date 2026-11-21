@@ -1,0 +1,4 @@
++27
+`text_redaction.StreamRedactor` keeps where the last committed private-key block's END
+line ends and passes it to the detectors' seam, so a stream window starts its private-key
+scan where whole text resumes it instead of reading a BEGIN inside that block as a new header.
