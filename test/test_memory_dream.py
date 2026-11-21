@@ -540,6 +540,38 @@ def test_work_state_keys_are_proposed(store) -> None:
     assert keys == ["project.kirocrew.memory_rfc_next_action", "project.kirocrew.pr_35231_status"]
 
 
+@pytest.mark.parametrize(
+    ("key", "want"),
+    [
+        # Owner spot-check: durable decisions and contracts wrongly proposed.
+        ("project.kirocrew.prepare_pr.rule_files_decision", False),
+        ("project.kirocrew.ci.error_code_contract_gate", False),
+        ("project.kirocrew.ci.fork_pr_workflow_approval", False),
+        # Nearby durable decisions about a PR, CI, issue or branch topic.
+        ("project.kirocrew.ci.merge_queue_policy", False),
+        ("project.kirocrew.pr_review.override_rule", False),
+        ("project.kirocrew.issue_triage_convention", False),
+        ("project.kirocrew.branch_naming_pattern", False),
+        # Real status: still proposed.
+        ("project.kirocrew.ci.flaky_windows_test", True),
+        ("project.kirocrew.ci.preexisting_failures_20260823", True),
+        ("project.kirocrew.pr40085.status", True),
+        ("project.kirocrew.apply_patch_gate_issue_number", True),
+        ("project.kirocrew.security_a_owner_gate_branch", True),
+        ("project.kirocrew.pr5387_auto_update_gate.split_recommendation", True),
+        # A status word or a number outranks a durable last word.
+        ("project.kirocrew.ci_gate_status", True),
+        ("project.kirocrew.pr_approval_pending", True),
+        ("project.kirocrew.review_round3_decision", True),
+        ("project.kirocrew.release.next_step_decision", True),
+        # No topic word: never work state, durable last word or not.
+        ("project.kirocrew.frontend_build_rule", False),
+    ],
+)
+def test_work_state_key_spares_durable_decisions(key, want) -> None:
+    assert md.is_work_state_key(key) is want
+
+
 def test_numbered_key_families_are_grouped_for_review(store) -> None:
     _put(store, "project.kirocrew.r15_fixer_rule", "a")
     _put(store, "project.kirocrew.r16_fixer_rule", "b")
