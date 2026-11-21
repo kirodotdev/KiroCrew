@@ -321,13 +321,24 @@ own sandbox, so Kiro Crew delegates the Kiro CLI chat backend, model list, accou
 identity and usage reads to it automatically.
 
 **The default chat harness, KAS, runs UNCONFINED on Windows.** KAS has no OS
-sandbox of its own on this platform, and it is not a Kiro CLI spawn, so it takes
-the same no-backend path as the other harnesses below: it can read your home
-directory, including `.aws` and `.ssh`. A fresh desktop install still needs no
-config edit before the first chat. To keep chat inside Kiro CLI's sandbox, pick
-**Kiro CLI** in Settings → Agent Harness (stored as `"acp_backend": "kiro"`).
-With the opt-out below declared, a KAS chat is refused with a message naming
-`sandbox_allow_unsandboxed_exec`; pick Kiro CLI to chat under that posture.
+sandbox of its own on this platform, and Kiro CLI's sandbox does not cover it
+here: started through `kiro-cli acp --agent-engine v3` or from Kiro Crew's bundled
+engine, the KAS process runs unconfined, so it takes the same no-backend path as
+the other harnesses below. It can read your home directory, including `.aws` and
+`.ssh`. A fresh desktop
+install still needs no config edit before the first chat. With the opt-out below
+declared, a KAS chat is refused with a message naming
+`sandbox_allow_unsandboxed_exec`.
+
+**Picking Kiro CLI keeps chat in Kiro CLI's sandbox only while your kiro-cli
+runs its v2 engine.** Settings → Agent Harness → **Kiro CLI** (stored as
+`"acp_backend": "kiro"`) runs on Kiro Crew's KAS path once the installed kiro-cli
+offers its v3 engine
+([decision](../decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md)). On
+Windows that chat is then unconfined like any KAS chat, or refused under the
+opt-out. To keep agent chat from running unconfined on Windows, declare the
+opt-out below, which refuses chat instead of confining it, or run Kiro Crew in a
+Linux VM, where its own Linux sandbox confines it.
 
 Everything else — scripts, hooks, third-party ACP backends, app backends, MCP
 probes and the `gh`/`glab` provider CLIs — has no proven internal sandbox to
@@ -373,8 +384,9 @@ spawn the same `kiro-cli` binary chat does, at the same `agent.sandbox` tier —
 on this platform they succeed and fail together with chat, rather than one working
 while the other 503s. Concretely:
 
-- **Default install** (`agent.sandbox` unset → `"auto"`): chat and these fixed
-  Kiro reads delegate to the CLI's built-in sandbox. No broad opt-in is needed.
+- **Default install** (`agent.sandbox` unset → `"auto"`): these fixed Kiro reads,
+  and a Kiro CLI chat while kiro-cli runs its v2 engine, delegate to the CLI's
+  built-in sandbox. No broad opt-in is needed.
   The parent strips gateway credentials, secret/session variables and inherited
   Python runtime variables before every delegated spawn.
 - **`agent.sandbox` explicitly `"off"`** (isolation deferred to kiro-cli's own
@@ -386,7 +398,7 @@ while the other 503s. Concretely:
 
 | Feature | Status on Windows |
 |---------|-------------------|
-| Core gateway / chat / dashboard | works without `sandbox_allow_unsandboxed_exec`. The default KAS harness runs unconfined under this platform's default (declare `sandbox_allow_unsandboxed_exec=false` to refuse it); the Kiro CLI harness delegates to Kiro CLI's built-in sandbox. The parent scrubs sensitive environment variables either way. A source install with a built `website/dist` is linked into `src/kiro_crew/static/dist` at gateway start via a **directory junction** (`platform_compat.symlink_or_junction`), which needs no privilege; a symlink there would need `SeCreateSymbolicLinkPrivilege` and would leave a non-elevated install serving the "not built" page |
+| Core gateway / chat / dashboard | works without `sandbox_allow_unsandboxed_exec`. The default KAS harness runs unconfined under this platform's default (declare `sandbox_allow_unsandboxed_exec=false` to refuse it); the Kiro CLI harness delegates to Kiro CLI's built-in sandbox only while the installed kiro-cli runs its v2 engine, and once kiro-cli offers v3 a Kiro CLI pick runs on KAS, unconfined or refused like any KAS chat (see [above](#kiro-sandbox-delegation-and-the-unsandboxed-exec-opt-in)). The parent scrubs sensitive environment variables either way. A source install with a built `website/dist` is linked into `src/kiro_crew/static/dist` at gateway start via a **directory junction** (`platform_compat.symlink_or_junction`), which needs no privilege; a symlink there would need `SeCreateSymbolicLinkPrivilege` and would leave a non-elevated install serving the "not built" page |
 | Project skills (`<project>/.kiro/skills`) | not yet — Python on Windows does not expose handle-relative directory traversal that can reject every reparse point before resolving it. Catalog, consent and loading fail closed before canonicalizing the project path, preventing a raced junction to a UNC share from initiating SMB authentication. Global and installed skills continue to work. |
 | Theme-pack install, detail, assets, overlays, topbars, and removal | works — opened pack files are contained with `GetFinalPathNameByHandleW`; descriptor resolution fails closed instead of trusting a pathname-only check |
 | LLM cron jobs (the `message` kind) | works |
