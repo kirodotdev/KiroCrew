@@ -554,6 +554,31 @@ async def test_upload_eml_is_accepted_as_text(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "payload",
+    [b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504, b"string name\nint32 id\n"],
+    ids=["outlook", "plain-text"],
+)
+async def test_upload_msg_is_accepted(upload_dir: Path, mock_sel, payload: bytes) -> None:
+    """An Outlook ``.msg`` (an OLE compound file) uploads byte-for-byte, and so
+    does a plain-text ``.msg`` (a ROS message definition) sharing the extension."""
+    form = aiohttp.FormData()
+    form.add_field(
+        "file",
+        payload,
+        filename="mail.msg",
+        content_type="application/vnd.ms-outlook",
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    saved = Path(body["paths"][0])
+    assert saved.name.endswith("_mail.msg")
+    assert saved.read_bytes() == payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("extension", "payload"),
     [
         (".php", b"<?php echo '<script>alert(1)</script>'; ?>\n"),
