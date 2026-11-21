@@ -156,11 +156,14 @@ async def _run(
     async def fake_llm(prompt: str, *, memory_store: str = "", session_key: str = "") -> dict:
         prompts.append(prompt)
         if prompt.startswith("Label stored memory items."):
-            # Kind routing's shadow label call: each item's own tag, by its index.
-            from kiro_crew.memory_kind_routing import route_semantic_by_kind
+            # Kind routing's label call (shadow and enforce): each item's own tag, by
+            # its index. Read without route_semantic_by_kind, which a test may spy on.
+            from kiro_crew.memory_kind_routing import is_routed, item_kind
+            from kiro_crew.vector_memory_constants import _MAX_SEMANTIC_PER_CONSOLIDATION
 
-            routed = route_semantic_by_kind({"semantic": list(items)}, "shadow").decisions
-            return {"kinds": {str(n): d.kind for n, d in enumerate(routed)}}
+            window = list(items)[:_MAX_SEMANTIC_PER_CONSOLIDATION]
+            routed = [item for item in window if is_routed(item)]
+            return {"kinds": {str(n): item_kind(item) for n, item in enumerate(routed)}}
         if while_thinking is not None:
             while_thinking()
         return {"semantic": list(items)}
@@ -250,6 +253,11 @@ async def test_member_store_is_never_handed_the_item_over_the_bound(
 
     vector_store.apply_consolidation.assert_called_once()
     handed = vector_store.apply_consolidation.call_args.kwargs["result"]["semantic"]
+    # Default kind routing stamps each routed item's label; it is not what this pins.
+    handed = [
+        {k: v for k, v in item.items() if k != "kind"} if isinstance(item, dict) else item
+        for item in handed
+    ]
     # The refused item keeps its place as None, which the store skips like any item
     # that is not an object.
     assert handed == [_item(_SMALL_KEY, _SMALL), None], (
@@ -1568,6 +1576,8 @@ def test_each_writer_logs_and_counts_a_confidence_by_its_own_rule(
     v1: object,
     member: object,
 ) -> None:
+    # Only the writers' own lines are pinned here, so routing's DEBUG line is kept out.
+    _route_as(monkeypatch, "off")
     store, c = _store_for(path, tmp_path, monkeypatch, opened)
     item = _with_confidence(_item("project.fact", "a short fact"), confidence)
     reads = v1 if path == "v1" else member

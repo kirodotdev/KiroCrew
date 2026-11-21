@@ -88,7 +88,7 @@ transcripts.
 | `kirocrew logs` | Show gateway logs (last 100 lines) |
 | `kirocrew logs -f` | Follow (tail) live log output |
 | `kirocrew logs -n 50` | Show last N lines |
-| `kirocrew tmp` | Remove your idle, unused leftovers from /tmp and /var/tmp |
+| `kirocrew tmp reclaim PATH…` | Remove each named /tmp or /var/tmp entry of yours once it is idle and unused (`--dry-run` removes nothing) |
 
 ## Pods (Isolated Worktree Test Instances)
 
@@ -139,8 +139,8 @@ Override with `PORT=` in `~/.kiro/crew/pods/<name>.env`.
 | `kirocrew desktop tunnel --host HOST` | Keep the desktop app's SSH forward to a remote crew alive (client-only mode); `--local-port` is the loopback port the app connects to, `--remote-port` the one the crew listens on over there |
 | `kirocrew manifest` | Generate Slack app manifest with your alias |
 | `kirocrew manifest --url` | Print one-click Slack app creation URL |
-| `kirocrew remote-control status` | Show whether personal Remote Control is on (`--json`) |
-| `kirocrew remote-control on` | Turn personal Remote Control on; it connects after Kiro Crew restarts |
+| `kirocrew remote-control status` | Show whether personal Remote Control is on (`--json`); a personal sign-in is on by default |
+| `kirocrew remote-control on` | Turn personal Remote Control back on after an `off`; it connects after Kiro Crew restarts |
 | `kirocrew remote-control off` | Turn personal Remote Control off; it stays off across restarts |
 
 ## Chat

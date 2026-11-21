@@ -824,11 +824,11 @@ disk, including fields the operator never set -- and each field is resolved as
 default, so **changing a shipped default reaches only installs created after the
 change**; a pre-existing install keeps whatever value was materialized last.
 `tunnel.relay_enabled` relies on that on purpose: its default moved from `false`
-to unset (`null`, where a team key or a workload identity hosts,
-`remote_control/hosting.py`), and an install that stores `false` keeps it, since a
-stored `false` cannot be told apart from a deliberate off. `config set` writes only
-the keys it names, so an older install may store nothing there; with a team key it
-hosts after the upgrade, the key being its choice. It has no registry row.
+to unset (`null`, where a personal sign-in, a team key or a workload identity
+hosts, `remote_control/hosting.py`), and an install that stores `false` keeps it,
+since a stored `false` cannot be told apart from a deliberate off. `config set`
+writes only the keys it names, so an older install may store nothing there; on a
+personal sign-in or a team key it hosts after the upgrade. It has no registry row.
 
 `config/superseded_defaults.py` holds an append-only registry
 (`SUPERSEDED_DEFAULTS`) of default changes existing installs should be told about,
@@ -3783,13 +3783,13 @@ class MemoryConfig:
     persistence_enabled: bool = True # global switch: off = no automatic memory writes (lessons, consolidation, task-runner) AND no stored memory/lessons injected
     writes_enabled: bool = True      # off = the same automatic writers persistence_enabled stops, while injection and memory_recall continue (read-only memory)
     lesson_extraction_enabled: bool = True  # off = consolidation (default and member stores) and the task runner save no extracted lessons; other writes and learn_add continue
-    kind_routing: str = "off"        # off | shadow | enforce: whether consolidation tags each project.* write with a kind (fact/event/state) and what it does with it; off keeps today's prompt and writes, shadow keeps them too and tags the written items in one separate label call that only feeds a bounded log; unknown values read as off (memory_kind_routing.py)
+    kind_routing: str = "enforce"    # off | shadow | enforce (default enforce since 2026-11-20): whether consolidation tags each project.* write with a kind (fact/event/state) in one separate label call and what it does with it; the consolidation prompt is the same under every mode; off makes no label call and writes every item, shadow writes every item and labels the written items to feed a bounded log, enforce labels them before the writes and skips state items; unknown values read as enforce (memory_kind_routing.py)
     extraction_instructions: str = ""  # free text the consolidation prompt carries as one fenced block after the fixed rules (what to keep, what never to store); empty keeps today's prompt byte for byte; non-text reads as empty, control characters are dropped, text past 2000 characters is cut (memory_sections.extraction_instructions_from, history_consolidation_span._extraction_guidance_block)
     lesson_origin_gate: str = "off"  # off | shadow | enforce: whether a lesson from a consolidation span with no person-sent turn, or a learn_add an agent or automatic turn triggered, may be a standing rule; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log, enforce stores it on_topic; unknown values read as off (memory_origin_gate.py)
     fact_origin_gate: str = "off"  # off | shadow | enforce: whether a pref.* / user.* semantic item (write or delete) or a preferences_update from a consolidation span with no person-sent turn is applied; enforce drops them, project.* and episodic items are never gated; off keeps today's prompt and writes, shadow writes as before and keeps capped counts and keys (memory_fact_origin_log:); unknown values read as off
     lesson_tier_policy: str = "off"  # off | shadow | enforce: which tier a new consolidation lesson gets; enforce stores an untagged lesson, and an always lesson whose user_quote is not found in a person's unrelayed turn, as on_topic, and only enforce asks the prompt for user_quote; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log plus a learn_add re-teach count; unknown values read as off (memory_tier_policy.py)
-    lesson_fold: str = "off"  # off | shadow | enforce: whether the session-start rule block leaves out near-duplicate rules (memory_item_identity.same_item, visited user-taught first then newest first, each row compared only with kept leaders); off keeps today's block, shadow keeps it and records in the injection receipt the (leader, folded) id pairs, enforce leaves folded rows out and prints a fold line; a folded row is not a budget omission; user_explicit rows are never folded; a row with a NOT-clause its leader lacks stays; unknown values read as off (memory_lesson_fold.py)
-    rule_authority_order: str = "off"  # off | shadow | enforce: how the session-start rule block orders its rules; off keeps today's block, shadow keeps it and records in the injection receipt the rule ids the authority order would add or drop, enforce lists user_explicit rules first then the rest, the authored-before-untagged order and request relevance holding inside each group; an agent-triggered learn_add is user_explicit unless lesson_origin_gate is enforce; cap and omission line unchanged; unknown values read as off (memory_rule_authority.py)
+    lesson_fold: str = "enforce"  # off | shadow | enforce (default enforce since 2026-11-20): whether the session-start rule block leaves out near-duplicate rules (memory_item_identity.same_item, visited user-taught first then newest first, each row compared only with kept leaders); off keeps today's block, shadow keeps it and records in the injection receipt the (leader, folded) id pairs, enforce leaves folded rows out and prints a fold line; a folded row is not a budget omission; user_explicit rows are never folded; a row with a NOT-clause its leader lacks stays; unknown values read as enforce (memory_lesson_fold.py)
+    rule_authority_order: str = "enforce"  # off | shadow | enforce (default enforce since 2026-11-20): how the session-start rule block orders its rules; off keeps today's block, shadow keeps it and records in the injection receipt the rule ids the authority order would add or drop, enforce lists user_explicit rules first then the rest, the authored-before-untagged order and request relevance holding inside each group; an agent-triggered learn_add is user_explicit unless lesson_origin_gate is enforce; cap and omission line unchanged; unknown values read as enforce (memory_rule_authority.py)
     member_lesson_dedup: str = "off"  # off | shadow | enforce: whether a private store folds a consolidation lesson into a live copy of the same rule (memory_item_identity.same_item); off keeps today's writes, shadow writes as before and keeps a bounded log, enforce skips a textual copy and retires a new near-copy with a revision before a dashboard turn receipt names it, and off restores those rows on the next backfill sweep; user_explicit rows are never folded; unknown values read as off (memory_lesson_dedup.py)
     relevance_rule: str = "off"  # off | shadow | enforce: which word matches admit session-start findings, task facts and activity sections; off keeps today's blocks, shadow keeps them and records in the injection receipt the ids the shared rule would add or drop, enforce counts only 3+ character words and CJK pairs and gives task facts on both stores the private store's relevance_evidence gate; rule block unchanged; unknown values read as off (memory_relevance_rule.py)
     dream: str = "off"               # off | propose: Dreaming, an offline pass over stored lesson and project.* rows while no chat turn runs; off schedules and reads nothing, propose writes an approval list and run receipts to memory_meta and applies nothing; L1 (user_explicit) and L2 (user_quote) rows are never proposed for change; unknown values read as off (memory_dream.py)
@@ -5252,16 +5252,20 @@ whose items are all strings, and nothing else (a scalar, `null`, an object or a 
 400 `must be a list of strings`, with nothing written). Every `str_list` entry declares
 `max_items` and `max_item_len`, and a longer list or a longer item is a 400 (`must be at most
 <n> items`, `each item must be at most <n> characters`), as every `str` entry has a `max_len`;
-`skills.extra_paths` allows 64 items of up to 4096 characters. A refusal records only the key
-as its SEL resource, never the value. Within the bounds the check is shape only: `[]`, empty
-items from a non-UI caller, duplicates, relative and non-existent paths are stored as sent, in
-order. `skills.extra_paths` is the one such entry. It is written through the normal locked
+`skills.extra_paths` allows 64 items of up to 4096 characters. An entry that also declares
+`item_pattern` (`browser.credentials.domains`, `dashboard.browser_local_origins`) refuses a list
+with any item that does not fully match it, a 400 `an item has the wrong shape`. All three
+checks live in one helper, `_str_list_problem`, which the nested `str_list` keys of a `dict`
+entry (`dashboard.update_nudge.skipped_versions`) use too. A refusal records only the key
+as its SEL resource, never the value. Without an `item_pattern`, the check within the bounds is
+shape only: `[]`, empty items from a non-UI caller, duplicates, relative and non-existent paths
+are stored as sent, in order. `skills.extra_paths` is such an entry. It is written through the normal locked
 writer, and the `SkillsLoader` watcher applies it live (no restart): the loader's own
 screening (expansion, resolution, sensitive-path exclusion, existence) stays the only judge of
 a path. Settings → Skills trims each line and drops blank ones before it sends the list; the
 same list is what `kirocrew config set skills.extra_paths --value-base64=…` stores.
-`dashboard.change_cards.check_setting_value` has the same `str_list` branch and bounds, so a card fails up
-front rather than falling through (no card can carry the list; see crew-mode).
+`dashboard.change_cards.check_setting_value` calls the same `_str_list_problem`, so a card is held
+to the same bounds and item pattern and fails up front rather than falling through (no card can carry the list; see crew-mode).
 
 ### Default context discovery
 

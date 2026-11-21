@@ -9,7 +9,7 @@ The generated default configuration is `~/.kiro/agents/kirocrew.json`. Its shipp
 - Model: `auto`, which leaves model selection to the configured provider.
 - Built-in tools: shell, file, code-search, web, introspection, session, reporting, and tool-search tools.
 - `allowedTools` grants for selected safe tools and Kiro Crew MCP operations.
-- MCP servers: `kirocrew-cron` and `kirocrew-core`; `kirocrew-computer` is emitted only when computer use is enabled and supported on the current platform.
+- MCP servers: `kirocrew-cron`, `kirocrew-core`, `kirocrew-guide` and `kirocrew-mate`; `kirocrew-computer` is emitted only when computer use is enabled and supported on the current platform.
 - A `postToolUse` audit hook for shell calls. It appends each command to
   `audit.log` under the data home (`~/.kiro/crew` or `KIROCREW_HOME`); the gateway
   (and a standalone `kirocrew chat`, at its start) rotates that file at 8 MiB,

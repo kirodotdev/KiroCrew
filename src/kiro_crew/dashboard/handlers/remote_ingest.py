@@ -214,7 +214,8 @@ async def close_remote_item(
        still name the slot (``holds_retired_slot``), and the row counts it in
        ``close_pending``.
     2. ``PATCH trust: false`` at once, to the pair the item held, whether or not
-       the retire landed.
+       the retire landed. When it did not and the peer did not take the PATCH,
+       :func:`_resend_revoke` sends it again with the close backoff.
     3. Start its close now (:func:`_schedule_closes`). A close in a turn the owner
        sent (*owner_turn*, :data:`CLOSE_BY_OWNER`) DELETEs the slot once its crew
        reads connected. Any other turn (:data:`CLOSE_BY_WAKE`) never DELETEs a live
@@ -249,12 +250,18 @@ async def close_remote_item(
         logger.warning("pending close not recorded for %s", item_id, exc_info=True)
     mgr = getattr(state, "instances_manager", None)
     if mgr is not None:
+        took = False
         try:
             # Bounded like a decide forward, so a stalled peer cannot outlast the
             # caller's request and turn a committed close into a reported failure.
-            await asyncio.wait_for(revoke_peer_trust(mgr, crew, slot), DECIDE_DEADLINE_SECS)
-        except Exception:  # noqa: BLE001 - the sweep's close sends it again
+            took = await asyncio.wait_for(revoke_peer_trust(mgr, crew, slot), DECIDE_DEADLINE_SECS)
+        except Exception:  # noqa: BLE001 - the sweep's close or the resend sends it again
             logger.warning("remote trust revoke failed for %s", item_id, exc_info=True)
+        if retired is None and not took:
+            # No ``retired`` entry, so no sweep sends it again: resend it here.
+            task = asyncio.ensure_future(_resend_revoke(mgr, crew, slot))
+            _CLOSE_TASKS.add(task)
+            task.add_done_callback(_CLOSE_TASKS.discard)
     if retired is not None:
         _schedule_closes(state, board, [retired])
 
@@ -1270,6 +1277,30 @@ async def _close_retired_slot(
             failures = _CLOSE_RETRY.get(key, (0, 0.0))[0] + 1
             delay = min(CLOSE_RETRY_SECS * 2 ** min(failures - 1, 16), CLOSE_RETRY_MAX_SECS)
             _CLOSE_RETRY[key] = (failures, _monotonic() + delay)
+
+
+#: How long :func:`_resend_revoke` keeps trying: the hard ceiling on any grant's
+#: lifetime, past which no grant it could end is still live.
+REVOKE_RESEND_SECS = 24 * 60 * 60
+
+
+async def _resend_revoke(mgr: Any, crew: str, slot: str) -> None:
+    """Resend ``trust: false`` to *slot* with the close backoff until the peer takes it.
+
+    For a close whose ``retire`` did not record, so no sweep retries it. Never raises.
+    shortcut: in memory only, like :data:`_CLOSE_RETRY`; a hub restart drops it and
+    the grant ends at its TTL. Persist a marker if that gap matters.
+    """
+    deadline, failures = _monotonic() + REVOKE_RESEND_SECS, 0
+    while _monotonic() < deadline:
+        # The same backoff as a failed close (_close_retired_slot).
+        await asyncio.sleep(min(CLOSE_RETRY_SECS * 2 ** min(failures, 16), CLOSE_RETRY_MAX_SECS))
+        failures += 1
+        try:
+            if await asyncio.wait_for(revoke_peer_trust(mgr, crew, slot), PULL_TIMEOUT_SECS):
+                return
+        except Exception:  # noqa: BLE001 - the next try sends it again
+            logger.info("trust revoke for %s on %s failed again", slot, crew, exc_info=True)
 
 
 async def _slot_idle_and_done(state: "DashboardState", mgr: Any, crew: str, slot: str) -> bool:

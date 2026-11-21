@@ -39,8 +39,13 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+#: The stages that default to ``enforce``, set ``off`` so a bare ``_config`` is every stage off.
+_DEFAULT_ON_OFF = {"kind_routing": "off", "lesson_fold": "off", "rule_authority_order": "off"}
+
+
 def _config(home: Path, **flags: str) -> None:
-    (home / "config.json").write_text(json.dumps({"memory": flags}), encoding="utf-8")
+    memory = {**_DEFAULT_ON_OFF, **flags}
+    (home / "config.json").write_text(json.dumps({"memory": memory}), encoding="utf-8")
 
 
 def _shards(home: Path) -> list[dict]:
@@ -75,11 +80,13 @@ def test_the_control_sample_is_a_stable_capped_subset_of_kept_keys() -> None:
 
 
 def test_observing_is_false_only_when_every_stage_is_off() -> None:
-    off = SimpleNamespace()
+    assert trace.observing(SimpleNamespace()) is True, "three stages default to enforce"
+    off = SimpleNamespace(**{stage.name: "off" for stage in msr.STAGES})
     assert trace.observing(off) is False
     for stage in msr.STAGES:
         mode = "propose" if stage.name == "dream" else "shadow"
-        assert trace.observing(SimpleNamespace(**{stage.name: mode})) is True, stage.name
+        flags = {**vars(off), stage.name: mode}
+        assert trace.observing(SimpleNamespace(**flags)) is True, stage.name
 
 
 def test_recall_ids_reads_keys_only_and_caps_them() -> None:

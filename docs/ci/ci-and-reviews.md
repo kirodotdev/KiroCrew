@@ -295,6 +295,35 @@ Three structural facts explain most of the rest:
   Actions token filed and only that issue's checked state record; the fix line is
   rebuilt from the issue timeline, not copied from the editable body.
   `test/test_main_red_pr_notice.py` runs the step with `gh` stubbed.
+- **Three pull requests that fail one test the same way open a `Main may be red:`
+  issue.** The `Main is red:` issue comes only after a push run on `main` ends,
+  about an hour after the commit that broke it. When a same-repository pull
+  request's `CI` run (target `main`) ends `failure` and names a failing test,
+  `main-red-suspect.yml` reads the newest failed runs of other pull requests and,
+  when the same node id fails with the same message start (80 characters) on 3
+  pull requests, whether or not the run that started it is one of them, files one
+  `ci: Main may be red: <node id>` issue under the `main-red-suspected` label
+  (`.github/scripts/main_red_suspect.py`). The 3 must have different authors and
+  runs started by different accounts, each failing on its current head, none
+  changing the test's file (an unreadable or cut list counts as changing it),
+  with a plain `test/...py::name` or `src/...py::name` id; a fork's pull request
+  is never counted. Every set of 3 among the runs read is tried, so the order
+  of the run list decides nothing. The issue lists the tests, the 3 pull
+  requests and the one of their bases that the other two contain. It is a notice and never a skip:
+  `scripts/ci_main_red_skip.py` and `main-red-pr-notice.yml` read only the issue
+  the watcher's `pick_issue` returns, and a suspected issue has another title
+  prefix, another record marker and another label, so only a red push run on
+  `main` can deselect a test. A push run on `main` closes the suspected issue:
+  a red one once the `Main is red:` issue names the test (that issue tracks it),
+  a green one that ran the full backend suite and contains the recorded base
+  (main was green), and a test closed that way is not suspected again for 24
+  hours, so a flaky test does not file one issue per flake. At most 3 are open
+  at once and a test is in one of them only. It reads nothing more while a `Main is red:` issue is open, reads at
+  most the newest 10 other failed pull request runs of the last 3 hours, reads
+  no other run when fewer than 1,500 API requests are left for the token, changes nothing on
+  a pull request and cannot fail a job. It holds `actions: read`,
+  `checks: read`, `contents: read`, `pull-requests: read` and `issues: write`.
+  `test/test_main_red_suspect.py` pins each rule with `gh` faked.
 - **A pull request does not run the tests that are red on main.** The `changes`
   job of `ci.yml` reads the open `Main is red:` issue once per run
   (`scripts/ci_main_red_skip.py decide`), and every `Backend Tests` shard, Linux
@@ -694,9 +723,16 @@ A second identical failure counts as evidence, not bad luck.
 
 ### Code ownership
 
-`.github/CODEOWNERS` assigns every repository path to
+`.github/CODEOWNERS` assigns repository paths to
 `@kirodotdev/kirocrew-pr-review` and `@KiroCrewCaptain` (the maintainers'
-automation account) through a single wildcard rule naming both, so an approval from either satisfies the ruleset's code owner review. GitHub reads that
+automation account) through a wildcard rule naming both, so an approval from either satisfies the ruleset's code owner review.
+Later rules with no owners leave the prose docs unowned (`docs/**/*.md`,
+`src/kiro_crew/docs/**/*.md`, `website/docs/**/*.md`, the root `README.md` and
+`CONTRIBUTING.md`), so a PR that changes only those needs no code owner review. Two
+directories are owned again by both: `docs/request-for-change/` (RFCs) and
+`docs/decisions/` (decision records), because they record product decisions. The
+last matching rule wins. Agent instructions (`AGENTS.md`, `skills/`,
+`.github/review-prompts/`, `.kiro/`) and `CHANGELOG.md` stay owned. GitHub reads that
 file to request reviews; the file
 itself establishes no approval count and enforces no branch protection, so a tier, a
 required number of reviewers, or a designated-maintainer requirement cannot be
@@ -814,6 +850,17 @@ Three checks skip a doc whose genre names things that do not exist yet
 names a file or a symbol precisely BECAUSE it is not there yet. `fenced-path` also
 skips the packaged user docs under `src/kiro_crew/docs/`, where a task-spec path is
 a template for the reader's own project rather than a file in this checkout.
+
+`dead-identifier` has two more exemptions. A doc anywhere else that specifies
+something not built yet puts a `Status: planned` line in its first twelve lines;
+only this check honours it, so the paths such a doc cites into today's code are
+still checked. A name defined outside this repository (a vendor API, another
+harness, an OS facility) goes in `.github/docs-lint-external-identifiers.txt`,
+under a comment naming its source. Never list a name this repo defines: the list
+would hide its rename. docs-lint holds the list to that rule: a listed name the code
+now defines is a `dead-identifier` finding against the list file, and unlike a doc's
+dead identifier it fails the run without `--strict-identifiers`, until the line is
+deleted.
 
 The builtin app tree is the mirror image of that exemption: it keeps every fact
 check and every link check, and drops only the two CURATION rules, reachability and
@@ -965,7 +1012,7 @@ yet decided: install from a committed constraints file, or set
 | `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces the project line-rate floors, plus a per-file floor with a shrink-only baseline (all floors live in the job's `env:` block). **CodeBuild-hosted runner** (pilot, below) except for forks. Each uses a sparse checkout of only what it reads: `src/`, `setup.cfg` and `pyproject.toml` for the combine; the gate script, `.github/coverage-baselines/` and `pyproject.toml` for the gate. A measured file outside the combine list fails `coverage xml` and `coverage report` with "No source for code"; `test/test_ci_coverage_sparse_checkout.py` holds both lists against what the jobs read |
 | `frontend-lint` | `tsc -p tsconfig.app.json` and `eslint` under a hard-zero warning ceiling. These two are the whole job: a type error or a lint failure makes a test result meaningless, so they are what `lint-gate` waits on. The frontend ratchets run in `frontend-ratchets` |
 | `frontend-ratchets` | "Frontend Ratchets & i18n". `jscpd`, `npm run i18n:check`, the find_ui index freshness check and the find_ui goldens that need the real generator, the phantom-classes and `ui/` restyle ratchets, and `scripts/check_file_line_cap.py` on a full-history checkout (its only home on a frontend-only diff, where `backend-ratchets` is skipped). Carries `frontend-lint`'s surface condition verbatim and is NOT in `lint-gate`'s `needs:` — a failure here reds the pull request alongside the heavy matrix rather than skipping it |
-| `backend-ratchets` | "Backend Ratchets & Boundaries". The baselined ratchets that judge a CHANGE rather than a build: `scripts/check_subprocess_encoding.py` (self-test first) — no text-mode subprocess call without an explicit `encoding=`, `**UTF8_TEXT`, or a `# subprocess-encoding: locale` marker, outside `.github/subprocess-encoding-baseline.txt`, which can only shrink — and `scripts/check_sync_io_in_async.py` (self-test first) — no blocking db / subprocess / http / `time.sleep` call inside an `async def` under `src/`, outside `.github/sync-io-in-async-baseline.txt`, and no blocking fs call there (`os.stat` / `listdir` / `walk`, `os.path.realpath` / `exists`, bare `open()`, zero-argument `.resolve()` / `.stat()` / `.exists()` and kin, zero-argument `.read_text()` / `.read_bytes()` / `.open()`, one-argument `.write_text()` / `.write_bytes()`) outside `.github/sync-io-in-async-fs-baseline.txt`; each ledger can only shrink. A stall past `dashboard.loop_stall_exit_after_secs` (25s) makes the watchdog kill the gateway and drop every in-flight turn (#3057, #1572); the escape is an offload (`await asyncio.to_thread(...)`, or a named lane from `src/kiro_crew/executors.py`) or a `# on-loop-io-ok: <why it cannot block>` marker whose reason is mandatory — and `scripts/check_file_line_cap.py` (self-test first) — no tracked code file over 2,000 lines outside `.github/file-line-cap-baseline.txt`, which can only shrink; a file the change does not touch is reported as main drift, not failed; plus `scripts/check_acp_frame_host_data.py`, `scripts/check_agent_sdk_boundary.py` and `scripts/check_lockdown_before_publish.py`. Full-history checkout, because four of them scope themselves by ancestry through `scripts/ratchet_scope.py`. Stdlib only, so no dependency install. Carries `backend-lint`'s surface condition verbatim and is likewise NOT in `lint-gate`'s `needs:` |
+| `backend-ratchets` | "Backend Ratchets & Boundaries". The baselined ratchets that judge a CHANGE rather than a build: `scripts/check_subprocess_encoding.py` (self-test first) — no text-mode subprocess call without an explicit `encoding=`, `**UTF8_TEXT`, or a `# subprocess-encoding: locale` marker, outside `.github/subprocess-encoding-baseline.txt`, which can only shrink — and `scripts/check_sync_io_in_async.py` (self-test first) — no blocking db / subprocess / http / `time.sleep` call inside an `async def` under `src/`, outside `.github/sync-io-in-async-baseline.txt`, and no blocking fs call there (`os.stat` / `listdir` / `walk`, `os.path.realpath` / `exists`, bare `open()`, zero-argument `.resolve()` / `.stat()` / `.exists()` and kin, zero-argument `.read_text()` / `.read_bytes()` / `.open()`, one-argument `.write_text()` / `.write_bytes()`) outside `.github/sync-io-in-async-fs-baseline.txt`; each ledger can only shrink. A stall past `dashboard.loop_stall_exit_after_secs` (25s) makes the watchdog kill the gateway and drop every in-flight turn (#3057, #1572); the escape is an offload (`await asyncio.to_thread(...)`, or a named lane from `src/kiro_crew/executors.py`) or a `# on-loop-io-ok: <why it cannot block>` marker whose reason is mandatory — and `scripts/check_file_line_cap.py` (self-test first) — no tracked code file over 2,000 lines outside `.github/file-line-cap-baseline.txt`, which can only shrink; a file the change does not touch is reported as main drift, not failed; plus `scripts/check_acp_frame_host_data.py`, `scripts/check_agent_sdk_boundary.py` and `scripts/check_lockdown_before_publish.py`. On a pull request it also runs `scripts/ci_guard_tier_membership.py`: the guard tier (`scripts/ci_test_map.py guard-tier`) of the merge commit against the tier of its first parent. A file that joins is listed in the job summary; a file that leaves while it still exists fails unless it carries a `# guard-tier: not a member -- <reason>` line of its own, and a tier member carrying that line fails too. Both sides come from the pull request and its own base, so no other change can alter the verdict. Full-history checkout, because four of them scope themselves by ancestry through `scripts/ratchet_scope.py`. Stdlib only, so no dependency install. Carries `backend-lint`'s surface condition verbatim and is likewise NOT in `lint-gate`'s `needs:` |
 | `electron-test` | The Electron shell's own node:test suite (`website/electron`). NOT diff-gated: the test suite reads `packaging/` paths and `src/kiro_crew/` files classified as backend by the catch-all filter, so any `only_backend` gate would skip it on exactly the backend-only diffs that can break it |
 | `electron-test-windows` | Runs the native Windows port-owner identity tests against real NTFS junction and `Win32_Process` behavior, and `find-bin-real-ssh.test.js`, which resolves the in-box OpenSSH client through the kernel's real `\SystemRoot` link; no npm install is needed because the tested modules use Node's standard library only. NOT diff-gated for the same reason as `electron-test` |
 | `frontend-test` | `vitest run --coverage`. **CodeBuild-hosted runner, `instance-size:large`** (pilot, below) except for forks. A test file a dead fork never started is run once on its own and must pass; its blob joins the merge, and only then are the worker-exit errors dropped from the shard blob. Any other failure, or a failing re-run, stays red (procedure and limits: [website/docs/testing.md, CI gates](../../website/docs/testing.md#ci-gates)). A failed or recovered shard also prints `free -m` and any kernel OOM-kill line ("Kernel log on a failed or recovered shard"), because Vitest 4's "Worker exited unexpectedly" names no signal (#23640). A clean kernel log does not rule out a native crash: Node re-raises SIGSEGV from its own handler, so the kernel logs no `segfault at` line for it |
@@ -2076,7 +2123,8 @@ what starts them:
   `sensitive-change-review-comment.yml`'s `rerun`, which a review starts too
   (above)
 - another workflow completing: `main-red-watch.yml`'s `watch`,
-  `main-red-pr-notice.yml`'s `notice`, `main-macos-failure-watch.yml`'s `page`
+  `main-red-pr-notice.yml`'s `notice`, `main-red-suspect.yml`'s `suspect`,
+  `main-macos-failure-watch.yml`'s `page`
   and `scheduled-failure-watch.yml`'s `surface`
 - a call from `nightly.yml`, `release.yml` or `release-lts.yml`:
   `publish-cli.yml`'s `publish-cli`, `publish-docker.yml`'s `publish-docker`,

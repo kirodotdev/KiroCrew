@@ -123,6 +123,9 @@ export interface WorkDiscussion {
   checking?: string[]
   disputed?: { point: string; sides?: string }[]
   recent?: { who: string; text: string }[]
+  /** The talk so far, one entry a round, one short line a participant.
+   *  Absent from a report written before it existed. */
+  rounds?: { round: number; lines: { who: string; text: string }[] }[]
 }
 
 /** The conductor's own record. No `worker_session_key` anywhere in it. */

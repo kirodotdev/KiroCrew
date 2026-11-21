@@ -16,6 +16,21 @@ def manager():
     return TunnelManager(port=5476, name_mode="username", name_override=None)
 
 
+def _relay_off_context() -> None:
+    """Compose the public defaults with Remote Control stored off: the no-op provider.
+
+    An unset ``tunnel.relay_enabled`` hosts on a personal sign-in, so the OSS stub
+    path is a stored off (the autouse ``_reset_platform_context`` resets it after).
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.platform.bootstrap import build_default_context
+    from kiro_crew.platform.context import set_context
+
+    cfg = KiroCrewConfig()
+    cfg.tunnel.relay_enabled = False
+    set_context(build_default_context(cfg))
+
+
 class TestTunnelName:
     def test_username_mode(self, manager: TunnelManager):
         assert manager._tunnel_name() == "kirocrew"
@@ -36,6 +51,7 @@ class TestStateTransitions:
     async def test_start_is_noop_disabled_in_oss(self, manager: TunnelManager):
         """Stub: the tunnel feature is not available in OSS, so start() leaves
         the tunnel disabled rather than spawning a managed tunnel."""
+        _relay_off_context()
         await manager.start()
         assert manager.state == TunnelState.DISABLED
         assert manager.status.error == "not available in OSS"
@@ -328,6 +344,7 @@ class TestStartLogsDisabledNotice:
     @pytest.mark.asyncio
     async def test_start_logs_oss_disabled_notice(self, manager: TunnelManager):
         """Stub: start() logs that the tunnel feature is unavailable in OSS."""
+        _relay_off_context()
         with patch("kiro_crew.tunnel.manager.logger") as mock_log:
             await manager.start()
         mock_log.info.assert_called()
@@ -717,7 +734,8 @@ class TestTunnelProviderDelegation:
     @pytest.mark.asyncio
     async def test_default_provider_status_is_local_and_disabled(self):
         """With the Default provider, status stays local + disabled (unchanged)."""
-        # No provider installed → the standalone Default composes lazily.
+        # The standalone Default, with Remote Control stored off.
+        _relay_off_context()
         mgr = TunnelManager(port=5476)
         await mgr.start()
         assert mgr.state == TunnelState.DISABLED

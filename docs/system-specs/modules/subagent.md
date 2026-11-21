@@ -5214,9 +5214,9 @@ manager's prose (`info.error.startswith("conversation_busy")`), because
 returning an identifier. `SubagentInfo.error_code` is the carrier that would let
 them be minted at the decision the way the unknown-agent refusal is; while they
 are not, treat `conversation_busy` / `conversation_gone` as inferred, not
-minted. Two more consumers reconstruct the same two decisions from prose
-internally (`crew_chat`'s queue hold, `continuation`'s busy retry), so minting
-them at the decision has to move those consumers too.
+minted. One more consumer reconstructs the busy decision from prose
+internally (`continuation`'s busy retry), so minting them at the decision has
+to move that consumer too.
 
 ### Handler keywords (instant, no LLM)
 

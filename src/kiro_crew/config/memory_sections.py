@@ -513,17 +513,17 @@ class MemoryConfig:
         ),
     )
     kind_routing: str = field(
-        default="off",
+        default="enforce",
         metadata=_meta(
             "Consolidation Kind Routing",
             "Whether consolidation tags each project.* fact with a kind (fact, event "
-            "or state) and what it does with it. 'off' (default) keeps today's "
-            "prompt and writes. 'shadow' writes every fact as before and only "
-            "logs, within fixed size caps, what routing would do. 'enforce' skips a "
-            "state item (the status of tracked work, such as a code change under "
-            "review, a ticket, a CI run or a branch, or a next step, a count or a "
-            "worktree path) and writes facts and events as before. Stored "
-            "facts are never changed.",
+            "or state) in one small extra model call and what it does with it. "
+            "'enforce' (default) skips a state item (the status of tracked work, "
+            "such as a code change under review, a ticket, a CI run or a branch, or "
+            "a next step, a count or a worktree path) and writes facts and events "
+            "as before. 'shadow' writes every fact as before and only logs, within "
+            "fixed size caps, what routing would do. 'off' makes no extra call and "
+            "writes every fact. Stored facts are never changed.",
             enum=list(KIND_ROUTING_MODES),
         ),
     )
@@ -585,30 +585,31 @@ class MemoryConfig:
         ),
     )
     lesson_fold: str = field(
-        default="off",
+        default="enforce",
         metadata=_meta(
             "Lesson Fold",
             "Whether the session-start rule block leaves out near-duplicate rules "
             "(same scope and tier, and the same text or stored vectors at cosine "
-            "0.95 or more). 'off' (default) keeps today's block. 'shadow' keeps "
-            "today's block and only records, in the injection receipt and within "
-            "fixed size caps, which rule ids would fold into which. 'enforce' keeps "
-            "the first copy of each rule (yours first, then newest) and says how many "
-            "were folded; learn_list still shows all. Rules you taught are never "
-            "folded and no stored lesson is changed.",
+            "0.95 or more). 'enforce' (default) keeps the first copy of each rule "
+            "(yours first, then newest) and says how many were folded; learn_list "
+            "still shows all. 'shadow' keeps every copy and only records, in the "
+            "injection receipt and within fixed size caps, which rule ids would fold "
+            "into which. 'off' keeps every copy. Rules you taught are never folded "
+            "and no stored lesson is changed.",
             enum=list(LESSON_FOLD_MODES),
         ),
     )
     rule_authority_order: str = field(
-        default="off",
+        default="enforce",
         metadata=_meta(
             "Rule Authority Order",
-            "How the session-start rule block orders its rules. 'off' (default) "
-            "keeps today's block. 'shadow' keeps today's block and only records, in "
-            "the injection receipt and within fixed size caps, which rule ids the "
-            "new order would add or drop. 'enforce' lists rules saved as yours "
-            "(learn_add, dashboard, CLI) first, then rules inferred from sessions; "
-            "inside each group the current order holds. Keep memory.lesson_origin_gate at 'enforce' "
+            "How the session-start rule block orders its rules. 'enforce' (default) "
+            "lists rules saved as yours (learn_add, dashboard, CLI) first, then rules "
+            "inferred from sessions; inside each group the relevance order holds. "
+            "'shadow' keeps the relevance order and only records, in the injection "
+            "receipt and within fixed size caps, which rule ids the authority order "
+            "would add or drop. 'off' keeps the relevance order. Set "
+            "memory.lesson_origin_gate to 'enforce' "
             "too, or a learn_add an agent made on its own counts as yours. The rule "
             "budget is unchanged and no stored lesson is changed.",
             enum=list(RULE_AUTHORITY_ORDER_MODES),

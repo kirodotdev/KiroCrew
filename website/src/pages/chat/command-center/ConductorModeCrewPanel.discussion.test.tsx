@@ -68,14 +68,52 @@ describe('Conductor mode Board: the discussing row', () => {
     for (const text of ['Direction', 'Card multiline first', 'Offline says so', 'Attach button', 'A: in the card · B: in the chat', 'Paste size cap', 'The card already has a box']) {
       expect(panel).toHaveTextContent(text)
     }
-    expect(within(panel).getByTestId('conductor-mode-talk-thread')).toHaveAttribute('href', '/chat/abc')
+    // An older report (no rounds) keeps its latest lines, and nothing opens a new page.
+    expect(panel).toHaveTextContent('Latest lines')
+    expect(within(panel).queryByTestId('conductor-mode-talk-rounds')).toBeNull()
+    expect(r.querySelector('a[target="_blank"]')).toBeNull()
   })
 
-  it('draws no thread link the board may not open', async () => {
-    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ discussion: { ...TALK, thread: 'javascript:alert(1)' } })] })
+  it('shows the talk round by round in place, oldest first, with no link out', async () => {
+    const rounds = [
+      { round: 2, lines: [{ who: 'A', text: 'Concedes: two inputs confuse' }, { who: 'B', text: 'Keeps the chat box' }] },
+      { round: 1, lines: [{ who: 'A', text: 'The card owns its input' }, { who: 'B', text: 'Reuse the chat box' }, { who: '', text: '' }] },
+    ]
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ discussion: { ...TALK, rounds } })] })
     renderPanel()
     const r = await row()
-    expect(within(r).queryByTestId('conductor-mode-talk-thread')).toBeNull()
+    fireEvent.click(within(r).getByTestId('conductor-mode-talk-toggle'))
+    const panel = within(r).getByTestId('conductor-mode-talk-panel')
+    expect(panel).toHaveTextContent('Round by round')
+    const shown = within(panel).getAllByTestId('conductor-mode-talk-round')
+    expect(shown.map(el => el.textContent)).toEqual([
+      'Round 1A: The card owns its inputB: Reuse the chat box',
+      'Round 2A: Concedes: two inputs confuseB: Keeps the chat box',
+    ])
+    // The rounds replace the latest lines, which would repeat the last round.
+    expect(panel).not.toHaveTextContent('Latest lines')
+    expect(r.querySelector('a')).toBeNull()
+  })
+
+  it('marks a running talk live, with a label, and only while talking or checking', async () => {
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({})] })
+    renderPanel()
+    const r = await row()
+    const dot = within(r).getByRole('img', { name: 'Discussion in progress' })
+    expect(dot).toHaveAttribute('data-testid', 'conductor-mode-talk-live')
+    expect(dot.className).toContain('motion-safe:animate-pulse')
+  })
+
+  it('shows no live mark when the talk is done or its host is idle', async () => {
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [
+      ITEM({ item_id: 'it_done', discussion: { ...TALK, phase: 'done', round: 3 } }),
+      ITEM({ item_id: 'it_idle', alive: 'idle' }),
+    ] })
+    renderPanel()
+    const rows = await screen.findAllByTestId('conductor-mode-milestone')
+    expect(rows).toHaveLength(2)
+    expect(within(rows[0]).getByTestId('conductor-mode-discussing')).toHaveTextContent('Talk finished · Round 3')
+    for (const r of rows) expect(within(r).queryByTestId('conductor-mode-talk-live')).toBeNull()
   })
 
   it('is gone once the item closes', async () => {
@@ -92,5 +130,6 @@ describe('Conductor mode Board: the discussing row', () => {
     const r = await row()
     expect(r).toHaveAttribute('data-state', 'quiet')
     expect(within(r).queryByTestId('conductor-mode-talk')).toBeNull()
+    expect(within(r).queryByTestId('conductor-mode-talk-live')).toBeNull()
   })
 })
