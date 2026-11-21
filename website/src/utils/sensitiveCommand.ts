@@ -74,6 +74,144 @@ const FULL_BLOCK_PATTERNS: Partial<Record<ReasonId, RegExp[]>> = {
   uploads_to_url: [/(curl|wget)\s[\s\S]*?-d\s+@[^\s]/],
 }
 
+/**
+ * PowerShell and cmd forms of the same risks, checked on words rather than
+ * patterns. A block is split into lines (a line ending in PowerShell's backtick
+ * continues on the next), each line into words and the separators `;`, `|`,
+ * `&`, `(` and `{`, and each command is its first word, lower-cased: both
+ * shells match command names case-insensitively, and a word only counts in
+ * command position, so `Add-Type` and `-Type` are not readers.
+ */
+const WIN_READERS = new Set(['get-content', 'gc', 'type'])
+const WIN_ENV_LISTERS = new Set(['get-childitem', 'gci', 'dir', 'ls'])
+/** `curl` and `wget` are Invoke-WebRequest aliases in Windows PowerShell 5.1. */
+const WIN_WEB_SENDERS = new Set(['invoke-webrequest', 'iwr', 'invoke-restmethod', 'irm', 'curl', 'wget'])
+const WIN_SEPARATORS = new Set([';', '|', '&', '(', '{'])
+const CREDENTIAL_DIRS = new Set(['.aws', '.ssh', '.gnupg', 'gcloud'])
+const CREDENTIAL_FILES = ['credentials', 'id_rsa', 'id_ed25519', 'private.key']
+const SECRET_WORDS = ['secret', 'key', 'token', 'pass', 'cred', 'aws']
+/** A regex, not string literals: the i18n literal gate reads `'$env:…'` as copy. */
+const SECRET_ENV_READ = /\$env:(aws_secret|aws_session|github_token|npm_token)/
+const ARG_WRAPPERS = new Set(['"', "'", ')', '}'])
+
+/** Lines of `code`, with a backtick-continued line joined to the next. */
+function logicalLines(code: string): string[] {
+  const out: string[] = []
+  let carry = ''
+  for (const raw of code.split('\n')) {
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
+    const trimmed = line.trimEnd()
+    if (trimmed.endsWith('`')) { carry += trimmed.slice(0, -1) + ' '; continue }
+    out.push(carry + line)
+    carry = ''
+  }
+  if (carry) out.push(carry)
+  return out
+}
+
+/** Lower-cased words of one line, each separator a word of its own. */
+function lineWords(line: string): string[] {
+  const words: string[] = []
+  let word = ''
+  for (const ch of line.toLowerCase()) {
+    if (ch === ' ' || ch === '\t') { if (word) words.push(word); word = ''; continue }
+    if (WIN_SEPARATORS.has(ch)) { if (word) words.push(word); words.push(ch); word = ''; continue }
+    word += ch
+  }
+  if (word) words.push(word)
+  return words
+}
+
+/** A word without the quotes and closing brackets around it. */
+function bare(word: string): string {
+  let start = 0
+  let end = word.length
+  while (start < end && ARG_WRAPPERS.has(word[start])) start++
+  while (end > start && ARG_WRAPPERS.has(word[end - 1])) end--
+  return word.slice(start, end)
+}
+
+/** Whether a path argument names a credential store, a key file or a `.env`. */
+function namesCredential(arg: string): boolean {
+  const parts = bare(arg).split('\\').join('/').split('/').filter(Boolean)
+  if (parts.length === 0) return false
+  if (parts.some(p => CREDENTIAL_DIRS.has(p))) return true
+  const last = parts[parts.length - 1]
+  if (last === '.env' || last.startsWith('.env.')) return true
+  return parts.length > 1 && CREDENTIAL_FILES.some(f => last === f || last.startsWith(f + '.'))
+}
+
+/** The words of a command with a leading `$var =` (or `$var=`) assignment
+ *  removed, so `$r = Invoke-RestMethod ...` is judged as Invoke-RestMethod. */
+function commandAfterAssignment(words: string[]): string[] {
+  if (words.length >= 2 && words[0].startsWith('$') && words[1] === '=') return words.slice(2)
+  const first = words[0] ?? ''
+  const eq = first.indexOf('=')
+  if (first.startsWith('$') && eq !== -1) {
+    const called = first.slice(eq + 1)
+    return called ? [called, ...words.slice(1)] : words.slice(1)
+  }
+  return words
+}
+
+/** Arguments without each redirection (`>`, `>>`, `2>`) and its target: a
+ *  redirect target is written, not read, so `type nul > .env` reads nothing,
+ *  while `type >dump.txt .env` still reads `.env`. */
+function withoutRedirects(args: string[]): string[] {
+  const out: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const op = /^[12]?>>?/.exec(args[i])
+    if (!op) { out.push(args[i]); continue }
+    // `> file`: the target is the next word; `>file`: it is joined.
+    if (op[0] === args[i]) i++
+  }
+  return out
+}
+
+/** The value an argument names: itself, the part after `:` of a colon-joined
+ *  parameter (`-Path:~\.aws\credentials`), or nothing for a bare parameter. */
+function argumentValue(arg: string): string {
+  if (!arg.startsWith('-')) return arg
+  const colon = arg.indexOf(':')
+  return colon === -1 ? '' : arg.slice(colon + 1)
+}
+
+/** The PowerShell and cmd reason `code` trips: a credential read first, then a
+ *  secret environment dump, then a single secret variable, then a file upload. */
+function windowsShellReason(code: string): ReasonId | null {
+  let envDump = false
+  let envSingle = false
+  let upload = false
+  for (const line of logicalLines(code)) {
+    const words = lineWords(line)
+    if (words.some(w => SECRET_ENV_READ.test(w))) envSingle = true
+    let start = 0
+    for (let i = 0; i <= words.length; i++) {
+      if (i < words.length && !WIN_SEPARATORS.has(words[i])) continue
+      const command = words.slice(start, i)
+      start = i + 1
+      const called = commandAfterAssignment(command)
+      if (called.length === 0) continue
+      const [name, ...rest] = called
+      const args = withoutRedirects(rest)
+      if (WIN_READERS.has(name) && args.some(a => namesCredential(argumentValue(a)))) return 'credential_files'
+      if (WIN_ENV_LISTERS.has(name) && args.some(a => bare(a).startsWith('env:'))) {
+        const pipe = words.indexOf('|', i)
+        if (pipe !== -1 && words.slice(pipe + 1).some(w => SECRET_WORDS.some(s => w.includes(s)))) envDump = true
+      }
+      if (WIN_WEB_SENDERS.has(name)) {
+        const at = args.indexOf('-infile')
+        if (at !== -1 && at + 1 < args.length && !WIN_SEPARATORS.has(args[at + 1])) upload = true
+        if (args.some(a => a.startsWith('-infile:') && a.length > '-infile:'.length)) upload = true
+      }
+    }
+  }
+  if (envDump) return 'env_dump'
+  if (envSingle) return 'env_single'
+  if (upload) return 'uploads_to_url'
+  return null
+}
+
 export interface SensitiveMatch {
   /** Localised, ready to render. Non-empty for every match. */
   reason: string
@@ -103,7 +241,7 @@ function firstMatch(groups: Partial<Record<ReasonId, RegExp[]>>, code: string): 
  * still fire. A missing translation degrades the wording, never the check.
  */
 export function checkSensitiveCommand(code: string): SensitiveMatch | null {
-  const reasonId = firstMatch(PER_LINE_PATTERNS, code) ?? firstMatch(FULL_BLOCK_PATTERNS, code)
+  const reasonId = firstMatch(PER_LINE_PATTERNS, code) ?? windowsShellReason(code) ?? firstMatch(FULL_BLOCK_PATTERNS, code)
   // `REASON_KEY[reasonId]` indexed INLINE at the call, not resolved inside
   // `firstMatch`: that is the shape `scripts/check-i18n-keys.mjs` follows, so
   // every reason key is verified to exist in the catalog.
