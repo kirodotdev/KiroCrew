@@ -216,6 +216,10 @@ ALWAYS_REDACTED_SITES: Mapping[str, str] = MappingProxyType(
             "stand down runs in full, since a trailing pass runs in its first caller's "
             "context and a teammate who joined it reads the same rows"
         ),
+        "hook_runtime/hook_dispatch.py": (
+            "hook_tool_input builds the PreToolUse payload's tool_input: a hook is a sink "
+            "no seam lists"
+        ),
         "platform/context.py": (
             "_scan_verdict: the upload gates' content scans decide whether a file may leave; "
             "redact_log_via_context: its callers clip the result for sinks that stay redacted"

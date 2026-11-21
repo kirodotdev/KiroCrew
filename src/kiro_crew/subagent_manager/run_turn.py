@@ -1395,6 +1395,7 @@ async def _run_inner_impl(
                     subagent_id=info.id,
                     parent_session_key=info.parent_session_key or None,
                     agent_role=info.agent or None,
+                    raw_tool_params=getattr(event, "raw_tool_params", None),
                 )
         elif event.kind == EVENT_TOOL_CALL_UPDATE:
             await _card_titles.refine(self._manager, info, event)
