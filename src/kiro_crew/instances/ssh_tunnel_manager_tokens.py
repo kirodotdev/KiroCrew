@@ -563,10 +563,14 @@ async def _cancel_token_refresh_and_wait(self: SshTunnelManager, instance_id: st
     would otherwise finish afterwards and store a token minted from the
     pre-edit coordinates against the tunnel the edit rebuilt — the embedded
     dashboard would then be handed a credential the new remote never issued.
+
+    A task that is already done has nothing left to unwind, and is skipped:
+    from CPython 3.14 ``gather`` binds the running loop and refuses a finished
+    task created on an earlier, closed loop.
     """
     task = self._refresh_tasks.get(instance_id)
     self._cancel_token_refresh(instance_id)
-    if task is not None:
+    if task is not None and not task.done():
         await asyncio.gather(task, return_exceptions=True)
 
 
