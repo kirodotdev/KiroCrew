@@ -8,6 +8,7 @@ import { setAgentSwitchNotice } from '../../../store/chatSlice'
 import { updateSlot } from '../../../store/dashboardSlice'
 import { inFlightSlotSwitchOutcome, stagedSlotSwitchTarget, performSlotSwitch } from '../../../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../../../lib/agentSwitch'
+import { performProjectSlotSwitch } from '../../../lib/projectSwitch'
 import { api } from '../../../api/client'
 import { decidePermissionRow } from '../../../lib/decidePermissionRow'
 import { useFilteredDropdown } from '../../../hooks/useFilteredDropdown'
@@ -354,14 +355,8 @@ export function useSessionChoices({
     const slot = activeSlot
     setProjectSwitches(prev => ({ ...prev, [slot]: (prev[slot] ?? 0) + 1 }))
     try {
-      // Same protocol as switchModel above; the server realpath-normalizes
-      // the directory, so the response's spelling is what gets written.
-      await performSlotSwitch('project', activeSlot, path,
-        async () => {
-          const r = await api.chatSlotProject(activeSlot, path)
-          return r?.project ?? path
-        },
-        (value) => dispatch(updateSlot({ key: activeSlot, project: value })))
+      // Same protocol as switchModel above.
+      await performProjectSlotSwitch(activeSlot, path, dispatch)
     } catch (e) {
       dispatch(setAgentSwitchNotice(agentSwitchErrorNotice(e)))
       // eslint-disable-next-line no-console -- surface setProject failures for debugging
