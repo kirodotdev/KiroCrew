@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import uuid
 from pathlib import Path
 
@@ -187,6 +188,8 @@ SINGLE_BACKSLASH_PROTECTED_PATH_BODIES = [
     ('open(r"D:\\Profiles\\u\\.aws\\credentials")', ".aws"),
     ("%USERPROFILE%\\.aws\\credentials", ".aws"),
     ("%USERPROFILE%\\.ssh\\id_rsa", ".ssh"),
+    ("C:\\.aws\\credentials", ".aws"),
+    ("open(r'C:\\Users\\u\\.ssh')", ".ssh"),
 ]
 
 
@@ -195,6 +198,36 @@ def test_vet_script_contents_refuses_a_single_backslash_protected_path(body, nam
     err = _vet_script_contents(body)
     assert err is not None, f"should refuse: {body!r}"
     assert name in err
+
+
+REGEX_ESCAPE_SCRUBBER_BODIES = [
+    'text = re.sub(r"\\.aws\\b", "[redacted]", text)',
+    'SCRUB = re.compile(r"~/\\.ssh/\\S+")',
+    'SCRUB = re.compile(r"\\.aws/credentials")',
+    'SCRUB = re.compile(r"(?:\\.aws\\b)")',
+    'SCRUB = re.compile(r"\\w\\.ssh\\b")',
+    'SCRUB = re.compile(r"\\S\\.aws\\b")',
+    'SCRUB = re.compile(r"${x}\\.aws\\b")',
+    'SCRUB = re.compile(r"~/.ssh\\b")',
+    'SCRUB = re.compile(r"(?i:\\.aws\\b)")',
+    'SCRUB = re.sub(r"(?s:\\.ssh/\\S+)", "", t)',
+]
+
+
+@pytest.mark.parametrize("body", REGEX_ESCAPE_SCRUBBER_BODIES)
+def test_vet_script_contents_allows_a_regex_escape_before_a_protected_name(body):
+    assert _vet_script_contents(body) is None, f"should allow: {body!r}"
+
+
+def test_windows_path_lead_has_no_unbounded_repeat():
+    """The lead-in runs on a whole script body, so an open-ended `*` or `+` in it
+    makes a long run such as `a:\\a:\\a:\\...` quadratic. Asserted on the pattern
+    text, not on seconds, which read the host."""
+    from kiro_crew.mcp_cron_shell_scan import _CRON_CRED_PATH_RE
+
+    assert re.search(r"(?<!\\)[*+]", _CRON_CRED_PATH_RE.pattern) is None
+    body = "a:\\" * 50_000
+    assert _vet_script_contents(body) is None
 
 
 def test_script_body_is_never_a_shell_gate_subject(monkeypatch):
