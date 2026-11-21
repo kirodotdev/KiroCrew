@@ -366,6 +366,28 @@ def test_a_weighted_plan_evens_out_the_ranges() -> None:
     assert max(by_weight) <= sum(weights.values()) / 4 + 100
 
 
+def test_the_plan_depends_only_on_the_names_and_the_sizes() -> None:
+    files = [f"src/f{index:05d}.py" for index in range(60)]
+    weights = {name: 1 + (index * 53) % 17 for index, name in enumerate(files)}
+    plan = chunked.plan_chunks(files, 4, weights)
+    shuffled = files[30:] + files[:30]
+    assert chunked.plan_chunks(shuffled, 4, dict(reversed(list(weights.items())))) == plan
+
+
+def test_the_script_imports_nothing_the_combine_job_does_not_install() -> None:
+    import ast
+    import sys
+
+    tree = ast.parse((ROOT / "scripts/ci/coverage_chunked_report.py").read_text(encoding="utf-8"))
+    roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            roots.add(node.module.split(".")[0])
+    assert roots - set(sys.stdlib_module_names) == {"coverage"}
+
+
 def test_the_plan_refuses_a_file_named_twice() -> None:
     with pytest.raises(chunked.ChunkError, match="names a file twice"):
         chunked.plan_chunks(["a.py", "a.py"], 1)

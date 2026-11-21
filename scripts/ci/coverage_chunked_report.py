@@ -29,10 +29,10 @@ import argparse
 import concurrent.futures
 import os
 import re
-import subprocess  # nosec B404 - runs coverage with a fixed argv, never a shell
+import subprocess
 import sys
 import time
-import xml.etree.ElementTree as ET  # nosec B405 - Comment and TreeBuilder only; parsing goes through defusedxml
+import xml.etree.ElementTree as ET
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -165,16 +165,29 @@ def _expect(element: ET.Element, tag: str, where: str) -> ET.Element:
     return element
 
 
-def read_chunk(path: Path) -> ChunkReport:
-    """Parse one chunk's XML report and check it against its own totals."""
-    from defusedxml import DefusedXmlException
-    from defusedxml.ElementTree import DefusedXMLParser
+class _ReportBuilder(ET.TreeBuilder):
+    """Builds the tree, keeps comments, and refuses a document type declaration."""
 
+    def __init__(self) -> None:
+        super().__init__(insert_comments=True)
+
+    def doctype(self, name: str, pubid: str | None, system: str | None) -> None:
+        raise ET.ParseError("a document type declaration is not part of a coverage report")
+
+
+def read_chunk(path: Path) -> ChunkReport:
+    """Parse one chunk's XML report and check it against its own totals.
+
+    The standard-library parser is enough here: the file was written a moment
+    ago by ``coverage xml`` in this same job, not handed over by another one.
+    A document type declaration is refused all the same, and without one a
+    document can define no entity, so nothing is expanded or fetched.
+    """
     where = path.name
-    parser = DefusedXMLParser(target=ET.TreeBuilder(insert_comments=True))
+    parser = ET.XMLParser(target=_ReportBuilder())
     try:
-        root = ET.parse(path, parser=parser).getroot()  # nosec B314 - the parser is defusedxml's
-    except (ET.ParseError, DefusedXmlException, OSError) as exc:
+        root = ET.parse(path, parser=parser).getroot()
+    except (ET.ParseError, OSError) as exc:
         raise ChunkError(f"{where}: not a readable XML report ({exc})") from None
     if root.tag != "coverage":
         raise ChunkError(f"{where}: root element is <{root.tag}>, not <coverage>")
@@ -354,7 +367,7 @@ def overall_total(classes: dict[str, ClassReport]) -> str:
 def run_command(argv: Sequence[str], stdout: Path | None) -> tuple[int, str]:
     """Run one coverage command; its stdout goes to ``stdout`` when given."""
     if stdout is None:
-        done = subprocess.run(  # nosec B603 - fixed argv, no shell
+        done = subprocess.run(
             list(argv),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -363,7 +376,7 @@ def run_command(argv: Sequence[str], stdout: Path | None) -> tuple[int, str]:
         )
         return done.returncode, done.stdout
     with open(stdout, "w", encoding="utf-8") as handle:
-        done = subprocess.run(  # nosec B603 - fixed argv, no shell
+        done = subprocess.run(
             list(argv), stdout=handle, stderr=subprocess.PIPE, encoding="utf-8", errors="replace"
         )
     return done.returncode, done.stderr
@@ -405,8 +418,9 @@ def build(
     xml_out.unlink(missing_ok=True)
     header = (
         f"{len(files)} measured files, in coverage report's row order, dealt into {len(plan)} contiguous "
-        "range(s) of about equal source size; each range has its own table below, so the tables read on "
-        "from one another."
+        "range(s), one per CPU: a file joins a range while its midpoint, counted in source bytes from the "
+        "start of the list, lies within that range's equal share of the total. Each range has its own "
+        "table below, so the tables read on from one another."
     )
     sections = [header]
     failure: ChunkError | None = None
