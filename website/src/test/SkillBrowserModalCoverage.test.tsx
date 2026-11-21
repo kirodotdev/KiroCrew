@@ -482,6 +482,8 @@ describe('SkillBrowserModal', () => {
     })
     expect(await within(row).findByText('Installed')).toBeInTheDocument()
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['skills'] })
+    // A new live skill can change pending rows' related-skill hints.
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['skills-audit'] })
     // Clicking the row after a local install must not re-offer Install.
     expect(within(row).queryByRole('button', { name: 'Install' })).not.toBeInTheDocument()
   })
