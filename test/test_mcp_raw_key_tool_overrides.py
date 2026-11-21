@@ -273,9 +273,9 @@ def test_an_alias_the_kiro_global_declares_keeps_its_own_list(home: SimpleNamesp
 def test_a_spec_already_holding_both_mounts_folds_back_to_one(
     home: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A spec a rebuild without the reconcile left with ``playwright-mcp`` (stale
-    list) beside ``playwright-mcp-2`` heals on the next rebuild: one mount, the
-    source's list, and no ref left naming the second mount."""
+    """A spec a rebuild without the reconcile and the alias adoption left with
+    ``playwright-mcp`` (stale list) beside ``playwright-mcp-2`` heals on the next
+    rebuild: one mount, the source's list, and no ref left naming the second mount."""
     raw = {"command": home.commands["raw"]}
     _write(home.store, {RAW: dict(raw, disabledTools=[TOOL])})
     agent_mod.rebuild_agent_config(refresh_forks=False)
@@ -284,6 +284,10 @@ def test_a_spec_already_holding_both_mounts_folds_back_to_one(
         patched.setattr(
             "kiro_crew.agent_materialization.mcp_sources.reconcile_raw_key_tool_overrides",
             lambda config, sources: None,
+        )
+        patched.setattr(
+            "kiro_crew.agent_materialization.mcp_sources._adopt_stale_alias_rendering",
+            lambda *args, **kwargs: None,
         )
         agent_mod.rebuild_agent_config(refresh_forks=False)
     assert set(_mounted()) == {ALIAS, f"{ALIAS}-2"}

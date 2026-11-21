@@ -29,6 +29,7 @@ from kiro_crew.dashboard.handlers.mcp_config_files import (
     _resolve_key_from_read,
 )
 from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+from kiro_crew.mcp_utils import mcp_server_alias
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.mcp")
 
@@ -125,8 +126,51 @@ def _kirocrew_entry_is_muted(name: str) -> bool:
         key = _config_key_for(servers, name)
     except AmbiguousServerKey:
         return False
-    entry = servers.get(key) if key is not None else None
+    if key is None:
+        return False
+    if _another_scope_declares(name):
+        if _muted_raw_keys(servers, name):
+            return True
+        key = name
+    entry = servers.get(key)
     return isinstance(entry, dict) and mcp_entry_is_muted(entry)
+
+
+def _muted_raw_keys(servers: dict, name: str) -> list[str]:
+    """The muted store entries under a raw key that aliases onto *name*.
+
+    When another scope declares *name*, the row still folds these into itself, so
+    a mute on any of them (an earlier switch-off wrote one there) reads the row
+    Disabled: an enable of the row lifts them alongside the exact-name stub.
+    """
+    return [
+        k
+        for k, v in servers.items()
+        if k != name
+        and mcp_server_alias(k) == name
+        and isinstance(v, dict)
+        and mcp_entry_is_muted(v)
+    ]
+
+
+def _another_scope_declares(name: str) -> bool:
+    """Whether the Kiro global or a provider global holds *name* as an exact key.
+
+    A store entry under a raw key (``npm:@playwright/mcp``) aliases onto
+    ``playwright-mcp``, but when another scope declares ``playwright-mcp`` itself
+    the rebuild mounts that one under the name and the raw entry beside it as
+    ``playwright-mcp-2``: a store write for the row must then name the row exactly.
+
+    Only an entry that launches something (``command`` or ``url``) declares a server.
+    A modifier-only stub, such as the ``disabledTools`` one a tool toggle writes,
+    adjusts whatever server mounts under the name and declares nothing.
+    """
+    for path in (_GLOBAL_MCP_JSON, *[s.global_json for s in _extra_mcp_scopes()]):
+        servers = _load_json_or_empty(path).get("mcpServers")
+        entry = servers.get(name) if isinstance(servers, dict) else None
+        if isinstance(entry, dict) and ("command" in entry or "url" in entry):
+            return True
+    return False
 
 
 def _set_kirocrew_entry(
@@ -177,9 +221,25 @@ def _set_kirocrew_entry(
         key = _resolve_key_from_read(servers, name, preferred)
     except AmbiguousServerKey:
         return "ambiguous"
+    elsewhere = key is not None and (enabled or key != name) and _another_scope_declares(name)
+    declared_elsewhere = elsewhere and key != name
+    raw_lifted = False
+    if elsewhere and enabled:
+        for raw_key in _muted_raw_keys(servers, name):
+            servers[raw_key].pop("disabled", None)
+            raw_lifted = True
+    if declared_elsewhere:
+        # The row is the server another scope declares under this exact name; the
+        # raw store key only aliases onto it and mounts as a separate server, so a
+        # switch-off leaves it alone and a stub under the exact name carries the
+        # switch.
+        key = None
     existing = servers.get(key) if key is not None else None
     existing = existing if isinstance(existing, dict) else None
     if existing_only and existing is None:
+        if raw_lifted:
+            _atomic_write(_kirocrew_mcp_json(), data)
+            return "enabled"
         return "absent"
     # A stub entry (``{"disabled": true}``, ``{"disabledTools": [...]}``, ``{}``)
     # has no command or url, so the spec lookup cannot see it and a caller with a
@@ -210,8 +270,10 @@ def _set_kirocrew_entry(
 
     if enabled:
         if existing is None and spec is None:
-            return "noop"
-        if existing is None:
+            if not raw_lifted:
+                return "noop"
+            action = "enabled"
+        elif existing is None:
             servers[name] = {k: v for k, v in (spec or {}).items() if k != "disabled"}
             action = "added"
         else:
@@ -224,11 +286,15 @@ def _set_kirocrew_entry(
                 action = "enabled"
             elif filled:
                 action = "added"
+            elif raw_lifted:
+                action = "enabled"
             else:
                 return "noop"
     else:
         if existing is None:
-            base = spec or _find_server_spec_anywhere(name) or {}
+            # A seed copied from "anywhere" would read the raw store entry, which
+            # is another server's launch spec; the declaring scope launches this one.
+            base = spec or (None if declared_elsewhere else _find_server_spec_anywhere(name)) or {}
             entry = {k: v for k, v in base.items() if k != "disabled"}
             entry["disabled"] = True
             servers[name] = entry

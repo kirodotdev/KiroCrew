@@ -153,6 +153,18 @@ two entries match apart from `disabledTools`
 collision handling. The merged entry is the one read, so a Kiro global guard on the
 raw key survives a store entry that omits the field.
 
+**A raw store key adopts its own rendering.** Switching such a row off writes
+`disabled: true` onto the raw store entry, which then differs from the previous
+rendering under the alias. Before the store merge, `_adopt_stale_alias_rendering`
+moves that rendering back under the raw key, so the server mounts once, switched
+off, rather than running beside a muted `playwright-mcp-2`. It adopts only when the
+store holds one raw key for the alias, the rendering launches the store entry's own
+program, and no app and no scope global declares a server (a `command` or `url`)
+under the alias. The stub a tool toggle leaves there (`{"disabledTools": [...]}`,
+or `{}` once the tool is back on) declares nothing, so it does not block adoption.
+The `timeout` and `disabled` it reconciled onto the rendering stay, and a switch
+written onto the stub mutes that one mount.
+
 **Resolution-aware fallback.** The same server can be defined in several sources
 with different commands. If the merged winner's `command` does not resolve (a
 bare command whose binary is not on the rebuild PATH), the rebuild retries the
