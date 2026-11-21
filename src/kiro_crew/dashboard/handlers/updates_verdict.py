@@ -483,6 +483,33 @@ def _is_newer(remote: str, local: str) -> bool | None:
     return remote_key[1:] > local_key[1:]
 
 
+def _fresh_update_info(**fields: object) -> dict[str, object]:
+    """A whole cache entry: every key at its unchecked default, then *fields* over it."""
+    return {
+        "supported": True,
+        "managed_by": "",
+        "mode": MODE_NONE,
+        "can_download": False,
+        "can_apply": False,
+        "requires_restart": True,
+        "channel": "",
+        "latest_version": "",
+        "changes": "",
+        "check_status": CHECK_UNCHECKED,
+        "update_available": None,
+        "version_newer": False,
+        "commits_ahead": 0,
+        "commits_behind": 0,
+        "error_code": None,
+        "unavailable_reason": None,
+        "remediation": None,
+        "can_arm": False,
+        "channel_move_pending": False,
+        "upcoming": None,
+        **fields,
+    }
+
+
 def _set_update_info(**fields: object) -> None:
     """Replace the cached result wholesale so no key survives from a prior run.
 
@@ -491,31 +518,7 @@ def _set_update_info(**fields: object) -> None:
     the class of half-truth this contract exists to prevent.
     """
     _update_info.clear()
-    _update_info.update(
-        {
-            "supported": True,
-            "managed_by": "",
-            "mode": MODE_NONE,
-            "can_download": False,
-            "can_apply": False,
-            "requires_restart": True,
-            "channel": "",
-            "latest_version": "",
-            "changes": "",
-            "check_status": CHECK_UNCHECKED,
-            "update_available": None,
-            "version_newer": False,
-            "commits_ahead": 0,
-            "commits_behind": 0,
-            "error_code": None,
-            "unavailable_reason": None,
-            "remediation": None,
-            "can_arm": False,
-            "channel_move_pending": False,
-            "upcoming": None,
-        }
-    )
-    _update_info.update(fields)
+    _update_info.update(_fresh_update_info(**fields))
 
 
 def _capability_fields(capability: UpdateCapability) -> dict[str, object]:

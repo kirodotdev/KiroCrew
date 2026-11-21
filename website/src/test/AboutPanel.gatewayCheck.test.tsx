@@ -120,6 +120,19 @@ describe('AboutPanel gateway update check', () => {
     expect(await screen.findByText('v0.4.0rc14')).toBeTruthy()
   })
 
+  it('the Check button POSTs, so the gateway runs the manual check', async () => {
+    // GET is the isolated check every other caller shares; only the click's POST
+    // may sign in with the owner's own git config (their credential helper).
+    const spy = stubFetch({ check_status: 'succeeded', update_available: false, error_code: null })
+    mountWeb()
+    await pressCheck()
+    await waitFor(() => {
+      const posts = spy.mock.calls.filter(([input, init]) =>
+        String(input).includes('/api/update/check') && init?.method === 'POST')
+      expect(posts.length).toBe(1)
+    })
+  })
+
   it('a check that could not run reports the failure, not "up to date"', async () => {
     stubFetch({ check_status: 'failed', update_available: null, error_code: 'feed_unreachable', managed_by: 'kirocrew' })
     mountWeb()
@@ -806,6 +819,26 @@ describe('AboutPanel gateway update check', () => {
     act(() => { pushStatus({ update_check_status: 'succeeded', update_available: false, update_last_checked_at: 200 }) })
     await waitFor(() => expect(screen.getByTestId('hero-up-to-date')).toBeTruthy())
     expect(screen.queryByTestId('check-failed')).toBeNull()
+  })
+
+  it('drops a click verdict when the gateway\'s copy of it expires, so Update re-checks first', async () => {
+    // The gateway keeps the click's verdict for ten minutes. Past that, Update
+    // armed against it would be refused, so the panel stops offering it.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      stubFetch({ check_status: 'succeeded', update_available: true, latest_version: '9.9.9', error_code: null, managed_by: 'git', can_apply: true, changes: '### 9.9.9\n- thing', last_checked_at: 100 })
+      pushStatus({ update_check_status: 'failed', update_last_checked_at: 50 })
+      mountWeb()
+      await pressCheck()
+      await screen.findByText('Update available')
+      act(() => { vi.advanceTimersByTime(599_000) })
+      expect(screen.queryByText('Update available')).toBeTruthy()
+      act(() => { vi.advanceTimersByTime(2_000) })
+      await waitFor(() => expect(screen.queryByText('Update available')).toBeNull())
+      expect(screen.queryByRole('button', { name: /^Update(?! the gateway)/ })).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('a newer background "no update" withdraws an update an older manual check found', async () => {

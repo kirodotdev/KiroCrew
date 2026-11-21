@@ -3366,6 +3366,51 @@ ahead) OR the pull already landed and only a restart is missing (`HEAD` equals
 its upstream while the on-disk `__version__` outranks the one this process
 imported).
 
+**Whose git config the check's fetch reads.** The boot check, the 12-hour poll
+and the update popup (`GET /api/update/check`) all share one isolated check: every
+git call runs under `git_command_env()`, which reads no global or system config, so
+no credential helper runs. The owner's **Check for
+updates** click is `POST /api/update/check`, with its own single-flight slot
+(`_manual_check_task`) so neither kind answers for the other. On a standalone
+install its FETCH alone runs under `git_command_env(human_transport=True)`, paired
+with `repo_exec_config_reason(..., human_transport=True)` as `POST /api/update`
+pairs them, so a private HTTPS remote that signs in through a credential helper
+can be checked. Every other git call of that check stays isolated, including the
+URL resolution in `fetch_and_pin_upstream`: the fetch applies the operator's
+`url.<base>.insteadOf` rewrites to the URL it is handed, so a URL already rewritten
+under that config would be rewritten twice. A checkout whose own config the paired probe
+refuses (a repository-level `credential.helper`) falls back to the isolated fetch.
+A governed install (a security policy installed, the LTS edition, or
+`agent.mcp_registry_mode` declared) always keeps the click isolated, so the
+operator's config is read only where no update source pin is in force;
+`update_governance.manual_check_operator_transport` is the one read, and an
+unreadable answer is isolated. Only the machine owner's `POST`
+(`is_host_owner_dashboard_request`) is a click; any other `POST`, a Shared Crew
+teammate's that passes the owner gate included, runs the isolated check.
+
+**The click's verdict is scoped to the click.** On a git checkout the owner's click
+records its answer in `_manual_verdict` (with `_manual_verdict_at`), never in
+`_update_info`, and leaves the 12-hourly clock `_last_update_check` alone. The
+cache is what the gateway's auto-update and the arm path act on, so a verdict that
+only a signed-in fetch could reach never turns the unattended apply into retries
+that cannot sign in. The status frame and the check response show the click's
+verdict, with the click's own time as `update_last_checked_at`, for
+`_MANUAL_VERDICT_TTL_S` (ten minutes). Any other check that finishes (the boot
+check, the poll), the next click, and a channel switch drop it; the update popup's
+`GET` reads a live click verdict instead of running an isolated check that would
+erase it, so an old answer never sits beside a newer check time: after that the
+badge shows the isolated check's own result, `git_fetch_failed` on a private
+remote, and the owner clicks again. A feed install's click has no such split and
+writes the cache as every check does. `POST /api/update` arms the version the
+badge shows: while the click's verdict is live and succeeded, the arm names it
+instead of re-running an isolated check that cannot sign in and would refuse an
+Update the badge offered. The arm records only the version; the apply at the
+next start does its own fetch. A click superseded by a channel switch or a
+revalidation discards its private verdict and leaves the shared cache alone: the
+revalidation's answer is what the cache holds. The About panel drops its own copy
+of a click's answer after the same ten minutes, so Update after that runs a fresh
+check instead of arming a verdict the gateway no longer holds.
+
 Commit distance is the primary signal because `__version__` is bumped only at a
 release: comparing version strings alone reported "you're on the latest version"
 to a checkout hundreds of commits behind `main`, for as long as the next bump
