@@ -248,7 +248,7 @@ async def _terminate_pids(
             # — a single-PID kill would orphan them and leak trees. Mirrors the
             # Windows branch of `kirocrew stop`.
             try:
-                platform_compat.kill_process_tree(pid, sig)
+                platform_compat.kill_gateway_pid_tree(pid, sig)
             except ProcessLookupError:
                 pass  # already gone — success for our purposes
             except PermissionError:
