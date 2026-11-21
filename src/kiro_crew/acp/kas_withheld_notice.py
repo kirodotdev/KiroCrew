@@ -10,7 +10,9 @@ such server keeps the projection's INFO log line, which names the field.
 The same notice names servers that will not run at all: in MCP registry mode,
 every server Crew withholds, and Crew's own, which KAS drops when the Kiro profile
 is registry-governed too (KAS keeps only admin-catalog servers then); and a plain
-``http`` url to another host (KAS refuses it as ``insecure-url``).
+``http`` url to another host (KAS refuses it as ``insecure-url``). When that url's
+headers are withheld only because ``agent.kas_refuse_plain_http_mcp_headers`` reads
+as on while the config cannot be read, the notice says so and names the setting.
 
 For a server that does run, the chat gets a notice only when the user can fix it:
 a stdio server Crew does not ship that lost env. Turning on Share for it in MCP
@@ -29,6 +31,7 @@ NAME is never printed, and no value is ever read here.
 from __future__ import annotations
 
 from kiro_crew.acp.kas_agents import (
+    NOT_RUN_CONFIG_UNREAD,
     NOT_RUN_INSECURE_URL,
     NOT_RUN_REGISTRY,
     NOT_RUN_REGISTRY_IF_GOVERNED,
@@ -84,6 +87,7 @@ def _not_run_notice(withheld: WithheldOut) -> str:
     registry = named(NOT_RUN_REGISTRY)
     own = named(NOT_RUN_REGISTRY_IF_GOVERNED)
     insecure = named(NOT_RUN_INSECURE_URL)
+    unread = named(NOT_RUN_CONFIG_UNREAD)
     parts = []
     if registry or own:
         lines = ["⚠ MCP registry mode is on (`agent.mcp_registry_mode`)."]
@@ -109,6 +113,16 @@ def _not_run_notice(withheld: WithheldOut) -> str:
             "machine (localhost), so these servers will not run in this session:\n"
             + "\n".join(f"• {_server_label(n)}" for n in insecure)
             + "\nChange each url to `https://` to use it here."
+        )
+    if unread:
+        parts.append(
+            "⚠ Kiro Crew could not read your config (`config.json`, `config.local.json` "
+            "or its `agent` section), so `agent.kas_refuse_plain_http_mcp_headers` is "
+            "treated as on and these plain `http://` servers will not run in this "
+            "session:\n"
+            + "\n".join(f"• {_server_label(n)}" for n in unread)
+            + "\nFix the file and start a new session. If the `agent` section was the "
+            "broken part, restart the gateway too."
         )
     return "\n\n".join(parts)
 
