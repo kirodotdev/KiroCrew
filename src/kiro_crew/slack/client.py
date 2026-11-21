@@ -301,6 +301,10 @@ class SlackClientOps(ABC):
         """Append a task_update chunk to a streaming message. Returns True on success."""
         return False
 
+    async def set_plan_title(self, channel: str, ts: str, title: str) -> bool:
+        """Set the title of a streaming message's plan. Returns True on success."""
+        return False
+
     async def set_thread_status(self, channel: str, thread_ts: str, status: str) -> bool:
         """Set assistant thread status via assistant.threads.setStatus.
 
@@ -940,8 +944,14 @@ class RealSlackClient(SlackClientOps):
             self._inject_team(channel, body)
             await self._web.api_call("chat.appendStream", json=body)
             return True
-        except Exception:
+        except Exception as exc:
             logger.debug("chat.appendStream failed", exc_info=True)
+            # The caller rotates the stream on this refusal, so say why in one line.
+            try:
+                code = str(getattr(exc, "response", {}).get("error", "") or type(exc).__name__)
+            except Exception:
+                code = type(exc).__name__
+            logger.warning("chat.appendStream refused (%s)", code)
             return False
 
     async def append_task(
@@ -976,6 +986,28 @@ class RealSlackClient(SlackClientOps):
             return True
         except Exception:
             logger.debug("chat.appendStream task_update failed", exc_info=True)
+            return False
+
+    async def set_plan_title(self, channel: str, ts: str, title: str) -> bool:
+        """Retitle a streaming message's plan with a ``plan_update`` chunk.
+
+        The title stays on the message after the stream stops, so a caller that
+        sets one for a message it keeps editing must set the real one again at the end.
+        """
+        if turn_muted(channel, ts=ts):
+            return False
+        try:
+            require_channel(channel)
+            body: dict[str, Any] = {
+                "channel": channel,
+                "ts": ts,
+                "chunks": [{"type": "plan_update", "title": title}],
+            }
+            self._inject_team(channel, body)
+            await self._web.api_call("chat.appendStream", json=body)
+            return True
+        except Exception:
+            logger.debug("chat.appendStream plan_update failed", exc_info=True)
             return False
 
     async def stop_stream(
