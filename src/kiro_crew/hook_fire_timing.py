@@ -90,7 +90,7 @@ class HookFireTiming:
         finally:
             self.end(phase)
 
-    def warn_if_slow(self, log: logging.Logger) -> bool:
+    def warn_if_slow(self, log: logging.Logger) -> None:
         """Log one warning naming every phase when the fire took the threshold or longer.
 
         A phase still open (a step that raised or timed out) counts until now.
@@ -98,7 +98,7 @@ class HookFireTiming:
         now = time.perf_counter()
         total = now - self._started
         if total * 1000 < SLOW_FIRE_WARN_MS:
-            return False
+            return
         in_phases = sum((p.ended if p.ended is not None else now) - p.started for p in self._phases)
         parts = ", ".join(p.describe(now) for p in self._phases) or "no phases"
         gc_runs = "/".join(
@@ -113,7 +113,6 @@ class HookFireTiming:
             _ms(max(total - in_phases, 0.0)),
             gc_runs,
         )
-        return True
 
 
 def _ms(seconds: float) -> int:
