@@ -6422,7 +6422,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Warm Set Cap",
-      "help": "Max number of remote instances kept warm (iframe mounted + tunnel live) at once. Least-recently-used instances beyond this are evicted and reconnected on demand. Bounds memory/socket use (each warm instance is a full dashboard SPA). 0 (the default) is automatic: the cap follows how many crews are configured, so up to an internal ceiling no crew you added is evicted and the cap widens by itself when you add one -- eviction cold-boots the pane and reads as a disconnect, so a cap below the number of crews in use makes tab switching look like a connection flap. Past that ceiling eviction resumes; an explicit value is honoured exactly, including one below the number of configured crews.",
+      "help": "Max number of remote Crews kept warm (pane loaded, connection live) at once, SSH and relay together. The most recently opened ones stay warm; the rest are dropped and reconnect when you open them. Bounds memory and connections (each warm Crew is a full dashboard page). 0 (the default) is automatic: 5. An explicit value is honoured exactly.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0

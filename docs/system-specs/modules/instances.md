@@ -90,7 +90,7 @@ destinations they actually use — see [Pinned crew chips](#pinned-crew-chips).
 - **Loopback-only.** Tunnels forward `127.0.0.1:<local>` to remote
   `127.0.0.1:<remote>`.
 - **Warm, not persistent.** Tokens are short-lived (20h cap) and re-minted
-  before they lapse; iframes are evicted past the warm cap.
+  before they lapse; a pane is dropped once its Crew leaves the warm set.
 
 ---
 
@@ -317,24 +317,60 @@ strip.
    up front (keeping the `InstanceTabBar` strip as the escape hatch back to
    Local) instead of the misleading 15s "tunnel looks connected" timeout. The
    same-origin pane carrier that would lift this restriction is out of scope.
-2. **Warm set.** Up to `warm_set_cap` most-recently-used instances
-   stay warm: iframe mounted (hide-not-unmount, so switching never reloads or
-   re-runs the token handshake) with a live tunnel and WebSocket. The default
-   (`0`) is **automatic**: `GET /api/instances` resolves the cap from how many
-   crews are REGISTERED (`resolve_warm_set_cap`, bounded by
-   `WARM_SET_CAP_AUTO_CEILING`), so up to that ceiling no crew the operator
-   configured is evicted; an explicit integer is served verbatim, including one
-   below the registered count. Registered rather than connected because a live
-   count races tunnel startup: a crew whose tunnel came up a moment after the
-   dashboard polled fell outside the cap and lost its pane, so exactly one crew
-   looked broken and which one changed on every restart. Exceeding the
-   cap **evicts the least-recently-used non-active iframe**. Eviction unmounts
-   the iframe only: it does NOT disconnect the tunnel or clear `was_connected`,
-   so the switcher entry persists and re-warms on the next click. Entries
-   disappear only on an explicit disconnect. Note that re-warming re-mints the
-   token and cold-boots the remote SPA, so from the user's seat an eviction is
-   hard to tell apart from a dropped connection — which is why the default
-   tracks the registry rather than a fixed number.
+2. **Warm set.** The `warm_set_cap` most recently opened remote Crews, SSH
+   and relay together, stay warm: an SSH crew's iframe mounted (hide-not-unmount,
+   so switching never reloads or re-runs the token handshake) with a live tunnel
+   and WebSocket, a relay Crew's pane loaded in the desktop shell. The default
+   (`0`) is **automatic** and `GET /api/instances` resolves it to
+   `WARM_SET_CAP_AUTO_CEILING` (5) flat (`resolve_warm_set_cap`): not from the
+   registry, because the cap is shared with relay Crews the registry does not
+   hold. An explicit integer is served verbatim, above or below 5.
+
+   *Opened* means brought to the front of the dashboard (a switcher click, a
+   shortcut, a deep link, a reload restoring the pane). `useCrewWarmKeeper`
+   (`website/src/hooks/useCrewWarmKeeper.ts`) records that order in the
+   `localStorage` key `mc-crew-recent` (crew ids and endpoint IDs only, never a
+   port or token), so the next start warms the same Crews. A background connect
+   or prewarm never counts as an open. Sign out and Switch account
+   (`closeRelayCrews`) forget the relay entries, so the next account never warms
+   a Crew only the last one opened. `rankWarmCrews`
+   (`website/src/lib/crewWarmSet.ts`) picks the set: opened Crews by recency
+   first, then free slots go to SSH crews never opened, in registry order, so a
+   new install still connects its machines. A relay Crew never opened is never
+   picked, so no access token is minted for a Crew nobody asked to see. Relay
+   Crews count only in the desktop shell with the pane bridge; a browser opens
+   them in another tab.
+
+   With **Auto-connect crews** on, startup auto-connect and auto-warm reach only
+   the SSH crews in the set, and each relay Crew in the set that is online and
+   has no pane gets a hidden one, one at a time, through the desktop shell's
+   `relay-crew:prewarm-pane` channel. It is the click's open (the same mint, the
+   same partition, so exactly the token a click would get) with two limits: only
+   the main window's dashboard may call it, and it answers `ALREADY_OPEN` for a
+   Crew with a window, a pane or an open in flight, so it never raises, reloads
+   or re-mints a Crew that is open. Each prewarm writes a `relay_viewer.token`
+   audit row with no click, and a hidden pane parks its renewal, so a pane mints
+   twice in its first minutes and then stops. A shell without the channel
+   prewarms nothing. A Crew that falls out
+   of the set loses its warm pane: an SSH crew's iframe unmounts (the tunnel and
+   `was_connected` stay, so the switcher entry persists and re-warms on the next
+   click) and a relay pane closes, its tab with it. The Crew in front is never
+   dropped. Re-warming re-mints the token and cold-boots the remote SPA, so from
+   the user's seat a dropped pane is hard to tell apart from a dropped
+   connection. The viewport's own LRU eviction past `warm_set_cap` and the
+   desktop shell's `RELAY_PANE_WARM_CAP` (10) remain as bounds on each kind.
+   A relay pane the person closed, or the shell closed, is not prewarmed again
+   until they open it. A click whose answer lands after they picked something
+   else still counts as an open: `openRelayPane` records it before the tab
+   exists. Any SSH entry outside the set and not in front is dropped as soon as it
+   is written (a Connect in Settings, a late auto-connect answer), so it never
+   pushes a Crew in the set out. A `kirocrew://chat?crew=` link records its crew
+   once its connect is admitted, just before the warm entry is written
+   (`connectInstanceInto`'s `beforeWarm`), so it keeps that entry and a refused
+   link moves nothing. If storage cannot be written, the page keeps the order in
+   memory. A failed prewarm is tried again after a minute. The first show of a
+   prewarmed pane asks the shell to open it again, which reloads a pane left on
+   the relay's error page.
 3. **Health probe.** While CONNECTED, a per-tunnel loop probes the forward
    **end-to-end** every `DEFAULT_PROBE_INTERVAL_SECS` (10s, not user-configurable;
    `<= 0` disables the probe): a `GET` at the transport's own unauthenticated
@@ -495,7 +531,7 @@ cannot drift.
 |-----|---------|---------|
 | `instances.enabled` | `true` | Primary switch, read at gateway startup; `false` turns the feature off. Also gates the CSP `frame-src` `*.localhost` extension. |
 | `instances.crew_reads_enabled` | `false` | Lets the **agent** read another crew's sessions through the `crew=` scope of the three session read tools (§18). A second opt-in on top of `enabled`, off by default because a peer's transcripts enter the agent's context as untrusted text. Read per call by the gateway route's gate (no restart); off, every crew read answers `403 crew_reads_disabled` before any caller is resolved or any peer is reached. The tools themselves are unchanged; only the `crew=` argument is refused. |
-| `instances.warm_set_cap` | `0` (automatic) | Max instances kept warm at once (bounds memory/sockets; each warm instance is a full dashboard SPA). `0` tracks how many crews are registered, so up to the internal ceiling no configured crew is evicted; an explicit value is honoured exactly, including one below the registered count. Negative values fall back to automatic. |
+| `instances.warm_set_cap` | `0` (automatic) | Max remote Crews kept warm at once, SSH and relay together, the most recently opened first (bounds memory and connections; each warm Crew is a full dashboard SPA). `0` is 5; an explicit value is honoured exactly. Negative values fall back to automatic. |
 | `instances.default_destination` | `""` | Instance id that **Send a copy to** lists first and marks as the default (§14). Served with `GET /api/instances`; resolved against the registry only when the menu renders, so an id naming no registered crew marks nothing. A folder's `default_destination_crew` overrides it. |
 | `instances.tunnel_base_port` | `7778` | First local loopback port the allocator hands out. Out-of-range values fall back to the default. |
 | `instances.ssh_compression` | `true` | Add `-C` to the tunnel argv. See §5.2. |
@@ -1031,7 +1067,8 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   created only by the user's Add click, through the same validation as typed
   input. That click is the trust decision: from it on the crew is one the user
   added, so with **Auto-connect crews** on (the default) its tunnel opens once it
-  is added, as for a crew typed by hand. That is why the form names the link and
+  is added if it falls inside the warm set (§4, item 2), as for a crew typed by hand, and
+  otherwise when it is opened. That is why the form names the link and
   its SSH host. See [Adding a crew from a link](#adding-a-crew-from-a-link).
 - **Addressing fields locked for a correlated cloud instance.** `PATCH
   /api/instances/{id}` rejects an edit to `connection_method`/`ssm_target`/
@@ -1262,7 +1299,9 @@ in and a line above the fields saying the values came from a link. The link
 fills in fields and does nothing else: no record is written and no tunnel opens
 until the user presses **Add remote crew**. That click is the decision to trust
 the host. After it the crew is handled like one typed by hand: with
-**Auto-connect crews** on (the default) it connects once added, and with it off
+**Auto-connect crews** on (the default) it connects once added if it falls inside
+the warm set (§4, item 2: the `instances.warm_set_cap` Crews opened most recently, then the
+rest in the order they were added) and otherwise when it is opened; with it off
 it waits for **Connect**.
 
 | Key | Form field | Rule |
@@ -1633,7 +1672,7 @@ whose current variable parts are all charset-bound literals.
 | Connect fails for another reason | Use **Diagnose**. The ladder reports the first broken link: `ssh_unreachable` (check SSH access or the host alias), `ssh_client_missing` (the local OpenSSH client could not be started: install it or put `ssh` on the gateway's PATH), `remote_down` (remote gateway not listening), `not_connected` (SSH and remote are fine, this instance has no tunnel yet: click Connect), or `tunnel_down` (reconnect). |
 | "local port N was taken while connecting" | The allocator picked a port that something grabbed in the moment before `ssh` bound it. Retry. If it persists, stop whatever keeps taking ports in that range or move `instances.tunnel_base_port` to a quieter one. |
 | Instance keeps dropping | The health probe plus 2-tier self-heal retry: a rebuild that fails outright spans roughly a two-minute window (8 attempts, capped-exponential backoff), while a forward that re-binds but whose far end stays dead additionally spends one probe window per attempt (`probe_failure_threshold` x `probe_interval`, 3 x 10s), so handoff to diagnosis takes `attempts x (30s + backoff)` ~= 6 minutes at the defaults. Tune `instances.max_recovery_attempts` / `recover_backoff_max_secs` / `probe_failure_threshold`; both recovery values are clamped so they cannot loop indefinitely. If self-heal gives up, diagnosis runs automatically. Check the remote gateway and SSH stability. |
-| A pane vanished from the warm set but its switcher entry is still there | It was LRU-evicted (warm set full). The tunnel is untouched: selecting the crew re-warms it, though the re-mint plus SPA cold boot makes that look like a reconnect. Only an explicit `instances.warm_set_cap`, or a fleet past the automatic ceiling (`WARM_SET_CAP_AUTO_CEILING`), can now be below the number of registered crews — set it to `0` to let the cap track the registry. |
+| A pane vanished from the warm set but its switcher entry is still there | Its Crew fell out of the warm set: more recently opened Crews, SSH or relay, filled `warm_set_cap`. The tunnel is untouched: selecting the crew re-warms it, though the re-mint plus SPA cold boot makes that look like a reconnect. Raise `instances.warm_set_cap` to keep more Crews warm. |
 | Every token mint fails on one remote, though its gateway is healthy | The remote's `~/.local/bin/kirocrew` probably points at an uninstalled checkout. See §12: the run-marker is what makes mint follow the *running* gateway's install. |
 
 ---

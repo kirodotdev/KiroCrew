@@ -1041,16 +1041,11 @@ class InstancesConfig:
         default=_DEFAULT_WARM_SET_CAP,
         metadata=_meta(
             "Warm Set Cap",
-            "Max number of remote instances kept warm (iframe mounted + tunnel live) "
-            "at once. Least-recently-used instances beyond this are evicted and "
-            "reconnected on demand. Bounds memory/socket use (each warm instance is a "
-            "full dashboard SPA). 0 (the default) is automatic: the cap follows how "
-            "many crews are configured, so up to an internal ceiling no crew you added "
-            "is evicted and the cap widens by itself when you add one -- eviction "
-            "cold-boots the pane and reads as a disconnect, so a cap below the number "
-            "of crews in use makes tab switching look like a connection flap. Past that "
-            "ceiling eviction resumes; an explicit value is honoured exactly, including "
-            "one below the number of configured crews.",
+            "Max number of remote Crews kept warm (pane loaded, connection live) at "
+            "once, SSH and relay together. The most recently opened ones stay warm; "
+            "the rest are dropped and reconnect when you open them. Bounds memory and "
+            "connections (each warm Crew is a full dashboard page). 0 (the default) is "
+            "automatic: 5. An explicit value is honoured exactly.",
         ),
     )
     default_destination: str = field(
@@ -1151,12 +1146,12 @@ class InstancesConfig:
 
     def __post_init__(self) -> None:
         if self.warm_set_cap < 0:
-            # 0 is meaningful here (automatic -- track the connected count), so
+            # 0 is meaningful here (automatic), so
             # only a negative value is a misconfiguration, and it falls back to
             # automatic rather than to 1: a caller who wrote a nonsense number
             # wanted "enough", not the tightest possible cap.
             logger.warning(
-                "instances.warm_set_cap %d < 0, using 0 (automatic: track the connected count)",
+                "instances.warm_set_cap %d < 0, using 0 (automatic)",
                 self.warm_set_cap,
             )
             object.__setattr__(self, "warm_set_cap", _WARM_SET_CAP_AUTO)

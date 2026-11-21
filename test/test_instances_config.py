@@ -15,8 +15,7 @@ class TestConfig:
 
         c = InstancesConfig()
         assert c.enabled is True
-        # 0 == automatic: the cap follows the REGISTERED crew count (resolved per
-        # request by resolve_warm_set_cap), so no configured crew is ever evicted.
+        # 0 == automatic, resolved per request by resolve_warm_set_cap.
         assert c.warm_set_cap == DEFAULT_WARM_SET_CAP == 0
         assert c.tunnel_base_port == DEFAULT_TUNNEL_BASE_PORT == 7778
         assert DEFAULT_CONNECT_TIMEOUT_SECS == 15.0
