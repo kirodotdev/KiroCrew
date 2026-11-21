@@ -91,6 +91,7 @@ from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL, KIRO_TOOL_A
 from kiro_crew.security import argv_rules as _argv_rules
 from kiro_crew.security import shell_commands as _shell_commands
 from kiro_crew.security import shell_normalizer as _shell
+from kiro_crew.security import shell_normalizer_walk as _walk
 
 logger = logging.getLogger(__name__)
 
@@ -377,7 +378,7 @@ def _prefix_words(extra_write_commands: tuple[str, ...]) -> list[list[str]]:
         words = _shell._shell_tokens(prefix.strip()) if isinstance(prefix, str) else []
         if words:
             # Compared with a command's program words, so reduced the same way.
-            prefixes.append([windows_program_name(_shell._program_basename(words[0])), *words[1:]])
+            prefixes.append([windows_program_name(_walk._program_basename(words[0])), *words[1:]])
     return prefixes
 
 
