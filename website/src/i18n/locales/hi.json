@@ -9428,7 +9428,11 @@
       "mute": "यह सत्र म्यूट करो",
       "unmute": "यह सत्र अनम्यूट करो",
       "mute_failed": "यह सत्र म्यूट नहीं हो सका",
-      "unmute_failed": "यह सत्र अनम्यूट नहीं हो सका"
+      "unmute_failed": "यह सत्र अनम्यूट नहीं हो सका",
+      "hide_source_chips": "इस सत्र में PR और Issue चिप मत दिखाओ",
+      "show_source_chips": "इस सत्र में PR और Issue चिप दिखाओ",
+      "hide_source_chips_failed": "इस सत्र के PR और Issue चिप बंद नहीं हो सके",
+      "show_source_chips_failed": "इस सत्र के PR और Issue चिप चालू नहीं हो सके"
     },
     "newFolderMoveDialog": {
       "cancel": "रद्द करो",
@@ -23754,6 +23758,7 @@
       "move_artifacts": "आर्टिफ़ैक्ट ले जाने",
       "move_sessions": "सेशन ले जाने",
       "change_mute": "सेशन म्यूट बदलने",
+      "change_source_chips": "PR और Issue चिप बदलने",
       "name_not_saved_keep_field_open": "गेटवे ऑफ़लाइन — अभी सहेजा नहीं गया। इस फ़ील्ड को खुला रखो और फिर से कनेक्ट करो; बंद करने पर नाम चला जाएगा।",
       "optimize": "अनुकूलित करने",
       "change_pin": "सेशन पिन बदलने",

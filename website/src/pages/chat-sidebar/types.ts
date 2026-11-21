@@ -153,6 +153,8 @@ export interface Slot {
   pinned?: boolean
   /** The per-row mute (see ChatSlot.muted); drawn as a marker at rest. */
   muted?: boolean
+  /** The per-session chip switch (see ChatSlot.source_links_off). */
+  source_links_off?: boolean
   /** A worker tab's process: `released` once the idle sweep stopped it. */
   process?: 'live' | 'released'
   tags?: string[]

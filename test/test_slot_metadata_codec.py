@@ -80,6 +80,7 @@ _POPULATED: dict = {
     "pinned": True,
     "mutes_opened": True,
     "muted": True,
+    "source_links_off": True,
     "color_index": 3,
     "color_hex": "#abcdef",
     "color_theme": "dark",

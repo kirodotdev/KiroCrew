@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Locate, Link2, Hash, Check, MessagesSquare, Tag as TagIcon, X, Unlink, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, Split, BellOff, Volume2, VolumeX } from 'lucide-react'
+import { Pencil, Circle, Pin, Locate, Link2, Hash, Check, MessagesSquare, Tag as TagIcon, X, Unlink, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, Split, BellOff, Volume2, VolumeX, Eye, EyeOff } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
@@ -174,7 +174,7 @@ function useFailedUntilCopied(status: 'idle' | 'copied' | 'failed'): boolean {
  * with dividers auto-collapsing between them):
  *   [informational]  MCP servers ▸  (header only)
  *   [tab modifiers]  Rename · Mark read/unread · Pin · Move to folder ▸ · Tags…
- *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Pop out · Split down (header only) · Reference in chat (sidebar rows only) · Copy link · Copy Kiro Crew session ID · Send a copy ▸ · Export for import (JSON) · Export as readable Markdown · Connected surfaces
+ *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Pop out · Split down (header only) · Reference in chat (sidebar rows only) · Copy link · Copy Kiro Crew session ID · Send a copy ▸ · Export for import (JSON) · Export as readable Markdown · Connected surfaces · Hide a PR or Issue chip ▸ · this session's chips off / on
  *   [colour]         colour swatches
  *   [close]          Close session
  */
@@ -185,7 +185,7 @@ export default function SessionActionsMenu({
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
 
   // Generic, surface-agnostic actions — one definition, wired straight to the store.
-  const { toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close } = useSessionActions(mode)
+  const { toggleRead, togglePin, toggleMutesOpened, toggleMuted, toggleSourceLinksOff, copyLink, move, reload, close } = useSessionActions(mode)
   // Popped-out window coordination (shared singleton — one channel for all menus).
   const { isPoppedOut, isSelfPopout, open: openPopout, focus: focusPopout, bringBack, returnSelfToMain } = useChatPopouts()
   // This menu also renders INSIDE a popout window (via the header). There the
@@ -216,6 +216,13 @@ export default function SessionActionsMenu({
   // and this is the only place that disagreement is said.
   const mutesOpenedError = useAppSelector(s => s.dashboard.slotMuteFlagError?.[muteFlagErrorKey('mutes_opened', slotKey)])
   const mutesOpenedErrorId = React.useId()
+  // The per-session chip switch, with the same store-backed failure notice.
+  const isSourceLinksOff = !!slot?.source_links_off
+  const sourceLinksOffError = useAppSelector(s => s.dashboard.slotMuteFlagError?.[muteFlagErrorKey('source_links_off', slotKey)])
+  const sourceLinksOffErrorId = React.useId()
+  const sourceLinksOffLabel = isSourceLinksOff
+    ? i18nT('components.sessionActionsMenu.show_source_chips')
+    : i18nT('components.sessionActionsMenu.hide_source_chips')
   // "Copy Kiro Crew session ID" acknowledges a successful copy in place through
   // the shared copy-ack hook (the same one the file-path menu's Copy path uses):
   // the item reads "Copied" with a check, then returns to its label. A stale
@@ -585,6 +592,38 @@ export default function SessionActionsMenu({
       // dashboard session retains the existing Slack channel picker.
       <LinkedSurfacesSection key="links" slotKey={slotKey} variant={variant} />,
       <SourceLinksSubmenu key="source-links" slotKey={slotKey} variant={variant} />,
+      // Beside the one-chip hides, and shown with no chip on the card too:
+      // a session can be switched off before its first link, and its chips
+      // are gone while it is off.
+      <Item key="source-links-off" {...offlineMenuRow(connected, i18nT('utils.offline.change_source_chips'), sourceLinksOffLabel, () => toggleSourceLinksOff(slotKey))}>
+        {isSourceLinksOff
+          ? <Eye size={13} className="shrink-0 text-muted" />
+          : <EyeOff size={13} className="shrink-0 text-muted" />}
+        {' '}{sourceLinksOffLabel}
+      </Item>,
+      sourceLinksOffError && (
+        <React.Fragment key="source-links-off-error">
+          <div className="max-w-[300px] px-2 py-1.5">
+            <ErrorNotice
+              id={sourceLinksOffErrorId}
+              variant="inline"
+              className="flex-wrap"
+              title={isSourceLinksOff
+                // Rolled back, so the current state names what failed.
+                ? i18nT('components.sessionActionsMenu.show_source_chips_failed')
+                : i18nT('components.sessionActionsMenu.hide_source_chips_failed')}
+              message={sourceLinksOffError}
+              messagePlacement="below"
+              testId="session-menu-source-links-off-error"
+            />
+          </div>
+          <ErrorNoticeMenuItem
+            Item={Item}
+            message={sourceLinksOffError}
+            describedBy={sourceLinksOffErrorId}
+          />
+        </React.Fragment>
+      ),
     ],
     // Colour — its own section
     [

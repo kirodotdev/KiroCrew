@@ -9195,7 +9195,11 @@
       "mute": "이 세션 음소거",
       "unmute": "이 세션 음소거 해제",
       "mute_failed": "이 세션을 음소거할 수 없습니다",
-      "unmute_failed": "이 세션의 음소거를 해제할 수 없습니다"
+      "unmute_failed": "이 세션의 음소거를 해제할 수 없습니다",
+      "hide_source_chips": "이 세션에서 PR 및 Issue 칩 표시 안 함",
+      "show_source_chips": "이 세션에서 PR 및 Issue 칩 표시",
+      "hide_source_chips_failed": "이 세션의 PR 및 Issue 칩을 끌 수 없습니다",
+      "show_source_chips_failed": "이 세션의 PR 및 Issue 칩을 켤 수 없습니다"
     },
     "newFolderMoveDialog": {
       "cancel": "취소",
@@ -23177,6 +23181,7 @@
       "move_artifacts": "아티팩트를 이동",
       "move_sessions": "세션을 이동",
       "change_mute": "세션 음소거를 변경",
+      "change_source_chips": "PR 및 Issue 칩을 변경",
       "name_not_saved_keep_field_open": "게이트웨이가 오프라인입니다 — 아직 저장되지 않았습니다. 이 입력란을 열어 둔 채 다시 연결하세요. 닫으면 이름이 삭제됩니다.",
       "optimize": "최적화",
       "change_pin": "세션 고정을 변경",

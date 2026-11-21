@@ -431,6 +431,11 @@ export interface ChatSlot extends TurnIdentityFields {
    * for the user, a terminal error and a tool-approval prompt still surface.
    * Durable, like `pinned`. */
   muted?: boolean
+  /** The user-owned per-session PR and Issue chip switch, set from the session
+   * menu. When true the gateway sends this row no `source_links` (and
+   * `source_links_total` 0) and refreshes none of its chips' status. Durable,
+   * like `muted`. */
+  source_links_off?: boolean
   /** The session tree's parent edge for this slot, attached to every row by
    * `_attach_slot_parents`: `{slot, key}`, or null when this slot has no parent.
    * `slot` is the parent's own citation and `key` names the parent's row IN THIS

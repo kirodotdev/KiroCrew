@@ -99,9 +99,10 @@ async def api_chat_slot_source_links(request: web.Request) -> web.Response:
     # delivers them. Owner only, because the read runs the operator's provider
     # credentials.
     #
-    # Deliberately NOT gated on `dashboard.session_card_source_links`: the only
+    # Deliberately NOT gated on `dashboard.session_card_source_links` or on the
+    # slot's own `source_links_off`: the only
     # caller is the sidebar's "+N" pill, which exists only while the strip
-    # renders, and the config write pushes fresh slots so the pill goes at once.
+    # renders, and either switch pushes fresh slots so the pill goes at once.
     # An app token that owns the slot could ask directly, but it can already read
     # the slot's messages -- these URLs are extracted FROM those messages, so
     # gating here would withhold nothing it does not already have.

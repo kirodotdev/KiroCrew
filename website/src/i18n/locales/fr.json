@@ -9661,7 +9661,11 @@
       "mute": "Mettre cette session en sourdine",
       "unmute": "Réactiver le son de cette session",
       "mute_failed": "Impossible de mettre cette session en sourdine",
-      "unmute_failed": "Impossible de réactiver le son de cette session"
+      "unmute_failed": "Impossible de réactiver le son de cette session",
+      "hide_source_chips": "Ne pas afficher les puces PR et ticket dans cette session",
+      "show_source_chips": "Afficher les puces PR et ticket dans cette session",
+      "hide_source_chips_failed": "Impossible de désactiver les puces PR et ticket de cette session",
+      "show_source_chips_failed": "Impossible d’activer les puces PR et ticket de cette session"
     },
     "newFolderMoveDialog": {
       "cancel": "Annuler",
@@ -24331,6 +24335,7 @@
       "move_artifacts": "déplacer des artefacts",
       "move_sessions": "déplacer des sessions",
       "change_mute": "modifier la sourdine des sessions",
+      "change_source_chips": "modifier les puces PR et ticket",
       "name_not_saved_keep_field_open": "Passerelle hors ligne — pas encore enregistré. Laisse ce champ ouvert et reconnecte-toi ; si tu le fermes, le nom est abandonné.",
       "optimize": "optimiser",
       "change_pin": "modifier l’épinglage des sessions",

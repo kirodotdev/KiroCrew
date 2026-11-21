@@ -762,6 +762,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "segment_removed": ("value", "{}"),
     "segment_shown_sha": ("type", "_hashlib.HASH"),
     "served_model": ("value", "''"),
+    "source_links_off": ("value", "False"),
     "tags": ("value", "[]"),
     "tags_revision": ("type", "builtins.str"),
     "theme_consent": ("value", "False"),

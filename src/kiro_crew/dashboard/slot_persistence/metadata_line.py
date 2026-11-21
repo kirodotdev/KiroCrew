@@ -478,6 +478,7 @@ def merge_empty_window(
     refusal_under_lock: Callable[[dict], str | None] | None = None,
     mutes_opened_override: bool | None = None,
     muted_override: bool | None = None,
+    source_links_off_override: bool | None = None,
     after_commit_under_lock: Callable[[], None] | None = None,
     queue_deferred_under_lock: Callable[[dict], bool] | None = None,
     turn_timeout_override: tuple[int | None] | None = None,
@@ -610,6 +611,7 @@ def merge_empty_window(
             # here would write the stale live flag.
             mutes_opened=mutes_opened_override,
             muted=muted_override,
+            source_links_off=source_links_off_override,
             # The turn-time-limit and threshold endpoints' staged values, the same way.
             turn_timeout_secs=turn_timeout_fold(
                 slot, turn_timeout_override, meta, routed_binding, history_key
@@ -798,6 +800,7 @@ def build_full_line(
     rows_only: bool,
     mutes_opened_override: bool | None = None,
     muted_override: bool | None = None,
+    source_links_off_override: bool | None = None,
     turn_timeout_override: tuple[int | None] | None = None,
     autocompact_override: tuple[float | None] | None = None,
 ) -> tuple[dict, str, list[dict], set[str], str | None]:
@@ -998,6 +1001,7 @@ def build_full_line(
             # session has a window or not.
             mutes_opened=mutes_opened_override,
             muted=muted_override,
+            source_links_off=source_links_off_override,
             turn_timeout_secs=turn_timeout_override,
             autocompact_pct=autocompact_override,
         ),

@@ -119,6 +119,8 @@ export function createChatOrganizationEndpoints({ post, del, patch, j, jfetch: f
     setSlotMutesOpened: (slot: string, mutesOpened: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/mutes-opened', { mutes_opened: mutesOpened }).then(j),
     // Toggle the per-row mute of this session.
     setSlotMuted: (slot: string, muted: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/muted', { muted }).then(j),
+    // Turn this session's PR and Issue chips off (true) or back on (false).
+    setSlotSourceLinksOff: (slot: string, off: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/source-links-off', { source_links_off: off }).then(j),
     /** Set the order of pinned sessions in one atomic write; answers the stored order.
      *  `onlyIfUnset` lands the write only while no order is stored (a 409
      *  otherwise), which is how the sidebar's first-load seed lands. */
