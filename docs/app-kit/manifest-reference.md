@@ -1743,25 +1743,22 @@ same rule that keeps `-m kiro_crew...` servers off the app deps, and it binds
 your hook code too: do not push your own tree onto `sys.path` ahead of the
 Gateway's modules from inside a hook.
 
-What serves hooks instead is the **install-time build step**: a registry
-install (which clones the app's git source) runs `pip install .` (or
-`pip install -r requirements.txt` when there is no `pyproject.toml`/`setup.py`)
-into the Gateway's own interpreter — the one that imports your hooks (see the
-publishing guide's install flow) — but only when the app's source directory
-(the `subdirectory` when one is declared) has no `package.json`, which takes
-precedence and routes the build to npm instead. Two caveats: a failed `pip` run
-fails the install, and **the desktop app's bundled interpreter cannot be
-installed into at all** — it lives inside the signed application bundle, so on
-that build the step is refused with a loud error for anything that would have to
-land in the Gateway's interpreter (`pyproject.toml`, `setup.py`). A Gateway
-interpreter with no `pip` module instead logs a soft skip, so an app that truly
-requires those dependencies must detect their absence rather than assuming the
-build ran. An app installed by other means, one whose `package.json` routed the
+There is **no install-time Python build step** on any host. The Gateway's own
+interpreter — the one that imports your hooks — is read-only to everything an
+app's install runs: on the desktop app it lives inside the signed application
+bundle, and on every other install Kiro Crew seals its environment so an app
+cannot change the code the Gateway runs. So a registry install (which clones
+the app's git source) whose source directory (the `subdirectory` when one is
+declared) has no `package.json` — which takes precedence and routes the build
+to npm instead — is refused with a loud error for anything that would have to
+land in the Gateway's interpreter: `pyproject.toml`, `setup.py`, and a
+`requirements.txt` the runtime does not provision itself (the exception
+below). An app installed by other means, one whose `package.json` routed the
 build to npm, or one declaring no
 `requirements.txt`/`pyproject.toml`/`setup.py` at all, imports only the stdlib
 plus whatever the Gateway's environment already provides.
 
-**The one desktop exception** is a root `requirements.txt` that the runtime
+**The one exception** is a root `requirements.txt` that the runtime
 provisions itself, and it is exactly the runtime's own condition: the app
 declares an out-of-process consumer in a shape the runtime provisions for — a
 **Python script** `backend.entryPoint` (`server.py`, `backend/app.py`: a `.py`
@@ -1829,18 +1826,18 @@ checkout is rolled back as for any other post-script
 rejection. A checkout the final pass cannot even copy for its verdict — your
 script left something the copy cannot read, such as an unreadable file, a FIFO
 or a symlink loop — is rolled back the same way and the install fails with the
-copy's error, not with the desktop refusal, so a retry starts clean. Build files (`pyproject.toml`, `setup.py`, `requirements.txt`,
+copy's error, not with the build-step refusal, so a retry starts clean. Build files (`pyproject.toml`, `setup.py`, `requirements.txt`,
 `package.json`) that appeared while the script ran leave the checkout, each
 named in the install log, so a corrected retry is not refused by them: on a
 checkout that already existed they are set aside beside it, in a
 `<name>.stale-…` sibling under `app-sources` that the retention sweep removes
 after seven days (recoverable from the path the log names until then); a
 checkout created by the failed install is deleted whole, and they go with it.
-Files that predate the script, tracked or not, are never touched. On a
-source install nothing changes — `requirements.txt` is still pip-installed at
-install time — so an app that needs its dependencies importable by hooks must
-ship `pyproject.toml`/`setup.py` and accept that it cannot install on the
-desktop build.
+Files that predate the script, tracked or not, are never touched. The same
+rule holds on a source install and on the desktop app; only the refusal's
+wording differs. So an app whose hooks import third-party packages cannot be
+installed from a registry: move that code into a backend entry point or a stdio
+MCP server, whose `requirements.txt` the runtime provisions.
 
 If you create a directory to hold your own dependencies, do **not** name it
 `.venv`. Interpreter resolution (`resolve_app_python`) runs only for spawned

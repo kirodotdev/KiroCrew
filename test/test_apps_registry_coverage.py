@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 from apps_registry_coverage_helpers import _explicit_registry_execution_admission  # noqa: F401
 from apps_registry_coverage_helpers import bundled_interpreter_fixture  # noqa: F401
-from apps_registry_coverage_helpers import pip_importable_fixture  # noqa: F401
+from apps_registry_coverage_helpers import source_interpreter_fixture  # noqa: F401
 from apps_registry_coverage_helpers import _DATA_IS_A_FILE, _asgi_backend, _fake_sandbox, _FakeProc
 
 from conftest import requires_symlinks
@@ -86,44 +86,51 @@ class TestRunAppBuild:
         assert spawned == [["/usr/bin/npm", "install"]]
 
     @pytest.mark.asyncio
-    async def test_requirements_only_uses_the_requirements_file(
-        self, tmp_path, monkeypatch, pip_importable
+    @pytest.mark.parametrize(
+        ("files", "manifest", "self_managed"),
+        [
+            ({"pyproject.toml": "[project]\n"}, None, False),
+            ({"pyproject.toml": "[project]\n", "requirements.txt": "pytest\n"}, None, False),
+            ({"setup.py": "from setuptools import setup\n"}, None, False),
+            (
+                {"requirements.txt": "fastapi\n", "server.py": ""},
+                {"backend": {"hooks": {"routes": "routes.py"}}},
+                False,
+            ),
+            (
+                {"requirements.txt": "fastapi\n", "server.py": ""},
+                {"backend": {"entryPoint": "server.py", "type": "asgi"}},
+                True,
+            ),
+            ({"requirements.txt": "fastapi\n"}, {"backend": {"entryPoint": "pkg.server"}}, False),
+            ({"requirements.txt": "pytest\n"}, None, False),
+        ],
+        ids=["pyproject", "pyproject-and-requirements", "setup-py", "hooks", "self-managed",
+             "dotted-entry", "no-consumer"],
+    )
+    async def test_a_source_install_refuses_a_build_the_gateway_would_import(
+        self, tmp_path, monkeypatch, source_interpreter, files, manifest, self_managed
     ):
-        (tmp_path / "requirements.txt").write_text("pytest\n", encoding="utf-8")
+        """No install-time pip runs into the gateway's env on any host: it is
+        read-only to sandboxed children. A checkout that would need one is
+        refused, with no spawn, and without the desktop code (whose dashboard
+        copy names the desktop build)."""
+        for name, body in files.items():
+            (tmp_path / name).write_text(body, encoding="utf-8")
         spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
-        assert await registry._run_app_build(tmp_path, "demo", [], manifest=AppManifest.from_dict({}), self_managed=False) == {"ok": True}
-        assert spawned == [[sys.executable, "-s", "-m", "pip", "install", "-r", "requirements.txt"]]
-
-    @pytest.mark.asyncio
-    async def test_pyproject_installs_the_project(
-        self, tmp_path, monkeypatch, pip_importable
-    ):
-        (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
-        (tmp_path / "requirements.txt").write_text("pytest\n", encoding="utf-8")
-        spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
-        assert await registry._run_app_build(tmp_path, "demo", [], manifest=AppManifest.from_dict({}), self_managed=False) == {"ok": True}
-        assert spawned == [[sys.executable, "-s", "-m", "pip", "install", "."]]
-
-    @pytest.mark.asyncio
-    async def test_setup_py_installs_the_project(
-        self, tmp_path, monkeypatch, pip_importable
-    ):
-        (tmp_path / "setup.py").write_text("from setuptools import setup\n", encoding="utf-8")
-        spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
-        assert await registry._run_app_build(tmp_path, "demo", [], manifest=AppManifest.from_dict({}), self_managed=False) == {"ok": True}
-        assert spawned == [[sys.executable, "-s", "-m", "pip", "install", "."]]
-
-    @pytest.mark.asyncio
-    async def test_missing_path_pip_does_not_skip_the_python_build(
-        self, tmp_path, monkeypatch, pip_importable
-    ):
-        """The Python build runs via ``sys.executable -m pip`` — the gateway's own
-        interpreter — so a host with no pip anywhere on PATH must still build."""
-        (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
-        monkeypatch.setattr(registry.shutil, "which", lambda name: None)
-        spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
-        assert await registry._run_app_build(tmp_path, "demo", [], manifest=AppManifest.from_dict({}), self_managed=False) == {"ok": True}
-        assert spawned == [[sys.executable, "-s", "-m", "pip", "install", "."]]
+        typed = AppManifest.from_dict({"name": "demo", **(manifest or {})})
+        log: list[str] = []
+        result = await registry._run_app_build(
+            tmp_path, "demo", log, manifest=typed, self_managed=self_managed
+        )
+        assert result == {
+            "ok": False,
+            "name": "demo",
+            "error": registry._SOURCE_BUILD_REFUSAL,
+            "code": registry.DESKTOP_BUILD_STEP_UNSUPPORTED,
+        }
+        assert spawned == []
+        assert any(registry._SOURCE_BUILD_REFUSAL in line for line in log)
 
     @pytest.mark.asyncio
     async def test_desktop_bundled_interpreter_never_runs_pip(self, tmp_path, monkeypatch):
@@ -1442,19 +1449,40 @@ class TestRunAppBuild:
         assert gateway_import["error"] == no_consumer["error"]
 
     @pytest.mark.asyncio
-    async def test_a_source_install_still_pip_installs_the_requirements(
-        self, tmp_path, monkeypatch, pip_importable
+    async def test_a_source_install_leaves_runtime_requirements_to_the_runtime(
+        self, tmp_path, monkeypatch, source_interpreter
     ):
-        """The gate change is scoped to the BUNDLED interpreter: an ordinary
-        source install keeps installing requirements.txt at install time, so a
-        hooks-only app on a normal host is unaffected."""
+        """A requirements.txt the runtime provisions into the app's deps dir (a
+        file backend entry here) installs on a source install too, and runs no
+        install-time pip into the gateway's env."""
         (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+        (tmp_path / "server.py").write_text("", encoding="utf-8")
         spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
+        log: list[str] = []
         result = await registry._run_app_build(
-            tmp_path, "demo", [], manifest=_asgi_backend(), self_managed=False
+            tmp_path, "demo", log, manifest=_asgi_backend(), self_managed=False
         )
         assert result == {"ok": True}
-        assert spawned == [[sys.executable, "-s", "-m", "pip", "install", "-r", "requirements.txt"]]
+        assert spawned == []
+        assert any("provisioned at runtime" in line for line in log)
+
+    @pytest.mark.asyncio
+    async def test_the_javascript_build_keeps_the_env_seal(self, tmp_path, monkeypatch):
+        (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(registry.shutil, "which", lambda name: "/usr/bin/npm")
+        _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
+        flags: list[object] = []
+
+        def _wrap(cmd, mode="", **kwargs):
+            flags.append(kwargs.get("gateway_env_writable"))
+            return list(cmd), None
+
+        monkeypatch.setattr(registry, "wrap_argv", _wrap)
+        result = await registry._run_app_build(
+            tmp_path, "demo", [], manifest=AppManifest.from_dict({}), self_managed=False
+        )
+        assert result == {"ok": True}
+        assert flags == [None]
 
     @pytest.mark.asyncio
     async def test_build_output_is_streamed_into_the_log(self, tmp_path, monkeypatch):

@@ -6831,8 +6831,8 @@
         "update_failed_generic": "Non è stato possibile aggiornare «{{app}}» e l'autorizzazione non è stata salvata.",
         "failed_generic_next_ask": "Scegli «Autorizza e riprova». Se non riesce di nuovo, scegli «Chiedi all'agente» per scoprire il perché.",
         "failed_generic_next_offline": "{{productName}} non è connesso in questo momento, quindi «Autorizza e riprova» resta disattivato finché non si riconnette.",
-        "failed_desktop_unsupported": "Non è possibile installare «{{app}}» nella versione desktop di {{productName}}, e nulla è stato modificato.",
-        "failed_desktop_unsupported_help": "Ha bisogno di pacchetti Python che la build desktop non può aggiungere; chiedi all'autore dell'app di includerli con l'app, oppure apri {{productName}} in un browser web invece che nella versione desktop."
+        "failed_desktop_unsupported": "Non è possibile installare «{{app}}» in {{productName}}, e nulla è stato modificato.",
+        "failed_desktop_unsupported_help": "Ha bisogno di pacchetti Python che {{productName}} non installa per le app; chiedi all'autore dell'app di includerli con l'app."
       },
       "registryTier": {
         "curated": "Verificato dal team",
@@ -12474,8 +12474,8 @@
       "failed_to_load_app": "Caricamento dell'app non riuscito",
       "unavailable_notice": "Impossibile caricare questa app all'avvio del gateway, quindi la sua pagina non è disponibile. Motivo: {{reason}}",
       "failed_to_uninstall": "Disinstallazione non riuscita",
-      "install_desktop_unsupported": "Questa app non può essere installata nella versione desktop di {{productName}}.",
-      "update_desktop_unsupported": "Questa app non può essere aggiornata nella versione desktop di {{productName}}.",
+      "install_desktop_unsupported": "Questa app non può essere installata in {{productName}}.",
+      "update_desktop_unsupported": "Questa app non può essere aggiornata in {{productName}}.",
       "install_desktop_unsupported_help": "{{help}} Quando l'autore avrà fornito i pacchetti, chiudi questo avviso per installare di nuovo.",
       "update_desktop_unsupported_help": "{{help}} Quando l'autore avrà fornito i pacchetti, chiudi questo avviso per aggiornare di nuovo.",
       "install_log": "Log di installazione",

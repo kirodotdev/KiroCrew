@@ -1,4 +1,9 @@
-"""The desktop build-step gate: whether the bundled interpreter can install a checkout.
+"""The Python build-step gate: whether the gateway can install a checkout.
+
+No gateway runs an install-time pip: the bundled interpreter sits in the signed
+application bundle, and every other gateway's environment is read-only to
+sandboxed children. So a checkout installs only when the runtime provisions its
+``requirements.txt`` itself, into the app's own deps directory.
 
 ``_desktop_build_refusal`` is the one owner of that verdict. The build step asks it
 before planning a Python build command, through ``_desktop_gate_probe``, and the
@@ -155,10 +160,10 @@ def _absent(path: Path) -> bool:
     return False
 
 
-#: Machine code carried beside the desktop refusal on the install result. The
-#: dashboard keys its plain-language copy on it: the condition is permanent for
-#: this gateway (retrying cannot change what the bundled interpreter can install),
-#: so the consent modal drops its retry instruction for exactly this code.
+#: Machine code carried beside a build-step refusal on the install result, on every
+#: gateway (the name is kept for existing callers). The dashboard keys its
+#: plain-language copy on it: the condition is permanent (retrying cannot change
+#: what the gateway installs), so the consent modal drops its retry instruction.
 DESKTOP_BUILD_STEP_UNSUPPORTED = "desktop_build_step_unsupported"
 
 _DESKTOP_BUILD_REFUSAL = (
@@ -166,6 +171,21 @@ _DESKTOP_BUILD_REFUSAL = (
     "build: its bundled interpreter is inside the signed application bundle and cannot "
     "install packages"
 )
+
+_SOURCE_BUILD_REFUSAL = (
+    "Python apps that require a build step (pyproject.toml, setup.py, or a "
+    "requirements.txt for code the gateway imports itself) are not supported: Kiro "
+    "Crew never installs an app's packages into the Python environment it runs on, so "
+    "an app cannot change the code Kiro Crew runs. Ask the app's author to ship a requirements.txt for a file-style "
+    "backend entry point or a stdio MCP server, which Kiro Crew installs into the "
+    "app's own directory"
+)
+
+
+def _build_refusal_code() -> str:
+    """The machine code for a build-step refusal: the same permanent code on every
+    gateway, since no host installs an app's packages into its own environment."""
+    return DESKTOP_BUILD_STEP_UNSUPPORTED
 
 
 def _desktop_build_refusal(
@@ -190,9 +210,8 @@ def _desktop_build_refusal(
     ``KIROCREW_HOME`` can sit on a network mount that stalls, which on the event
     loop would freeze the gateway and its liveness heartbeat with it.
 
-    Judges the same layout the build detects, in the same order: nothing on a
-    gateway that is not the bundled interpreter; nothing when ``package.json``
-    selects the JavaScript build (the Python files are not examined then); the
+    Judges the same layout the build detects, in the same order: nothing when
+    ``package.json`` selects the JavaScript build (the Python files are not examined then); the
     refusal for ``pyproject.toml`` / ``setup.py``, which install INTO this
     interpreter; then, for a ``requirements.txt`` that is present, the refusal
     for one the runtime does not provision (:func:`_requirements_owned_by_the_runtime`,
@@ -233,13 +252,17 @@ def _desktop_build_refusal(
     consumer nothing of ours would
     ever read it, and the build's own detection (``is_file``, on every host)
     sees no file: it passes, as it does on a source install.
+
+    Every gateway asks it: a source install's environment is read-only to
+    sandboxed children too, so no gateway runs an install-time pip. The refusal
+    text names the desktop build only on the bundled interpreter.
     """
-    if not platform_compat.is_bundled_interpreter():
-        return ""
+    bundled = platform_compat.is_bundled_interpreter()
+    refusal = _DESKTOP_BUILD_REFUSAL if bundled else _SOURCE_BUILD_REFUSAL
     if (build_dir / "package.json").is_file():
         return ""
     if (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file():
-        return _DESKTOP_BUILD_REFUSAL
+        return refusal
     requirements = build_dir / "requirements.txt"
     if not os.path.lexists(requirements):
         return ""
@@ -249,20 +272,20 @@ def _desktop_build_refusal(
         # requirements.txt with nothing of ours to provision it is the
         # silent-broken install; a dangling link with no consumer is what the
         # build's detection already calls "no file".
-        return _DESKTOP_BUILD_REFUSAL if requirements.is_file() else ""
+        return refusal if requirements.is_file() else ""
     with _installed_tree_preview(build_dir, manifest.name) as installed:
         if not _requirements_owned_by_the_runtime(
             manifest, installed, source=build_dir, self_managed=self_managed, final=final
         ):
             # The tree-reading half of the same union: no consumer the copy carries.
-            return _DESKTOP_BUILD_REFUSAL if requirements.is_file() else ""
+            return refusal if requirements.is_file() else ""
         if requirements_in_tree(installed, installed / "requirements.txt") is None:
             if not final and os.path.islink(requirements) and not requirements.exists():
                 # Dangling NOW, in the checkout, before `setup.onInstall` has had
                 # its window to create the target; the final pass judges the
                 # post-script checkout and refuses if it is still dangling there.
                 return ""
-            return _DESKTOP_BUILD_REFUSAL
+            return refusal
     return ""
 
 

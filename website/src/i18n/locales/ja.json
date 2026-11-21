@@ -6440,8 +6440,8 @@
         "update_failed_generic": "「{{app}}」をアップデートできず、信頼は保存されませんでした。",
         "failed_generic_next_ask": "「信頼して再試行」を選んでください。もう一度失敗した場合は、「エージェントに質問」を選んで理由を確認してください。",
         "failed_generic_next_offline": "{{productName}} は今接続されていないため、再接続するまで「信頼して再試行」は使えません。",
-        "failed_desktop_unsupported": "「{{app}}」は {{productName}} のデスクトップ版にはインストールできず、何も変更されませんでした。",
-        "failed_desktop_unsupported_help": "デスクトップ版では追加できない Python パッケージが必要です。アプリの作者にアプリへ同梱してもらうか、デスクトップ版ではなくウェブブラウザーで {{productName}} を開いてください。"
+        "failed_desktop_unsupported": "「{{app}}」は {{productName}} にインストールできず、何も変更されませんでした。",
+        "failed_desktop_unsupported_help": "{{productName}} がアプリ用にインストールしない Python パッケージが必要です。アプリの作者にアプリへ同梱してもらってください。"
       },
       "registryTier": {
         "curated": "チーム確認済み",
@@ -11930,8 +11930,8 @@
       "failed_to_load_app": "アプリの読み込みに失敗",
       "unavailable_notice": "ゲートウェイの起動時にこのアプリを読み込めなかったため、ページを利用できません。理由: {{reason}}",
       "failed_to_uninstall": "アンインストール失敗",
-      "install_desktop_unsupported": "このアプリは {{productName}} のデスクトップ版にはインストールできません。",
-      "update_desktop_unsupported": "このアプリは {{productName}} のデスクトップ版では更新できません。",
+      "install_desktop_unsupported": "このアプリは {{productName}} にインストールできません。",
+      "update_desktop_unsupported": "このアプリは {{productName}} では更新できません。",
       "install_desktop_unsupported_help": "{{help}}作者がパッケージを同梱したら、この通知を閉じて再度インストールしてください。",
       "update_desktop_unsupported_help": "{{help}}作者がパッケージを同梱したら、この通知を閉じて再度更新してください。",
       "install_log": "インストールログ",

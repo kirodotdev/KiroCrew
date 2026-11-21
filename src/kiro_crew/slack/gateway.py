@@ -430,6 +430,7 @@ from kiro_crew.sandbox import (
     SandboxUnavailableError,
     create_subprocess_limited,
     ensure_agents_slice_limits,
+    prime_interpreter_env_seal,
     sandboxed_spawn_argv,
     sandboxed_spawn_argv_async,
     warm_backend,

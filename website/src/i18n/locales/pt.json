@@ -6831,8 +6831,8 @@
         "update_failed_generic": "Não foi possível atualizar o “{{app}}” e a confiança não foi salva.",
         "failed_generic_next_ask": "Escolha “Confiar e tentar de novo”. Se falhar de novo, escolha “Perguntar ao agente” para descobrir o motivo.",
         "failed_generic_next_offline": "O {{productName}} não está conectado agora, então “Confiar e tentar de novo” fica desativado até ele reconectar.",
-        "failed_desktop_unsupported": "Não é possível instalar o “{{app}}” na versão para desktop do {{productName}}, e nada foi alterado.",
-        "failed_desktop_unsupported_help": "Ele precisa de pacotes Python que a versão de desktop não consegue adicionar; peça ao autor do app para incluí-los com o app, ou abra o {{productName}} em um navegador web em vez da versão de desktop."
+        "failed_desktop_unsupported": "Não é possível instalar o “{{app}}” no {{productName}}, e nada foi alterado.",
+        "failed_desktop_unsupported_help": "Ele precisa de pacotes Python que o {{productName}} não instala para apps; peça ao autor do app para incluí-los com o app."
       },
       "registryTier": {
         "curated": "Revisado pela equipe",
@@ -12474,8 +12474,8 @@
       "failed_to_load_app": "Falha ao carregar o app",
       "unavailable_notice": "Este app não pôde ser carregado quando o gateway iniciou, então sua página está indisponível. Motivo: {{reason}}",
       "failed_to_uninstall": "Falha ao desinstalar",
-      "install_desktop_unsupported": "Este app não pode ser instalado na versão para desktop do {{productName}}.",
-      "update_desktop_unsupported": "Este app não pode ser atualizado na versão para desktop do {{productName}}.",
+      "install_desktop_unsupported": "Este app não pode ser instalado no {{productName}}.",
+      "update_desktop_unsupported": "Este app não pode ser atualizado no {{productName}}.",
       "install_desktop_unsupported_help": "{{help}} Quando o autor enviar os pacotes, dispense este aviso para instalar de novo.",
       "update_desktop_unsupported_help": "{{help}} Quando o autor enviar os pacotes, dispense este aviso para atualizar de novo.",
       "install_log": "Log de instalação",

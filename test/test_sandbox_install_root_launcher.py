@@ -24,7 +24,7 @@ pytestmark = pytest.mark.skipif(
 
 from test_sandbox_launcher_program import RecordingLibc, launch, payload, refusal  # noqa: E402
 
-from kiro_crew import sandbox  # noqa: E402
+from kiro_crew import sandbox, sandbox_env_scan  # noqa: E402
 from kiro_crew import sandbox_launcher_program as program  # noqa: E402
 
 _MS_BIND = 4096
@@ -37,6 +37,7 @@ def _managed_venv(tmp_path: Path) -> tuple[Path, Path]:
     versioned = tmp_path / "crew-venv-2" / "lib" / "python3.12" / "site-packages" / "kiro_crew"
     (versioned / "static" / "dist").mkdir(parents=True)
     (versioned / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "crew-venv-2" / "pyvenv.cfg").write_text("home = /x/bin\n", encoding="utf-8")
     current = tmp_path / "crew-venv-current"
     current.symlink_to(tmp_path / "crew-venv-2", target_is_directory=True)
     lexical = current / "lib" / "python3.12" / "site-packages" / "kiro_crew"
@@ -75,3 +76,35 @@ def test_a_direct_site_packages_install_is_sealed_without_refusal(tmp_path: Path
         and call.target_id == (package_stat.st_dev, package_stat.st_ino)
         for call in libc.calls
     )
+
+
+def test_the_interpreter_env_and_the_package_are_sealed_without_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The managed layout again, now with the venv itself and a base Python's stdlib both
+    # sealed: every spelling, the linked one included, is bound and remounted read-only.
+    # A synthetic layout never sees the libpython the test runner itself mapped.
+    monkeypatch.setattr(sandbox_env_scan, "_mapped_libpython", lambda: [])
+    lexical, versioned = _managed_venv(tmp_path)
+    base = tmp_path / "python" / "3.12.13"
+    stdlib = base / "lib" / "python3.12"
+    stdlib.mkdir(parents=True)
+    current = tmp_path / "crew-venv-current"
+    env = sandbox._interpreter_env_targets_cached.__wrapped__(
+        str(lexical), (str(current), str(base)), (str(stdlib),), (), ("/nonexistent-home",)
+    )
+    assert env == (str(current), str(tmp_path / "crew-venv-2"), str(stdlib))
+    targets = [*env, *sandbox._install_root_targets_cached.__wrapped__(str(lexical))]
+
+    libc = RecordingLibc()
+    run = launch(tmp_path, payload(readonly_dirs=targets), libc=libc)
+    assert refusal(program.seal_readonly, run) is None
+
+    sealed = {
+        call.target_id
+        for call in libc.calls
+        if call.flags & _MS_REMOUNT and call.flags & _MS_RDONLY
+    }
+    for path in (tmp_path / "crew-venv-2", stdlib, versioned):
+        st = os.stat(path)
+        assert (st.st_dev, st.st_ino) in sealed, path

@@ -41,14 +41,15 @@ _DATA_IS_A_FILE = (
     ["adds_hooks", "drops_the_entry_point"],
     ids=["onInstall adds backend.hooks", "onInstall drops the entry point"],
 )
+@pytest.mark.parametrize("bundled", [True, False], ids=["desktop", "source"])
 async def test_onInstall_rewriting_the_manifest_loses_the_desktop_requirements_waiver(
-    monkeypatch, tmp_path, script_effect
+    monkeypatch, tmp_path, script_effect, bundled
 ):
-    """The bundled-interpreter waiver is re-derived from the FINAL manifest.
+    """The requirements waiver is re-derived from the FINAL manifest, on every host.
 
     ``setup.onInstall`` can add ``backend.hooks`` (code imported into the gateway) or
     drop the entry point; either voids the waiver, so the install fails, rolls back
-    and registers nothing.
+    and registers nothing. Only the desktop refusal carries the desktop code.
     """
     src = tmp_path / "app-sources" / "demoapp"
     src.mkdir(parents=True)
@@ -60,7 +61,7 @@ async def test_onInstall_rewriting_the_manifest_loses_the_desktop_requirements_w
         "setup": {"onInstall": "true"},
     }
     (src / "app.json").write_text(json.dumps(entering), encoding="utf-8")
-    monkeypatch.setattr(registry.platform_compat, "is_bundled_interpreter", lambda: True)
+    monkeypatch.setattr(registry.platform_compat, "is_bundled_interpreter", lambda: bundled)
     monkeypatch.setattr(registry, "app_source_dir", lambda n: src)
     monkeypatch.setattr(registry, "sel", lambda: MagicMock())
     monkeypatch.setattr(registry, "app_admission_denied", lambda *a, **k: None)
@@ -133,12 +134,16 @@ async def test_onInstall_rewriting_the_manifest_loses_the_desktop_requirements_w
     result = await registry.install_from_registry("demoapp")
 
     assert result["ok"] is False
-    assert result["error"] == (
-        "Python apps that require a build step are not supported in Kiro Crew's desktop "
-        "build: its bundled interpreter is inside the signed application bundle and cannot "
-        "install packages"
-    )
-    assert result["code"] == "desktop_build_step_unsupported"
+    if bundled:
+        assert result["error"] == (
+            "Python apps that require a build step are not supported in Kiro Crew's desktop "
+            "build: its bundled interpreter is inside the signed application bundle and cannot "
+            "install packages"
+        )
+        assert result["code"] == "desktop_build_step_unsupported"
+    else:
+        assert result["error"] == registry._SOURCE_BUILD_REFUSAL
+        assert result["code"] == "desktop_build_step_unsupported"  # permanent on every host
     # Nothing registered, nothing enabled: the refusal happens before install_app.
     assert registered == []
     # The pre-existing checkout is rolled back the way the post-script admission

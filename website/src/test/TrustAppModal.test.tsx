@@ -103,6 +103,7 @@ import {
   setGatewayConnected,
 } from '../utils/errorReport'
 import { namedCeiling } from './namedCeiling'
+import enManual from '../i18n/locales/en.manual.json'
 
 /** An ApiError-shaped rejection: message plus the raw structured body. */
 function apiError(status: number, body: object, message = 'boom') {
@@ -1410,6 +1411,21 @@ describe('registry install trust gate — permanent desktop refusal', () => {
     const report = findReport(REFUSAL)
     expect(report?.code).toBe(DESKTOP_BUILD_STEP_UNSUPPORTED)
     expect(report?.endpoint).toBe('/api/apps/registry/install-stream')
+  })
+
+  it('words the permanent refusal for every host, not the desktop build alone', () => {
+    // Every gateway now refuses an install-time Python build with this code, so the
+    // copy names no host and offers no "open it in a browser" way out.
+    const modal = enManual.components.appstore.trustAppModal
+    const page = enManual.pages.appDetailPage
+    for (const text of [
+      modal.failed_desktop_unsupported,
+      modal.failed_desktop_unsupported_help,
+      page.install_desktop_unsupported,
+      page.update_desktop_unsupported,
+    ]) {
+      expect(text).not.toMatch(/desktop|browser/i)
+    }
   })
 
   it('keeps the generic headline for a reason the server did not mark permanent', async () => {

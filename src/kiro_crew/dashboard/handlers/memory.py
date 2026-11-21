@@ -1607,6 +1607,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.apps.registry import (  # noqa: F401
         minimal_env,
     )
+    from kiro_crew.apps.registry_pipeline.subprocess_env import (  # noqa: F401
+        _GATEWAY_ENV_PIP_ENV,
+    )
     from kiro_crew.context import (  # noqa: F401
         validated_cached_vector_stores,
     )

@@ -163,6 +163,38 @@ def _running_install_bin() -> str | None:
     return str(sibling)
 
 
+def reexec_service_with_safe_path() -> None:
+    """Restart a service-managed gateway once with ``-P`` when it runs without safe path.
+
+    A unit written before ``service_environment`` set ``PYTHONSAFEPATH`` starts the
+    gateway with the console script's directory on ``sys.path``. Only a managed
+    service (``KIROCREW_SERVICE_MANAGED=1``) restarts; a foreground start and an
+    interpreter started with ``-E`` (which would ignore the marker too) never do.
+    The replacement runs with ``-P``, so ``sys.flags.safe_path`` is set and this
+    returns at once: one exec at most.
+    """
+    if (
+        os.environ.get("KIROCREW_SERVICE_MANAGED") != "1"
+        or sys.flags.safe_path
+        or sys.flags.ignore_environment
+        or not getattr(sys, "orig_argv", None)
+    ):
+        return
+    # nosemgrep: python.lang.security.audit.dangerous-os-exec-tainted-env-args.dangerous-os-exec-tainted-env-args -- re-runs this process's own interpreter and argv with -P added; service-only, and the replacement has safe_path set, so it execs at most once  # noqa: E501
+    os.execv(sys.executable, [sys.executable, "-P", *sys.orig_argv[1:]])
+
+
+def drop_safe_path_for_children() -> None:
+    """Remove ``PYTHONSAFEPATH`` from this process's environment.
+
+    Safe path is fixed when the interpreter starts, so the gateway keeps it; its
+    children (an agent's or a cron script's ``python run.py``) keep the default
+    ``sys.path[0]``. Removed even when this interpreter ignored the variable
+    (``python -E``, the pipx shebang), since its children would not.
+    """
+    os.environ.pop("PYTHONSAFEPATH", None)
+
+
 def service_environment(home: str) -> "dict[str, str]":
     """Build the environment baked into the installed service.
 
@@ -174,6 +206,7 @@ def service_environment(home: str) -> "dict[str, str]":
     Keys:
 
     * ``HOME`` / ``PATH`` — always set; ``PATH`` per :func:`service_path`.
+    * ``PYTHONSAFEPATH`` — ``1``, so the script directory is not on ``sys.path``.
     * ``LANG`` / ``LC_ALL`` — a fixed UTF-8 locale, so a subprocess reading a
       non-ASCII file does not fail under ``US-ASCII`` (launchd sets no locale).
       Not the installer's own: a ``LANG=C`` install would bake a non-UTF-8
@@ -198,6 +231,10 @@ def service_environment(home: str) -> "dict[str, str]":
         # background service. Older definitions without it are diagnosed by
         # ``kirocrew doctor`` and regenerated with ``kirocrew service install``.
         "KIROCREW_SERVICE_MANAGED": "1",
+        # The console script's own directory (``~/.local/bin`` for a --user
+        # install) is not put first on sys.path, so it is not part of the
+        # gateway's import path and stays writable to the agent.
+        "PYTHONSAFEPATH": "1",
     }
     kiro_bin = os.environ.get("KIROCREW_KIRO_BIN", "").strip()
     if kiro_bin:

@@ -107,6 +107,7 @@ async def spawn_supervised_oneshot(argv: list[str], **kwargs: Any) -> asyncio.su
             argv = [
                 sys.executable,
                 "-I",
+                "-S",
                 "-c",
                 _PROCESS_GROUP_SUPERVISOR_CODE,
                 "--reap-survivors",
@@ -577,10 +578,12 @@ async def _run_process(
             # runs Python in the child before exec, which can wedge that child
             # in a futex with the fds it inherited pinned. The supervisor
             # applies the same setrlimits after exec, single-threaded, and the
-            # exec'd child inherits them.
+            # exec'd child inherits them. It is stdlib only, so -S skips `site`
+            # (.pth / sitecustomize) as well.
             spawn_argv = [
                 sys.executable,
                 "-I",
+                "-S",
                 "-c",
                 _PROCESS_GROUP_SUPERVISOR_CODE,
                 *resource_limit_supervisor_argv(),

@@ -6479,8 +6479,8 @@
         "update_failed_generic": "“{{app}}”未能更新，且信任未保存。",
         "failed_generic_next_ask": "请选择“信任并重试”。如果再次失败，请选择“询问代理”了解原因。",
         "failed_generic_next_offline": "{{productName}} 当前未连接，重新连接前无法使用“信任并重试”。",
-        "failed_desktop_unsupported": "“{{app}}”无法安装到 {{productName}} 桌面版中，且没有做任何更改。",
-        "failed_desktop_unsupported_help": "它需要桌面版无法添加的 Python 软件包；请让应用作者将其随应用一同提供，或改为在网页浏览器中打开 {{productName}}，而不是使用桌面版。"
+        "failed_desktop_unsupported": "“{{app}}”无法安装到 {{productName}} 中，且没有做任何更改。",
+        "failed_desktop_unsupported_help": "它需要 {{productName}} 不会为应用安装的 Python 软件包；请让应用作者将其随应用一同提供。"
       },
       "registryTier": {
         "curated": "团队已审核",
@@ -11930,8 +11930,8 @@
       "failed_to_load_app": "加载应用失败",
       "unavailable_notice": "网关启动时无法加载此应用，因此其页面不可用。原因：{{reason}}",
       "failed_to_uninstall": "卸载失败",
-      "install_desktop_unsupported": "此应用无法安装到 {{productName}} 桌面版中。",
-      "update_desktop_unsupported": "此应用无法在 {{productName}} 桌面版中更新。",
+      "install_desktop_unsupported": "此应用无法安装到 {{productName}} 中。",
+      "update_desktop_unsupported": "此应用无法在 {{productName}} 中更新。",
       "install_desktop_unsupported_help": "{{help}}作者随应用提供这些包后，关闭此通知即可重新安装。",
       "update_desktop_unsupported_help": "{{help}}作者随应用提供这些包后，关闭此通知即可重新更新。",
       "install_log": "安装日志",

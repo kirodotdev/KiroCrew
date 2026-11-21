@@ -6655,8 +6655,8 @@
         "update_failed_generic": "“{{app}}” अपडेट नहीं हो सका, और भरोसा सहेजा नहीं गया।",
         "failed_generic_next_ask": "“भरोसा करो और फिर कोशिश करो” चुनो। अगर फिर से नाकाम हो, तो वजह जानने के लिए “एजेंट से पूछें” चुनो।",
         "failed_generic_next_offline": "{{productName}} अभी जुड़ा नहीं है, इसलिए दोबारा जुड़ने तक “भरोसा करो और फिर कोशिश करो” बंद रहेगा।",
-        "failed_desktop_unsupported": "“{{app}}” {{productName}} के डेस्कटॉप संस्करण में इंस्टॉल नहीं किया जा सकता, और कुछ भी नहीं बदला।",
-        "failed_desktop_unsupported_help": "इसे ऐसे Python पैकेज चाहिए जो डेस्कटॉप बिल्ड नहीं जोड़ सकता; ऐप के लेखक से उन्हें ऐप के साथ शामिल करने को कहो, या डेस्कटॉप संस्करण के बजाय वेब ब्राउज़र में {{productName}} खोलो।"
+        "failed_desktop_unsupported": "“{{app}}” {{productName}} में इंस्टॉल नहीं किया जा सकता, और कुछ भी नहीं बदला।",
+        "failed_desktop_unsupported_help": "इसे ऐसे Python पैकेज चाहिए जो {{productName}} ऐप्स के लिए इंस्टॉल नहीं करता; ऐप के लेखक से उन्हें ऐप के साथ शामिल करने को कहो।"
       },
       "registryTier": {
         "curated": "टीम ने समीक्षित",
@@ -12203,8 +12203,8 @@
       "failed_to_load_app": "ऐप लोड नहीं हो सका",
       "unavailable_notice": "गेटवे शुरू होने पर यह ऐप लोड नहीं हो सका, इसलिए इसका पेज उपलब्ध नहीं है। कारण: {{reason}}",
       "failed_to_uninstall": "अनइंस्टॉल नहीं हो सका",
-      "install_desktop_unsupported": "यह ऐप {{productName}} के डेस्कटॉप संस्करण में इंस्टॉल नहीं किया जा सकता।",
-      "update_desktop_unsupported": "यह ऐप {{productName}} के डेस्कटॉप संस्करण में अपडेट नहीं किया जा सकता।",
+      "install_desktop_unsupported": "यह ऐप {{productName}} में इंस्टॉल नहीं किया जा सकता।",
+      "update_desktop_unsupported": "यह ऐप {{productName}} में अपडेट नहीं किया जा सकता।",
       "install_desktop_unsupported_help": "{{help}} जब लेखक पैकेज शामिल कर दे, तो फिर से इंस्टॉल करने के लिए इस सूचना को खारिज करें।",
       "update_desktop_unsupported_help": "{{help}} जब लेखक पैकेज शामिल कर दे, तो फिर से अपडेट करने के लिए इस सूचना को खारिज करें।",
       "install_log": "इंस्टॉल लॉग",

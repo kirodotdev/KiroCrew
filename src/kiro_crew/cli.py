@@ -731,6 +731,13 @@ def main() -> None:
     if args.command == "gateway":
         _refuse_unpersistable_data_home()
         maybe_reexec(sys.argv[1:])
+        from kiro_crew.service.common import (
+            drop_safe_path_for_children,
+            reexec_service_with_safe_path,
+        )
+
+        reexec_service_with_safe_path()
+        drop_safe_path_for_children()
 
     # ``gateway --seed <fixture>`` runs BEFORE ``KiroCrewConfig.load()`` and the
     # file-log handler: both call ``config_dir()``, which ``mkdir``s $KIROCREW_HOME

@@ -97,6 +97,11 @@ class SandboxRequest:
     #: mask simply does not set this. False by default, so a spawn seals nothing unless
     #: it asks.
     seal_hidden_dirs: bool = False
+    #: Leave the gateway's interpreter environment (``sandbox_tiers.
+    #: _resolved_interpreter_env_targets``) out of the read-only seals for this spawn;
+    #: the ``kiro_crew`` package directory stays sealed. Only a gateway-initiated
+    #: install with a fixed argv sets it; no config key or tool argument maps to it.
+    gateway_env_writable: bool = False
     extra_hidden_dir_ids: tuple[tuple[str, int, int], ...] = ()
     extra_alias_credential_ids: tuple[tuple[int, int], ...] = ()
     extra_visible_dirs: tuple[str, ...] = ()
@@ -194,6 +199,9 @@ class PlanHost:
     #: The running gateway's packaged install tree (both spellings), sealed read-only.
     #: Empty for an editable or from-source checkout.
     install_root_targets: tuple[str, ...] = ()
+    #: Dirs inside :attr:`install_root_targets` the interpreter never loads (a venv
+    #: gateway's base ``site-packages``), re-opened writable after the seals.
+    install_root_holes: tuple[str, ...] = ()
     #: Every entry resolving a read-only seal (``run``, the kiro agents tree, the crew-home
     #: ceilings, the install tree) steps on, links included, and the parents of its own
     #: spelling: renaming one carries the seal away. Seatbelt gets every one; the namespace
@@ -704,6 +712,25 @@ OPERATOR_EXCEPTION_NOT_A_DIRECTORY = (
 OPERATOR_EXCEPTION_REFUSED = "SECURITY: ignoring agent.sandbox_readonly_exceptions entry %r: %s"
 
 
+def install_root_holes(
+    host: PlanHost, guards: list[str], operator_readonly: list[str] | tuple[str, ...] = ()
+) -> list[str]:
+    """``host.install_root_holes`` that hold no path in *guards* (a mask, another
+    seal) and touch none of the operator's read-only paths: re-opening a hole is a
+    bind over it on Linux and an allow emitted last on Seatbelt, either of which would
+    lift a rule placed inside it, or the operator's own seal around it. A hole that is
+    not inside an install seal any more is dropped too.
+    """
+    sealed = host.install_root_targets
+    return [
+        hole
+        for hole in host.install_root_holes
+        if any(path_within(hole, t) and hole != t for t in sealed)
+        and not any(path_within(g, hole) for g in guards)
+        and not any(path_within(hole, o) or path_within(o, hole) for o in operator_readonly)
+    ]
+
+
 def writable_carveouts(
     extra_writable_dirs: tuple[str, ...],
     probes: Mapping[str, CarveoutProbe],
@@ -1189,6 +1216,10 @@ def _namespace_plan(
         protected_roots=stand_in_roots(host.uid),
         canonical_only=True,
     )
+    writable = [
+        *writable,
+        *install_root_holes(host, [*kept, *unhidden, *readonly], operator_readonly),
+    ]
     expose = [(fold(os.path.join(home, f)), f.split("/")[-1]) for f in expose_files]
     # Caller re-exposures are a COPY, never the inode: strictly weaker than lifting the
     # tree with ``extra_visible_dirs``.
@@ -1447,6 +1478,10 @@ def _seatbelt_plan(
         protected_roots=[],
         canonical_only=False,
     )
+    writable = [
+        *writable,
+        *install_root_holes(host, [*masked_targets, *readonly, *caller_targets], operator_readonly),
+    ]
     return ConfinementPlan(
         backend=request.backend,
         tier=tier,

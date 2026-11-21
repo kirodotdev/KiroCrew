@@ -587,20 +587,20 @@ The store's Install button (`POST /api/apps/registry/install`, or the SSE varian
 3. Check `minKiroCrewVersion`.
 4. Clone into `~/.kiro/crew/app-sources/{name}/` (persistent, one workspace per
    app; 60s timeout) and run a detected build: `npm install` plus `npm run build`
-   when `package.json` declares a build script, or `pip install .` /
-   `pip install -r requirements.txt` for a Python source tree. A missing
-   `npm` is a logged skip, and so is a gateway interpreter with no `pip`
-   module; when pip is present the step runs on the gateway's own interpreter
-   and a failed run fails the install. **An official-catalog entry does
+   when `package.json` declares a build script. A missing `npm` is a logged
+   skip. No Python build runs on any host: the gateway's own interpreter is
+   read-only to the install, so a Python source tree (`pyproject.toml`,
+   `setup.py`, or a `requirements.txt` the runtime does not provision itself)
+   is refused, except for the `requirements.txt` waiver described under "The
+   one exception" in the [manifest reference](manifest-reference.md)
+   (`backend.hooks` section), which the runtime installs into the app's own
+   deps directory instead. **An official-catalog entry does
    not clone a branch**: it fetches exactly the commit the published catalog
    pins and hard-fails on any mismatch, never reuses a pre-existing checkout
    (the old one is set aside and restored if the install fails), and clones
-   credential-free. On the desktop app the bundled interpreter cannot be
-   installed into, so this step refuses a Python build, except for the
-   `requirements.txt` waiver described under "The one desktop exception" in the
-   [manifest reference](manifest-reference.md) (`backend.hooks` section).
-5. Run `setup.onInstall` (300s). On the desktop app a final desktop-gate pass
-   then re-checks the checkout as the script left it, and a refusal fails the
+   credential-free.
+5. Run `setup.onInstall` (300s). A final pass of the same Python gate then
+   re-checks the checkout as the script left it, and a refusal fails the
    install.
 6. Resolve declared dependencies.
 7. For a gateway-managed app: copy into `~/.kiro/crew/apps/{name}/`, register

@@ -2158,8 +2158,8 @@
         "update_failed_generic": "“{{app}}” could not be updated, and trust was not saved.",
         "failed_generic_next_ask": "Choose “Trust and try again”. If it fails again, choose “Ask the agent” to find out why.",
         "failed_generic_next_offline": "{{productName}} is not connected right now, so “Trust and try again” stays off until it reconnects.",
-        "failed_desktop_unsupported": "“{{app}}” can't be installed in the desktop version of {{productName}}, and nothing was changed.",
-        "failed_desktop_unsupported_help": "It needs Python packages the desktop build can't add; ask the app's author to ship them with the app, or open {{productName}} in a web browser instead of the desktop version."
+        "failed_desktop_unsupported": "“{{app}}” can't be installed in {{productName}}, and nothing was changed.",
+        "failed_desktop_unsupported_help": "It needs Python packages {{productName}} doesn't install for apps; ask the app's author to ship them with the app."
       },
       "registryTier": {
         "curated": "Team reviewed",
@@ -5462,8 +5462,8 @@
       "failed_to_load_app": "Failed to load app",
       "unavailable_notice": "This app could not load when the gateway started, so its page is unavailable. Reason: {{reason}}",
       "failed_to_uninstall": "Failed to uninstall",
-      "install_desktop_unsupported": "This app can't be installed in the desktop version of {{productName}}.",
-      "update_desktop_unsupported": "This app can't be updated in the desktop version of {{productName}}.",
+      "install_desktop_unsupported": "This app can't be installed in {{productName}}.",
+      "update_desktop_unsupported": "This app can't be updated in {{productName}}.",
       "install_desktop_unsupported_help": "{{help}} Once the author ships the packages, dismiss this notice to install again.",
       "update_desktop_unsupported_help": "{{help}} Once the author ships the packages, dismiss this notice to update again.",
       "install_log": "Install log",

@@ -75,7 +75,7 @@ from kiro_crew.apps.registry_pipeline.install_clone import (
     _report_retained_stale_checkouts,
 )
 from kiro_crew.apps.registry_pipeline.install_desktop_gate import (
-    DESKTOP_BUILD_STEP_UNSUPPORTED,
+    _build_refusal_code,
     _desktop_build_refusal,
 )
 from kiro_crew.apps.registry_pipeline.install_rollback import (
@@ -1303,7 +1303,7 @@ async def install_from_registry(
                 self_managed=is_self_managed,
                 final=True,
             )
-            refusal_code = DESKTOP_BUILD_STEP_UNSUPPORTED
+            refusal_code = _build_refusal_code()
         except InstalledTreeRefused as exc:
             # The preview copy produced a tree `install_app` would refuse (a root
             # `data` that is not a directory): the install's own refusal, before
