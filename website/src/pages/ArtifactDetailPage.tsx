@@ -373,6 +373,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
         toggleSidebar={toggleSidebar} handleRevert={handleRevert} openCompanionChat={openCompanionChat}
         popout={popout} stateRead={stateRead} documentRead={documentRead} editorRead={editorRead}
         composerRead={composerRead} menuRead={menuRead}
+        navigateToSlot={(slotKey) => sendNav({ path: '/chat', slotKey })}
       />
 
       <ArtifactDetailPageBody

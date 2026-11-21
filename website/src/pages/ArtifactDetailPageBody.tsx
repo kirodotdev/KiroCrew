@@ -20,6 +20,7 @@ import { CanvasArtifactBody } from '../components/canvas/lazyCanvas'
 import { PublishHub } from '../components/PublishHub'
 import ArtifactVersionCompare from '../components/ArtifactVersionCompare'
 import { COMPARE_NONE } from '../lib/artifactCompare'
+import { hasFullHeightPage } from '../lib/artifactKinds'
 import { publishNoticeKey } from '../lib/publishHelpers'
 import type { Artifact, ArtifactEvent, ArtifactComment } from '../types'
 
@@ -156,7 +157,7 @@ function versionNumber(version: number | null | undefined): string {
 /** Lifecycle activity timeline. Renders a chronological feed of
  * created/edited/iterated/referenced/reverted events from the artifact's
  * audit log. */
-const ActivityTimeline = memo(function ActivityTimeline({
+export const ActivityTimeline = memo(function ActivityTimeline({
   events, navigateToSlot,
 }: {
   events: ArtifactEvent[]
@@ -354,9 +355,13 @@ export function ArtifactDetailPageBody({
   // (next cron run will create a newer version) without noisy chrome on
   // read-only views.
   const showCronWarning = editing && artifact.source === 'cron'
+  // A canvas gets a page that never scrolls: the canvas takes the height left under the header
+  // and is the only thing that pans, zooms or scrolls. What a scrolling page puts below the
+  // body (description, created/updated line, activity) lives in the header's Details bar.
+  const fullHeight = hasFullHeightPage(artifact.kind)
   return (
-    <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
-      {artifact.description && (
+    <div className={fullHeight ? 'px-2 md:px-4 pb-2 flex flex-col flex-1 min-h-0' : 'px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0'}>
+      {!fullHeight && artifact.description && (
         <div className="mb-3 text-sm text-muted italic">{artifact.description}</div>
       )}
 
@@ -494,7 +499,7 @@ export function ArtifactDetailPageBody({
 
       {/* Publish panel — toggled by the Publish toolbar button */}
       {showPublish && artifact.kind !== 'webapp' && artifact.kind !== 'image' && (
-        <div className="mb-3">
+        <div className={fullHeight ? 'mb-3 shrink-0 max-h-[50dvh] overflow-y-auto' : 'mb-3'}>
           <PublishHub artifact={artifact} onClose={() => setShowPublish(false)} />
         </div>
       )}
@@ -504,13 +509,13 @@ export function ArtifactDetailPageBody({
           render unconditionally, so scoping the row to the non-webapp branch
           would let a click on a webapp artifact create/activate a session with
           nowhere to display. */}
-      <div className="flex gap-4 items-start">
+      <div className={fullHeight ? 'flex gap-4 flex-1 min-h-0' : 'flex gap-4 items-start'}>
         {/* An open panel owns the width while narrow, so the artifact body
             steps aside -- giving the panel `w-full` alone would still leave the
             two of them splitting 390px. Hidden rather than unmounted: the body
             holds scroll position and, for markdown, an in-progress anchored
             comment selection, and rotating a phone crosses the breakpoint. */}
-        <div className={`flex-1 min-w-0 ${narrowPanelOpen ? 'hidden' : ''}`}>
+        <div className={`flex-1 min-w-0 ${fullHeight ? 'min-h-0 flex flex-col' : ''} ${compareKey !== null && fullHeight ? 'overflow-y-auto' : ''} ${narrowPanelOpen ? 'hidden' : ''}`}>
           {compareKey !== null ? (
             <ArtifactVersionCompare
               shown={artifact}
@@ -642,7 +647,7 @@ export function ArtifactDetailPageBody({
         {/* EVERY breakpoint, not just desktop: mobile HIDES the body while a panel is open, so a
             !isMobile gate here left a mobile chat with neither body nor panel -- a blank page. */}
         {panel === 'chat' && (
-          <div className={`flex flex-col min-h-0 h-[calc(100vh-240px)] ${isMobile ? 'flex-1 min-w-0' : 'w-[480px] shrink-0'}`}>
+          <div className={`flex flex-col min-h-0 ${fullHeight ? '' : 'h-[calc(100vh-240px)]'} ${isMobile ? 'flex-1 min-w-0' : 'w-[480px] shrink-0'}`}>
             {/* IN THIS COLUMN, its only mount: the remedy names the composer below it, and a
                 page-top banner puts that instruction a column away from the control it means. */}
             {contextNotice}
@@ -659,7 +664,7 @@ export function ArtifactDetailPageBody({
         )}
       </div>
 
-      <div className="mt-3 text-[12px] text-muted">
+      {!fullHeight && <div className="mt-3 text-[12px] text-muted">
         {i18nT('pages.artifactDetailPage.created_at_value', { date: fmtDateTime(artifact.created_at) })} {"\u00b7"}{' '}
         {i18nT('pages.artifactDetailPage.updated_at_value', { date: fmtDateTime(artifact.updated_at) })} {"\u00b7"}{' '}
         {/* "Live" reflects the always-current state. Numbered versions
@@ -678,7 +683,7 @@ export function ArtifactDetailPageBody({
             {i18nT('pages.artifactDetailPage.or')} <strong>{i18nT('pages.artifactDetailPage.agent_chat')}</strong> {i18nT('pages.artifactDetailPage.to_chat_with_the_agent')}.
           </span>
         )}
-      </div>
+      </div>}
 
       {openThread && (
         <CommentThreadPopover
@@ -697,7 +702,7 @@ export function ArtifactDetailPageBody({
       )}
 
       {/* Lifecycle event log + activity timeline. */}
-      <div className="mt-6">
+      {!fullHeight && <div className="mt-6">
         <h3 className="text-[13px] font-semibold text-text-strong mb-2">{i18nT('pages.artifactDetailPage.activity')}</h3>
         {/* No hand-off: editor buffer editedContent may be dirty */}
         <ErrorNotice
@@ -709,7 +714,7 @@ export function ArtifactDetailPageBody({
           events={eventsQuery.data?.events ?? []}
           navigateToSlot={(slotKey) => sendNav({ path: '/chat', slotKey })}
         />
-      </div>
+      </div>}
     </div>
   )
 }

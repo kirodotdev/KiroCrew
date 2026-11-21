@@ -6,16 +6,16 @@
  * which the facade calls in the page's hook order
  * (`ArtifactDetailPage.owners.test.tsx` pins it).
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowLeft, Camera, Check, Copy, ExternalLink, Download, Eye, FoldHorizontal, MoreHorizontal, Pencil,
   UnfoldHorizontal, RefreshCw, X, RotateCcw, Plus, Sparkles, MessageSquare, Monitor, Undo2, Upload, Star,
-  Folder as FolderIcon,
+  Folder as FolderIcon, ChevronDown, ChevronUp,
 } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { PageHeader, Badge, Btn, Input } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
-import { fmtNumber } from '../i18n/format'
+import { fmtDateTime, fmtNumber } from '../i18n/format'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import { platformShortcut } from '../utils/platform'
@@ -30,7 +30,8 @@ import { canvasDocument, discardCanvas, flushCanvas } from '../components/canvas
 import { api } from '../api/client'
 import { downloadUrl, isAndroidWebView } from '../utils/download'
 import { useArtifactPopouts } from '../hooks/useArtifactPopouts'
-import { USER_SELECTABLE_KINDS } from '../lib/artifactKinds'
+import { USER_SELECTABLE_KINDS, hasFullHeightPage } from '../lib/artifactKinds'
+import { ActivityTimeline } from './ArtifactDetailPageBody'
 import { COMPARE_NONE, compareChoices, isComparableKind, stateLabel } from '../lib/artifactCompare'
 import type { Artifact } from '../types'
 
@@ -287,10 +288,43 @@ export function useArtifactDetailPageMenu({
 
 export type ArtifactDetailPageMenuRead = ReturnType<typeof useArtifactDetailPageMenu>
 
+/** What a scrolling page keeps below the document, for a canvas page that cannot scroll: the slug,
+ *  Compare with, the description, the created/updated line and the activity log. */
+function CanvasPageDetails({ artifact, compareSelect, eventsQuery, version, navigateToSlot }: {
+  artifact: Artifact
+  compareSelect: ReactNode
+  eventsQuery: ArtifactDetailPageDocumentRead['eventsQuery']
+  version: string
+  navigateToSlot: (slotKey: string) => void
+}) {
+  return (
+    <>
+      {compareSelect}
+      <div className="basis-full min-w-0 text-[12px] text-muted">
+        <div>{i18nT('pages.artifactDetailPage.artifact_slug', { slug: artifact.slug })}</div>
+        {artifact.description && <div className="mt-1 text-sm italic">{artifact.description}</div>}
+        <div className="mt-1">
+          {i18nT('pages.artifactDetailPage.created_at_value', { date: fmtDateTime(artifact.created_at) })} {'\u00b7'}{' '}
+          {i18nT('pages.artifactDetailPage.updated_at_value', { date: fmtDateTime(artifact.updated_at) })} {'\u00b7'}{' '}
+          {version}
+        </div>
+        <h3 className="mt-3 mb-2 text-[13px] font-semibold text-text-strong">{i18nT('pages.artifactDetailPage.activity')}</h3>
+        {/* No hand-off: a canvas's waiting save lives on this page. */}
+        <ErrorNotice
+          title={i18nT('pages.artifactDetailPage.activity_failed_to_load')}
+          message={eventsQuery.error ? (errMessage(eventsQuery.error) || i18nT('components.errorBoundary.something_went_wrong')) : null}
+          className="mb-2"
+        />
+        <ActivityTimeline events={eventsQuery.data?.events ?? []} navigateToSlot={navigateToSlot} />
+      </div>
+    </>
+  )
+}
+
 /** The sticky header: title, chips, version picker, row actions and the More menu. */
 export function ArtifactDetailPageHeader({
   stateRead, documentRead, editorRead, composerRead, menuRead, artifact, displayCommentCount, panel,
-  toggleSidebar, handleRevert, openCompanionChat, popout,
+  toggleSidebar, handleRevert, openCompanionChat, popout, navigateToSlot,
 }: {
   stateRead: ArtifactDetailPageStateRead
   documentRead: ArtifactDetailPageDocumentRead
@@ -304,14 +338,17 @@ export function ArtifactDetailPageHeader({
   handleRevert: () => Promise<void>
   openCompanionChat: (opts?: { address?: boolean }) => Promise<void>
   popout: boolean
+  navigateToSlot: (slotKey: string) => void
 }) {
   const {
     slug, navigate, confirm, renaming, nameDraft, setNameDraft, selectedVersion,
     setSelectedVersion, compareWith, setCompareWith, editing, previewDuringEdit, setPreviewDuringEdit, readingWidth, toggleReadingWidth,
-    saving, saveConflict, showPublish, setShowPublish, addingTag, setAddingTag, newTag, setNewTag, ime,
+    saving, saveConflict, showPublish, setShowPublish, detailsOpen, setDetailsOpen, addingTag, setAddingTag, newTag, setNewTag, ime,
     refocusAddTagRef, addTagButtonRef,
   } = stateRead
-  const { versionsQuery, versions, isCurrent, editable, dirty, usesIframe } = documentRead
+  const {
+    versionsQuery, versions, isCurrent, editable, dirty, usesIframe, eventsQuery, detailQuery, effectiveVersion,
+  } = documentRead
   const {
     addTag, removeTag, pinning, togglePin, changingKind, changeKind, titleButtonRef, startRenaming,
     commitRename, cancelRename, startEditing, endEditing, cancelEditing, handleSave, handleSnapshotLive,
@@ -343,37 +380,68 @@ export function ArtifactDetailPageHeader({
   // while editing (the buffer is not a saved state) and for kinds with no text.
   const compareKeys = !editing && isComparableKind(artifact.kind) ? compareChoices(selectedVersion, versions) : []
   const compareValue = compareKeys.includes(compareWith) ? compareWith : COMPARE_NONE
+  // A canvas has a full-height page (see `hasFullHeightPage`): one slim row of Back, title,
+  // Details, Version, chat and More. Kind, folder, star, tags, Compare, the created/updated line
+  // and the activity log wait in the Details bar, so the canvas keeps the height they would take.
+  const compact = hasFullHeightPage(artifact.kind)
+  const compareSelect = compareKeys.length > 0 && (
+    <SimpleSelect
+      aria-label={i18nT('pages.artifactDetailPage.compare_with')}
+      className={TOOLBAR_SELECT_CLASS}
+      options={[COMPARE_NONE, ...compareKeys]}
+      optionLabels={[
+        i18nT('pages.artifactDetailPage.compare_with'),
+        ...compareKeys.map((key) => i18nT('pages.artifactDetailPage.compare_with_state', {
+          state: stateLabel(key),
+        })),
+      ]}
+      value={compareValue}
+      onChange={async (key) => {
+        if (key !== COMPARE_NONE) {
+          const canvasSaved = await flushCanvas(artifact.slug)
+          if (!canvasSaved && !(await confirm({
+            title: i18nT('pages.artifactDetailPage.discard_unsaved_changes'),
+            confirmLabel: i18nT('pages.artifactDetailPage.discard_changes_button'),
+          }))) return
+          if (!canvasSaved) discardCanvas(artifact.slug)
+        }
+        setCompareWith(key)
+      }}
+    />
+
+  )
+  const titleNode = renaming ? (
+    <Input
+      autoFocus
+      value={nameDraft}
+      aria-label={i18nT('pages.artifactDetailPage.artifact_name')}
+      onChange={(e) => setNameDraft(e.target.value)}
+      {...ime.bindEnter({
+        onEnter: () => void commitRename(true),
+        onEscape: cancelRename,
+        onBlur: () => void commitRename(false),
+      })}
+      className={`px-2 py-0.5 ${compact ? 'text-base font-semibold' : 'text-2xl font-bold'} tracking-tight text-text-strong w-full max-w-[36rem]`}
+    />
+  ) : (
+    <HoverTip label={i18nT('pages.artifactDetailPage.rename_this_artifact')}>
+      <Btn
+        ref={titleButtonRef}
+        onClick={startRenaming}
+        className={`group gap-2 bg-transparent border-none p-0 ${compact ? 'min-w-0 max-w-full text-base font-semibold' : 'text-2xl font-bold'} tracking-tight text-text-strong cursor-text hover:bg-transparent hover:border-none`}
+      >
+        {compact ? <span className="truncate">{artifact.name}</span> : artifact.name}
+        <Pencil size={14} className="text-muted opacity-0 group-hover:opacity-100 transition-opacity shrink-0" aria-hidden="true" />
+      </Btn>
+    </HoverTip>
+  )
   return (
     <div className="sticky top-0 z-10 bg-bg border-b border-border">
-      <PageHeader
-        title={renaming ? (
-          <Input
-            autoFocus
-            value={nameDraft}
-            aria-label={i18nT('pages.artifactDetailPage.artifact_name')}
-            onChange={(e) => setNameDraft(e.target.value)}
-            {...ime.bindEnter({
-              onEnter: () => void commitRename(true),
-              onEscape: cancelRename,
-              onBlur: () => void commitRename(false),
-            })}
-            className="px-2 py-0.5 text-2xl font-bold tracking-tight text-text-strong w-full max-w-[36rem]"
-          />
-        ) : (
-          <HoverTip label={i18nT('pages.artifactDetailPage.rename_this_artifact')}>
-            <Btn
-              ref={titleButtonRef}
-              onClick={startRenaming}
-              className="group gap-2 bg-transparent border-none p-0 text-2xl font-bold tracking-tight text-text-strong cursor-text hover:bg-transparent hover:border-none"
-            >
-              {artifact.name}
-              <Pencil size={14} className="text-muted opacity-0 group-hover:opacity-100 transition-opacity shrink-0" aria-hidden="true" />
-            </Btn>
-          </HoverTip>
-        )}
+      {!compact && <PageHeader
+        title={titleNode}
         subtitle={i18nT('pages.artifactDetailPage.artifact_slug', { slug: artifact.slug })}
-      />
-      <div className="px-4 md:px-6 py-2 flex flex-wrap items-center gap-2">
+      />}
+      <div className={`${compact ? 'px-2 md:px-4' : 'px-4 md:px-6'} py-2 flex flex-wrap items-center gap-2`}>
         {!popout && (
           <Btn onClick={async () => {
             // A canvas saves itself, so `dirty` never covers it: send what is
@@ -388,125 +456,156 @@ export function ArtifactDetailPageHeader({
             <ArrowLeft size={13} /> {i18nT('pages.artifactDetailPage.back')}
           </Btn>
         )}
-        {/* Type control. Markdown and plain text are indistinguishable by
-          * content — "# Notes" is a heading in one and literal text in the
-          * other — so the difference is intent and has to be stated, not
-          * sniffed. Offered only for the inline-editable kinds; widget / html
-          * render in a sandboxed iframe with no editor, so switching to one
-          * would strand a document the user is typing in. Choosing a type also
-          * PINS it, stopping the auto-detect from re-typing it later. */}
-        {editable ? (
-          <HoverTip label={i18nT('pages.artifactDetailPage.change_how_this_document_is_rendered')}>
-            <SimpleSelect
-              options={USER_SELECTABLE_KINDS}
-              value={artifact.kind}
-              aria-label={i18nT('pages.artifactDetailPage.document_type')}
-              className={TOOLBAR_SELECT_CLASS}
-              disabled={changingKind}
-              onChange={(v) => void changeKind(v)}
-            />
-          </HoverTip>
-        ) : (
-          <Badge variant="aim">{artifact.kind}</Badge>
+        {compact && (
+          <div className="flex min-w-0 flex-1 basis-32 [&>span]:min-w-0 [&>span]:max-w-full">{titleNode}</div>
         )}
-        <FolderChip artifact={artifact} />
-        {/* Only on the current version: a version snapshot does not carry the
-          * live record-level `pinned`, so rendering it there could show a
-          * stale star for state the user cannot meaningfully toggle. */}
-        {isCurrent && (
-          <HoverTip label={artifact.pinned ? i18nT('pages.artifactsPage.starred_click_to_unstar') : i18nT('pages.artifactsPage.star_artifact')}>
-            <button
+        {compact && (
+          <HoverTip label={i18nT('pages.artifactDetailPage.details')}>
+            <Btn
               type="button"
-              onClick={togglePin}
-              disabled={pinning}
-              className={`${TOOLBAR_CHIP_CLASS} border transition-colors cursor-pointer disabled:cursor-default ${
-                artifact.pinned
-                  ? 'bg-accent/10 border-accent text-accent'
-                  : 'bg-bg-elevated border-border text-muted hover:text-accent hover:border-accent'
-              }`}
-              aria-label={artifact.pinned ? i18nT('pages.artifactsPage.remove_star_from_artifact') : i18nT('pages.artifactsPage.star_artifact')}
-              aria-pressed={!!artifact.pinned}
+              onClick={() => setDetailsOpen(o => !o)}
+              aria-label={i18nT('pages.artifactDetailPage.details')}
+              aria-expanded={detailsOpen}
+              className="h-8"
             >
-              {pinning
-                ? <RefreshCw size={13} className="animate-spin" />
-                : <Star size={13} className={artifact.pinned ? 'fill-current' : ''} />}
-              {artifact.pinned ? i18nT('pages.artifactsPage.starred') : i18nT('pages.artifactDetailPage.star')}
-            </button>
+              {detailsOpen ? <ChevronUp size={13} aria-hidden="true" /> : <ChevronDown size={13} aria-hidden="true" />}
+            </Btn>
           </HoverTip>
         )}
-        {artifact.tags.map((t) => (
-          <span key={t} className={`${TOOLBAR_CHIP_CLASS} bg-bg-elevated border border-border text-muted group`}>
-            {/* Own element: the remove button's HoverTip keeps an sr-only copy of
-                its label in this chip, so the bare text node would no longer be
-                the chip's whole text. */}
-            <span>{t}</span>
-            <HoverTip label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}>
+        {(!compact || detailsOpen) && (
+          // Beside Back on the page's other kinds (`contents` adds no box); on a canvas page a bar
+          // of its own under the slim row, scrolling inside itself so the page never does.
+          <div className={compact ? 'order-last basis-full max-h-[40dvh] overflow-y-auto flex flex-wrap items-center gap-2' : 'contents'}>
+          {/* Type control. Markdown and plain text are indistinguishable by
+            * content — "# Notes" is a heading in one and literal text in the
+            * other — so the difference is intent and has to be stated, not
+            * sniffed. Offered only for the inline-editable kinds; widget / html
+            * render in a sandboxed iframe with no editor, so switching to one
+            * would strand a document the user is typing in. Choosing a type also
+            * PINS it, stopping the auto-detect from re-typing it later. */}
+          {editable ? (
+            <HoverTip label={i18nT('pages.artifactDetailPage.change_how_this_document_is_rendered')}>
+              <SimpleSelect
+                options={USER_SELECTABLE_KINDS}
+                value={artifact.kind}
+                aria-label={i18nT('pages.artifactDetailPage.document_type')}
+                className={TOOLBAR_SELECT_CLASS}
+                disabled={changingKind}
+                onChange={(v) => void changeKind(v)}
+              />
+            </HoverTip>
+          ) : (
+            <Badge variant="aim">{artifact.kind}</Badge>
+          )}
+          <FolderChip artifact={artifact} />
+          {/* Only on the current version: a version snapshot does not carry the
+            * live record-level `pinned`, so rendering it there could show a
+            * stale star for state the user cannot meaningfully toggle. */}
+          {isCurrent && (
+            <HoverTip label={artifact.pinned ? i18nT('pages.artifactsPage.starred_click_to_unstar') : i18nT('pages.artifactsPage.star_artifact')}>
               <button
                 type="button"
-                // The chip, and this focused button with it, leaves the page
-                // once the write lands, so focus moves to + Tag first.
-                onClick={() => { removeTag(t); addTagButtonRef.current?.focus() }}
-                className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-within:opacity-100 hover:text-danger transition-opacity bg-transparent border-none cursor-pointer p-0 inline-flex items-center"
-                aria-label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}
+                onClick={togglePin}
+                disabled={pinning}
+                className={`${TOOLBAR_CHIP_CLASS} border transition-colors cursor-pointer disabled:cursor-default ${
+                  artifact.pinned
+                    ? 'bg-accent/10 border-accent text-accent'
+                    : 'bg-bg-elevated border-border text-muted hover:text-accent hover:border-accent'
+                }`}
+                aria-label={artifact.pinned ? i18nT('pages.artifactsPage.remove_star_from_artifact') : i18nT('pages.artifactsPage.star_artifact')}
+                aria-pressed={!!artifact.pinned}
               >
-                <X size={12} />
+                {pinning
+                  ? <RefreshCw size={13} className="animate-spin" />
+                  : <Star size={13} className={artifact.pinned ? 'fill-current' : ''} />}
+                {artifact.pinned ? i18nT('pages.artifactsPage.starred') : i18nT('pages.artifactDetailPage.star')}
               </button>
             </HoverTip>
-          </span>
-        ))}
-        {addingTag ? (
-          <input
-            type="text"
-            value={newTag}
-            onChange={e => setNewTag(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter') {
-                // Rule 2 shape: this handler carries more than Enter (comma/space
-                // also commit), so only the Enter path is gated. Rule 1: single-line
-                // input, so the guard alone is enough.
-                if (ime.isComposing(e)) return
-                // addTag closes the input for any non-blank text, a duplicate included.
-                if (newTag.trim()) closeTagInputByKey(e)
-                addTag(newTag)
-              }
-              if (e.key === ',' || e.key === ' ') {
-                // Space cycles IME candidates mid-composition; committing here
-                // would post the composing buffer and kill candidate selection.
-                // The claim is key-agnostic: it consumes the separator only
-                // when the IME is not itself using the keypress.
-                if (ime.claimEnter(e) && newTag.trim()) { closeTagInputByKey(e); addTag(newTag) }
-              }
-              if (e.key === 'Escape') { ime.reset(); setNewTag(''); closeTagInputByKey(e); setAddingTag(false) }
-            }}
-            {...ime.bindComposition({
-              onBlur: () => {
-                if (newTag.trim()) addTag(newTag)
-                else setAddingTag(false)
-              },
-            })}
-            autoFocus
-            placeholder={i18nT('pages.artifactDetailPage.tag')}
-            className={`${TOOLBAR_CHIP_CLASS} bg-bg-elevated border border-accent text-text outline-hidden focus-ring`}
-            style={{ width: '90px' }}
-            aria-label={i18nT('pages.artifactDetailPage.add_a_tag')}
-          />
-        ) : (
-          <HoverTip label={i18nT('pages.artifactDetailPage.add_a_tag_comma_separated_tags_supported')}>
-            <button
-              ref={el => {
-                addTagButtonRef.current = el
-                if (!el || !refocusAddTagRef.current) return
-                refocusAddTagRef.current = false
-                el.focus()
+          )}
+          {artifact.tags.map((t) => (
+            <span key={t} className={`${TOOLBAR_CHIP_CLASS} bg-bg-elevated border border-border text-muted group`}>
+              {/* Own element: the remove button's HoverTip keeps an sr-only copy of
+                  its label in this chip, so the bare text node would no longer be
+                  the chip's whole text. */}
+              <span>{t}</span>
+              <HoverTip label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}>
+                <button
+                  type="button"
+                  // The chip, and this focused button with it, leaves the page
+                  // once the write lands, so focus moves to + Tag first.
+                  onClick={() => { removeTag(t); addTagButtonRef.current?.focus() }}
+                  className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-within:opacity-100 hover:text-danger transition-opacity bg-transparent border-none cursor-pointer p-0 inline-flex items-center"
+                  aria-label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}
+                >
+                  <X size={12} />
+                </button>
+              </HoverTip>
+            </span>
+          ))}
+          {addingTag ? (
+            <input
+              type="text"
+              value={newTag}
+              onChange={e => setNewTag(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  // Rule 2 shape: this handler carries more than Enter (comma/space
+                  // also commit), so only the Enter path is gated. Rule 1: single-line
+                  // input, so the guard alone is enough.
+                  if (ime.isComposing(e)) return
+                  // addTag closes the input for any non-blank text, a duplicate included.
+                  if (newTag.trim()) closeTagInputByKey(e)
+                  addTag(newTag)
+                }
+                if (e.key === ',' || e.key === ' ') {
+                  // Space cycles IME candidates mid-composition; committing here
+                  // would post the composing buffer and kill candidate selection.
+                  // The claim is key-agnostic: it consumes the separator only
+                  // when the IME is not itself using the keypress.
+                  if (ime.claimEnter(e) && newTag.trim()) { closeTagInputByKey(e); addTag(newTag) }
+                }
+                if (e.key === 'Escape') { ime.reset(); setNewTag(''); closeTagInputByKey(e); setAddingTag(false) }
               }}
-              type="button"
-              onClick={() => setAddingTag(true)}
-              className={`${TOOLBAR_CHIP_CLASS} border border-dashed border-border text-muted hover:text-text hover:border-border-strong cursor-pointer bg-transparent transition-colors`}
+              {...ime.bindComposition({
+                onBlur: () => {
+                  if (newTag.trim()) addTag(newTag)
+                  else setAddingTag(false)
+                },
+              })}
+              autoFocus
+              placeholder={i18nT('pages.artifactDetailPage.tag')}
+              className={`${TOOLBAR_CHIP_CLASS} bg-bg-elevated border border-accent text-text outline-hidden focus-ring`}
+              style={{ width: '90px' }}
               aria-label={i18nT('pages.artifactDetailPage.add_a_tag')}
-            >
-              <Plus size={13} /> {i18nT('pages.artifactDetailPage.tag_2')}
-            </button>
-          </HoverTip>
+            />
+          ) : (
+            <HoverTip label={i18nT('pages.artifactDetailPage.add_a_tag_comma_separated_tags_supported')}>
+              <button
+                ref={el => {
+                  addTagButtonRef.current = el
+                  if (!el || !refocusAddTagRef.current) return
+                  refocusAddTagRef.current = false
+                  el.focus()
+                }}
+                type="button"
+                onClick={() => setAddingTag(true)}
+                className={`${TOOLBAR_CHIP_CLASS} border border-dashed border-border text-muted hover:text-text hover:border-border-strong cursor-pointer bg-transparent transition-colors`}
+                aria-label={i18nT('pages.artifactDetailPage.add_a_tag')}
+              >
+                <Plus size={13} /> {i18nT('pages.artifactDetailPage.tag_2')}
+              </button>
+            </HoverTip>
+          )}
+            {compact && (
+              <CanvasPageDetails
+                artifact={artifact} compareSelect={compareSelect} eventsQuery={eventsQuery}
+                version={selectedVersion === null
+                  ? i18nT('pages.artifactDetailPage.showing_live_v', { version: detailQuery.data?.version ?? '?' })
+                  : i18nT('pages.artifactDetailPage.showing_v_historical', { version: effectiveVersion })}
+                navigateToSlot={navigateToSlot}
+              />
+            )}
+          </div>
         )}
         {/* `flex-wrap`: the parent row wraps, but this group did not, so at a
             narrow window the trailing controls (Download last) ran past the
@@ -545,31 +644,7 @@ export function ArtifactDetailPageHeader({
               })
             }}
           />
-          {compareKeys.length > 0 && (
-            <SimpleSelect
-              aria-label={i18nT('pages.artifactDetailPage.compare_with')}
-              className={TOOLBAR_SELECT_CLASS}
-              options={[COMPARE_NONE, ...compareKeys]}
-              optionLabels={[
-                i18nT('pages.artifactDetailPage.compare_with'),
-                ...compareKeys.map((key) => i18nT('pages.artifactDetailPage.compare_with_state', {
-                  state: stateLabel(key),
-                })),
-              ]}
-              value={compareValue}
-              onChange={async (key) => {
-                if (key !== COMPARE_NONE) {
-                  const canvasSaved = await flushCanvas(artifact.slug)
-                  if (!canvasSaved && !(await confirm({
-                    title: i18nT('pages.artifactDetailPage.discard_unsaved_changes'),
-                    confirmLabel: i18nT('pages.artifactDetailPage.discard_changes_button'),
-                  }))) return
-                  if (!canvasSaved) discardCanvas(artifact.slug)
-                }
-                setCompareWith(key)
-              }}
-            />
-          )}
+          {!compact && compareSelect}
           {/* No hand-off: editor buffer editedContent may be dirty */}
           <ErrorNotice
             variant="inline"

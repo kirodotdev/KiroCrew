@@ -12716,7 +12716,8 @@
       "content_copied_from_version": "内容复制自 v{{version}}",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
-      "version_change": "v{{from}} → v{{to}}"
+      "version_change": "v{{from}} → v{{to}}",
+      "details": "详情"
     },
     "artifactPopoutFrame": {
       "artifact": "产物",

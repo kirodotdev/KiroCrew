@@ -143,6 +143,9 @@ describe('canvas session handoff', () => {
 })
 describe('canvas comparison navigation', () => {
   async function compareWith(label = 'Compare with v1') {
+    // Compare with waits in the canvas page's Details bar; leave it open once opened.
+    const details = screen.getByRole('button', { name: 'Details' })
+    if (details.getAttribute('aria-expanded') !== 'true') fireEvent.click(details)
     fireEvent.click(screen.getByRole('combobox', { name: 'Compare with' }))
     await act(async () => {
       fireEvent.click(screen.getByRole('option', { name: label, exact: true }))

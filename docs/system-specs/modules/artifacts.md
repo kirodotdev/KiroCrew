@@ -1847,6 +1847,19 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   blank re-typing that turns a JSON-looking first save into `json` cannot apply.
   Importing a `.canvas` file through **Add Artifact** gives the same kind, and
   **Download** writes one back out.
+- **A full-height page of its own.** A canvas opens on a page that never
+  scrolls (`hasFullHeightPage` in `lib/artifactKinds.ts`): the canvas fills the
+  height the layout leaves under the header (flex and `min-h-0` down from the page
+  root, not a `calc(100dvh - N)` guess) and is the only thing that scrolls, pans or
+  zooms. The header is one slim row: Back, the title (it truncates), a Details
+  toggle, Version, the agent chat and More. The Details bar, closed until opened and
+  scrolling inside itself (at most 40% of the window), holds what the other kinds
+  show beside or below the document: the kind badge, folder, Star and tags, Compare
+  with, the slug, the description, the created/updated line and the activity log.
+  The chat panel takes the page's height beside the canvas, and a comparison scrolls
+  inside its own area. Because those controls are not mounted while the bar is
+  closed, a guide step aimed at the folder chip (`artifacts.detail.move-to-folder`)
+  finds nothing on a canvas until Details is open.
 - **No edit mode, live saves.** The editor is always live on the current
   version and saves a moment after the last change as a silent live save
   (`snapshot: false`), so moving shapes never adds a numbered version; the

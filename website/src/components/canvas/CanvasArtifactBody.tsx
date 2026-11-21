@@ -340,7 +340,9 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
       : state === 'saved' ? t('components.canvas.status_saved') : null
 
   return (
-    <div className="flex flex-col gap-2">
+    // Fills the page's remaining height (flex, `min-h-0` down from the page root), so the canvas
+    // is the only thing that scrolls; no height is guessed from the page chrome.
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
       {confirmDialog}
       {state === 'conflict' && (
         <ErrorNotice
@@ -365,8 +367,7 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
       )}
       <div
         data-testid="canvas-artifact"
-        className="relative overflow-hidden rounded-lg border border-border"
-        style={{ height: 'max(420px, calc(100dvh - 220px))' }}
+        className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border"
       >
         <CanvasEditor canvas={canvas} onChange={onChange} readOnly={!editable} epoch={epoch} />
         {editable && status && (
