@@ -663,7 +663,11 @@ async def _run_update_check(*, manual: bool = False) -> dict[str, object]:
             # in from the switch on purpose — the file is the authority on which
             # lane the install now follows, so a switch whose write failed cannot
             # leave the panel naming a channel that was never persisted.
-            _set_update_info(channel=await asyncio.to_thread(_release_channel))
+            # A manual run wrote only its private verdict, so there is nothing of
+            # its own in the shared cache to reset, and a revalidation that
+            # finished first has put its answer there.
+            if not own_run:
+                _set_update_info(channel=await asyncio.to_thread(_release_channel))
         else:
             # Stamped even on failure, so an offline host or a broken feed cannot
             # turn the 12-hourly background poll into a hot retry loop. The

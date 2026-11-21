@@ -535,6 +535,42 @@ async def _as_owner(request: web.Request, handler: Callable) -> web.StreamRespon
     return await handler(request)
 
 
+class TestARevalidationOutlivesASupersededClick:
+    def test_a_click_overtaken_by_a_revalidation_leaves_the_revalidated_cache(
+        self, helper_home, git_checkout, monkeypatch
+    ):
+        # ``/api/update/revalidate`` is ``_invalidate_update_check`` then an isolated
+        # check. The click that was fetching when it landed is superseded; its
+        # cleanup must not put the shared cache back to ``unchecked``.
+        _standalone(monkeypatch)
+        real = updates._check_git_checkout
+
+        async def _main() -> None:
+            reached, release = asyncio.Event(), asyncio.Event()
+
+            async def _gated(*args, **kwargs):
+                reached.set()
+                await release.wait()
+                return await real(*args, **kwargs)
+
+            monkeypatch.setattr(updates, "_check_git_checkout", _gated)
+            click = asyncio.create_task(updates._do_update_check(manual=True))
+            await await_until(reached, what="the click's fetch")
+
+            updates._invalidate_update_check("stable")
+            monkeypatch.setattr(updates, "_check_git_checkout", real)
+            await updates._do_update_check()
+            assert updates.get_update_info()["check_status"] == "failed"
+
+            release.set()
+            await await_until(click, what="the superseded click")
+
+        asyncio.run(_main())
+        info = updates.get_update_info()
+        assert info["check_status"] == "failed"
+        assert info["error_code"] == "git_fetch_failed"
+
+
 class TestTheTwoChecksDoNotShareASlot:
     def test_a_click_does_not_ride_on_a_running_isolated_check(self, monkeypatch):
         started: list[bool] = []

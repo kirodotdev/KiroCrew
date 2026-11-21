@@ -821,6 +821,26 @@ describe('AboutPanel gateway update check', () => {
     expect(screen.queryByTestId('check-failed')).toBeNull()
   })
 
+  it('drops a click verdict when the gateway\'s copy of it expires, so Update re-checks first', async () => {
+    // The gateway keeps the click's verdict for ten minutes. Past that, Update
+    // armed against it would be refused, so the panel stops offering it.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      stubFetch({ check_status: 'succeeded', update_available: true, latest_version: '9.9.9', error_code: null, managed_by: 'git', can_apply: true, changes: '### 9.9.9\n- thing', last_checked_at: 100 })
+      pushStatus({ update_check_status: 'failed', update_last_checked_at: 50 })
+      mountWeb()
+      await pressCheck()
+      await screen.findByText('Update available')
+      act(() => { vi.advanceTimersByTime(599_000) })
+      expect(screen.queryByText('Update available')).toBeTruthy()
+      act(() => { vi.advanceTimersByTime(2_000) })
+      await waitFor(() => expect(screen.queryByText('Update available')).toBeNull())
+      expect(screen.queryByRole('button', { name: /^Update(?! the gateway)/ })).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('a newer background "no update" withdraws an update an older manual check found', async () => {
     stubFetch({ check_status: 'succeeded', update_available: true, latest_version: '9.9.9', error_code: null, last_checked_at: 100 })
     pushStatus({ update_check_status: 'succeeded', update_last_checked_at: 100 })

@@ -3405,7 +3405,11 @@ writes the cache as every check does. `POST /api/update` arms the version the
 badge shows: while the click's verdict is live and succeeded, the arm names it
 instead of re-running an isolated check that cannot sign in and would refuse an
 Update the badge offered. The arm records only the version; the apply at the
-next start does its own fetch.
+next start does its own fetch. A click superseded by a channel switch or a
+revalidation discards its private verdict and leaves the shared cache alone: the
+revalidation's answer is what the cache holds. The About panel drops its own copy
+of a click's answer after the same ten minutes, so Update after that runs a fresh
+check instead of arming a verdict the gateway no longer holds.
 
 Commit distance is the primary signal because `__version__` is bumped only at a
 release: comparing version strings alone reported "you're on the latest version"
