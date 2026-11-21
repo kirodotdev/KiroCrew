@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -40,6 +41,9 @@ def _pause_store(tmp_path, _floor_monkeypatch):
     _floor_monkeypatch.setattr(crew_pause, "_path", lambda: path)
     _floor_monkeypatch.setattr(crew_pause, "_loaded_from", None)
     _floor_monkeypatch.setattr(crew_pause, "_records", {})
+    _floor_monkeypatch.setattr(crew_pause, "_stored", {}, raising=False)
+    _floor_monkeypatch.setattr(crew_pause, "_memory_only", {}, raising=False)
+    _floor_monkeypatch.setattr(crew_pause, "_spilled", {}, raising=False)
     _floor_monkeypatch.setattr(crew_pause, "_resuming", {})
     _floor_monkeypatch.setattr(crew_pause, "_unsaved", False)
     _floor_monkeypatch.setattr(crew_mode, "_known_roots", set())
@@ -49,7 +53,10 @@ def _pause_store(tmp_path, _floor_monkeypatch):
 
 def _forget_memory() -> None:
     """What a gateway restart does to the in-memory copy, before the preload has run."""
-    crew_pause._records.clear()
+    crew_pause._records = {}
+    crew_pause._stored = {}
+    crew_pause._memory_only = {}
+    crew_pause._spilled = {}
     crew_pause._resuming = {}
     crew_pause._loaded_from = None
 
@@ -145,6 +152,240 @@ def test_a_turn_owed_when_its_write_is_refused_is_still_continued(_pause_store, 
         _restart()
         assert crew_pause.record("root")["owed"] == ["w2"]
     assert crew_pause.resume("root")["stopped"] == ["w1", "w2"]
+
+
+#: A member key long enough that storing its owed turn takes more bytes than a
+#: small crew's record frees.
+_LONG = "chat-" + "m" * 400
+
+
+def _owe_at_the_cap(_pause_store: Any, monkeypatch: Any, key: str = _LONG) -> None:
+    """Fill the pause file to the cap, then have the gate end *key*'s held turn."""
+    monkeypatch.setattr(crew_pause, "MAX_FILE_BYTES", _pause_store.stat().st_size)
+    assert crew_pause.owe_turn(key) is True
+    stored = json.loads(_pause_store.read_text(encoding="utf-8"))["paused"]
+    assert key not in stored["root"]["owed"]  # the cap refused it: memory only
+
+
+def test_a_write_that_shrinks_the_file_fits_while_an_owed_turn_is_kept_in_memory(
+    _pause_store, monkeypatch
+):
+    crew_pause.pause("root", ["w1", _LONG], ["w1"])
+    crew_pause.pause("small", [], [])
+    _owe_at_the_cap(_pause_store, monkeypatch)
+    # Resume all on the other, smaller crew and a member's own Continue both fit.
+    assert crew_pause.resume("small") is not None
+    assert crew_pause.release("w1")
+    _restart()
+    assert crew_pause.record("small") is None
+    assert crew_pause.record("root")["held"] == [_LONG]
+
+
+def test_resume_all_continues_an_owed_turn_kept_in_memory(_pause_store, monkeypatch):
+    crew_pause.pause("root", ["w1", _LONG], ["w1"])
+    _owe_at_the_cap(_pause_store, monkeypatch)
+    assert crew_pause.record("root")["owed"] == [_LONG]
+    assert crew_pause.roots_naming(_LONG) == ["root"]
+    assert crew_pause.resume("root")["stopped"] == sorted(["w1", _LONG])
+    # Stored as resuming, so a restart before its hand-back holds it again.
+    _restart()
+    assert _LONG in crew_pause.record("root")["stopped"]
+
+
+def test_a_released_owed_turn_does_not_strip_a_later_pauses_fresh_stop(_pause_store, monkeypatch):
+    crew_pause.pause("root", ["w1", "w2"], ["w1"])
+    _owe_at_the_cap(_pause_store, monkeypatch, "w2")
+    assert crew_pause.release("w2")["root"]["memory_only"] == {
+        "owed": ["w2"],
+        "stopped": ["w2"],
+    }
+    assert crew_pause._memory_only == {}
+    monkeypatch.setattr(crew_pause, "MAX_FILE_BYTES", 256 * 1024)
+    crew_pause.pause("root", ["w1", "w2"], ["w2"])
+    _restart()
+    assert crew_pause.record("root")["stopped"] == ["w1", "w2"]
+
+
+@pytest.mark.parametrize("record_ends", [False, True])
+def test_a_refused_continue_puts_back_an_owed_turn_kept_in_memory(
+    _pause_store, monkeypatch, record_ends
+):
+    if record_ends:
+        # A Resume all left only this member held: its Continue ends the record.
+        crew_pause.keep_pending("root", [_LONG], root_pending=False)
+    else:
+        crew_pause.pause("root", ["w1", _LONG], ["w1"])
+    _owe_at_the_cap(_pause_store, monkeypatch)
+    removed = crew_pause.release(_LONG)
+    assert (removed["root"]["dropped"] is not None) is record_ends
+    # The Continue is refused: putting the member back fits under the cap.
+    crew_pause.rehold(_LONG, removed)
+    rec = crew_pause.record("root")
+    assert _LONG in rec["held"] and _LONG in rec["stopped"] and rec["owed"] == [_LONG]
+    assert crew_pause.holds_turn(_LONG)
+    assert _LONG in crew_pause.resume("root")["stopped"]
+
+
+def test_a_refused_resume_holds_an_owed_turn_kept_in_memory_again(_pause_store, monkeypatch):
+    crew_pause.pause("root", ["w1", _LONG], ["w1"])
+    _owe_at_the_cap(_pause_store, monkeypatch)
+    stopped = crew_pause.resume("root")["stopped"]
+    # Its hand-back did not happen: held again for the next Resume all, in memory
+    # at once, and from the file's resuming after a restart.
+    pending = [k for k in stopped if k != "root"]
+    crew_pause.forget_resuming(stopped, root="root", pending=pending)
+    assert crew_pause.record("root")["stopped"] == sorted(["w1", _LONG])
+    assert crew_pause.holds_turn(_LONG)
+    _restart()
+    assert crew_pause.record("root")["stopped"] == sorted(["w1", _LONG])
+
+
+def test_an_owed_turn_kept_in_memory_is_stored_once_the_file_has_room(_pause_store, monkeypatch):
+    crew_pause.pause("root", ["w1", "w2"], ["w1"])
+    crew_pause.pause("big", [f"chat-member-{i}" for i in range(40)], [])
+    _owe_at_the_cap(_pause_store, monkeypatch, "w2")
+    assert crew_pause.resume("big") is not None  # frees room, kept for its undo
+    assert crew_pause._memory_only == {"root": {"owed": ["w2"], "stopped": ["w2"]}}
+    assert crew_pause.owe_turn("w2") is True  # the gate's next refusal stores it
+    assert crew_pause._memory_only == {}
+    _restart()
+    assert crew_pause.record("root")["owed"] == ["w2"]
+
+
+@pytest.mark.parametrize("next_write", ["continue", "resume_all"])
+def test_an_owed_turn_the_disk_refused_is_stored_by_the_next_continue_or_resume(
+    _pause_store, monkeypatch, next_write
+):
+    crew_pause.pause("root", ["w1", "w2"], ["w1"])
+    crew_pause.pause("other", ["o1"], ["o1"])
+
+    def _fail(*_a: Any, **_k: Any) -> None:
+        raise OSError("disk full")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(crew_pause, "atomic_write", _fail)
+        assert crew_pause.owe_turn("w2") is True
+    # The disk recovers; the next write is another member's Continue or Resume all.
+    if next_write == "continue":
+        assert crew_pause.release("w1")
+    else:
+        assert crew_pause.resume("other") is not None
+    assert crew_pause._memory_only == {}
+    _restart()
+    assert crew_pause.record("root")["owed"] == ["w2"]
+
+
+def test_a_stop_a_later_pause_stored_stays_stored_through_a_refused_continue(
+    _pause_store, monkeypatch
+):
+    crew_pause.pause("root", ["w1", "w2"], ["w1"])
+    _owe_at_the_cap(_pause_store, monkeypatch, "w2")
+    # Room for a second Pause all to store w2's stop, but not its owed turn too.
+    stopped = crew_pause._copy_records()
+    stopped["root"]["stopped"] = ["w1", "w2"]
+    monkeypatch.setattr(crew_pause, "MAX_FILE_BYTES", 1 << 20)
+    size = len(crew_pause._body(stopped, {}).encode("utf-8"))
+    monkeypatch.setattr(crew_pause, "MAX_FILE_BYTES", size)
+    crew_pause.pause("root", ["w1", "w2"], ["w2"])
+    assert crew_pause._memory_only == {"root": {"owed": ["w2"]}}
+    removed = crew_pause.release("w2")
+    crew_pause.rehold("w2", removed)  # its Continue is refused
+    _restart()
+    assert crew_pause.record("root")["stopped"] == ["w1", "w2"]
+
+
+def test_a_refused_continue_fits_back_beside_another_owed_turn_kept_in_memory(
+    _pause_store, monkeypatch
+):
+    crew_pause.pause("root", ["w2", _LONG], [_LONG])
+    _owe_at_the_cap(_pause_store, monkeypatch, "w2")
+    # Its Continue frees room, which stays free: w2 is still memory only.
+    removed = crew_pause.release(_LONG)
+    assert crew_pause._memory_only == {"root": {"owed": ["w2"], "stopped": ["w2"]}}
+    crew_pause.rehold(_LONG, removed)
+    rec = crew_pause.record("root")
+    assert rec["stopped"] == sorted(["w2", _LONG]) and _LONG in rec["held"]
+    _restart()
+    assert _LONG in crew_pause.record("root")["stopped"]
+
+
+def test_a_refused_continue_fits_back_after_another_crews_continue_stored_an_owed_turn(
+    _pause_store, monkeypatch
+):
+    owed = "chat-" + "b" * 100  # smaller than _LONG's record, bigger than c1's entries
+    # Crew a: a Resume all left only _LONG held, so its Continue ends the record.
+    crew_pause.keep_pending("a", [_LONG], root_pending=False)
+    crew_pause.pause("b", ["b1", owed], ["b1"])
+    crew_pause.pause("c", ["c1", "c2"], ["c1"])
+    monkeypatch.setattr(crew_pause, "MAX_FILE_BYTES", _pause_store.stat().st_size)
+    assert crew_pause.owe_turn(owed) is True  # the cap refused it: memory only
+    removed = crew_pause.release(_LONG)  # a's room stays free for its undo
+    assert crew_pause._memory_only == {"b": {"owed": [owed], "stopped": [owed]}}
+    # Crew c's own Continue lands while a's is still being decided: it stores
+    # b's owed turn in the room a freed.
+    assert crew_pause.release("c1")
+    assert crew_pause._memory_only == {}
+    # a's Continue is refused: a comes back, and b's owed turn, once refused by the
+    # file, goes back to memory only to make the room.
+    crew_pause.rehold(_LONG, removed)
+    assert crew_pause.holds_turn(_LONG) and _LONG in crew_pause.record("a")["held"]
+    assert crew_pause.record("b")["owed"] == [owed]
+    assert crew_pause._memory_only == {"b": {"owed": [owed], "stopped": [owed]}}
+    _restart()
+    assert _LONG in crew_pause.record("a")["held"]
+
+
+def test_a_pause_at_the_cap_never_drops_an_owed_turn_a_later_write_stored(
+    _pause_store, monkeypatch
+):
+    owed = "chat-" + "o" * 60
+    crew_pause.pause("root", ["w1", owed], ["w1"])
+    crew_pause.pause("big", [f"chat-member-{i}" for i in range(40)], [])
+    _owe_at_the_cap(_pause_store, monkeypatch, owed)
+    assert crew_pause.resume("big") is not None  # frees room, kept for its undo
+    assert crew_pause.owe_turn(owed) is True  # the gate's next refusal stores it
+    assert crew_pause._memory_only == {}
+    # A Pause all of another crew would fit only by dropping that stored turn.
+    grown = crew_pause._copy_records()
+    grown["new"] = {
+        "tree": ["n1"],
+        "held": ["n1"],
+        "stopped": [],
+        "owed": [],
+        "paused_at": datetime.now(timezone.utc).isoformat(),
+        "root_released": False,
+    }
+    trimmed = crew_pause._without(grown, {"root": {"owed": [owed], "stopped": [owed]}})
+    # The slack covers the timestamp's optional microseconds, not the two entries.
+    cap = len(crew_pause._body(trimmed, {}).encode("utf-8")) + 16
+    monkeypatch.setattr(crew_pause, "MAX_FILE_BYTES", cap)
+    with pytest.raises(OSError):
+        crew_pause.pause("new", ["n1"], [])
+    _restart()
+    assert crew_pause.record("new") is None
+    assert crew_pause.record("root")["owed"] == [owed]
+
+
+def test_a_refused_continue_fits_back_after_another_refused_continue_stored_its_owed_turn(
+    _pause_store, monkeypatch
+):
+    owed = "chat-" + "b" * 100  # smaller than _LONG's record
+    # Crew a: a Resume all left only _LONG held, so its Continue ends the record.
+    crew_pause.keep_pending("a", [_LONG], root_pending=False)
+    crew_pause.pause("b", ["b1", owed], ["b1"])
+    monkeypatch.setattr(crew_pause, "MAX_FILE_BYTES", _pause_store.stat().st_size)
+    assert crew_pause.owe_turn(owed) is True  # the cap refused it: memory only
+    removed_a = crew_pause.release(_LONG)  # a's room stays free for its undo
+    removed_b = crew_pause.release(owed)
+    # b's Continue is refused first: its undo stores b's owed turn in a's room.
+    crew_pause.rehold(owed, removed_b)
+    assert crew_pause._memory_only == {}
+    # a's Continue is refused too: b's owed turn goes back to memory only to fit.
+    crew_pause.rehold(_LONG, removed_a)
+    assert crew_pause.holds_turn(_LONG) and crew_pause.holds_turn(owed)
+    assert crew_pause.record("b")["owed"] == [owed]
+    _restart()
+    assert _LONG in crew_pause.record("a")["held"]
 
 
 @pytest.mark.parametrize(
