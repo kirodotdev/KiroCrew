@@ -36,6 +36,8 @@ from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS
 
 _AGENT = "probe"
+#: The ask rules every claude seed carries for Claude Code's own scheduler tools.
+_SCHEDULER_ASK_RULES = ["CronCreate", "CronDelete", "ScheduleWakeup"]
 _SHELL = {"shell": {"denyByDefault": True, "allowedCommands": ["git status"]}}
 _WRITE = {"fs_write": {"fallbackAction": "deny", "allowedPaths": ["docs/**"]}}
 
@@ -166,7 +168,11 @@ def test_a_checkout_spec_cannot_drop_the_users_allowlists(tmp_path, agents_dir) 
     checkout = _plant_checkout(tmp_path)
     client = _client(checkout)
     perms = json.loads(client._render_claude_settings_payload()).get("permissions") or {}
-    assert perms.get("ask") == [*CLAUDE_SHELL_ASK_RULES, *CLAUDE_WRITE_ASK_RULES]
+    assert perms.get("ask") == [
+        *CLAUDE_SHELL_ASK_RULES,
+        *CLAUDE_WRITE_ASK_RULES,
+        *_SCHEDULER_ASK_RULES,
+    ]
     reason = _auto_refusal(_write(client, checkout / "src" / "a.py"))
     assert reason is not None and "fallbackAction" in reason
 
@@ -209,6 +215,30 @@ def test_a_declined_project_settings_file_still_gets_the_ask_rules(tmp_path, age
 def test_the_envelope_asks_nothing_without_an_allowlist(tmp_path, agents_dir) -> None:
     _write_spec(agents_dir, None)
     assert _envelope_asks(_client(tmp_path)) == []
+
+
+def test_a_left_out_project_file_keeps_every_ask_rule_once(tmp_path, agents_dir) -> None:
+    """A project file Crew can leave out moves the seed inline. The allowlist rules,
+    Claude's own scheduler rules and the project's own ask rules all reach claude,
+    each once, so neither merge drops the other's rules."""
+    _write_spec(agents_dir, {**_SHELL, **_WRITE})
+    local = tmp_path / ".claude" / "settings.local.json"
+    local.parent.mkdir()
+    project = {"permissions": {"ask": ["CronCreate", "Bash(git push:*)"]}}
+    local.write_text(json.dumps(project), encoding="utf-8")
+    client = AcpClient(
+        work_dir=tmp_path, agent=_AGENT, acp_backend=ACP_BACKEND_CLAUDE, session_key="cron:probe"
+    )
+    client._claude_adapter_disk_version = "0.84.0"
+    client._write_claude_local_settings()
+    client._session_mcp_servers()
+    assert client._claude_local_settings_excluded
+    assert _envelope_asks(client) == [
+        *CLAUDE_SHELL_ASK_RULES,
+        *CLAUDE_WRITE_ASK_RULES,
+        *_SCHEDULER_ASK_RULES,
+        "Bash(git push:*)",
+    ]
 
 
 def test_a_spec_with_no_allowlist_stamps_nothing(tmp_path, agents_dir) -> None:
@@ -271,14 +301,15 @@ def test_the_seed_asks_about_the_allowlisted_tools(
     tmp_path, agents_dir, tools_settings, expected
 ) -> None:
     """claude approves a read-only command or an ``acceptEdits`` edit on its own;
-    an ``ask`` rule outranks that, so the call reaches the gate."""
+    an ``ask`` rule outranks that, so the call reaches the gate. Claude's own
+    scheduler rules, which every seed carries, follow them."""
     _write_spec(agents_dir, tools_settings)
-    assert _seeded_permissions(tmp_path).get("ask") == expected
+    assert _seeded_permissions(tmp_path).get("ask") == [*expected, *_SCHEDULER_ASK_RULES]
 
 
-def test_the_seed_asks_nothing_without_an_allowlist(tmp_path, agents_dir) -> None:
+def test_the_seed_asks_only_about_schedulers_without_an_allowlist(tmp_path, agents_dir) -> None:
     _write_spec(agents_dir, {"shell": {"allowedCommands": ["git status"]}})
-    assert "ask" not in _seeded_permissions(tmp_path)
+    assert _seeded_permissions(tmp_path).get("ask") == _SCHEDULER_ASK_RULES
 
 
 def test_a_spec_that_grants_the_shell_and_denies_nothing_lifts_deny_by_default() -> None:
