@@ -253,8 +253,23 @@ def build_backlinks(notes: dict[str, str]) -> dict[str, list[dict[str, Any]]]:
 
 
 def _tokenize(text: str) -> list[str]:
-    """Lowercase alphanumeric tokens; the unit of both indexing and querying."""
-    return re.findall(r"[a-z0-9]+", text.lower())
+    """Lowercase word tokens; the unit of both indexing and querying.
+
+    A token is a run of Unicode alphanumerics and combining marks, so a word
+    in any script is one term. Text is NFC-normalised first, so a decomposed
+    note and a composed query produce the same term.
+    """
+    tokens: list[str] = []
+    current: list[str] = []
+    for char in unicodedata.normalize("NFC", text).lower():
+        if char.isalnum() or unicodedata.category(char)[0] == "M":
+            current.append(char)
+        elif current:
+            tokens.append("".join(current))
+            current = []
+    if current:
+        tokens.append("".join(current))
+    return tokens
 
 
 @dataclass
@@ -361,7 +376,11 @@ class SearchIndex:
 
     @staticmethod
     def _snippet(content: str, terms: list[str]) -> Optional[str]:
-        """Text around the first matching term, or None when it is title-only."""
+        """Text around the first matching term, or None when it is title-only.
+
+        The content is NFC-normalised to match the form terms are indexed in.
+        """
+        content = unicodedata.normalize("NFC", content)
         lowered = content.lower()
         for term in terms:
             at = lowered.find(term)
