@@ -104,7 +104,13 @@ class TestSubagentPostToolUseHook:
             f"PostToolUse should receive cached tool_name with 'Running: ' "
             f"stripped, got {kwargs['tool_name']!r}"
         )
-        assert kwargs["tool_response"] == {"output": "hello world"}
+        # The cut is reported via two sibling keys (issue #38593), alongside
+        # the unchanged ``output`` for a short (non-truncated) payload.
+        assert kwargs["tool_response"] == {
+            "output": "hello world",
+            "truncated": False,
+            "output_length": len("hello world"),
+        }
         # The child's own key, for per-session attribution, beside the
         # parent's key that marks the event as a subagent's.
         assert kwargs["session_key"] == "subagent:t01"
@@ -168,9 +174,13 @@ class TestSubagentPostToolUseHook:
             if c.args and c.args[0] == "PostToolUse"
         ]
         assert len(post_calls) == 1
-        output = post_calls[0].kwargs["tool_response"]["output"]
+        response = post_calls[0].kwargs["tool_response"]
+        output = response["output"]
         assert len(output) == 2000
         assert output == "x" * 2000
+        # The cut is no longer silent (issue #38593): a hook can tell it happened.
+        assert response["truncated"] is True
+        assert response["output_length"] == 5000
 
     @pytest.mark.asyncio
     async def test_post_tool_use_no_hook_store_is_noop(self) -> None:
