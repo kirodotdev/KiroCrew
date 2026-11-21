@@ -15,6 +15,7 @@ import gc
 import os
 import time
 import weakref
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from apps_registry_helpers import _catalog_absent  # noqa: F401 - fixture
@@ -23,7 +24,7 @@ from apps_registry_helpers import unsandboxed_spawn  # noqa: F401 - fixture
 
 from kiro_crew.apps import registry
 from kiro_crew.apps.registry_pipeline import catalog, store_art
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import await_until, finished
 
 
 def _external_rows(count: int) -> list[dict]:
@@ -411,6 +412,13 @@ async def test_a_fetch_past_the_budget_holds_none_of_the_rows_unused_fields(monk
 
     _stub_listing_sources(monkeypatch, [], _slow_resolve)
     monkeypatch.setattr(registry, "_load_external_registries", _fake_external)
+    # The listing reads each stale row on an executor thread, and a pool worker drops
+    # its job (which holds the caller's row) only after the listing has its answer.
+    # One worker runs jobs in order, so a no-op job after the listing returns only
+    # once every earlier job is dropped. Set before the test's first ``to_thread``, so
+    # it is the loop's only default executor; ``_join_test_loop_executor`` joins the
+    # loop's current default executor at teardown.
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=1))
 
     listed = {r["name"]: r for r in await _listing(registry.list_registry())}
     assert catalog._MANIFEST_BATCHES, "the fetches past the budget must keep running"
@@ -419,6 +427,7 @@ async def test_a_fetch_past_the_budget_holds_none_of_the_rows_unused_fields(monk
     assert all("featured" not in e for e in inputs), "the fetch got a key it never reads"
     for name in (failing["name"], fetching["name"]):
         assert listed[name]["unused_metadata"] == {"blob": "x" * 100_000}
+    await finished(asyncio.to_thread(lambda: None), what="the executor dropping the listing's jobs")
     gc.collect()
     assert [ref() for ref in held] == [None] * 4, "the background held the caller's row"
 
