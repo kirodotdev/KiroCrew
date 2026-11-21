@@ -1602,10 +1602,31 @@ changed launch. A row refused as
 same with **Approve**. A marked row that cannot share (a refusal with no
 approvable identity, or an env a shared copy would withhold) has no switch,
 only a **Remove** button that takes the mark off. A row's **Details** shows
-the launch in the gateway's display-safe form (argv, env key names, never a
-value), with the approved launch beside the new one for a changed command, the
-changed arguments and env names said once above them and marked in the new
-one.
+the launch in the gateway's display-safe form (argv, env key names), each
+distinct command line once, with the approved launch beside the new one for a
+changed command. The changed arguments are marked in each column and repeated
+in no line above them; each column lists only the env keys that were added,
+removed or changed, and those keys are said once above the columns. A launch
+whose command is new on its side also lists and marks its own keys
+(`unmatchedKeys`), unless a launch the other side alone runs had the same
+value, so a key it gained is shown even when another launch already set it.
+When a launch of a command both sides run changed as well
+(`wholeLaunchChanges`), per-key sets cannot prove which keys moved between
+those launches (two of them swapping a loader preload), so the columns hide no
+key and the changed launches are drawn whole behind **Show full command**. A key the
+same on both sides, such as a PATH that did not change, is not listed. An env
+key set on both sides with a new value is said there too: for a value the gateway shows in clear (PATH, `LD_*`, a `${VAR}`
+reference) the list entries added and removed, and otherwise only its key
+(`envValueChanges`). When both sides run the same commands, the summary is per
+launch (`mcpLaunchDiff.launchChanges`): each new launch is paired with the
+approved launch it most likely replaced (same command, then fewest changed
+keys) and diffed against that launch only, so two launches swapping values
+show as a change on each; a launch with no partner is named as added or
+removed in one line that carries its command. Launches of one command that
+changed the same way (the gateway's PATH moving on every launch) are drawn
+once (`distinctChanges`). The changed launches, each distinct one once, sit
+behind **Show full command**, and a value outside the gateway's clear set is
+drawn as its key only.
 A `changed_needs_reapproval` refusal that only added a launch, such as a second
 agent declaring the same server with its own arguments, reads **Paused · new
 launch to approve** instead, and its Details line says the approved launch did
