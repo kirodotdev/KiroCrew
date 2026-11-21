@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next'
 
 import { ratingOptions } from './sessionPulseWireValues'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { apiTransport } from '../api/apiTransport'
 
 // Kiro Crew is self-hosted, open-source software — every install runs on its
 // own arbitrary origin, which Aperture's browser-CORS allowlist model (a
@@ -233,7 +234,7 @@ export default function SessionPulseSurveyCard({
     setSubmitError(false)
 
     try {
-      const res = await fetch(FEEDBACK_SUBMIT_URL, {
+      const res = await apiTransport.request(FEEDBACK_SUBMIT_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

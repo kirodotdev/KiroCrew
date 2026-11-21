@@ -57,6 +57,21 @@ const RAW_API_FETCH_SELECTORS = [
   },
 ]
 
+// A write on the global `fetch` (an init object whose `method` is not GET) skips
+// the transport's edge-throttle retry as well as its journal: a tunnel-edge 429
+// loses the action while its message says the dashboard retries (issue #40178).
+// This one matches by AST shape, whatever the URL, so a write to a computed base
+// (`fetch(BASE + '/deploy', { method: 'POST' })`) is caught too. Send it through
+// `apiTransport.request`, which keeps the same arguments. A method passed in a
+// variable is not caught. Apps (`src/apps/**`) sit on their own iframe boundary
+// and are exempted below, as is `src/api/**`, which defines the transport.
+const BARE_FETCH_WRITE_SELECTORS = [
+  {
+    selector: "CallExpression[callee.name='fetch'] > ObjectExpression.arguments:nth-child(2) > Property[key.name='method']:not([value.value='GET']):not([value.value='HEAD'])",
+    message: "No write on the global fetch — it skips the edge-throttle retry and the transport journal. Use apiTransport.request(url, init) from api/apiTransport (same arguments), or a typed api.* method. See issue #40178.",
+  },
+]
+
 // The standing inventory of files that still call `fetch('/api/…')` directly
 // (issue #18723), each mapped to the EXACT number of raw API fetches it holds
 // today. Exported so `src/test/rawApiFetchGate.test.ts` can enforce the
@@ -79,24 +94,15 @@ export const RAW_API_FETCH_INVENTORY = {
   'src/apps/mochi/pet/main.tsx': 1,
   'src/apps/mochi/pet/petBridge.ts': 4,
   'src/apps/mochi/src/mochiApi.ts': 10,
-  'src/components/AutoNudgePopover.tsx': 2,
-  'src/components/CliPanel.tsx': 2,
+  'src/components/AutoNudgePopover.tsx': 1,
   'src/components/FileRenderers.tsx': 1,
-  'src/components/McpAppFrame.tsx': 2,
-  'src/components/TerminalCompletion.tsx': 1,
   'src/components/WebAppArtifactCard.tsx': 2,
-  'src/components/chat-input/optimizer.ts': 1,
   'src/components/settingRef/useConfigSchema.ts': 1,
-  'src/components/useMarkdownPanelFileState.ts': 4,
-  'src/hooks/usePanelDocumentActions.ts': 1,
-  'src/hooks/usePathKind.ts': 1,
+  'src/components/useMarkdownPanelFileState.ts': 2,
   'src/hooks/useRefreshScheduler.ts': 2,
   'src/hooks/useRunInTerminalBridge.ts': 1,
-  'src/lib/externalTerminal.ts': 1,
   'src/lib/linkMeta.ts': 1,
   'src/pages/ArtifactDeployPage.tsx': 1,
-  'src/pages/knowledge/api.ts': 1,
-  'src/pages/overview/PortabilityTab.tsx': 2,
   'src/shell/boot/terminalRestore.ts': 2,
 }
 
@@ -218,7 +224,7 @@ export default [
       // pane a remote Crew hides, so it stays painted over the other Crew.
       // OverlayPortal / useOverlayRoot resolve the owning pane's overlay root
       // instead (see src/components/overlayRoot.tsx).
-      'no-restricted-syntax': ['error', ...NATIVE_UI_SELECTORS, ...RAW_API_FETCH_SELECTORS],
+      'no-restricted-syntax': ['error', ...NATIVE_UI_SELECTORS, ...RAW_API_FETCH_SELECTORS, ...BARE_FETCH_WRITE_SELECTORS],
     },
   },
   {
@@ -276,7 +282,27 @@ export default [
     // the gate is a hard zero everywhere else. `src/api/client.ts` is not listed
     // because it DEFINES the journaled transport (jfetch) the gate
     // steers callers toward.
-    files: Object.keys(RAW_API_FETCH_INVENTORY),
+    //
+    // The bare-fetch WRITE gate (#40178) still applies to these files: only
+    // their remaining raw reads are inventoried.
+    files: Object.keys(RAW_API_FETCH_INVENTORY).filter((path) => !path.startsWith('src/apps/')),
+    rules: {
+      'no-restricted-syntax': ['error', ...NATIVE_UI_SELECTORS, ...BARE_FETCH_WRITE_SELECTORS],
+    },
+  },
+  {
+    // Apps are MCP-app iframes on their own `credentials: 'same-origin'` trust
+    // boundary, not the core transport, so the bare-fetch write gate (#40178)
+    // does not apply to them; the raw-`/api` gate does, except for the
+    // inventoried app files in the next block.
+    files: ['src/apps/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': ['error', ...NATIVE_UI_SELECTORS, ...RAW_API_FETCH_SELECTORS],
+    },
+  },
+  {
+    // The inventoried app files: the raw-`/api` gate is dropped as above.
+    files: Object.keys(RAW_API_FETCH_INVENTORY).filter((path) => path.startsWith('src/apps/')),
     rules: {
       'no-restricted-syntax': ['error', ...NATIVE_UI_SELECTORS],
     },
