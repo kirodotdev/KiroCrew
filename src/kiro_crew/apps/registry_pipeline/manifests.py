@@ -51,6 +51,7 @@ from kiro_crew.apps.registry_pipeline.git_targets import (
     _git_transport_env,
     _git_url_host,
     _is_ssh_git_url,
+    _lfs_endpoint_pin_argv,
     _loggable_git_transport_output,
     _looks_like_git_url,
     _ssh_method_list_closes,
@@ -348,6 +349,7 @@ async def _fetch_app_manifest(
             clone_cmd = [
                 "git",
                 *_HOOKS_NEUTRALIZER_ARGV,
+                *_lfs_endpoint_pin_argv(git_url),
                 "clone",
                 "--depth",
                 "1",
