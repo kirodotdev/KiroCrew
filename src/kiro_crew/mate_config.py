@@ -106,9 +106,65 @@ def crewmate_file_on_record(mate_id: str) -> bool:
     Every crewmate file write records its id with the writer's data home and
     nothing removes it, so this still answers True after the file is deleted.
     An entry another instance sharing the Kiro home wrote is not this one's.
+
+    A file with no entry at all was written before the record existed. It is
+    this instance's when this instance's roster names it (the ``config.agents[mate_id]``
+    crewmate binding points at the file by name), and it is recorded then, once,
+    under the owner lock, so another instance sharing the Kiro home finds this
+    one's entry afterwards. Otherwise it stays unowned and answers False.
     Raises :class:`MateConfigError` when the record exists but cannot be read.
     """
-    return _read_owners().get(mate_id) == _this_home()
+    owner = _read_owners().get(mate_id)
+    if owner is not None:
+        return owner == _this_home()
+    if not mate_config_path(mate_id).is_file() or not _on_this_roster(mate_id):
+        return False
+    return _record_unowned_file(mate_id)
+
+
+def _on_this_roster(mate_id: str) -> bool:
+    """Whether this instance's ``config.json`` binds a crewmate that owns file *mate_id*.
+
+    A crewmate file is named by its binding's alias, and the binding points at it
+    by that same name (``mate_worker._claimed_file``): ``agents[mate_id]`` has a
+    ``member_id`` and ``kiro_agent == mate_id``. An unreadable config answers
+    False: the file then stays unowned, as before.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    try:
+        config = KiroCrewConfig.load()
+    except Exception:  # noqa: BLE001 - an unreadable config claims nothing
+        logger.warning("config unreadable; Bot file %r stays unowned", mate_id, exc_info=True)
+        return False
+    binding = config.agents.get(mate_id)
+    return bool(getattr(binding, "member_id", "")) and getattr(binding, "kiro_agent", "") == mate_id
+
+
+def _record_unowned_file(mate_id: str) -> bool:
+    """Record *mate_id* as this instance's, unless another instance recorded it first.
+
+    Re-reads the record under the owner lock, the lock :func:`write_mate_spec`
+    holds, so two instances asking at once agree on one owner. A failed write
+    answers False: the file stays unowned this pass and is asked about again.
+    """
+    try:
+        with _owners_lock():
+            owners = _read_owners()
+            owner = owners.get(mate_id)
+            if owner is not None:
+                return owner == _this_home()
+            owners[mate_id] = _this_home()
+            atomic_write(
+                _owners_path(), json.dumps(owners, indent=2, sort_keys=True) + "\n", mode=0o600
+            )
+    except OSError as exc:
+        logger.warning("could not record Bot file %r as this instance's: %s", mate_id, exc)
+        return False
+    logger.info(
+        "recorded Bot file %r, which predates the owner record, as this instance's", mate_id
+    )
+    return True
 
 
 def source_agents_dir(source_agent: str) -> Path:

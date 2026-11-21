@@ -9,7 +9,7 @@
  * when both figures came back; nothing here estimates one.
  */
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Check, ExternalLink, RefreshCw, Share2 } from 'lucide-react'
+import { AlertTriangle, Check, ExternalLink, Info, RefreshCw, Share2 } from 'lucide-react'
 import type { McpGatewayFootprint, McpManagedServer } from '../../api/client'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -35,15 +35,23 @@ import {
 } from './mcpManagementModel'
 import { RefusalLaunch, SHARE_BUTTON_CLASS } from './McpManagementLaunchReview'
 import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
+import { McpShareDiagram } from './McpShareDiagram'
 
 export const HERO_TITLE_ID = 'mcp-hero-title'
 const SWITCH_NOTE_ID = 'mcp-hero-switch-note'
+const SHARE_DIAGRAM_ID = 'mcp-share-diagram'
+/** The sharing card's anchor: `/capabilities?tab=mcp-servers&view=sharing#mcp-sharing`
+ *  opens the Sharing view and scrolls here. */
+export const SHARING_ANCHOR_ID = 'mcp-sharing'
+/** Set once sharing has been turned on here, so the diagram stops showing by default. */
+export const SHARE_DIAGRAM_SEEN_KEY = 'kirocrew.mcp.shareDiagramSeen'
 
 function gib(bytes: number): string {
   return fmtNumber(gibNumber(bytes), { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 }
 
-/** The page-wide switch, drawn larger than a row's and named by the hero title. */
+/** The page-wide switch, drawn larger than a row's, with its own name. */
 function HeroSwitch({
   on,
   disabled,
@@ -60,7 +68,7 @@ function HeroSwitch({
       type="button"
       role="switch"
       aria-checked={on}
-      aria-labelledby={HERO_TITLE_ID}
+      aria-label={i18nT('pages.mcpManagement.share_switch_label')}
       aria-describedby={describedBy}
       disabled={disabled}
       onClick={onClick}
@@ -89,6 +97,7 @@ export function SharingHero({
   on,
   switchDisabled,
   switchNote,
+  stateKnown = true,
   onToggle,
   footprint,
   footprintFailed,
@@ -103,6 +112,9 @@ export function SharingHero({
   switchDisabled: boolean
   /** Why the switch is disabled, read to assistive tech only (no visible line). */
   switchNote?: string | null
+  /** False while the sharing state is still loading: the diagram waits for it,
+   *  so a gateway that already shares never flashes the first-use diagram. */
+  stateKnown?: boolean
   onToggle: () => void
   footprint?: McpGatewayFootprint
   /** The footprint read itself failed (a request error, not a null figure). */
@@ -130,8 +142,25 @@ export function SharingHero({
   const showNow = typeof now === 'number'
   const showWithSharing = showNow && typeof withSharing === 'number'
   const showBanner = on && (staleCount > 0 || !!reloadNote || !!reloadError)
+  // Shown until sharing is first turned on; after that, behind the info button.
+  const [unseen, setUnseen] = useState(() => safeGetItem(SHARE_DIAGRAM_SEEN_KEY) !== '1')
+  const firstUse = stateKnown && !on && unseen
+  const [diagramOpen, setDiagramOpen] = useState(false)
+  const [diagramRun, setDiagramRun] = useState(0)
+  // The page is lazy, so the browser's own jump to #mcp-sharing finds nothing yet.
+  useEffect(() => {
+    if (window.location.hash === `#${SHARING_ANCHOR_ID}`) {
+      document.getElementById(SHARING_ANCHOR_ID)?.scrollIntoView?.({ block: 'start' })
+    }
+  }, [])
+  useEffect(() => {
+    if (!on) return
+    safeSetItem(SHARE_DIAGRAM_SEEN_KEY, '1')
+    setUnseen(false)
+  }, [on])
   return (
     <section
+      id={SHARING_ANCHOR_ID}
       // What the footprint read is doing, for a test to wait on instead of a
       // timer: pending, ready (answered, figures or not), refused or error.
       data-footprint={footprintRefused ? 'refused' : footprintFailed ? 'error' : footprint ? 'ready' : 'pending'}
@@ -146,9 +175,30 @@ export function SharingHero({
             <Share2 size={16} />
           </span>
           <div className="min-w-0">
-            <h2 id={HERO_TITLE_ID} className="text-[15px] font-semibold leading-snug text-[var(--text)]">
-              {i18nT('pages.mcpManagement.hero_title')}
-            </h2>
+            <div className="flex min-w-0 items-center gap-1">
+              <h2 id={HERO_TITLE_ID} className="text-[15px] font-semibold leading-snug text-[var(--text)]">
+                {i18nT('pages.mcpManagement.hero_title')}
+              </h2>
+              {/* Toggles the diagram; each time it opens, it plays again. */}
+              <button
+                type="button"
+                aria-label={i18nT('pages.mcpManagement.share_diagram_show')}
+                aria-expanded={firstUse || diagramOpen}
+                aria-controls={SHARE_DIAGRAM_ID}
+                onClick={() => {
+                  if (firstUse || diagramOpen) {
+                    setUnseen(false)
+                    setDiagramOpen(false)
+                  } else {
+                    setDiagramRun(n => n + 1)
+                    setDiagramOpen(true)
+                  }
+                }}
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+              >
+                <Info size={14} aria-hidden="true" />
+              </button>
+            </div>
             <a
               href={DOCS_URL}
               target="_blank"
@@ -172,6 +222,8 @@ export function SharingHero({
           </span>
         )}
       </div>
+
+      {(firstUse || diagramOpen) && <McpShareDiagram id={SHARE_DIAGRAM_ID} run={diagramRun} />}
 
       {/* A non-owner's 403 is still a rejected request, so it goes through
           ErrorNotice (errors-use-error-notice), but says what happened: the

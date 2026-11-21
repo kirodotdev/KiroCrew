@@ -97,6 +97,18 @@ _STATUS_HEAD_LINES = 12
 # defines never belongs here: it would hide its own rename.
 EXTERNAL_IDENTIFIERS_FILE = ".github/docs-lint-external-identifiers.txt"
 
+# Names ONE doc owns: keys of an output schema it defines, fields an agent writes
+# into free-form notes (``defines``), or a name it cites because it is wrong or
+# retired (``wrong-on-purpose``). Declared on its own line as
+# ``<!-- docs-lint: defines a, b -->``, outside fences, so an example of the syntax
+# declares nothing. Only the dead-identifier check reads it, and only for that doc.
+# Two guards keep it honest: a declared name the code defines, or that the doc no
+# longer names in a code span, is a failing finding against the doc.
+_DOC_DECLARATION_RE = re.compile(
+    r"^[ \t]*<!--[ \t]*docs-lint:[ \t]*(?:defines|wrong-on-purpose)[ \t]+(.*?)[ \t]*-->",
+    re.MULTILINE,
+)
+
 # A source path written from the REPO ROOT, so it resolves or it is wrong. Both
 # boundaries are load-bearing. The lookBEHIND keeps the ``docs/`` and ``src/`` arms
 # from matching the tail of a longer path: without it
@@ -299,6 +311,14 @@ def _declares_planned(text: str) -> bool:
     """True for a doc whose own head carries a ``Status: planned`` line."""
     head = text.splitlines()[:_STATUS_HEAD_LINES]
     return any(_PLANNED_STATUS_RE.match(line) for line in head)
+
+
+def _doc_declared_names(text: str) -> set[str]:
+    """The names a doc's own ``<!-- docs-lint: ... -->`` lines declare, fences aside."""
+    names: set[str] = set()
+    for match in _DOC_DECLARATION_RE.finditer(_strip_fences(text)):
+        names.update(name for name in re.split(r"[\s,]+", match.group(1)) if name)
+    return names
 
 
 def _external_identifiers(root: Path) -> frozenset[str]:
@@ -601,7 +621,9 @@ def check_dead_identifiers(root: Path, docs: list[Path], findings: Findings) -> 
     Forward-looking genres are skipped for the same reason as the path check, and
     so is a doc whose head says ``Status: planned``. Documentation placeholders
     (``MyPage``) are meant to be absent, and a name in the curated external list
-    is defined somewhere this repo cannot see.
+    is defined somewhere this repo cannot see. A name the doc itself declares
+    (:data:`_DOC_DECLARATION_RE`) passes in that doc only, and fails the run once
+    the code defines it or the doc stops naming it.
     """
     code = _identifier_index(root)
     external = _external_identifiers(root)
@@ -628,16 +650,25 @@ def check_dead_identifiers(root: Path, docs: list[Path], findings: Findings) -> 
             continue
         if _declares_planned(text):
             continue
-        for _lineno, code in _iter_code_spans(text):
+        spans = [span for _lineno, span in _iter_code_spans(text)]
+        declared = _doc_declared_names(text)
+        named = {token for span in spans for token in _IDENT_TOKEN_RE.findall(span)}
+        for token in sorted(declared & code):
+            detail = "is defined in this repo's code; drop it from this doc's docs-lint comment"
+            findings.facts.append(FactFinding(CHECK_DEAD_IDENTIFIER, rel_doc, token, detail))
+        for token in sorted(declared - named):
+            detail = "is declared in this doc's docs-lint comment but no code span names it"
+            findings.facts.append(FactFinding(CHECK_DEAD_IDENTIFIER, rel_doc, token, detail))
+        for span in spans:
             for pattern in (_IDENT_SNAKE_RE, _IDENT_CAMEL_RE):
-                for token in pattern.findall(code):
+                for token in pattern.findall(span):
                     if len(token) < _IDENT_MIN_LEN:
                         continue
                     if token.lower() in _IDENT_STOPWORDS:
                         continue
                     if token.startswith(_IDENT_PLACEHOLDER_PREFIXES):
                         continue
-                    if token in live:
+                    if token in live or token in declared:
                         continue
                     findings.advisories.append(FactFinding(CHECK_DEAD_IDENTIFIER, rel_doc, token))
 

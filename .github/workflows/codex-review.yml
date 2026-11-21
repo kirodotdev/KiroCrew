@@ -1213,7 +1213,8 @@ jobs:
             #     a-bound-bounds-every-field-it-retains, keep-modules-small,
             #     an-operator-facing-string-states-what-was-measured,
             #     a-gateway-status-row-carries-a-notice-token,
-            #     a-module-level-cache-ships-its-per-test-reset, and the
+            #     a-module-level-cache-ships-its-per-test-reset,
+            #     a-wheel-install-job-pins-its-python, and the
             #     website UI rules other than frontend-security --
             #     availability/hygiene classes with bounded harm.
             #   - fenced by the vocabulary above, not by name:

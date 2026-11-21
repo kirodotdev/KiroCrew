@@ -668,21 +668,36 @@ shared 15,000 requests an hour the section above is about, returns at most
 1,000 runs a search, and carries no count of a run's red jobs.
 
 **The budget.** The census reads by GraphQL with the job's `GITHUB_TOKEN`. That
-token has a GraphQL primary limit of its own, apart from the REST one: 15,000
-points an hour per repository for a repository of a GitHub Enterprise Cloud
-account, 1,000 otherwise
-([GitHub's GraphQL rate limits](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#primary-rate-limit)).
-Every workflow of the repository shares it.
+token has a GraphQL primary limit of its own, apart from the REST one, and
+every workflow of the repository shares it. Its size is read, not assumed:
+this repository's Actions token has 10,000 points an hour, where
+[GitHub's page](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#primary-rate-limit)
+gives 1,000 or 15,000 for `GITHUB_TOKEN`.
 
-| Flag | Value | What it bounds |
-|---|---|---|
-| `--max-points` | 4,800 | The most one run spends: a third of the bucket, less 200 points for the calls already sent when the census stops (one for each worker, about 30 points at most). A weekday is about 3,000, and a day up to about three days back still fits |
-| `--reserve-points` | 7,700 | It stops before a call that would start with less: half the bucket, and the same 200 points for the calls already sent |
-| `--gh-timeout-seconds` | 900 | One `gh` call: the 600 seconds the `gh` wrapper may sleep inside it on a spent limit, and 300 for the call itself. The wrapper charges a sleep before it starts, so a call ended mid-sleep would have spent the wait budget and read nothing |
+The step before the census runs `scripts/ci_red_census_budget.py`. It reads the
+bucket from `/rate_limit`, which costs nothing, and sizes the census's two
+limits to it:
 
-A step before the census reads the bucket's size from `/rate_limit`, which
-costs nothing, and fails the job when it is under 10,500 points (the reserve
-and a weekday). The census never waits for a bucket: a job that sleeps holds a
+| Limit | Rule | On 10,000 points | What it bounds |
+|---|---|---|---|
+| reserve (`--reserve-points`) | half the bucket, plus 120 | 5,120 | The census stops, and says Partial, before a call that would start with less: other workflows keep half of every hour's bucket |
+| most (`--max-points`) | two fifths of the bucket, less 120 | 3,880 | The most one run spends. A weekday is about 3,000 |
+
+The 120 points are one call for each of the 4 workers at about 30 points, the
+dearest query: the census checks its budget before a call and learns the cost
+after it, so the calls already sent when it stops land past the line.
+
+The step refuses, the census is not started and the job fails when the read
+would not fit: two fifths of the bucket hold less than a weekday (any bucket
+under 7,800 points an hour), what is left above the reserve holds less than a
+weekday (other jobs spent this hour's bucket), or the bucket cannot be read.
+The census step takes both numbers from that step and starts nothing without
+them. `--gh-timeout-seconds 900` gives one `gh` call the 600 seconds the `gh`
+wrapper may sleep inside it on a spent limit and 300 for the call itself: the
+wrapper charges a sleep before it starts, so a call ended mid-sleep would have
+spent the wait budget and read nothing.
+
+The census never waits for a bucket: a job that sleeps holds a
 runner. A `schedule` event carries no inputs and no `repository` object, so
 an empty `day` means yesterday and the default branch falls back to
 `github.ref_name`; a test evaluates every step's `env:` under both events.
@@ -702,7 +717,7 @@ the days it has. Any other exit fails the job, and
 
 **Filling a day in.** GitHub may delay or drop a scheduled run, and nothing
 re-reads a missed night by itself. Run the workflow by hand with `day` set to
-the missing day (up to about three days back fits one run's budget), then once
+the missing day (yesterday and the day before fit one run's budget), then once
 more with `week` ticked and `day` set to the last day of that week.
 
 **What adding days up does and does not do.** A run belongs to the day it was
@@ -887,6 +902,15 @@ would hide its rename. docs-lint holds the list to that rule: a listed name the 
 now defines is a `dead-identifier` finding against the list file, and unlike a doc's
 dead identifier it fails the run without `--strict-identifiers`, until the line is
 deleted.
+
+A name one doc owns is declared in that doc, on its own line outside a fence:
+`<!-- docs-lint: defines a, b -->` for keys the doc defines itself (an output
+schema it specifies, fields an agent writes into free-form notes), and
+`<!-- docs-lint: wrong-on-purpose a -->` for a name it cites so a reader avoids it
+(a retired task type, a deliberate typo). The comment does not render on GitHub,
+covers only that doc, and only `dead-identifier` reads it. It is held to the same
+rule as the external list: a declared name the code defines, or one the doc no
+longer cites in a code span, fails the run until the name leaves the comment.
 
 The builtin app tree is the mirror image of that exemption: it keeps every fact
 check and every link check, and drops only the two CURATION rules, reachability and
@@ -1164,7 +1188,8 @@ The Linux, Windows and macOS matrices assign whole files before pytest imports
 their items. `scripts/ci_file_shards.py` is an opt-in pytest plugin, loaded only by
 those matrix commands. It uses SHA-256 of the root-relative POSIX path to choose
 one of `SHARD_COUNT` owners. Each xdist worker reaches the same assignment.
-Adding a file does not move existing files between shards.
+Adding a file does not move existing files between shards, except within a
+`--file-shard-targets` list (below).
 
 Pytest still walks its configured roots, applies its filename patterns and
 platform-specific conftest ignores, and creates its normal file collectors.
@@ -1178,6 +1203,8 @@ list and the leaf-test corpus gates reach pytest as a file named by
 roots as usual and skips every path that is not a listed file or a directory
 above one. Passed as arguments, pytest walks each file's directory once per
 argument, and the ~1,200 reduced-scope files took up to an hour to collect.
+The listed files are spread across the shards by measured time, not by hash or
+pins ([testing-conventions § Shard balance](../system-specs/common/testing-conventions.md#shard-balance)).
 Leaf-test corpus-gate passes load the file-sharding plugin (the same one as the
 full and reduced paths) so the ~814 gates are split across the matrix shards.
 Changed-file repetitions remain unsharded: each matrix job repeats every changed
@@ -3106,6 +3133,37 @@ The guard is a stopgap: Playwright prints `your OS is not officially supported`
 and runs the 24.04 build. The real fix is to bump Playwright from 1.58.2 to a
 release with a native ubuntu26.04 host entry (1.65.1 has one), then remove the
 guard and its test together.
+
+### A job that installs the project's wheel pins its Python
+
+Every workflow job that `pip install`s this project (the built wheel, or `.`)
+selects its interpreter first with the SHA-pinned `actions/setup-python` and an
+explicit `python-version`, then runs pip, `venv` and the scripts from that
+interpreter. It never uses the runner image's own `python3`. That interpreter moves
+with the image, and the wheel's pins are resolved against it. When
+`kirocrew-linux-4-core` moved to ubuntu 26.04, its `python3` became 3.14. The
+only cp314 x86_64 wheel of `pysqlite3-binary` is `0.5.4.post2`, which
+`setup.cfg` excludes (#32424). So the platform-wheel gate that #39770 added to
+`publish-cli.yml` without `setup-python` failed on the scheduled nightly with
+`No matching distribution found for pysqlite3-binary!=0.5.4.post2,>=0.5.4`
+(#40371, fixed by #40354). Use the version the lane that built the wheel uses
+(`build-wheel.yml`, `build-platform-wheels.yml`: `3.12`). A stdlib-only step that
+installs nothing may still use the image's `python3`.
+
+### A change to a nightly-only or release-only workflow says how it was verified
+
+PR CI never runs the jobs that only the nightly schedule, a release push or a
+manual dispatch reach: `nightly.yml`, `publish-cli.yml`, `release.yml`,
+`release-lts.yml` and the reusable workflows only they call. A green PR therefore
+proves nothing about a job added or changed there, and the first run is the
+scheduled nightly, after merge. A PR that adds or changes such a job says in its
+description how the changed job was exercised: a test that extracts and runs the
+`run:` block, the exact local reproduction of the step against the same
+interpreter and inputs, or, for a workflow that publishes nothing, a
+`workflow_dispatch` run of the branch (link it). Never dispatch a publishing
+workflow from a branch to prove a change. If none
+of these was possible, the description says so. A change that only edits
+comments or a guard already covered by a test needs no extra proof.
 
 ## `build.yml`: the artifacts still build
 

@@ -27,29 +27,35 @@ name: CI Red-Cause Census
 # a search at most, and has no count of a run's red jobs.
 #
 # WHICH BUCKET, AND HOW MUCH. The census reads by GraphQL with the job's
-# `GITHUB_TOKEN`, whose GraphQL primary limit is apart from the REST one:
-# 15,000 points an hour per repository for a repository of a GitHub Enterprise
-# Cloud account, 1,000 otherwise
+# `GITHUB_TOKEN`, whose GraphQL primary limit is apart from the REST one. Its
+# size is the token's to say, not this file's: this repository's Actions token
+# has 10,000 points an hour, where GitHub's page gives 1,000 or 15,000
 # (https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#primary-rate-limit).
-# Every workflow of the repository shares it. The first step reads its size
-# from `/rate_limit`, which costs nothing, and fails before a point is spent
-# when it could not hold the reserve and a day. Then:
+# Every workflow of the repository shares it. So the step before the census
+# reads the bucket from `/rate_limit`, which costs nothing, and sizes the
+# budget to it (`scripts/ci_red_census_budget.py`):
 #
-#   --max-points 4800         the most one run spends: a third of the bucket,
-#                             less 100 for the calls already sent when it
-#                             stops (one a worker). A weekday is about
-#                             3,000; a day up to three days back still fits
-#   --reserve-points 7700     it stops, and says Partial, before a call that
-#                             would start with less: half the bucket, and
-#                             the same 100 for the calls already sent
+#   reserve   half the bucket and 120 points: the census stops, and says
+#             Partial, before a call that would start with less
+#   most      two fifths of the bucket less 120 points: the most one run spends
+#
+# The 120 points are one call for each of the 4 workers, the dearest about 30:
+# the calls already sent when the census stops land past the line. On 10,000
+# points that is a reserve of 5,120 and 3,880 to spend; a weekday is about
+# 3,000. The step refuses, and the census is not started, when two fifths of
+# the bucket could not hold a weekday, when what is left above the reserve
+# could not (other jobs spent this hour's bucket), or when the bucket cannot be
+# read. Below 7,800 points an hour there is no census.
+#
 #   --gh-timeout-seconds 900  one `gh` call: the 600 s the wrapper below may
 #                             sleep inside it on a spent limit, and 300 for
 #                             the call. A call ended mid-sleep would have
 #                             spent the wrapper's budget and read nothing
 #
-# So one run takes a third of one hour's bucket at the very most and a fifth of
-# it on a usual night, once a day. REST: the workflow list (one call) at night;
-# two listings and one download for each day on Sunday.
+# So one run takes two fifths of one hour's bucket at the very most, about three
+# tenths on a usual night, once a day, and leaves half of it alone. REST: the
+# rate limit and the workflow list (two calls) at night; two listings and one
+# download for each day on Sunday.
 #
 # WHEN. 07:17 UTC. On the one weekday counted hour by hour (2026-11-19, runs
 # created per hour), 05:00 to 09:00 UTC were the only hours under 2,500 runs
@@ -65,8 +71,8 @@ name: CI Red-Cause Census
 # A MISSED NIGHT. GitHub may delay or drop a scheduled run. Sunday's summary
 # says in its first line how many of the seven days it covers, names each day
 # that is missing or partial, divides by the days it has, and says what to do:
-# dispatch this workflow with `day` set to read that day (up to about three
-# days back fits the budget), then with `week` to add the week up again.
+# dispatch this workflow with `day` set to read that day (yesterday and the
+# day before fit the budget), then with `week` to add the week up again.
 #
 # THE NIGHT'S OWN DAY. `week` takes the day its own run has just read with
 # `actions/download-artifact`, which needs no listing: whether the API lists
@@ -146,22 +152,17 @@ jobs:
         with:
           max-wait: "600"
 
-      - name: Read the GraphQL bucket
+      - name: Size the budget to the bucket
+        id: budget
         env:
           GH_TOKEN: ${{ github.token }}
-          NEEDED_POINTS: "10500" # the reserve and one weekday
         run: |
-          set -euo pipefail
-          state="$(gh api rate_limit --jq '.resources.graphql | "\(.limit) \(.remaining)"' || true)"
-          limit="${state%% *}"
-          remaining="${state##* }"
-          if ! [[ "$limit" =~ ^[0-9]+$ && "$remaining" =~ ^[0-9]+$ ]]; then
-            echo "::warning::The GraphQL rate limit could not be read; the census reads it with its first query."
-            exit 0
-          fi
-          echo "GraphQL bucket of this token: ${limit} points an hour, ${remaining} left." | tee -a "$GITHUB_STEP_SUMMARY"
-          if [ "$limit" -lt "$NEEDED_POINTS" ]; then
-            echo "::error::This token's GraphQL bucket is ${limit} points an hour; the census leaves 7,700 and a weekday costs 3,000, so it needs ${NEEDED_POINTS}. Nothing was read."
+          set -uo pipefail
+          status=0
+          python3 scripts/ci_red_census_budget.py --needs-points 3000 --workers 4 > budget.txt || status=$?
+          tee -a "$GITHUB_STEP_SUMMARY" < budget.txt
+          if [ "$status" -ne 0 ]; then
+            echo "::error::The census was not started: its budget does not fit this hour's GraphQL bucket. The line above says why."
             exit 1
           fi
 
@@ -170,7 +171,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           DAY: ${{ inputs.day }}
+          RESERVE_POINTS: ${{ steps.budget.outputs.reserve }}
+          MOST_POINTS: ${{ steps.budget.outputs.most }}
         run: |
+          set -uo pipefail
+          if ! [[ "$RESERVE_POINTS" =~ ^[0-9]+$ && "$MOST_POINTS" =~ ^[0-9]+$ ]]; then
+            echo "::error::The budget step gave no budget; the census was not started."
+            exit 1
+          fi
           set -uo pipefail
           if [ -z "$DAY" ]; then
             set -- --last-days 1
@@ -183,7 +191,7 @@ jobs:
           mkdir -p census
           status=0
           python3 scripts/ci_red_cause_census.py "$@" --repo "$REPO" --out-dir census \
-            --logs never --workers 4 --reserve-points 7700 --max-points 4800 \
+            --logs never --workers 4 --reserve-points "$RESERVE_POINTS" --max-points "$MOST_POINTS" \
             --gh-timeout-seconds 900 > census/run.txt || status=$?
           cat census/run.txt
           {

@@ -18,6 +18,7 @@ import io
 import logging
 import os
 import queue
+import random
 import sys
 from logging.handlers import QueueListener
 
@@ -104,6 +105,43 @@ class TestDynamicCredentialEnvironmentIsRestored:
     def test_this_test_starts_without_the_dynamic_token(self) -> None:
         """Which is only true if no earlier test on this worker leaked one."""
         assert "JIRA_TOKEN_AABBCC" not in os.environ
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_any_mix_of_credential_changes_ends_where_the_test_began(self, seed: int) -> None:
+        """Generated credentials, generated changes: set, replaced, removed and added.
+
+        Every credential the cycle inherited is back with its inherited value, every
+        credential it did not inherit is gone, and a variable that is not a credential
+        keeps whatever the test left in it.
+        """
+        from kiro_crew.config.loader import CREDENTIAL_KEYS
+
+        rng = random.Random(seed)
+        pool = [*CREDENTIAL_KEYS, "JIRA_TOKEN_0A1B", "JIRA_TOKEN_ffee", "JIRA_TOKEN_9"]
+        bystander = "KIROCREW_FLOOR_PROBE_NOT_A_CREDENTIAL"
+        with pytest.MonkeyPatch.context() as mp:
+            for key in pool:
+                mp.delenv(key, raising=False)
+            mp.delenv(bystander, raising=False)
+            for key in rng.sample(pool, rng.randrange(0, len(pool))):
+                mp.setenv(key, f"inherited-{key}")
+            inherited = {key: os.environ[key] for key in pool if key in os.environ}
+
+            cycle = _autouse_floor_generator("_no_credential_env_residue")()
+            next(cycle)
+            # Through ``mp``, which is undone only after the cycle below has ended, so
+            # the floor's teardown sees each of these as left behind by the test.
+            for key in rng.sample(pool, rng.randrange(0, len(pool))):
+                if rng.random() < 0.5:
+                    mp.setenv(key, f"left-by-the-test-{key}")
+                else:
+                    mp.delenv(key, raising=False)
+            mp.setenv(bystander, "left-by-the-test")
+            with pytest.raises(StopIteration):
+                next(cycle)
+
+            assert {key: os.environ[key] for key in pool if key in os.environ} == inherited
+            assert os.environ[bystander] == "left-by-the-test"
 
     def test_an_injected_dynamic_token_is_removed_by_the_floors_own_teardown(self) -> None:
         """One full cycle of the real fixture: snapshot while absent, inject, restore.

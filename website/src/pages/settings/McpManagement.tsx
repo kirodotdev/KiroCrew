@@ -1124,6 +1124,7 @@ export function McpManagement({
 
       <SharingHero
         on={!!status?.enabled}
+        stateKnown={!statusQ.isLoading}
         switchDisabled={
           busy || prepareSharing.isPending || turnOn.isPending || statusQ.isLoading
           || (!status?.enabled && !canEnableSharing)

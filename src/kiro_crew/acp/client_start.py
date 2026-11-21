@@ -699,9 +699,9 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
     the first attempt creates nothing. ``_wait_for_response`` records the
     substitute model in ``self._last_substitution_model``, and a backend whose
     client class retries (``_retry_after_model_substitution``: the claude
-    client pins ``self._model`` to it, re-seeds ``settings.local.json`` and
-    re-issues) gets ONE retry -- if the gateway substitutes again to the
-    same/another restricted id it stops rather than loop. Returns the
+    client names its served pin or the substitute in ``settings.local.json``
+    and re-issues) gets ONE retry -- if the gateway refuses the model the seed
+    already names, it stops rather than loop. Returns the
     session/new response dict (possibly still without a sessionId, which the
     caller treats as a hard failure). kiro-cli never emits this advisory.
     """
@@ -762,8 +762,11 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
     # Substitution path: the gateway named a model it WILL serve. A backend whose
     # client class adopts it re-issues once (``_retry_after_model_substitution``);
     # on this class the response stands.
+    # The substitute may equal ``self._model``: a pin pushed live after session/new
+    # never reached the refused request, so the client class decides whether a
+    # retry can help.
     substitute = self._last_substitution_model
-    if substitute and substitute != self._model:
+    if substitute:
         session_resp = await self._retry_after_model_substitution(
             new_params, session_resp, substitute
         )
