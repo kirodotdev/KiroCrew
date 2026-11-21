@@ -1316,3 +1316,43 @@ class TestSelfKillRawWindowSearchesDequotedView:
     )
     def test_named_allowances_stay_allowed(self, cmd):
         assert _denied_by(cmd.format(n=_NAME, q=self._SPLICED)) is None
+
+
+class TestWindowsKillByNamePrograms:
+    """Windows ends a process by name with its own programs, read as pkill is."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "taskkill /f /im {n}.exe",
+            "taskkill /F /T /IM KiroCrew.exe",
+            "taskkill.exe /f /im {n}.exe",
+            'taskkill /fi "imagename eq {n}.exe" /f',
+            "Stop-Process -Name {n} -Force",
+            "spps -Name {n}",
+            "Get-Process {n}* | Stop-Process -Force",
+            "gps {n} | Where-Object {{ $_.Id -ne $PID }} | spps",
+            "wmic process where \"name like '%{n}%'\" delete",
+            "wmic process where name='{n}.exe' call terminate",
+            "bash -c 'taskkill /im {n}.exe'",
+        ],
+    )
+    def test_a_windows_by_name_kill_of_the_product_is_refused(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME)) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "taskkill /f /im notepad.exe",
+            "taskkill /PID 1234 /T /F",
+            "Get-Process {n}",
+            "Stop-Process -Name notepad",
+            "Stop-Process -Id 1234 -Force",
+            "Get-Process notepad | Stop-Process",
+            "Get-Process {n}; Stop-Process -Name notepad",
+            "wmic process where name='{n}.exe' get processid",
+            "echo taskkill /im {n}.exe",
+        ],
+    )
+    def test_other_targets_pid_forms_and_reads_stay_allowed(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME)) is None
