@@ -367,13 +367,13 @@
       "create_returned_no_session": "A sessão foi criada, mas o servidor não a devolveu. Tente novamente."
     },
     "pullRequestPanel": {
-      "not_declared": "Este app não pode mostrar pull requests. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Peça ao desenvolvedor do app para adicioná-lo."
+      "not_declared": "Este app não pode mostrar pull requests. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso."
     },
     "fileTree": {
-      "not_declared": "Este app não pode mostrar os arquivos do projeto. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Peça ao desenvolvedor do app para adicioná-lo."
+      "not_declared": "Este app não pode mostrar os arquivos do projeto. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso."
     },
     "projectPicker": {
-      "not_declared": "Este app não pode mostrar o seletor de projetos. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Peça ao desenvolvedor do app para adicioná-lo."
+      "not_declared": "Este app não pode mostrar o seletor de projetos. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso."
     },
     "sessionChanges": {
       "not_declared": "Este app não pode mostrar as alterações deste chat. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso.",

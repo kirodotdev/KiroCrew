@@ -367,13 +367,13 @@
       "create_returned_no_session": "La sessione è stata creata, ma il server non l’ha restituita. Riprova."
     },
     "pullRequestPanel": {
-      "not_declared": "Questa app non può mostrare pull request. Lo sviluppatore di questa app non l'ha consentito: le autorizzazioni dell'app non dichiarano {{path}}. Chiedi allo sviluppatore dell'app di aggiungerlo."
+      "not_declared": "Questa app non può mostrare pull request. Lo sviluppatore di questa app non l'ha consentito: le autorizzazioni dell'app non dichiarano {{path}}. Solo lo sviluppatore dell'app può cambiarlo."
     },
     "fileTree": {
-      "not_declared": "Questa app non può mostrare i file del progetto. Lo sviluppatore di questa app non l'ha consentito: le autorizzazioni dell'app non dichiarano {{path}}. Chiedi allo sviluppatore dell'app di aggiungerlo."
+      "not_declared": "Questa app non può mostrare i file del progetto. Lo sviluppatore di questa app non l'ha consentito: le autorizzazioni dell'app non dichiarano {{path}}. Solo lo sviluppatore dell'app può cambiarlo."
     },
     "projectPicker": {
-      "not_declared": "Questa app non può mostrare il selettore di progetti. Lo sviluppatore di questa app non l'ha consentito: le autorizzazioni dell'app non dichiarano {{path}}. Chiedi allo sviluppatore dell'app di aggiungerlo."
+      "not_declared": "Questa app non può mostrare il selettore di progetti. Lo sviluppatore di questa app non l'ha consentito: le autorizzazioni dell'app non dichiarano {{path}}. Solo lo sviluppatore dell'app può cambiarlo."
     },
     "sessionChanges": {
       "not_declared": "Questa app non può mostrare le modifiche di questa chat. Lo sviluppatore di questa app non l'ha consentito: le autorizzazioni dell'app non dichiarano {{path}}. Solo lo sviluppatore dell'app può cambiarlo.",
