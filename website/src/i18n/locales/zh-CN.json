@@ -14552,7 +14552,11 @@
       "your_crewmate": "你的 Bot",
       "jump_to_new_other": "{{count}} 条新 · 跳到最新",
       "could_not_repair_images": "无法修复图片",
-      "session_closed_elsewhere": "此聊天已在此窗口之外关闭。"
+      "session_closed_elsewhere": "此聊天已在此窗口之外关闭。",
+      "fork_point_forked_into": "已分叉到",
+      "fork_point_continued_in": "后续消息继续于",
+      "fork_point_show_all": "显示全部",
+      "fork_point_open": "打开 {{name}}"
     },
     "chatSidebar": {
       "sign_in_then_resume": "先登录，再点“恢复”",
