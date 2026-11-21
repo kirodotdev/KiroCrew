@@ -216,6 +216,41 @@ class TestPublishFloorNestedPayloads:
         for cmd in ("(git push origin main)", "(git push origin 'main')"):
             assert is_denied(cmd) is not None, cmd
 
+    def test_windows_program_spellings_of_git_are_git(self) -> None:
+        """Windows runs ``git.exe`` and a full path to it as git.
+
+        The detector and the push-target reader read the program word as Windows
+        does, so a Windows spelling of a protected push gets the same refusal as
+        ``git push origin main``.
+        """
+        from kiro_crew.security import argv_floor_git as fg
+        from kiro_crew.security import is_denied
+
+        # The refusal's first line names the rule; the diagnostic after it carries the span.
+        expected = (is_denied("git push origin main") or "").splitlines()[0]
+        assert expected.endswith("git-publish-push-protected-branch-name")
+        for cmd in (
+            "git.exe push origin main",
+            "Git.EXE push origin main",
+            "git.cmd push origin main",
+            "& 'C:\\Program Files\\Git\\cmd\\git.exe' push origin main",
+            '"C:\\Program Files\\Git\\cmd\\git.exe" push origin main',
+            "git.exe -C repo push origin HEAD:main",
+            "git.exe push origin feature && git.exe push origin main",
+        ):
+            assert fg._is_git_publish(cmd.lower()), cmd
+            assert (is_denied(cmd) or "").splitlines()[:1] == [expected], cmd
+
+        # A feature-branch push and a non-push stay allowed; near-names are not git.
+        for cmd in (
+            "git.exe push origin feature",
+            '"C:\\Program Files\\Git\\cmd\\git.exe" push origin feature',
+            "git.exe status",
+            "gitx.exe push origin main",
+            "git.exe.bak push origin main",
+        ):
+            assert is_denied(cmd) is None, cmd
+
     def test_obfuscation_with_no_payload_still_fails_closed(self) -> None:
         """The deferral is NOT a general escape hatch.
 

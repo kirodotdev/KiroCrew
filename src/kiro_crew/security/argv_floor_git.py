@@ -141,6 +141,19 @@ def _is_git_publish(text_lower: str) -> bool:
 _GIT_ARG_FLAGS = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace"})
 
 
+def _is_git_program_word(word: str) -> bool:
+    """True when *word* names the git program as a POSIX or a Windows shell runs it.
+
+    Windows runs ``git.exe``, ``Git.EXE``, ``git.cmd`` and ``C:\\...\\cmd\\git.exe`` as
+    git, so the last ``/`` or ``\\`` part is compared in any case and without a trailing
+    ``.exe``/``.cmd``/``.bat``. A superset of the exact and basename tests, so it only
+    widens detection (fail-closed); a program named ``GIT`` or ``git.cmd`` on POSIX is
+    read as git too, and the push target still decides the verdict.
+    """
+    name = re.split(r"[\\/]", word)[-1].lower()
+    return name == "git" or (name[:3] == "git" and name[3:] in (".exe", ".cmd", ".bat"))
+
+
 def _is_git_push_via_normalizer(text_lower: str) -> bool:
     """Normalizer-based git push detection (second pass).
 
@@ -178,6 +191,8 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
     def _resolves_to(token: str, word: str) -> bool:
         for candidate in (token, _cut_at_operator(token)):
             if candidate == word or os.path.basename(candidate) == word:
+                return True
+            if word == "git" and _is_git_program_word(candidate):
                 return True
         return False
 
@@ -364,7 +379,7 @@ def _git_push_args(segment: str) -> list[str] | None:
         # without cutting so a quoted absolute path still resolves.
         raw = raw_tokens[index]
         for candidate in (anchors[index], raw, raw.strip("'\"")):
-            if candidate == "git" or os.path.basename(candidate) == "git":
+            if _is_git_program_word(candidate):
                 return True
         return False
 
