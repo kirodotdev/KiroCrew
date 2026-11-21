@@ -21398,6 +21398,7 @@
         "theme_schedule_save_failed": "Не удалось сохранить это время. Это устройство использует его, а другие устройства сохраняют прежнее. Попробуй ещё раз.",
         "color_mode_solid_tint": "Сплошной оттенок",
         "color_mode_gradient": "Градиент",
+        "color_mode_row_fill": "Заливка строки",
         "intensity_soft": "Мягкая",
         "intensity_clear": "Чёткая",
         "intensity_vivid": "Яркая",

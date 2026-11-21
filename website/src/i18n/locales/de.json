@@ -20344,6 +20344,7 @@
         "theme_schedule_save_failed": "Diese Uhrzeiten konnten nicht gespeichert werden. Dieses Gerät verwendet sie; andere Geräte behalten die alten. Versuch es erneut.",
         "color_mode_solid_tint": "Einfarbige Tönung",
         "color_mode_gradient": "Farbverlauf",
+        "color_mode_row_fill": "Zeilenfüllung",
         "intensity_soft": "Sanft",
         "intensity_clear": "Klar",
         "intensity_vivid": "Lebhaft",

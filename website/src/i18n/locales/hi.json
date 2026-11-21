@@ -20344,6 +20344,7 @@
         "theme_schedule_save_failed": "ये समय सहेजे नहीं जा सके। यह डिवाइस इन्हें इस्तेमाल करता है; दूसरे डिवाइस पुराने समय ही रखते हैं। फिर से कोशिश करो।",
         "color_mode_solid_tint": "एकरंगी टिंट",
         "color_mode_gradient": "ग्रेडिएंट",
+        "color_mode_row_fill": "पंक्ति भराव",
         "intensity_soft": "हल्का",
         "intensity_clear": "स्पष्ट",
         "intensity_vivid": "चटकीला",

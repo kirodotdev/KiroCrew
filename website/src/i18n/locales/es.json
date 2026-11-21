@@ -20871,6 +20871,7 @@
         "theme_schedule_save_failed": "No se pudieron guardar estas horas. Este dispositivo las usa; los demás conservan las anteriores. Inténtalo de nuevo.",
         "color_mode_solid_tint": "Tinte sólido",
         "color_mode_gradient": "Degradado",
+        "color_mode_row_fill": "Relleno de fila",
         "intensity_soft": "Suave",
         "intensity_clear": "Clara",
         "intensity_vivid": "Viva",

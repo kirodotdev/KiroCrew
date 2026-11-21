@@ -19817,6 +19817,7 @@
         "theme_schedule_save_failed": "无法保存这些时间。本设备会使用新时间，其他设备仍使用原来的时间。请重试。",
         "color_mode_solid_tint": "纯色着色",
         "color_mode_gradient": "渐变",
+        "color_mode_row_fill": "整行填充",
         "intensity_soft": "柔和",
         "intensity_clear": "清晰",
         "intensity_vivid": "鲜艳",

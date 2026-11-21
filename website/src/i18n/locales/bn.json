@@ -20344,6 +20344,7 @@
         "theme_schedule_save_failed": "এই সময়গুলো সংরক্ষণ করা যায়নি। এই ডিভাইস এগুলো ব্যবহার করছে; অন্য ডিভাইসগুলো আগের সময়ই রাখছে। আবার চেষ্টা করো।",
         "color_mode_solid_tint": "একরঙা আভা",
         "color_mode_gradient": "গ্রেডিয়েন্ট",
+        "color_mode_row_fill": "সারি পূরণ",
         "intensity_soft": "কোমল",
         "intensity_clear": "স্পষ্ট",
         "intensity_vivid": "উজ্জ্বল",

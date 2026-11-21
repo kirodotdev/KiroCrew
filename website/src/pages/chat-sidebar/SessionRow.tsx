@@ -17,7 +17,7 @@ import { crewOf } from '../../hooks/useInstanceSessions'
 import { switchSlot, selectSidebarWorkflowActive, selectAutomationForSlot, selectSlotStreamState } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { recencyTintShadow } from '../../utils/recencyTint'
-import { resolveSessionColor } from '../../utils/sessionColors'
+import { resolveSessionColor, rowFillStyle } from '../../utils/sessionColors'
 import { toolStatusLabel, type ToolStatusDetail } from '../../utils/toolStatusLabel'
 import { IconButton, IconButtonGroup } from '../../components/ui'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
@@ -1210,12 +1210,11 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     // theme-independent: palette swatches re-derive from the theme accent,
     // a custom color is frozen. Muted-text legibility still goes through the
     // same APCA boost via boostFor.
-    // The agent default color is resolved at RENDER time (not creation): a
-    // session with no explicit per-session color inherits its agent's
-    // session_color. Deriving it here rather than persisting at creation means
-    // it applies to EVERY origin (dashboard, channel, cron, subagent — anything
-    // with s.agent), needs no event-loop config I/O, and re-tints live when the
-    // agent's color is edited.
+    // The agent default color is resolved at RENDER time (not creation): a session with no
+    // explicit per-session color inherits its agent's session_color. Deriving it here rather
+    // than persisting at creation means it applies to EVERY origin (dashboard, channel, cron,
+    // subagent — anything with s.agent), needs no event-loop config I/O, and re-tints live
+    // when the agent's color is edited.
     const resolvedColor = resolveSessionColor(s, paletteColors, s.agent ? installedAgents.find(a => a.name === s.agent)?.session_color : null)
     const rowColor = resolvedColor?.hex ?? null
     const boostStyle: Record<string, string> = {}
@@ -1223,6 +1222,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       boostStyle['--session-color'] = resolvedColor.hex
       const muted = resolvedColor.index != null ? boost.mutedColors[resolvedColor.index] : boostFor(resolvedColor.hex).mutedColors[0]
       if (muted) boostStyle['--session-muted'] = muted
+      if (colorMode === 'row-fill') Object.assign(boostStyle, rowFillStyle(resolvedColor, boost, boostFor))
     }
     if (recent) boostStyle.boxShadow = recencyTintShadow(recent, recentTintCount)
     // A session that's open in its own window is dimmed here so the main
@@ -1380,7 +1380,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         <ContextMenuStableTrigger content={rowContextMenuContent} disabled={isDragging}>
         <div ref={dndRow ? setNodeRef : undefined} {...(dndRow ? listeners : {})}
           data-draggable={(!isRenaming && !foreignRow).toString()}
-          className={`session-row focus-ring-accent-inset group relative flex items-start ${ROW_BOX_CLS} text-sm transition-all select-none ${isActive ? !connected ? `session-active ${ROW_ACTIVE_CLS} cursor-not-allowed` : `session-active ${ROW_ACTIVE_CLS} cursor-pointer` : !connected ? 'text-muted opacity-50 cursor-not-allowed' : `${ROW_IDLE_CLS} cursor-pointer`} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isCrewParent ? 'session-crew-parent' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
+          className={`session-row focus-ring-accent-inset group relative flex items-start ${ROW_BOX_CLS} text-sm transition-all select-none ${isActive ? !connected ? `session-active ${ROW_ACTIVE_CLS} cursor-not-allowed` : `session-active ${ROW_ACTIVE_CLS} cursor-pointer` : !connected ? 'text-muted opacity-50 cursor-not-allowed' : `${ROW_IDLE_CLS} cursor-pointer`} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${rowColor && colorMode === 'row-fill' ? 'session-row-fill' : ''} ${isCrewParent ? 'session-crew-parent' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
           data-crew-root={crewRoot ? 'true' : undefined}
           data-crew-parent={isCrewParent ? 'true' : undefined}
           style={boostStyle as React.CSSProperties}

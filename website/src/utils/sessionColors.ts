@@ -2,7 +2,7 @@
 
 import { i18nT } from '../i18n/t'
 
-export type SessionColorMode = 'tint' | 'gradient'
+export type SessionColorMode = 'tint' | 'gradient' | 'row-fill'
 export type PaletteName = 'trailhead' | 'horizon' | 'voyage' | 'odyssey' | 'categorical'
 export type IntensityName = 'soft' | 'clear' | 'vivid' | 'bold' | 'intense'
 export type DefaultColorSetting = number | null | 'auto'
@@ -239,6 +239,27 @@ export interface PaletteBoost {
   activePct: number[]
   hoverPct: number[]
   mutedColors: string[]
+  /** Strongest whole-row wash (percent) that keeps `--text` readable; see rowFillStyle. */
+  fillMaxPct?: number[]
+}
+
+/** Ceilings for the Row Fill wash (resting, hovered, selected), in percent of
+ *  the session colour. A whole-row wash behind a two-line title reads like a
+ *  coloured terminal tab at these strengths; past them it competes with the text. */
+const ROW_FILL_MAX_PCT = { idle: 16, hover: 22, active: 30 } as const
+
+/** A Row Fill wash may cost the title at most this share of its contrast on the plain surface. */
+const ROW_FILL_TEXT_KEEP = 0.8
+
+/** Strongest wash of `fg` over `bg`, at most `cap` percent, that keeps `text`'s APCA
+ *  contrast at ROW_FILL_TEXT_KEEP of what it has on `bg`. A light colour on a dark
+ *  theme (or a dark one on a light theme) moves the surface toward the text, so it
+ *  gets a weaker wash. */
+function maxFillPct(fg: [number, number, number], bg: [number, number, number], text: [number, number, number], cap: number): number {
+  const target = Math.abs(apcaLc(text, bg)) * ROW_FILL_TEXT_KEEP
+  let pct = cap
+  while (pct > 0 && Math.abs(apcaLc(text, blendRgb(fg, bg, pct / 100))) < target) pct -= 1
+  return pct
 }
 
 function shiftToward(
@@ -278,11 +299,12 @@ export function computePaletteBoost(
   const textStrong = textStrongHex ? parseColor(textStrongHex) : text
   const baseIdle = isDark ? 15 : 10
   const threshold = INTENSITY_THRESHOLDS[intensity]
-  const result: PaletteBoost = { idlePct: [], activePct: [], hoverPct: [], mutedColors: [] }
+  const fillMaxPct: number[] = []
+  const result: PaletteBoost = { idlePct: [], activePct: [], hoverPct: [], mutedColors: [], fillMaxPct }
   for (const col of colors) {
     const fg = parseColor(col)
     if (!fg || !bg) {
-      result.idlePct.push(baseIdle); result.activePct.push(35); result.hoverPct.push(isDark ? 22 : 16); result.mutedColors.push(mutedHex); continue
+      result.idlePct.push(baseIdle); result.activePct.push(35); result.hoverPct.push(isDark ? 22 : 16); result.mutedColors.push(mutedHex); fillMaxPct.push(ROW_FILL_MAX_PCT.active); continue
     }
     let idle = baseIdle
     while (idle <= 80) {
@@ -291,12 +313,13 @@ export function computePaletteBoost(
     }
     idle = Math.min(idle, 80)
     if (!muted || !text) {
-      result.idlePct.push(idle); result.activePct.push(idle + 20); result.hoverPct.push(idle + 7); result.mutedColors.push(mutedHex); continue
+      result.idlePct.push(idle); result.activePct.push(idle + 20); result.hoverPct.push(idle + 7); result.mutedColors.push(mutedHex); fillMaxPct.push(ROW_FILL_MAX_PCT.active); continue
     }
     result.idlePct.push(idle)
     result.activePct.push(idle + 20)
     result.hoverPct.push(idle + 7)
     result.mutedColors.push(adaptMuted(muted, text, textStrong || text, blendRgb(fg, bg, idle / 100), bg))
+    fillMaxPct.push(maxFillPct(fg, bg, text, ROW_FILL_MAX_PCT.active))
   }
   return result
 }
@@ -362,5 +385,31 @@ export function headerBandStyle(
     '--session-band-pct': `${band}%`,
     '--session-band-edge-pct': `${Math.min(band + 20, 65)}%`,
     ...(muted ? { '--muted': muted } : {}),
+  }
+}
+
+/** Fill strengths for a sidebar row in Row Fill mode (`row-fill`), as CSS variables.
+ *
+ *  Taken from the same intensity-derived blends the rest of the palette uses, so
+ *  the Intensity setting still decides how visible the colour is, then capped by
+ *  `ROW_FILL_MAX_PCT` and by `fillMaxPct`, so a light colour on a dark theme cannot
+ *  wash the title out. The row's adapted muted colour is measured against the
+ *  resting blend only, which is why the stylesheet switches hovered and selected
+ *  rows to `--text` for their secondary line. */
+export function rowFillStyle(
+  color: ResolvedSessionColor,
+  boost: PaletteBoost,
+  boostFor: (hex: string) => PaletteBoost,
+): Record<string, string> {
+  const b = color.index != null ? boost : boostFor(color.hex)
+  const i = color.index ?? 0
+  const idle = b.idlePct[i]
+  if (idle == null) return {}
+  // The title reads --text on every state, so no wash may push it past fillMaxPct.
+  const textCap = b.fillMaxPct?.[i] ?? ROW_FILL_MAX_PCT.active
+  return {
+    '--session-fill-pct': `${Math.min(idle, ROW_FILL_MAX_PCT.idle, textCap)}%`,
+    '--session-fill-hover-pct': `${Math.min(b.hoverPct[i] ?? idle, ROW_FILL_MAX_PCT.hover, textCap)}%`,
+    '--session-fill-active-pct': `${Math.min(b.activePct[i] ?? idle, ROW_FILL_MAX_PCT.active, textCap)}%`,
   }
 }

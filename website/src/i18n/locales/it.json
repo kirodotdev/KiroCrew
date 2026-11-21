@@ -20871,6 +20871,7 @@
         "theme_schedule_save_failed": "Impossibile salvare questi orari. Questo dispositivo li usa; gli altri dispositivi mantengono quelli precedenti. Riprova.",
         "color_mode_solid_tint": "Tinta unita",
         "color_mode_gradient": "Sfumatura",
+        "color_mode_row_fill": "Riempimento riga",
         "intensity_soft": "Tenue",
         "intensity_clear": "Nitida",
         "intensity_vivid": "Vivace",

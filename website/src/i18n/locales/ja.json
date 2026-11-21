@@ -19817,6 +19817,7 @@
         "theme_schedule_save_failed": "これらの時刻を保存できませんでした。このデバイスでは新しい時刻を使用し、他のデバイスは以前の時刻のままです。もう一度お試しください。",
         "color_mode_solid_tint": "単色",
         "color_mode_gradient": "グラデーション",
+        "color_mode_row_fill": "行の塗りつぶし",
         "intensity_soft": "ソフト",
         "intensity_clear": "クリア",
         "intensity_vivid": "ビビッド",
