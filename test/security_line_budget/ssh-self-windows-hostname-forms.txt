@@ -1,0 +1,2 @@
++10
+The ssh-to-self floor's run-time spellings of this host's own name gain the Windows ones, PowerShell's $env:COMPUTERNAME (bare and braced) and cmd's %COMPUTERNAME%, read also after a user@ prefix. Three tuple entries, their reason comment and the userinfo loop. Deny-only: nothing refused before is allowed now.
