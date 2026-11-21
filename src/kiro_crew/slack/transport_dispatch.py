@@ -1228,8 +1228,6 @@ async def handle_message_transport(
                     )
         else:
             sessions.record_success(session_key)
-            # Per-interaction telemetry, as the legacy handler reports it.
-            record_interaction_event(client, session_key, "slack")
             # Beside the counter it stands in for: a landed turn clears the
             # shared-death streak exactly as it clears the consecutive-failure
             # count, so the streak stays a consecutive run rather than a lifetime
@@ -1241,6 +1239,9 @@ async def handle_message_transport(
         _turn_landed = driver_turn_landed(driver)
         if _turn_landed:
             note_turn_landed(sessions, session_key)
+            # Per-interaction telemetry, on the landed verdict alone: a Stop
+            # or a stream with no completion returns normally but did not land.
+            record_interaction_event(client, session_key, "slack")
         if _unfinished:
             Stats().inc_message_failed()
         else:

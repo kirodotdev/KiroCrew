@@ -1343,6 +1343,11 @@ class ChannelTurns:
             # recorded a failure, but the context it carried has already landed,
             # and re-arming would inject it a second time on the next turn.
             landed = bracket.landed(driver)
+            if landed:
+                # Per-interaction telemetry, on the landed verdict alone and
+                # before delivery is judged: a reply the channel failed to carry
+                # was still a model turn. On the provider this turn ran on.
+                record_interaction_event(_turn_provider, session_key, channel)
             stop_reason = (
                 (getattr(driver, "last_stop_reason", "") or "")
                 if getattr(driver, "completion_observed", False)
@@ -1426,9 +1431,6 @@ class ChannelTurns:
                         )
             else:
                 _record_success(sessions, session_key, channel)
-                # Per-interaction telemetry, as every landed-turn engine reports
-                # it, on the provider this turn ran on (a retry may swap it).
-                record_interaction_event(_turn_provider, session_key, channel)
                 verdict = Verdict.ANSWERED
 
             await self._after_answer(

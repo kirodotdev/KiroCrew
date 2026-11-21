@@ -100,6 +100,39 @@ def test_every_landed_turn_engine_reports_one_interaction_event() -> None:
     assert not missing, "\n".join(missing)
 
 
+#: Sites whose engine returns normally for a turn that did not land (a Stop, a
+#: stream with no completion, a failed completion), so the call must sit under
+#: that engine's landed verdict rather than its delivery or success branch.
+_LANDED_GUARDED = (
+    "slack/transport_dispatch.py",
+    "telegram/dispatch/turn_engine.py",
+    "messaging/dispatch.py",
+    "dashboard/handlers/hooks.py",
+    "slack/gateway_runtime/heartbeat_turns.py",
+    "slack/gateway_runtime/runtime_charge.py",
+)
+
+
+def test_channel_and_webhook_sites_report_only_a_landed_turn() -> None:
+    unguarded = []
+    for rel in _LANDED_GUARDED:
+        fn_name = _REPORTING_SITES[rel][0]
+        fn = _function(ast.parse((_SRC / rel).read_text(encoding="utf-8")), fn_name)
+        guarded = [
+            call
+            for node in ast.walk(fn)
+            if isinstance(node, ast.If) and "landed" in ast.unparse(node.test)
+            for stmt in node.body
+            for call in ast.walk(stmt)
+            if isinstance(call, ast.Call)
+            and getattr(call.func, "id", getattr(call.func, "attr", ""))
+            == "record_interaction_event"
+        ]
+        if len(guarded) != 1:
+            unguarded.append(f"{rel}:{fn_name}")
+    assert not unguarded, f"not under a landed check: {unguarded}"
+
+
 def test_no_engine_books_a_landed_turn_without_a_decision() -> None:
     unlisted = []
     for path in sorted(_SRC.rglob("*.py")):

@@ -567,9 +567,6 @@ async def _run_turn(
                     )
         else:
             self.sessions.record_success(session_key)
-            # Per-interaction telemetry, as every landed-turn engine reports it,
-            # on the provider this turn ran on (a retry may have swapped it).
-            record_interaction_event(_turn_provider, session_key, "telegram")
             # Beside the counter it stands in for: a landed turn clears the
             # shared-death streak exactly as it clears the consecutive-failure
             # count, so the streak stays a consecutive run rather than a lifetime
@@ -581,6 +578,9 @@ async def _run_turn(
         _turn_landed = driver_turn_landed(driver)
         if _turn_landed:
             note_turn_landed(self.sessions, session_key)
+            # Per-interaction telemetry, on the landed verdict alone, on the
+            # provider this turn ran on (a retry may have swapped it).
+            record_interaction_event(_turn_provider, session_key, "telegram")
         if _unfinished:
             facade.Stats().inc_message_failed()
         else:
