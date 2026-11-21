@@ -40,10 +40,12 @@ _REPORTING_SITES: dict[str, tuple[str, str | None]] = {
     "slack/gateway_runtime/runtime_charge.py": ("_inject_with_retry", "subagent_report"),
 }
 
-#: A second function in the same module that also books a landed turn.
-_EXTRA_SITES: dict[str, tuple[str, str | None]] = {
-    "slack/gateway_runtime/cron_turn.py": ("_cron_run_single", "cron"),
-}
+#: A second function in the same module that also reports a landed turn.
+_EXTRA_SITES: list[tuple[str, str, str | None]] = [
+    ("slack/gateway_runtime/cron_turn.py", "_cron_run_single", "cron"),
+    # A prompt a Stop hook continues lands before the run ends.
+    ("subagent_manager/run_turn.py", "_stream_with_transient_retry", "subagent"),
+]
 
 #: Modules that book a landed turn but must NOT report, with the reason.
 _NOT_REPORTING: dict[str, str] = {
@@ -90,13 +92,12 @@ def _books_a_landed_turn(tree: ast.Module) -> bool:
 
 def test_every_landed_turn_engine_reports_one_interaction_event() -> None:
     missing = []
-    for table in (_REPORTING_SITES, _EXTRA_SITES):
-        for rel, (fn_name, surface) in table.items():
-            tree = ast.parse((_SRC / rel).read_text(encoding="utf-8"))
-            fn = _function(tree, fn_name)
-            surfaces = _reported_surfaces(fn)
-            if surfaces.count(surface) != 1:
-                missing.append(f"{rel}:{fn_name} reports {surfaces}, wants [{surface!r}]")
+    sites = [(rel, fn, surface) for rel, (fn, surface) in _REPORTING_SITES.items()]
+    for rel, fn_name, surface in sites + _EXTRA_SITES:
+        tree = ast.parse((_SRC / rel).read_text(encoding="utf-8"))
+        surfaces = _reported_surfaces(_function(tree, fn_name))
+        if surfaces.count(surface) != 1:
+            missing.append(f"{rel}:{fn_name} reports {surfaces}, wants [{surface!r}]")
     assert not missing, "\n".join(missing)
 
 

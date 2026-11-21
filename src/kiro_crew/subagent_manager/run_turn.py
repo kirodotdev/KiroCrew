@@ -938,6 +938,18 @@ async def _run_inner_impl(
                     # ``settle(None)`` reads the provider's own last-turn stats.
                     usage.settle(_ended)
                     _persist_usage_row(_ended)
+                    if (
+                        _ended is not None
+                        and classify_stop_reason(
+                            str(getattr(_ended, "stop_reason", "") or "")
+                        ).is_success
+                    ):
+                        # This prompt landed and the next one starts now, so it
+                        # is reported here; the run's last prompt is reported
+                        # by _count_success. Imported here like ActiveModelLine.
+                        from kiro_crew.llm_helpers import record_interaction_event
+
+                        record_interaction_event(client, session_key, "subagent")
                     logger.info(
                         "Subagent %s: a Stop hook asked to continue (%d)",
                         info.id,
@@ -1637,11 +1649,14 @@ async def _run_inner_impl(
     def _count_success() -> None:
         # The one success bookkeeping, for a claimed ending and the tail's alike.
         self._manager._sessions.record_success(session_key)
-        # Per-interaction telemetry, as every landed-turn engine reports it.
-        # Imported here like ActiveModelLine above.
-        from kiro_crew.llm_helpers import record_interaction_event
+        # Per-interaction telemetry for the run's LAST prompt, and only when a
+        # completion was observed: output kept after a generation failure ends
+        # the stream with none. Earlier prompts a Stop hook continued are
+        # reported where they end, in the stream above.
+        if _complete_event is not None:
+            from kiro_crew.llm_helpers import record_interaction_event
 
-        record_interaction_event(client, session_key, "subagent")
+            record_interaction_event(client, session_key, "subagent")
         Stats().inc_subagent_completed()
         logger.info("Subagent %s completed", info.id)
 
