@@ -512,6 +512,11 @@ describe('the App SDK FileTree', () => {
     // Same mount, same model: its loaded folders and selection are kept.
     expect(screen.getByTestId('file-tree')).toBeInTheDocument()
     expect(treeMock.last()).toBe(listed)
+    // The poll stops on the failure, so the notice keeps a Retry, which clears it.
+    treeStatus = 200
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.queryByTestId('app-file-tree-error')).toBeNull())
+    expect(treeMock.last()).toBe(listed)
   })
 
   it('keeps the dashboard client and its row actions for a builtin page', async () => {

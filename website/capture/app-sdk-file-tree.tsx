@@ -10,6 +10,7 @@
  *   status    it also declares /api/project/git/status: changed rows coloured.
  *   refused   it declares only /api/project/git/status.
  *   error     the tree read answers 500.
+ *   refresh-error  the first tree read answers; the next refresh answers 500.
  *   (The shoot script opens a folder, opens a file and types a filter.)
  * Theme: &theme=dark|light
  */
@@ -50,11 +51,14 @@ const STATUS = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
+let rootReads = 0
 const realFetch = window.fetch.bind(window)
 window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href)
   if (url.pathname === '/api/project/tree') {
-    return scene === 'error' ? json({ error: 'internal error' }, 500) : json(TREE)
+    // refresh-error: the first project read answers, every later one (the 10 s poll) fails.
+    const refreshFails = scene === 'refresh-error' && !url.searchParams.get('dir') && rootReads++ > 0
+    return scene === 'error' || refreshFails ? json({ error: 'internal error' }, 500) : json(TREE)
   }
   if (url.pathname === '/api/project/git/status') {
     return scene === 'status-error' ? json({ error: 'git status failed', code: 'git_status_failed' }, 503) : json(STATUS)

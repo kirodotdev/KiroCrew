@@ -5,7 +5,8 @@
  * Shots: the tree with `src` and `src/components` open and a file opened, in
  * both themes; the same with the git status read declared (changed rows
  * coloured); a typed filter; the refusal for an app that declares only the
- * status read; and a failed tree read with its Retry. Every response is
+ * status read; a failed tree read with its Retry; and a listed tree whose
+ * refresh failed, still open under the inline notice. Every response is
  * fabricated inside the entry; no gateway or token is involved.
  *
  * Usage (from website/): node capture/shoot-app-sdk-file-tree.mjs [outDir]
@@ -41,6 +42,7 @@ const shots = [
   ['refused', 'refused', 'dark', ''],
   ['error', 'error', 'light', ''],
   ['status-error', 'status-error', 'dark', ''],
+  ['refresh-error', 'refresh-error', 'dark', ''], ['refresh-error', 'refresh-error', 'light', ''],
 ]
 for (const [name, scene, theme, filter] of shots) {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 }, deviceScaleFactor: 2 })
@@ -65,6 +67,8 @@ for (const [name, scene, theme, filter] of shots) {
       await page.getByTestId('opened').getByText('/home/me/widgets/src/app.tsx').waitFor({ timeout: 10000 })
     }
     if (scene === 'status-error') await page.getByTestId('app-file-tree-status-error').waitFor({ timeout: 30000 })
+    // The tree's 10 s poll is the failed refresh; the open folders must stay.
+    if (scene === 'refresh-error') await page.getByTestId('app-file-tree-error').waitFor({ timeout: 30000 })
   }
   await page.waitForTimeout(500)
   const path = `${OUT}/${name}-${theme}.png`

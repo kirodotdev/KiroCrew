@@ -131,23 +131,37 @@ function TreeBody({ client, projectDir, onOpenFile, selectedPath, searchQuery, a
   // A failed read takes the tree's place only while nothing is listed. A failed
   // refresh of a listed tree keeps it mounted, with its loaded folders and
   // selection, under an inline notice, as the Files rail does.
+  // The tree's poll stops on a failed read, so the Retry is how either recovers.
   const cause = q.isError ? searchErrorCause(q.error) : null
+  const retry = () => { void q.refetch() }
+  const canRetry = cause != null && RETRYABLE_SEARCH_CAUSES.has(cause)
+  const retryLabel = i18nT('components.workspaceTree.folder_listing_retry')
+  // No hand-off on either: the hosting app's page may hold an unsaved draft of its own.
+  if (!q.data) {
+    if (!cause) return <TreeSkeleton />
+    return (
+      <ErrorNotice
+        testId="app-file-tree-error"
+        message={i18nT(TREE_FAILURE_KEYS[cause])}
+        report={reportForError(q.error)}
+        actions={canRetry ? <Btn type="button" onClick={retry}>{retryLabel}</Btn> : undefined}
+      />
+    )
+  }
+  // An inline notice carries no actions of its own, so its Retry sits beside it,
+  // as the shared tree's folder-listing notice does.
   const failure = cause && (
-    // No hand-off: the hosting app's page may hold an unsaved draft of its own.
-    <ErrorNotice
-      testId="app-file-tree-error"
-      variant={q.data ? 'inline' : undefined}
-      className={q.data ? 'mx-2 mt-1.5 whitespace-normal' : undefined}
-      message={i18nT(TREE_FAILURE_KEYS[cause])}
-      report={reportForError(q.error)}
-      actions={RETRYABLE_SEARCH_CAUSES.has(cause) ? (
-        <Btn type="button" onClick={() => { void q.refetch() }}>
-          {i18nT('components.workspaceTree.folder_listing_retry')}
-        </Btn>
-      ) : undefined}
-    />
+    <div className="mx-2 mt-1.5 flex flex-wrap items-center gap-1.5">
+      <ErrorNotice
+        testId="app-file-tree-error"
+        variant="inline"
+        className="whitespace-normal"
+        message={i18nT(TREE_FAILURE_KEYS[cause])}
+        report={reportForError(q.error)}
+      />
+      {canRetry && <Btn type="button" onClick={retry}>{retryLabel}</Btn>}
+    </div>
   )
-  if (!q.data) return failure || <TreeSkeleton />
   return (
     // Fills its host whether the host is a flex column or a sized block; the
     // tree itself sizes as a flex item (`flex: 1; height: 100%`).
