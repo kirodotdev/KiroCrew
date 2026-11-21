@@ -3905,6 +3905,24 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "stt.custom_model_sha256"
   },
   {
+    "id": "voice.hold-the-message-box-to-talk",
+    "label": "Hold the message box to talk",
+    "labelKey": "pages.settings.sttSettings.pointer_enabled",
+    "hint": "Turn this off and a press on the message box only places the cursor.",
+    "tab": "voice",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "voice.hold-time",
+    "label": "Hold time",
+    "labelKey": "pages.settings.sttSettings.pointer_hold_time",
+    "hint": "How long the button stays down before dictation starts. Shorter starts sooner; longer keeps a slow click from starting it.",
+    "tab": "voice",
+    "type": "stepper",
+    "occurrence": 1
+  },
+  {
     "id": "voice.how-the-key-works",
     "label": "How the key works",
     "labelKey": "pages.settings.sttSettings.ptt_mode",
