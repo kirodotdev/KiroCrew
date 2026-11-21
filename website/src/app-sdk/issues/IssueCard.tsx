@@ -39,9 +39,11 @@ export function issueProviderName(provider: IssueSummary['provider']): string {
   if (provider === 'gitlab') return i18nT('appSdk.issues.provider_gitlab')
   if (provider === 'jira') return i18nT('appSdk.issues.provider_jira')
   if (provider === 'linear') return i18nT('appSdk.issues.provider_linear')
+  if (provider === 'servicenow') return i18nT('appSdk.issues.provider_servicenow')
   return i18nT('appSdk.issues.provider_github')
 }
 
+/** ServiceNow has no bundled logo yet, so it falls through to the shared neutral mark. */
 function ProviderMark({ provider, size }: { provider: IssueSummary['provider']; size: number }) {
   if (provider === 'linear') return <BrandGlyph url={linearLogoUrl} size={size} testId="linear-provider-mark" />
   return <SourceProviderMark provider={provider} size={size} />
@@ -89,7 +91,7 @@ function Avatar({ person }: { person: IssuePerson }) {
 }
 
 /** Providers whose issue search sends `commentCount: 0` because the list API has no count. */
-const NO_COMMENT_COUNT: ReadonlySet<IssueSummary['provider']> = new Set(['jira', 'linear'])
+const NO_COMMENT_COUNT: ReadonlySet<IssueSummary['provider']> = new Set(['jira', 'linear', 'servicenow'])
 
 /** An icon and a number; the words are for screen readers and the tooltip. */
 function Count({ icon, value, label }: { icon: ReactNode; value: number; label: string }) {
@@ -217,7 +219,7 @@ function ExpandedCard({ issue, onSelect }: { issue: IssueSummary; onSelect?: (is
             <span dir="auto" className="truncate">{i18nT('appSdk.issues.opened_by', { name: personName(issue.author) })}</span>
           </span>
         )}
-        {/* Jira's and Linear's search APIs return no comment count, so the route
+        {/* Jira's, Linear's and ServiceNow's list APIs return no comment count, so the route
             sends 0 for every issue from them; showing it would state a wrong number. */}
         {!NO_COMMENT_COUNT.has(issue.provider) && (
           <Count icon={<MessageSquare size={12} aria-hidden="true" />} value={issue.commentCount} label={i18nT('appSdk.issues.comments', { count: issue.commentCount })} />

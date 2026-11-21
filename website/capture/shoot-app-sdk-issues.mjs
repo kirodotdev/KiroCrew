@@ -4,8 +4,9 @@
  * Serves the isolated entry with a programmatic Vite dev server on loopback.
  * Shots: condensed and expanded views at 720px in both themes, both views at
  * 320px, the refusal for an app that declares only /api/source/issue, "Assigned
- * to me" on, and the empty, loading and error states. Every
- * response is fabricated inside the entry; no gateway or token is involved.
+ * to me" on, the empty, loading and error states, and one ServiceNow table in
+ * both views. Every response is fabricated inside the entry; no gateway or
+ * token is involved.
  *
  * Usage (from website/): node capture/shoot-app-sdk-issues.mjs [outDir]
  */
@@ -38,15 +39,18 @@ const shots = [
   ['condensed', 'dark', 320], ['expanded', 'light', 320],
   ['refused', 'dark', 760],
   ['mine', 'dark', 760], ['empty', 'light', 760], ['loading', 'dark', 760], ['error', 'light', 760],
+  ['servicenow', 'dark', 760], ['servicenow-expanded', 'light', 760],
 ]
 for (const [scene, theme, width] of shots) {
   const page = await browser.newPage({ viewport: { width, height: 1800 }, deviceScaleFactor: 2 })
   page.on('pageerror', e => console.log('PAGE EXCEPTION:', e.message))
-  await page.goto(`${base}/capture/app-sdk-issues.html?scene=${scene === 'mine' ? 'condensed' : scene}&theme=${theme}`)
+  const serviceNow = scene.startsWith('servicenow')
+  const entryScene = scene === 'mine' || scene === 'servicenow' ? 'condensed' : scene === 'servicenow-expanded' ? 'expanded' : scene
+  await page.goto(`${base}/capture/app-sdk-issues.html?scene=${entryScene}&theme=${theme}${serviceNow ? '&provider=servicenow' : ''}`)
   if (scene === 'refused' || scene === 'error') await page.getByRole('alert').first().waitFor({ timeout: 20000 })
   else if (scene === 'empty') await page.getByTestId('app-issue-list-empty').waitFor({ timeout: 20000 })
   else if (scene === 'loading') await page.getByTestId('issue-list-loading').waitFor({ timeout: 20000 })
-  else await page.getByText('CREW-142').first().waitFor({ timeout: 20000 })
+  else await page.getByText(serviceNow ? 'INC0010001' : 'CREW-142').first().waitFor({ timeout: 20000 })
   if (scene === 'mine') {
     await page.getByRole('button', { name: 'Assigned to me' }).click()
     await page.waitForFunction(() => document.querySelector('[aria-pressed="true"]'))

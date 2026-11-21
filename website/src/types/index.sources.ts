@@ -130,24 +130,28 @@ export interface IssueSource {
 
 /* ── Issue search (POST /api/source/issues) ─────────────────────────────────
  * Lists or searches ONE scope's issues. GitHub, GitLab, Jira (Cloud and
- * Server/Data Center) and Linear are served today. Errors use the same
+ * Server/Data Center), Linear and ServiceNow are served today. Errors use the same
  * status/shape mapping as POST /api/source/issue. */
 
-export type IssueSearchProvider = 'github' | 'gitlab' | 'jira' | 'linear'
+export type IssueSearchProvider = 'github' | 'gitlab' | 'jira' | 'linear' | 'servicenow'
 
 export interface IssueSearchRequest {
   provider: IssueSearchProvider
-  /** GitHub `owner/repo`; GitLab project path `group/sub/project`; Jira project key; Linear team key. */
+  /** GitHub `owner/repo`; GitLab project path `group/sub/project`; Jira project key; Linear team key;
+   *  ServiceNow table: 'incident', 'problem', 'change_request', 'sc_req_item' or 'sc_task'. */
   scope: string
   /** GitHub Enterprise / self-managed GitLab / Jira host. Defaults to github.com / gitlab.com;
    *  required for Jira. Must be a host the gateway already allows for that provider.
-   *  Omit it for Linear. */
+   *  Omit it for Linear. Required for ServiceNow: the instance (`acme.service-now.com`) the
+   *  stored SERVICENOW_API_KEY belongs to. */
   host?: string
   /** Default 'open'. */
   state?: 'open' | 'closed' | 'all'
-  /** 'me' = the signed-in user. Jira: an account ID on Cloud, a username on Server/DC. */
+  /** 'me' = the signed-in user. Jira: an account ID on Cloud, a username on Server/DC.
+   *  ServiceNow: a user name or an email address. */
   assignee?: string
   author?: string
+  /** Refused (400) for ServiceNow, which has no labels. */
   labels?: string[]
   text?: string
   /** Default 'updated'. */
@@ -155,8 +159,9 @@ export interface IssueSearchRequest {
   /** Default 'desc'. */
   order?: 'desc' | 'asc'
   /** Provider-native query (GitHub search qualifiers, GitLab filter string, Jira JQL, Linear
-   *  IssueFilter JSON object). Replaces the structured filters; `scope` still applies and
-   *  cannot be widened by it. */
+   *  IssueFilter JSON object, ServiceNow encoded query). Replaces the structured filters,
+   *  except on ServiceNow, where it is ANDed after them; `scope` still applies and cannot be
+   *  widened by it. */
   raw?: string
   /** 1..100, default 25. */
   limit?: number
@@ -173,7 +178,7 @@ export interface IssuePerson {
 export interface IssueSummary {
   provider: IssueSearchProvider
   url: string
-  /** Display key: '#4821', 'CREW-142', 'ENG-77'. */
+  /** Display key: '#4821', 'CREW-142', 'ENG-77', 'INC0010001'. */
   key: string
   number: number | null
   title: string

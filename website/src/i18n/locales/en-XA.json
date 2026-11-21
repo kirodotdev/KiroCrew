@@ -188,6 +188,7 @@
       "provider_gitlab": "[ĞìţĹàƀ ·········]",
       "provider_jira": "[Ĵìŕà ······]",
       "provider_linear": "[Ĺìñèàŕ ·········]",
+      "provider_servicenow": "[ŞèŕṽìçèÑøẁ ···············]",
       "retry": "[Ŕèţŕý ········]",
       "row_label": "[{{provider}} {{key}}: {{title}} ({{status}}) ·········]",
       "state_all": "[Àĺĺ ·····]",

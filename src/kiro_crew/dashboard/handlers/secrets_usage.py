@@ -363,6 +363,7 @@ def _scan_named_readers(
     scans: tuple[tuple[str, Callable[[Any, frozenset[str], readers.Add], None]], ...] = (
         (readers.KIND_INTEGRATION, readers.scan_bitbucket_server),
         (readers.KIND_INTEGRATION, readers.scan_linear),
+        (readers.KIND_INTEGRATION, readers.scan_servicenow),
         (readers.KIND_INTEGRATION, readers.scan_decisions),
         (readers.KIND_INTEGRATION, readers.scan_otlp),
         (readers.KIND_SPRITES_PROFILE, readers.scan_sprites),

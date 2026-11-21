@@ -89,6 +89,21 @@ def test_linear_lists_its_key_only_under_its_own_name() -> None:
     assert _collect(readers.scan_linear, _config(), set()) == {}
 
 
+# ── ServiceNow ──
+
+
+def test_servicenow_lists_its_key_and_instance_under_their_own_names() -> None:
+    from kiro_crew.dashboard.source_providers.servicenow import API_KEY_NAME, INSTANCE_NAME
+
+    place = [{"kind": "integration", "name": "ServiceNow", "key": ""}]
+    stored = {API_KEY_NAME, INSTANCE_NAME, "SERVICENOW_API_KEY_OLD"}
+    assert _collect(readers.scan_servicenow, _config(), stored) == {
+        API_KEY_NAME: place,
+        INSTANCE_NAME: place,
+    }
+    assert _collect(readers.scan_servicenow, _config(), set()) == {}
+
+
 # ── Jev decisions ──
 
 

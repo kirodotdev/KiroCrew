@@ -376,6 +376,7 @@
       "provider_gitlab": "GitLab",
       "provider_jira": "Jira",
       "provider_linear": "Linear",
+      "provider_servicenow": "ServiceNow",
       "retry": "重试",
       "row_label": "{{provider}} {{key}}：{{title}}（{{status}}）",
       "state_all": "全部",
