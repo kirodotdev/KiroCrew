@@ -4,7 +4,7 @@
  * stubs heavy child components, uses real ChatPage with real hooks.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { act, render, screen, fireEvent } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitForElementToBeRemoved } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -139,6 +139,6 @@ describe('ChatPage in-session search integration', () => {
     await act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true })) })
     expect(screen.getByPlaceholderText('Find in chat…')).toBeInTheDocument()
     await act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
-    expect(screen.queryByPlaceholderText('Find in chat…')).not.toBeInTheDocument()
+    await waitForElementToBeRemoved(() => screen.queryByPlaceholderText('Find in chat…'))
   })
 })
