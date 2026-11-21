@@ -473,6 +473,60 @@ raise SystemExit(m['main']())
         self.assertNotIn("i18n", "\n".join(str(s) for s in steps))
         self.assertEqual(module["MEMORY_UI_TIMEOUT"], 720)
 
+    def test_the_suite_is_sharded_and_what_runs_once_stays_on_one_leg(self):
+        import yaml
+
+        job = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]["e2e"]
+        legs = job["strategy"]["matrix"]["shard"]
+        # Leg numbers are Playwright's 1-based shard indices, so the list must be
+        # 1..K: a gap or a repeat would leave part of the suite to no leg.
+        self.assertEqual(legs, list(range(1, len(legs) + 1)))
+        self.assertGreaterEqual(len(legs), 2)
+        # One red leg must not cancel the other: each reports its own part.
+        self.assertIs(job["strategy"]["fail-fast"], False)
+        self.assertIn("${{ matrix.shard }}/${{ strategy.job-total }}", job["name"])
+        steps = job["steps"]
+        parallel = next(
+            s for s in steps if s.get("run") == "exec python scripts/ci_e2e_parallel.py"
+        )
+        # K comes from the matrix itself, so the list above is the only place a
+        # shard count is written.
+        self.assertEqual(
+            parallel["env"]["KIROCREW_E2E_SHARD"],
+            "${{ matrix.shard }}/${{ strategy.job-total }}",
+        )
+        # Every step that is not the sharded suite runs on leg 1 and on no other,
+        # so it still runs once per pull request.
+        once = [s for s in steps if "if" in s and "matrix.shard" in str(s["if"])]
+        self.assertEqual({s["if"] for s in once}, {"${{ matrix.shard == 1 }}"})
+        self.assertEqual(
+            [s["name"].split(" (")[0] for s in once],
+            [
+                "MCP-App message rows render both delivery states",
+                "kiro-light cards carry their own edge",
+                "SkillForm frontmatter parity",
+                "Transcript rows hold the 4px grid floor",
+            ],
+        )
+        # Two legs upload in one run, where an artifact name can be used once.
+        uploads = [
+            s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")
+        ]
+        self.assertTrue(uploads)
+        for upload in uploads:
+            self.assertTrue(upload["with"]["name"].endswith("-${{ matrix.shard }}"), upload)
+        report = next(s for s in uploads if s["with"]["name"].startswith("e2e-playwright-report-"))
+        self.assertEqual(report["if"], "${{ always() }}")
+        self.assertEqual(
+            report["with"]["path"].rstrip("/"), parallel["env"]["KIROCREW_E2E_REPORT_DIR"]
+        )
+        lanes = runpy.run_path(str(HELPER))["_lanes"]
+        self.assertEqual(lanes(None), ["smoke", "memory-ui"])
+        self.assertEqual(lanes(""), ["smoke", "memory-ui"])
+        self.assertEqual(lanes("1/2"), ["smoke", "memory-ui"])
+        self.assertEqual(lanes("2/2"), ["smoke"])
+        self.assertEqual(lanes("3/3"), ["smoke"])
+
     def test_render_gate_is_its_own_job_with_the_base_resolved_before_it(self):
         import yaml
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import glob
+import hashlib
 import json
 import os
 import re
@@ -26,6 +27,7 @@ import signal
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import NoReturn
 
@@ -156,6 +158,231 @@ def _ceiling_from_job_budget(minutes: str | None) -> int:
 
 PLAYWRIGHT_RUN_CEILING_SECS = _ceiling_from_job_budget(os.environ.get(_JOB_TIMEOUT_MINUTES_ENV))
 
+# Sharding. ci.yml runs this suite as K jobs, each with its own gateway and one
+# worker, and passes ``<i>/<K>`` here; the run then takes Playwright's
+# ``--shard=<i>/<K>``. Unset, the command and every check are the unsharded ones.
+#
+# A shard cannot see the other jobs, so each one proves the whole division
+# itself before it runs anything (_shard_share): it lists the full suite and
+# every one of the K shards, and fails unless the K lists cover the full list
+# with each test in exactly one of them. After the run it fails unless the report
+# holds exactly its own list and every test in it ran (_assert_shard_ran_its_share).
+#
+# Two jobs agree on the division because Playwright computes it from the ordered
+# test list alone (runner/testGroups.ts: createTestGroups keeps a serial block,
+# or a file in serial mode, in one group; filterForShard gives each group to the
+# shard whose index range holds the group's first test). The one input that
+# comes from the machine is the order of the spec files, which Playwright sorts
+# with the process locale's collation (runner/projectUtils.ts, localeCompare).
+# So every shard also lists the K shards under LC_ALL=C and fails unless that
+# division is the one it is about to run: two jobs that both pass hold the
+# division of the C locale, which does not depend on the runner.
+_SHARD_ENV = "KIROCREW_E2E_SHARD"
+_SHARD_RE = re.compile(r"([1-9][0-9]*)/([1-9][0-9]*)")
+# Projects other projects depend on (playwright.config.ts: `chromium` depends on
+# `setup`). Playwright shards top-level projects only and runs a dependency in
+# every shard that needs it, so these tests belong to every shard; any other
+# test belongs to exactly one.
+_DEPENDENCY_PROJECTS = frozenset({"setup"})
+# Where the run's JSON report is copied for the CI artifact, when set.
+_REPORT_DIR_ENV = "KIROCREW_E2E_REPORT_DIR"
+# Statuses Playwright gives a test that ran. Its fourth, `skipped`, also covers a
+# test the run never reached.
+_RAN_STATUSES = frozenset({"expected", "flaky", "unexpected"})
+
+
+def _parse_shard(value: str | None) -> tuple[int, int] | None:
+    """``(i, K)`` from ``"<i>/<K>"``, ``None`` when unset; anything else raises."""
+    if not value:
+        return None
+    match = _SHARD_RE.fullmatch(value)
+    if not match or int(match[1]) > int(match[2]):
+        raise ValueError(f"{_SHARD_ENV}={value!r} is not <i>/<K> with 1 <= i <= K")
+    return int(match[1]), int(match[2])
+
+
+def _playwright_argv(pw_bin: Path, shard: tuple[int, int] | None) -> list[str]:
+    """The run's command. html keeps the CI artifact the config asks for; json adds
+    the counts. A CLI --reporter replaces the config value, so both are named."""
+    argv = [str(pw_bin), "test", "--reporter=html,json"]
+    if shard is not None:
+        argv.append(f"--shard={shard[0]}/{shard[1]}")
+    return argv
+
+
+def _report_tests(data: dict) -> dict[tuple[str, str], tuple[str, str]]:
+    """``(project, spec id) -> (status, "file > title")`` for a JSON report or list."""
+    found: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def walk(suite: dict) -> None:
+        for spec in suite.get("specs") or ():
+            name = f"{spec.get('file', '?')} > {spec.get('title', '?')}"
+            for test in spec.get("tests") or ():
+                key = (str(test.get("projectName", "")), str(spec.get("id", name)))
+                found[key] = (str(test.get("status", "")), name)
+        for child in suite.get("suites") or ():
+            walk(child)
+
+    for suite in data.get("suites") or ():
+        walk(suite)
+    return found
+
+
+def _names(tests: dict, keys) -> str:
+    """Up to ten ``file > title`` names for *keys*, for an assertion message."""
+    names = sorted(tests[key][1] if key in tests else str(key) for key in keys)
+    more = f" (+{len(names) - 10} more)" if len(names) > 10 else ""
+    return "; ".join(names[:10]) + more
+
+
+def _shard_share(
+    full: dict,
+    shards: list[dict],
+    pinned: list[dict],
+    current: int,
+) -> frozenset:
+    """This shard's tests, after proving the K lists divide *full* exactly.
+
+    *full* is the unsharded list, *shards* the K shard lists in the locale the
+    run uses, *pinned* the same K lists under ``LC_ALL=C``; each is a
+    ``_report_tests`` mapping. Fails when the suite is under the executed-spec
+    floor, when a test is in no shard, when a shard lists a test the suite does
+    not have, when a test is in two shards (a dependency project's test must be in
+    all of them instead), or when the division depends on the locale.
+    """
+    assert len(full) >= MIN_EXECUTED_SPECS, (
+        f"the suite lists {len(full)} specs, floor is {MIN_EXECUTED_SPECS}. "
+        "Specs stopped being collected. Check grepInvert in "
+        "website/playwright.config.ts for a newly excluded tag, and check that no "
+        "spec file was renamed out of the testDir. If the drop is intended, lower "
+        "MIN_EXECUTED_SPECS and say why in the commit body."
+    )
+    known = dict(full)
+    for listing in shards:
+        known.update(listing)
+    listed = set().union(*shards)
+    missing = set(full) - listed
+    assert not missing, f"{len(missing)} test(s) are in no shard: {_names(known, missing)}"
+    extra = listed - set(full)
+    names = _names(known, extra)
+    assert not extra, f"{len(extra)} test(s) are in a shard but not in the suite: {names}"
+    for key in full:
+        holders = sum(1 for listing in shards if key in listing)
+        if key[0] in _DEPENDENCY_PROJECTS:
+            assert holders == len(shards), (
+                f"{known[key][1]} belongs to dependency project {key[0]!r} and must run "
+                f"in every shard, but {holders} of {len(shards)} list it"
+            )
+        else:
+            assert holders == 1, f"{known[key][1]} is in {holders} shards, must be in one"
+    assert [set(listing) for listing in shards] == [set(listing) for listing in pinned], (
+        "the shards divide the suite differently under LC_ALL=C than under this "
+        "runner's locale, so two runners could each skip the same test. Playwright "
+        "orders spec files with the locale's collation: rename the spec file whose "
+        "position depends on it."
+    )
+    return frozenset(shards[current - 1])
+
+
+def _list_tests(pw_bin: Path, *, cwd: Path, env: dict, out: Path, shard: str | None) -> dict:
+    """``_report_tests`` of ``playwright test --list``, for the suite or one shard."""
+    from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+
+    argv = [str(pw_bin), "test", "--list", "--reporter=json"]
+    if shard is not None:
+        argv.append(f"--shard={shard}")
+    proc = subprocess.run(
+        argv,
+        cwd=str(cwd),
+        env={**env, "PLAYWRIGHT_JSON_OUTPUT_NAME": str(out)},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=FALLBACK_TIMEOUT_SECS,
+        check=False,
+    )
+    detail = proc.stderr[-2000:]
+    assert proc.returncode == 0, f"{' '.join(argv[1:])} exited {proc.returncode}: {detail}"
+    return _report_tests(json.loads(out.read_text(encoding="utf-8")))
+
+
+def _prove_shard_share(
+    pw_bin: Path, *, cwd: Path, env: dict, tmp: Path, shard: tuple[int, int]
+) -> frozenset:
+    """List the suite and all K shards, twice, and return this shard's proven share."""
+    current, total = shard
+    pinned_env = {**env, "LC_ALL": "C"}
+    jobs = [("full", env, None)]
+    jobs += [(f"shard-{i}", env, f"{i}/{total}") for i in range(1, total + 1)]
+    jobs += [(f"pinned-{i}", pinned_env, f"{i}/{total}") for i in range(1, total + 1)]
+
+    def run(job: tuple[str, dict, str | None]) -> dict:
+        name, job_env, flag = job
+        return _list_tests(pw_bin, cwd=cwd, env=job_env, out=tmp / f"list-{name}.json", shard=flag)
+
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        full, *rest = pool.map(run, jobs)
+    share = _shard_share(full, rest[:total], rest[total:], current)
+    digest = hashlib.sha256("\n".join(sorted(f"{p} {i}" for p, i in share)).encode()).hexdigest()
+    print(
+        f"[test:e2e:playwright] shard={current}/{total} listed={len(share)} of {len(full)} "
+        f"share_sha256={digest}",
+        flush=True,
+    )
+    return share
+
+
+def _assert_shard_ran_its_share(report: Path, share: frozenset) -> None:
+    """Fail unless the report holds exactly *share* and every test in it ran."""
+    try:
+        data = json.loads(report.read_text())
+    except (OSError, json.JSONDecodeError) as exc:  # pragma: no cover - defensive
+        pytest.fail(f"could not read Playwright JSON report at {report}: {exc}")
+    tests = _report_tests(data)
+    unlisted = set(tests) - share
+    assert not unlisted, (
+        f"the run reported {len(unlisted)} test(s) outside this shard's list: "
+        f"{_names(tests, unlisted)}"
+    )
+    absent = share - set(tests)
+    assert not absent, (
+        f"{len(absent)} test(s) of this shard's list are not in the report: "
+        f"{_names(tests, absent)}"
+    )
+    not_run = [key for key, (status, _name) in tests.items() if status not in _RAN_STATUSES]
+    assert not not_run, (
+        f"{len(not_run)} of this shard's {len(share)} listed test(s) did not run: "
+        f"{_names(tests, not_run)}"
+    )
+    stats = data.get("stats") or {}
+    executed = int(stats.get("expected", 0)) + int(stats.get("flaky", 0))
+    failed = sum(1 for status, _name in tests.values() if status == "unexpected")
+    assert executed == len(share) - failed, (
+        f"{executed} specs executed, this shard lists {len(share)} and {failed} failed. "
+        "The report's counts and its tests disagree."
+    )
+
+
+def _keep_report(report: Path, shard: tuple[int, int] | None) -> None:
+    """Copy the run's JSON report to ``$KIROCREW_E2E_REPORT_DIR`` for the CI artifact.
+
+    Best effort, like the job summary: the report stays evidence, and a directory
+    this user cannot write must not turn a green run red.
+    """
+    target = os.environ.get(_REPORT_DIR_ENV)
+    if not target:
+        return
+    name = "playwright-results.json"
+    if shard is not None:
+        name = f"playwright-results-{shard[0]}-of-{shard[1]}.json"
+    try:
+        os.makedirs(target, exist_ok=True)
+        shutil.copyfile(report, Path(target) / name)
+    except OSError as exc:
+        print(f"[test:e2e:playwright] report not kept ({exc})", flush=True)
+
+
 # How often the run checks that the gateway it drives is still alive. A dead
 # gateway turns every remaining spec and every retry into a timeout against
 # nothing, which is what a retry must never be mistaken for. Only an exited
@@ -178,25 +405,33 @@ def _counts_line(stats: dict) -> str:
     return f"[test:e2e:playwright] executed={executed} skipped={skipped} stats={stats}"
 
 
-def _assert_suite_not_darkened(report: Path) -> None:
+def _assert_suite_not_darkened(report: Path, share: frozenset | None = None) -> None:
     """Fail if the run executed fewer specs than the floor, skipped any, or was flaky.
 
     Reads Playwright's JSON report rather than scraping stdout. `expected` and
     `flaky` both mean "ran and ultimately passed", so both count as executed; a
     flaky spec is then failed by the separate MAX_FLAKY_SPECS ceiling.
+
+    A sharded run passes *share*, the list ``_shard_share`` proved for it. Its
+    floor is then exact: the report must hold that list and nothing else, with
+    every test run. MIN_EXECUTED_SPECS was asserted on the whole suite's list
+    before the run.
     """
     stats, flaky = _read_counts(report)
     executed = int(stats.get("expected", 0)) + int(stats.get("flaky", 0))
     skipped = int(stats.get("skipped", 0))
     print(_counts_line(stats), flush=True)
 
-    assert executed >= MIN_EXECUTED_SPECS, (
-        f"only {executed} specs executed, floor is {MIN_EXECUTED_SPECS}. "
-        "Specs stopped running rather than failing. Check grepInvert in "
-        "website/playwright.config.ts for a newly excluded tag, and check that no "
-        "spec file was renamed out of the testDir. If the drop is intended, lower "
-        "MIN_EXECUTED_SPECS and say why in the commit body."
-    )
+    if share is not None:
+        _assert_shard_ran_its_share(report, share)
+    else:
+        assert executed >= MIN_EXECUTED_SPECS, (
+            f"only {executed} specs executed, floor is {MIN_EXECUTED_SPECS}. "
+            "Specs stopped running rather than failing. Check grepInvert in "
+            "website/playwright.config.ts for a newly excluded tag, and check that no "
+            "spec file was renamed out of the testDir. If the drop is intended, lower "
+            "MIN_EXECUTED_SPECS and say why in the commit body."
+        )
     assert skipped <= MAX_SKIPPED_SPECS, (
         f"{skipped} spec(s) skipped, ceiling is {MAX_SKIPPED_SPECS}. A skip reports "
         "green while verifying nothing. Seed the precondition in a fixture instead "
@@ -446,6 +681,8 @@ def test_dashboard_playwright_suite() -> None:
     if node_dir is None:
         _unresolved("No Node.js >=18 found; Playwright 1.58 requires it")
 
+    shard = _parse_shard(os.environ.get(_SHARD_ENV))
+
     # Point the gateway's ACP client at the packaged fake backend so the
     # agent-driven specs (chat, fork) run deterministic, credential-less turns
     # instead of needing real model access. acp/client.py reads
@@ -554,14 +791,19 @@ def test_dashboard_playwright_suite() -> None:
                     f"node_dir={node_dir} fake_acp={fake_acp_backend.__file__} cwd={website}",
                     flush=True,
                 )
-                # html keeps the CI artifact the config asks for; json adds the
-                # counts. A CLI --reporter replaces the config value, so name both.
+                # A shard proves the division of the suite before it runs its part.
+                share = None
+                if shard is not None:
+                    share = _prove_shard_share(
+                        pw_bin, cwd=website, env=env, tmp=Path(tmp), shard=shard
+                    )
                 rc, stopped = _run_playwright(
-                    [str(pw_bin), "test", "--reporter=html,json"],
+                    _playwright_argv(pw_bin, shard),
                     cwd=website,
                     env=env,
                     gateway=gw,
                 )
+            _keep_report(report, shard)
             salvaged = _salvaged_counts(report)
             if salvaged is not None:
                 _write_step_summary(*salvaged)
@@ -570,7 +812,7 @@ def test_dashboard_playwright_suite() -> None:
             # plus a collapsed spec count points at darkening, not at the failure.
             if stopped:
                 pytest.fail(f"{stopped}\n{salvaged[0] if salvaged else 'no readable report'}")
-            _assert_suite_not_darkened(report)
+            _assert_suite_not_darkened(report, share)
             assert rc == 0, f"playwright test exited {rc}"
     finally:
         if prev_kiro_bin is None:
@@ -676,6 +918,202 @@ def test_floor_fails_when_the_report_is_missing(tmp_path: Path) -> None:
         pytest.fail.Exception, match="could not read Playwright JSON report"
     ):
         _assert_suite_not_darkened(tmp_path / "absent.json")
+
+
+# --------------------------------------------------------------------------- #
+# Shard tests. Ungated like the floor's: the division of the suite between two
+# CI jobs is checked by these functions and by nothing else.
+# --------------------------------------------------------------------------- #
+
+
+def test_an_unset_shard_keeps_the_unsharded_command() -> None:
+    assert _parse_shard(None) is None
+    assert _parse_shard("") is None
+    assert _playwright_argv(Path("pw"), None) == ["pw", "test", "--reporter=html,json"]
+
+
+def test_a_shard_is_passed_to_playwright_as_given() -> None:
+    assert _parse_shard("2/3") == (2, 3)
+    assert _playwright_argv(Path("pw"), (2, 3)) == [
+        "pw",
+        "test",
+        "--reporter=html,json",
+        "--shard=2/3",
+    ]
+
+
+@pytest.mark.parametrize("value", ["0/2", "3/2", "1/0", "1", "a/b", "1/2 ", "-1/2", "1/2/3"])
+def test_a_malformed_shard_is_refused(value: str) -> None:
+    with pytest.raises(ValueError, match=_SHARD_ENV):
+        _parse_shard(value)
+
+
+def _listing(*ids: str, project: str = "chromium", status: str = "skipped") -> dict:
+    """A ``_report_tests`` mapping of *ids* in one project."""
+    return {(project, i): (status, f"a.spec.ts > {i}") for i in ids}
+
+
+_SETUP = _listing("auth", project="setup")
+
+
+def _suite(count: int) -> list[str]:
+    return [f"t{n}" for n in range(count)]
+
+
+def test_a_division_that_covers_the_suite_once_returns_this_shards_list() -> None:
+    ids = _suite(MIN_EXECUTED_SPECS)
+    full = {**_SETUP, **_listing(*ids)}
+    shards = [{**_SETUP, **_listing(*ids[::2])}, {**_SETUP, **_listing(*ids[1::2])}]
+    assert _shard_share(full, shards, shards, 2) == frozenset(shards[1])
+
+
+def test_a_suite_under_the_floor_fails_every_shard() -> None:
+    ids = _suite(MIN_EXECUTED_SPECS - 2)
+    full = {**_SETUP, **_listing(*ids)}
+    shards = [{**_SETUP, **_listing(*ids[::2])}, {**_SETUP, **_listing(*ids[1::2])}]
+    with pytest.raises(AssertionError, match="floor is"):
+        _shard_share(full, shards, shards, 1)
+
+
+def _division() -> tuple[dict, list[dict]]:
+    ids = _suite(MIN_EXECUTED_SPECS)
+    full = {**_SETUP, **_listing(*ids)}
+    return full, [{**_SETUP, **_listing(*ids[::2])}, {**_SETUP, **_listing(*ids[1::2])}]
+
+
+def test_a_test_in_no_shard_fails() -> None:
+    full, shards = _division()
+    del shards[1][("chromium", "t1")]
+    with pytest.raises(AssertionError, match=r"1 test\(s\) are in no shard: a.spec.ts > t1"):
+        _shard_share(full, shards, shards, 1)
+
+
+def test_a_test_in_two_shards_fails() -> None:
+    full, shards = _division()
+    shards[0].update(_listing("t1"))
+    with pytest.raises(AssertionError, match="a.spec.ts > t1 is in 2 shards"):
+        _shard_share(full, shards, shards, 1)
+
+
+def test_a_shard_listing_a_test_the_suite_lacks_fails() -> None:
+    full, shards = _division()
+    shards[0].update(_listing("stray"))
+    with pytest.raises(AssertionError, match="in a shard but not in the suite: a.spec.ts > stray"):
+        _shard_share(full, shards, shards, 1)
+
+
+def test_a_dependency_test_missing_from_one_shard_fails() -> None:
+    full, shards = _division()
+    del shards[1][("setup", "auth")]
+    with pytest.raises(AssertionError, match="must run in every shard, but 1 of 2"):
+        _shard_share(full, shards, shards, 1)
+
+
+def test_a_division_that_depends_on_the_locale_fails() -> None:
+    full, shards = _division()
+    pinned = [dict(shards[0]), dict(shards[1])]
+    pinned[0][("chromium", "t1")] = pinned[1].pop(("chromium", "t1"))
+    with pytest.raises(AssertionError, match="differently under LC_ALL=C"):
+        _shard_share(full, shards, pinned, 1)
+
+
+def _shard_report(tmp_path: Path, tests: dict[str, str], project: str = "chromium") -> Path:
+    """A JSON report of ``id -> status`` tests, with the stats Playwright derives."""
+    report = tmp_path / "results.json"
+    specs = [
+        {
+            "id": i,
+            "title": i,
+            "file": "a.spec.ts",
+            "tests": [{"projectName": project, "status": st}],
+        }
+        for i, st in tests.items()
+    ]
+    stats = {
+        name: sum(1 for st in tests.values() if st == name)
+        for name in ("expected", "flaky", "skipped", "unexpected")
+    }
+    report.write_text(
+        json.dumps({"stats": stats, "suites": [{"title": "a.spec.ts", "specs": specs}]})
+    )
+    return report
+
+
+def test_a_shard_that_ran_exactly_its_list_passes(tmp_path: Path) -> None:
+    share = frozenset(_listing("a", "b"))
+    _assert_suite_not_darkened(_shard_report(tmp_path, {"a": "expected", "b": "expected"}), share)
+
+
+def test_a_shard_is_held_to_its_own_list_not_to_the_suite_floor(tmp_path: Path) -> None:
+    """Two tests are far under MIN_EXECUTED_SPECS; the same report unsharded fails."""
+    report = _shard_report(tmp_path, {"a": "expected", "b": "expected"})
+    with pytest.raises(AssertionError, match="specs executed, floor is"):
+        _assert_suite_not_darkened(report)
+
+
+def test_a_shard_that_ran_fewer_tests_than_it_listed_fails(tmp_path: Path) -> None:
+    share = frozenset(_listing("a", "b"))
+    report = _shard_report(tmp_path, {"a": "expected"})
+    with pytest.raises(AssertionError, match="are not in the report: .*b"):
+        _assert_suite_not_darkened(report, share)
+
+
+def test_a_shard_that_ran_a_test_it_did_not_list_fails(tmp_path: Path) -> None:
+    share = frozenset(_listing("a"))
+    report = _shard_report(tmp_path, {"a": "expected", "b": "expected"})
+    with pytest.raises(AssertionError, match="outside this shard's list: a.spec.ts > b"):
+        _assert_suite_not_darkened(report, share)
+
+
+def test_a_listed_test_the_run_never_reached_fails(tmp_path: Path) -> None:
+    share = frozenset(_listing("a", "b"))
+    report = _shard_report(tmp_path, {"a": "expected", "b": "skipped"})
+    with pytest.raises(AssertionError, match="1 of this shard's 2 listed .* did not run"):
+        _assert_suite_not_darkened(report, share)
+
+
+def test_a_failed_test_counts_as_run_and_leaves_the_verdict_to_the_exit_code(
+    tmp_path: Path,
+) -> None:
+    share = frozenset(_listing("a", "b"))
+    _assert_suite_not_darkened(_shard_report(tmp_path, {"a": "expected", "b": "unexpected"}), share)
+
+
+def test_shard_counts_that_disagree_with_the_tests_fail(tmp_path: Path) -> None:
+    share = frozenset(_listing("a", "b"))
+    report = _shard_report(tmp_path, {"a": "expected", "b": "expected"})
+    data = json.loads(report.read_text())
+    data["stats"]["expected"] = 1
+    report.write_text(json.dumps(data))
+    with pytest.raises(AssertionError, match="counts and its tests disagree"):
+        _assert_suite_not_darkened(report, share)
+
+
+def test_a_flaky_test_still_fails_a_shard(tmp_path: Path) -> None:
+    share = frozenset(_listing("a", "b"))
+    report = _shard_report(tmp_path, {"a": "expected", "b": "flaky"})
+    with pytest.raises(AssertionError, match="passed only on a retry"):
+        _assert_suite_not_darkened(report, share)
+
+
+def test_the_report_is_kept_under_its_shards_name(tmp_path: Path, monkeypatch) -> None:
+    report = _shard_report(tmp_path, {"a": "expected"})
+    monkeypatch.setenv(_REPORT_DIR_ENV, str(tmp_path / "kept"))
+    _keep_report(report, (2, 3))
+    _keep_report(report, None)
+    kept = sorted(path.name for path in (tmp_path / "kept").iterdir())
+    assert kept == ["playwright-results-2-of-3.json", "playwright-results.json"]
+    assert (tmp_path / "kept" / kept[0]).read_text() == report.read_text()
+
+
+def test_an_unwritable_report_directory_does_not_fail_the_run(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    blocker = tmp_path / "file"
+    blocker.write_text("")
+    monkeypatch.setenv(_REPORT_DIR_ENV, str(blocker / "kept"))
+    _keep_report(_shard_report(tmp_path, {"a": "expected"}), (1, 2))
+    assert "report not kept" in capsys.readouterr().out
 
 
 def _report_with(tmp_path: Path, tests: list[tuple[str, str]]) -> Path:
