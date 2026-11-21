@@ -56,6 +56,8 @@ _SPAWN_INPUT_KEYED = {
     # Whether the session is a Bot's: a Bot session carries its member id (and its
     # store, beside it), a plain chat none, so the two never share and two Bots never do.
     "member_context": "member_id",
+    # The KAS session recap opt-in (``agent.session_recap``), sent once in initialize.
+    "session_recap": "session_recap",
 }
 
 #: Runtime constructor parameter -> why it is NOT a compatibility property.

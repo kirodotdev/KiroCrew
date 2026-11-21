@@ -2,7 +2,7 @@
  * Assistant-role system notices the backend injects into the feed -- status
  * reports (auto-compaction, session reload confirmations, session-switch
  * boundary rows, Shared Crew memory changes, Task Runner notices in the chat
- * that started the run), not real turns.
+ * that started the run, the session recap on resume), not real turns.
  *
  * Every scan that walks backward for "the assistant's last word" (follow-up
  * [OPTIONS:] derivation, the continuable-thread checks) must skip these, or a
@@ -16,6 +16,7 @@ const SYSTEM_NOTICE_KINDS: ReadonlySet<string> = new Set([
   'session_switch',
   'memory_change',
   'taskrunner_notice',
+  'recap',
 ])
 
 export function isSystemNoticeKind(kind: string | undefined): boolean {

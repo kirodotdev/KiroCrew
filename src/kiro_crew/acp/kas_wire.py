@@ -92,6 +92,7 @@ KIND_TURN_END = "turn_end"
 # active model slot (``AgentExecutionWaitingForActiveSlot``; carries
 # ``activeSessionId``). From 0.66.104 only a spec-generation turn waits there.
 KIND_QUEUED = "queued"
+KIND_RECAP = "recap"
 
 # Summarization maps to Crew's compaction status; steering to mid-turn steer.
 SUMMARIZATION_KINDS = frozenset(
@@ -104,6 +105,7 @@ FIELD_KIND = "kind"
 FIELD_USAGE_PERCENTAGE = "usagePercentage"
 FIELD_CONVERSATION_SUMMARY = "conversationSummary"
 FIELD_CONTENT = "content"
+FIELD_TEXT = "text"
 FIELD_PROMPT_TURN_SUMMARIES = "promptTurnSummaries"
 FIELD_AGENT_SUBTASK_ID = "agentSubtaskId"
 FIELD_PIPELINE = "pipeline"
@@ -116,6 +118,40 @@ UNIT_CREDIT = "credit"
 # ``initialize``'s ``agentCapabilities._meta.kiro`` flag that announces the
 # ``_kiro/checkpoint/*`` verbs (``METHOD_KAS_CHECKPOINT_REVERT``).
 CAPABILITY_CHECKPOINTS = "checkpoints"
+
+# ── Feature settings Crew may send ──
+# The key KAS's feature gate reads under ``clientCapabilities._meta.kiro.settings``
+# at initialize. With it on, KAS generates a recap after each turn (one more model
+# call per turn) and replays the latest one inside the ``session/load`` window.
+SETTING_SESSION_RECAP = "sessionRecap"
+
+
+def session_recap_settings(enabled: bool) -> dict[str, Any]:
+    """The ``_meta.kiro.settings`` entry that opts a KAS process into recaps.
+
+    Empty when off, so the handshake stays exactly as it was; KAS reads an absent
+    setting as disabled.
+    """
+    return {SETTING_SESSION_RECAP: {"enabled": True}} if enabled else {}
+
+
+def is_recap_update(params: object) -> bool:
+    """True when a ``session/update`` notification's params carry a recap union.
+
+    Backend-agnostic on purpose: the CALLER gates on the KAS backend (the one
+    producer today) — this predicate answers only "is this frame shaped like a
+    recap". Shared by the runtime's init-staging branch and the session
+    handle's pre-turn drain so the two never drift.
+    """
+    if not isinstance(params, dict):
+        return False
+    update = params.get("update")
+    if not isinstance(update, dict):
+        return False
+    if update.get("sessionUpdate") != "session_info_update":
+        return False
+    kiro = kiro_meta(update)
+    return kiro is not None and kiro.get(FIELD_KIND) == KIND_RECAP
 
 
 def kiro_meta(update: dict) -> dict[str, Any] | None:
