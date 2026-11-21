@@ -5307,9 +5307,29 @@ different sets could each leave a file to another. No shard can see another's
 list, so each prints `file-shard targets: <N> file(s), sha256 <digest>; shard
 <i>/<n> owns <k>` in its terminal summary; the counts and digests of one run's
 shards must match. `--file-shard-targets-sha256=<digest>` turns that into a
-refusal: a shard whose list has another digest stops before collecting. No
-workflow passes it yet, because the reduced scope computes its list on each
-shard; passing one digest computed once per run is what closes the gap.
+refusal: a shard whose list has another digest stops before collecting, and so
+does one given a value that is not a digest (an empty one means the run named
+none).
+
+`ci.yml` passes it with every list. The `changes` job runs once per run, and is
+not repeated when one failed shard is re-run, so its step "Digest the selected
+backend test lists" names the digest each list must have: the leaf corpus gates
+(one list on Linux and Windows), the reduced scope on Linux, the reduced scope
+on Windows (`scripts/ci-surface-tests.py --for-windows`, the Linux list without
+`test/windows-collect-ignore.txt`) and the docs contract readers. The selector's
+Windows list does not depend on the host that computes it: it matches test file
+names whatever their case by name, not through the host's glob, and prints UTF-8. The reduced
+scope and the docs readers are still worked out on each shard; the digest is
+what holds those copies to one list. Three outcomes fail a shard instead of
+falling back to the full suite, because the other shards have already left it
+its share of the list: its list has another digest, the run named no digest for
+a list it holds, or it holds no list (its selector failed or found nothing)
+while the run named one. When the selector fails in the `changes` job and on
+every shard, no list exists anywhere and the full suite runs, as before.
+`test/test_ci_shard_list_digest.py` executes those steps. Not covered: the
+Windows leaf budget in "Select test scope", which each Windows shard decides
+from the run's leaf outputs and the checkout, and which sends the shard to the
+full suite with no list.
 
 Before the Linux and Windows full-suite test step, `scripts/ci_rewrite_prewarm.py`
 writes pytest's assertion-rewrite pyc for the shard's test files (same hash and
