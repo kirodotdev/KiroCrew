@@ -71,8 +71,9 @@ def open_member_folder(slug: str) -> Iterator[MemberFolder]:
     names is opened the same way and held, and ``members_is_link`` is set: the write
     stays in that folder and a caller leaves its mode as it is. A link that leads to no
     folder that can be opened (a dangling link, a loop, a file, a folder it may not open,
-    a target that is not text), or to the data home or a folder above it, is refused, and
-    nothing is created behind it. The slug level is created relative to the held folder,
+    a target that is not text), or to the data home, a folder above it or a folder inside
+    it (the trust or SEL folder), is refused, and nothing is created behind it. A folder
+    outside the data home is allowed. The slug level is created relative to the held folder,
     so nothing is made behind a link.
 
     Everything that happens before the folder is yielded either succeeds or ends in
@@ -170,12 +171,16 @@ def _open_link_at_members(base: Path, name: str, stack: ExitStack) -> int:
                 "refusing to use the member folder: the link at members cannot be resolved"
             ) from exc
         stack.callback(os.close, fd)
-        if _is_data_home_or_above(fd, base_fd):
+        # The same walk both ways: the target is the data home or above it, or (the
+        # arguments swapped) the data home is the target or above it, so the target is
+        # inside the data home. The `members` folder itself is the link, never a target.
+        if _is_data_home_or_above(fd, base_fd) or _is_data_home_or_above(base_fd, fd):
             # The slug folders are made inside the folder ``members`` names: the data
-            # home, or a folder above it, would put them beside the stores kept there.
+            # home, a folder above it, or another folder of the data home (trust, SEL)
+            # would put them beside the stores kept there.
             raise refusal(
                 "refusing to use the member folder: the link at members leads to the "
-                "data home or to a folder above it"
+                "data home, a folder above it, or a folder inside it"
             )
         return fd
     finally:
@@ -225,10 +230,10 @@ def _open_link_at_members_by_name(
         raise refusal(
             "refusing to use the member folder: the link at members cannot be resolved"
         ) from exc_resolve
-    if root == base or root in base.parents:
+    if root == base or root in base.parents or base in root.parents:
         raise refusal(
             "refusing to use the member folder: the link at members leads to the "
-            "data home or to a folder above it"
+            "data home, a folder above it, or a folder inside it"
         ) from None
     try:
         parent_fd = stack.enter_context(
