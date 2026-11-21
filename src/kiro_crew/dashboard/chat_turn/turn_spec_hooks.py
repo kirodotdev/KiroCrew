@@ -38,6 +38,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
     unmet_post_tool_matchers_sentence,
     withheld_project_spec_hooks,
 )
+from kiro_crew.agent_sdk.spec_hooks_matchers import InvalidMatcherHook, invalid_matcher_spec_hooks
 from kiro_crew.constants import HOOK_DENY_REASON_MAX_CHARS
 from kiro_crew.dashboard.agent_welcome import AGENT_WELCOME_KIND
 from kiro_crew.dashboard.chat_utils import (
@@ -332,6 +333,14 @@ async def _prepare_spec_hooks(
             # one the session drops is named here too.
             kas_checkout=kas_hook_checkout(client),
         )
+        await _surface_invalid_matcher_hooks(
+            state,
+            slot,
+            agent,
+            spec_project_dir(client),
+            by_session.get("session_key", ""),
+            kas_checkout=kas_hook_checkout(client),
+        )
     if is_new:
         # A withheld project spec yields the user-level spec in its place, so
         # these hooks are exactly the user-level ones that still run.
@@ -600,6 +609,7 @@ async def _prepare_observer_spec_hooks(
                     "msg msg-info",
                 )
         await _surface_overlong_hook_commands(state, slot, agent, project_dir, session_key)
+        await _surface_invalid_matcher_hooks(state, slot, agent, project_dir, session_key)
         await _surface_withheld_project_hooks(
             state, slot, client, agent, user_hooks_run=bool(observed)
         )
@@ -662,6 +672,72 @@ async def _surface_overlong_hook_commands(
         return
     if hooks:
         text = _redact_display_text(_overlong_hook_commands_notice(agent, hooks))
+        if _session_notice_is_new(slot, text, project_dir, kas_checkout):
+            append_and_surface(
+                state,
+                slot,
+                "notice",
+                text,
+                "msg msg-info",
+                meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+            )
+
+
+def _invalid_matcher_hooks_notice(agent: str, hooks: list[InvalidMatcherHook]) -> str:
+    """The session-start notice for spec hooks dropped because Crew cannot read their matcher."""
+    # circular import: agent imports hooks, which spec_hooks imports at load time.
+    from kiro_crew.agent import _MAX_MATCHER_LEN
+
+    shown = []
+    for hook in hooks[:_OVERLONG_NOTICE_ENTRIES]:
+        # Redact each whole value before the cut, as the too-long notice does.
+        event = _redact_display_text(hook.event)[:64]
+        shown.append(f"{event} matcher {_redact_display_text(hook.matcher)[:64]}")
+    text = "; ".join(shown)
+    more = len(hooks) - _OVERLONG_NOTICE_ENTRIES
+    if more > 0:
+        text += f"; and {more} more"
+    noun, them = ("hook does", "it") if len(hooks) == 1 else ("hooks do", "them")
+    return (
+        f"ℹ Agent {agent}: {len(hooks)} {noun} not run because Crew cannot read the "
+        f"matcher ({text}), so no tool call reaches {them}. A matcher is read as a tool "
+        "name or glob of letters, digits and _ . - * ?, or as @builtin, @<server> or "
+        f"@<server>/<tool glob>, up to {_MAX_MATCHER_LEN} characters; a regular "
+        "expression is not read. Rewrite the matcher in one of those forms, with one "
+        "hook per tool where it named several."
+    )
+
+
+async def _surface_invalid_matcher_hooks(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    agent: str,
+    project_dir: str | None,
+    session_key: str,
+    *,
+    kas_checkout: str | None = None,
+) -> None:
+    """One notice row naming the spec hooks dropped because Crew cannot read their matcher.
+
+    Reads the spec :func:`_surface_overlong_hook_commands` reads. Best-effort: a spec
+    that cannot be read renders no row rather than failing the turn.
+    """
+    by_session = {"session_key": session_key} if session_key else {}
+    try:
+        hooks = await asyncio.to_thread(
+            functools.partial(
+                invalid_matcher_spec_hooks,
+                agent,
+                project_dir,
+                kas_checkout=kas_checkout,
+                **by_session,
+            )
+        )
+    except Exception:  # noqa: BLE001 - an informational row must never fail a turn
+        logger.debug("spec hook matchers for %r could not be read", agent, exc_info=True)
+        return
+    if hooks:
+        text = _redact_display_text(_invalid_matcher_hooks_notice(agent, hooks))
         if _session_notice_is_new(slot, text, project_dir, kas_checkout):
             append_and_surface(
                 state,
