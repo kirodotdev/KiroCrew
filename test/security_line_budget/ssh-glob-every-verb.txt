@@ -1,0 +1,2 @@
++3
+The ssh self-target floor reads a glob program word that can name several ssh-family verbs (s??, s*) as each of them, in sorted order, so its verdict no longer follows the per-process hash seed. The lines are the multi-verb helper, the per-verb token iterator the walk loops over, and the facade name for the helper.
