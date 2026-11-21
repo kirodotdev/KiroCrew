@@ -320,6 +320,13 @@ def _substitution_bodies(text: str, *, raw_source: bool = False) -> "list[str]":
     no ``#``, ``<<``, backslash or control byte (a newline, or a sentinel a caller
     masked in) and whose every quote closes. Any other text, including text with a
     live opener anywhere, gets the quote-blind openers for the whole text.
+
+    In *raw_source*, a backtick after an odd run of backslashes opens nothing, as in
+    bash: ``\\``` is a literal backtick unquoted and inside double quotes, and inside
+    single quotes every backtick is literal anyway. Read as an opener, it paired
+    with the next LIVE backtick as its closer, so the live substitution after it was
+    never read as a body. A payload is still read quote-blind: there a ``\\``` may
+    be live once ``sh -c`` or ``eval`` reads it again.
     """
     if raw_source and not any(m in text for m in ("#", "<<", "$", "\\")):
         if not any(ch < " " for ch in text) and _only_single_quoted_openers(text):
@@ -338,13 +345,27 @@ def _substitution_bodies(text: str, *, raw_source: bool = False) -> "list[str]":
             bodies.append(text[i + 2 : end - 1] if proven else text[i + 2 :])
             i = end
             continue
-        if text[i] == "`":
+        if text[i] == "`" and not (raw_source and _after_odd_backslashes(text, i)):
             end, proven = _matching_close_backtick(text, i + 1)
-            bodies.append(text[i + 1 : end - 1] if proven else text[i + 1 :])
+            body = text[i + 1 : end - 1] if proven else text[i + 1 :]
+            # Inside backticks bash drops the backslash before ``\``, ``` and ``$``
+            # before it runs the body, so ``\\`` + newline there is a continuation.
+            bodies.append(_BACKTICK_BODY_ESCAPE_RE.sub(r"\1", body))
             i = end
         else:
             i += 1
     return bodies
+
+
+_BACKTICK_BODY_ESCAPE_RE = re.compile(r"\\([\\`$])")
+
+
+def _after_odd_backslashes(text: str, i: int) -> bool:
+    """True if the character at *i* follows an odd run of backslashes (is escaped)."""
+    j = i
+    while j > 0 and text[j - 1] == "\\":
+        j -= 1
+    return (i - j) % 2 == 1
 
 
 # A shell removes ``backslash + newline`` while lexing (line continuation), so
@@ -353,12 +374,22 @@ def _substitution_bodies(text: str, *, raw_source: bool = False) -> "list[str]":
 # model the shell before tokenizing. Scoped to the floor's own tokenizer input
 # (NOT a catalog-wide rewrite of the matched text): it only shapes the argv the
 # self-protection predicates see, so it cannot over-block an unrelated rule.
-_SHELL_LINE_CONTINUATION_RE = re.compile(r"\\\r?\n")
+# The match takes a whole run of backslashes: only an ODD run ends in a backslash
+# that escapes the newline. In ``\\<newline>`` the two make one literal backslash,
+# and the newline stays. Dropping its last ``\`` and the newline turned a live
+# backtick on the next line into an escaped ``\```.
+_SHELL_LINE_CONTINUATION_RE = re.compile(r"(?<!\\)\\+\r?\n")
 
 
 def _shell_join_continuations(text: str) -> str:
     """Collapse bash ``\\<newline>`` line continuations, as the shell does pre-lex."""
-    return _SHELL_LINE_CONTINUATION_RE.sub("", text)
+    return _SHELL_LINE_CONTINUATION_RE.sub(_join_one_continuation, text)
+
+
+def _join_one_continuation(match: "re.Match[str]") -> str:
+    run = match.group()
+    slashes = len(run.rstrip("\r\n"))
+    return run[: slashes - 1] if slashes % 2 else run
 
 
 @once_per_call()

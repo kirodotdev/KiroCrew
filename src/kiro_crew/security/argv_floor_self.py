@@ -1028,6 +1028,10 @@ def _self_cli_operands(tokens: "list[str]", i: int, *, glued_words: bool) -> "li
         # does for the program name.
         if operand.startswith("$") and not operand.startswith(("$(", "${")):
             operand = _decode_printf_escapes(operand[1:])
+        # A ``\`` before a CR leaves the CR glued to the word (``restart`` + CR from
+        # ``restart\<CR><LF>``). A CLI subcommand never carries a trailing CR, so
+        # drop it before the match; this only widens what reads as the subcommand.
+        operand = operand.rstrip("\r")
         if operand and not operand.startswith("-"):
             operands.append(operand)
         depth += _substitution_depth_delta(later)

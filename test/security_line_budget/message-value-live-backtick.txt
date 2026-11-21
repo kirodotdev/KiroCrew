@@ -1,0 +1,7 @@
++35
+The self floor misread a live backtick in a message value as inert when an
+escaped backtick sat next to it, or when a literal backslash preceded the
+newline before it. The quote-aware continuation fold, the backtick-body
+backslash decode and the trailing-CR strip on an operand read bash's own
+handling, so `gh pr create`/`git commit -m` message values that open a real
+`kirocrew restart` substitution are now denied.
