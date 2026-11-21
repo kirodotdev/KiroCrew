@@ -167,7 +167,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _install_root_targets_with _install_root_targets_cached _resolved_install_root_targets
         _bundled_kas_targets_cached _bundled_kiro_cli_targets_cached _bundled_root_spellings
         _gateway_package_dir _APP_BACKEND_OWNED_LEAVES app_backend_visible_targets
-        app_backend_secret_mask_targets
+        app_backend_secret_mask_targets app_backend_mac_key_mask_targets
         app_declared_mask_targets app_declared_readonly_targets _liftable_declared_file
         _liftable_declared_dir
         crew_home_visible_spellings carveout_chain_has_planted_link

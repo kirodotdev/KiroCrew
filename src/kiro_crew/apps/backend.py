@@ -62,6 +62,7 @@ from kiro_crew.sandbox import (
     MD_NOTEBOOK_APP_NAME,
     RLIMIT_PROFILE_BUILD,
     RLIMIT_PROFILE_TOOL,
+    app_backend_mac_key_mask_targets,
     app_backend_secret_mask_targets,
     app_backend_visible_targets,
     app_declared_mask_targets,
@@ -88,6 +89,7 @@ if "_PART_MODULES" in globals():
 from kiro_crew.apps.backend_runtime.pidfile import (  # noqa: E402
     _proc_start_time,
     _record_app_pid,
+    _spawn_predates_gateway_secret,
 )
 from kiro_crew.apps.backend_runtime.ports import (  # noqa: E402
     _MAX_PORT,
@@ -608,10 +610,17 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
                 # With apps_never_adopt_backend_listener on, a listener this run did not
                 # start is never adopted.
                 allowed = _adoption_allowed()
+                predates_secret = allowed and _spawn_predates_gateway_secret(app_name)
+                if not allowed:
+                    outcome = "refused_not_spawned_this_run"
+                elif predates_secret:
+                    outcome = "refused_predates_gateway_secret"
+                else:
+                    outcome = "adopted"
                 try:
                     sel().log_api_access(
                         caller="gateway", operation="app_backend_adopt",
-                        outcome="adopted" if allowed else "refused_not_spawned_this_run",
+                        outcome=outcome,
                         resources=f"{app_name} port={port}",
                     )
                 except Exception as exc:
@@ -622,6 +631,16 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
                         "apps_never_adopt_backend_listener is on, so a listener this run did "
                         "not start is not adopted. Stop that process, or free the port.",
                         app_name, port,
+                    )
+                    return None
+                if predates_secret:
+                    logger.warning(
+                        "App %s: not adopting the instance on port %d: it was started "
+                        "before the current gateway secret was written, so its sandbox "
+                        "does not cover that secret. Stop that process; the next start "
+                        "spawns a fresh backend.",
+                        app_name,
+                        port,
                     )
                     return None
                 # Record owning PIDs at adoption time, scoped to the listener
@@ -1268,11 +1287,32 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
             _visible = _visible + (_cache_target,)
     # The gateway's internal-API secret files are hidden from every app backend: the
     # value is the only credential of the internal routes, and app code is third-party.
+    # The session-token MAC key is hidden from every backend that is not a shipped builtin
+    # (``_admitted_builtin``: the executed path resolves inside the shipped package, never a
+    # name or a manifest claim). A shipped backend writes its audit log in-process, which loads
+    # the key. The key is made before the spawn, and a third-party spawn is refused without it.
+    _hidden_key: tuple[str, ...] = ()
+    if not _admitted_builtin:
+        _hidden_key = app_backend_mac_key_mask_targets()
+        if not _hidden_key:
+            logger.error(
+                "App %s: not spawning: the trust-root key does not exist, so it cannot be hidden "
+                "from this backend.",
+                app_name,
+            )
+            try:
+                sel().log_api_access(
+                    caller="gateway", operation="app_backend_spawn",
+                    outcome="refused_key_mask_unavailable", resources=f"{app_name} port={port}",
+                )
+            except Exception as exc:
+                logger.debug("SEL audit failed for app %s spawn refusal: %s", app_name, exc)
+            return None
     sandboxed_cmd, cleanup_path = wrap_argv(
         cmd,
         mode="standard",
         extra_visible_dirs=_visible,
-        extra_hidden_dirs=app_backend_secret_mask_targets(),
+        extra_hidden_dirs=(*app_backend_secret_mask_targets(), *_hidden_key),
     )
     # On Linux a non-null cleanup path is the namespace launcher script this process
     # generated, whose main() forks once: the Popen root waits for the server child.
@@ -1627,6 +1667,7 @@ if _typing.TYPE_CHECKING:
     from kiro_crew.apps.backend_runtime.pidfile import (  # noqa: F401
         _forget_app_pid,
         _forget_app_pid_if,
+        _gateway_secret_identity,
         _pidfile_lock,
         _pidfile_path,
         _read_pidfile,

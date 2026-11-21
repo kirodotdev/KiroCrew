@@ -62,9 +62,9 @@ def test_recording_a_spawn_sets_a_cut_off_file_aside_instead_of_dropping_it(pidf
         backend_mod._record_app_pid("gamma", 4003, 9103)
     set_aside = list(pidfile.parent.glob(pidfile.name + ".corrupt-*"))
     assert [path.read_bytes() for path in set_aside] == [cut]
-    assert json.loads(pidfile.read_text()) == {
-        "gamma": {"pid": 4003, "start_time": "ST-C", "port": 9103}
-    }
+    row = json.loads(pidfile.read_text())["gamma"]
+    row.pop("secret_id")
+    assert row == {"pid": 4003, "start_time": "ST-C", "port": 9103}
 
 
 def test_recording_a_spawn_into_a_missing_file_still_creates_it(pidfile):
