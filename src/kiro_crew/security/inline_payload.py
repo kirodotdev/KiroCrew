@@ -13,6 +13,7 @@ import base64
 import binascii
 import io
 import re
+import string
 import token
 import tokenize
 
@@ -87,7 +88,8 @@ _ATTRIBUTE_SUBSCRIPT_RE = re.compile(r"""__dict__\s*\[\s*(["'])([A-Za-z_]\w*)\1\
 #: A whole dotted head, so only its LAST component names the callable:
 #: ``runpy.run_module`` resolves, ``run_module.thing`` does not.
 _DOTTED_HEAD_RE = re.compile(r"\A(?:[A-Za-z_]\w*\s*\.\s*)*([A-Za-z_]\w*)\Z")
-_ALIAS_BINDING_RE = re.compile(r"([A-Za-z_]\w*)\s*=\s*\Z")
+#: The characters ``[A-Za-z_]`` admits; a bound name starts at the first of them.
+_NAME_START_CHARS = frozenset(string.ascii_letters + "_")
 #: Matched with an explicit position, so it carries no string-start anchor:
 #: ``\\A`` means offset zero even when ``match`` is given one, which reads every
 #: call after the first as nameless.
@@ -493,10 +495,39 @@ def _callable_aliases(
                 aliases[item.string] = last
         index += 1
     for head, _, canonical in _indirect_heads(view, spans, brackets):
-        binding = _ALIAS_BINDING_RE.search(view[:head])
-        if binding is not None:
-            aliases[binding.group(1)] = canonical
+        name = _name_bound_before(view, head)
+        if name is not None:
+            aliases[name] = canonical
     return aliases
+
+
+def _name_bound_before(view: str, head: int) -> str | None:
+    """The name ``view[:head]`` ends by binding (``r = ``), else None.
+
+    Reads back from *head* over blanks, one ``=``, blanks and one run of word
+    characters, so its cost is the length of that tail and not of the prefix:
+    one search of the whole prefix per head made a script of N heads cost N^2.
+    The answer is the one ``([A-Za-z_]\\w*)\\s*=\\s*\\Z`` finds by searching
+    ``view[:head]``: ``str.isspace`` is ``\\s``, ``isalnum`` or ``_`` is ``\\w``,
+    and a leftmost search starts the name at the run's first ``[A-Za-z_]``, so
+    ``9abc =`` binds ``abc`` and ``==`` binds nothing.
+    """
+    _, cursor, _ = slice(head).indices(len(view))
+    cursor -= 1
+    while cursor >= 0 and view[cursor].isspace():
+        cursor -= 1
+    if cursor < 0 or view[cursor] != "=":
+        return None
+    cursor -= 1
+    while cursor >= 0 and view[cursor].isspace():
+        cursor -= 1
+    end = cursor + 1
+    while cursor >= 0 and (view[cursor].isalnum() or view[cursor] == "_"):
+        cursor -= 1
+    for start in range(cursor + 1, end):
+        if view[start] in _NAME_START_CHARS:
+            return view[start:end]
+    return None
 
 
 def _resolved_calls(
