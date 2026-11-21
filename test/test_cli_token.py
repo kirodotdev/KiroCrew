@@ -662,22 +662,16 @@ class TestOwnerVerifiedSecretTransport:
         reason="needs a real AF_UNIX socket file; AF_UNIX-only",
     )
     def test_a_stale_socket_file_falls_through_to_the_peer_verified_tcp_arm(
-        self, monkeypatch, tmp_path
+        self, monkeypatch, short_sock_dir
     ):
-        import shutil
         import socket as _socket
-        import tempfile
-        from pathlib import Path
-        import urllib.error
         import urllib.request
 
-        from kiro_crew import cli_server
+        from kiro_crew import cli_restart_idle, cli_server
 
         # A socket file with no listener: bind then close without unlinking, as a
         # crashed gateway leaves it. connect() on it is refused.
-        # (A short directory: an AF_UNIX path is limited to about 100 bytes.)
-        short_dir = Path(tempfile.mkdtemp(prefix="kc", dir="/tmp"))
-        sock_file = short_dir / "gw.sock"
+        sock_file = short_sock_dir / "gw.sock"
         s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
         s.bind(str(sock_file))
         s.close()
@@ -701,16 +695,18 @@ class TestOwnerVerifiedSecretTransport:
             raise urllib.error.URLError(ConnectionRefusedError(61, "refused"))
 
         monkeypatch.setattr(cli_server, "tcp_verified_urlopen", refused)
-        try:
-            with pytest.raises(urllib.error.URLError, match="stale gateway socket"):
-                cli_server._owner_verified_secret_urlopen(
-                    urllib.request.Request("http://127.0.0.1:7777/x"),
-                    7777,
-                    5,
-                    operation="gateway_token",
-                )
-        finally:
-            shutil.rmtree(short_dir, ignore_errors=True)
+        with pytest.raises(urllib.error.URLError, match="stale gateway socket") as caught:
+            cli_server._owner_verified_secret_urlopen(
+                urllib.request.Request("http://127.0.0.1:7777/x"),
+                7777,
+                5,
+                operation="gateway_token",
+            )
+        # The reason stays a refusal, so the idle-gated restart still reads a
+        # crashed gateway as down rather than as a failed check.
+        assert isinstance(caught.value.reason, ConnectionRefusedError)
+        monkeypatch.setattr(cli_restart_idle, "read_local_secret", lambda *a, **k: "")
+        assert cli_restart_idle._ask_gate(7777).state == "down"
 
     @pytest.mark.skipif(
         not hasattr(__import__("socket"), "AF_UNIX"),

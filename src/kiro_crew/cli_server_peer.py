@@ -319,9 +319,14 @@ def _owner_verified_secret_urlopen(
         return tcp_verified_urlopen(req, timeout, verify_peer=_verify_tcp_peer)
     except urllib.error.URLError as exc:
         if stale_socket and isinstance(exc.reason, ConnectionRefusedError):
+            # The reason stays a ConnectionRefusedError: callers such as the
+            # idle-gated restart read that type as "nothing is running".
             raise urllib.error.URLError(
-                f"stale gateway socket at {stale_socket} refuses connections and "
-                f"nothing is listening on TCP port {port}"
+                ConnectionRefusedError(
+                    exc.reason.errno,
+                    f"stale gateway socket at {stale_socket} refuses connections and "
+                    f"nothing is listening on TCP port {port}",
+                )
             ) from exc
         raise
 
