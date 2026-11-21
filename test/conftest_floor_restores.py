@@ -18,6 +18,7 @@ import contextlib
 import functools
 import gc
 import logging
+import operator
 import sys
 import threading
 import time
@@ -638,6 +639,59 @@ def _logger_levels() -> dict[str, tuple[int, bool]]:
     return snapshot
 
 
+class _LoggerCensus:
+    """The ``Logger`` objects of one ``loggerDict``, as of one reading of it."""
+
+    __slots__ = ("logger_dict", "keys", "values", "names", "loggers")
+
+    def __init__(self, logger_dict: dict) -> None:
+        # One C-level copy, as ``_logger_levels`` takes: a thread a test left running
+        # can create a logger while a Python-level loop walks the live dict.
+        items = list(logger_dict.items())
+        self.logger_dict = logger_dict
+        self.keys = [name for name, _ in items]
+        self.values = [obj for _, obj in items]
+        loggers = [(name, obj) for name, obj in items if isinstance(obj, logging.Logger)]
+        self.names = [name for name, _ in loggers]
+        self.loggers = [obj for _, obj in loggers]
+
+    def current(self) -> bool:
+        """Whether ``loggerDict`` is this dict and holds these entries, in this order."""
+        logger_dict = logging.Logger.manager.loggerDict
+        # By identity, never ``==``: an entry replaced by an object that compares equal
+        # to the one it replaced is still a different logger to read.
+        return (
+            logger_dict is self.logger_dict
+            and len(logger_dict) == len(self.values)
+            and all(map(operator.is_, logger_dict.values(), self.values))
+            and list(logger_dict) == self.keys
+        )
+
+
+#: The last census taken, reused for as long as it is current.
+_LOGGER_CENSUS: _LoggerCensus | None = None
+
+
+def _logger_census() -> _LoggerCensus:
+    """The census of the live ``loggerDict``: the last one if still current, else a new one."""
+    global _LOGGER_CENSUS
+    census = _LOGGER_CENSUS
+    if census is None or not census.current():
+        census = _LOGGER_CENSUS = _LoggerCensus(logging.Logger.manager.loggerDict)
+    return census
+
+
+def _put_logger_levels_back(before: dict[str, tuple[int, bool]]) -> None:
+    """Restore every live logger to *before*; a name missing from it goes to pristine."""
+    for name, after in _logger_levels().items():
+        level, disabled = before.get(name, _PRISTINE_LOGGER)
+        if after == (level, disabled):
+            continue
+        logger = logging.getLogger(name)
+        logger.setLevel(level)
+        logger.disabled = disabled
+
+
 @floor_guard
 def _restore_logger_levels():
     """Put every logger's level and ``disabled`` flag back after each test.
@@ -681,18 +735,31 @@ def _restore_logger_levels():
     ``test_cli_logging.py``'s own ``_pristine_logging`` fixture is what absorbs it today,
     by clearing both handler lists at setup rather than by trusting its inheritance.
 
-    Measured cost: ~30us per snapshot at ~450 live loggers, so ~60us per test.
+    The levels are read through ``_logger_census``: the list of live ``Logger`` objects,
+    kept while ``loggerDict`` holds the same entries, so a test that leaves every level
+    as it found it costs two list reads on each side and no per-name work. Anything
+    else -- a changed level, a logger created or replaced during the test -- goes
+    through ``_put_logger_levels_back`` with the same "before" mapping a full
+    snapshot would have produced.
     """
     before_disable = logging.Logger.manager.disable
-    before = _logger_levels()
+    census = _logger_census()
+    levels = [logger.level for logger in census.loggers]
+    disabled = [logger.disabled for logger in census.loggers]
+    root = logging.getLogger()
+    root_before = (root.level, root.disabled)
     yield
-    for name, after in _logger_levels().items():
-        level, disabled = before.get(name, _PRISTINE_LOGGER)
-        if after == (level, disabled):
-            continue
-        logger = logging.getLogger(name)
-        logger.setLevel(level)
-        logger.disabled = disabled
+    root = logging.getLogger()
+    unchanged = (
+        _logger_census() is census
+        and [logger.level for logger in census.loggers] == levels
+        and [logger.disabled for logger in census.loggers] == disabled
+        and (root.level, root.disabled) == root_before
+    )
+    if not unchanged:
+        before = dict(zip(census.names, zip(levels, disabled)))
+        before[""] = root_before
+        _put_logger_levels_back(before)
     if logging.Logger.manager.disable != before_disable:
         logging.disable(before_disable)
 

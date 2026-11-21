@@ -337,7 +337,8 @@ def _no_credential_env_residue():
     def _is_credential(key: str) -> bool:
         return key in fixed or _JIRA_TOKEN_RE.match(key) is not None
 
-    before = {key: value for key, value in os.environ.items() if _is_credential(key)}
+    # Keys first: only a credential's value is read, not every variable's.
+    before = {key: os.environ[key] for key in os.environ if _is_credential(key)}
     try:
         yield
     finally:
