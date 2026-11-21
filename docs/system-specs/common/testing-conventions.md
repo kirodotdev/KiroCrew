@@ -4018,7 +4018,14 @@ fixture that patched through it, and the rest of that test runs on the host's re
 The rootdir conftest's `_floor_monkeypatch` is undone independently, so an autouse
 fixture requests it instead; no autouse fixture in either conftest patches through the
 shared instance. A `@per_test_guard` is handed `_floor_monkeypatch` the same way, and
-sealing the set fails collection for a guard that names any other fixture. `test/conftest.py`'s `_a_shared_monkeypatch_first` requests it only so
+sealing the set fails collection for a guard that names any other fixture. The floor's patcher
+is a `MonkeyPatch` subclass (`_FloorMonkeyPatch`, `test/conftest_floor_home.py`) that
+skips an environment write which changes nothing and still leaves its undo record:
+`setenv` to the value a variable already holds, and `expect_absent(name)` for a
+variable that must be gone after the test whether or not the code under test writes
+it. A write to `os.environ` cost about 38 µs on a Windows runner against 6 µs on Linux,
+and the floors made about 66 per test. `test/test_floor_environment_writes.py` holds
+the patcher to the environment a plain `MonkeyPatch` leaves at every step. `test/conftest.py`'s `_a_shared_monkeypatch_first` requests it only so
 that it is created before the others there and undone after their teardowns, which read
 the test's patches while they unwind.
 

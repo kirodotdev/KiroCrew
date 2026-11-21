@@ -922,6 +922,8 @@ naming the shape; the contract line holds the detail and its numbers. The helper
 - [ ] `monkeypatch.delenv(key, raising=False)` on a key that is ABSENT records no undo: when the
       product then `os.environ.setdefault`s it, `setenv` the key first so the fixture's undo
       removes whatever the product leaves
+      (a floor on `_floor_monkeypatch` calls `_floor_monkeypatch.expect_absent(key)`, which
+      leaves the same undo record without writing the environment)
 - [ ] A harness that runs a real shell script SUPPLIES every tool the script requires that
       the host may lack (`jq` beside the `gh` and `curl` it already stubs) as a shell
       function in its `BASH_ENV` file, implementing exactly the invocations the script

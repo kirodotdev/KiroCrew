@@ -155,50 +155,7 @@ os.environ.pop("KIROCREW_ACP_RECORD_FRAMES", None)
 
 
 @pytest.fixture
-def _floor_monkeypatch():
-    """The isolation floor's OWN ``MonkeyPatch`` -- never the shared ``monkeypatch``.
-
-    Every floor fixture below patches through this instance instead of the
-    ``monkeypatch`` fixture a test also receives. The two are undone
-    independently, and that is the point: ``monkeypatch.undo()`` reverts EVERY
-    record on the instance it is called on, so a test that called it mid-way to
-    drop one of its own patches -- ~90 sites do, to restore a function before a
-    final assertion -- also dropped the floor's ``KIROCREW_HOME`` pin, and
-    whatever ran after that resolved the OPERATOR's real data home. Five full
-    runs on a developer machine left ``~/.kiro/crew/trash/session-storage.lock``
-    (``test_session_storage`` ran ``empty_trash()`` against the real trash) and
-    ``~/.kiro/crew/inbound-spool/refused.jsonl.lock`` behind this way.
-
-    A test that pins something itself still wins: its ``monkeypatch`` is set up
-    after the floor and torn down before it, so its value overrides during the
-    test and the floor's value is what gets put back first, then the original.
-    """
-    mp = pytest.MonkeyPatch()
-    # In-process CLI calls clear the sandbox markers and publish the UTF-8
-    # process contract. Preserve the worker's exact outer environment for the
-    # next test, including absent and explicitly empty values.
-    cli_process_environment = {
-        name: os.environ.get(name)
-        for name in (
-            "KIROCREW_SANDBOX_ACTIVE",
-            "KIROCREW_SANDBOX_LEVEL",
-            "PYTHONUTF8",
-            "PYTHONIOENCODING",
-        )
-    }
-    try:
-        yield mp
-    finally:
-        mp.undo()
-        for name, value in cli_process_environment.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
-
-
-@pytest.fixture
-def monkeypatch(_floor_monkeypatch):
+def monkeypatch(_floor_monkeypatch):  # noqa: F811 -- the fixture, bound below
     """pytest's own ``monkeypatch``, re-declared to order it AFTER the floor.
 
     Body-identical to ``_pytest.monkeypatch.monkeypatch``; the only change is the
@@ -341,6 +298,8 @@ from conftest_floor_home import (  # noqa: E402,F401 -- bound for pytest and for
     _TMP_ROOT_PREFIX,
     _agent_spec_seam_modules,
     _breadcrumb_guard,
+    _floor_monkeypatch,
+    _FloorMonkeyPatch,
     _hide_the_operators_kiro_cli,
     _isolate_agent_spec_home,
     _isolate_kiro_sessions_dir,
@@ -468,7 +427,7 @@ if _READ_BUDGET_RAISE:
 
 
 @floor_guard
-def _scrub_inherited_preload_env(_floor_monkeypatch):
+def _scrub_inherited_preload_env(_floor_monkeypatch):  # noqa: F811 -- the fixture, bound below
     """Hide the entries ``name_grant`` refuses as inherited preloads, then restore them.
 
     RHEL-family distributions (Amazon Linux 2023, RHEL, CentOS Stream, Fedora) ship

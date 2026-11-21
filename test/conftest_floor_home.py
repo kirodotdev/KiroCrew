@@ -21,6 +21,7 @@ import sys
 import tempfile
 
 import pytest
+from _pytest.monkeypatch import notset as _ABSENT
 from conftest_floor_guards import floor_guard
 
 # ── how this run names the directories it leaves in the platform temp root ────
@@ -388,6 +389,128 @@ _isolation_dirs.seq = 0  # type: ignore[attr-defined]
 _HOME_PIN_ARMED = pytest.StashKey[bool]()
 
 
+def _expect_absent(monkeypatch, name: str) -> None:
+    """Remove *name* for the test, and at undo whatever the test left in it.
+
+    Through the floor's own patcher when that is what was handed in. A plain
+    ``MonkeyPatch``, which the floor's tests drive this with, has no such record to
+    leave, so it gets the two writes that produce one.
+    """
+    expect_absent = getattr(monkeypatch, "expect_absent", None)
+    if expect_absent is not None:
+        expect_absent(name)
+    elif name in os.environ:
+        monkeypatch.delenv(name)
+    else:
+        monkeypatch.setenv(name, "")  # the undo for this entry is "was absent"
+        monkeypatch.delenv(name)
+
+
+class _EnvUndo:
+    """What ``MonkeyPatch.undo`` restores an environment variable through, without
+    writing when the variable already is what the undo wants.
+
+    A write to ``os.environ`` is a system call, and on Windows a slow one. An undo
+    record that names this object in place of ``os.environ`` asks for the same end
+    state: ``self[name] = value`` leaves *name* holding *value*, and ``del
+    self[name]`` leaves it absent and raises ``KeyError`` when it already was, which
+    ``undo`` takes as done. Bound to the environment object the record was made
+    against, as a record on ``os.environ`` itself is.
+    """
+
+    __slots__ = ("environ",)
+
+    def __init__(self, environ) -> None:
+        self.environ = environ
+
+    def __setitem__(self, name: str, value: str) -> None:
+        if self.environ.get(name) != value:
+            self.environ[name] = value
+
+    def __delitem__(self, name: str) -> None:
+        if name not in self.environ:
+            raise KeyError(name)
+        del self.environ[name]
+
+
+class _FloorMonkeyPatch(pytest.MonkeyPatch):
+    """The floor's patcher: the same pins and the same undo, with fewer environment writes.
+
+    Two shapes cost a write at setup and another at undo while changing nothing:
+
+    * ``setenv(name, value)`` when *name* already holds *value*. The floor still
+      needs the undo record, which is what puts *value* back if the test changes
+      or deletes the variable, so the record is made and the write is not.
+    * making sure a variable that is absent is absent again after the test.
+      ``delenv`` on an absent variable records nothing, so a value the code under
+      test writes would outlive the test; the idiom was ``setenv(name, "")`` then
+      ``delenv(name)``, two writes to leave one record. ``expect_absent`` leaves
+      that record alone.
+
+    Both records sit in the undo list where the writes would have put theirs, so
+    ``undo`` restores every variable to the same value in the same order.
+    """
+
+    def _record(self, name: str, value) -> None:
+        self._setitem.append((_EnvUndo(os.environ), name, value))
+
+    def setenv(self, name: str, value: str, prepend: str | None = None) -> None:
+        if prepend is None and isinstance(value, str) and os.environ.get(name) == value:
+            self._record(name, value)
+            return
+        super().setenv(name, value, prepend)
+
+    def expect_absent(self, name: str) -> None:
+        """Remove *name* for the test, and whatever the test leaves in it afterwards."""
+        if name in os.environ:
+            self.delenv(name)
+        else:
+            self._record(name, _ABSENT)
+
+
+@pytest.fixture
+def _floor_monkeypatch():
+    """The isolation floor's OWN ``MonkeyPatch`` -- never the shared ``monkeypatch``.
+
+    Every floor fixture below patches through this instance instead of the
+    ``monkeypatch`` fixture a test also receives. The two are undone
+    independently, and that is the point: ``monkeypatch.undo()`` reverts EVERY
+    record on the instance it is called on, so a test that called it mid-way to
+    drop one of its own patches -- ~90 sites do, to restore a function before a
+    final assertion -- also dropped the floor's ``KIROCREW_HOME`` pin, and
+    whatever ran after that resolved the OPERATOR's real data home. Five full
+    runs on a developer machine left ``~/.kiro/crew/trash/session-storage.lock``
+    (``test_session_storage`` ran ``empty_trash()`` against the real trash) and
+    ``~/.kiro/crew/inbound-spool/refused.jsonl.lock`` behind this way.
+
+    A test that pins something itself still wins: its ``monkeypatch`` is set up
+    after the floor and torn down before it, so its value overrides during the
+    test and the floor's value is what gets put back first, then the original.
+    """
+    mp = _FloorMonkeyPatch()
+    # In-process CLI calls clear the sandbox markers and publish the UTF-8
+    # process contract. Preserve the worker's exact outer environment for the
+    # next test, including absent and explicitly empty values.
+    cli_process_environment = {
+        name: os.environ.get(name)
+        for name in (
+            "KIROCREW_SANDBOX_ACTIVE",
+            "KIROCREW_SANDBOX_LEVEL",
+            "PYTHONUTF8",
+            "PYTHONIOENCODING",
+        )
+    }
+    try:
+        yield mp
+    finally:
+        mp.undo()
+        for name, value in cli_process_environment.items():
+            if value is None:
+                os.environ.pop(name, None)
+            elif os.environ.get(name) != value:
+                os.environ[name] = value  # flake-ok: the floor putting the worker's own value back
+
+
 @floor_guard
 def _isolate_kirocrew_home(request, _isolation_dirs, _floor_monkeypatch):
     """Pin ``KIROCREW_HOME`` and ``KIROCREW_WORKSPACE`` to per-test tmp dirs, for EVERY testpath.
@@ -504,11 +627,7 @@ def _isolate_kirocrew_home(request, _isolation_dirs, _floor_monkeypatch):
         "KIROCREW_STRICT_ON_LOOP_PERSIST",
         "KIROCREW_SCRATCH_ROOT",
     ):
-        if _name in os.environ:
-            monkeypatch.delenv(_name)
-        else:
-            monkeypatch.setenv(_name, "")  # the undo for this entry is "was absent"
-            monkeypatch.delenv(_name)
+        _expect_absent(monkeypatch, _name)
     _reset_path_resolver_degradation(monkeypatch)
     paths = sys.modules.get("kiro_crew.config.paths")
     if paths is not None:
