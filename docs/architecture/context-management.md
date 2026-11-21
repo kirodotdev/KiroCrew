@@ -541,7 +541,10 @@ next turn reads it through `consume_reinjection` (owned by
 `rearm_reinjection` it when the turn does not land or its stream reported a
 completed backend compaction, or delegate to `drive_turn` or
 answer through `messaging.dispatch.ChannelTurns`; `test/test_reinjection_gate.py`
-pins that per module. `build_message` then
+pins that per module. The flag is also kept in the session map
+(`session_map.COMPACTED_FLAG`) until a turn lands, so a restart or resume before
+then does not lose it: that resume's slim prompt carries the list below too, and
+a fresh start drops the copy. `build_message` then
 re-adds, once:
 
 1. the memory activity index and the `[Memory tools]` line;

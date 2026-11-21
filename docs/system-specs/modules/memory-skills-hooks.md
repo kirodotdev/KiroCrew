@@ -8326,13 +8326,21 @@ re-send the learned-lessons block, the steering resources and the folder
 steering, because a compacted restored transcript may have lost them; it uses
 the post-compaction helpers (`context_assembly/turn.py` → `lessons_parts`,
 `steering_parts`) and their gates, and a minimal turn gets none of them.
+A resume whose transcript was compacted since its last re-injection
+(`needs_reinjection=True`) sends the whole `post_compaction_parts` set instead,
+agent prompt, memory navigation, skills index and reply preferences included. The
+mark that says so survives a restart (`session_compaction_mark.py` owns its
+copy): `mark_needs_reinjection` copies it to the
+session map (`session_map.COMPACTED_FLAG`), `consume_needs_reinjection` reads it
+once per session record, a landed turn (`note_turn_landed`) clears it, and a fresh
+claim (`note_session_head`) drops it.
 A direct `build_session_context(resumed=True)` call only skips thread history;
 it is not the public turn's slim-resume path.
 
 | Block | Slim resume |
 |---|---|
 | Thread history | Native provider history retained; no duplicate block |
-| Memory, skills, agent prompt | No full reinjection |
+| Memory, skills, agent prompt | No full reinjection; re-sent after a compaction |
 | Lessons, steering resources, folder steering | Re-sent under the post-compaction gates |
 | Date, runtime, UI language | Refreshed minimal header |
 | Member essentials/rules | Existing lifecycle delivery retained |
