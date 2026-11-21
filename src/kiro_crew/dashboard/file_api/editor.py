@@ -146,11 +146,16 @@ async def api_file_read(request: web.Request) -> web.Response:
 
     With ``start`` and/or ``end`` (1-based, inclusive line numbers) the body is a
     window of that content instead of all of it: see :func:`_line_window` for the
-    cap and the clamping, and the ``X-Line-*`` headers below for what came back.
-    Everything before the body -- the owner gate, the path validation, the
-    sensitive-path refusal, the read cap, the credential pass and the audit row
-    -- is the same read; the window is cut from the body that read would have
-    served, after the pass, so it never shows a line the full read would not.
+    cap and the clamping, and the ``X-Line-*`` headers below for what came back
+    (``X-Line-Start`` / ``X-Line-End`` the lines the body holds, ``X-Line-Total``
+    the line count of the body the window was cut from). Everything before the
+    body -- the owner gate, the path validation, the sensitive-path refusal, the
+    read cap, the credential pass and the audit row -- is the same read; the
+    window is cut from the body that read would have served, after the pass, so
+    it never shows a line the full read would not. The server does the same work
+    as a full read (the capped read and the pass, then the slice); what the window
+    saves is the wire and the client's memory. A malformed window is refused as a
+    malformed path is, for HEAD too; a well-formed one HEAD ignores.
     """
     owner_denied = await require_owner_dashboard_request(request, "file_read")
     if owner_denied is not None:
@@ -162,10 +167,16 @@ async def api_file_read(request: web.Request) -> web.Response:
     )
 
     raw_path = request.query.get("path", "")
+    # The window is parsed first, before anything touches the disk -- the
+    # resolve probe below included, which a malformed window skips -- so a
+    # malformed request costs no read. It is refused as a malformed path is:
+    # the one status, body and denied row, from the one site after the schema
+    # check. HEAD takes the same refusal; a well-formed window it ignores.
+    window = _parse_line_window(request.query)
     # Resolve relative paths against project dir when resolve=1. Off-loop: the
     # resolution is a pair of realpath calls, and the schema check below needs
     # the resolved string, so it cannot be folded into the probe.
-    if request.query.get("resolve") == "1":
+    if request.query.get("resolve") == "1" and not isinstance(window, str):
         try:
             raw_path, _resolve_err = await _run_path_probe(
                 _resolve_project_relative,
@@ -190,10 +201,6 @@ async def api_file_read(request: web.Request) -> web.Response:
         path_valid = True
     except ValidationError:
         path_valid = False
-    # The window is parsed here, before anything touches the disk, so a malformed
-    # request costs no read, and a malformed window is refused as a malformed
-    # path is: the one status, body and denied row, from the one site.
-    window = _parse_line_window(request.query)
     if not path_valid or isinstance(window, str):
         _sel().log_tool_invocation(
             session_key="dashboard",
@@ -337,7 +344,7 @@ async def api_file_read(request: web.Request) -> web.Response:
             content, first, last, total, cut = _line_window(content, *window)
             headers["X-Line-Start"] = str(first)
             headers["X-Line-End"] = str(last)
-            headers["X-Line-Count"] = str(total)
+            headers["X-Line-Total"] = str(total)
             if cut:
                 headers["X-Window-Truncated"] = "true"
             _sel().log_tool_invocation(

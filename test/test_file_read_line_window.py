@@ -148,7 +148,7 @@ class TestFileReadLineWindow:
             assert await resp.text() == "line 3\nline 4\nline 5\n"
             assert resp.headers["X-Line-Start"] == "3"
             assert resp.headers["X-Line-End"] == "5"
-            assert resp.headers["X-Line-Count"] == "10"
+            assert resp.headers["X-Line-Total"] == "10"
             assert "X-Window-Truncated" not in resp.headers
             assert "X-Truncated" not in resp.headers
             mock_sel.log_tool_invocation.assert_called_with(
@@ -197,7 +197,7 @@ class TestFileReadLineWindow:
             assert resp.status == 200
             assert await resp.text() == ""
             assert (resp.headers["X-Line-Start"], resp.headers["X-Line-End"]) == ("0", "0")
-            assert resp.headers["X-Line-Count"] == "10"
+            assert resp.headers["X-Line-Total"] == "10"
 
     @pytest.mark.asyncio
     async def test_window_caps_the_lines_and_says_so(self, tmp_path, mock_sel, home_patch):
@@ -249,7 +249,7 @@ class TestFileReadLineWindow:
             assert resp.status == 200
             assert await resp.text() == ""
             assert resp.headers["X-Truncated"] == "true"
-            assert resp.headers["X-Line-Count"] == "256000"
+            assert resp.headers["X-Line-Total"] == "256000"
             assert (resp.headers["X-Line-Start"], resp.headers["X-Line-End"]) == ("0", "0")
 
     @pytest.mark.asyncio
@@ -287,7 +287,7 @@ class TestFileReadLineWindow:
             assert key not in body
             assert body.startswith("token = [REDACTED")
             assert resp.headers["X-Redacted"] == "true"
-            assert resp.headers["X-Line-Count"] == "3"
+            assert resp.headers["X-Line-Total"] == "3"
 
     @pytest.mark.asyncio
     async def test_window_into_a_multi_line_secret_shows_none_of_it(
@@ -371,7 +371,9 @@ class TestFileReadLineWindow:
             )
 
     @pytest.mark.asyncio
-    async def test_head_ignores_the_window(self, tmp_path, mock_sel, home_patch):
+    async def test_head_ignores_a_well_formed_window_and_refuses_a_malformed_one(
+        self, tmp_path, mock_sel, home_patch
+    ):
         f = _numbered(tmp_path, 10)
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.head(f"/api/file-read?path={f}&start=3&end=5")
@@ -379,6 +381,42 @@ class TestFileReadLineWindow:
             assert resp.headers["X-Path-Kind"] == "file"
             assert "X-Line-Start" not in resp.headers
             assert await resp.read() == b""
+            mock_sel.log_tool_invocation.assert_called_once_with(
+                session_key="dashboard",
+                tool_name="file_read",
+                outcome="success",
+                resources=str(f),
+            )
+            mock_sel.log_tool_invocation.reset_mock()
+            # The window is parsed before the method branches, so HEAD takes the
+            # same refusal GET does: no stat, no probe, one denied row.
+            resp = await client.head(f"/api/file-read?path={f}&start=0")
+            assert resp.status == 400
+            assert "X-Path-Kind" not in resp.headers
+            mock_sel.log_tool_invocation.assert_called_once_with(
+                session_key="dashboard",
+                tool_name="file_read",
+                outcome="denied",
+                resources=str(f),
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_window_skips_the_resolve_probe(self, tmp_path, mock_sel, home_patch):
+        # "Refused before any disk access" holds for resolve=1 too: the realpath
+        # probe is skipped when the window is malformed, so the denied row names
+        # the path as given, unresolved, and nothing was stat'ed.
+        with patch.object(files, "_run_path_probe") as probe:
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get("/api/file-read?path=src/app.py&resolve=1&start=0")
+                assert resp.status == 400
+                assert await resp.json() == {"error": "invalid input"}
+        probe.assert_not_called()
+        mock_sel.log_tool_invocation.assert_called_once_with(
+            session_key="dashboard",
+            tool_name="file_read",
+            outcome="denied",
+            resources="src/app.py",
+        )
 
     @pytest.mark.asyncio
     async def test_without_the_parameters_the_read_is_unchanged(
