@@ -60,6 +60,7 @@ _EXEMPT_TOOL_IDS: frozenset[str] = frozenset(
     {
         "browser",
         "computer_list_apps",
+        "computer_list_windows",
         "computer_launch_app",
         "computer_get_state",
         "computer_click",

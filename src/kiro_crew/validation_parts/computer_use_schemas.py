@@ -62,6 +62,12 @@ _CU_ELEMENT_FIELD = FieldSpec(
 _CU_OPTIONAL_ELEMENT_FIELD = FieldSpec(
     "element_index", int, min_val=0, max_val=_cu_types.MAX_ELEMENT_INDEX
 )
+# Optional on every app-scoped tool: the window of the app to address, as listed by
+# ``computer_list_windows``. Absent (or 0) keeps the driver's own default window.
+# Only bounded here; whether the id names a live window of the RESOLVED application
+# is the driver's check (``resolve_window``), because window ids are recycled and a
+# bare range test cannot tell one process's window from another's.
+_CU_WINDOW_ID_FIELD = FieldSpec("window_id", int, min_val=0, max_val=_cu_types.MAX_WINDOW_ID)
 _CU_CLICK_METHODS = frozenset(_cu_types.CLICK_METHODS)
 _CU_MOUSE_BUTTONS = frozenset(_cu_types.MOUSE_BUTTONS)
 _CU_DRAG_PATHS = frozenset(_cu_types.DRAG_PATHS)
@@ -97,6 +103,10 @@ def _cu_coord_field(name: str, *, required: bool = False) -> FieldSpec:
 
 MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
     _cu_types.TOOL_LIST_APPS: ToolSchema(tool_name=_cu_types.TOOL_LIST_APPS, fields=[]),
+    _cu_types.TOOL_LIST_WINDOWS: ToolSchema(
+        tool_name=_cu_types.TOOL_LIST_WINDOWS,
+        fields=[_CU_APP_FIELD],
+    ),
     _cu_types.TOOL_LAUNCH_APP: ToolSchema(
         tool_name=_cu_types.TOOL_LAUNCH_APP,
         # ONE field, and the absence of the others is the point. No ``path``, no
@@ -111,6 +121,7 @@ MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
         tool_name=_cu_types.TOOL_GET_STATE,
         fields=[
             _CU_APP_FIELD,
+            _CU_WINDOW_ID_FIELD,
             FieldSpec("text_limit", int, min_val=1, max_val=_cu_types.MAX_TEXT_LIMIT),
             FieldSpec("max_tree_nodes", int, min_val=1, max_val=_cu_types.MAX_TREE_NODES_LIMIT),
             FieldSpec("max_tree_depth", int, min_val=1, max_val=_cu_types.MAX_TREE_DEPTH_LIMIT),
@@ -124,6 +135,7 @@ MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
         tool_name=_cu_types.TOOL_CLICK,
         fields=[
             _CU_APP_FIELD,
+            _CU_WINDOW_ID_FIELD,
             _CU_OPTIONAL_ELEMENT_FIELD,
             _cu_coord_field("x"),
             _cu_coord_field("y"),
@@ -147,6 +159,7 @@ MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
         tool_name=_cu_types.TOOL_DRAG,
         fields=[
             _CU_APP_FIELD,
+            _CU_WINDOW_ID_FIELD,
             # All four coordinates REQUIRED: a drag has no element form (no
             # accessibility action expresses a sweep between two points), so a
             # partial pair has no meaning to fall back on.
@@ -176,6 +189,7 @@ MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
         tool_name=_cu_types.TOOL_TYPE_TEXT,
         fields=[
             _CU_APP_FIELD,
+            _CU_WINDOW_ID_FIELD,
             FieldSpec("text", str, required=True, max_len=_cu_types.MAX_TYPE_TEXT_LEN),
             # REQUIRED, and a security control rather than an ergonomic choice: an
             # unnamed target has no role or subrole, so ``policy.check_input_target``
@@ -190,6 +204,7 @@ MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
         tool_name=_cu_types.TOOL_PRESS_KEY,
         fields=[
             _CU_APP_FIELD,
+            _CU_WINDOW_ID_FIELD,
             # REQUIRED for the same reason as ``computer_type_text``, plus one of its
             # own: ``press_key('tab')`` can MOVE focus onto a password box, so the
             # keystroke after an indexless call would land there. The driver focuses
@@ -209,6 +224,7 @@ MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
         tool_name=_cu_types.TOOL_SET_VALUE,
         fields=[
             _CU_APP_FIELD,
+            _CU_WINDOW_ID_FIELD,
             _CU_ELEMENT_FIELD,
             FieldSpec("value", str, required=True, max_len=_cu_types.MAX_TYPE_TEXT_LEN),
         ],
@@ -217,6 +233,7 @@ MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
         tool_name=_cu_types.TOOL_SCROLL,
         fields=[
             _CU_APP_FIELD,
+            _CU_WINDOW_ID_FIELD,
             _CU_ELEMENT_FIELD,
             FieldSpec("direction", str, required=True, max_len=8, allowed=_CU_SCROLL_DIRECTIONS),
             FieldSpec(
@@ -232,6 +249,7 @@ MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
         tool_name=_cu_types.TOOL_PERFORM_ACTION,
         fields=[
             _CU_APP_FIELD,
+            _CU_WINDOW_ID_FIELD,
             _CU_ELEMENT_FIELD,
             FieldSpec(
                 "action",

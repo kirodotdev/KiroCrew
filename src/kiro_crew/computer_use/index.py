@@ -68,6 +68,7 @@ from kiro_crew.computer_use.types import (
     MAX_INDEXED_APPS,
     SNAPSHOT_TTL_SECS,
     TOOL_GET_STATE,
+    AppRef,
     ElementRec,
     Snapshot,
     StaleIndex,
@@ -216,6 +217,27 @@ class SnapshotIndex:
         """Drop THIS session's cached snapshot for one app (post-action, or on drift)."""
         with self._lock:
             self._snapshots.pop((session_key, app_key), None)
+
+    def sibling_window_id(self, app: AppRef, *, session_key: str, now: float | None = None) -> int:
+        """The window id of this session's newest live snapshot of ANOTHER window of *app*.
+
+        ``0`` when there is none. Used only to word a refusal: an action that
+        resolved to one window of an app while the session's indices belong to a
+        different window of the same process is refused either way (the cache is
+        keyed per window), and naming the window the indices DO belong to is what
+        lets the model pass ``window_id`` instead of re-snapshotting the default
+        window and acting on the wrong one.
+        """
+        stamp = time.monotonic() if now is None else now
+        prefix = f"{app.key}#{app.pid}#"
+        with self._lock:
+            for (sess, key), snap in reversed(list(self._snapshots.items())):
+                if sess != session_key or key == app.window_key or not key.startswith(prefix):
+                    continue
+                if stamp - snap.captured_at > self._ttl:
+                    continue
+                return snap.app.window_id
+        return 0
 
     def end_turn(self, *, session_key: str) -> None:
         """Drop every snapshot cached for *session_key* — the explicit early release.
