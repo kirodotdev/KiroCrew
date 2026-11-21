@@ -327,6 +327,16 @@ def _fallback_spawn_child(argv: list[str], exec_env: dict[str, str]) -> NoReturn
     os._exit(_child_exit_status(rc))
 
 
+#: The one INHERITED ``PYTHON*`` key the control-plane verdict does not count: it
+#: only turns off stdio buffering, so it can neither load code nor move an import
+#: root, and service managers commonly export it to the whole runtime (a systemd
+#: unit's ``Environment=PYTHONUNBUFFERED=1``). The child keeps it, as a directly
+#: launched server would. A declared value that differs still counts, like every
+#: other ``PYTHON*`` or loader key: stripping one here could remove a root the
+#: child needs to import itself, and keeping it is an overlay the fence refuses.
+_INERT_INTERPRETER_ENV = "PYTHONUNBUFFERED"
+
+
 def _fallback_target_is_own_control_plane(
     args: argparse.Namespace, target_args: list[str], exec_env: Mapping[str, str]
 ) -> bool:
@@ -344,7 +354,8 @@ def _fallback_target_is_own_control_plane(
     is dropped when its value is the pinned one. The runtime sets those two
     ``PYTHON*`` keys on every process it starts, so they reach this stub from
     kiro-cli, and gatewayd likewise applies them only after its verdict. Any
-    other value for those keys still counts. The cwd judged is this process's,
+    other value for those keys still counts. An inherited ``PYTHONUNBUFFERED``
+    is dropped too (:data:`_INERT_INTERPRETER_ENV`). The cwd judged is this process's,
     because ``exec`` inherits it.
 
     Fails closed: any error means "not ours", which is the behaviour before this
@@ -378,7 +389,9 @@ def _fallback_target_is_own_control_plane(
         verdict_env = {
             key: value
             for key, value in exec_env.items()
-            if key != STUB_SESSION_TOKEN_ENV and _UTF8_PROCESS_ENV.get(key) != value
+            if key != STUB_SESSION_TOKEN_ENV
+            and not (key == _INERT_INTERPRETER_ENV and os.environ.get(key) == value)
+            and _UTF8_PROCESS_ENV.get(key) != value
         }
         denial: list[str] = []
         ours = bool(

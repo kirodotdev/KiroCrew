@@ -1912,7 +1912,8 @@ old-daemon compatibility.
 `_spawns_own_control_plane` vetting gatewayd applies before it hands a pooled
 backend the token: control-plane name, managed binary by real path, exact args,
 no loader or `PYTHON*` overlay in the child env (Kiro Crew's own pinned UTF-8
-values excepted), and no import root shadowing `kiro_crew`. A kept token also
+values and an inherited `PYTHONUNBUFFERED`, which a service manager often
+exports to the whole runtime, excepted), and no import root shadowing `kiro_crew`. A kept token also
 gets `PYTHONSAFEPATH` (and `PYTHONNOUSERSITE` unless user-site holds this
 package). Every other target has the token removed, so a third-party binary
 never inherits it. Without the token a fallback control plane relies on the

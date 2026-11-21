@@ -280,6 +280,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _EXIT_UNRESOLVED_SECRET,
         _FALLBACK_COUNT_WINDOW_SECS,
         _FALLBACK_LOG_MAX_BYTES,
+        _INERT_INTERPRETER_ENV,
         _child_exit_status,
         _fallback_log_path,
         _fallback_spawn_child,
