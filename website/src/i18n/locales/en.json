@@ -11768,7 +11768,11 @@
         "language": "Language",
         "language_for_spoken_replies": "Language for spoken replies",
         "language_provider_default": "Provider default",
-        "no_engine_teammate": "The Crew's computer has no built-in speech engine. Pick another provider, or ask the Crew's owner to install one."
+        "no_engine_teammate": "The Crew's computer has no built-in speech engine. Pick another provider, or ask the Crew's owner to install one.",
+        "what_to_speak": "What to speak",
+        "speak_mode_full": "Full reply",
+        "speak_mode_summary": "Short summary",
+        "speak_mode_hint": "For Auto-speak and Read aloud. A short summary is a few spoken sentences about the finished reply; when none can be made, the full reply is spoken."
       },
       "webexPanel": {
         "access": "Access",

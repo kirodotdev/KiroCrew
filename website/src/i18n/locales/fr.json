@@ -22421,7 +22421,11 @@
         "language": "Langue",
         "language_for_spoken_replies": "Langue des réponses vocales",
         "language_provider_default": "Valeur par défaut du fournisseur",
-        "no_engine_teammate": "L’ordinateur de la Crew n’a pas de moteur vocal intégré. Choisis un autre fournisseur ou demande au propriétaire de la Crew d’en installer un."
+        "no_engine_teammate": "L’ordinateur de la Crew n’a pas de moteur vocal intégré. Choisis un autre fournisseur ou demande au propriétaire de la Crew d’en installer un.",
+        "what_to_speak": "Quoi lire à voix haute",
+        "speak_mode_full": "Réponse complète",
+        "speak_mode_summary": "Résumé court",
+        "speak_mode_hint": "Pour la lecture automatique et Lire à voix haute. Un résumé court est quelques phrases parlées sur la réponse terminée ; s'il ne peut pas être produit, la réponse complète est lue."
       },
       "weComPanel": {
         "allow_all_bypass_note": "L’autorisation générale est activée : la liste de userid ci-dessus est ignorée. Elle est conservée pour ton retour en arrière.",
