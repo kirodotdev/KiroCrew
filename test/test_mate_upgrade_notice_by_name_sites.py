@@ -2,15 +2,18 @@
 """Upgrade notices write, create and unlink through the held member folder, not by name.
 
 ``members.member_dir`` only builds a path. A write that goes on to use that path looks
-the folder up by name a second time, so a link put at ``members/<slug>`` right after
-``member_dir`` answers sends the write behind it. Each test puts that link at the moment
-``member_dir`` answers and shows the other folder is left as it was.
+the folder up by name a second time, so a link put at ``members/<slug>`` after the folder
+is found sends the write behind it. Each test puts that link right after
+``open_member_folder`` has pinned the folder, before the write, unlink or claim, checks the
+link was put there, and shows the effect landed in the held folder and the other folder
+is left as it was.
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -19,6 +22,8 @@ from conftest import requires_symlinks
 from kiro_crew import mate_upgrade_notice as notice
 from kiro_crew import members as members_mod
 from kiro_crew import pinned_fs
+from kiro_crew.member_folder import MemberFolder
+from kiro_crew.member_folder import open_member_folder as real_open_member_folder
 
 SLUG = members_mod.member_slug("ada")
 
@@ -31,32 +36,46 @@ pytestmark = [
 
 
 @pytest.fixture
-def arm(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Callable[[], Path]:
-    """Return a function that links ``members/<slug>`` to a folder elsewhere, once
-    ``member_dir`` has next answered, and returns that folder.
+def arm(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Callable[[], tuple[Path, list[bool]]]:
+    """Return a function that links ``members/<slug>`` to a folder elsewhere, once, and
+    returns that folder and a list that holds ``True`` after the link was put there.
 
-    The member's real folder is renamed aside, so a held descriptor still names it and
-    a lookup by name lands in the other folder. A test arms it after it has put the
-    member's own files in place.
+    The link goes in right after ``open_member_folder`` has pinned the member's folder,
+    before the caller's write, unlink or claim. A caller that looks the folder up by name
+    instead (``member_dir``) gets the link right after that call answers. The member's
+    real folder is renamed aside, so a held descriptor still names it and a lookup by
+    name lands in the other folder. A test arms it after it has put the member's own
+    files in place.
     """
 
-    def install() -> Path:
+    def install() -> tuple[Path, list[bool]]:
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
         real_member_dir = members_mod.member_dir
         done: list[bool] = []
 
-        def member_dir(slug: str) -> Path:
-            answer = real_member_dir(slug)
+        def swap() -> None:
             if not done:
                 done.append(True)
-                answer.mkdir(parents=True, exist_ok=True)
-                answer.rename(answer.with_name(answer.name + ".moved"))
-                os.symlink(elsewhere, answer)
+                folder = members_mod.members_root() / SLUG
+                folder.mkdir(parents=True, exist_ok=True)
+                folder.rename(folder.with_name(folder.name + ".moved"))
+                os.symlink(elsewhere, folder)
+
+        def member_dir(slug: str) -> Path:
+            answer = real_member_dir(slug)
+            swap()
             return answer
 
+        @contextmanager
+        def open_member_folder(slug: str) -> Iterator[MemberFolder]:
+            with real_open_member_folder(slug) as held:
+                swap()
+                yield held
+
         monkeypatch.setattr(members_mod, "member_dir", member_dir)
-        return elsewhere
+        monkeypatch.setattr(notice, "open_member_folder", open_member_folder, raising=False)
+        return elsewhere, done
 
     return install
 
@@ -69,31 +88,35 @@ def _real_files() -> list[str]:
 
 
 def test_the_owed_notice_is_written_to_the_held_folder(arm) -> None:
-    elsewhere = arm()
+    elsewhere, done = arm()
     notice.mark_notice_owed("ada", "a change")
+    assert done == [True]
     assert list(elsewhere.iterdir()) == []
     assert _real_files() == [notice.NOTICE_OWED_FILENAME]
 
 
 def test_the_kept_notice_is_written_to_the_held_folder(arm) -> None:
-    elsewhere = arm()
+    elsewhere, done = arm()
     notice.mark_kept_owed("ada", "why")
+    assert done == [True]
     assert list(elsewhere.iterdir()) == []
     assert _real_files() == [notice.KEPT_OWED_FILENAME]
 
 
 def test_the_policy_notice_is_written_to_the_held_folder(arm) -> None:
-    elsewhere = arm()
+    elsewhere, done = arm()
     notice.mark_policy_owed("ada", "restored")
+    assert done == [True]
     assert list(elsewhere.iterdir()) == []
     assert _real_files() == [notice.POLICY_OWED_FILENAME]
 
 
 def test_clearing_the_kept_notice_unlinks_in_the_held_folder(arm) -> None:
     notice.mark_kept_owed("ada", "why")
-    elsewhere = arm()
+    elsewhere, done = arm()
     (elsewhere / notice.KEPT_OWED_FILENAME).write_text("not the member's\n", encoding="utf-8")
     notice.clear_kept_owed("ada")
+    assert done == [True]
     assert [p.name for p in elsewhere.iterdir()] == [notice.KEPT_OWED_FILENAME]
     assert _real_files() == []
 
@@ -136,5 +159,6 @@ def test_the_claim_marker_is_created_in_the_held_folder(
     # ``supports_pinned_walk`` asks whether ``os.open`` takes ``dir_fd``; the spy does too.
     monkeypatch.setattr(os, "supports_dir_fd", os.supports_dir_fd | {spy_open})
     claim(SLUG, "ada")
-    assert list(elsewhere.iterdir()) == []
     assert done == [True]
+    assert list(elsewhere.iterdir()) == []
+    assert marker in _real_files()
