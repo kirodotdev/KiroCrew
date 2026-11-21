@@ -7,8 +7,13 @@ state stays on the instance, so tests, ``AcpProvider.__new__`` builds and
 ``MagicMock(spec=AcpProvider)`` see the same members they always did. This file pins the
 binding contract:
 
-* the frozen member inventory -- every member, its kind, whether it is a coroutine or an
-  async generator, its signature (the ``self`` annotation aside) and the module that owns it;
+* the split-time member snapshot -- every member the class had when it was split is still
+  there with its kind, whether it is a coroutine or an async generator, its signature (the
+  ``self`` annotation aside) and the module that owns it; a member added later needs no
+  entry, and the snapshot may only lose entries;
+* every member the class has now, read off the class, lives in the facade or in a listed
+  owner, under its own name there; the class body binds each name once; every
+  annotation-only field is written by an owner member;
 * each bound member IS its owner's function, and no owner keeps an unbound ``self`` function;
 * no bound function uses zero-argument ``super()``, ``__class__`` or a name-mangled
   attribute, which only work inside a class body;
@@ -45,8 +50,10 @@ SHARED_BINDINGS_CHECKS = (
     "the_class_only_scan_can_fail",
 )
 
-#: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
-#: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
+#: Member -> (kind, coroutine, signature digest, owning module) for the members the class
+#: had when it was split: the kind, coroutine flag and signature are BASE's; the owner is
+#: where the member lives now. A ratchet: a member removed from the class drops its entry,
+#: a member added to the class gets none.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "__init__": ("function", False, "f9df55c15d04", "acp"),
     "_abc_impl": ("data", False, "", ""),
@@ -218,16 +225,45 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "zero_tool_ban_notice": ("property", False, "bb418bb7ece8", "acp"),
 }
 
-#: Class-level annotations the split adds: fields first set by a member an owner defines,
-#: declared in the class so type checkers know them. An annotation creates no attribute.
-_DECLARED = frozenset({"_picker_probe_at"})
-
 _PACKAGE = "kiro_crew.providers"
 _FACADE = acp_provider.__name__
 
 
 def _owners() -> list[ModuleType]:
     return [sys.modules[name] for name in acp_provider._ACP_PROVIDER_OWNERS]
+
+
+def _present_members() -> set[str]:
+    """Every member the class defines itself: its non-dunder attributes and ``__init__``."""
+    return {
+        name
+        for name in vars(AcpProvider)
+        if not (name.startswith("__") and name.endswith("__")) or name == "__init__"
+    }
+
+
+def _annotation_only_fields() -> set[str]:
+    """Class-level annotations with no value: fields an owner member first sets, declared
+    in the class so type checkers know them."""
+    return set(AcpProvider.__dict__.get("__annotations__", {})) - set(vars(AcpProvider))
+
+
+def _bound_function(value: Any) -> Any:
+    """The function behind a class attribute, or None for a data member."""
+    if isinstance(value, staticmethod):
+        return value.__func__
+    if isinstance(value, property):
+        return value.fget
+    return value if inspect.isfunction(value) else None
+
+
+def _statics_of(owner: str) -> set[str]:
+    """The class's static methods whose function *owner* defines."""
+    return {
+        name
+        for name, value in vars(AcpProvider).items()
+        if isinstance(value, staticmethod) and value.__func__.__module__ == owner
+    }
 
 
 def _signature_digest(fn: Any) -> str:
@@ -255,12 +291,8 @@ def _self_functions(
     tree: ast.Module, owner: str = ""
 ) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
     """The owner's functions the class binds: every ``self``-first function, plus the
-    ones the inventory records as static methods of *owner*."""
-    statics = {
-        name
-        for name, (kind, _, _, home) in _MEMBERS.items()
-        if kind == "staticmethod" and home and f"{_PACKAGE}.{home}" == owner
-    }
+    ones the class holds as static methods of *owner*."""
+    statics = _statics_of(owner)
     return [
         node
         for node in tree.body
@@ -269,15 +301,115 @@ def _self_functions(
     ]
 
 
-def test_the_member_set_is_the_frozen_inventory() -> None:
-    present = {
-        name
-        for name in vars(AcpProvider)
-        if not (name.startswith("__") and name.endswith("__")) or name == "__init__"
+def test_every_split_member_is_still_on_the_class() -> None:
+    assert sorted(set(_MEMBERS) - _present_members()) == []
+
+
+def _placement_gaps(cls: type, owners: tuple[str, ...]) -> list[str]:
+    """Members of *cls* whose function lives outside the facade and *owners*, or that an
+    owner does not hold under the member's own name."""
+    gaps: list[str] = []
+    for name, value in sorted(vars(cls).items()):
+        fn = _bound_function(value)
+        if fn is None or (name.startswith("__") and name != "__init__"):
+            continue
+        home = fn.__module__
+        if home == _FACADE:
+            continue
+        if home not in owners:
+            gaps.append(f"{name}: defined in {home}")
+        elif vars(sys.modules[home]).get(name) is not fn:
+            gaps.append(f"{name}: {home} holds no {name} that is this function")
+    return gaps
+
+
+def test_every_member_lives_in_the_facade_or_a_listed_owner_under_its_own_name() -> None:
+    owners = acp_provider._ACP_PROVIDER_OWNERS
+    homes = {
+        fn.__module__
+        for name in _present_members()
+        if (fn := _bound_function(vars(AcpProvider)[name])) is not None
     }
-    present |= set(AcpProvider.__dict__.get("__annotations__", {}))
-    assert sorted(present ^ (set(_MEMBERS) | _DECLARED)) == []
-    assert not _DECLARED & set(vars(AcpProvider))
+    # The class read finds members in the facade and in every owner.
+    assert homes >= {_FACADE, *owners}
+    assert _placement_gaps(AcpProvider, owners) == []
+
+
+def test_the_placement_scan_can_fail() -> None:
+    owner = "kiro_crew.providers.acp_turns"
+    turns = sys.modules[owner]
+
+    class Misbound:
+        stream = turns.stream
+        renamed = turns.cancel
+        foreign = staticmethod(inspect.signature)
+
+    assert _placement_gaps(Misbound, (owner,)) == [
+        "foreign: defined in inspect",
+        f"renamed: {owner} holds no renamed that is this function",
+    ]
+
+
+def _rebound_names(cls: ast.ClassDef) -> list[str]:
+    """Names the class body binds more than once. A ``@<name>.setter`` or ``.deleter``
+    function extends its property and is not a second binding."""
+    seen: dict[str, int] = {}
+    for node in cls.body:
+        names: list[str] = []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            accessor = any(
+                isinstance(d, ast.Attribute)
+                and d.attr in ("setter", "deleter")
+                and isinstance(d.value, ast.Name)
+                and d.value.id == node.name
+                for d in node.decorator_list
+            )
+            if not accessor:
+                names.append(node.name)
+        elif isinstance(node, ast.Assign):
+            names.extend(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.append(node.target.id)
+        for name in names:
+            seen[name] = seen.get(name, 0) + 1
+    return sorted(name for name, count in seen.items() if count > 1)
+
+
+def _facade_class() -> ast.ClassDef:
+    return next(
+        node
+        for node in _tree(acp_provider).body
+        if isinstance(node, ast.ClassDef) and node.name == "AcpProvider"
+    )
+
+
+def test_the_class_body_binds_each_name_once() -> None:
+    cls = _facade_class()
+    assert len(cls.body) > len(_owners())
+    assert _rebound_names(cls) == []
+
+
+def test_the_rebinding_scan_can_fail() -> None:
+    cls = ast.parse(
+        "class C:\n"
+        "    @property\n    def p(self): ...\n"
+        "    @p.setter\n    def p(self, v): ...\n"
+        "    def stream(self): ...\n"
+        "    stream = _acp_turns.stream\n"
+        "    x: int = 0\n"
+        "    x = 1\n"
+    ).body[0]
+    assert isinstance(cls, ast.ClassDef)
+    assert _rebound_names(cls) == ["stream", "x"]
+
+
+def test_each_annotation_only_field_is_written_by_an_owner_member() -> None:
+    declared = _annotation_only_fields()
+    assert declared
+    written: set[str] = set()
+    for module in _owners():
+        written |= _fields(_self_functions(_tree(module), module.__name__))[0]
+    assert sorted(declared - written) == []
 
 
 @pytest.mark.parametrize("name", sorted(_MEMBERS))
@@ -302,16 +434,20 @@ def test_each_member_keeps_its_kind_shape_and_owner(name: str) -> None:
 
 
 def test_every_owner_lists_in_the_facade_and_holds_its_members() -> None:
-    homes = {owner for _kind, _c, _d, owner in _MEMBERS.values() if owner and owner != "acp"}
-    listed = {name.rsplit(".", 1)[-1] for name in acp_provider._ACP_PROVIDER_OWNERS}
-    assert homes == listed
+    homes = {
+        fn.__module__
+        for name in _present_members()
+        if (fn := _bound_function(vars(AcpProvider)[name])) is not None
+    } - {_FACADE}
+    assert homes
+    assert homes == set(acp_provider._ACP_PROVIDER_OWNERS)
 
 
 @pytest.mark.parametrize("owner", acp_provider._ACP_PROVIDER_OWNERS)
 def test_no_owner_keeps_an_unbound_self_function(owner: str) -> None:
     module = sys.modules[owner]
     for node in _self_functions(_tree(module), owner):
-        assert node.name in _MEMBERS, f"{owner}.{node.name} is bound on no class"
+        assert node.name in vars(AcpProvider), f"{owner}.{node.name} is bound on no class"
         assert _member_function(node.name) is vars(module)[node.name]
 
 
@@ -421,7 +557,8 @@ def _fields(fns: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> tuple[set[str]
                 and isinstance(node.args[1].value, str)
             ):
                 (written if func.id == "setattr" else read).add(node.args[1].value)
-    return written - set(_MEMBERS), read - written - set(_MEMBERS)
+    members = _present_members()
+    return written - members, read - written - members
 
 
 def _listed(doc: str, label: str) -> set[str]:
@@ -446,9 +583,10 @@ def test_owners_log_under_the_provider_logger(owner: str) -> None:
 
 def test_the_bound_function_scans_include_every_static_method() -> None:
     statics = {
-        name: f"{_PACKAGE}.{home}"
-        for name, (kind, _, _, home) in _MEMBERS.items()
-        if kind == "staticmethod" and home.startswith("acp_")
+        name: value.__func__.__module__
+        for name, value in vars(AcpProvider).items()
+        if isinstance(value, staticmethod)
+        and value.__func__.__module__ in acp_provider._ACP_PROVIDER_OWNERS
     }
     assert statics
     scanned = {
