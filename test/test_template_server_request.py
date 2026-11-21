@@ -205,6 +205,50 @@ def test_request_raises_a_card_the_owner_applies_and_undoes(env, tmp_path):
     assert env["applied"] == 2
 
 
+async def _resolve_any(name, source, registry_id, *, settings_hint):
+    return name, dict(GATEWAY_ENTRY), {"source": "gateway"}
+
+
+def test_a_gateway_server_named_with_a_colon_is_applied_and_undone(
+    env, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(capability_catalog, "resolve_server", _resolve_any)
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        status, card = await _request(c, {"server": "docs:search", "source": "gateway"})
+        assert status == 200, card
+        step = card["plan"]["apply"][0]
+        applied = await c.post(step["path"], json=step["body"], headers=_card_headers(card))
+        assert applied.status == 200, await applied.text()
+        recorded = set(additions.read_additions("kirocrew-conductor"))
+        after = store.public(store.get(card["id"]))
+        undo = after["plan"]["undo"][0]
+        undone = await c.delete(undo["path"], headers=_card_headers(after, op="undo"))
+        return card, recorded, undo, undone.status
+
+    card, recorded, undo, undone = _run(store, go)
+    assert card["params"]["server"] == "docs:search"
+    assert recorded == {"docs:search"}
+    assert "/mcp-additions/docs%3Asearch?" in undo["path"]
+    assert undone == 200
+    assert additions.read_additions("kirocrew-conductor") == {}
+
+
+@pytest.mark.parametrize("server", ["docs/search", "@docs", ":docs", "docs:", "docs::search"])
+def test_a_template_server_name_outside_one_plain_segment_is_refused(
+    env, tmp_path, monkeypatch, server
+):
+    monkeypatch.setattr(capability_catalog, "resolve_server", _resolve_any)
+    status, body = _run(
+        CardStore(tmp_path / "c.json"),
+        lambda c: _request(c, {"server": server, "source": "gateway"}),
+    )
+    assert (status, body["code"]) == (400, "invalid_param"), body
+    assert "can't be added to an agent template" in body["error"]
+    assert additions.read_additions("kirocrew-conductor") == {}
+
+
 def test_the_request_never_takes_a_launch_line_from_the_agent(env, tmp_path):
     store = CardStore(tmp_path / "c.json")
 
