@@ -723,9 +723,16 @@ A second identical failure counts as evidence, not bad luck.
 
 ### Code ownership
 
-`.github/CODEOWNERS` assigns every repository path to
+`.github/CODEOWNERS` assigns repository paths to
 `@kirodotdev/kirocrew-pr-review` and `@KiroCrewCaptain` (the maintainers'
-automation account) through a single wildcard rule naming both, so an approval from either satisfies the ruleset's code owner review. GitHub reads that
+automation account) through a wildcard rule naming both, so an approval from either satisfies the ruleset's code owner review.
+Later rules with no owners leave the prose docs unowned (`docs/**/*.md`,
+`src/kiro_crew/docs/**/*.md`, `website/docs/**/*.md`, the root `README.md` and
+`CONTRIBUTING.md`), so a PR that changes only those needs no code owner review. Two
+directories are owned again by both: `docs/request-for-change/` (RFCs) and
+`docs/decisions/` (decision records), because they record product decisions. The
+last matching rule wins. Agent instructions (`AGENTS.md`, `skills/`,
+`.github/review-prompts/`, `.kiro/`) and `CHANGELOG.md` stay owned. GitHub reads that
 file to request reviews; the file
 itself establishes no approval count and enforces no branch protection, so a tier, a
 required number of reviewers, or a designated-maintainer requirement cannot be
@@ -850,7 +857,10 @@ only this check honours it, so the paths such a doc cites into today's code are
 still checked. A name defined outside this repository (a vendor API, another
 harness, an OS facility) goes in `.github/docs-lint-external-identifiers.txt`,
 under a comment naming its source. Never list a name this repo defines: the list
-would hide its rename.
+would hide its rename. docs-lint holds the list to that rule: a listed name the code
+now defines is a `dead-identifier` finding against the list file, and unlike a doc's
+dead identifier it fails the run without `--strict-identifiers`, until the line is
+deleted.
 
 The builtin app tree is the mirror image of that exemption: it keeps every fact
 check and every link check, and drops only the two CURATION rules, reachability and

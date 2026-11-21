@@ -31,6 +31,14 @@ The desktop pet keeps polling the gateway while disabled so enabling Mochi in
 the App Store takes effect without restarting the shell. Probe diagnostics are
 deduplicated per outcome for one minute, including alternating HTTP errors and
 disabled responses; actual enabled-state changes still log immediately.
+The probe re-resolves a cached link token once it is 240 s old, or when the wall
+clock moved backwards (`website/electron/link-token-age.js`), so it never sends one
+the gateway's 300 s link window refuses. That refusal would be a `denied` security
+event, and its 403 would reset the reconcile to its 5 s base cadence
+(`MOCHI_PET_RECONCILE_MS`). Without that reset, a disabled pet's reconcile settles at
+its 300 s ceiling (`MOCHI_PET_RECONCILE_MAX_MS`). A borrowed session cookie is never aged out, and a
+401/403 still re-resolves the credential. Crew Companion, the app window host and the
+update lane's gateway arm (`runtime/update/gateway-arm.js`) use the same rule.
 
 **A non-answer never creates a pet.** Every probe the reconcile tick makes is
 tri-state (`enabled` / `disabled` / `unknown`), including the remote instance's
