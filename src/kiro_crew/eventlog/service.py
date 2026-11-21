@@ -271,6 +271,8 @@ def _remove_legacy_activity(slug: str) -> bool:
 
     try:
         members.validate_slug(slug)
+        # The name is used only where the platform has no descriptors; ``members`` is
+        # pinned first below, and a link there is refused, so no unlink follows it.
         named_dir = members.members_root() / slug
     except Exception:
         logger.debug("legacy activity path unavailable for %r", slug, exc_info=True)
