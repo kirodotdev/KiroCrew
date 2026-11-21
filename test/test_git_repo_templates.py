@@ -13,7 +13,9 @@ import builtins
 import hashlib
 import io
 import os
+import shutil
 import struct
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +28,7 @@ from push_guard_helpers import _git
 
 from conftest import requires_symlinks
 from kiro_crew.testing.links import make_dir_link
+from kiro_crew.testing.wait import default_timeout
 
 repo_templates = templates.repo_templates  # the fixture, bound for this module
 
@@ -94,7 +97,10 @@ def _build(root: Path) -> None:
     (root / "extra.gitconfig").write_text("[extra]\n\tkey = 1\n", encoding="utf-8")
     _git(str(work), "config", "include.path", str(root / "extra.gitconfig"))
     # A tracked file edited after the commit: it must stay modified in a copy.
-    (work / "sub" / "kept.txt").write_text("edit\n", encoding="utf-8", newline="\n")
+    # The edit changes the size. A same-size edit within the second of the
+    # ``git add`` is git's "racily clean" state, which git repairs by zeroing
+    # the entry's size when it next writes the index; ``racy`` covers that.
+    (work / "sub" / "kept.txt").write_text("edited, and longer\n", encoding="utf-8", newline="\n")
 
 
 def _git_view(root: Path) -> dict[str, object]:
@@ -257,6 +263,100 @@ def test_every_git_the_helper_starts_runs_with_auto_maintenance_off(
     for env in envs:
         assert git_maintenance_off_entries(env) == {}, "the env leaves auto maintenance on"
         assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+
+
+#: A fixed time for the racy-timestamp states, long before any index is written.
+RACY_MTIME = 1_600_000_000
+#: Where the index's own time sits against its entries' ``RACY_MTIME``.
+RACY_STATES = {"index-newer": 100, "same-second": 0, "entries-in-the-future": -50}
+
+
+def _entry_stats(index: Path) -> dict[str, tuple[int, ...]]:
+    """Each index entry's ten stat words by path (versions 2 and 3, no extended flags)."""
+    data = index.read_bytes()
+    count = struct.unpack_from(">I", data, 8)[0]
+    found, offset = {}, 12
+    for _ in range(count):
+        *words, _blob, flags = templates._ENTRY_HEAD.unpack_from(data, offset)
+        length = flags & templates._NAME_MASK
+        name_at = offset + templates._ENTRY_HEAD.size
+        found[data[name_at : name_at + length].decode()] = tuple(words)
+        offset += (templates._ENTRY_HEAD.size + length + 8) & ~7
+    return found
+
+
+@pytest.fixture(scope="module")
+def racy(tmp_path_factory: pytest.TempPathFactory) -> dict[str, dict[str, object]]:
+    """What git's refresh does, per ``RACY_STATES``, to a copy and to an index git wrote.
+
+    The template is in git's racily clean state: ``kept.txt`` is edited to the
+    same size and given back the time the index recorded. ``core.checkStat``
+    and ``core.trustctime`` are set so that the copied file matches the
+    recorded stat data on every platform, as it does on Windows when a copy is
+    made within the second its template was built (no inode there, and the
+    creation time read as ctime falls in the same second).
+    """
+    template = tmp_path_factory.mktemp("racy-template")
+    work = template / "work"
+    work.mkdir()
+    _git(str(work), "init", "-q", "-b", "main")
+    for key, value in (("core.checkStat", "minimal"), ("core.trustctime", "false")):
+        _git(str(work), "config", key, value)
+    for name in ("README.md", "kept.txt"):
+        (work / name).write_text("kept\n", encoding="utf-8", newline="\n")
+        os.utime(work / name, (RACY_MTIME, RACY_MTIME))
+    _git(str(work), "add", ".")
+    _git(str(work), "commit", "-q", "-m", "seed")
+    (work / "kept.txt").write_text("edit\n", encoding="utf-8", newline="\n")
+    os.utime(work / "kept.txt", (RACY_MTIME, RACY_MTIME))
+
+    seen: dict[str, dict[str, object]] = {}
+    for state, offset in RACY_STATES.items():
+        for writer in ("helper", "git"):
+            root = tmp_path_factory.mktemp(f"racy-{state}-{writer}")
+            if writer == "helper":
+                copy_repo(template, root)
+            else:  # the index bytes git wrote, on a plain copy
+                shutil.copytree(template / "work", root / "work")
+            index = root / "work" / ".git" / "index"
+            os.utime(index, (RACY_MTIME + offset, RACY_MTIME + offset))
+            before = _entry_stats(index)
+            changed = _git(str(root / "work"), "diff-files", "--name-only")
+            subprocess.run(  # exits 1 for the modified file; the index write is what is read
+                ["git", "update-index", "-q", "--really-refresh"],
+                cwd=root / "work",
+                env=templates._git_env(),
+                capture_output=True,
+                timeout=default_timeout(),
+            )
+            after = _entry_stats(index)
+            moved = {name: after[name] for name in after if after[name] != before[name]}
+            seen[f"{state} {writer}"] = {"changed": changed, "moved": moved}
+    return seen
+
+
+@pytest.mark.parametrize("state", RACY_STATES)
+def test_under_racy_timestamps_git_treats_a_copy_as_it_treats_its_own_index(
+    racy: dict[str, dict[str, object]], state: str
+) -> None:
+    helper, git = racy[f"{state} helper"], racy[f"{state} git"]
+    assert helper["changed"] == git["changed"]
+    assert helper["moved"] == git["moved"]
+    if state != "index-newer":  # git re-checks content only where the index is not newer
+        assert helper["changed"] == "kept.txt"
+
+
+def test_a_racily_clean_entry_is_the_only_thing_git_s_refresh_rewrites_in_a_copy(
+    racy: dict[str, dict[str, object]],
+) -> None:
+    # The refresh writes the index again where an entry is no older than it,
+    # and zeroes the recorded size of the one entry whose file was edited
+    # without a visible stat change. Nothing the helper re-read moves.
+    for state in ("same-second", "entries-in-the-future"):
+        moved = racy[f"{state} helper"]["moved"]
+        assert list(moved) == ["kept.txt"], state  # type: ignore[call-overload]
+        assert moved["kept.txt"][9] == 0, state  # type: ignore[index]
+    assert racy["index-newer helper"]["moved"] == {}
 
 
 def _bare_git_dir(root: Path) -> Path:
