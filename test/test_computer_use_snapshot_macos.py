@@ -124,6 +124,26 @@ class _SlowClock:
         self.now += secs
 
 
+class _RestagesOnSleep(_SlowClock):
+    """A still clock whose every sleep gives *window* the next child list in *trees*.
+
+    The Electron retry sleeps before each re-walk, so each entry is what one re-walk sees."""
+
+    def __init__(self, fakes: _Fakes, window: int, trees: list[list[dict]]) -> None:
+        super().__init__(step=0.0)
+        self._fakes = fakes
+        self._window = window
+        self._trees = list(trees)
+        self.polls = 0
+
+    def sleep(self, secs: float) -> None:
+        self.now += secs
+        self.polls += 1
+        if self._trees:
+            children = [_stage_element(self._fakes, spec) for spec in self._trees.pop(0)]
+            self._fakes.ax.attrs[(self._window, "AXChildren")] = self._fakes.new_array(children)
+
+
 class TestBuildSnapshot:
     def test_walks_the_window_into_records(self, fakes: _Fakes):
         _stage_window(
@@ -229,6 +249,40 @@ class TestElectronOptIn:
             and args[1] == macos_ffi.AX_MANUAL_ACCESSIBILITY
         ]
         assert len(sets) == 1
+
+    def test_a_secure_field_only_a_smaller_retry_walk_saw_is_reported(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The retry keeps its largest walk for the tree, but a password field that
+        only a smaller walk saw must still suppress the screenshot."""
+        window = _stage_window(fakes, children=[{"role": "AXGroup"}])
+        monkeypatch.setattr(macos_ffi, "ELECTRON_OPT_IN_WAIT_SECS", 1.0)  # flake-ok: faked clock
+        monkeypatch.setattr(macos_ffi, "ELECTRON_OPT_IN_POLL_SECS", 0.5)  # flake-ok: faked clock
+        password = {"role": "AXTextField", "subrole": "AXSecureTextField", "title": "Password"}
+        buttons = [{"role": "AXButton", "title": f"b{i}"} for i in range(10)]
+        clock = _RestagesOnSleep(fakes, window, [[password], buttons])
+        monkeypatch.setattr(snapshot_macos, "time", clock)
+
+        snap = snapshot_macos.build_snapshot(_APP, _req())
+
+        assert clock.polls == 2
+        assert not [rec for rec in snap.elements if rec.secure]  # the tree is the larger walk
+        assert snap.has_secure is True
+
+    def test_a_secure_field_only_the_walk_before_the_retry_saw_is_reported(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A stub window can hold a password prompt that is gone by the time the
+        retry re-walks it; the screenshot must still be suppressed."""
+        password = {"role": "AXTextField", "subrole": "AXSecureTextField", "title": "Password"}
+        window = _stage_window(fakes, children=[password])
+        buttons = [{"role": "AXButton", "title": f"b{i}"} for i in range(30)]
+        monkeypatch.setattr(snapshot_macos, "time", _RestagesOnSleep(fakes, window, [buttons]))
+
+        snap = snapshot_macos.build_snapshot(_APP, _req())
+
+        assert not [rec for rec in snap.elements if rec.secure]
+        assert snap.has_secure is True
 
     def test_implausibly_small_tree_also_triggers_the_opt_in(self, fakes: _Fakes):
         """The finding an error-only check would have missed.
