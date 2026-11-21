@@ -72,6 +72,7 @@ if TYPE_CHECKING:
         read_effective_agent,
         read_turn_model,
         rearm_reinjection,
+        record_interaction_event,
         rollback_skill_bodies,
         run_in_embed_pool,
         settle_turn,
@@ -437,6 +438,9 @@ async def _cron_run_sequence(
                 if _seq_landed:
                     # This step's release confirms what it received inline.
                     note_turn_landed(self.sessions, agent_session_key)
+                    # Per-interaction telemetry, as every landed-turn engine
+                    # reports it: one event per step that landed.
+                    record_interaction_event(client, agent_session_key, "cron")
                     await _seq_hooks.stop(result_text)
                 if not result_text:
                     result_text = _gate.empty_reply_placeholder()
@@ -1024,6 +1028,8 @@ async def _cron_run_single(
             # This turn's release confirms what it received inline; a turn the
             # deadline, a stop or a reap ends first never gets here.
             note_turn_landed(self.sessions, session_key)
+            # Per-interaction telemetry, as every landed-turn engine reports it.
+            record_interaction_event(client, session_key, "cron")
             await _hook_turn.stop(result_text)
 
         # Recorded, not inferred from the text: the dedup hash below
