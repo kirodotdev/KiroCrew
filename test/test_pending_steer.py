@@ -1657,3 +1657,83 @@ async def test_the_stale_turn_queue_fallback_gates_on_the_tighter_fence(
     target._acp_client.steer.assert_not_awaited()
     assert any(TEXT in str(entry) for entry in target._queue), "and it queued the steer"
     assert not target._deferred_steers
+
+
+async def _send_plain(state, caller, message):
+    """A plain ``session_send`` (no steer): queued at the tail of a busy target."""
+    return await sc.send_to_target(
+        state, caller_session_key=_key(caller), target="chat-2", message=message, steer=False
+    )
+
+
+def _queued_order(target, *texts):
+    """The index in ``target._queue`` of the entry carrying each text, in *texts* order."""
+    contents = [entry["content"] for entry in target._queue]
+    return [next(i for i, c in enumerate(contents) if text in c) for text in texts]
+
+
+@pytest.mark.asyncio
+async def test_a_held_steer_the_turn_outlived_queues_ahead_of_a_later_plain_send(tmp_path):
+    """A held steer joins the HEAD of the queue at the turn's end, as an unconsumed steer
+    does, so a plain message sent after it does not run first."""
+    from kiro_crew.dashboard import deferred_steer
+
+    state = _make_state(tmp_path)
+    caller, target, client = _loss_recovery_target(state)
+    held = await _send(state, caller)
+    assert held.get("pending_steer") is True
+    later = "a plain note sent after the steer"
+    assert (await _send_plain(state, caller, later))["started"] is False
+
+    try:
+        await deferred_steer.requeue_all(state, target)
+    finally:
+        target.task.cancel()
+
+    assert _queued_order(target, TEXT, later) == [0, 1], [e["content"] for e in target._queue]
+    assert target._deferred_steer_receipts[held["steer_id"]]["state"].startswith("queued@")
+
+
+@pytest.mark.asyncio
+async def test_several_held_steers_queue_in_send_order_ahead_of_plain_sends(tmp_path):
+    """Two held steers keep the order they were sent in, both ahead of queued plain text."""
+    from kiro_crew.dashboard import deferred_steer
+
+    state = _make_state(tmp_path)
+    caller, target, client = _loss_recovery_target(state)
+    plain = "a plain note queued before either steer"
+    second = "and run the full gate after the rebase"
+    assert (await _send_plain(state, caller, plain))["started"] is False
+    assert (await _send(state, caller)).get("pending_steer") is True
+    assert (await _send(state, caller, message=second)).get("pending_steer") is True
+
+    try:
+        await deferred_steer.requeue_all(state, target)
+    finally:
+        target.task.cancel()
+
+    assert _queued_order(target, TEXT, second, plain) == [0, 1, 2], [
+        e["content"] for e in target._queue
+    ]
+    assert not target._deferred_steers
+
+
+@pytest.mark.asyncio
+async def test_a_held_steer_orphaned_by_a_turn_change_queues_at_the_head(tmp_path):
+    """The stale-turn arm queues a held steer its turn outlived at the HEAD too."""
+    from kiro_crew.dashboard import deferred_steer
+
+    state = _make_state(tmp_path)
+    caller, target, client = _loss_recovery_target(state)
+    assert (await _send(state, caller)).get("pending_steer") is True
+    later = "a plain note sent after the steer"
+    assert (await _send_plain(state, caller, later))["started"] is False
+    target.task.cancel()
+    _running(target)  # the next turn, which the held steer was not sent into
+    try:
+        await deferred_steer.flush_at_boundary(state, target)
+    finally:
+        target.task.cancel()
+
+    client.steer.assert_not_awaited()
+    assert _queued_order(target, TEXT, later) == [0, 1], [e["content"] for e in target._queue]

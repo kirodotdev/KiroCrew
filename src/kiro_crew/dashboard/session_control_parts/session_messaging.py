@@ -559,8 +559,14 @@ async def send_to_target(
         # suspended and the queue entry records the containment for the drain to
         # re-assert: a snapshot taken now must not certify a link the authorization
         # never saw.
+        #
+        # *at_head* queues it at the head: a held steer its turn outlived outranks
+        # the messages queued meanwhile, as an unconsumed steer does. The orphaned
+        # RPC fallback keeps the tail.
         async def _queue_after_orphaned_unavailable(
             still_wanted: Callable[[], bool] | None = None,
+            *,
+            at_head: bool = False,
         ) -> bool:
             await prewarm_app_reach(state)
             await prewarm_enabled_check()
@@ -592,7 +598,7 @@ async def send_to_target(
                 state,
                 slot,
                 prompt,
-                session_deliver.peer(steer=False, sender=caller_session_key),
+                session_deliver.peer(steer=False, sender=caller_session_key, at_head=at_head),
                 queue_meta={**send_origin_meta(state, caller_key), SESSION_SEND_QUEUED_META: True},
                 relay_meta=relay_meta,
             )
@@ -616,8 +622,12 @@ async def send_to_target(
                 return any(h is held for h in slot._deferred_steers)
 
             if slot._turn_generation != held_in_turn:
-                # The turn it was meant for is over and nothing handed it on.
-                queued = await _queue_after_orphaned_unavailable(_still_held)
+                # The turn it was meant for is over and nothing handed it on. Queued at
+                # the head, as the hand-off's requeue does.
+                # shortcut: this flush walks the held list oldest first, so two stale
+                # steers found in one flush queue newest first; walk them newest first
+                # if a turn end ever leaves more than one held behind.
+                queued = await _queue_after_orphaned_unavailable(_still_held, at_head=True)
                 return deferred_steer.QUEUED if queued else deferred_steer.DROPPED
             await prewarm_app_reach(state)
             await prewarm_enabled_check()

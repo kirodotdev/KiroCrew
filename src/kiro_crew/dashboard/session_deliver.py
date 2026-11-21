@@ -77,6 +77,9 @@ class Origin:
     #: That steer's held entry itself: the RPC re-checks it by identity, so a later
     #: re-send of the same text (same id) is never mistaken for it.
     entry: object = field(default=None, compare=False, repr=False)
+    #: A peer's queue-or-run delivery of a held steer its turn outlived: a queue
+    #: entry goes to the HEAD, ahead of messages queued meanwhile.
+    at_head: bool = False
 
 
 def cron(label: str) -> Origin:
@@ -84,7 +87,13 @@ def cron(label: str) -> Origin:
 
 
 def peer(
-    *, steer: bool, sender: str = "", held: str = "", mark: str = "", entry: object = None
+    *,
+    steer: bool,
+    sender: str = "",
+    held: str = "",
+    mark: str = "",
+    entry: object = None,
+    at_head: bool = False,
 ) -> Origin:
     """A peer session's text.
 
@@ -92,8 +101,11 @@ def peer(
     caller whose turn ended before the steer ran gets :data:`NOT_DELIVERED` and
     makes the one queue-or-run delivery itself (``steer=False``). *sender* is the
     peer's session key, read only to link the turn the text starts to the sender's.
+    *at_head* (``steer=False`` only) queues the entry at the head of the queue.
     """
-    return Origin(ORIGIN_PEER, steer=steer, sender=sender, held=held, mark=mark, entry=entry)
+    return Origin(
+        ORIGIN_PEER, steer=steer, sender=sender, held=held, mark=mark, entry=entry, at_head=at_head
+    )
 
 
 def app(label: str) -> Origin:
@@ -474,5 +486,6 @@ async def _deliver_peer(
             state,
             extra_meta={**(queue_meta or {}), **sender_meta} or queue_meta,
             relay_meta=relay_meta,
+            at_head=origin.at_head,
         )
     return DELIVERED_TURN if started else DELIVERED_QUEUED

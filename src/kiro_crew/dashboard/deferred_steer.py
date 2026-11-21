@@ -9,8 +9,8 @@ queueing it behind the whole turn.
 * The stream loop calls :func:`flush_at_boundary` after every tool result. Each held
   steer is retried there, every boundary, until it is delivered.
 * If the turn ends first, ``_hand_off_queue`` calls :func:`requeue_all` before it drains,
-  so the held steers take the ordinary end-of-turn queue path and the next turn starts in
-  the same hand-off.
+  so the held steers join the head of the end-of-turn queue, in send order, and the
+  next turn starts in the same hand-off.
 * A steer is identified by ``sender + target + message``. Sending the same text again
   while it is held returns the same steer and delivers nothing a second time. Once it
   is settled, the same text is a new message.
@@ -279,18 +279,21 @@ async def requeue_all(state: "DashboardState", slot: "_ChatSlot") -> None:
     """The turn ended first: hand every held steer to the end-of-turn queue.
 
     Called by ``_hand_off_queue`` before it drains, so the next turn starts in the
-    same call. The queue entry carries the same text and provenance as a steer would.
+    same call. The queue entry carries the same text and provenance as a steer would,
+    and joins the HEAD of the queue, as an unconsumed steer does: a held steer runs
+    ahead of messages queued meanwhile. The held list is walked newest first, so
+    after the head inserts the held steers run in the order they were sent.
     A steer already marked delivered (its injection may have reached the harness) is
     settled without a queue entry, so it never runs a second time.
     """
     slot._deferred_steer_ended_gen = slot._turn_generation
     await _settle_flush_task(slot)
-    for held in list(slot._deferred_steers):
+    for held in reversed(slot._deferred_steers[:]):
         if held.steer_id in slot._deferred_steer_delivered:
             _settle(slot, held, DELIVERED)
             continue
         try:
-            queued = await held.to_queue(lambda: held in slot._deferred_steers)
+            queued = await held.to_queue(lambda: held in slot._deferred_steers, at_head=True)
         except Exception:  # noqa: BLE001 - a refused entry must not strand the others
             logger.warning("deferred steer %s could not be queued", held.steer_id, exc_info=True)
             queued = False

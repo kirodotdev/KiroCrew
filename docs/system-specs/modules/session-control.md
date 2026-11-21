@@ -428,8 +428,10 @@ teardown requeue skips a marked steer. On the Claude Code and Codex paths it is
 therefore injected at most once and never queued back; on the Goose, request and
 concurrent-prompt (Pi, OpenCode) paths a steer the adapter took just as its turn
 ended is reported False and can run once more from the queue. A turn that ends
-first hands the unmarked held steers to the queue,
-and the next turn starts in the same hand-off. A held steer that a later re-check
+first hands the unmarked held steers to the queue, and the next turn starts in the
+same hand-off. They join the HEAD of the queue, ahead of messages queued meanwhile and
+in send order, as an unconsumed steer does; a held steer that a boundary of a later
+turn finds is queued at the head too. A held steer that a later re-check
 refuses, at a boundary (the gate refuses the sender, or the key resolves to another
 session) or when its turn ends and the queue fallback refuses it, reads
 `refused@<time>`, and its sender gets one `SEND_DISCARD_REFUSED_STEER` notice that

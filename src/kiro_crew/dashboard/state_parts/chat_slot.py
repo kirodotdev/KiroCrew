@@ -1255,6 +1255,7 @@ class _ChatSlot:
         extra_meta: dict[str, Any] | None = None,
         relay_meta: dict[str, Any] | None = None,
         gateway_prompt_kind: str = "",
+        at_head: bool = False,
     ) -> bool:
         """Queue *prompt* if busy, otherwise start an agent turn.
 
@@ -1280,6 +1281,11 @@ class _ChatSlot:
         own words: queued under that kind, or appended directly as the ``inject``
         row that kind drains to, so neither arm draws it as the person's bubble.
         The caller hands a *run_chat_coro* that runs it as a synthetic payload.
+
+        *at_head* queues the entry at the HEAD instead of the tail, for a held
+        peer steer its turn outlived: steers outrank queued messages, as the
+        unconsumed-steer requeue (``_requeue_unconsumed_steers``) has them.
+        Ignored on the run arm.
 
         Concurrency: the check (``self.running``) and mutation (``self.task = ...``)
         run synchronously on the asyncio event loop with no ``await`` between them,
@@ -1317,7 +1323,15 @@ class _ChatSlot:
             if relay_meta:
                 _meta["relay"] = dict(relay_meta)
             _meta.update(containment_meta(state, self))
-            self.queue_append(prompt, kind=gateway_prompt_kind, meta=_meta)
+            if at_head:
+                from kiro_crew.tracing import steps as trace_steps
+
+                # Its queue wait is timed as an appended entry's is.
+                trace_steps.note_queued(
+                    self.queue_insert(0, prompt, kind=gateway_prompt_kind, meta=_meta)
+                )
+            else:
+                self.queue_append(prompt, kind=gateway_prompt_kind, meta=_meta)
             # Returning False IS the receipt that the prompt was accepted onto the
             # queue, and until the drain writes its transcript row the queue is the
             # prompt's only record -- so a restart inside the periodic flush
