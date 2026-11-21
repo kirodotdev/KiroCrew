@@ -48,7 +48,7 @@ import { Provider } from 'react-redux'
 import '../i18n/all'
 import { i18nT } from '../i18n/t'
 import { BrowserView } from '../app-sdk/index'
-import { coordsFor } from '../app-sdk/browserViewHooks'
+import { VIEW_KEEPALIVE_MS, coordsFor, useBrowserView } from '../app-sdk/browserViewHooks'
 import { useAutoSendIntake } from '../pages/chat/page/launchIntake'
 import { AppIdentityProvider } from '../app-sdk/identity'
 import { AppScopedApiProvider } from '../app-sdk/scopedApi'
@@ -757,5 +757,200 @@ describe('coordsFor', () => {
   it('answers null before a frame is drawn', () => {
     expect(coordsFor(undefined).toPage(1, 1)).toBeNull()
     expect(coordsFor({ width: 10, height: 10, frame: null }).toView(1, 1)).toBeNull()
+  })
+})
+
+/*
+ * A second view (`tabId`): one of the slot's own tabs beside the slot's own view,
+ * for looking only. The gateway's checks (own tab only, preview, `view` verb, the
+ * app off) are test_browser_live_views.py; here: it opens only when the page may
+ * show the slot, shows the view's picture under the view's key with no take over,
+ * says why when the gateway refuses, and closes the view on unmount.
+ */
+describe('BrowserView second view (tabId)', () => {
+  const VIEW = `${OWN}.view1`
+
+  it('opens a look-only view of the tab, shows it under its own key, and closes it on unmount', async () => {
+    const open = vi.spyOn(api, 'browserLiveViewOpen').mockResolvedValue({ view_key: VIEW, turn_id: 'v1' })
+    const close = vi.spyOn(api, 'browserLiveViewClose').mockResolvedValue({ ok: true } as never)
+    act(() => { browserLiveStore.applyEvent(ev(OWN)); browserLiveStore.applyEvent(ev(VIEW, { turn_id: 'v1', url: 'https://b.example/' })) })
+    act(() => { browserLiveStore.applyFrame(frame(VIEW)) })
+    const { unmount } = mount(OWN, <BrowserView slot={OWN} tabId="TB" aria-label="Tab B" />)
+    expect(open).toHaveBeenCalledWith(OWN, 'TB')
+    await act(async () => {})
+    expect(view().dataset.state).toBe('live')
+    expect(view().textContent).toContain('b.example')
+    expect(screen.queryByTestId('app-browser-view-take-over')).toBeNull()
+    expect(writes.visibility).toHaveBeenLastCalledWith(VIEW, true)
+    unmount()
+    // close is called with the key and the turn_id returned by open.
+    expect(close).toHaveBeenCalledWith(VIEW, 'v1')
+  })
+
+  it('keeps a view on screen looked at, and opens it again once the gateway ended it', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const open = vi.spyOn(api, 'browserLiveViewOpen').mockResolvedValue({ view_key: VIEW, turn_id: 'v1' })
+      vi.spyOn(api, 'browserLiveViewClose').mockResolvedValue({ ok: true } as never)
+      // The keepalive now posts directly to the API (not through the store), so
+      // it always refreshes the gateway's idle timer even for a still page.
+      const keepAlive = vi.spyOn(api, 'browserLiveVisibility').mockResolvedValue({ ok: true } as never)
+      act(() => { browserLiveStore.applyEvent(ev(VIEW, { turn_id: 'v1' })); browserLiveStore.applyFrame(frame(VIEW)) })
+      mount(OWN, <BrowserView slot={OWN} tabId="TB" aria-label="Tab B" />)
+      await act(async () => {})
+      await act(async () => { vi.advanceTimersByTime(VIEW_KEEPALIVE_MS) })
+      expect(keepAlive).toHaveBeenCalledWith(VIEW, true)
+      // A reloaded page's leftover is ended by the gateway once idle; a view that
+      // was ended while mounted is opened again.
+      expect(open).toHaveBeenCalledTimes(1)
+      act(() => { browserLiveStore.applyEvent(ev(VIEW, { turn_id: 'v1', state: 'done' })) })
+      await act(async () => {})
+      expect(open).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('opens nothing for a slot the page may not show', () => {
+    const open = vi.spyOn(api, 'browserLiveViewOpen').mockResolvedValue({ view_key: 'x' })
+    mount(FOREIGN, <BrowserView slot={FOREIGN} tabId="TB" aria-label="Tab B" />)
+    expect(view().dataset.state).toBe('denied')
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it("says why when the gateway refuses the tab", async () => {
+    vi.spyOn(api, 'browserLiveViewOpen').mockRejectedValue(new Error('that tab cannot be shown in a view'))
+    mount(OWN, <BrowserView slot={OWN} tabId="NOT-MINE" aria-label="Tab" />)
+    await act(async () => {})
+    expect(view().dataset.state).toBe('view_error')
+    expect(view().textContent).toContain('that tab cannot be shown in a view')
+  })
+
+  it("lists the slot's own tabs through useBrowserView(slot).tabs()", async () => {
+    vi.spyOn(api, 'browserLiveViewTabs').mockResolvedValue({ tabs: [{ tab_id: 'TA', url: 'https://a/', title: 'A', current: true }, { bad: 1 }] })
+    let got: unknown = null
+    function Probe() {
+      const v = useBrowserView(OWN)
+      return <button onClick={() => { void v.tabs().then((t) => { got = t }) }}>list</button>
+    }
+    mount(OWN, <Probe />)
+    await act(async () => { fireEvent.click(screen.getByText('list')) })
+    expect(got).toEqual([{ tabId: 'TA', url: 'https://a/', title: 'A', current: true }])
+  })
+
+  it('drops the store session and frame rings on unmount', async () => {
+    vi.spyOn(api, 'browserLiveViewOpen').mockResolvedValue({ view_key: VIEW, turn_id: 'v1' })
+    vi.spyOn(api, 'browserLiveViewClose').mockResolvedValue({ ok: true } as never)
+    // Spy on forgetView to confirm it is called on unmount.
+    const forget = vi.spyOn(browserLiveStore, 'forgetView')
+    act(() => { browserLiveStore.applyEvent(ev(VIEW, { turn_id: 'v1' })); browserLiveStore.applyFrame(frame(VIEW)) })
+    const { unmount } = mount(OWN, <BrowserView slot={OWN} tabId="TB" aria-label="Tab B" />)
+    await act(async () => {})
+    // Session was created by the backend open.
+    expect(forget).not.toHaveBeenCalled()
+    unmount()
+    await act(async () => {})
+    // After unmount forgetView must have been called for VIEW.
+    expect(forget).toHaveBeenCalledWith(VIEW)
+  })
+
+  it('a late done event does not recreate a forgotten view session', async () => {
+    // After forgetView, a late `done` event from the gateway must not recreate
+    // the session for other connected owner tabs, so their frame rings are released.
+    act(() => { browserLiveStore.applyEvent(ev(VIEW, { turn_id: 'v1' })) })
+    expect((browserLiveStore as unknown as { sessions: Map<string, unknown> }).sessions.has(VIEW)).toBe(true)
+    browserLiveStore.forgetView(VIEW)
+    expect((browserLiveStore as unknown as { sessions: Map<string, unknown> }).sessions.has(VIEW)).toBe(false)
+    // A late `done` event arrives -- the backend always sends one when the view ends.
+    act(() => { browserLiveStore.applyEvent(ev(VIEW, { turn_id: 'v1', state: 'done' })) })
+    // The session must NOT be recreated (tombstone prevents it).
+    expect((browserLiveStore as unknown as { sessions: Map<string, unknown> }).sessions.has(VIEW)).toBe(false)
+  })
+})
+
+describe('applyEvent ring eviction scope', () => {
+  const VIEW2 = `${OWN}.view1234`  // a typical secondary-view key (registered via reviveView)
+
+  it('a secondary_view marker in the event registers the key in secondaryViewKeys', () => {
+    // Other dashboard tabs receive secondary_view: true from the gateway; they must
+    // register the key so their ring eviction runs on done, without the opening tab
+    // calling reviveView on their behalf.
+    const otherViewKey = `${OWN}.viewabcd`
+    act(() => {
+      browserLiveStore.applyEvent({ ...ev(otherViewKey, { turn_id: 'w1' }), secondary_view: true })
+    })
+    type S = { secondaryViewKeys: Set<string> }
+    expect((browserLiveStore as unknown as S).secondaryViewKeys.has(otherViewKey)).toBe(true)
+    // A done event must now evict the ring.
+    act(() => { browserLiveStore.applyFrame(frame(otherViewKey)) })
+    type SS = { sessions: Map<string, { turns: Map<string, { ring: { length: number } }> }> }
+    const before = (browserLiveStore as unknown as SS).sessions.get(otherViewKey)?.turns.get('w1')?.ring?.length
+    expect(before).toBeGreaterThan(0)
+    act(() => { browserLiveStore.applyEvent({ ...ev(otherViewKey, { turn_id: 'w1', state: 'done' }), secondary_view: true }) })
+    const after = (browserLiveStore as unknown as SS).sessions.get(otherViewKey)?.turns.get('w1')?.ring?.length
+    expect(after).toBe(0)
+  })
+  it('a done event does not clear rings for an ordinary slot whose name contains .view', () => {
+    // The ring-eviction must only apply to keys in secondaryViewKeys (registered by
+    // reviveView on a successful /views/open), not to ordinary slots whose name
+    // happens to match any pattern. Here "foo-1.viewing" is an ordinary slot -- it
+    // is never passed to reviveView, so its ring must survive a done event.
+    const ordinarySlot = 'foo-1.viewing'
+    act(() => { browserLiveStore.applyEvent(ev(ordinarySlot, { turn_id: 't1' })) })
+    act(() => { browserLiveStore.applyFrame(frame(ordinarySlot)) })
+    type S = { sessions: Map<string, { turns: Map<string, { ring: { length: number } }> }> }
+    const s = (browserLiveStore as unknown as S).sessions.get(ordinarySlot)
+    const ringBefore = s?.turns.get('t1')?.ring
+    expect(ringBefore?.length).toBeGreaterThan(0)
+    // Apply a `done` event -- ring must survive for ordinary slot.
+    act(() => { browserLiveStore.applyEvent(ev(ordinarySlot, { turn_id: 't1', state: 'done' })) })
+    const ringAfter = s?.turns.get('t1')?.ring
+    expect(ringAfter).toBe(ringBefore)
+    expect(ringAfter?.length).toBeGreaterThan(0)
+  })
+
+  it('a keepalive refusal renders an error on the second view', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      vi.spyOn(api, 'browserLiveViewOpen').mockResolvedValue({ view_key: VIEW2, turn_id: 'v1' })
+      vi.spyOn(api, 'browserLiveViewClose').mockResolvedValue({ ok: true } as never)
+      // Keepalive is refused -- this happens when capabilities.browse is revoked.
+      vi.spyOn(api, 'browserLiveVisibility').mockRejectedValue(new Error('policy_denied'))
+      act(() => { browserLiveStore.applyEvent(ev(VIEW2, { turn_id: 'v1' })); browserLiveStore.applyFrame(frame(VIEW2)) })
+      mount(OWN, <BrowserView slot={OWN} tabId="TB" aria-label="Tab B" />)
+      await act(async () => {})
+      await act(async () => { vi.advanceTimersByTime(VIEW_KEEPALIVE_MS) })
+      await act(async () => {})
+      // After a keepalive refusal the view should show an error notice.
+      expect(view().dataset.state).toBe('view_error')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a keepalive error clears after a successful heartbeat', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const VIEW3 = `${OWN}.view9999`
+      vi.spyOn(api, 'browserLiveViewOpen').mockResolvedValue({ view_key: VIEW3, turn_id: 'v2' })
+      vi.spyOn(api, 'browserLiveViewClose').mockResolvedValue({ ok: true } as never)
+      const visibilityMock = vi.spyOn(api, 'browserLiveVisibility')
+        .mockRejectedValueOnce(new Error('policy_denied'))
+        .mockResolvedValue({ ok: true } as never)
+      act(() => { browserLiveStore.applyEvent(ev(VIEW3, { turn_id: 'v2' })); browserLiveStore.applyFrame(frame(VIEW3)) })
+      mount(OWN, <BrowserView slot={OWN} tabId="TB" aria-label="Tab B" />)
+      await act(async () => {})
+      // First tick: rejection sets error.
+      await act(async () => { vi.advanceTimersByTime(VIEW_KEEPALIVE_MS) })
+      await act(async () => {})
+      expect(view().dataset.state).toBe('view_error')
+      // Second tick: success clears error.
+      await act(async () => { vi.advanceTimersByTime(VIEW_KEEPALIVE_MS) })
+      await act(async () => {})
+      expect(view().dataset.state).not.toBe('view_error')
+      void visibilityMock  // suppress unused var
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

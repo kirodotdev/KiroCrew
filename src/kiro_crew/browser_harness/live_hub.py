@@ -256,6 +256,10 @@ class LiveSession:
     #: Where the cursor drawn over the live view points (:meth:`LiveHub.aim`):
     #: ``{"x", "y", "label", "seq"}`` in viewport CSS px, or ``None`` before any aim.
     aim: dict[str, Any] | None = None
+    #: Set on a second live view of another session's tab
+    #: (``live_hub_views.start_view``): that session's key. A view owns no tab and
+    #: no turn, and is for looking only.
+    view_of: str = ""
 
     @property
     def relay(self) -> Relay | None:
@@ -347,6 +351,10 @@ def live_event(sess: LiveSession) -> dict[str, Any]:
         "ended_at_ms": int(sess.ended_ms),
         # Only once something aimed: older readers see the fields they always had.
         **({"aim": dict(sess.aim)} if sess.aim is not None else {}),
+        # Secondary views (opened via /views/open) carry this marker so every
+        # connected owner tab can register the key in secondaryViewKeys and
+        # release its JPEG rings when the view ends, not only the opening tab.
+        **({"secondary_view": True} if sess.view_of else {}),
     }
 
 
@@ -1021,6 +1029,7 @@ class LiveHub:
             sess.state = state
         self._update_page(sess, url=url, title=title, browser=browser, headless=headless)
         self._emit(sess)
+        self._follow_views(sess)
 
     def page_changed(self, session_key: str, *, url: str = "", title: str = "") -> None:
         sess = self._session(session_key)
@@ -1028,6 +1037,26 @@ class LiveHub:
         if self.recorder is not None and url:
             self.recorder.note_url(session_key, url)
         self._emit(sess)
+        self._follow_views(sess)
+
+    def _follow_views(self, sess: LiveSession) -> None:
+        """Give each live second view of *sess*'s current tab that tab's new address.
+
+        The agent's page reports reach only its own session; a view
+        (``live_hub_views``) showing the same tab would otherwise keep the address it
+        opened on. A view is look-only, so only the agent moves its tab.
+        """
+        target = sess.target_id
+        if not target:
+            return
+        for view in self._sessions.values():
+            if view.view_of != sess.session_key or view.state == STATE_DONE:
+                continue
+            if view.shown_target != target:
+                continue
+            if (view.url, view.title) != (sess.url, sess.title):
+                self._update_page(view, url=sess.url, title=sess.title)
+                self._emit(view)
 
     @staticmethod
     def _update_page(
@@ -1139,6 +1168,13 @@ class LiveHub:
         sess.visible = bool(sess.visible_tabs)
         if sess.visible:
             sess.seen_at = self._clock()
+            # A positive visibility heartbeat from a mounted secondary view is also
+            # a good time to reap any sibling views whose keepalive has gone quiet,
+            # so orphaned views from reloaded pages are not held until the next open.
+            if sess.view_of:
+                from kiro_crew.browser_harness import live_hub_views as _lhv  # noqa: PLC0415
+
+                _lhv.reap_idle_views(self, sess.view_of)
         if sess.stream is not None:
             await sess.stream.set_visible(sess.visible)
 
@@ -1153,7 +1189,10 @@ class LiveHub:
         sess = self._sessions.get(session_key)
         if sess is None or sess.stream is None:
             return False
-        sess.seen_at = self._clock()
+        # Secondary views use a keepalive heartbeat (set_visible) for idle tracking;
+        # frame acks from non-mounting tabs must not refresh seen_at and prevent reap.
+        if not sess.view_of:
+            sess.seen_at = self._clock()
         if stream is not None and stream != getattr(sess.stream, "stream_id", stream):
             return False
         return sess.stream.ack(int(seq))

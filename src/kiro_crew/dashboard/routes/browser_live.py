@@ -41,6 +41,10 @@ def register(app: web.Application) -> None:
     )
     app.router.add_post("/api/browser/live/reopen", handlers.api_browser_live_reopen)
     app.router.add_post("/api/browser/live/close", handlers.api_browser_live_close)
+    # A second view of an app slot's own tab (owner-only, ``handlers/browser_live_views.py``).
+    app.router.add_post("/api/browser/live/views/tabs", handlers.api_browser_live_views_tabs)
+    app.router.add_post("/api/browser/live/views/open", handlers.api_browser_live_views_open)
+    app.router.add_post("/api/browser/live/views/close", handlers.api_browser_live_views_close)
     app.router.add_post("/api/browser/input/claim", handlers.api_browser_input_claim)
     app.router.add_post("/api/browser/input/release", handlers.api_browser_input_release)
     app.router.add_post("/api/browser/input/event", handlers.api_browser_input_event)

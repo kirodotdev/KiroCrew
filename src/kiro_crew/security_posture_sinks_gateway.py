@@ -1095,4 +1095,11 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "address and title and a picked element's name. Each passes the "
         "exfiltration-URL and credential redactors whole before any cut to a length.",
     ),
+    (
+        "Second-view tab metadata handed to an app page",
+        "dashboard/handlers/browser_live_views.py",
+        "The `/api/browser/live/views/tabs` route lists the slot's own tabs for an "
+        "app page's `BrowserView tabId` picker. Each tab's URL and title passes the "
+        "exfiltration-URL and credential redactors before it leaves the gateway.",
+    ),
 )

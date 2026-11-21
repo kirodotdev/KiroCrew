@@ -22,6 +22,7 @@ import { useCallback, useContext, useEffect, useId, useRef, useState } from 'rea
 import { Btn } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
 import { i18nT } from '../i18n/t'
+import { api } from '../api/client'
 import { browserLiveStore, useBrowserLiveCurrent } from '../hooks/useBrowserLive'
 import type { FrameSize } from '../hooks/useBrowserLive.input'
 import type { BrowserHandbackSaid } from '../api/client/browserLive'
@@ -31,7 +32,7 @@ import { hostOf } from '../pages/chat/BrowserLiveCardViews'
 import { PictureBox } from '../pages/chat/BrowserLiveReplayStage'
 import { BrowserLiveHandbackBar } from '../pages/chat/BrowserLiveHandback'
 import { sanitizeLlmOutput } from '../utils/sanitize'
-import { reportBrowserViewGeometry, useBrowserView } from './browserViewHooks'
+import { VIEW_KEEPALIVE_MS, reportBrowserViewGeometry, useBrowserSecondView, useBrowserView } from './browserViewHooks'
 import { AppSdkContext } from './scopedApi'
 
 /** One annotation, in view coordinates (CSS pixels from the view's top left). */
@@ -48,7 +49,13 @@ export interface BrowserViewMark {
 export interface BrowserViewProps {
   /** One of this app's slot keys (`<app>-<id>`). */
   slot: string
-  /** May the person take over; default true. */
+  /**
+   * One of the slot's own tabs (`useBrowserView(slot).tabs()`), shown in a second
+   * view beside the slot's own: for two tabs side by side. Look only, so there is
+   * no take over; absent shows the tab the slot's Bot is on.
+   */
+  tabId?: string
+  /** May the person take over; default true (ignored when `tabId` is given). */
   interactive?: boolean
   /** The person took over in this view, once the gateway accepted it. */
   onTakeover?: () => void
@@ -81,12 +88,16 @@ function Placeholder({ state, text, className }: { state: string; text: string; 
 }
 
 export default function BrowserView({
-  slot, interactive = true, onTakeover, onHandBack, onNavigate, marks, stayLive = false, 'aria-label': ariaLabel, className,
+  slot, tabId, interactive: interactiveProp = true, onTakeover, onHandBack, onNavigate, marks, stayLive = false, 'aria-label': ariaLabel, className,
 }: BrowserViewProps) {
   const view = useBrowserView(slot)
   const { access } = view
   const ok = access === 'ok'
-  const turn = useBrowserLiveCurrent(ok ? slot : null)
+  // A tabId shows a second view under its own key; the slot's own view otherwise.
+  const second = useBrowserSecondView(slot, tabId, ok)
+  const key = tabId ? second.viewKey : slot
+  const interactive = interactiveProp && !tabId
+  const turn = useBrowserLiveCurrent(ok && key ? key : null)
   const instanceId = useId()
   const [frame, setFrame] = useState<FrameSize | null>(null)
   const boxRef = useRef<HTMLDivElement>(null)
@@ -109,22 +120,60 @@ export default function BrowserView({
   }, [rootEl])
   const shown = hostActive && onScreen
   useEffect(() => {
-    if (!ok || !turnId) return
-    browserLiveStore.setVisible(slot, instanceId, shown, turnId)
-    return () => browserLiveStore.setVisible(slot, instanceId, false, turnId)
-  }, [ok, slot, instanceId, turnId, shown])
+    if (!ok || !turnId || !key) return
+    browserLiveStore.setVisible(key, instanceId, shown, turnId)
+    return () => browserLiveStore.setVisible(key, instanceId, false, turnId)
+  }, [ok, key, instanceId, turnId, shown])
+  // A second view: tell the gateway it is still looked at while on screen and the
+  // browser tab is visible, so the view does not idle out from a reloaded page's
+  // leftover.  Post directly (not through the store) so the gateway's idle timer
+  // refreshes even when the page is still: the store deduplicates repeated
+  // visibility writes and would suppress the refresh.  Document visibility gates
+  // it so a hidden tab never re-enables the screencast.
+  // A refusal (403 policy_denied when the app loses capabilities.browse) is
+  // surfaced as a keepalive error so the person sees an explanation rather than
+  // a silently frozen picture.  The error is scoped to the current key: a new key
+  // (tab change) or a successful heartbeat both clear it so the view recovers.
+  const [keepaliveError, setKeepaliveError] = useState<{ key: string; message: string } | null>(null)
+  const keepaliveErrorMsg = keepaliveError?.key === key ? keepaliveError.message : null
+  const { reopen: reopenView } = second
+  useEffect(() => {
+    if (!ok || !tabId || !key || !shown) return
+    const id = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        api.browserLiveVisibility(key, true).then(() => {
+          setKeepaliveError(null)
+        }).catch((e: unknown) => {
+          setKeepaliveError({ key, message: e instanceof Error ? e.message : String(e) })
+        })
+      }
+    }, VIEW_KEEPALIVE_MS)
+    return () => clearInterval(id)
+  }, [ok, tabId, key, shown])
+  // Once per ended turn: a reopened view starts a new turn, so a view that keeps
+  // failing to open is not retried in a loop.
+  const viewEnded = !!tabId && turn?.state === 'done'
+  const endedTurn = viewEnded ? turnId : null
+  const reopenedFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (!ok || !endedTurn || reopenedFor.current === endedTurn) return
+    reopenedFor.current = endedTurn
+    reopenView()
+  }, [ok, endedTurn, reopenView])
 
   // The picture box's size, for useBrowserCoords.
   useEffect(() => {
     const el = boxRef.current
-    if (!ok || !el) return
+    // A second view (tabId) must not register under slot: it would overwrite the
+    // primary view's geometry and delete it on unmount (useBrowserCoords reads slot).
+    if (!ok || !el || tabId) return
     const report = () => reportBrowserViewGeometry(slot, { width: el.clientWidth, height: el.clientHeight, frame })
     report()
     if (typeof ResizeObserver === 'undefined') return () => reportBrowserViewGeometry(slot, null)
     const ro = new ResizeObserver(report)
     ro.observe(el)
     return () => { ro.disconnect(); reportBrowserViewGeometry(slot, null) }
-  }, [ok, slot, frame, turn?.hasFrame])
+  }, [ok, slot, tabId, frame, turn?.hasFrame])
 
   // Where the keyboard goes. In control (a Take over from the button, a click on
   // the frame, a second takeover after a hand back): the frame, so typing and Esc
@@ -154,7 +203,9 @@ export default function BrowserView({
 
   const callbacks = useRef({ onTakeover, onHandBack, onNavigate })
   callbacks.current = { onTakeover, onHandBack, onNavigate }
-  const { url, title } = view
+  // The page this view shows: the second view's own tab when tabId is given.
+  const url = turn?.url ?? (tabId ? '' : view.url)
+  const title = turn?.title ?? (tabId ? '' : view.title)
   useEffect(() => {
     if (ok && url) callbacks.current.onNavigate?.({ url, title })
   }, [ok, url, title])
@@ -207,6 +258,22 @@ export default function BrowserView({
   if (access === 'app_off') return <Placeholder state="app_off" text={i18nT('appSdk.browserView.app_off')} className={className} />
   if (access === 'not_granted') return <Placeholder state="not_granted" text={i18nT('appSdk.browserView.not_granted')} className={className} />
   if (access === 'denied') return <Placeholder state="denied" text={i18nT('appSdk.browserView.denied')} className={className} />
+  // Second view errors: a refused tab, an app off, the slot's own view cap.
+  if (tabId && second.error) {
+    return (
+      <div className={`rounded-md border border-border bg-card p-4 ${className ?? ''}`} data-testid="app-browser-view" data-state="view_error">
+        <ErrorNotice variant="inline" message={second.error} askAgent testId="app-browser-view-view-error" />
+      </div>
+    )
+  }
+  if (tabId && keepaliveErrorMsg) {
+    return (
+      <div className={`rounded-md border border-border bg-card p-4 ${className ?? ''}`} data-testid="app-browser-view" data-state="view_error">
+        <ErrorNotice variant="inline" message={keepaliveErrorMsg} askAgent testId="app-browser-view-keepalive-error" />
+      </div>
+    )
+  }
+  if (tabId && !key) return <Placeholder state="idle" text={i18nT('appSdk.browserView.waiting_for_frame')} className={className} />
   // Off the live view, a failed control write (take over, hand back, a hand-back
   // note) is shown on every face; nothing on those faces is unsaved.
   const controlNotice = turn?.controlError
@@ -234,7 +301,7 @@ export default function BrowserView({
     }
     // The Bot's turn is over but its tab is still open: one click streams it again
     // (the chat card's "Open live", the same owner route).
-    if (turn && turn.tab === 'open' && browserLiveStore.isCurrentTurn(slot, turn.turnId)) {
+    if (turn && !tabId && turn.tab === 'open' && browserLiveStore.isCurrentTurn(slot, turn.turnId)) {
       return (
         <div ref={setRootEl} className={`grid place-items-center gap-3 rounded-md border border-border bg-card p-6 text-center text-[13px] text-muted ${className ?? ''}`} data-testid="app-browser-view" data-state="done">
           {controlNotice}
@@ -299,7 +366,7 @@ export default function BrowserView({
             {turn.hasFrame ? (
               <BrowserLiveCardCanvas
                 ref={canvasRef}
-                sessionKey={slot}
+                sessionKey={key ?? slot}
                 turnId={turn.turnId}
                 visible={shown}
                 interactive={canInteract}
