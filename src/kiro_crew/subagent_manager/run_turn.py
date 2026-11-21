@@ -1472,7 +1472,10 @@ async def _run_inner_impl(
                 try:
                     _tool_name = _pending_tools.pop(event.tool_call_id, "")
                     _named = _pending_tool_ids.pop(event.tool_call_id, None)
-                    _out = _redact((event.tool_output or "")[:2000])
+                    # Redact the FULL output, then cut to the 2000-char hook
+                    # bound: cutting first can split a credential into a
+                    # fragment the redactor does not match.
+                    _out = _redact(event.tool_output or "")[:2000]
                     # The child's own ACP session id, for its spec hooks only.
                     _sid = getattr(client, "session_id", "") if _spec.hooks else ""
                     await self._manager.hook_store.fire(
