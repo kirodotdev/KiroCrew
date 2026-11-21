@@ -3668,7 +3668,7 @@ TEI (Text Embeddings Inference) uses the candle Rust framework with a Metal back
 ### Lessons in Vector Memory
 
 When vector memory is active, lessons are stored as semantic entries:
-- Key: `lesson.<md5_of_rule>` when the lesson is global (dedup via hash). A lesson
+- Key: `lesson.<md5(rule)>` when the lesson is global (dedup via hash). A lesson
   carrying `repo_scope` folds the scope into the hash, so the same rule scoped to two
   repositories is two rows and an unscoped row keeps its historical key byte-for-byte.
 - Value: a mapping `{"rule": ..., "category": ..., "negative": ...}` — the NOT-clause
@@ -7111,7 +7111,7 @@ No new command. Users interact via the existing skill management surface:
 - Review pending candidates: dashboard Skills → Pending review, or `GET /api/skills/-/pending`
 - List auto skills: filter `kirocrew` skill listings to those under `auto/`, or use `SkillsLoader.list_auto_skills()` in code
 - Remove unwanted auto skill: use the dashboard Skills delete action
-- Audit trail: `kirocrew security events -n 20 | grep auto_skill`
+- Audit trail: `kirocrew security events -n 20 | grep auto_skill_` (the `auto_skill_create`, `auto_skill_refine` and `auto_skill_update_approve` events)
 
 ## Hooks (`hooks.py` and `hook_runtime/`)
 

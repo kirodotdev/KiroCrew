@@ -69,7 +69,7 @@ Against a **frozen golden set** of `(query → the chunk(s) that should answer i
 |--------|------------|-------|
 | **recall@k** | `|relevant ∩ retrieved@k| / |relevant|` — fraction of relevant chunks that land in the top-k | coverage / completeness |
 | **precision@k** | `|relevant ∩ retrieved@k| / k` — fraction of the top-k that is relevant | signal-to-noise |
-| **MRR** | mean of `1 / rank_of_first_relevant` over queries | how early the first hit lands |
+| **MRR** | mean over queries of `1 / rank`, where rank is the position of the first relevant hit | how early the first hit lands |
 | **nDCG@k** | graded relevance with a log-rank discount, normalized to the ideal ordering | rank quality when relevance is graded, not binary |
 | **hit@k** | binary: did *any* relevant chunk make the top-k | cheap "did retrieval work at all" gate |
 

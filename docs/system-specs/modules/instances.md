@@ -2433,8 +2433,8 @@ versions is what lets a v2 instance still receive a copy from a v1 one.
 | `POST /api/chat/slots/import` | Receiving side, for BOTH arrival routes. Accepts a bundle — gzipped or plain JSON, sniffed from its own bytes — and materialises a new slot. Answers `{ok, key, title, messages, resume_mode, folder_id}`; `folder_id` is the arrival folder in THIS instance's own tree (`""` when unfiled), so the client can open its path. See §14.5a. |
 
 `send-session` goes through the same `_guard()` as every other route in §6
-(owner-only, never Slack, feature-gated, SEL-audited as
-`instances_send_session`). It returns `{ok, instance, remote_key, messages, resume_mode}` (`resume_mode` is the peer's, `""` from an older peer).
+(owner-only, never Slack, feature-gated, SEL-audited by `_audit` as `instances_<operation>` with
+operation `send_session`). It returns `{ok, instance, remote_key, messages, resume_mode}` (`resume_mode` is the peer's, `""` from an older peer).
 
 Status codes: `404` unknown instance or unknown local slot, `400` a
 non-persistent source session or a malformed body, `503` the manager is not

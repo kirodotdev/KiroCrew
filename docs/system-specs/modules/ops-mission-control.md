@@ -1557,7 +1557,9 @@ precisely what they asked not to happen.
 
 ### Autonomy gate (`backend/rotation.py`)
 
-`effective = min(app_mode, matching_rule_mode)` over `observe < propose < act`.
+`effective_mode(app_default, rule_mode)` (in `backend/models.py`) is
+`min(app_default, rule_mode)` over `observe < propose < act`, where `rule_mode` is
+the mode of the best matching rule.
 
 - Default `app_mode` is **`observe`** — nothing is written to any provider.
 - `act` requires **both** `app_mode == act` AND a user-authored rule whose
@@ -1990,7 +1992,7 @@ two paths provider text leaves this app sanitize to one standard.
 **The pre-push ledger scan follows the same rule.** `ledger_sync._credential_bearing_lines` is
 the last gate before bytes leave the machine for the team's shared git remote, and the asymmetry
 documented here for the postmortem applies verbatim: the core scan
-(`security.iter_credential_matches`) misses `ddapp_0123…` while `redact_tokens` misses
+(`security.iter_credential_matches`) misses a prefixed Datadog application key (`ddapp_…`) while `redact_tokens` misses
 `AKIAIOSFODNN7EXAMPLE`, so a scan using one of them would commit and push a legacy row (written
 by an older build, or by any path other than `POST /ledger`) carrying a provider token. The scan
 flags a line if EITHER detector does, and a structural test asserts both are called so a private
