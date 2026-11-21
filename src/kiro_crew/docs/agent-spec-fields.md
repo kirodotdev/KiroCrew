@@ -535,8 +535,13 @@ itself:
   `$VAR` and `${VAR}` first (`file://$HOME/p.md`), as kiro-cli's v2 engine
   does;
 - relative or absolute, the resolved path (symlinks followed) must not be a
-  credential or governance location, `~/.config/gh`, the data home's
-  `app_receipt_secret` or `session_token_*.sig`, `/proc`, `/sys` or `/dev` —
+  credential or governance location, gh's config folder wherever gh looks
+  (`GH_CONFIG_DIR`, `$XDG_CONFIG_HOME/gh`, `%APPDATA%\GitHub CLI`,
+  `~/.config/gh`; a relative value is fenced by its tail and under the
+  gateway's cwd), the data home's `app_receipt_secret` or
+  `session_token_*.sig`, `/proc`, `/sys` or `/dev`, or a share or
+  device-namespace path that can name a file on this host (a share on this
+  host, a drive-letter or `admin$` share, the Windows device namespace) —
   the content is shipped
   over the wire, so a spec pointing at `/proc/<pid>/environ` would exfiltrate
   the gateway's environment (`acp/kas_prompt_paths.py`);
