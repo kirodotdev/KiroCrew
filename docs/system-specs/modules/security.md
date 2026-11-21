@@ -1516,16 +1516,22 @@ Security properties:
   so each rule is written once). One SEL row per vault fill and per save
   names the item and the origin.
 - **Browser upload reads ordinary files inside the gateway.** The browser's
-  `upload {ref, path}` op (`browser_harness/upload.py`; see [browser](browser.md),
+  `upload {ref, path, via}` op (`browser_harness/upload.py`; see [browser](browser.md),
   Security) runs in the gateway, outside the agent's sandbox, so the path is
   judged there and not trusted from the sandbox: the gate's `param-paths` tier
-  reads `args.path` (one path or a list, each judged), and the gateway refuses each again when it is relative, not a
-  regular file, a final link, or over 25 MiB. It copies the file with
+  reads `args.path` (one entry or a list, each judged), and the gateway refuses each file again when it is relative, not a
+  regular file, a final link, or over 25 MiB. A folder or glob entry is expanded in
+  the gateway; links inside are skipped, never followed, and every file found is
+  checked and copied the same way, one protected file refusing the whole call. It copies the file with
   `hooks.safe_copy_file_nolink`, the same descriptor-pinned copy other gateway
   readers use: one open without following a final link, a regular file with one
   link, and `is_sensitive_path` on the real path of the OPENED descriptor, so a
   folder link flipped between the check and the open is refused. An app's
-  `browserSites` grant never approves it. The browser receives that copy, in the
+  `browserSites` grant never approves it; a person's `act` site grant on the
+  chat's host does, with the route's host re-check, except for a path in a
+  folder the strict sandbox hides: with no card the walk and the copy (on the
+  opened descriptor's real path, `safe_copy_file_nolink(refuse=...)`) answer
+  `needs_card`, and the route puts the call on the person's card. The browser receives that copy, in the
   hidden IPC leaf, never the agent's path, so a file or link swapped in after the
   check never reaches the page. One
   SEL row per file names the path and size, never the content.
@@ -5257,9 +5263,9 @@ API instead of importing dashboard runner internals or fabricating a
 offers the `trust_command` tier as a grant on ONE site: the host of the page the
 call acts on, with its port when the URL names one, for one op class
 (`browser_harness/op_classes.py`). `read` covers opening and reading that host's
-pages; `act` covers clicking, typing and picking there too, and is stored as the
+pages; `act` covers clicking, typing, picking and uploading files there too, and is stored as the
 host's key prefix plus `*`, so it also covers `read` on that host and nothing
-else. `ask`, `reflex` and every call of `op_classes.card_only` (`upload`, `js`,
+else. `ask`, `reflex` and every call of `op_classes.card_only` (`js`,
 `cdp`, `http_get` and `tabs close`, which reach past one host's pages) never get
 a key, and neither does an op the
 classifier does not name. The host is the URL a `navigate` or `tabs new` opens

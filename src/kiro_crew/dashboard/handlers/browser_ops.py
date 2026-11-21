@@ -75,6 +75,8 @@ so chats do not share cookies either, and the daemon's current tab is never adop
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import functools
 import importlib
 import logging
 import uuid
@@ -499,6 +501,28 @@ def _site_gate(sites: tuple[str, ...]) -> Any:
 def session_app(request: web.Request, key: str) -> str:
     """The app that owns the dashboard slot *key*, or ``""`` (no slot, or a person's)."""
     return slot_app(_request_state(request), key)
+
+
+def _read_permitted(session_key: str, agent: str, app: str, path: str) -> bool:
+    """Whether governance lets *session_key* (its slot's *agent* and *app*) read *path*.
+
+    Fail-closed. Blocking.
+    """
+    from kiro_crew.platform.governance_profiles import governance_permits
+
+    try:
+        decision = governance_permits(
+            "filesystem.read",
+            path,
+            session_key=session_key,
+            agent=agent,
+            app=app,
+            log_warning=False,
+            fail_closed=True,
+        )
+    except Exception:  # noqa: BLE001 - unevaluable denies
+        return False
+    return bool(getattr(decision, "permitted", False))
 
 
 def slot_app(state: Any, key: str) -> str:
@@ -1214,7 +1238,23 @@ async def run_browser_op(
         return _held(request, hub, key, op, interrupted=False)
     from kiro_crew.dashboard.handlers import browser_card_ask
 
-    carded = await browser_card_ask.gate(state, session_key, op, args, approval)
+    # An upload a person's act grant on this host covers runs with no card; its host
+    # goes down to the op, which re-reads the bound tab before the files go.
+    granted_host = "" if approval else browser_card_ask.upload_grant_host(state, session_key, op)
+    ctx.upload_grant_host = granted_host
+    # The caller as the tool gate names it: an agent- or app-bound profile narrows too.
+    slot = (getattr(state, "_slots", None) or {}).get(key)
+    ctx.read_allowed = functools.partial(
+        _read_permitted,
+        session_key,
+        str(getattr(slot, "agent", "") or ""),
+        str(getattr(slot, "_app", "") or ""),
+    )
+    carded = (
+        None
+        if granted_host
+        else await browser_card_ask.gate(state, session_key, op, args, approval)
+    )
     if carded is not None:
         code = str(carded.get("code") or "")
         _audit(request, "pending" if code == "needs_approval" else "denied", code)
@@ -1256,6 +1296,7 @@ async def run_browser_op(
                 budget,
                 caller_key=session_key,
                 sites=sites,
+                granted_host=granted_host,
             )
     finally:
         _OP_LOCK.release()
@@ -1265,6 +1306,13 @@ async def run_browser_op(
         hub.record_op(key, op, args, {"ok": False, "code": "interrupted"}, mark)
         return _held(request, hub, key, op, interrupted=True)
     assert isinstance(result, dict)
+    if granted_host and result.get("code") == "needs_card":
+        # The grant does not cover a strict-hidden path: the person's card does.
+        carded = await browser_card_ask.open_card(state, session_key, op, args)
+        _audit(
+            request, "pending" if carded.get("code") == "needs_approval" else "denied", "needs_card"
+        )
+        return carded, 200
     # The turn replay's event for this op: generic, from the step it reported and
     # the result it answered (``browser_harness.recording.agent_event``). An ask
     # records its own ``person`` events instead.
@@ -1410,6 +1458,7 @@ async def _fenced_op(
     *,
     caller_key: str = DASHBOARD_SURFACE_KEY,
     sites: tuple[str, ...] = (),
+    granted_host: str = "",
 ) -> dict[str, Any] | object:
     """:func:`_run_fenced_op`, with any unreported popup tab move on its answer.
 
@@ -1418,7 +1467,17 @@ async def _fenced_op(
     never saw.
     """
     answer = await _run_fenced_op(
-        request, hub, key, supervisor, ctx, op, args, budget, caller_key=caller_key, sites=sites
+        request,
+        hub,
+        key,
+        supervisor,
+        ctx,
+        op,
+        args,
+        budget,
+        caller_key=caller_key,
+        sites=sites,
+        granted_host=granted_host,
     )
     if op == "ask":
         # A quick ask's text is its outcome alone (``mcp_tools.browser._ask_text``),
@@ -1439,6 +1498,7 @@ async def _run_fenced_op(
     *,
     caller_key: str = DASHBOARD_SURFACE_KEY,
     sites: tuple[str, ...] = (),
+    granted_host: str = "",
 ) -> dict[str, Any] | object:
     """Bind, run, follow -- under both locks.
 
@@ -1462,7 +1522,7 @@ async def _run_fenced_op(
 
     try:
         return await _bound_op(
-            request, hub, key, supervisor, ctx, op, args, budget, caller_key, sites
+            request, hub, key, supervisor, ctx, op, args, budget, caller_key, sites, granted_host
         )
     finally:
         relay = getattr(supervisor, "relay", None)
@@ -1482,6 +1542,7 @@ async def _bound_op(
     budget: float,
     caller_key: str,
     sites: tuple[str, ...],
+    granted_host: str = "",
 ) -> dict[str, Any] | object:
     async def _bind() -> dict[str, Any] | None:
         # The bind comes first: it records the context this op browses in, which
@@ -1511,6 +1572,8 @@ async def _bound_op(
         # The call's own host-grant note, taken once whatever this op's answer, so
         # a later identical call never inherits it.
         noted_host = browser_host_trust.take_host_approval(key, op, args)
+        # An upload the route let through on an act grant is checked the same way.
+        noted_host = granted_host or noted_host
         if op == "ask":
             # A quick ask binds to the card's own stream: make sure one runs on the
             # tab just bound, then put the ask on the card (it never runs ``run_op``).
@@ -1538,9 +1601,11 @@ async def _bound_op(
         else:
             # An app's op is not one of the chat's steps: ``browser.run`` counts the Bot's.
             max_ops, max_repeats = (0, 0) if isinstance(request, GatewayCaller) else _run_limits()
+            counted: tuple[Any, run_budget.RunCount] | None = None
             if max_ops or max_repeats:
                 sess = hub.get(key)
                 if sess is not None:
+                    counted = (sess, dataclasses.replace(sess.run))
                     stopped = run_budget.check(
                         sess.run, op, args, max_ops=max_ops, max_repeats=max_repeats
                     )
@@ -1559,6 +1624,14 @@ async def _bound_op(
                 raise
             finally:
                 hub.op_finished(key)
+            if (
+                counted is not None
+                and granted_host
+                and result.get("code") in ("needs_card", browser_host_trust.SCOPE_CHANGED_CODE)
+            ):
+                # Turned away before any file went (the card's call, or the tab left the
+                # granted host after staging): the run that follows is the one that counts.
+                counted[0].run = counted[1]
     except asyncio.TimeoutError:
         _audit(request, "error", "timeout")
         return {"ok": False, "code": "timeout", "error": f"{op} ran past {budget:g}s"}

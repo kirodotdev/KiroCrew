@@ -246,8 +246,10 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: by), so every existing caller still fits. ``fire_tool_hooks`` also takes a
 #: trailing ``tool_match_names=None`` keyword (``None`` keeps title matching).
 #: ``safe_copy_file_nolink`` takes a keyword-only ``links_only=False`` (the browser
-#: upload's read of a cloud-files placeholder on Windows), so its callers fit too.
-_BASE_SHAPE_DIGEST = "4f800391db8fe8cf0c7db83ec28af558812e0ea03dc14f557de05ec6d7334b49"
+#: upload's read of a cloud-files placeholder on Windows) and a keyword-only
+#: ``refuse=None`` (as ``safe_read_prefix``: the upload's own fence on the opened
+#: descriptor's real path), so its callers fit too.
+_BASE_SHAPE_DIGEST = "793a01abfa9634d8e6b9aac14536d41b4a511b11e878cee3f2effd34d14a3cee"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in
