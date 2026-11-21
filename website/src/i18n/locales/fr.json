@@ -19034,7 +19034,7 @@
         "resources": "Ressources",
         "read_only_here": "lecture seule ici",
         "mcp_servers": "Serveurs MCP – connexions à des outils externes",
-        "mcp_read_only_hint": "lecture seule dans cette version — gère les serveurs dans Serveurs MCP",
+        "mcp_read_only_hint": "lecture seule ici — les serveurs ajoutés sur la page Serveurs MCP n’atteignent pas cet agent",
         "none": "Aucun",
         "unsaved_changes": "Modifications non enregistrées",
         "discard": "Abandonner",

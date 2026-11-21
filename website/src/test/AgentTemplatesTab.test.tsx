@@ -465,6 +465,18 @@ describe('AgentTemplatesTab detail robustness', () => {
     expect(rows.map(r => r.textContent)).toEqual(['docsstdio', 'broken', 'remotehttps://mcp.example.test'])
   })
 
+  it('says the MCP Servers page does not add servers to a custom agent', async () => {
+    // A server added on that page goes to the Kiro Crew store, which no custom
+    // agent mounts; the old hint sent people there to add one.
+    mockApi.agentDetail.mockImplementation(async (name: string) => ({
+      name, prompt: 'p', tools: [], allowedTools: [], resources: [], skills: [], mcpServers: {},
+    }))
+    renderTab()
+    await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'))
+    await screen.findByText(/servers added on the MCP Servers page don't reach this agent/)
+    expect(screen.queryByText(/manage servers under MCP Servers/)).toBeNull()
+  })
+
   it('says why a read-only template has no prompt instead of showing an empty editor', async () => {
     mockApi.agentDetail.mockImplementation(async (name: string) => ({
       name, prompt: '', tools: [], allowedTools: [], resources: [], skills: [],

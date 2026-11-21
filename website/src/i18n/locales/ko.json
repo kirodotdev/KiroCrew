@@ -18058,7 +18058,7 @@
         "resources": "리소스",
         "read_only_here": "여기서는 읽기 전용",
         "mcp_servers": "MCP 서버 — 외부 도구 연결",
-        "mcp_read_only_hint": "이 버전에서는 읽기 전용 — 서버는 MCP 서버에서 관리하세요",
+        "mcp_read_only_hint": "여기서는 읽기 전용 — MCP 서버 페이지에서 추가한 서버는 이 에이전트에 전달되지 않습니다",
         "none": "없음",
         "unsaved_changes": "저장되지 않은 변경 사항",
         "discard": "취소",

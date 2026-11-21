@@ -18058,7 +18058,7 @@
         "resources": "リソース",
         "read_only_here": "ここでは読み取り専用",
         "mcp_servers": "MCP サーバー — 外部ツールとの接続",
-        "mcp_read_only_hint": "このバージョンでは読み取り専用 — サーバーは MCP サーバー で管理してください",
+        "mcp_read_only_hint": "ここでは読み取り専用 — MCP サーバーページで追加したサーバーはこのエージェントには届きません",
         "none": "なし",
         "unsaved_changes": "未保存の変更",
         "discard": "破棄",
