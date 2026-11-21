@@ -228,6 +228,29 @@ async def test_an_overlapping_get_cannot_record_an_older_revision_than_a_store(t
     assert await _server(tmp_path).answer(kss.METHOD_SECRET_GET, {"key": _TOKENS_KEY}) == {}
 
 
+@pytest.mark.asyncio
+async def test_a_cleared_sign_in_is_logged_for_the_server(tmp_path, caplog):
+    """The only record of a clear: without it a vanished grant has no cause in the log."""
+    server = _server(tmp_path)
+    await server.answer(kss.METHOD_SECRET_STORE, {"key": _TOKENS_KEY, "value": _TOKEN_VALUE})
+    with caplog.at_level(logging.INFO, logger=kss.logger.name):
+        await server.answer(kss.METHOD_SECRET_DELETE, {"key": _TOKENS_KEY})
+    cleared = [r.getMessage() for r in caplog.records if "asked to clear it" in r.getMessage()]
+    assert cleared == [
+        "MCP sign-in for server {}: the engine asked to clear it".format(_HASH[:12])
+    ]
+
+
+@pytest.mark.asyncio
+async def test_clearing_a_client_registration_logs_no_sign_in_line(tmp_path, caplog):
+    """Only the tokens entry is the sign-in; a registration clear is not one."""
+    server = _server(tmp_path)
+    await server.answer(kss.METHOD_SECRET_STORE, {"key": _CLIENT_KEY, "value": "reg"})
+    with caplog.at_level(logging.INFO, logger=kss.logger.name):
+        await server.answer(kss.METHOD_SECRET_DELETE, {"key": _CLIENT_KEY})
+    assert "asked to clear it" not in caplog.text
+
+
 @pytest.mark.parametrize("method", [[], {}, {"m": 1}, None, 7, ["_kiro/secret/get"]])
 def test_a_non_string_method_is_never_a_secret_method(method):
     assert kss.is_secret_method(method) is False
