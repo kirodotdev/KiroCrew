@@ -1938,7 +1938,9 @@ with it on, each spawn is admitted as a child charged to the app's own system
 principal, under the per-person and Crew-wide limits.
 
 API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
-`build_continue_impl`, `SpawnError`. The calls are described in
+`build_success_probe`, `build_continue_impl`, `SpawnError`. `SpawnSDK.is_done` is
+True on any finish; `SpawnSDK.succeeded` is True only for a run the host reports
+completed. The calls are described in
 [api-reference](api-reference.md#background-agents-ctxspawn).
 
 #### `permissions.memberThreads` — A Bot's own thread
