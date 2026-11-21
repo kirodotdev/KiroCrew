@@ -45,16 +45,18 @@ def selector():
 
     ``collect`` costs ~3s a call. The memo key carries ``_is_windows()`` because the
     Windows filter runs inside ``collect``, and ``test_posix_scope_is_unfiltered``
-    patches that seam between two ``collect("backend")`` calls.
+    patches that seam between two ``collect("backend")`` calls. ``for_windows``
+    is a key of its own, so the Windows list asked for on a POSIX host is worked
+    out from that argument and never read back from a patched seam.
     """
     module = _load_selector()
-    memo: dict[tuple[str, bool], list[str]] = {}
+    memo: dict[tuple[str, bool, bool], list[str]] = {}
     uncached = module.collect
 
-    def collect(surface: str) -> list[str]:
-        key = (surface, module._is_windows())
+    def collect(surface: str, for_windows: bool = False) -> list[str]:
+        key = (surface, module._is_windows(), for_windows)
         if key not in memo:
-            memo[key] = uncached(surface)
+            memo[key] = uncached(surface, for_windows=for_windows)
         # A copy, so a caller that sorts or filters in place cannot poison the memo.
         return list(memo[key])
 
@@ -455,6 +457,21 @@ def test_posix_scope_is_unfiltered(selector, monkeypatch) -> None:
     # The POSIX list must still carry suites the Windows one drops, or the filter
     # is a no-op and this whole guard proves nothing.
     assert posix_selected - win_selected
+
+
+@pytest.mark.timeout(POSIX_SCOPE_TIMEOUT_SECS)
+def test_any_host_can_name_the_list_a_windows_run_gets(selector, monkeypatch, capsys) -> None:
+    """One job names the list every Windows shard of a run must hold."""
+    monkeypatch.setattr(selector, "_is_windows", lambda: True)
+    on_windows = selector.collect("backend")
+    monkeypatch.setattr(selector, "_is_windows", lambda: False)
+    assert selector.collect("backend", for_windows=True) == on_windows
+    assert selector.collect("backend") != on_windows
+    # The command line reaches the same list, and without the flag the host's.
+    assert selector.main(["--surface", "backend", "--for-windows"]) == 0
+    assert capsys.readouterr().out.splitlines() == on_windows
+    assert selector.main(["--surface", "backend"]) == 0
+    assert capsys.readouterr().out.splitlines() == selector.collect("backend")
 
 
 def test_windows_seam_follows_os_name(selector, monkeypatch) -> None:

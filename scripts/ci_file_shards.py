@@ -41,8 +41,10 @@ each leave a file to another. No shard can see another's list, so each one
 prints the SHA-256 of its target set and how many files it holds in the
 terminal summary, where differing shards show. ``--file-shard-targets-sha256``
 names the digest the run expects: a shard whose list has another one stops
-before collecting. The digest is over the sorted root-relative paths, one per
-line, which is ``LC_ALL=C sort -u <list> | sha256sum``.
+before collecting, and so does one given a value that is not a digest (an empty
+one: the run named none). The digest is over the sorted root-relative paths, one
+per line, which is ``LC_ALL=C sort -u <list> | sha256sum``. ``ci.yml`` computes
+it once per run, in the ``changes`` job, and passes it to every shard.
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ from __future__ import annotations
 import hashlib
 import heapq
 import math
+import re
 import statistics
 import sys
 from collections.abc import Iterable, Mapping
@@ -58,6 +61,7 @@ from pathlib import Path
 import pytest
 
 _HERE = Path(__file__).resolve().parent
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 DEFAULT_WEIGHTS = {
     "linux": _HERE / "ci_file_shard_weights.txt",
     "windows": _HERE / "ci_file_shard_weights_windows.txt",
@@ -246,6 +250,12 @@ def pytest_configure(config: pytest.Config) -> None:
     elif weights_path is not None or expected is not None:
         raise pytest.UsageError(
             "--file-shard-weights and --file-shard-targets-sha256 require --file-shard-targets"
+        )
+    if expected is not None and not _SHA256.fullmatch(expected.strip().lower()):
+        raise pytest.UsageError(
+            f"--file-shard-targets-sha256 {expected!r} is not a SHA-256 digest (64 hex "
+            f"characters): the run named no digest for --file-shard-targets {targets_path}, "
+            "so this shard cannot be shown to hold the same list as the rest of the run"
         )
     plugin = FileShards(config.rootpath, count, index, pins, targets, weights)
     if expected is not None and plugin.digest != expected.strip().lower():

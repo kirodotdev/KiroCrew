@@ -25,6 +25,10 @@ Usage
 -----
     ci-surface-tests.py --surface backend    # pytest files that must still run
     ci-surface-tests.py --surface frontend   # vitest/electron specs that must run
+    ci-surface-tests.py --surface backend --for-windows   # the list a Windows run gets
+
+``--for-windows`` prints, on any host, the list this script prints on Windows, so
+one job can name the list every Windows shard of a run must hold.
 
 Prints one repo-relative path per line (empty output = nothing needs to run).
 ``--summary`` adds counts on stderr. Exit 2 on a usage/environment error, in
@@ -177,8 +181,11 @@ def _windows_collect_ignore(root: Path) -> frozenset[str]:
     return frozenset(n for n in names if n)
 
 
-def collect(surface: str) -> list[str]:
-    """Repo-relative paths that must still run for a single-surface diff."""
+def collect(surface: str, for_windows: bool = False) -> list[str]:
+    """Repo-relative paths that must still run for a single-surface diff.
+
+    ``for_windows`` applies the Windows filter below whatever the host is.
+    """
     root = _repo_root()
     must_run: list[str] = []
 
@@ -193,7 +200,7 @@ def collect(surface: str) -> list[str]:
                 if _is_cross_surface(path, _FRONTEND_FOREIGN):
                     must_run.append(path.relative_to(root).as_posix())
 
-    if _is_windows():
+    if for_windows or _is_windows():
         # These paths are consumed as EXPLICIT pytest arguments, and an explicit
         # argument bypasses both `collect_ignore` and the `pytest_ignore_collect`
         # hook -- verified, not assumed. So conftest's Windows exclusion does not
@@ -231,9 +238,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also print counts to stderr",
     )
+    parser.add_argument(
+        "--for-windows",
+        action="store_true",
+        help="print the list a Windows run gets, whatever this host is",
+    )
     args = parser.parse_args(argv)
 
-    paths = collect(args.surface)
+    paths = collect(args.surface, for_windows=args.for_windows)
 
     if args.summary:
         root = _repo_root()

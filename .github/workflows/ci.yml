@@ -110,6 +110,14 @@ jobs:
       leaf_tests: ${{ steps.leaf.outputs.leaf_tests }}
       leaf_targets: ${{ steps.leaf.outputs.leaf_targets }}
       leaf_gates: ${{ steps.leaf.outputs.leaf_gates }}
+      # The SHA-256 of each test-file list this run's backend shards split by
+      # file, or empty when the run has no such list (see "Digest the selected
+      # backend test lists"). A shard passes its list's digest to pytest with
+      # the list, and one whose list has another digest fails.
+      leaf_gates_sha256: ${{ steps.lists.outputs.leaf_gates_sha256 }}
+      reduced_sha256: ${{ steps.lists.outputs.reduced_sha256 }}
+      reduced_windows_sha256: ${{ steps.lists.outputs.reduced_windows_sha256 }}
+      docs_readers_sha256: ${{ steps.lists.outputs.docs_readers_sha256 }}
       # JSON {issue, nodeids} of tests red on main that a pull request's backend
       # shards deselect, or empty for "run everything" (scripts/ci_main_red_skip.py).
       # An absent output (this job failed) also runs everything.
@@ -420,6 +428,69 @@ jobs:
             printf '%s\n' "$gates"
             echo "GATE_EOF"
           } >> "$GITHUB_OUTPUT"
+
+      # A list handed to pytest as --file-shard-targets is placed across the
+      # shards by measured time, so the placement depends on the whole list: if
+      # two shards of one run hold different lists, each can leave a file to
+      # the other and that file runs nowhere, on a green run. No shard sees
+      # another's list, and the reduced scope and the docs readers are worked
+      # out on each shard. So this job, which runs once per run and is not
+      # repeated when one failed shard is re-run, works each list out the same
+      # way from the same commit and publishes its digest; every shard passes
+      # that digest with its own list, and pytest stops before collecting when
+      # they differ. An empty digest means the run has no such list: a shard
+      # that then holds one fails too, and so does a shard that holds none when
+      # the run has one (the scope steps of the three jobs).
+      #
+      # The Windows shards get their own digest: their list leaves out
+      # test/windows-collect-ignore.txt. The leaf corpus gates are one list on
+      # both. The digest is `LC_ALL=C sort -u | sha256sum` over the non-blank
+      # lines, which is what the pytest plugin computes from the file.
+      - name: Digest the selected backend test lists
+        id: lists
+        env:
+          ONLY_FRONTEND: ${{ steps.decide.outputs.only_frontend }}
+          DOCS_ONLY: ${{ steps.docs-only.outputs.docs_only }}
+          LEAF_GATES: ${{ steps.leaf.outputs.leaf_gates }}
+        run: |
+          set -uo pipefail
+          # The digest of the list on stdin; nothing for an empty list, and
+          # nothing (never a failed step) when it cannot be computed.
+          digest() {
+            local lines
+            lines="$(grep '[^[:space:]]' | LC_ALL=C sort -u)" || return 0
+            printf '%s\n' "$lines" | sha256sum | cut -d ' ' -f 1 || true
+          }
+          leaf_gates="$(printf '%s\n' "$LEAF_GATES" | digest)"
+          reduced=""
+          reduced_windows=""
+          docs_readers=""
+          # A selector that fails here publishes no digest, so a shard whose
+          # own selector worked fails instead of running a list nothing vouches for.
+          if [ "$ONLY_FRONTEND" = "true" ]; then
+            if list="$(python3 scripts/ci-surface-tests.py --surface backend)"; then
+              reduced="$(printf '%s\n' "$list" | digest)"
+            fi
+            if list="$(python3 scripts/ci-surface-tests.py --surface backend --for-windows)"; then
+              reduced_windows="$(printf '%s\n' "$list" | digest)"
+            fi
+          fi
+          # The same diff and the same split as docs-contract-tests' own step.
+          if [ "$DOCS_ONLY" = "true" ]; then
+            if docs="$(git diff --no-renames --name-only HEAD^1 HEAD)"; then
+              mapfile -t docs < <(printf '%s\n' "$docs" | grep . || true)
+              if list="$(python3 .github/scripts/docs_only.py readers ${docs[@]+"${docs[@]}"})"; then
+                docs_readers="$(printf '%s\n' "$list" | { grep -v '^website/' || true; } | digest)"
+              fi
+            fi
+          fi
+          {
+            echo "leaf_gates_sha256=$leaf_gates"
+            echo "reduced_sha256=$reduced"
+            echo "reduced_windows_sha256=$reduced_windows"
+            echo "docs_readers_sha256=$docs_readers"
+          } >> "$GITHUB_OUTPUT"
+          echo "List digests: leaf gates '${leaf_gates}', reduced '${reduced}', reduced (Windows) '${reduced_windows}', docs readers '${docs_readers}'."
 
       # Same-repository push/PR/merge-group AND an actor admitted by the fleet
       # webhook. A merge_group run's actor is the person who queued the PR, so
@@ -1446,6 +1517,7 @@ jobs:
         env:
           BACKEND_FILE: ${{ runner.temp }}/docs-readers-backend.txt
           FRONTEND_FILE: ${{ runner.temp }}/docs-readers-frontend.txt
+          DOCS_READERS_SHA256: ${{ needs.changes.outputs.docs_readers_sha256 }}
         run: |
           set -euo pipefail
           # The merge commit against its first parent (the base) is the change
@@ -1458,6 +1530,12 @@ jobs:
           sed -n 's#^website/##p' "$RUNNER_TEMP/readers.txt" > "$FRONTEND_FILE" || true
           echo "Changed docs: ${docs[*]+"${docs[*]}"}"
           echo "Backend test files: $(grep -c . "$BACKEND_FILE" || true); frontend specs: $(grep -c . "$FRONTEND_FILE" || true)"
+          # The run named a backend list (the `changes` job) and this leg found
+          # none: the other legs leave this leg's share of that list to it.
+          if [ ! -s "$BACKEND_FILE" ] && [ -n "$DOCS_READERS_SHA256" ]; then
+            echo "::error::this leg selected no backend test file, but the run's list of docs readers is not empty -- refusing to skip this leg's share of it."
+            exit 1
+          fi
           echo "backend=$([ -s "$BACKEND_FILE" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "frontend=$([ -s "$FRONTEND_FILE" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
@@ -1542,6 +1620,8 @@ jobs:
           # Node ids red on main, deselected by scripts.ci_main_red_skip (see the
           # `changes` job). Read by the plugin from the environment only.
           CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+          # The digest every leg's list must have (the `changes` job).
+          DOCS_READERS_SHA256: ${{ needs.changes.outputs.docs_readers_sha256 }}
         run: |
           set -euo pipefail
           echo "::remove-matcher owner=python::"
@@ -1558,9 +1638,11 @@ jobs:
           python -m pytest -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 --no-cov -m "not ipv6_required and not real_venv" \
             --max-worker-restart=2 -p scripts.ci_main_red_skip \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.shard }} \
-            --file-shard-targets="$BACKEND_FILE" || rc=$?
+            --file-shard-targets="$BACKEND_FILE" \
+            --file-shard-targets-sha256="$DOCS_READERS_SHA256" || rc=$?
           # 5 = nothing collected (this shard owns no selected file, or every
-          # one it owns skips on this platform).
+          # one it owns skips on this platform). 4 = this leg's list is not
+          # the run's, and stays a failure.
           if [ "$rc" -eq 5 ]; then exit 0; fi
           exit "$rc"
 
@@ -1647,11 +1729,16 @@ jobs:
           LEAF_TESTS: ${{ needs.changes.outputs.leaf_tests }}
           LEAF_TARGETS: ${{ needs.changes.outputs.leaf_targets }}
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+          # Not empty when the run has a reduced list (the `changes` job).
+          REDUCED_SHA256: ${{ needs.changes.outputs.reduced_sha256 }}
         # A frontend-only diff cannot affect a backend test that never touches
         # the frontend surface, so we run only the files the selector could NOT
         # prove single-surface (every parity guard, plus anything unclassified).
         # Every failure path here falls back to the FULL suite on purpose --
-        # never trade a missed test for a faster run.
+        # never trade a missed test for a faster run. One exception fails
+        # instead: the selector is unusable on this shard while the run has a
+        # reduced list. The other shards then run their share of that list and
+        # leave this shard its own, which the full suite's split would not run.
         run: |
           # Leaf-test verdict wins: it is the narrower and more specific reduction,
           # and it is computed once in the `changes` job. `reduced=true` rides along
@@ -1675,6 +1762,10 @@ jobs:
           rc=0
           python3 scripts/ci-surface-tests.py --surface backend --summary > "$TARGETS_FILE" || rc=$?
           if [ "$rc" != "0" ] || [ ! -s "$TARGETS_FILE" ]; then
+            if [ -n "$REDUCED_SHA256" ]; then
+              echo "::error::surface selector unusable (rc=$rc) on this shard, but the run has a reduced list -- refusing to run the full suite's share here, which would skip this shard's share of that list."
+              exit 1
+            fi
             echo "::warning::surface selector unusable (rc=$rc) -- running the FULL backend suite."
             echo "reduced=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -1738,6 +1829,9 @@ jobs:
           LEAF_REPEAT: "3"
           LEAF_GATES: ${{ needs.changes.outputs.leaf_gates }}
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+          # The digests every shard's lists must have (the `changes` job).
+          LEAF_GATES_SHA256: ${{ needs.changes.outputs.leaf_gates_sha256 }}
+          REDUCED_SHA256: ${{ needs.changes.outputs.reduced_sha256 }}
           # Node ids red on main, deselected by scripts.ci_main_red_skip (see the
           # `changes` job). Read by the plugin from the environment only.
           CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
@@ -1796,7 +1890,10 @@ jobs:
           # backend lane for this run (see coverage-gate). The reduced and
           # leaf-gate lists reach pytest as --file-shard-targets=PATH, never as
           # arguments, and a path option pointing outside the checkout keeps
-          # its `=`; why both matter is in scripts/ci_file_shards.py.
+          # its `=`; why both matter is in scripts/ci_file_shards.py. Each
+          # list goes with the digest the `changes` job computed for it once
+          # for the whole run: pytest stops before collecting when this
+          # shard's list has another, or when the run named none.
           TARGETS=()
           if [ "$REDUCED" = "true" ]; then
             while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
@@ -1836,8 +1933,12 @@ jobs:
               echo "::group::leaf corpus gates (${#GATES[@]} file(s), shard ${{ matrix.group }}/$SHARD_COUNT)"
               python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 --no-cov -m "not ipv6_required and not real_venv" \
                 --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
-                --file-shard-targets="$RUNNER_TEMP/leaf-gates.txt"
+                --file-shard-targets="$RUNNER_TEMP/leaf-gates.txt" \
+                --file-shard-targets-sha256="$LEAF_GATES_SHA256"
               echo "::endgroup::"
+            elif [ -n "$LEAF_GATES_SHA256" ]; then
+              echo "::error::this shard holds no leaf corpus gate, but the run's gate list is not empty -- refusing to skip this shard's share of it."
+              exit 1
             fi
             for pass in $(seq 1 "$LEAF_REPEAT"); do
               echo "::group::leaf changed files, pass $pass/$LEAF_REPEAT"
@@ -1850,7 +1951,8 @@ jobs:
             python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required and not real_venv" \
               --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
               --no-cov \
-              --file-shard-targets="$TARGETS_FILE"
+              --file-shard-targets="$TARGETS_FILE" \
+              --file-shard-targets-sha256="$REDUCED_SHA256"
             exit 0
           fi
           python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required and not real_venv" \
@@ -2026,6 +2128,9 @@ jobs:
           # measured weights if a leaf run ever nears the timeout.
           WINDOWS_LEAF_MAX_FILES: "40"
           WINDOWS_LEAF_MAX_PINNED: "4"
+          # Not empty when the run has a reduced Windows list (the `changes`
+          # job): the selector failing here then fails this shard, as on Linux.
+          REDUCED_SHA256: ${{ needs.changes.outputs.reduced_windows_sha256 }}
         run: |
           if [ "$WINDOWS_PATHS" != "false" ] || [ "$EVENT" = "push" ]; then
             echo "reduced=false" >> "$GITHUB_OUTPUT"
@@ -2065,6 +2170,10 @@ jobs:
           rc=0
           python scripts/ci-surface-tests.py --surface backend --summary > "$TARGETS_FILE" || rc=$?
           if [ "$rc" != "0" ] || [ ! -s "$TARGETS_FILE" ]; then
+            if [ -n "$REDUCED_SHA256" ]; then
+              echo "::error::surface selector unusable (rc=$rc) on this shard, but the run has a reduced list -- refusing to run the full suite's share here, which would skip this shard's share of that list."
+              exit 1
+            fi
             echo "::warning::surface selector unusable (rc=$rc) -- running the FULL Windows suite."
             echo "reduced=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -2138,6 +2247,9 @@ jobs:
           # A file, never the leaf_gates output as env (see "Select test scope").
           GATES_FILE: ${{ runner.temp }}/leaf-gate-list.txt
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+          # The digests every shard's lists must have (the `changes` job).
+          LEAF_GATES_SHA256: ${{ needs.changes.outputs.leaf_gates_sha256 }}
+          REDUCED_SHA256: ${{ needs.changes.outputs.reduced_windows_sha256 }}
           # Node ids red on main, deselected by scripts.ci_main_red_skip.
           CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
         run: |
@@ -2208,8 +2320,12 @@ jobs:
               echo "::group::leaf corpus gates (${#GATES[@]} file(s), shard ${{ matrix.group }}/$SHARD_COUNT)"
               python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
                 --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
-                --file-shard-targets="$RUNNER_TEMP/leaf-gates.txt"
+                --file-shard-targets="$RUNNER_TEMP/leaf-gates.txt" \
+                --file-shard-targets-sha256="$LEAF_GATES_SHA256"
               echo "::endgroup::"
+            elif [ -n "$LEAF_GATES_SHA256" ]; then
+              echo "::error::this shard holds no leaf corpus gate, but the run's gate list is not empty -- refusing to skip this shard's share of it."
+              exit 1
             fi
             for pass in $(seq 1 "$LEAF_REPEAT"); do
               echo "::group::leaf changed files, pass $pass/$LEAF_REPEAT"
@@ -2221,7 +2337,8 @@ jobs:
           if [ "$REDUCED" = "true" ]; then
             python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
               --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
-              --file-shard-targets="$TARGETS_FILE"
+              --file-shard-targets="$TARGETS_FILE" \
+              --file-shard-targets-sha256="$REDUCED_SHA256"
             exit 0
           fi
           python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards -p scripts.ci_main_red_skip \
