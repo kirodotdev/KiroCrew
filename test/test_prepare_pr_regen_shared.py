@@ -14,6 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import git_repo_templates
 import pytest
 from git_maintenance_helpers import git_maintenance_off_entries
 from skill_script_helpers import load_skill_script
@@ -27,6 +28,8 @@ SKILL = PREPARE_PR / "SKILL.md"
 REFERENCE = PREPARE_PR / "references" / "split-and-regen.md"
 
 rs = load_skill_script("prepare_pr_regen_shared_under_test", SCRIPT)
+
+repo_templates = git_repo_templates.repo_templates  # the fixture, bound for this module
 
 
 def _env() -> dict[str, str]:
@@ -83,10 +86,12 @@ def _entry(
 
 
 @pytest.fixture
-def repo(tmp_path: Path) -> Path:
+def repo(tmp_path: Path, repo_templates) -> Path:
     """``origin/main`` is one commit; HEAD adds a commit that edits nothing shared."""
-    root = tmp_path / "repo"
-    root.mkdir()
+    return repo_templates.copy(_build_repo, tmp_path / "repo")
+
+
+def _build_repo(root: Path) -> None:
     _git(root, "init", "-q", "-b", "main")
     _write(root / "gen" / "out.txt", "stale\n")
     _write(root / "src.txt", "1\n")
@@ -95,7 +100,6 @@ def repo(tmp_path: Path) -> Path:
     _git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
     _write(root / "src.txt", "2\n")
     _git(root, "commit", "-q", "-am", "mine")
-    return root
 
 
 REWRITE = "open('gen/out.txt','w').write('fresh\\n')"

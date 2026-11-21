@@ -25,12 +25,13 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
+import git_repo_templates
 import pytest
 from git_maintenance_helpers import git_maintenance_off_entries
+from git_repo_templates import RepoTemplates, copy_repo
 
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS, git_command_env
 
@@ -46,6 +47,8 @@ SPEC.loader.exec_module(scope)
 #: Config a ``git -c ...`` that ran the suite (a pre-push hook) exports to its children.
 #: git reads it after ``GIT_CONFIG_COUNT``, so it would override any pin set there.
 _GIT_COMMAND_LINE_CONFIG = ("GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")
+
+repo_templates = git_repo_templates.repo_templates  # the fixture, bound for this module
 
 
 def _fixture_git_env() -> dict[str, str]:
@@ -122,13 +125,14 @@ def _repo_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
     Six git subprocesses (~2-3s) would otherwise be paid on every one of the 23
     tests in this module. Session scope is safe here because the template is
-    never handed to a test, only copied from via ``shutil.copytree`` -- so a
+    never handed to a test, only copied from via ``copy_repo`` -- so a
     test that adds a commit, merges, or moves a branch cannot reach another's
     copy.
     """
     template = tmp_path_factory.mktemp("ratchet-scope-seed") / "repo"
     template.mkdir()
     _build_repo_with_diverged_feature(template)
+    _git(template, "reset", "--hard", "HEAD")  # the ORIG_HEAD and reflog line a copy starts with
     return template
 
 
@@ -152,12 +156,9 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _repo_template: Path) 
     # A CI run's own base branch must not leak into the synthetic repository.
     for var in ("GITHUB_BASE_REF", "GITHUB_REF_NAME"):
         monkeypatch.delenv(var, raising=False)
-    fixture_repo = tmp_path / "repo"
-    shutil.copytree(_repo_template, fixture_repo)
-    # A copied checkout reads as "unstaged changes" on Windows (fresh inode/ctime
-    # invalidate the index stat cache); nothing in the template is uncommitted, so
-    # this changes no content and only re-stats the index.
-    _git(fixture_repo, "reset", "--hard", "HEAD")
+    # ``copy_repo`` gives the copied index the copied files' stat data: a plain
+    # copy reads as "unstaged changes" (fresh inode and ctime).
+    fixture_repo = copy_repo(_repo_template, tmp_path / "repo")
     # The module runs git with cwd=ROOT; retarget it at the synthetic repo.
     monkeypatch.setattr(scope, "ROOT", fixture_repo)
     return fixture_repo
@@ -868,29 +869,46 @@ class _RepoHelper:
         return self.root / name
 
 
+def _build_change_repo(root: Path) -> None:
+    """``main`` holds ``a.txt``; ``change``, checked out, adds ``b.txt`` in one commit."""
+    repo = _RepoHelper(root)
+    (root / "a.txt").write_text("one\n", encoding="utf-8")
+    repo.git("init", "-q")
+    repo.git("checkout", "-q", "-b", "main")
+    repo.git("add", "-A")
+    repo.git("commit", "-q", "-m", "base")
+    repo.git("checkout", "-q", "-b", "change")
+    (root / "b.txt").write_text("two\n", encoding="utf-8")
+    repo.git("add", "-A")
+    repo.git("commit", "-q", "-m", "add b.txt")
+
+
+def _build_three_file_repo(root: Path) -> None:
+    """``main`` holds three files; ``change`` is checked out at the same commit."""
+    repo = _RepoHelper(root)
+    (root / "a.txt").write_text("one\n", encoding="utf-8")
+    (root / "b.txt").write_text("two\n", encoding="utf-8")
+    (root / "to_delete.txt").write_text("gone\n", encoding="utf-8")
+    repo.git("init", "-q")
+    repo.git("checkout", "-q", "-b", "main")
+    repo.git("add", "-A")
+    repo.git("commit", "-q", "-m", "base")
+    repo.git("checkout", "-q", "-b", "change")
+
+
 class TestChangeMergeBase:
     """The change-shaped base resolver, for a per-file comparison that must handle a
     forked ``origin`` and a shallow CI checkout.
     """
 
     @pytest.fixture
-    def repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _RepoHelper:
+    def repo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repo_templates: RepoTemplates
+    ) -> _RepoHelper:
         _drop_ambient_git_location(monkeypatch)
         monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
         monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-        root = tmp_path / "repo"
-        root.mkdir()
-        repo = _RepoHelper(root)
-        (root / "a.txt").write_text("one\n", encoding="utf-8")
-        repo.git("init", "-q")
-        repo.git("checkout", "-q", "-b", "main")
-        repo.git("add", "-A")
-        repo.git("commit", "-q", "-m", "base")
-        repo.git("checkout", "-q", "-b", "change")
-        (root / "b.txt").write_text("two\n", encoding="utf-8")
-        repo.git("add", "-A")
-        repo.git("commit", "-q", "-m", "add b.txt")
-        return repo
+        return _RepoHelper(repo_templates.copy(_build_change_repo, tmp_path / "repo"))
 
     def test_the_fixture_ignores_ambient_git_state(self, request, monkeypatch, tmp_path) -> None:
         assert_fixture_ignores_ambient_git(request, monkeypatch, tmp_path, "repo")
@@ -958,22 +976,13 @@ class TestChangeFilesAndShowAt:
     changes against *base*, and ``show_at`` reads a file's bytes at that base."""
 
     @pytest.fixture
-    def repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _RepoHelper:
+    def repo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repo_templates: RepoTemplates
+    ) -> _RepoHelper:
         _drop_ambient_git_location(monkeypatch)
         monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
         monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-        root = tmp_path / "repo"
-        root.mkdir()
-        repo = _RepoHelper(root)
-        (root / "a.txt").write_text("one\n", encoding="utf-8")
-        (root / "b.txt").write_text("two\n", encoding="utf-8")
-        (root / "to_delete.txt").write_text("gone\n", encoding="utf-8")
-        repo.git("init", "-q")
-        repo.git("checkout", "-q", "-b", "main")
-        repo.git("add", "-A")
-        repo.git("commit", "-q", "-m", "base")
-        repo.git("checkout", "-q", "-b", "change")
-        return repo
+        return _RepoHelper(repo_templates.copy(_build_three_file_repo, tmp_path / "repo"))
 
     def test_the_fixture_ignores_ambient_git_state(self, request, monkeypatch, tmp_path) -> None:
         assert_fixture_ignores_ambient_git(request, monkeypatch, tmp_path, "repo")

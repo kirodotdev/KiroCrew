@@ -502,8 +502,9 @@ The recurring wins, in order of leverage:
 2. **A production timeout or poll the test never asserts on** — `monkeypatch` the
    interval to `0`; the branch still executes, only the waiting goes.
 3. **An expensive immutable thing built per test** — a real `git` repo costs ~1–1.6s in
-   subprocesses. Build it once `scope="session"` and `copytree` it per test; copy *from*
-   the template rather than yielding it, so nothing one test does can reach another's.
+   subprocesses. Build it once and copy it per test with `copy_repo` from
+   `test/git_repo_templates.py`, which needs no git after the copy; copy *from* the
+   template rather than yielding it, so nothing one test does can reach another's.
 4. **A module-cached tree scan paid once per WORKER** — an `lru_cache`d `rglob` +
    `ast.parse` of `src/` (~30 s) is computed again on every xdist worker the module's
    tests land on; five full runs measured eighteen ratchet modules each re-scanning on
