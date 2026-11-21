@@ -1149,7 +1149,7 @@ async def _run_hook_inner(
     # Per-interaction telemetry, only for a completion that landed: the loop
     # above also ends on a failed one (e.g. ``error: compaction failed``).
     from kiro_crew.llm_helpers import record_interaction_event
-    from kiro_crew.messaging.turn_bracket import stop_reason_landed
+    from kiro_crew.messaging.dispatch import stop_reason_landed
 
     if _complete_event is not None and stop_reason_landed(
         str(getattr(_complete_event, "stop_reason", "") or "")

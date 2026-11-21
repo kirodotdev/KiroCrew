@@ -27,7 +27,6 @@ _SRC = Path(kiro_crew.__file__).resolve().parent
 #: module (relative to ``kiro_crew``) -> function that books the landed turn,
 #: and the ``surface`` literal it reports (``None``: computed, e.g. a channel).
 _REPORTING_SITES: dict[str, tuple[str, str | None]] = {
-    "dashboard/chat_turn/turn_stats.py": ("_turn_context_usage", "dashboard"),
     "slack/handler_runtime/turn.py": ("book_success", "slack"),
     "slack/transport_dispatch.py": ("handle_message_transport", "slack"),
     "subagent_manager/run_turn.py": ("_count_success", "subagent"),
@@ -48,7 +47,11 @@ _EXTRA_SITES: list[tuple[str, str, str | None]] = [
 ]
 
 #: Modules that book a landed turn but must NOT report, with the reason.
+#: The dashboard turn reports too, but is not read here:
+#: ``test_source_pin_budget.py`` forbids new reads of the turn's source, and
+#: ``test_interaction_telemetry.py`` drives a real dashboard turn instead.
 _NOT_REPORTING: dict[str, str] = {
+    "dashboard/chat_turn/turn_stats.py": "covered by test_interaction_telemetry.py",
     "session_parts/claims.py": "defines SessionManager.record_success / note_turn_landed",
     "parent_turns.py": "defines note_turn_landed",
     "messaging/dispatch_recovery.py": "the _record_success helper; messaging/dispatch.py reports",
