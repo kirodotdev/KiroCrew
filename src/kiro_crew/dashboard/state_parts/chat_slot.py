@@ -386,6 +386,7 @@ class _ChatSlot:
         "_deferred_steer_injected",
         "_deferred_steer_ended_gen",
         "_deferred_flush_task",
+        "_deferred_flush_dirty",
         "_steer_attachment_meta",
         "_steer_act_now",
         "_steer_automation",
@@ -782,6 +783,8 @@ class _ChatSlot:
     _deferred_steer_ended_gen: int
     #: The one running boundary flush (``dashboard.deferred_steer.schedule_flush``).
     _deferred_flush_task: Any
+    #: A boundary arrived while that flush ran: it runs one more pass when it finishes.
+    _deferred_flush_dirty: bool
     _steer_attachment_meta: dict[str, dict[str, Any]]
     _steer_act_now: set[str]
     _steer_automation: dict[str, dict]

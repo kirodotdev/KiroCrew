@@ -25,7 +25,7 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_refusal_client_pick_epoch``, ``_refusal_fallback_attempted``,
 ``_refusal_fallback_candidate``, ``_refusal_fallback_primary``,
 ``_refusal_fallback_session_key``, ``_refusal_pick_gen``,
-``_deferred_flush_task``, ``_deferred_steer_delivered``, ``_deferred_steer_injected``,
+``_deferred_flush_dirty``, ``_deferred_flush_task``, ``_deferred_steer_delivered``, ``_deferred_steer_injected``,
 ``_deferred_steer_ended_gen``, ``_deferred_steer_receipts``, ``_deferred_steers``,
 ``_session_not_found_retry_used``,``_stale_recovery_exhausted_emitted``,
 ``_stale_recovery_retries``, ``_steer_act_now``, ``_steer_admissions``,
@@ -548,6 +548,7 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     self._deferred_steer_injected = {}
     self._deferred_steer_ended_gen = -1
     self._deferred_flush_task = None
+    self._deferred_flush_dirty = False
     # Validated attachment lists for a pending steer. Requeue moves them
     # to the queue entry; a consumption echo releases them after an accepted
     # steer has stamped its own row.

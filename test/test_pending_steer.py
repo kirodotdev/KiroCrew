@@ -1783,3 +1783,122 @@ async def test_a_steer_sent_during_a_turn_change_is_injected_into_the_new_turn(
     assert TEXT in client.steer.await_args.args[0]
     assert not target._queue, [e["content"] for e in target._queue]
     assert target._deferred_steer_receipts[out["steer_id"]]["state"].startswith("delivered@")
+
+
+def _gated_target(state):
+    """A running target whose steers each wait for ``release``; records overlap of flushes."""
+    caller = _slot(state, "chat-1")
+    target = _running(_peer_target(state, "chat-2", caller))
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def _gated_steer(_text):
+        started.set()
+        await release.wait()
+        return True
+
+    client = _steerable(accepted=True)
+    client.steer_needs_loss_recovery = False
+    client.steer = AsyncMock(side_effect=_gated_steer)
+    return caller, target, client, release, started
+
+
+@pytest.mark.asyncio
+async def test_a_steer_held_during_a_running_flush_gets_a_follow_up_pass(tmp_path):
+    """A boundary that arrives while a flush awaits an ack runs one more pass afterwards.
+
+    The running pass walks the held list it copied at its start, so a steer held
+    meanwhile is tried by the follow-up pass, with no third boundary.
+    """
+    from kiro_crew.dashboard import deferred_steer
+
+    state = _make_state(tmp_path)
+    caller, target, client, release, started = _gated_target(state)
+    first = await _send(state, caller)
+    assert first.get("pending_steer") is True
+    target._acp_client = client
+
+    deferred_steer.schedule_flush(state, target)
+    task = target._deferred_flush_task
+    await asyncio.wait_for(started.wait(), _AWAIT_SECS)
+
+    # Steer B is held while A's injection awaits its ack (no client at B's send).
+    target._acp_client = None
+    other = "a second steer, held while the first one is in flight"
+    second = await _send(state, caller, message=other)
+    assert second.get("pending_steer") is True, second
+    target._acp_client = client
+
+    deferred_steer.schedule_flush(state, target)  # the second boundary
+    assert target._deferred_flush_task is task, "single flight: no second task"
+    release.set()
+    try:
+        await asyncio.wait_for(task, _AWAIT_SECS)
+    finally:
+        target.task.cancel()
+
+    assert target._deferred_flush_task is task, "the follow-up pass runs in the same task"
+    assert client.steer.await_count == 2, client.steer.await_args_list
+    assert other in client.steer.await_args_list[1].args[0]
+    assert not target._deferred_steers, "B is not left held"
+    receipts = target._deferred_steer_receipts
+    assert receipts[first["steer_id"]]["state"].startswith("delivered@")
+    assert receipts[second["steer_id"]]["state"].startswith("delivered@")
+
+
+@pytest.mark.asyncio
+async def test_a_flush_with_no_boundary_meanwhile_runs_one_pass(tmp_path, monkeypatch):
+    """No boundary arrived during the flush: exactly one pass, one attempt per steer."""
+    from kiro_crew.dashboard import deferred_steer
+
+    state = _make_state(tmp_path)
+    caller, target, client, release, _started = _gated_target(state)
+    assert (await _send(state, caller)).get("pending_steer") is True
+    target._acp_client = client
+    passes = []
+    real = deferred_steer.flush_at_boundary
+
+    async def _counted(*args):
+        passes.append(True)
+        await real(*args)
+
+    monkeypatch.setattr(deferred_steer, "flush_at_boundary", _counted)
+
+    release.set()
+    deferred_steer.schedule_flush(state, target)
+    try:
+        await asyncio.wait_for(target._deferred_flush_task, _AWAIT_SECS)
+    finally:
+        target.task.cancel()
+
+    assert len(passes) == 1
+    client.steer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_flush_starts_no_follow_up_pass(tmp_path, monkeypatch):
+    """The hand-off's settle cancels a stuck flush: a boundary marked meanwhile restarts nothing."""
+    from kiro_crew.dashboard import deferred_steer
+
+    state = _make_state(tmp_path)
+    caller, target, client, _release, started = _gated_target(state)
+    assert (await _send(state, caller)).get("pending_steer") is True
+    target._acp_client = client
+    monkeypatch.setattr(
+        deferred_steer, "FLUSH_SETTLE_SECS", 0.05
+    )  # flake-ok: the steer is never released, so the wait always expires
+
+    deferred_steer.schedule_flush(state, target)
+    task = target._deferred_flush_task
+    await asyncio.wait_for(started.wait(), _AWAIT_SECS)
+    deferred_steer.schedule_flush(state, target)  # a boundary while the flush awaits
+    try:
+        await deferred_steer._settle_flush_task(target)
+        for _ in range(5):
+            await asyncio.sleep(0)
+    finally:
+        target.task.cancel()
+
+    assert task.cancelled()
+    assert target._deferred_flush_task is task, "no new task after the cancel"
+    client.steer.assert_awaited_once()

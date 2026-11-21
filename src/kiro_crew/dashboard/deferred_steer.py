@@ -228,12 +228,33 @@ def schedule_flush(state: "DashboardState", slot: "_ChatSlot") -> None:
 
     A steer's acknowledgement is read by the same loop that calls this; awaiting
     the flush inline would leave that acknowledgement unread until a timeout.
+    A boundary that arrives while the task runs is recorded, and the task runs one
+    more pass for it when the current one finishes.
     """
     task = slot._deferred_flush_task
     if task is None or task.done():
         slot._deferred_flush_task = asyncio.get_running_loop().create_task(
-            flush_at_boundary(state, slot)
+            _flush_passes(state, slot)
         )
+    else:
+        slot._deferred_flush_dirty = True
+
+
+async def _flush_passes(state: "DashboardState", slot: "_ChatSlot") -> None:
+    """Run boundary flushes, one at a time, while boundaries keep arriving during them.
+
+    A pass walks the held list it copied at its start, so a steer held during the
+    pass is tried by the next one. The turn's hand-off stops new passes: it reads
+    the held list once this task is settled. A cancel ends the loop with no pass.
+    """
+    while True:
+        slot._deferred_flush_dirty = False
+        await flush_at_boundary(state, slot)
+        if not slot._deferred_flush_dirty:
+            return
+        if slot._turn_generation == slot._deferred_steer_ended_gen:
+            slot._deferred_flush_dirty = False
+            return
 
 
 async def _settle_flush_task(slot: "_ChatSlot") -> None:

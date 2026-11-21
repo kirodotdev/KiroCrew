@@ -631,6 +631,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_source_links_revision": ("value", "0"),
     "_stale_recovery_exhausted_emitted": ("value", "False"),
     "_stale_recovery_retries": ("value", "0"),
+    "_deferred_flush_dirty": ("value", "False"),
     "_deferred_flush_task": ("value", "None"),
     "_deferred_steer_delivered": ("value", "{}"),
     "_deferred_steer_ended_gen": ("value", "-1"),
