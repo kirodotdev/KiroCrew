@@ -5488,9 +5488,10 @@ too, since that is precisely the deletion-under-a-live-process state;
 `"unwritable"` leaves the tree UNOWNED — never deleted in place, and moved into
 the quarantine only after a week with no write in it (`_UNOWNED_IDLE_SECONDS`;
 never under a `KIROCREW_SCRATCH_ROOT` override, which can hold the operator's
-own folders), a move a human can undo rather than a loss — and warns. Only Linux can tell that
-a live process still uses such a tree (`agent_scratch_users`, which then keeps
-it); on macOS and Windows the week with no write is the only hold. `"garbled"` (a marker
+own folders), a move a human can undo rather than a loss — and warns. Only Linux, and Windows
+for a script cron's run, can tell that a live process still uses such a tree
+(`agent_scratch_users`, which then keeps it); on macOS, and on Windows for an agent
+runtime's tree, the week with no write is the only hold. `"garbled"` (a marker
 this module did not write: not integers, oversized, not a regular file) also
 only warns and proceeds: the sweep skips such a tree for good, so mounting it
 risks a leak and never a deletion, and a fatal answer would let any agent
@@ -5521,9 +5522,23 @@ a gateway started from an agent shell keeps that shell's exports there after it
 dropped them (`drop_own_inherited_scratch_env`), a `kirocrew server restart`
 run from an agent shell starts the launcher with them, and reading them would
 keep that shell's tree for the gateway's whole life. Their working directories
-and descriptors still count. On macOS and Windows nothing here lists every
+and descriptors still count. On macOS nothing here lists every
 process's environment, so the named groups stay the only liveness signal there.
 Pinned by `test/test_agent_scratch_live_users.py`.
+
+On Windows there is no process table to read and no process group, so a script cron
+run's tree is kept by a Job object instead (`agent_scratch_job`). The cron runner
+creates the script child suspended, `join` puts it in a job of its own (no limits and no
+`KILL_ON_JOB_CLOSE`, so background work keeps running), and only then resumes it, so every
+process the script starts is a member whether or not its parent has exited.
+`agent_scratch_users.scratch_users` reads each job's process list and keeps the tree while
+it lists a live process. The gateway holds each job's handle, keyed by the tree's name,
+until it reads the job empty, because nothing can open a job again once its last handle
+closes. The same WARNING names the tree and one member's pid. A run whose job could not be
+made falls back to the owner marker alone, and so does a run from before a gateway restart,
+whose handle went with the old gateway. Agent runtimes do not join a job, so their trees keep the owner-marker rule
+alone. The Job read is proven against the real kernel only by the Windows test in
+`test/test_agent_scratch_job.py`.
 
 A ROOT that respawns is still its tree. An `AcpClient` whose process exited and
 is respawned by `ensure_ready`, an `AcpRuntime` respawned on the same object,

@@ -24,7 +24,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
-from kiro_crew import agent_scratch, platform_compat
+from kiro_crew import agent_scratch, agent_scratch_job, platform_compat
 from kiro_crew.config.loader import read_local_secret
 from kiro_crew.config.paths import data_home
 from kiro_crew.port_resolution import resolve_serving_port
@@ -123,6 +123,10 @@ def _record_cron_scratch_owner(scratch: Path | None, proc: subprocess.Popen) -> 
     as they fail an agent spawn. ``unwritable`` is fail-open: an unowned dir is
     never deleted in place, only moved into the quarantine after a week with no
     write.
+
+    On Windows the child also joins the tree's Job object
+    (:mod:`kiro_crew.agent_scratch_job`), so the sweep can see a background
+    process the script left behind after the child itself has exited.
     """
     if scratch is None:
         return True
@@ -130,7 +134,22 @@ def _record_cron_scratch_owner(scratch: Path | None, proc: subprocess.Popen) -> 
     if outcome in ("refused", "stale"):
         logger.warning("agent-scratch: cron child %s owner record %s; reaping", proc.pid, outcome)
         return False
+    # Fail-open like the rest of this hygiene: with no job, the sweep judges the
+    # run by the recorded pid alone.
+    agent_scratch_job.join(scratch.name, proc)
     return True
+
+
+def _resume_cron_child(proc: subprocess.Popen) -> bool:
+    """Let a child spawned ``CREATE_SUSPENDED`` run; False means it is frozen and must be reaped.
+
+    The script child is created suspended on Windows so that it joins its
+    scratch tree's Job object (:func:`_record_cron_scratch_owner`) before it has
+    run an instruction: a venv's ``python.exe`` starts the real interpreter at
+    once, and a child started before the join would sit outside the job. Always
+    True on POSIX, where nothing is created suspended.
+    """
+    return not platform_compat.IS_WINDOWS or platform_compat.resume_process_main_thread(proc.pid)
 
 
 def _discard_unused_cron_scratch(scratch: Path | None) -> None:
@@ -146,6 +165,7 @@ def _discard_unused_cron_scratch(scratch: Path | None) -> None:
 _SCRATCH_OWNER_ERROR = (
     "Error: Cron run stopped: its temp dir owner marker could not be recorded safely"
 )
+_RESUME_ERROR = "Error: Cron run stopped: its script process could not be started"
 
 
 def _default_temp_dir() -> str:

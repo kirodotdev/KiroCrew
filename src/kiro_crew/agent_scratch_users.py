@@ -10,9 +10,10 @@ deleting the tree under it makes every later temp write fail with ``ENOENT``.
 
 This is the sweep's second liveness signal: the live processes whose
 exec-time scratch exports, working directory or an open descriptor name a
-path inside a tree. It answers on Linux only. Elsewhere nothing here lists
-every process's environment, so the answer is empty and the sweep keeps its
-owner-group rule alone.
+path inside a tree. It answers on Linux from ``/proc`` and on Windows from the
+Job object of each script cron run (:mod:`kiro_crew.agent_scratch_job`).
+Elsewhere nothing here lists every process's environment, so the answer is
+empty and the sweep keeps its owner-group rule alone.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import os
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
-from kiro_crew import platform_compat
+from kiro_crew import agent_scratch_job, platform_compat
 
 
 def scratch_users(
@@ -49,9 +50,13 @@ def scratch_users(
     Best effort, and a lower bound: a process whose entries cannot be read
     (another user's, or one that exited mid-read) is skipped, and a ``/proc``
     that cannot be listed answers empty. *proc_root* is a fixture seam; when
-    given it is read on any host.
+    given it is read on any host. On Windows a tree is used when the Job object
+    of the script cron run that made it still has a live member, whatever that
+    member's working directory or environment.
     """
     if proc_root is None:
+        if platform_compat.IS_WINDOWS:
+            return agent_scratch_job.scratch_users(root)
         if not platform_compat.IS_LINUX:
             return {}
         proc_root = Path("/proc")
