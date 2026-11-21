@@ -215,6 +215,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self) -> 'tuple[list[dict[str, Any]], int]'",
     ),
+    "durable_source": ("function", False, False, "(self) -> 'list[dict[str, Any]]'"),
     "enqueue_or_run_prompt": (
         "function",
         False,
@@ -223,7 +224,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "_ChatSlot, str], Coroutine[Any, Any, None]]', state: "
         "'DashboardState', *, extra_meta: 'dict[str, Any] | None' = None, "
         "relay_meta: 'dict[str, Any] | None' = None, gateway_prompt_kind: 'str' = "
-        "'') -> 'bool'",
+        "'', at_head: 'bool' = False) -> 'bool'",
     ),
     "flush_deferred_notes": (
         "function",
@@ -631,6 +632,13 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_source_links_revision": ("value", "0"),
     "_stale_recovery_exhausted_emitted": ("value", "False"),
     "_stale_recovery_retries": ("value", "0"),
+    "_deferred_flush_dirty": ("value", "False"),
+    "_deferred_flush_task": ("value", "None"),
+    "_deferred_steer_delivered": ("value", "{}"),
+    "_deferred_steer_ended_gen": ("value", "-1"),
+    "_deferred_steer_injected": ("value", "{}"),
+    "_deferred_steer_receipts": ("value", "{}"),
+    "_deferred_steers": ("value", "[]"),
     "_steer_act_now": ("value", "set()"),
     "_steer_admissions": ("value", "{}"),
     "_steer_attachment_meta": ("value", "{}"),

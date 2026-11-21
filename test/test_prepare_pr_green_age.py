@@ -23,12 +23,15 @@ import subprocess
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import git_repo_templates
 import pytest
 from skill_script_helpers import load_skill_script
 
 ROOT = Path(__file__).resolve().parents[1]
 _SKILL_DIR = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "kirocrew-prepare-pr"
 SCRIPT = _SKILL_DIR / "scripts" / "green_age.py"
+
+repo_templates = git_repo_templates.repo_templates  # the fixture, bound for this module
 
 
 @pytest.fixture()
@@ -86,12 +89,18 @@ class Pair:
 
 
 @pytest.fixture()
-def pair(tmp_path: Path) -> Pair:
+def pair(tmp_path: Path, repo_templates) -> Pair:
     """An upstream on ``main`` with one commit, plus a clone of it.
 
     The seed tree carries the two shapes the classes need: a module directory
-    under ``src/kiro_crew/`` and a sibling test directory.
+    under ``src/kiro_crew/`` and a sibling test directory. Built once and
+    copied per test; the copied clone's remote is the copied upstream.
     """
+    repo_templates.copy(_build_pair, tmp_path)
+    return Pair(tmp_path / "upstream", tmp_path / "work")
+
+
+def _build_pair(tmp_path: Path) -> None:
     upstream = tmp_path / "upstream"
     upstream.mkdir()
     _git(upstream, "init", "-q", "-b", "main")
@@ -103,9 +112,7 @@ def pair(tmp_path: Path) -> Pair:
     _commit(upstream, "seed")
 
     _git(tmp_path, "clone", "-q", str(upstream), "work")
-    work = tmp_path / "work"
-    _identify(work)
-    return Pair(upstream, work)
+    _identify(tmp_path / "work")
 
 
 def _git_runs_in(mod: ModuleType, monkeypatch, cwd: Path) -> None:

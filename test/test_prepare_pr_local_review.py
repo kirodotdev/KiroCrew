@@ -35,6 +35,7 @@ from pathlib import Path
 
 import pytest
 from git_maintenance_helpers import git_maintenance_off_entries
+from git_repo_templates import copy_repo
 from skill_script_helpers import load_skill_script
 
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
@@ -274,6 +275,7 @@ def _parity_repo_template(tmp_path_factory):
     (root / "changed.py").write_text("VALUE = 1\n", encoding="utf-8")
     _git(root, "add", "-A")
     _git(root, "commit", "-m", "feat(thing): add VALUE\n\nA body line for intent.")
+    _git(root, "reset", "--hard", "HEAD")  # the ORIG_HEAD and reflog line a copy starts with
     return root
 
 
@@ -291,15 +293,11 @@ def parity_repo(tmp_path, _parity_repo_template):
     contract out of the base commit. A workflow present only in the checkout is
     not authority and fails the run closed.
 
-    Each test receives its own ``copytree`` of the session template. The repo
-    has no remote, so nothing recorded in ``.git`` names the template's path;
-    the ``reset --hard`` re-stats the copied files against the index, because a
-    copied checkout otherwise reads as having "unstaged changes" on Windows.
+    Each test receives its own ``copy_repo`` of the session template, which
+    gives the copied index the copied files' stat data: a plain copy of a
+    checkout reads as having "unstaged changes".
     """
-    root = tmp_path / "repo"
-    shutil.copytree(_parity_repo_template, root)
-    _git(root, "reset", "--hard", "HEAD")
-    return root
+    return copy_repo(_parity_repo_template, tmp_path / "repo")
 
 
 # --------------------------------------------------------------------------

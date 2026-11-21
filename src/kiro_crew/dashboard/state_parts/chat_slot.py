@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew._facade_bindings import own_methods
 from kiro_crew.approval_mode_policy import session_mode_permitted
+from kiro_crew.dashboard import deferred_steer
 from kiro_crew.dashboard import run_clock as _run_clock
 from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.side_state import SideState
@@ -380,6 +381,13 @@ class _ChatSlot:
         "_steer_clear",
         "_steer_audience_fences",
         "_steer_audience_fence_holders",
+        "_deferred_steers",
+        "_deferred_steer_receipts",
+        "_deferred_steer_delivered",
+        "_deferred_steer_injected",
+        "_deferred_steer_ended_gen",
+        "_deferred_flush_task",
+        "_deferred_flush_dirty",
         "_steer_attachment_meta",
         "_steer_act_now",
         "_steer_automation",
@@ -762,6 +770,22 @@ class _ChatSlot:
     _steer_clear: SteerClear | None
     _steer_audience_fences: dict[str, dict]
     _steer_audience_fence_holders: dict[str, int]
+    #: Steers held for the next tool boundary and the receipts of settled ones
+    #: (``dashboard.deferred_steer``).
+    _deferred_steers: list[Any]
+    _deferred_steer_receipts: dict[str, dict[str, Any]]
+    #: Ids of held steers marked delivered before their injection; the teardown
+    #: requeue skips them, so none runs a second time.
+    _deferred_steer_delivered: dict[str, str]
+    #: Id -> text of every held steer injected at a boundary, marked or not, while its
+    #: text may still be pending; a hard stop reads it to tell the sender.
+    _deferred_steer_injected: dict[str, str]
+    #: The turn generation whose hand-off has begun: nothing is held for it any more.
+    _deferred_steer_ended_gen: int
+    #: The one running boundary flush (``dashboard.deferred_steer.schedule_flush``).
+    _deferred_flush_task: Any
+    #: A boundary arrived while that flush ran: it runs one more pass when it finishes.
+    _deferred_flush_dirty: bool
     _steer_attachment_meta: dict[str, dict[str, Any]]
     _steer_act_now: set[str]
     _steer_automation: dict[str, dict]
@@ -1044,17 +1068,35 @@ class _ChatSlot:
         if was and not self._has_reader_flag:
             self._retry_deferred_release()
 
+    def durable_source(self) -> list[dict[str, Any]]:
+        """The list the durable queue writer persists from: the held peer steers
+        (``deferred_steer.saved_queue_entries``), then ``_queue``.
+
+        Every check that judges whether a queued prompt is kept
+        (``warn_if_not_durable``, ``refused_durable_ids``) reads this rather than
+        ``_queue`` alone, so a prompt the held steers push past the count cap or
+        the byte budget is reported and marked as one the queue pushes out is.
+        """
+        return deferred_steer.saved_queue_entries(self) + self._queue
+
     def durable_queue_entries(self) -> list[dict[str, Any]]:
-        """The queued user prompts a metadata writer may persist right now."""
-        return durable_queue_entries(self._queue)
+        """The queued user prompts a metadata writer may persist right now.
+
+        The held peer steers come first (``deferred_steer.saved_queue_entries``),
+        each as the queued peer send the turn's end would make of it, so a restart
+        hands it back as a queue card. The drift check reads this too, so a hold
+        or a settle owes a save as a queue change does.
+        """
+        return durable_queue_entries(self.durable_source())
 
     def durable_queue_view(self) -> tuple[list[dict[str, Any]], int]:
         """Persistable queued prompts and the candidate count, from one read.
 
         Used where the two are SUBTRACTED (the save's over-cap report), so the
-        difference describes one observation of the queue rather than two.
+        difference describes one observation of the queue rather than two. The
+        held peer steers lead, as in :meth:`durable_queue_entries`.
         """
-        return durable_queue_view(self._queue)
+        return durable_queue_view(self.durable_source())
 
     @property
     def queue_persist_pending(self) -> bool:
@@ -1235,6 +1277,7 @@ class _ChatSlot:
         extra_meta: dict[str, Any] | None = None,
         relay_meta: dict[str, Any] | None = None,
         gateway_prompt_kind: str = "",
+        at_head: bool = False,
     ) -> bool:
         """Queue *prompt* if busy, otherwise start an agent turn.
 
@@ -1260,6 +1303,11 @@ class _ChatSlot:
         own words: queued under that kind, or appended directly as the ``inject``
         row that kind drains to, so neither arm draws it as the person's bubble.
         The caller hands a *run_chat_coro* that runs it as a synthetic payload.
+
+        *at_head* queues the entry at the HEAD instead of the tail, for a held
+        peer steer its turn outlived: steers outrank queued messages, as the
+        unconsumed-steer requeue (``_requeue_unconsumed_steers``) has them.
+        Ignored on the run arm.
 
         Concurrency: the check (``self.running``) and mutation (``self.task = ...``)
         run synchronously on the asyncio event loop with no ``await`` between them,
@@ -1297,7 +1345,15 @@ class _ChatSlot:
             if relay_meta:
                 _meta["relay"] = dict(relay_meta)
             _meta.update(containment_meta(state, self))
-            self.queue_append(prompt, kind=gateway_prompt_kind, meta=_meta)
+            if at_head:
+                from kiro_crew.tracing import steps as trace_steps
+
+                # Its queue wait is timed as an appended entry's is.
+                trace_steps.note_queued(
+                    self.queue_insert(0, prompt, kind=gateway_prompt_kind, meta=_meta)
+                )
+            else:
+                self.queue_append(prompt, kind=gateway_prompt_kind, meta=_meta)
             # Returning False IS the receipt that the prompt was accepted onto the
             # queue, and until the drain writes its transcript row the queue is the
             # prompt's only record -- so a restart inside the periodic flush
