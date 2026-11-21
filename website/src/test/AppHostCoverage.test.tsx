@@ -52,6 +52,8 @@ vi.mock('../app-sdk', () => ({
 
 import AppHost from '../components/AppHost'
 import { __resetAppBundleFreshnessForTests } from '../components/appBundleFreshness'
+import { resetAppSlotPushForTests, setAppSlotPushConnected } from '../utils/appSlotPush'
+import type { SlotPush } from '../app-sdk/slotPush'
 
 type AppRecord = AppHostProps['app']
 
@@ -232,6 +234,27 @@ describe('AppHost — hosting a real bundle', () => {
     // to anything that is not a builtin. An installed app is external even when it
     // has taken a builtin's name.
     expect(hosted().origin).toBe('external')
+  })
+
+  it.each([
+    ['approved', { approvedGrants: { events: ['slots:user'] } }, true],
+    ['with no approved set stored', {}, true],
+    ['still waiting for approval', { approvedGrants: { events: [] } }, false],
+  ] as const)('signals a user tab under a slots:user declaration %s', async (_label, grants, live) => {
+    resetAppSlotPushForTests(() => null, () => null, (key) => (key === 'user-tab' ? 'user' : null))
+    try {
+      renderHost(appRecord({
+        ...grants,
+        manifest: { version: '1.2.3', ui: { entry: 'index.js' }, permissions: { events: ['slots:user'] } },
+      }))
+      await settleBundle()
+      setAppSlotPushConnected(true)
+      const push = (sdk.props as { slotPush: SlotPush }).slotPush
+      expect(push.connected('user-tab')).toBe(live)
+      expect(push.connected('other-tab')).toBe(false)
+    } finally {
+      resetAppSlotPushForTests()
+    }
   })
 
   it('scopes an app that declares no permissions to nothing at all', async () => {

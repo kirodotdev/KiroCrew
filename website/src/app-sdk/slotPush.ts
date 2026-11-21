@@ -12,9 +12,9 @@
  * scoped read stays the only way content reaches app code, so the read's
  * permission checks (the declared `permissions.api`, the gateway's slot
  * ownership check) still decide what an app sees. Which slots a host signals
- * for is the host's decision; the dashboard signals only for slots the app
- * owns, the same set an app token receives slot events for without declaring
- * any `slots:*` scope.
+ * for is the host's decision; the dashboard signals for the slots the app
+ * owns plus those its approved `slots:user` / `slots:all` declarations admit,
+ * the set an app token receives slot events for.
  */
 import { useContext } from 'react'
 import { AppSdkContext } from './scopedApi'

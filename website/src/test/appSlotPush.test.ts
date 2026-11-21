@@ -1,7 +1,8 @@
 /**
  * The dashboard socket's per-slot change signal for app embeds: an app is
- * signalled only for slots it owns, the signal carries nothing, ownership is
- * read at delivery, and connectivity reaches every watcher.
+ * signalled for the slots it owns and for those its declared `slots:*` scopes
+ * admit, the signal carries nothing, owner and origin are read at delivery,
+ * and connectivity reaches every watcher.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -10,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 
 import {
   createAppSlotPush,
+  grantedEvents,
   noteAppSlotChanged,
   noteAppSlotFrame,
   noteAppSlotRows,
@@ -20,6 +22,7 @@ import type { ChatSlot } from '../types'
 
 const owners = new Map<string, string>()
 const listed = new Map<string, Partial<ChatSlot>>()
+const origins = new Map<string, string>()
 
 function watcher() {
   return { onChange: vi.fn(), onConnection: vi.fn() }
@@ -28,7 +31,12 @@ function watcher() {
 beforeEach(() => {
   owners.clear()
   listed.clear()
-  resetAppSlotPushForTests((key) => owners.get(key) ?? null, (key) => listed.get(key) ?? null)
+  origins.clear()
+  resetAppSlotPushForTests(
+    (key) => owners.get(key) ?? null,
+    (key) => listed.get(key) ?? null,
+    (key) => origins.get(key) ?? null,
+  )
 })
 
 afterEach(() => {
@@ -273,6 +281,107 @@ describe('appSlotPush', () => {
     noteAppSlotRows([{ key: 's1', messages: 0 }])
     expect(second.onChange).toHaveBeenCalledTimes(1)
     expect(first.onChange).toHaveBeenCalledTimes(1)
+  })
+
+  describe('declared slot scopes', () => {
+    it('with no declaration, signals and reads live only its own slots', () => {
+      origins.set('user-tab', 'user')
+      owners.set('theirs', 'other-app')
+      const push = createAppSlotPush('watcher-app')
+      const userTab = watcher()
+      const theirs = watcher()
+      push.watch('user-tab', userTab)
+      push.watch('theirs', theirs)
+      setAppSlotPushConnected(true)
+      noteAppSlotFrame('chat_done', { slot: 'user-tab' })
+      noteAppSlotFrame('chat_done', { slot: 'theirs' })
+      expect(userTab.onChange).not.toHaveBeenCalled()
+      expect(theirs.onChange).not.toHaveBeenCalled()
+      expect(push.connected('user-tab')).toBe(false)
+      expect(userTab.onConnection.mock.calls).toEqual([[false]])
+    })
+
+    it('under slots:user, signals a user-origin slot and no other', () => {
+      origins.set('user-tab', 'user')
+      origins.set('cron-tab', 'cron')
+      owners.set('theirs', 'other-app')
+      origins.set('theirs', 'app')
+      const push = createAppSlotPush('watcher-app', ['slots:user'])
+      const userTab = watcher()
+      const cronTab = watcher()
+      const untagged = watcher()
+      const theirs = watcher()
+      push.watch('user-tab', userTab)
+      push.watch('cron-tab', cronTab)
+      push.watch('untagged', untagged)
+      push.watch('theirs', theirs)
+      setAppSlotPushConnected(true)
+      for (const slot of ['user-tab', 'cron-tab', 'untagged', 'theirs']) noteAppSlotFrame('chat_done', { slot })
+      expect(userTab.onChange).toHaveBeenCalledTimes(1)
+      expect(cronTab.onChange).not.toHaveBeenCalled()
+      expect(untagged.onChange).not.toHaveBeenCalled()
+      expect(theirs.onChange).not.toHaveBeenCalled()
+      expect(push.connected('user-tab')).toBe(true)
+      expect(push.connected('cron-tab')).toBe(false)
+      expect(userTab.onConnection.mock.calls).toEqual([[true]])
+    })
+
+    it('reads origin at delivery, so a slot that stops being a user slot goes quiet', () => {
+      origins.set('s1', 'user')
+      const w = watcher()
+      createAppSlotPush('watcher-app', ['slots:user']).watch('s1', w)
+      noteAppSlotChanged('s1')
+      origins.delete('s1')
+      noteAppSlotChanged('s1')
+      expect(w.onChange).toHaveBeenCalledTimes(1)
+    })
+
+    it.each([['slots:all'], ['*']])('under %s, signals any slot', (scope) => {
+      owners.set('theirs', 'other-app')
+      const push = createAppSlotPush('watcher-app', [scope])
+      const theirs = watcher()
+      const unowned = watcher()
+      push.watch('theirs', theirs)
+      push.watch('unowned', unowned)
+      noteAppSlotFrame('chat_done', { slot: 'theirs' })
+      noteAppSlotFrame('chat_done', { slot: 'unowned' })
+      expect(theirs.onChange).toHaveBeenCalledTimes(1)
+      expect(unowned.onChange).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not signal another app\'s slot under slots:app:<name>, which needs that app\'s opt-in', () => {
+      owners.set('theirs', 'other-app')
+      const push = createAppSlotPush('watcher-app', ['slots:app:other-app'])
+      const w = watcher()
+      push.watch('theirs', w)
+      setAppSlotPushConnected(true)
+      noteAppSlotFrame('chat_done', { slot: 'theirs' })
+      expect(w.onChange).not.toHaveBeenCalled()
+      expect(push.connected('theirs')).toBe(false)
+    })
+
+    it('scopes one app\'s declaration to that app\'s watchers', () => {
+      origins.set('user-tab', 'user')
+      const declared = watcher()
+      const plain = watcher()
+      createAppSlotPush('declares', ['slots:user']).watch('user-tab', declared)
+      createAppSlotPush('plain').watch('user-tab', plain)
+      noteAppSlotChanged('user-tab')
+      expect(declared.onChange).toHaveBeenCalledTimes(1)
+      expect(plain.onChange).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('grantedEvents', () => {
+    it('keeps every declared entry when no approved set is stored', () => {
+      expect(grantedEvents(['slots:user', 'chat_done'], null)).toEqual(['slots:user', 'chat_done'])
+      expect(grantedEvents(undefined, undefined)).toEqual([])
+    })
+
+    it('drops a declared entry the owner has not approved yet', () => {
+      expect(grantedEvents(['slots:user', 'chat_done'], ['chat_done'])).toEqual(['chat_done'])
+      expect(grantedEvents(['slots:user'], [])).toEqual([])
+    })
   })
 
   it('is fed every decoded frame by the socket router', () => {

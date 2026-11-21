@@ -1,11 +1,11 @@
 """The dashboard's app slot-push filter grants no more than the gateway's own event gate.
 
 ``website/src/utils/appSlotPush.ts`` signals an app embed when a frame
-from the SLOT_CHANGE_FRAMES set arrives for a slot that app owns. That claim is
-only safe while every name in the set is a slot-scoped event here, outside the
-subagent family, so the gateway itself admits it to an app token for its own
-slot with no ``slots:*`` declaration and refuses it for a slot another app or a
-person owns. These tests read the set from the client source and check each
+from the SLOT_CHANGE_FRAMES set arrives for a slot that app owns, or one its
+``slots:user`` / ``slots:all`` declaration admits. That claim is only safe while
+every name in the set is a slot-scoped event here, outside the subagent family,
+so the gateway itself admits it to an app token for exactly those slots and
+refuses it for the rest. These tests read the set from the client source and check each
 name against ``ws_event_scope``, and check that every other slot-scoped event
 is named as one that leaves the embed's read unchanged. The client also signals
 when a watched slot's listed row moves a field in SLOT_ROW_FIELDS, so the last
@@ -129,6 +129,37 @@ def test_gateway_admits_push_frame_for_own_slot_only(event_type):
     assert allowed("person") is False
 
 
+#: The declared scopes the client also signals for, and which of the three
+#: slots the client signals under each one.
+_SIGNALLED_UNDER = {
+    "slots:user": {"own", "person"},
+    "slots:all": {"own", "foreign", "person"},
+    "*": {"own", "foreign", "person"},
+}
+
+
+@pytest.mark.parametrize("scope", sorted(_SIGNALLED_UNDER))
+@pytest.mark.parametrize("event_type", _push_frames())
+def test_gateway_admits_push_frame_wherever_the_declared_scope_is_signalled(event_type, scope):
+    own = _make_slot(owner_app="spec-builder", origin=SlotOrigin.APP, key="own")
+    foreign = _make_slot(owner_app="other-app", origin=SlotOrigin.APP, key="foreign")
+    person = _make_slot(owner_app="", origin=SlotOrigin.USER, key="person")
+    state = _make_state({"own": own, "foreign": foreign, "person": person})
+    field = "key" if event_type in _key_frames() else "slot"
+    admitted = {
+        key
+        for key in ("own", "foreign", "person")
+        if ws_event_allowed(
+            event_type,
+            {field: key},
+            app="spec-builder",
+            allowed_events=_allowed(scope),
+            state=state,
+        )
+    }
+    assert admitted == _SIGNALLED_UNDER[scope]
+
+
 def _row_fields() -> list[str]:
     source = _PUSH_SOURCE.read_text(encoding="utf-8")
     match = re.search(r"const SLOT_ROW_FIELDS = \[(.*?)\] as const", source, re.DOTALL)
@@ -153,3 +184,17 @@ def test_row_fields_reach_an_app_token_for_its_own_slot_only():
 
     assert [row["key"] for row in sent] == ["own"]
     assert {field: sent[0][field] for field in fields} == {field: 1 for field in fields}
+
+
+@pytest.mark.parametrize("scope", sorted(_SIGNALLED_UNDER))
+def test_row_fields_reach_an_app_token_wherever_the_declared_scope_is_signalled(scope):
+    fields = _row_fields()
+    own = _make_slot(owner_app="spec-builder", origin=SlotOrigin.APP, key="own")
+    foreign = _make_slot(owner_app="other-app", origin=SlotOrigin.APP, key="foreign")
+    person = _make_slot(owner_app="", origin=SlotOrigin.USER, key="person")
+    state = _make_state({"own": own, "foreign": foreign, "person": person})
+    rows = [{"key": key, **{field: 1 for field in fields}} for key in ("own", "foreign", "person")]
+
+    sent = filter_slots_for_app(rows, "spec-builder", _allowed(scope), state)
+
+    assert {row["key"] for row in sent} == _SIGNALLED_UNDER[scope]

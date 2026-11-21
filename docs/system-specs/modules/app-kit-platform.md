@@ -654,17 +654,22 @@ The dashboard's provider (`utils/appSlotPush.ts`) is fed every frame
 the dashboard socket decodes and the connectivity flag from
 `markGatewayConnected`/`markGatewayDisconnected`. That socket is the dashboard
 user's and carries every slot, so the provider is the permission boundary. It
-signals an app only for a slot whose `ChatSlot.app` is that app, read again at
-each delivery, and only for frames that change what the slot read returns
+signals an app for a slot whose `ChatSlot.app` is that app, for any slot under
+`slots:all` (or `*`), and for a slot whose `ChatSlot.origin` is `user` under
+`slots:user`: §13's `_slot_visible` order. Owner and origin are read again at
+each delivery. The declared events are the approved ones: `AppHost` filters
+`permissions.events` by the app row's `approvedGrants.events` (`grantedEvents`),
+as `staged_app_grants` does, so an update's unapproved `slots:user` signals
+nothing. The provider signals only for frames that change what the slot read returns
 (`SLOT_CHANGE_FRAMES`), `slot_title` included because the embed header shows
 the read's `title`. `slot_title` names its slot in `key`, not `slot`, and the
 provider reads it from there (`KEY_SLOT_FRAMES`) exactly as the gateway gate
-does. That is the set §13 admits to an app token with no
-`slots:*` declaration, so this path grants no event an app token could not
-already receive. Widening it to `slots:user`/`slots:all` slots would mean
-mirroring the gate on the client, `exposeToApps` included; that is not done.
-A slot the app does not own (the generic `POST /api/chat` creates one), or one
-not yet in the slot list, is not signalled, and `connected(slotKey)` and
+does. That is the set §13 admits to an app token for the same declarations,
+so this path grants no event an app token could not already receive.
+`slots:app:<name>` is not mirrored: it also needs `<name>`'s `exposeToApps`
+opt-in, which the page does not hold. Any other slot (another app's, one the
+generic `POST /api/chat` created, or, without `slots:all`, one not yet in the
+slot list) is not signalled, and `connected(slotKey)` and
 `onConnection` report it as not live even while the socket is up, so its embed
 keeps the full 1 s / 5 s cadence rather than the backstop. The embed reads
 `connected(slotKey)` again at each poll tick, so a slot that changes hands,
@@ -683,11 +688,11 @@ send without `meta.sendId`, because its sender may have drawn the row. The
 or the partial rows of a `slot_patch`, to `noteAppSlotRows`. For a watched slot
 it compares `messages`, `running`, `stopping`, `queue_depth` and
 `pending_approval` (`SLOT_ROW_FIELDS`) with the values it last saw, and a change
-signals the owning app as a frame does. A field a `slot_patch` row omits keeps
+signals the admitted apps as a frame does. A field a `slot_patch` row omits keeps
 its last value. The first values are the row this tab lists when the watch
 starts, because the embed reads at mount. A slot not listed then signals on its
 first row, which can already carry a send the mount read missed: a spurious
-signal costs one read, a missed one a backstop poll. An app token receives the same row for its own slot
+signal costs one read, a missed one a backstop poll. An app token receives the same row for each slot it is admitted to
 (`filter_slots_for_app`), so this source grants nothing new either. The cost is
 up to one extra read when a turn starts or ends, joined with the frame signals
 of the same moment by the 250 ms gap below.
@@ -720,14 +725,25 @@ While the read is failing no push read is sent at all: change signals and
 connects are dropped rather than held, so a stream of frames cannot hit a
 failing endpoint every 250 ms, and the poll's next good read carries the change.
 
-Hosts that pass it: `AppHost`, `SpecBuilderPage`. Others (`IncidentChat`,
+Hosts that pass it: `AppHost` (with the app's approved events),
+`SpecBuilderPage` (none: its slots are its own). Others (`IncidentChat`,
 whose slot is unowned; session controls; the vendored iframe SDK) pass none
 and poll.
+
+A host learns that a read landed through `onRead({ at, running })`
+(`app-sdk/embedReadReport.ts`): once per read that lands, push or poll, keyed on
+slot, page size and `dataUpdatedAt`, so a new callback identity does not repeat
+it. A failed read moves only `errorUpdatedAt` and reports nothing. The root's
+`data-read-at` is the newest landed read of the slot on screen, held while a
+wider page loads or fails, as the rows are.
 Writers: `website/src/app-sdk/slotPush.ts`, `website/src/app-sdk/ChatEmbed.tsx`,
+`website/src/app-sdk/embedReadReport.ts`, `website/src/components/AppHost.tsx`,
 `website/src/utils/appSlotPush.ts`, `website/src/hooks/useWebSocket.ts`,
 `website/src/hooks/websocket/slotList.ts`,
 `website/src/hooks/websocket/gatewayConnectivity.ts`.
 Tests: `website/src/test/ChatEmbed.pushRead.test.tsx`,
+`website/src/test/ChatEmbed.onRead.test.tsx`,
+`website/src/test/AppHostCoverage.test.tsx`,
 `website/src/test/appSlotPush.test.ts`,
 `website/src/test/useWebSocket.appSlotRows.test.ts`, `test/test_app_slot_push_frames.py`.
 
