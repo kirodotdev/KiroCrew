@@ -62,7 +62,7 @@ const browser = await chromium.launch()
  * per-session by design, so the dismissed frame has to come from a page that was
  * never reset, while each banner frame must start undismissed.
  */
-async function openScene({ theme, newCount, viewport = { width: 1280, height: 900 }, revealOk = true }) {
+async function openScene({ theme, newCount, viewport = { width: 1280, height: 900 }, revealOk = true, nativeLogOff = null }) {
   const ctx = await browser.newContext({
     viewport,
     deviceScaleFactor: 2,
@@ -96,18 +96,19 @@ async function openScene({ theme, newCount, viewport = { width: 1280, height: 90
   // `get()` resolves the count and NOTHING else, matching the real summary: the
   // main process stopped sending `lastCrashAt` and `hasLog` once nothing read
   // them, and a stub that still offered them would quietly re-legitimise fields
-  // the boundary no longer carries.
+  // the boundary no longer carries. The one exception is the real summary's own:
+  // `nativeLogOff`, a cause code, on a launch whose Chromium file log is off.
   //
   // `reveal` resolves `{ ok: revealOk }`: `true` for the frames where the result
   // is discarded and the frame is identical either way, `false` for the failure
   // scene, where the component surfaces the fallback through ErrorNotice and
   // that IS the delta the frame exists to show.
-  await page.addInitScript(({ count, revealOk }) => {
+  await page.addInitScript(({ count, revealOk, nativeLogOff }) => {
     window.crashReportsAPI = {
-      get: () => Promise.resolve({ newCount: count }),
+      get: () => Promise.resolve(nativeLogOff ? { newCount: count, nativeLogOff } : { newCount: count }),
       reveal: () => Promise.resolve({ ok: revealOk }),
     }
-  }, { count: newCount, revealOk })
+  }, { count: newCount, revealOk, nativeLogOff })
 
   await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' })
   return { ctx, page }
@@ -213,6 +214,39 @@ for (const width of [390, 320]) {
   await ctx.close()
 }
 
+// Scenes 8 to 11 — Chromium's file log is off this launch (`nativeLogOff`), so
+// the chromium.log the banner asks the user to attach is from an earlier
+// session. The muted line under the count says so, in both themes, at the
+// narrowest width, and in the pre-filled report note.
+for (const theme of ['dark', 'light']) {
+  const { ctx, page } = await openScene({ theme, newCount: 2, nativeLogOff: 'disk_full' })
+  await page.getByTestId('crash-notice-native-log-off').waitFor({ state: 'visible', timeout: 20_000 })
+  await shootBanner(page, `crash-notice-native-log-off-${theme}.png`)
+  await ctx.close()
+}
+{
+  const { ctx, page } = await openScene({
+    theme: 'dark',
+    newCount: 2,
+    nativeLogOff: 'disk_full',
+    viewport: { width: 320, height: 720 },
+  })
+  await page.getByTestId('crash-notice-native-log-off').waitFor({ state: 'visible', timeout: 20_000 })
+  await shootBanner(page, 'crash-notice-native-log-off-narrow-320.png')
+  await ctx.close()
+}
+{
+  const { ctx, page } = await openScene({ theme: 'dark', newCount: 2, nativeLogOff: 'disk_full' })
+  const el = banner(page)
+  await el.waitFor({ state: 'visible', timeout: 20_000 })
+  await page.waitForTimeout(800)
+  await el.getByRole('button', { name: /report issue/i }).click()
+  await page.getByRole('dialog').waitFor({ state: 'visible', timeout: 20_000 })
+  await page.waitForTimeout(400)
+  await page.screenshot({ path: `${OUT}/crash-notice-native-log-off-report-dialog.png` })
+  await ctx.close()
+}
+
 await browser.close()
 srv.close()
-console.log(`wrote 8 frames to ${OUT}`)
+console.log(`wrote 12 frames to ${OUT}`)
