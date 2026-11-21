@@ -782,6 +782,7 @@ def _module_level_imports(tree: ast.Module) -> dict[str, int]:
 _SURFACE_ONLY_REEXPORTS = frozenset("""
     OUTCOME_REJECTED_TRANSPORT_FLOOR
     _get_agent_for_session _review_drafts_get _review_drafts_pop adopt_dashboard_thread_agent
+    apply_voice_reply_change
     adopt_default_agent adopt_slack_config cancel_background_tasks enable_yolo_with_ttl get_orch_cfg
     handle_interaction is_open_channel is_slack_session_trusted is_tracked_channel
     link_agent_mismatch post_linked_approval read_config_text read_link_record

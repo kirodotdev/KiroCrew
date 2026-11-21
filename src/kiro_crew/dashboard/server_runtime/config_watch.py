@@ -342,6 +342,11 @@ def _register_config_watch(
 
         await crewmate_harness_notice.deliver(state, change.new)
 
+    async def _apply_voice_reply(change: ConfigChange) -> None:
+        from kiro_crew.slack.handler import apply_voice_reply_change
+
+        await apply_voice_reply_change(change)
+
     subs = [
         live.subscribe(
             "agent.acp_backend",
@@ -402,6 +407,9 @@ def _register_config_watch(
             callback=_push_channels_switch,
             name="dashboard.channels_enabled",
         ),
+        # Slack's live voice state follows the file, so a CLI or hand edit of
+        # voice_reply (enabled above all) reaches a running gateway.
+        live.subscribe("voice_reply", callback=_apply_voice_reply, name="voice_reply"),
         live.subscribe(
             "dashboard.terminal.enabled",
             callback=_apply_terminal_enabled,
