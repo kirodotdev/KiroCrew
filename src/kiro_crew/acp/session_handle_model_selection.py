@@ -365,23 +365,15 @@ async def set_model(self: AcpSessionHandle, model_id: str, *, inherit: bool = Fa
     self.inherited_model = ""
     if self._runtime.acp_backend == ACP_BACKEND_KAS:
         model_id = _kas_model_spelling(model_id, self._advertised_model_ids())
-        # KAS takes any id on ``set_config_option`` and fails every later prompt
-        # on one the account is not served, so judge the pin against the
-        # ``model`` select here. ``auto`` is left to ``ensure_served_default``.
-        # shortcut: a select that lists only ``auto`` is not trusted as the
-        # account's list; judge it too once an auto-only account is captured.
-        served = self._kas_served_ids
-        if model_id and model_id != DEFAULT_MODEL and any(m != DEFAULT_MODEL for m in served):
-            listed = resolve_pin_spelling(model_id, served)
-            if not listed:
-                logger.warning(
-                    "KAS model %s is not in this session's model select; "
-                    "staying on the session's current model",
-                    redact_log_via_context(str(model_id)),
-                )
-                self.model_pin_refused = model_id
-                return
-            model_id = listed
+        # The ``model`` select is the account's picker, not its entitlement: a
+        # model the user hid from the picker is left out of it and is still
+        # served, and KAS takes any id on ``set_config_option``. So the select
+        # only folds the pin's spelling to the listed one; a pin it does not
+        # list goes on the wire as spelled, and one the account is not served
+        # fails its turn with ``InvalidModelError``, as on a reopened chat.
+        # ``auto`` is left to ``ensure_served_default``.
+        if model_id and model_id != DEFAULT_MODEL:
+            model_id = resolve_pin_spelling(model_id, self._kas_served_ids) or model_id
     # Backend-aware: on a ``<model>[<effort>]`` pair-id harness the advertised
     # list is the picker's vocabulary while the ``model`` config option's is
     # the BARE id, so a bare pin misses the list yet is exactly what the wire

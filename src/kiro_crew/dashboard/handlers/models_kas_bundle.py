@@ -46,8 +46,12 @@ there keeps the gate's 503 when its kiro-cli check only timed out.
   window is fed: the rows carry none.
 * **No entitlement narrowing.** The kiro-cli path narrows its catalog to what a
   live session advertises because ``--list-models`` prints the same rows for
-  every tier. The select is not that: the engine lists what the signed-in
-  account is served, so the recording IS the entitled list. The kiro path's
+  every tier. The select is not that: the engine lists the signed-in account's
+  model picker, the served models less the ones the user hid from the picker
+  on Kiro Web or the Kiro CLI, in the user's order, so the recording is already
+  the list the picker should show. A hidden model is still served, so the
+  recording is a picker and not an entitlement: nothing judges a saved pin by
+  it. The kiro path's
   ``_entitled_kiro_models`` is deliberately not run here -- it reads the newest
   live provider in the shared ``acp`` namespace, which after a hot switch of
   ``agent.acp_backend`` can be a retained kiro-cli session whose own (possibly

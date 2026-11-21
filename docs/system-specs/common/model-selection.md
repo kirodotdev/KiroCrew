@@ -146,15 +146,18 @@ to a listed id. The select never becomes the session's advertised list, so the
 picker's entitlement narrowing and the explicit-pick guard are unchanged for KAS,
 and a concrete model the session already runs is never moved off.
 
-The select answers one more question, at the wire: is the pin `set_model` is about
-to send listed? KAS accepts any id on `session/set_config_option` and then fails
-every prompt with `InvalidModelError` on one the account is not served, so
-`AcpSessionHandle.set_model` keeps the select's ids (`_kas_served_ids`) and, when
-they name a concrete model, withholds an unlisted pin: the session stays on its
-current model and the pin is recorded in `model_pin_refused`, the same read-back
-the cold start, the warm-pool re-apply and a live switch already use. A
-`<namespace>::` qualifier or case difference is folded first
-(`resolve_pin_spelling`). A select listing only `auto` is not judged. A live capture
+The select is the account's model picker, not its entitled models. Kiro Web and
+the Kiro CLI let a user hide models from the picker and order it, the preference
+is stored per account by the Kiro control plane (its GetUserPreference
+modelPicker section), and KAS applies it to the
+`model` select it sends every client that does not arrange the picker itself,
+Kiro Crew among them. A model the user hid is left out of the select and is still
+served: KAS accepts any id on `session/set_config_option`, and only a model the
+account is not served fails its prompts with `InvalidModelError`. So
+`AcpSessionHandle.set_model` keeps the select's ids (`_kas_served_ids`) to fold a
+pin's spelling to the listed one (a `<namespace>::` qualifier or a case
+difference, `resolve_pin_spelling`) and sends a pin the select leaves out as
+spelled, so an agent or Bot pinned to a hidden model runs on it. A live capture
 on kiro-cli 3.1.0 listed the same 34 ids as the v2 engine's `models` block, and
 the one `--list-models` row it left out failed the turn with `InvalidModelError`.
 
@@ -169,14 +172,12 @@ with no select. A reopened chat therefore judges no pin before the turn: a pin t
 engine does not serve fails that turn with `InvalidModelError`, and every other pick
 switches the live session.
 
-Saving a pin is judged against the same select before any session sends it:
-with no `models` list on the newest live KAS session, the agent and role-pin
-validators (`dashboard/handlers/core_config_models.py`, `_kas_select_ids`) refuse
-an id the recorded select does not list, since the engine fails every prompt on
-such an id
-with `InvalidModelError`. They read it through `recorded_catalog_snapshot` with the
-vault identity the save read off the loop, so a select recorded for another
-account is no evidence and the pin is accepted as unknown.
+Saving a pin is not judged against the select either: with no `models` list on
+the newest live KAS session, the agent and role-pin validators
+(`dashboard/handlers/core_config_models.py`, `_advertised_evidence_provider`)
+have no entitlement evidence and accept the pin, as on every harness whose
+session advertised nothing. A `models` list a KAS session does carry is read as
+its entitlement like any other session's.
 
 The same select IS the engine's catalog, and the shared-runtime driver records it
 as one (`agent_sdk/kas_model_catalog.py`, `record_catalog`, on a positive KAS
