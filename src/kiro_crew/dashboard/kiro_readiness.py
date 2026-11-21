@@ -29,7 +29,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -67,6 +67,20 @@ _KIRO_PROBE_TIMED_OUT_RESPONSE = {
     "try again in a moment.",
     "code": KIRO_PROBE_TIMED_OUT_CODE,
 }
+# A turn that runs on the KAS engine and that Crew's own sign-in (or the edition's
+# engine credential) cannot serve. kiro-cli is never asked for such a turn, so this is
+# not kiro-cli's code: the remedy is Crew's sign-in, not ``kiro-cli login``.
+KAS_TURN_REFUSED_CODE = "kas_turn_refused"
+_KAS_TURN_REFUSED_RESPONSE = {
+    "error": "Kiro Crew's own sign-in cannot start this turn. Sign in again under "
+    "Settings > Agent Harness, or fix the host's engine credential.",
+    "code": KAS_TURN_REFUSED_CODE,
+}
+
+#: :func:`kas_turn_verdict`'s answers.
+KAS_TURN_READY = "ready"
+KAS_TURN_REFUSED = "refused"
+KAS_TURN_NOT_KAS_ROUTE = "not_kas_route"
 
 
 def is_probe_timeout_refusal(refusal: web.Response) -> bool:
@@ -289,6 +303,33 @@ def turn_gate_target(state: object, slot_key: object) -> tuple[bool, str | None]
         return False, None
 
 
+def _live_runtime(state: object, session_key: str | None) -> object:
+    """The runtime of the LIVE session on *session_key*, or None. Never raises."""
+    if session_key is None:
+        return None
+    try:
+        sessions = getattr(state, "sessions", None)
+        provider = sessions.get_provider(session_key) if sessions is not None else None
+        if provider is None:
+            return None
+        inner = provider
+        if getattr(provider, "_runtime", None) is None:
+            inner = getattr(provider, "client", None)
+        return getattr(inner, "_runtime", None)
+    except Exception as exc:  # noqa: BLE001 - an unreadable live session reads as none
+        logger.debug("Kiro readiness: live session unreadable (%s)", type(exc).__name__)
+        return None
+
+
+def live_engine_auth(state: object, session_key: str | None) -> object:
+    """The edition engine credential the LIVE session's process was started under.
+
+    ``AcpRuntime._kas_engine_auth``, copied from its spawn plan; None for Crew's own
+    sign-in or no live session. Reads only in-memory state. Never raises.
+    """
+    return getattr(_live_runtime(state, session_key), "_kas_engine_auth", None)
+
+
 def live_turn_route(state: object, session_key: str | None) -> bool | None:
     """Whether the LIVE session on *session_key* is Crew's KAS engine bundle.
 
@@ -389,6 +430,91 @@ async def kas_crew_signin_ready(
         logger.debug("Kiro readiness: Crew sign-in cannot serve the turn (%s)", type(exc).__name__)
         return False
     return True
+
+
+def _kas_backend_sync(session_key: str | None, config: object = None) -> bool:
+    """True when the turn on *session_key* starts on the KAS harness, on any route.
+
+    The backend is chosen as :func:`_kas_bundle_turn_sync` chooses it, but neither
+    the route nor an installed engine is asked: an edition credential's refusals
+    (:func:`_edition_turn_verdict_sync`) hold whether or not the engine is
+    installed yet, since the spawn installs it after they pass. Blocking (a config
+    read); never raises, and an unreadable answer is False.
+    """
+    try:
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.chat_handlers import configured_backend_for_session
+
+        applied = config if config is not None else KiroCrewConfig.load()
+        return configured_backend_for_session(session_key, applied) == ACP_BACKEND_KAS
+    except Exception as exc:  # noqa: BLE001 - an unreadable answer keeps the kiro-cli gate
+        logger.debug("Kiro readiness: KAS backend probe failed (%s)", type(exc).__name__)
+        return False
+
+
+def _edition_turn_verdict_sync(
+    session_key: str | None, live_route: bool | None, config: object, engine_auth: object
+) -> str | None:
+    """The verdict on a KAS turn while an edition condition is in force, else None.
+
+    The conditions are the ``crew_client`` preview's: an engine credential (an
+    edition's, or Crew's machine mode) and a stored sign-in on an edition's own
+    start URL. Under either, the turn is Crew's sign-in alone, so it is
+    :data:`KAS_TURN_READY` or :data:`KAS_TURN_REFUSED`, never kiro-cli's. The
+    refusals mirror ``KasHarness.resolve_spawn``: a failed preflight, a registered
+    start URL, and an engine credential off ``agent.kas_bundle``. None (no
+    condition, or a turn not on KAS) keeps the turn gate as it is without the
+    preview. A live session is judged by the credential its process was started
+    under (*engine_auth*). Blocking; never raises.
+    """
+    from kiro_crew.agent_sdk import kas_engine_auth
+    from kiro_crew.auth.login.endpoints import stored_sign_in_registered
+
+    auth: Any = engine_auth if live_route else kas_engine_auth.active_engine_auth()
+    if not live_route:
+        if auth is None and not stored_sign_in_registered():
+            return None
+        if not _kas_backend_sync(session_key, config):
+            return None
+        if kas_engine_auth.cold_spawn_refused(auth, config):
+            return KAS_TURN_REFUSED
+    if auth is None:
+        return None
+    return KAS_TURN_READY if kas_engine_auth.turn_ready(auth) else KAS_TURN_REFUSED
+
+
+async def kas_turn_verdict(
+    session_key: str | None,
+    live_route: bool | None = None,
+    *,
+    config: object = None,
+    engine_auth: object = None,
+) -> str:
+    """Who authorizes the turn on *session_key*, and whether it may start.
+
+    * :data:`KAS_TURN_READY`: the turn runs on the KAS engine and Crew's own
+      sign-in can serve it.
+    * :data:`KAS_TURN_REFUSED`: an edition condition is in force
+      (:func:`_edition_turn_verdict_sync`) and the turn cannot start. kiro-cli is
+      never its authority: the caller refuses outright, before any history is cut.
+    * :data:`KAS_TURN_NOT_KAS_ROUTE`: every other turn, which the kiro-cli gate
+      decides exactly as without the preview (:func:`kas_crew_signin_ready`).
+
+    Arguments as :func:`kas_crew_signin_ready`, plus *engine_auth*, the credential a
+    live session was started under (:func:`live_engine_auth`). Never raises.
+    """
+    from kiro_crew import workload_identity
+
+    if live_route is not False and not workload_identity.active():
+        verdict = await asyncio.to_thread(
+            _edition_turn_verdict_sync, session_key, live_route, config, engine_auth
+        )
+        if verdict is not None:
+            return verdict
+    if await kas_crew_signin_ready(session_key, live_route, config=config):
+        return KAS_TURN_READY
+    return KAS_TURN_NOT_KAS_ROUTE
 
 
 async def workload_turns_ready() -> bool:
@@ -660,15 +786,25 @@ async def reject_if_kiro_unverified(
         live_route = None
     # The configuration the provider factory allocates the turn's session from.
     applied = getattr(getattr(state, "sessions", None), "_cfg", None)
-    if harness_turn and await kas_crew_signin_ready(session_key, live_route, config=applied):
-        _clear_refusal_warning()
-        return None
-    service = _service(request)
-    if await kiro_verified_ready(service, max_age_secs=max_age_secs):
-        _clear_refusal_warning()
-        return None
-    timed_out = isinstance(service, KiroPrerequisiteService) and service.probe_timed_out
-    body = _KIRO_PROBE_TIMED_OUT_RESPONSE if timed_out else _KIRO_NOT_READY_RESPONSE
+    live_auth = live_engine_auth(state, session_key) if live_route else None
+    extra = {"engine_auth": live_auth} if live_auth is not None else {}
+    body = None
+    if harness_turn:
+        verdict = await kas_turn_verdict(session_key, live_route, config=applied, **extra)
+        if verdict == KAS_TURN_READY:
+            _clear_refusal_warning()
+            return None
+        if verdict == KAS_TURN_REFUSED:
+            # A KAS turn is authorized by Crew's own sign-in alone: kiro-cli is not
+            # asked, so a rerun's history is never cut for a spawn that refuses.
+            body = _KAS_TURN_REFUSED_RESPONSE
+    if body is None:
+        service = _service(request)
+        if await kiro_verified_ready(service, max_age_secs=max_age_secs):
+            _clear_refusal_warning()
+            return None
+        timed_out = isinstance(service, KiroPrerequisiteService) and service.probe_timed_out
+        body = _KIRO_PROBE_TIMED_OUT_RESPONSE if timed_out else _KIRO_NOT_READY_RESPONSE
     _warn_refused_once(_log_safe_path(request), body["code"])
     return web.json_response(body, status=503)
 

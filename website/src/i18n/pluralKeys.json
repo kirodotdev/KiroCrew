@@ -1,4 +1,8 @@
 [
+  "managedEnv.list.with_crew_pointer",
+  "managedEnv.idle.span_minutes",
+  "managedEnv.idle.span_hours",
+  "managedEnv.idle.span_days",
   "pages.chat.quickAsk.vault_more",
   "components.gitPanel.repos_omitted",
   "components.queueStack.queued_count",

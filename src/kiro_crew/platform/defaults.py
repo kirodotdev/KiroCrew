@@ -648,6 +648,14 @@ class DefaultDashboardContributor:
         # The public edition knows no company portal: the form starts empty.
         return {}
 
+    def idc_sign_in_profiles(self) -> Dict[str, Dict[str, Any]]:
+        # No start URL has an edition form: every IdC sign-in is the public one.
+        return {}
+
+    def kas_engine_auth(self) -> Optional[Any]:
+        # Crew's own sign-in answers the engine's credential callback.
+        return None
+
     def mixed_internal_api_paths(self) -> "frozenset[str]":
         # The public edition mounts no routes, so it has none to make reachable
         # by an internal loopback caller. Empty keeps the middleware's admitted

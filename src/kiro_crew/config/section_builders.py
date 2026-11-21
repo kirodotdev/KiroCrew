@@ -658,7 +658,43 @@ def _build_instances_config(
         max_recovery_attempts=section.read("max_recovery_attempts", _safe_int),
         recover_backoff_max_secs=section.read("recover_backoff_max_secs", _safe_float),
         probe_failure_threshold=section.read("probe_failure_threshold", _safe_int),
+        **_managed_env_fields(instances_data),
     )
+
+
+#: The managed-environment lane's text keys under ``instances``; each defaults to "".
+_MANAGED_ENV_TEXT_KEYS = (
+    "managed_env_endpoint",
+    "managed_env_start_url",
+    "managed_env_profile_arn",
+    "managed_env_ssh_region",
+    "managed_env_kas_endpoint",
+    "managed_env_kas_control_plane_endpoint",
+    "managed_env_kas_region",
+    "managed_env_box_token_path",
+    "managed_env_box_token_env",
+    "managed_env_box_openssl",
+)
+_MANAGED_ENV_LIST_KEYS = (
+    "managed_env_scopes",
+    "managed_env_box_env_drop",
+    "managed_env_box_unset_env",
+)
+
+
+def _managed_env_fields(data: dict) -> dict:
+    """The lane's keys as read: a non-text value reads as empty and a list keeps only
+    non-blank strings, so a hand edit can only leave a key unset, never guessed."""
+    out: dict = {}
+    for key in _MANAGED_ENV_TEXT_KEYS:
+        raw = data.get(key)
+        out[key] = raw.strip() if isinstance(raw, str) else ""
+    for key in _MANAGED_ENV_LIST_KEYS:
+        raw = data.get(key)
+        items = raw if isinstance(raw, list) else []
+        out[key] = [v.strip() for v in items if isinstance(v, str) and v.strip()]
+    out["managed_env_mcp_registry_mode"] = data.get("managed_env_mcp_registry_mode") is True
+    return out
 
 
 def _build_tunnel_config(tunnel_data: dict) -> TunnelConfig:

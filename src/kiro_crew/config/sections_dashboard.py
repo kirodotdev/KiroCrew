@@ -61,11 +61,15 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     # Has server behavior: kiro_crew.connected_computers.flag gates enrollment,
     # the connector socket, the chat choice and every start on it.
     "connected_computers",
+    # Has server behavior: kiro_crew.crew_client_preview gates the edition sign-in
+    # profiles and the KAS engine-credential hook.
+    "crew_client",
     "crew_oauth",
     "dashboard_stale_fields",
     "dashboard_stale_wake",
     "explore",
     "folder_conductor",
+    "launch_card_close",
     "remote_crew_chat",
     "session_environments",
     "session_harness",

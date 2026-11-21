@@ -10,6 +10,9 @@ import './lib/installBasePath'
 // before store/providers/App so seam registrations run before render.
 // Empty in the stock build. See website/src/extensions.ts.
 import './extensions'
+// The managed-environment Remote Crew lane's form and row actions. They draw only while the
+// server offers the lane (the crew_client feature preview on). See components/managedEnv.
+import './components/managedEnv/register'
 import { startMemoryWatch } from './lib/memoryWatch'
 // Side effect only: when the slow frame log is on (Settings > Developer > Debug
 // tools), it starts here so it sees the page load. Off, it creates no observer.
