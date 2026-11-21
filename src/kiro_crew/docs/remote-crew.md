@@ -315,11 +315,13 @@ A set control plane URL must be `https://` (`http://` only for a loopback
 port-forward). A URL that breaks that rule is ignored with a warning, and the
 viewer answers that it is not set up.
 
-### The Team Crews group
+### The Remote Crews group
 
-Once a list is loaded, the Crew switcher in the top header gains a **Team Crews**
+Once a list is loaded, the Crew switcher in the top header gains a **Remote Crews**
 group. It lists the Crews the control plane lists for you, each with its name,
-**Personal** or **Team**, and its status. A Crew is **online**, and choosing its
+**Shared** or **Private**, and its status. It is one list with the SSH, SSM and
+Fargate Crews this dashboard reaches itself: those sit above the relay rows under
+the same heading, each reading **Private** with its source and its host. A Crew is **online**, and choosing its
 row opens it, only while the relay reports its tunnel connected. A Crew whose host
 still renews its lease but whose tunnel is down shows **reconnecting**, any other
 shows **offline**, and either may also show when it was last seen. A row that

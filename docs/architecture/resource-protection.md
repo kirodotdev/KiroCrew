@@ -120,9 +120,11 @@ multi-GB, roughly-118-thread gateway, and runs Python bytecode in the child befo
 wedge before ever reaching `exec`, and a wedged child takes more than itself down:
 
 - `subprocess.Popen._execute_child` blocks in an unbounded `os.read(errpipe_read, ...)`
-  waiting for the child to exec or die. For `asyncio.create_subprocess_exec` that read runs
-  on the event loop thread with no `await` point, so no `asyncio.wait_for` can interrupt it
-  and the whole gateway stops.
+  waiting for the child to exec or die. For `asyncio.create_subprocess_exec` on a stock loop
+  that read runs on the event loop thread with no `await` point, so no `asyncio.wait_for` can
+  interrupt it and the whole gateway stops. The gateway loop builds each child on a worker
+  thread instead ([platform-compat](../system-specs/common/platform-compat.md#posix-gateway-spawns-build-their-child-off-the-event-loop)),
+  but the `fork()` itself still holds the GIL, and a wedged child holds that worker.
 - `_posixsubprocess`'s `child_exec()` runs `_close_open_fds()` *after* `preexec_fn`, so the
   wedged child still holds a duplicate of every inherited fd, `gateway.lock` and the
   dashboard's listening socket included, which then outlive the gateway.
