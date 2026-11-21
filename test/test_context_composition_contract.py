@@ -522,7 +522,7 @@ _SCENARIOS = {
 #: recorded before the assembly moved into owners.
 _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
     "background_overflow": (
-        "991d511142f47fc4baaf03e87ab5d7dadbcfcb51d3108a9a4b1a51e3898707a5",
+        "be37faf3e1b13b1a88ff2ae93e5f30fa99b909de50e135f43202a3d98d0036bf",
         [
             ("unclassified", 64),
             ("agent_identity", 25),
@@ -531,7 +531,7 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
             ("docs_pointer", 235),
             ("memory", 31813),
             ("memory_tools", 425),
-            ("lessons", 177),
+            ("lessons", 257),
         ],
     ),
     "cancelled_turn_preamble": (
@@ -579,7 +579,7 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "follow_up_reinjection": (
-        "68cf43320da49ab32b5df8116a792b14d6ba8e490439c3a849eee9369c94b3af",
+        "d0c4e7f2afd84daf02c663317a4fa56ee92a641320644e78430ba85c531ac964",
         [
             ("agent_instructions", 1675),
             ("memory", 183),
@@ -587,14 +587,14 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
             ("recovery", 167),
             ("skill_index", 439),
             ("unclassified", 36),
-            ("lessons", 179),
+            ("lessons", 259),
             ("response_preferences", 402),
             ("reply_format_rules", 1282),
             ("request_header", 46),
         ],
     ),
     "fresh_channel_noninteractive": (
-        "21109e887cdcd6f8a1d01901ffb7d621a7b1a1f252dd64c7adc6c0244d0ef6fb",
+        "b6825284e1a407cb4946602ee0385ee3e057e67ce3c830c783a4cc4f2e15b3b3",
         [
             ("agent_instructions", 145),
             ("session_wrapper", 296),
@@ -604,13 +604,13 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
             ("docs_pointer", 235),
             ("memory", 864),
             ("memory_tools", 425),
-            ("lessons", 178),
+            ("lessons", 258),
             ("unclassified", 26),
             ("request_header", 49),
         ],
     ),
     "fresh_custom_agent": (
-        "aa014b08e62d2dda135d67e7496c3407ee4d8bd043ac281e16ffa034630b8c55",
+        "67c095450c3149b4f68fa784f2b20b257a39f8773084276412f3772b8c8bc383",
         [
             ("agent_instructions", 74),
             ("session_wrapper", 288),
@@ -618,7 +618,7 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
             ("surface", 197),
             ("memory", 864),
             ("memory_tools", 425),
-            ("lessons", 178),
+            ("lessons", 258),
             ("unclassified", 26),
             ("reply_format_rules", 1282),
             ("request_header", 50),
@@ -639,7 +639,7 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "fresh_dashboard": (
-        "ba8d01b7fb4d0d3e9d9f1f6898430ae437f03fbeb5a9e37f880c7f2b9e067571",
+        "7d9936d5ea19e3b83121fea1a6a476692e21758cd490c278c2c55300ab008342",
         [
             ("agent_instructions", 1675),
             ("session_wrapper", 288),
@@ -649,7 +649,7 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
             ("docs_pointer", 235),
             ("memory", 864),
             ("memory_tools", 425),
-            ("lessons", 178),
+            ("lessons", 258),
             ("unclassified", 26),
             ("reply_format_rules", 1282),
             ("request_header", 58),
@@ -729,12 +729,12 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "resumed": (
-        "dc5948d4637d5b9d8139c2347928058b4ed7b144ac43d0aa731a85e582666935",
+        "51773f0870b8a9813d7cb87fbdeb1c2da7372d352b34f388d871f7045e663f63",
         [
             ("recovery", 442),
             ("agent_identity", 25),
             ("surface", 30),
-            ("lessons", 179),
+            ("lessons", 259),
             ("unclassified", 18),
             ("reply_format_rules", 1282),
             ("request_header", 50),
@@ -752,7 +752,7 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "session_context_small_window": (
-        "6c62e5fc6af6abfd6d0cd088a5a92aa0914278dbeacdde657e65a9fa1c16faf0",
+        "6bf3fc76ceb8e60a9b7c9500b28912a5840baaf87f1ed549de3539166df095ec",
         [
             ("unclassified", 64),
             ("agent_identity", 25),
@@ -761,7 +761,7 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
             ("docs_pointer", 235),
             ("memory", 869),
             ("memory_tools", 425),
-            ("lessons", 177),
+            ("lessons", 257),
         ],
     ),
     "session_replay_live_window": (

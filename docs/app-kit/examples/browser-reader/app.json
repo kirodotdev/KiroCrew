@@ -1,0 +1,17 @@
+{
+  "name": "browser-reader",
+  "version": "0.1.0",
+  "displayName": "Browser Reader",
+  "description": "Reads and clicks the browser page of its own chat slot through ctx.browser",
+  "author": "kirocrew",
+  "tags": ["example"],
+  "permissions": {
+    "chatSlots": true,
+    "browser": ["read", "act"]
+  },
+  "backend": {
+    "hooks": {
+      "routes": "backend.routes:register_routes"
+    }
+  }
+}

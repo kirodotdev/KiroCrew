@@ -17,6 +17,12 @@ to the test files that touched it.
     select  given a diff (`--base B --head H`, or `--name-status FILE`) and a
             map, print the test files it would run, or fall back to the full
             suite and say why
+    guard-tier
+            print the guard tier, one test file per line, so the tier runs as
+            one pytest invocation:
+                python -m pytest $(python3 scripts/ci_test_map.py guard-tier)
+            Only files git tracks, in code point order, as POSIX paths: the
+            same lines on every platform, whatever else a working tree holds.
 
 The map
 -------
@@ -175,6 +181,32 @@ def guard_tier(root: Path) -> list[str]:
     return corpus_gates(root)
 
 
+def parse_ls_files(out: bytes) -> set[str]:
+    """The paths in `git ls-files -z` output."""
+    return {name for name in out.decode("utf-8", "surrogateescape").split("\0") if name}
+
+
+def tracked_tests(root: Path) -> set[str] | None:
+    """The files under `test/` in git's index, or None for a tree with no `.git`."""
+    if not (root / ".git").exists():
+        return None
+    listed = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z", "--cached", "--", "test"],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    return parse_ls_files(listed.stdout)
+
+
+def tier_lines(tier: Iterable[str], tracked: set[str] | None) -> list[str]:
+    """*tier* as the `guard-tier` command prints it: tracked paths, in code point order."""
+    lines = sorted(path for path in tier if tracked is None or path in tracked)
+    if not lines:
+        raise ValueError("guard tier is empty: refusing to print it")
+    return lines
+
+
 def share(selection: Selection, test_map: Mapping[str, Any]) -> float:
     """Share of the map's test node ids the selection would run (full = 1.0)."""
     counts: Mapping[str, int] = test_map["tests"]
@@ -221,6 +253,12 @@ def _cmd_select(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_guard_tier(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    print("\n".join(tier_lines(guard_tier(root), tracked_tests(root))))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--root", default=str(REPO_ROOT), help="repository root")
@@ -235,9 +273,11 @@ def main(argv: list[str] | None = None) -> int:
     pick.add_argument("--head")
     pick.add_argument("--name-status", help="file holding `git diff --name-status -M` output")
     pick.add_argument("--json", action="store_true", help="print one JSON verdict line")
+    sub.add_parser("guard-tier", help="print the guard tier, one test file per line")
     args = parser.parse_args(argv)
+    commands = {"build": _cmd_build, "select": _cmd_select, "guard-tier": _cmd_guard_tier}
     try:
-        return _cmd_build(args) if args.cmd == "build" else _cmd_select(args)
+        return commands[args.cmd](args)
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

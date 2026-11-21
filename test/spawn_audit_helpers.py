@@ -28,9 +28,15 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # and paths the runner created; none comes from the agent or the model.
         # The case's `build.sh`, run on a fresh empty directory before any agent.
         "eval/tasks.py::build_repo",
-        # `git add/commit/push` in a repo `build_repo` just made, for the
+        # `git add/commit` in a repo `build_repo` just made, for the
         # no-model `--check` gate only; no agent has touched that repo.
         "eval/tasks.py::apply_reference",
+        # `git -c core.hooksPath=/dev/null --git-dir <origin> fetch <repo> trunk:trunk`:
+        # fixed argv and two paths the runner created. It runs in the runner's own
+        # bare origin with hooks off, so no remote, push URL or hook the agent set in
+        # the repo decides where the branch goes; the agent's commits are only read
+        # as data, the same objects the hidden check (`_run_check`) then imports.
+        "eval/tasks.py::sync_task_branch",
         # This package's own gateway (`python -P -m kiro_crew gateway --port auto
         # --no-open --no-tunnel`) in the run's fresh data home; it sandboxes the
         # agents it spawns itself.

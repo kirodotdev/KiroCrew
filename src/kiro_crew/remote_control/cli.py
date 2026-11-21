@@ -25,7 +25,7 @@ _ACTIONS = (
 LOCKED_NOTICE = "Remote Control is managed by this build and cannot be turned on here."
 #: Status for a Crew that hosts only because its team key or workload identity is set.
 BY_DEFAULT_NOTICE = (
-    "On by default, because this Crew has a team key or a workload identity. "
+    "On by default, for this Crew's personal sign-in, team key or workload identity. "
     "To turn it off: kirocrew remote-control off"
 )
 

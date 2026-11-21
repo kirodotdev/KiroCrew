@@ -168,6 +168,9 @@ class LiveSession:
     #: answer has told the agent yet. Page-targeted ops are refused while it is set;
     #: the next answer the route returns carries it and clears it.
     tab_moved: dict[str, Any] | None = None
+    #: The same move, kept apart for the slot's app (``PagePort``): each side is told
+    #: once, and telling one never clears the other's.
+    app_tab_moved: dict[str, Any] | None = None
     #: The relay the last stream ran on, kept after the stream stops so the finished
     #: card's "Open in Chrome" can still activate the retained tab.
     last_relay: Relay | None = None
@@ -958,6 +961,7 @@ class LiveHub:
         """
         sess = self._session(session_key)
         sess.tab_moved = {**(sess.tab_moved or {}), **notice}
+        sess.app_tab_moved = {**(sess.app_tab_moved or {}), **notice}
 
     def pending_tab_move(self, session_key: str) -> dict[str, Any] | None:
         """The unreported tab move, if any, left in place."""
@@ -970,6 +974,19 @@ class LiveHub:
         if sess is None or not sess.tab_moved:
             return None
         notice, sess.tab_moved = sess.tab_moved, None
+        return notice
+
+    def pending_app_tab_move(self, session_key: str) -> dict[str, Any] | None:
+        """The tab move the slot's app has not been told, left in place."""
+        sess = self._sessions.get(session_key)
+        return dict(sess.app_tab_moved) if sess is not None and sess.app_tab_moved else None
+
+    def take_app_tab_move(self, session_key: str) -> dict[str, Any] | None:
+        """The tab move the slot's app has not been told, cleared; the Bot's stays."""
+        sess = self._sessions.get(session_key)
+        if sess is None or not sess.app_tab_moved:
+            return None
+        notice, sess.app_tab_moved = sess.app_tab_moved, None
         return notice
 
     def owner_of_target(self, target_id: str) -> str | None:

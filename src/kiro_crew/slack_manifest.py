@@ -255,15 +255,47 @@ def deep_link(alias: str, features: Iterable[str] | None = None) -> str:
     return f"{_APP_CREATE_BASE}?new_app=1&manifest_yaml={encoded}"
 
 
+_APP_ID_RE = re.compile(r"A[A-Z0-9]{6,20}")
+_TEAM_ID_RE = re.compile(r"T[A-Z0-9]{6,20}")
+
+#: Slack's documented redirect into an app's DM ("Deep linking into Slack").
+APP_REDIRECT_URL = "https://slack.com/app_redirect"
+
+
 def app_manifest_url(app_id: str) -> str | None:
     """The App Manifest page of an existing Slack app, or None for a bad id.
 
     Slack app ids are ``A`` plus upper-case alphanumerics; anything else is
     refused so a value read off Slack cannot steer the link elsewhere.
     """
-    if not re.fullmatch(r"A[A-Z0-9]{6,20}", app_id or ""):
+    if not _APP_ID_RE.fullmatch(app_id or ""):
         return None
     return f"{_APP_CREATE_BASE}/{app_id}/app-manifest"
+
+
+def app_basic_info_url(app_id: str) -> str | None:
+    """The Basic Information page (where App-Level Tokens are generated), or None.
+
+    Same id check and URL shape as :func:`app_manifest_url`.
+    """
+    if not _APP_ID_RE.fullmatch(app_id or ""):
+        return None
+    return f"{_APP_CREATE_BASE}/{app_id}/general"
+
+
+def app_dm_url(app_id: str, team_id: str = "") -> str | None:
+    """A link that opens the app's DM in Slack, or None for a bad app id.
+
+    A workspace id (``T…``) is added when valid. An org-level install has none
+    (its team is an ``E…`` org id), so the link carries only the app and Slack
+    opens it in the user's default workspace.
+    """
+    if not _APP_ID_RE.fullmatch(app_id or ""):
+        return None
+    url = f"{APP_REDIRECT_URL}?app={app_id}"
+    if _TEAM_ID_RE.fullmatch(team_id or ""):
+        url += f"&team={team_id}"
+    return url
 
 
 @dataclass(frozen=True)

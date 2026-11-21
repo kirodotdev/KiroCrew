@@ -13,7 +13,7 @@ import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
 import { useSharedCrewCapabilities } from '../../hooks/sharedCrew/useSharedCrew'
-import { PREVIEW_APP_BROWSER_SDK, PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_VISUAL_REFRESH, PREVIEW_WEBHOOKS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_APP_BROWSER_SDK, PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_VISUAL_REFRESH, PREVIEW_WEBHOOKS, PREVIEW_WIDGETS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -139,6 +139,7 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_CHAT_RUNTIME_SHARING: return i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing')
     case PREVIEW_WORKER_GRILL: return i18nT('pages.developer.featurePreviewsTab.worker_grill')
     case PREVIEW_APP_BROWSER_SDK: return i18nT('pages.developer.featurePreviewsTab.app_browser_sdk')
+    case PREVIEW_WIDGETS: return i18nT('pages.developer.featurePreviewsTab.widgets')
     case PREVIEW_SESSION_ENVIRONMENTS: return i18nT('sessionEnvironments.title')
     case PREVIEW_SESSION_HARNESS: return i18nT('pages.developer.featurePreviewsTab.session_harness')
     case PREVIEW_CONNECTED_COMPUTERS: return i18nT('connectedComputers.preview.label')
@@ -200,6 +201,7 @@ export function FeaturePreviewsSection() {
   const chatRuntimeSharing = usePreviewFlag(PREVIEW_CHAT_RUNTIME_SHARING)
   const workerGrill = usePreviewFlag(PREVIEW_WORKER_GRILL)
   const appBrowserSdk = usePreviewFlag(PREVIEW_APP_BROWSER_SDK)
+  const widgets = usePreviewFlag(PREVIEW_WIDGETS)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   const sessionHarness = usePreviewFlag(PREVIEW_SESSION_HARNESS)
   const connectedComputers = usePreviewFlag(PREVIEW_CONNECTED_COMPUTERS)
@@ -466,6 +468,18 @@ export function FeaturePreviewsSection() {
             hint={i18nT('pages.developer.featurePreviewsTab.app_browser_sdk_desc')}
             checked={appBrowserSdk}
             onChange={v => setPreviewFlag(PREVIEW_APP_BROWSER_SDK, v)}
+          />
+        )}
+        {/* Phone widgets (`widgets`): a gateway switch (`kiro_crew/widgets_preview.py`).
+            Off, agents are not told about widgets and `dashboard_save` refuses them.
+            NO ingress button: the widgets are placed on the phone. */}
+        {!previewsOff && (
+          <SettingsToggle
+            label={i18nT('pages.developer.featurePreviewsTab.widgets')}
+            description={i18nT('pages.developer.featurePreviewsTab.widgets_desc_summary')}
+            hint={i18nT('pages.developer.featurePreviewsTab.widgets_desc')}
+            checked={widgets}
+            onChange={v => setPreviewFlag(PREVIEW_WIDGETS, v)}
           />
         )}
         {/* The visual refresh. NO ingress button and NO capture: it restyles pages

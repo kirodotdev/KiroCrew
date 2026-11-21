@@ -29,6 +29,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.chat_utils_injected_rows import (
     AUTOMATION_STEER_META,
+    AUTOMATION_STEER_WIRE_KEY,
     REQUEUED_STEER_ROW_MID_META,
     RESOURCE_WAKE_KIND,
 )
@@ -528,6 +529,10 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             # card (matched by `queue_id`) can tie its row to the steer row. A
             # card only: the entry and the row it drains into never carry it.
             _push_meta["requeuedSteer"] = True
+            if _nudge is not None:
+                # Automation text: a crewmate chat must not draw its card as the
+                # person's own bubble (`queue_entry_view` tags a listed entry alike).
+                _push_meta[AUTOMATION_STEER_WIRE_KEY] = True
             _push["meta"] = _push_meta
             from kiro_crew.dashboard import responsive_chat as _rc
 

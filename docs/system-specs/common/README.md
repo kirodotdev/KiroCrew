@@ -10,5 +10,6 @@ rather than restating them.
 | [platform-compat.md](platform-compat.md) | The POSIX-call shim table: which `platform_compat` helper replaces each `fcntl` / `os.kill` / `resource` call, and why. |
 | [error-handling.md](error-handling.md) | Exception boundaries, retries, and user-facing failure text. |
 | [testing-conventions.md](testing-conventions.md) | Test patterns, which conftest owns which isolation, the side-effect floor, the seven flake classes and the one correct fix for each, and how to keep the suite fast. |
+| [testing-sweep-findings.md](testing-sweep-findings.md) | The records of each repeated five-run pass of the full suite: what the per-test probe caught on each host and how each class was closed. Evidence for testing-conventions.md, not extra rules. |
 | [injected-messages.md](injected-messages.md) | The envelopes automation injects into a session (cron, subagent, auto-nudge) and how to treat them. |
 | [take-away-changes.md](take-away-changes.md) | A PR that hides, deletes, tightens or migrates something lists every reader on main, with a test each. |

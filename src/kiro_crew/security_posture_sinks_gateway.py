@@ -289,6 +289,20 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "state and binary pixel frames are unchanged.",
     ),
     (
+        "Browser js, cdp and http_get results",
+        "browser_harness/raw_ops.py",
+        "The value a page script, a DevTools command or a direct fetch returns to the "
+        "agent passes the exfiltration-URL and credential redactors whole, then is "
+        "fence-neutralized and capped, before it leaves the op route.",
+    ),
+    (
+        "Browser sign-in completion",
+        "browser_harness/sign_in.py",
+        "The page URL a provider's sign-in completion lands on, the only part of it the "
+        "agent sees, passes the exfiltration-URL and credential redactors before it is "
+        "returned or written to the step label.",
+    ),
+    (
         "Browser action change reports",
         "browser_harness/change_report.py",
         "The `changes` report a click, type or select carries while "
@@ -1072,6 +1086,14 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "in `kiro.message`. The upstream can echo request headers, so every token the "
         "call sent is replaced first (a bare token matches no secret pattern) and the "
         "credential scanner then runs over the text, cut to 300 characters.",
+    ),
+    (
+        "Browser page text handed to an app",
+        "apps/browser_page_port.py",
+        "Every string `ctx.browser.page(slot)` returns to an app's backend: the page "
+        "outline, a tab's address and title, an op's result or error, the live view's "
+        "address and title and a picked element's name. Each passes the "
+        "exfiltration-URL and credential redactors whole before any cut to a length.",
     ),
     (
         "The work a restart is waiting on",

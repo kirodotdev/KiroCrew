@@ -72,12 +72,35 @@ const RADIUS = 16
 const add = (p: Pt, n: Pt, k: number): Pt => ({ x: p.x + n.x * k, y: p.y + n.y * k })
 const horizontal = (side: Side) => side === 'left' || side === 'right'
 
-/** The elbow's corners from *a* (leaving along *na*) to *b* (entered against *nb*). */
-function elbowPoints(a: Pt, sa: Side, b: Pt, sb: Side): Pt[] {
+/** Whether the axis-aligned segment *p*-*q* passes through the inside of *s*. */
+function crosses(s: Box, p: Pt, q: Pt): boolean {
+  const e = 0.01
+  return Math.max(p.x, q.x) > s.x + e && Math.min(p.x, q.x) < s.x + s.w - e
+    && Math.max(p.y, q.y) > s.y + e && Math.min(p.y, q.y) < s.y + s.h - e
+}
+
+/** Limit each stub to half the clearance only when the other box lies ahead on its outward ray. */
+function stubLength(a: Pt, side: Side, other: Box): number {
+  const h = horizontal(side)
+  const across = h ? a.y : a.x
+  const lo = h ? other.y : other.x
+  const extent = h ? other.h : other.w
+  if (across <= lo || across >= lo + extent) return STUB
+  const n = h ? NORMAL[side].x : NORMAL[side].y
+  const near = h ? other.x + (n < 0 ? other.w : 0) : other.y + (n < 0 ? other.h : 0)
+  const clearance = (near - (h ? a.x : a.y)) * n
+  return clearance >= 0 ? Math.min(STUB, clearance / 2) : STUB
+}
+
+/** The elbow's corners from *a* on *from* (leaving along *na*) to *b* on *to* (entered against *nb*). */
+function elbowPoints(a: Pt, sa: Side, b: Pt, sb: Side, from: Box, to: Box): Pt[] {
   const na = NORMAL[sa]
   const nb = NORMAL[sb]
-  const p1 = add(a, na, STUB)
-  const p2 = add(b, nb, STUB)
+  const gap = (b.x - a.x) * na.x + (b.y - a.y) * na.y
+  // Facing ends share the gap even when their outward rays miss the other box.
+  const facingStub = horizontal(sa) === horizontal(sb) && sa !== sb && gap >= 0 ? Math.min(STUB, gap / 2) : STUB
+  const p1 = add(a, na, Math.min(facingStub, stubLength(a, sa, to)))
+  const p2 = add(b, nb, Math.min(facingStub, stubLength(b, sb, from)))
   let middle: Pt[]
   if (horizontal(sa) === horizontal(sb)) {
     const h = horizontal(sa)
@@ -98,6 +121,16 @@ function elbowPoints(a: Pt, sa: Side, b: Pt, sb: Side): Pt[] {
       const v = (across(p1) + across(p2)) / 2
       middle = [pt(along(p1), v), pt(along(p2), v)]
     }
+    // Aligned shapes whose sides do not face: that route runs through one of
+    // them, so detour round both, over or under (left or right), the shorter way.
+    const legs = [p1, ...middle, p2]
+    if (legs.some((p, i) => i > 0 && (crosses(from, legs[i - 1], p) || crosses(to, legs[i - 1], p)))) {
+      const lo = (h ? Math.min(from.y, to.y) : Math.min(from.x, to.x)) - STUB
+      const hi = (h ? Math.max(from.y + from.h, to.y + to.h) : Math.max(from.x + from.w, to.x + to.w)) + STUB
+      const v = (across(p1) + across(p2)) / 2
+      const side = v - lo <= hi - v ? lo : hi
+      middle = [pt(along(p1), side), pt(along(p2), side)]
+    }
   } else {
     // One horizontal end, one vertical: a single corner where they meet, if the
     // last leg then enters the target the right way; otherwise one more turn.
@@ -109,7 +142,11 @@ function elbowPoints(a: Pt, sa: Side, b: Pt, sb: Side): Pt[] {
   return simplify([a, p1, ...middle, p2, b])
 }
 
-/** Drops repeated and collinear points, so each corner is a real turn. */
+/**
+ * Drops repeated points, and collinear ones that carry straight on, so each
+ * corner is a real turn. A point where the line doubles back is kept: dropping
+ * it would join the legs into one that runs through a shape.
+ */
 function simplify(pts: Pt[]): Pt[] {
   const out: Pt[] = []
   for (const p of pts) {
@@ -118,7 +155,8 @@ function simplify(pts: Pt[]): Pt[] {
     if (out.length >= 2) {
       const q = out[out.length - 2]
       const cross = (last.x - q.x) * (p.y - q.y) - (last.y - q.y) * (p.x - q.x)
-      if (Math.abs(cross) < 0.01) { out[out.length - 1] = p; continue }
+      const onward = (last.x - q.x) * (p.x - last.x) + (last.y - q.y) * (p.y - last.y)
+      if (Math.abs(cross) < 0.01 && onward >= 0) { out[out.length - 1] = p; continue }
     }
     out.push(p)
   }
@@ -250,7 +288,7 @@ function routeOn(from: Box, to: Box, sa: Side, sb: Side, c: Pick<Connector, 'lin
     const e = add(b, NORMAL[sb], endGap)
     return { d: `M${s.x},${s.y} C${c1.x},${c1.y} ${c2.x},${c2.y} ${e.x},${e.y}`, a, b, points: [a, c1, c2, b] }
   }
-  const points = c.route?.length ? shapedPoints(a, sa, b, sb, c.route) : elbowPoints(a, sa, b, sb)
+  const points = c.route?.length ? shapedPoints(a, sa, b, sb, c.route) : elbowPoints(a, sa, b, sb, from, to)
   return { d: roundedPath(trimmed(points, startGap, endGap)), a, b, points }
 }
 

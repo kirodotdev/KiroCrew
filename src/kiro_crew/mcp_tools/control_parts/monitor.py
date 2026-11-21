@@ -570,6 +570,8 @@ def _compact_monitor_inspection(result: dict[str, Any]) -> dict[str, Any]:
         "objective",
         "budgets",
         "cadence_secs",
+        "wake_instructions",
+        "wake_on_terminal",
         "last_observation_status",
         "last_observation_reason_code",
         "last_fingerprint",

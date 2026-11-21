@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { act, screen, waitFor, within } from '@testing-library/react'
 import { relayPaneOpened } from '../store/instancesSlice'
+import { setGatewayConnected } from '../utils/errorReport'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstanceTabBar, {
@@ -579,6 +580,23 @@ describe('InstanceTabBar', () => {
     await waitFor(() => expect(api.listInstances).toHaveBeenCalled())
     await new Promise(r => setTimeout(r, 0))
     expect(screen.queryByTestId('instance-tab-bar-list-error')).toBeNull()
+  })
+
+  it('stays quiet while the gateway is offline, then re-reads once it is back (Bug Bash row 50)', async () => {
+    // The header's offline status says it; the bar must not add the browser's
+    // raw "Failed to fetch" in red beside it, nor keep it after the gateway returns.
+    setGatewayConnected(false)
+    onTestFinished(() => setGatewayConnected(true))
+    vi.mocked(api.listInstances).mockRejectedValue(new TypeError('Failed to fetch'))
+    renderWithProviders(<InstanceTabBar variant="inline" />)
+    await waitFor(() => expect(api.listInstances).toHaveBeenCalled())
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    expect(screen.queryByTestId('instance-tab-bar-list-error')).toBeNull()
+    const reads = vi.mocked(api.listInstances).mock.calls.length
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, instances: [] } as never)
+    act(() => setGatewayConnected(true))
+    await waitFor(() => expect(vi.mocked(api.listInstances).mock.calls.length).toBeGreaterThan(reads))
+    expect(screen.queryByText('Failed to fetch')).toBeNull()
   })
 
   it('marks the list-failure notice so the desktop top bar gives it only spare room', async () => {

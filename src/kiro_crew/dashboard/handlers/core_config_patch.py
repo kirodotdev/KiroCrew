@@ -50,13 +50,17 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.core")
 
 
 def _str_list_problem(value: object, spec: dict) -> str:
-    """Why *value* is not a list *spec* (``max_items``, ``max_item_len``) allows, or ""."""
+    """Why *value* is not a list *spec* (``max_items``, ``max_item_len``, ``item_pattern``)
+    allows, or ""."""
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         return "must be a list of strings"
     if len(value) > spec["max_items"]:
         return f"must be at most {spec['max_items']} items"
     if any(len(item) > spec["max_item_len"] for item in value):
         return f"each item must be at most {spec['max_item_len']} characters"
+    item_pattern = spec.get("item_pattern")
+    if item_pattern and any(not re.fullmatch(item_pattern, item) for item in value):
+        return "an item has the wrong shape"
     return ""
 
 
@@ -505,9 +509,6 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         problem = _str_list_problem(value, spec)
         if problem:
             return _deny(problem, path_key)
-        item_pattern = spec.get("item_pattern")
-        if item_pattern and any(not re.fullmatch(item_pattern, item) for item in value):
-            return _deny(f"an item has the wrong shape for {path_key}", path_key)
     elif spec["type"] == "dict":
         # One-level record written ATOMICALLY as a single value, for settings
         # where multiple scalar fields form one verdict and a partial write is

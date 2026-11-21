@@ -347,37 +347,24 @@ async def _resume_candidates(
         )
 
 
-#: How often a candidate looks for the memory preparation task while startup
-#: is preparing it but has not published it on the state yet.
-_MEMORY_TASK_POLL_SECONDS = 0.1
-
-
 async def _memory_preparation_settled(state: DashboardState) -> None:
-    """Return once the gateway's memory preparation has ended.
+    """Return once the gateway's memory preparation has ended, or raise.
 
     The task the queue drain parks on (``_memory_preparation_pending``). Startup
     publishes it on the state only after the listener is up, so while this
-    process is still preparing (``memory_startup_preparing``) and nothing is
-    published yet, the candidate waits for the task to appear, as a restored
-    send does (``slot_queue_repository``); a turn started then would be refused
-    by the memory barrier. A failed or cancelled preparation counts as ended:
-    the turn refuses on its own then, as it does for any send.
+    process is still preparing and nothing is published yet, the candidate waits
+    for the task to appear; a turn started then would be refused by the memory
+    barrier. The wait is the single-turn one (``wait_for_memory_preparation``),
+    which also re-reads the fence: the backstop fails a wedged pass but cannot
+    cancel its worker thread, so the task may never end. A recorded failure
+    raises ``MemoryStartupUnavailable``, so ``_one`` reports the slot as failed
+    instead of queueing a recovery entry the drain would park behind that task.
     """
-    from kiro_crew.memory_startup import memory_startup_preparing
+    from kiro_crew.memory_startup import wait_for_memory_preparation
 
-    while getattr(state, "memory_startup_task", None) is None and memory_startup_preparing():
-        await asyncio.sleep(_MEMORY_TASK_POLL_SECONDS)
-    task = getattr(state, "memory_startup_task", None)
-    if task is None or task.done():
-        return
-    try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        if not task.done():
-            raise
-    except Exception:
-        # A failed preparation has ended too; the turn then refuses on its own.
-        pass
+    await wait_for_memory_preparation(
+        lambda: getattr(state, "memory_startup_task", None), bounded=False
+    )
 
 
 def _claims(request: web.Request) -> dict[str, Any]:

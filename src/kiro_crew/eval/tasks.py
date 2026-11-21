@@ -275,26 +275,64 @@ def _run_check(case: Case, origin: Path, pyc: str) -> dict[str, Any]:
     return {"pass": False, "parts": {}, "notes": [f"no verdict: {stderr.strip()[-300:]}"]}
 
 
-def apply_reference(case: Case, repo: Path) -> None:
-    """Copy the case's ``ref/`` over *repo*, commit, and push the task branch."""
+def apply_reference(case: Case, repo: Path, origin: Path) -> None:
+    """Copy the case's ``ref/`` over *repo*, commit, and sync the task branch to *origin*."""
     shutil.copytree(case.path / "ref", repo, dirs_exist_ok=True)
     env = _base_env()
     for cmd in (
         ["git", "add", "-A"],
         ["git", "commit", "-q", "--allow-empty", "-m", "reference"],
-        # Local transport drops GIT_CONFIG_* before receive-pack, so name the setting here.
-        [
-            "git",
-            "push",
-            "--receive-pack=git -c maintenance.auto=false receive-pack",
-            "-q",
-            "origin",
-            TASK_BRANCH,
-        ],
     ):
         subprocess.run(
             cmd, cwd=repo, check=True, capture_output=True, env=env, timeout=BUILD_TIMEOUT_SECS
         )
+    if not sync_task_branch(repo, origin):
+        raise RuntimeError("could not sync the reference commit to the local origin")
+
+
+def sync_task_branch(repo: Path, origin: Path) -> bool:
+    """Copy *repo*'s task branch into *origin*, as it stands now; False when it cannot.
+
+    No arm pushes: the agent only commits, and the runner brings that branch to the
+    local origin the hidden check judges. The fetch runs in *origin*, so nothing the
+    agent set in *repo* (a remote, a push URL, a hook) decides where it goes, and
+    hooks are off in *origin* too. A missing or broken branch leaves *origin* as it
+    was, and the check then judges that.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "--git-dir",
+                str(origin),
+                "fetch",
+                "-q",
+                "--no-tags",
+                "--force",
+                str(repo),
+                f"refs/heads/{TASK_BRANCH}:refs/heads/{TASK_BRANCH}",
+            ],
+            capture_output=True,
+            env=_base_env(),
+            timeout=BUILD_TIMEOUT_SECS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+def _synced_check(case: Case, dirs: RunDirs) -> dict[str, Any]:
+    """The hidden check on the run's origin, once the agent's task branch is synced to it.
+
+    A sync that fails (the agent removed or broke ``trunk``) fails the check: the
+    origin may still hold an earlier sample's commit, which is not what the run left.
+    """
+    if not sync_task_branch(dirs.repo, dirs.origin):
+        note = f"the repo's {TASK_BRANCH} could not be synced to the local origin"
+        return {"pass": False, "parts": {}, "counters": {}, "notes": [note]}
+    return run_check(case, dirs.origin)
 
 
 def check_cases(cases: list[Case]) -> list[str]:
@@ -311,7 +349,7 @@ def check_cases(cases: list[Case]) -> list[str]:
                 build_repo(case, repo, origin)
                 if run_check(case, origin)["pass"]:
                     problems.append(f"{case.id}: the hidden check passes on the untouched base")
-                apply_reference(case, repo)
+                apply_reference(case, repo, origin)
                 after = run_check(case, origin)
                 if not after["pass"]:
                     problems.append(
@@ -658,7 +696,9 @@ def score(
     if outcome.status == "timeout" or wall_s > caps.timeout_s:
         return "FAILED", "timeout"
     cost_cap = {"credits": caps.credits, "usd": caps.usd}.get(outcome.cost_unit)
-    over = outcome.cost is not None and cost_cap is not None and outcome.cost > cost_cap
+    # An unknown cost still has its known floor: spend past the cap fails either way.
+    spent = outcome.cost if outcome.cost is not None else outcome.cost_floor
+    over = spent is not None and cost_cap is not None and spent > cost_cap
     if outcome.status == "budget" or over:
         return "FAILED", "spend_cap"
     if outcome.status != "done":
@@ -727,10 +767,10 @@ def run_one(
         seed = case.seed.replace("{repo}", str(dirs.repo))
         argv = arm.argv(seed, str(dirs.repo), caps, model, case.tools)
         ran = drive_arm(
-            argv, dirs, env, caps.timeout_s, lambda: bool(run_check(case, dirs.origin)["pass"])
+            argv, dirs, env, caps.timeout_s, lambda: bool(_synced_check(case, dirs)["pass"])
         )
         # Judged while the gateway (and any server the agent started) is still up.
-        check = run_check(case, dirs.origin)
+        check = _synced_check(case, dirs)
         outcome = arm.parse(ran.returncode, ran.stdout)
         if ran.killed:
             outcome.status = "timeout"
@@ -751,8 +791,10 @@ def run_one(
             exit_code=ran.returncode,
             asks=outcome.asks,
             ask_events=outcome.ask_events,
+            denials=outcome.denials,
             wall_s=round(ran.wall_s, 1),
             cost=outcome.cost,
+            cost_floor=outcome.cost_floor,
             cost_unit=outcome.cost_unit,
             idle_after_done_s=(
                 None if first_pass is None else round(max(0.0, ran.wall_s - first_pass), 1)
@@ -780,8 +822,18 @@ def run_one(
     return _write_record(out_dir, record)
 
 
+#: The parts of a Crew run's data home that hold its process: every chat's transcript
+#: (the root chat and each worker a conductor dispatched) and every background agent.
+_CREW_LOG_DIRS = ("sessions", "subagents")
+
+
 def _copy_transcript(stdout: str, dirs: RunDirs) -> None:
-    """Copy a Crew run's transcript (inside the run's data home) next to its output."""
+    """Copy a Crew run's transcripts (inside the run's data home) next to its output.
+
+    The root chat's transcript lands as ``transcript.jsonl``; the whole ``sessions/``
+    and ``subagents/`` trees land under ``crew/``, so a run's steps, tool calls and
+    timings can be read after its data home is deleted.
+    """
     from kiro_crew.eval.arms import _last_json_object
 
     payload = _last_json_object(stdout) or {}
@@ -792,6 +844,27 @@ def _copy_transcript(stdout: str, dirs: RunDirs) -> None:
         tmp = dirs.out / f".transcript.{uuid.uuid4().hex}"
         shutil.copyfile(path, tmp)
         os.replace(tmp, dirs.out / "transcript.jsonl")
+    if dirs.out.is_symlink():
+        return
+    # Copied into a directory made here and then renamed into place, never merged into
+    # what is already at ``crew/``: the agent can write into the output directory, and
+    # a link it left there must be replaced, not followed (a rename onto a link fails).
+    staged = dirs.out / f".crew.{uuid.uuid4().hex}"
+    try:
+        staged.mkdir()
+        for name in _CREW_LOG_DIRS:
+            src = dirs.crew / name
+            if src.is_dir() and not src.is_symlink():
+                # Links are copied as links, never followed, as in the run's copy-out.
+                shutil.copytree(src, staged / name, symlinks=True)
+        dest = dirs.out / "crew"
+        if dest.is_symlink() or dest.is_file():
+            dest.unlink()
+        elif dest.is_dir():
+            shutil.rmtree(dest)
+        os.replace(staged, dest)
+    except (shutil.Error, OSError):
+        shutil.rmtree(staged, ignore_errors=True)  # no partial copy is left behind
 
 
 def _copy_out(dirs: RunDirs, dest: Path) -> None:
@@ -889,7 +962,7 @@ def _median(values: list[Any]) -> float | None:
 
 def format_summary(rows: list[dict[str, Any]]) -> str:
     """The summary rows as a Markdown table."""
-    head = "| arm | tier | runs | passed | failed | void | asked | pass^k cases | wall s | cost | idle s |"
+    head = "| arm | tier | runs | passed | failed | void | asked | pass^k cases | median wall s | median cost | median idle s |"
     lines = ["# kirocrew eval run: tasks", "", head, "|" + "---|" * 11]
     for r in rows:
         cost = "" if r["median_cost"] is None else f"{r['median_cost']} {r['cost_unit']}"

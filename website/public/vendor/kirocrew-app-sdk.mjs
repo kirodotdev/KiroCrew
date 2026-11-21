@@ -17,6 +17,9 @@ export const {
   useChatSession, ChatPanel, ChatEmbed, ChatMessageList,
   // The dashboard's pull-request panel, behind the app's declared source paths (level 2).
   PullRequestPanel,
+  // The dashboard's diff viewer, and a session's changed files with their diffs behind the
+  // app's declared session-file paths (level 12).
+  DiffView, SessionChanges,
   // Issue lists behind the app's declared `/api/source/issues` (level 6).
   useIssues, IssueList, IssueCard,
   // The dashboard's project picker behind the app's declared listing paths (level 7).

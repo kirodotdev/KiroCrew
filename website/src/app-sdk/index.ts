@@ -644,6 +644,13 @@ export { default as ChatMessageList } from './ChatMessageList'
 export { default as PullRequestPanel } from './PullRequestPanel'
 export type { AppPullRequestPanelProps } from './PullRequestPanel'
 export type { PullRequestLink } from '../utils/pullRequestLinks'
+// The dashboard's diff viewer, which takes two texts and sends nothing, and the
+// chat's list of the files a session changed with each change's diff, behind the
+// app's declared session-file paths (level 12, see ./SessionChanges).
+export { default as DiffView } from './DiffView'
+export type { AppDiffViewProps } from './DiffView'
+export { default as SessionChanges } from './SessionChanges'
+export type { AppSessionChangesProps } from './SessionChanges'
 // Issue lists from GitHub, GitLab, Jira and Linear behind the app's declared
 // `/api/source/issues` (see ./issues/useIssues).
 export { useIssues, IssueList, IssueCard } from './issues'

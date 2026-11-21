@@ -101,6 +101,12 @@ export async function closeRelayCrews(): Promise<void> {
   }
 }
 
+/** A refusal that says the person is signed out: an ordinary state with a way
+ *  forward (sign in), so it is told as a status, not as an error. */
+export function isSignedOutRefusal(code: string | undefined): boolean {
+  return (code || '').toUpperCase() === 'SIGNED_OUT'
+}
+
 /** Plain text for a typed refusal code (the control plane client's codes, design
  *  section 5). Matched case-insensitively; every other code, the bridge's own
  *  INVALID_ENDPOINT and UNAVAILABLE included, gets the generic text. */

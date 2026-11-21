@@ -211,6 +211,16 @@ class SlackConfig:
             # and is the name help text shows; the Slack applier refreshes it.
         ),
     )
+    setup_guide_url: str = field(
+        default="",
+        metadata=_meta(
+            "Setup Guide URL",
+            "Your organization's own Slack setup guide (for example, how to get a "
+            "workspace you may install apps in). The Slack setup wizard links it on "
+            "its first step. https:// only; any other value is ignored. Empty = no link.",
+            tags=["slack"],
+        ),
+    )
     forward_to_agent_callback: str = field(
         default="",
         metadata=_meta(

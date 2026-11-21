@@ -144,7 +144,10 @@ async def _start_aea_tunnel(
                 from kiro_crew.remote_control.guard import install_for_relay
                 from kiro_crew.remote_control.hosting import hosting_by_default
 
-                guard = install_for_relay(tunnel_mgr, current_context().tunnel)
+                provider = current_context().tunnel
+                # The public root's lazy provider is loaded by now: the tunnel started.
+                loaded = getattr(provider, "loaded", None)
+                guard = install_for_relay(tunnel_mgr, loaded() if loaded else provider)
                 if guard is not None and hosting_by_default(cfg.tunnel):
                     from kiro_crew.remote_control import default_notice
 

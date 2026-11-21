@@ -117,8 +117,12 @@ def test_a_red_backend_shard_gives_every_failing_node_id_with_a_message_prefix()
     ]
     values = list(found.values())
     assert values[0] == "assert 2 == 1"
-    assert len(values[1]) == mod.MESSAGE_CHARS
-    assert values[1].startswith("AssertionError: assert {'a': 1")
+    # The cut at 80 characters lands on a space here, and the space is not kept.
+    assert (
+        values[1]
+        == "AssertionError: assert {'a': 1, 'b': 2, 'c': 3} == {'a': 1, 'b': 2, 'c': 4} and"
+    )
+    assert len(values[1]) == mod.MESSAGE_CHARS - 1
     assert values[2] == "TypeError: x"
     assert values[3] == ""
 

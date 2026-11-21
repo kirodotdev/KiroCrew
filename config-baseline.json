@@ -3006,12 +3006,13 @@
         "writes_enabled": true,
         "lesson_extraction_enabled": true,
         "repeated_failures_notice": false,
-        "kind_routing": "off",
+        "kind_routing": "enforce",
         "extraction_instructions": "",
         "lesson_origin_gate": "off",
+        "fact_origin_gate": "off",
         "lesson_tier_policy": "off",
-        "lesson_fold": "off",
-        "rule_authority_order": "off",
+        "lesson_fold": "enforce",
+        "rule_authority_order": "enforce",
         "member_lesson_dedup": "off",
         "relevance_rule": "off",
         "dream": "off",
@@ -3609,14 +3610,13 @@
       "sensitive": false,
       "tags": [],
       "label": "Consolidation Kind Routing",
-      "help": "Whether consolidation tags each project.* fact with a kind (fact, event or state) and what it does with it. 'off' (default) keeps today's prompt and writes. 'shadow' writes every fact as before and only logs, within fixed size caps, what routing would do. 'enforce' skips a state item (the status of tracked work, such as a code change under review, a ticket, a CI run or a branch, or a next step, a count or a worktree path) and writes facts and events as before. Stored facts are never changed.",
+      "help": "Whether consolidation tags each project.* fact with a kind (fact, event or state) in one small extra model call and what it does with it. 'enforce' (default) skips a state item (the status of tracked work, such as a code change under review, a ticket, a CI run or a branch, or a next step, a count or a worktree path) and writes facts and events as before. 'off' makes no extra call and writes every fact. A stored 'shadow' reads as 'enforce'. Stored facts are never changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
-        "shadow",
         "enforce"
       ],
-      "defaultValue": "off"
+      "defaultValue": "enforce"
     },
     {
       "path": "memory.extraction_instructions",
@@ -3642,6 +3642,24 @@
       "tags": [],
       "label": "Lesson Origin Gate",
       "help": "Whether a lesson learned from turns no person sent (another session's message, an auto-nudge, a cron or heartbeat run) may become a standing rule. 'off' (default) keeps today's prompt and writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, what the gate would demote. 'enforce' stores such a lesson as an on_topic finding instead, and gives an agent-triggered learn_add its own source. Stored lessons are never changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.fact_origin_gate",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Fact Origin Gate",
+      "help": "Whether facts about you (pref.* and user.* keys, and the preferences file) may be learned from turns no person sent (another session's message, an auto-nudge, a cron or heartbeat run). 'off' (default) keeps today's prompt and writes. 'shadow' writes every fact as before and only counts, within fixed size caps, what the gate would hold back. 'enforce' does not write or delete those facts, or change the preferences file, from such turns. Project facts, episodes and stored facts are never changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
@@ -3677,14 +3695,13 @@
       "sensitive": false,
       "tags": [],
       "label": "Lesson Fold",
-      "help": "Whether the session-start rule block leaves out near-duplicate rules (same scope and tier, and the same text or stored vectors at cosine 0.95 or more). 'off' (default) keeps today's block. 'shadow' keeps today's block and only records, in the injection receipt and within fixed size caps, which rule ids would fold into which. 'enforce' keeps the first copy of each rule (yours first, then newest) and says how many were folded; learn_list still shows all. Rules you taught are never folded and no stored lesson is changed.",
+      "help": "Whether the session-start rule block leaves out near-duplicate rules (same scope and tier, and the same text or stored vectors at cosine 0.95 or more). 'enforce' (default) keeps the first copy of each rule (yours first, then newest) and says how many were folded; learn_list still shows all. 'off' keeps every copy. A stored 'shadow' reads as 'enforce'. Rules you taught are never folded and no stored lesson is changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
-        "shadow",
         "enforce"
       ],
-      "defaultValue": "off"
+      "defaultValue": "enforce"
     },
     {
       "path": "memory.rule_authority_order",
@@ -3695,14 +3712,13 @@
       "sensitive": false,
       "tags": [],
       "label": "Rule Authority Order",
-      "help": "How the session-start rule block orders its rules. 'off' (default) keeps today's block. 'shadow' keeps today's block and only records, in the injection receipt and within fixed size caps, which rule ids the new order would add or drop. 'enforce' lists rules saved as yours (learn_add, dashboard, CLI) first, then rules inferred from sessions; inside each group the current order holds. Keep memory.lesson_origin_gate at 'enforce' too, or a learn_add an agent made on its own counts as yours. The rule budget is unchanged and no stored lesson is changed.",
+      "help": "How the session-start rule block orders its rules. 'enforce' (default) lists rules saved as yours (learn_add, dashboard, CLI) first, then rules inferred from sessions; inside each group the relevance order holds. 'off' keeps the relevance order. A stored 'shadow' reads as 'enforce'. Set memory.lesson_origin_gate to 'enforce' too, or a learn_add an agent made on its own counts as yours. The rule budget is unchanged and no stored lesson is changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
-        "shadow",
         "enforce"
       ],
-      "defaultValue": "off"
+      "defaultValue": "enforce"
     },
     {
       "path": "memory.member_lesson_dedup",
@@ -7758,6 +7774,7 @@
         "tracking_channels": [],
         "open_channels": [],
         "command": "kirocrew",
+        "setup_guide_url": "",
         "forward_to_agent_callback": "",
         "trusted_bot_ids": [],
         "trusted_bot_turn_limit": 5,
@@ -7888,6 +7905,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "kirocrew"
+    },
+    {
+      "path": "slack.setup_guide_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Setup Guide URL",
+      "help": "Your organization's own Slack setup guide (for example, how to get a workspace you may install apps in). The Slack setup wizard links it on its first step. https:// only; any other value is ignored. Empty = no link.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "slack.forward_to_agent_callback",
@@ -11146,6 +11179,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.widgets",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: widgets",
+      "help": "Turn on the 'widgets' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.worker_grill",
       "kind": "core",
       "type": "boolean",
@@ -12857,7 +12904,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Kiro Relay",
-      "help": "Let this Crew dial the Kiro relay and serve the requests it delivers, with the caller named by the relay. Unset (the default) turns it on only for a team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity whose Relay Lease Credential names its credential; a Crew on a personal sign-in stays off until you run kirocrew remote-control on. True is on and false is off, whatever the Crew's credential. It holds a lease (from Relay Lease Service URL, or the built-in one when that is empty) on Relay Lease Credential, or on a personal Crew's own Kiro sign-in when that is empty. A team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity connects only when Relay Lease Credential names its credential: without it no relay client starts and the tunnel status names the missing setting. While it is off, Crew starts no relay client, strips every x-kiro-relay-* header from every request and trusts none of them. To reach the relay and the lease service through a proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment variables (ALL_PROXY when HTTPS_PROXY is unset), so a proxy set only in macOS System Settings is not used.",
+      "help": "Let this Crew dial the Kiro relay and serve the requests it delivers, with the caller named by the relay. Unset (the default) turns it on for a Crew on a personal sign-in (Relay Lease Credential empty or kiro-sign-in, no Relay Lease Token Type, no workload identity), and for a team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity whose Relay Lease Credential names its credential; kirocrew remote-control off turns it off. True is on and false is off, whatever the Crew's credential. It holds a lease (from Relay Lease Service URL, or the built-in one when that is empty) on Relay Lease Credential, or on a personal Crew's own Kiro sign-in when that is empty. A team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity connects only when Relay Lease Credential names its credential: without it no relay client starts and the tunnel status names the missing setting. While it is off, Crew starts no relay client, strips every x-kiro-relay-* header from every request and trusts none of them. To reach the relay and the lease service through a proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment variables (ALL_PROXY when HTTPS_PROXY is unset), so a proxy set only in macOS System Settings is not used.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null,

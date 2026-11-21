@@ -20,10 +20,6 @@ and every *proposal* is an agent: the agent writes candidate fixes, and the gate
 measurer, keeper, and PR pipeline decide what survives. The agent never grades its
 own work.
 
-The app's origin as a port of an upstream app, and the design decisions the port
-made, are recorded in
-[`PORT_PLAN.md`](../../../src/kiro_crew/apps/builtins/auto_improvement/docs/PORT_PLAN.md).
-
 ## Routes
 
 All routes live under `/api/apps/auto-improvement/` and are registered by

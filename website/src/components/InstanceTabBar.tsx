@@ -36,6 +36,7 @@ import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
 import { hasDashboardPane } from '../utils/remoteCrew'
 import { useSelectInstance } from '../hooks/useSelectInstance'
 import { isRelayHostOffline } from '../utils/relayHostOffline'
+import { useOutageFailure } from '../hooks/useOutageFailure'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { safeSetItem } from '../utils/safeStorage'
@@ -1413,6 +1414,7 @@ export default function InstanceTabBar({
   const embedded = isEmbeddedPane()
   // Shared with InstancesViewport / InstancesPanel via the React Query cache.
   const instancesQuery = useQuery({ queryKey: ['instances'], queryFn: () => api.listInstances(), enabled: !embedded })
+  const listOutage = useOutageFailure(instancesQuery.isError, instancesQuery.errorUpdatedAt, instancesQuery.refetch)
   // Only the gateway's own `instances_disabled` 403 means "feature off"; a
   // non-owner or Slack-origin 403 is a real failure and shows as one.
   const disabled = isInstancesDisabledError(instancesQuery.error)
@@ -1507,7 +1509,9 @@ export default function InstanceTabBar({
   // which case the bar exists to say so (an empty bar and a failed read used to
   // look identical).
   // The relay's host-offline answer is the offline cover's to say, not this bar's.
-  const listFailure = !disabled && instancesQuery.error && !isRelayHostOffline(instancesQuery.error)
+  // So is a lost gateway: the header's own offline status already says it, and
+  // the failed read's text is the browser's raw "Failed to fetch".
+  const listFailure = !disabled && !listOutage && instancesQuery.error && !isRelayHostOffline(instancesQuery.error)
     ? (errMessage(instancesQuery.error) || i18nT('components.instanceTabBar.instances_load_failed'))
     : null
   // Team Crews keep the bar up on their own, even with the instances feature off.

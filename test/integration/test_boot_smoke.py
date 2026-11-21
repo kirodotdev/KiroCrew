@@ -634,6 +634,13 @@ async def test_a_second_boot_touches_only_known_module_globals(gateway_boot, mon
     config_paths.valid_scratch_root_override()
     async with gateway_boot() as gw:
         await gw.get_json("/api/health", auth=False)
+        # The warm-up boot must get as far as a boot here can, or a process-once
+        # global it never reached is first set by the second boot. The update
+        # coordinator starts after the channel transports, past the HTTP bind.
+        await async_wait_until(
+            lambda: gw.orchestrator._update_check_task is not None,
+            describe=lambda: "the warm-up boot never started its update coordinator",
+        )
     before = _module_globals()
     async with gateway_boot() as gw:
         await gw.get_json("/api/health", auth=False)

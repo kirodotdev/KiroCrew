@@ -21,10 +21,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import errno
 import functools
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Mapping, NoReturn
 
 from kiro_crew import platform_compat
+from kiro_crew.kas_env_shim import windows_child_command
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.mcp_gateway.stub_bridge import logger
@@ -288,14 +289,18 @@ def _fallback_spawn_child(argv: list[str], exec_env: dict[str, str]) -> NoReturn
     Resolve the command against the CHILD's ``PATH``, because that is what
     ``execvpe`` searches; Windows ``CreateProcess`` would search this process's
     instead, so a relative command could otherwise resolve differently on the
-    two platforms. An unresolvable name is passed through unchanged so the
-    resulting ``FileNotFoundError`` still surfaces, matching ``execvpe``.
+    two platforms. A bare name is looked up only in that ``PATH``'s absolute
+    entries (:func:`kiro_crew.kas_env_shim.windows_child_command`), because a
+    Windows lookup otherwise tries the current directory first. An unresolvable
+    name raises ``FileNotFoundError``, matching ``execvpe``, and starts nothing.
 
     Exit through ``os._exit``: this stands in for a process replacement, which
     runs no cleanup handlers and flushes nothing, and a ``SystemExit`` raised
     here would have to survive the teardown of the stub's own event loop.
     """
-    resolved = shutil.which(argv[0], path=exec_env.get("PATH")) or argv[0]
+    resolved = windows_child_command(argv[0], exec_env)
+    if resolved is None:
+        raise FileNotFoundError(errno.ENOENT, "not found on its PATH", argv[0])
     # Our own buffers, not the child's: it inherits the same fds, so anything
     # still queued here would interleave into the middle of its JSON-RPC stream.
     for stream in (sys.stdout, sys.stderr):

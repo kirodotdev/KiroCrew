@@ -30,6 +30,10 @@ from kiro_crew.dashboard.chat_utils import (
     _redact_for_display,
     _redact_meta,
 )
+from kiro_crew.dashboard.chat_utils_injected_rows import (
+    AUTOMATION_STEER_META,
+    AUTOMATION_STEER_WIRE_KEY,
+)
 from kiro_crew.dashboard.slot_queue_repository import (
     ATTACHMENT_META_KEYS,
     RESTORED_QUEUE_KEY,
@@ -1778,6 +1782,8 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
     label = (item.get("meta") or {}).get("appLabel")
     if isinstance(label, str) and label:
         view.setdefault("meta", {})["appLabel"] = label
+    if isinstance((item.get("meta") or {}).get(AUTOMATION_STEER_META), dict):
+        view.setdefault("meta", {})[AUTOMATION_STEER_WIRE_KEY] = True
     # Entries loaded from disk on restart carry RESTORED_QUEUE_KEY=True.
     # Projecting this as a boolean lets the client skip a restored queued row
     # when deciding whether to offer Resume — matching the backend gate in

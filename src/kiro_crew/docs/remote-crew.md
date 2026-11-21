@@ -465,14 +465,16 @@ credential instead of your Kiro sign-in. Leave it empty.
 
 ### Hosting this Crew on the relay
 
-To let people open a personal Crew through the Kiro relay, turn Remote Control on
-where the Crew runs, then restart. On a personal Crew it is off by default:
+A personal Crew hosts on the Kiro relay by default: once it starts, people the relay
+lets open it can reach it, with no `remote-control on`. The first time it connects,
+the log and the bell say so once. To keep it off, run this where the Crew runs; a
+stored off sticks across restarts and upgrades:
 
 ```bash
-kirocrew remote-control on
-kirocrew restart
+kirocrew remote-control off
 ```
 
+`kirocrew remote-control on`, then `kirocrew restart`, turns it back on.
 `kirocrew remote-control status` says whether it is on.
 
 A personal Crew needs nothing else. A Crew is personal when it sets no
@@ -481,8 +483,18 @@ holds its lease with the Crew's own Kiro
 sign-in, which must be IAM Identity Center or your organization's identity
 provider with a Kiro profile. Builder ID and social sign-ins can't host a Crew.
 While the sign-in can't be used, the tunnel status says why and tries again, so
-signing in resumes hosting without another restart. A Builder ID or social sign-in
-is held quietly: the log says so once, and the Crew checks again every minute.
+signing in resumes hosting without another restart. A Crew with no sign-in, a
+sign-in with no Kiro profile, and a Builder ID or social sign-in are held quietly:
+the log says so once (at INFO when the Crew was never signed in), and the Crew
+checks again every minute. While a personal Crew that is on only by default can't
+host yet, the Overview page shows nothing for it; `/api/tunnel/status` still names
+the reason. That covers a gateway bound to one address other than loopback, which
+the relay can't reach: the Crew stays stopped until it restarts on a loopback or
+wildcard bind. A fault on the way, such as a lease service that times out or
+refuses the connection, still shows on the Tunnel tile, and so does a failure it
+can't recover from by itself, such as a relay that refuses this version. A Crew
+you turned on with `remote-control on` shows every reason on the Overview page's
+Tunnel tile.
 
 A team Crew leases with its crew API key. Store the key under **Settings →
 Secrets**, then name it:
@@ -532,6 +544,23 @@ hosts. **Settings → Remote Crew** shows the state and a **Turn off** button on
 machine; opened through the relay, it shows the state only, because a Crew turned
 off there can only be turned back on at its machine.
 
+### Behind a firewall or proxy
+
+The relay is reached by name over HTTPS and WebSocket on port 443. On a network
+that only lets listed names out, allow these. Allow them by name, not by IP
+address: the addresses change. Do not allow all of `*.on.aws`.
+
+| Machine | Names to allow |
+|---|---|
+| The one opening a Crew (viewer) | `*.kiro-relay.us-east-1.on.aws`, `*.kiro-relay.eu-central-1.on.aws` |
+| The viewer, for the list of Crews | `management.us-east-1.kiro.dev`, `management.eu-central-1.kiro.dev` |
+| The viewer, for Crews still on the old address | `*.us-east-1.relay.kiro.dev` |
+| The one running a Crew (host) | `host.us-east-1.relay.kiro.dev`, `management.us-east-1.kiro.dev` |
+| A host in Frankfurt | `host.eu-central-1.relay.kiro.dev`, `management.eu-central-1.kiro.dev` |
+
+A proxy must pass WebSocket upgrades through: the Crew page and the host's lease
+both stay open as WebSockets.
+
 ## The four things called "crew"
 
 The product's own name is in three of these, which is exactly why they get
@@ -555,6 +584,7 @@ over a normal link.
 | Setting | Default | What it does |
 |---|---|---|
 | `instances.enabled` | `true` | The main switch; `false` turns Remote Crew off. Read at startup, so changing it needs a restart. |
+| `instances.crew_reads_enabled` | `false` | Lets the agent read a connected crew's sessions through the `crew` argument of `search_chat_history`, `list_sessions` and `get_chat_session`. Off by default, because a peer's transcripts enter the agent's context as untrusted text. Read per call, so no restart. |
 | `instances.warm_set_cap` | `0` | How many panes stay warm at once. `0` tracks how many machines you have registered, so up to an internal ceiling nothing is evicted. A number you set is honoured exactly. |
 | `instances.default_destination` | `""` | The crew **Send a copy to** lists first, marked as the default. Empty means no default. A folder's own **Default destination crew** (Folder settings) overrides it for sessions in that folder. Nothing is sent until you click. |
 | `instances.tunnel_base_port` | `7778` | The first local loopback port handed out for a tunnel. |

@@ -274,6 +274,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'RemoteCrewPanelCustomType.tsx': 'instances',
   'RemoteCrewPanelSections.tsx': 'instances',
   'RemoteCrewPanelRestartBanner.tsx': 'instances',
+  // Mounted below RemoteCrewPanel (SettingsPage.tsx); its on/off state is the
+  // manual instances.remote-control entry.
+  'RemoteControlCard.tsx': 'instances',
   // Mounted from outside pages/settings, so each is also a root in panelRoots:
   // ImportPanel mounts PortabilityTab, FeaturePreviewsSection the gateway-wide
   // automatic-cards switch.

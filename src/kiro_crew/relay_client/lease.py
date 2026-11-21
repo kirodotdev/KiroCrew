@@ -90,6 +90,7 @@ from kiro_crew.relay_client.protocol import (
     is_loopback_host,
 )
 from kiro_crew.relay_client.token_source import (
+    HOST_TOKEN_NOT_ISSUED_YET,
     ConnectedPeople,
     HostCredential,
     HostTokenRetryLater,
@@ -292,11 +293,15 @@ class LeaseCredentialReferenceError(LeaseCredentialError):
 
 
 class LeaseSignInCannotHost(LeaseCredentialError):
-    """The Crew's Kiro sign-in is of a kind that never hosts (Builder ID, social).
+    """The Crew's Kiro sign-in cannot host now: none, no Kiro profile, Builder ID, social.
 
     Checked on this machine, before any request. Only a new sign-in changes it, so
     the lease client checks again on a slow fixed step and says so once.
     """
+
+
+class LeaseNotSignedIn(LeaseSignInCannotHost):
+    """The Crew has no Kiro sign-in at all: held the same way, and said at INFO."""
 
 
 #: How often a sign-in that cannot host is checked again. The check reads only the
@@ -644,7 +649,15 @@ class _Stop(Exception):
 
 
 class _Later(Exception):
-    """No answer this time; the schedule says when to try again."""
+    """No answer this time; the schedule says when to try again.
+
+    *cannot_host_yet* marks a hold on this Crew's own eligibility (its sign-in, or
+    its account or organization refusing remote access), not a transport fault.
+    """
+
+    def __init__(self, message: str, *, cannot_host_yet: bool = False) -> None:
+        super().__init__(message)
+        self.cannot_host_yet = cannot_host_yet
 
 
 class _Unreachable(Exception):
@@ -763,8 +776,12 @@ class LeaseHostTokenSource:
         #: No call before this: a backoff after a failure, or the service's own wait.
         self._hold_until = 0.0
         self._hold_reason = ""
+        #: Whether the current hold is on this Crew's eligibility, not a transport fault.
+        self._hold_cannot_host_yet = False
         #: The sign-in refusal last logged, so a held Crew says it once.
         self._cannot_host_said = ""
+        #: The access refusal last logged at WARNING, so a refused Crew says it once.
+        self._access_denied_said = ""
         #: Why renewals stopped for good, once a refusal or a credential fault did it.
         self._stopped = ""
 
@@ -820,6 +837,8 @@ class LeaseHostTokenSource:
         self._send_version = False
         self._held_until = self._next_at = self._hold_until = 0.0
         self._hold_reason = self._stopped = self._cannot_host_said = ""
+        self._access_denied_said = ""
+        self._hold_cannot_host_yet = False
         self._backoff.reset()
         # Last, so a stop cancelled during the release has already forgotten the
         # lease, and its session still closes.
@@ -856,12 +875,12 @@ class LeaseHostTokenSource:
             except _Stop as exc:
                 raise HostTokenUnavailable(str(exc)) from None
             except _Later as exc:
-                raise HostTokenRetryLater(str(exc)) from None
+                raise HostTokenRetryLater(str(exc), cannot_host_yet=exc.cannot_host_yet) from None
             finally:
                 self._ensure_timer()
             held = self._usable()
         if held is None:
-            raise HostTokenRetryLater("the lease service has not issued a host token yet")
+            raise HostTokenRetryLater(HOST_TOKEN_NOT_ISSUED_YET)
         return held
 
     async def _call(
@@ -882,13 +901,16 @@ class LeaseHostTokenSource:
             raise _Stop(self._stopped)
         now = self._monotonic()
         if now < self._hold_until:
-            raise _Later(f"{self._hold_reason}; next try in {self._hold_until - now:.0f}s")
+            raise _Later(
+                f"{self._hold_reason}; next try in {self._hold_until - now:.0f}s",
+                cannot_host_yet=self._hold_cannot_host_yet,
+            )
         try:
             credential = await self._credential(rejected)
         except LeaseCredentialReferenceError as exc:
             self._stop(f"tunnel.relay_lease_credential names no credential: {exc}")
         except LeaseSignInCannotHost as exc:
-            self._hold_cannot_host(str(exc))
+            self._hold_cannot_host(str(exc), quiet=isinstance(exc, LeaseNotSignedIn))
         except LeaseCredentialError as exc:
             # A file briefly missing or half written during a rotation, or a sign-in
             # to redo: read again on the backoff steps rather than stop until a restart.
@@ -934,7 +956,7 @@ class LeaseHostTokenSource:
             if self._send_version and self._usable() is None:
                 # A service that needs the version mints when a token is due, not on
                 # request, so asking again before the next renewal only repeats this.
-                self._hold(self._next_at, "the lease service has not issued a host token yet")
+                self._hold(self._next_at, HOST_TOKEN_NOT_ISSUED_YET)
             return
         if status == 401:
             # The one status read before the exception name: a sign-in failure from
@@ -977,14 +999,21 @@ class LeaseHostTokenSource:
             self._hold(
                 arrived + RETRY_AFTER_MAX_SECONDS,
                 f"the lease service refused this Crew ({named}): {why}{said}",
+                cannot_host_yet=True,
             )
-            logger.warning(
+            # One WARNING per refusal text: the retry repeats until access is
+            # granted, and the tunnel status keeps naming the reason meanwhile.
+            repeat = self._access_denied_said == self._hold_reason
+            self._access_denied_said = self._hold_reason
+            level = logging.INFO if repeat else logging.WARNING
+            logger.log(
+                level,
                 "the lease service refused this Crew (%s)%s; trying again in %.0fs",
                 named,
                 said,
                 RETRY_AFTER_MAX_SECONDS,
             )
-            raise _Later(self._hold_reason)
+            raise _Later(self._hold_reason, cannot_host_yet=True)
         if kind == _NOT_FOUND:
             self._stop(f"the lease service refused this Crew ({named}): {_NOT_FOUND_WHY}{said}")
         if kind == _VALIDATION:
@@ -1205,7 +1234,8 @@ class LeaseHostTokenSource:
 
     def _apply(self, answer: LeaseAnswer, arrived: float) -> None:
         self._hold_until = 0.0
-        self._hold_reason = ""
+        self._hold_reason = self._access_denied_said = ""
+        self._hold_cannot_host_yet = False
         self._backoff.reset()
         self._endpoint_id = answer.endpoint_id
         self._lease_version = answer.lease_version
@@ -1242,9 +1272,10 @@ class LeaseHostTokenSource:
             answer.renew_in,
         )
 
-    def _hold(self, until: float, reason: str) -> None:
+    def _hold(self, until: float, reason: str, *, cannot_host_yet: bool = False) -> None:
         self._hold_until = until
         self._hold_reason = reason
+        self._hold_cannot_host_yet = cannot_host_yet
         self._next_at = until
 
     def _back_off(self, problem: str) -> NoReturn:
@@ -1254,18 +1285,23 @@ class LeaseHostTokenSource:
         logger.warning("lease renewal failed (%s); next try in %.1fs", problem, delay)
         raise _Later(problem)
 
-    def _hold_cannot_host(self, problem: str) -> NoReturn:
+    def _hold_cannot_host(self, problem: str, *, quiet: bool = False) -> NoReturn:
         """Hold quietly on a sign-in that cannot host, and end this call.
 
-        A fixed slow step, not the reconnect steps, and one WARNING until a call
-        gets past the sign-in: the state does not change until the owner signs in
-        again, so every further line would only repeat it.
+        A fixed slow step, not the reconnect steps, and one line until a call gets
+        past the sign-in: the state does not change until the owner signs in again,
+        so every further line would only repeat it. The line is a WARNING, or INFO
+        (*quiet*) for a Crew that has no sign-in at all.
         """
-        self._hold(self._monotonic() + SIGN_IN_CANNOT_HOST_RECHECK_SECONDS, problem)
+        self._hold(
+            self._monotonic() + SIGN_IN_CANNOT_HOST_RECHECK_SECONDS, problem, cannot_host_yet=True
+        )
         if self._cannot_host_said != problem:
             self._cannot_host_said = problem
-            logger.warning("Remote Control held: %s", problem)
-        raise _Later(problem)
+            logger.log(
+                logging.INFO if quiet else logging.WARNING, "Remote Control held: %s", problem
+            )
+        raise _Later(problem, cannot_host_yet=True)
 
     def _hold_workload_refusal(self, arrived: float, named: str, said: str = "") -> NoReturn:
         """Wait 15 minutes after the service refused the workload identity, and end this call.

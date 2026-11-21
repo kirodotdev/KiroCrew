@@ -688,14 +688,11 @@ def check_setting_value(spec: dict[str, Any], value: Any) -> None:
         if pattern and not re.fullmatch(pattern, value):
             raise err("invalid_value", "value has an invalid format")
     elif kind == "str_list":
-        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-            raise err("invalid_value", "value must be a list of strings")
-        if len(value) > spec["max_items"]:
-            raise err("invalid_value", f"value must be at most {spec['max_items']} items")
-        if any(len(item) > spec["max_item_len"] for item in value):
-            raise err(
-                "invalid_value", f"each item must be at most {spec['max_item_len']} characters"
-            )
+        from kiro_crew.dashboard.handlers.core import _str_list_problem
+
+        problem = _str_list_problem(value, spec)
+        if problem:
+            raise err("invalid_value", f"value: {problem}")
     elif kind == "dict":
         # Every key, optional ones too: a card writes and restores a WHOLE
         # record, which the route stores as sent (the update popup's skip list

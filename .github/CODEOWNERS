@@ -27,3 +27,6 @@ website/docs/**/*.md
 
 # RFCs record product decisions and still need a human review.
 docs/request-for-change/                @kirodotdev/kirocrew-pr-review @KiroCrewCaptain
+
+# Decision records are product decisions and still need a human review.
+docs/decisions/                         @kirodotdev/kirocrew-pr-review @KiroCrewCaptain

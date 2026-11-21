@@ -372,18 +372,11 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
               error = t('pages.connectionsPage.mint_failure_callback_unauthorized_client', { provider: name })
               if (adminGuide) help = { href: adminGuide }
               break
+            // A refusal no org admin policy causes reads as the one generic line.
             case 'crew_oauth_callback_invalid_request':
-              error = t('pages.connectionsPage.mint_failure_callback_invalid_request', { provider: name })
-              break
             case 'crew_oauth_callback_unsupported_response_type':
-              error = t('pages.connectionsPage.mint_failure_callback_unsupported_response_type', { provider: name })
-              break
             case 'crew_oauth_callback_server_error':
-              error = t('pages.connectionsPage.mint_failure_callback_server_error', { provider: name })
-              break
             case 'crew_oauth_callback_temporarily_unavailable':
-              error = t('pages.connectionsPage.mint_failure_callback_temporarily_unavailable', { provider: name })
-              break
             case 'crew_oauth_callback_refused':
               error = t('pages.connectionsPage.mint_failure_callback_refused', { provider: name })
               break

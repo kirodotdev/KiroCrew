@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import sys
 
-import pytest
+from conftest_guards import per_test_guard
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_kas_agent_config_error_reports():
     """No agent config error reported yet: ``kas_agent_config_error.report`` warns
     once per report and once at its cap, so leftover state silences the next WARNING."""

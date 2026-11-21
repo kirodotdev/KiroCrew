@@ -1,7 +1,7 @@
 """Say once that this Crew is reachable through the Kiro relay because of its default.
 
-A Crew whose ``tunnel.relay_enabled`` is unset hosts when it has a team key or a
-workload identity (:mod:`kiro_crew.remote_control.hosting`), with no ``on`` from
+A Crew whose ``tunnel.relay_enabled`` is unset hosts on a personal sign-in, a team
+key or a workload identity (:mod:`kiro_crew.remote_control.hosting`), with no ``on`` from
 anyone. The first time such a Crew connects to the relay, :func:`announce` writes
 one gateway log line and one ``system.agent`` bell note that say who can now reach
 it and how to turn it off, then records that it did in
@@ -32,9 +32,9 @@ RECORD_NAME = "remote-control-notice.json"
 
 TITLE = "This Crew is now reachable through the Kiro relay"
 TEXT = (
-    "Remote Control is on by default because this Crew has a team key or a workload "
-    "identity. People the Kiro relay lets open this Crew can now reach it. To turn "
-    "it off: kirocrew remote-control off"
+    "Remote Control is on by default for this Crew's personal sign-in, team key or "
+    "workload identity. People the Kiro relay lets open this Crew can now reach it. "
+    "To turn it off: kirocrew remote-control off"
 )
 
 
