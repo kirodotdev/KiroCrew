@@ -5370,8 +5370,22 @@ code in `error`, through `always_allow_tool.refuse`; a success writes `success`.
 gate: it is answered by the `operator-grants` tier after every deny tier and
 governance, so it does not ask `may_skip_gate_now`, which governs static
 `allowedTools` entries only. That tier matches an `auto_approve_tool_identities` entry only
-against a verified identity with case-insensitive literal equality, never glob matching,
-path normalization or the title. A stored `*`, `?` or bracket expression matches only
+against a verified identity with literal equality, never glob matching,
+path normalization or the title. Each grant these surfaces write is bound, in the
+same locked write, to the launch ids (`tool_grant_launch_audit.launch_id`: command
+and args, or the URL; never env) of every definition of its server the granting
+session could see, in `hooks.auto_approve_tool_identity_launches`; granting the
+same entry again adds the launches seen then. A bound grant matches its
+identity case-sensitively and approves a call only when every definition of the
+server the calling session can see has a launch id in its binding; a changed,
+added or unidentifiable launch, or no definition at all, gets no verdict and the
+call asks. A grant with no binding (every grant written before the binding
+existed, or one written when no launch could be read) keeps case-insensitive
+equality and is observed only, as before; while any spelling of an identity is
+bound, no unbound spelling approves it. Removing a grant drops its binding, and the
+binding map is a security key of the config-pending gate, so an outside edit
+that drops or widens a binding waits for the owner. `hooks.auto_approve_tools`
+patterns are never bound. A stored `*`, `?` or bracket expression matches only
 its literal spelling, and `/` and `\` remain distinct on every platform. A shell call whose model-written
 description reads `@server/tool` is not approved by it, and `hooks.confirm_tools`
 outranks it as it outranks `auto_approve_tools` (`test/test_gate_tiers.py`). The

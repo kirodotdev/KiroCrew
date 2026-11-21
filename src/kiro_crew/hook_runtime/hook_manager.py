@@ -118,9 +118,15 @@ class HookManager:
         self.reload(after)
 
         def _grants(cfg: HooksConfig) -> set[tuple[str, str]]:
-            return {("tools", p) for p in cfg.auto_approve_tools} | {
-                ("identities", p) for p in cfg.auto_approve_tool_identities
-            }
+            return (
+                {("tools", p) for p in cfg.auto_approve_tools}
+                | {("identities", p) for p in cfg.auto_approve_tool_identities}
+                # A dropped or changed launch binding can widen its grant.
+                | {
+                    ("launches", f"{ref}\0{','.join(sorted(ids))}")
+                    for ref, ids in cfg.auto_approve_tool_identity_launches.items()
+                }
+            )
 
         # A hooks reload can WIDEN what runs without a prompt, and config.json is
         # writable by an auto-approved agent shell, so an approval-set change is
