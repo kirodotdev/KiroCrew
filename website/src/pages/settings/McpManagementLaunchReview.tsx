@@ -18,6 +18,7 @@ import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import {
   argvLine,
+  commandSetUnchanged,
   detailsWhyKey,
   envKeyNames,
   launchDiff,
@@ -25,6 +26,14 @@ import {
   launchIsApprovable,
   type McpRowState,
 } from './mcpManagementModel'
+import {
+  type DrawnLaunch,
+  distinctCommands,
+  type EnvValueChange,
+  envValueChanges,
+  type LaunchChange,
+  launchChanges,
+} from './mcpLaunchDiff'
 import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
 
 /** The id of a row's Details sub-row, so its toggle can point at it. */
@@ -84,20 +93,23 @@ function LaunchBlock({
   envs,
   complete,
   marked,
+  only,
 }: {
   label: string
   commands?: string[][]
   envs?: string[][]
   complete?: boolean
-  /** Arguments and env names to mark as changed (the NEW side of a change). */
+  /** Arguments and env names to mark as changed on this side of a change. */
   marked?: { args: ReadonlySet<string>; env: ReadonlySet<string> }
+  /** When set, only these env names are listed (the keys that changed). */
+  only?: ReadonlySet<string>
 }) {
-  const names = envKeyNames(envs)
+  const names = envKeyNames(envs).filter(n => !only || only.has(n))
   return (
     <div className="min-w-0 space-y-1">
       <div className={DETAILS_LABEL_CLASS}>{label}</div>
       <pre className="m-0 whitespace-pre-wrap [overflow-wrap:anywhere] rounded bg-[var(--bg)] px-2 py-1.5 font-mono text-[12px] text-[var(--text)]">
-        {(commands ?? []).map((argv, line) => (
+        {distinctCommands(commands).map((argv, line) => (
           <Fragment key={line}>
             {line > 0 && '\n'}
             {argv.map((arg, i) => (
@@ -131,6 +143,26 @@ function LaunchBlock({
       {complete === false && (
         <p className="m-0 text-[12px]">{i18nT('pages.mcpManagement.details_runs_cut')}</p>
       )}
+    </div>
+  )
+}
+
+/**
+ * Launches drawn whole: each command line, then its env pairs one per line (a
+ * hidden value shows only its key). Used for the launches that changed.
+ */
+function ChangedLaunches({ label, launches }: { label: string; launches: DrawnLaunch[] }) {
+  return (
+    <div className="min-w-0 space-y-1">
+      <div className={DETAILS_LABEL_CLASS}>{label}</div>
+      {launches.map((launch, i) => (
+        <pre
+          key={i}
+          className="m-0 whitespace-pre-wrap [overflow-wrap:anywhere] rounded bg-[var(--bg)] px-2 py-1.5 font-mono text-[12px] text-[var(--text)]"
+        >
+          {[argvLine(launch.command), ...launch.env].join('\n')}
+        </pre>
+      ))}
     </div>
   )
 }
@@ -192,35 +224,102 @@ export function ServerDetailsBody({
   )
 }
 
+/** The summary lines for env changes: names added or removed, then each changed value. */
+function envLines(envAdded: string[], envRemoved: string[], values: EnvValueChange[]): string[] {
+  const list = (items: string[]) => fmtList(items, { style: 'narrow' })
+  const out: string[] = []
+  if (envAdded.length > 0) out.push(i18nT('pages.mcpManagement.diff_env_added', { names: list(envAdded) }))
+  if (envRemoved.length > 0) out.push(i18nT('pages.mcpManagement.diff_env_removed', { names: list(envRemoved) }))
+  for (const change of values) {
+    // A key set on both sides with a new value: the entries that changed
+    // (a PATH dir), or only its name when the value is hidden.
+    const start = out.length
+    if (change.added.length > 0) {
+      out.push(i18nT('pages.mcpManagement.diff_env_entries_added', { name: change.name, entries: list(change.added) }))
+    }
+    if (change.removed.length > 0) {
+      out.push(i18nT('pages.mcpManagement.diff_env_entries_removed', { name: change.name, entries: list(change.removed) }))
+    }
+    if (out.length === start) out.push(i18nT('pages.mcpManagement.diff_env_value_changed', { name: change.name }))
+  }
+  return out
+}
+
+/** The lines one changed launch shows. A launch with no approved partner is named whole. */
+function launchChangeLines(change: LaunchChange): string[] {
+  const env = envLines(change.envAdded, change.envRemoved, change.values)
+  if (change.kind === 'added') return [i18nT('pages.mcpManagement.diff_added', { tokens: argvLine(change.command) }), ...env]
+  if (change.kind === 'removed') return [i18nT('pages.mcpManagement.diff_removed', { tokens: argvLine(change.command) }), ...env]
+  return env
+}
+
+const SUMMARY_CLASS = 'm-0 list-none space-y-0.5 p-0 font-mono text-[12px] text-[var(--text)] [overflow-wrap:anywhere]'
+
 /**
- * What a refused launch runs, from the refusal itself (no second read): the
- * approved launch beside the new one for a changed command, side by side from
- * `md` and stacked below it; otherwise one Runs block. Shared by a row's
- * Details and the Review dialog, so both show the launch an Approve pins.
+ * What a refused launch runs, from the refusal itself (no second read). When
+ * the commands stayed the same, each changed launch is listed with what changed
+ * against the approved launch it replaced, and the whole launches sit behind
+ * "Show full command". For a changed command, the approved launch sits beside
+ * the new one, side by side from `md` and stacked below it; otherwise one Runs
+ * block. Shared by a row's Details and the Review dialog, so both show the
+ * launch an Approve pins.
  */
 export function RefusalLaunch({ refusal }: { refusal: LaunchRefusal }) {
   const changed = refusal.reason === 'changed_needs_reapproval' && refusal.approved_commands !== undefined
   if (changed) {
     const diff = launchDiff(refusal)
-    const lines = [
-      diff.removed.length > 0 && diff.added.length > 0
-        ? i18nT('pages.mcpManagement.diff_changed', { from: diff.removed.join(' '), to: diff.added.join(' ') })
-        : diff.added.length > 0
-          ? i18nT('pages.mcpManagement.diff_added', { tokens: diff.added.join(' ') })
-          : diff.removed.length > 0
-            ? i18nT('pages.mcpManagement.diff_removed', { tokens: diff.removed.join(' ') })
-            : null,
-      diff.envAdded.length > 0 ? i18nT('pages.mcpManagement.diff_env_added', { names: fmtList(diff.envAdded, { style: 'narrow' }) }) : null,
-      diff.envRemoved.length > 0
-        ? i18nT('pages.mcpManagement.diff_env_removed', { names: fmtList(diff.envRemoved, { style: 'narrow' }) })
-        : null,
-    ].filter((l): l is string => l !== null)
+    // Same commands: list each changed launch with what changed against the
+    // approved launch it replaced; the whole launches sit behind a disclosure.
+    // A cut display (`complete: false`) can't support a per-launch summary, so
+    // it keeps the two full columns and their "too long to show" line.
+    const perLaunch = refusal.complete !== false && commandSetUnchanged(refusal) ? launchChanges(refusal) : []
+    if (perLaunch.length > 0) {
+      return (
+        <div className="min-w-0 space-y-2">
+          {perLaunch.map((change, i) => (
+            <div key={i} className="min-w-0 space-y-0.5">
+              <pre className="m-0 whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[12px] text-[var(--muted)]">
+                {argvLine(change.command)}
+              </pre>
+              <ul className={SUMMARY_CLASS}>
+                {launchChangeLines(change).map(l => (
+                  <li key={l}>{l}</li>
+                ))}
+              </ul>
+            </div>
+          ))}
+          <details className="min-w-0">
+            <summary className="cursor-pointer text-[12px] text-[var(--muted)] hover:text-[var(--text)]">
+              {i18nT('pages.mcpManagement.show_full_launch')}
+            </summary>
+            <div className="mt-1 grid min-w-0 gap-2 md:grid-cols-2">
+              <ChangedLaunches
+                label={i18nT('pages.mcpManagement.details_approved')}
+                launches={perLaunch.flatMap(c => (c.before ? [c.before] : []))}
+              />
+              <ChangedLaunches
+                label={i18nT('pages.mcpManagement.details_new')}
+                launches={perLaunch.flatMap(c => (c.after ? [c.after] : []))}
+              />
+            </div>
+          </details>
+        </div>
+      )
+    }
+    // The two columns mark the changed arguments on each side, so no line
+    // repeats them. The env summary stays: the columns list key names only.
+    const values = envValueChanges(refusal)
+    const lines = envLines(diff.envAdded, diff.envRemoved, values)
+    // A key the same on both sides (the gateway's own PATH folds out to this)
+    // tells the reader nothing, so each column lists only the keys that changed.
+    const valueChanged = values.map(v => v.name)
+    const beforeKeys = new Set([...diff.envRemoved, ...valueChanged])
+    const afterKeys = new Set([...diff.envAdded, ...valueChanged])
     return (
       <div className="min-w-0 space-y-2">
-        {/* What changed, said once above the two columns, so the reader does
-            not compare two long commands by eye. */}
+        {/* What changed in the env, said once above the two columns. */}
         {lines.length > 0 && (
-          <ul className="m-0 list-none space-y-0.5 p-0 font-mono text-[12px] text-[var(--text)] [overflow-wrap:anywhere]">
+          <ul className={SUMMARY_CLASS}>
             {lines.map(l => (
               <li key={l}>{l}</li>
             ))}
@@ -231,6 +330,8 @@ export function RefusalLaunch({ refusal }: { refusal: LaunchRefusal }) {
             label={i18nT('pages.mcpManagement.details_approved')}
             commands={refusal.approved_commands}
             envs={refusal.approved_envs}
+            marked={{ args: new Set(diff.removed), env: new Set(diff.envRemoved) }}
+            only={beforeKeys}
           />
           <LaunchBlock
             label={i18nT('pages.mcpManagement.details_new')}
@@ -238,6 +339,7 @@ export function RefusalLaunch({ refusal }: { refusal: LaunchRefusal }) {
             envs={refusal.envs}
             complete={refusal.complete}
             marked={{ args: new Set(diff.added), env: new Set(diff.envAdded) }}
+            only={afterKeys}
           />
         </div>
       </div>

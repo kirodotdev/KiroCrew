@@ -515,7 +515,8 @@ The **Sharing** view, beside **Servers** under the card, holds the rest. In
 the **Share** column, named **Enable MCP sharing** (`mcp_gateway.stub_servers`,
 which [MCP Apps](mcp-apps.md) calls routing). Turning it on reads the command the
 server runs and approves exactly that launch; the row's **Details** shows it, with
-env names only, never their values. A row's state is one of:
+env names only, never a secret value. When a server's PATH changes, Details names
+the folders added and removed. A row's state is one of:
 
 | State | Meaning |
 |---|---|
