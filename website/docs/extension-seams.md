@@ -247,7 +247,7 @@ must stay deduplicated or hooks bind to a second React.
 The core's `tsc -p tsconfig.app.json` covers `website/src` only (`tsconfig.app.json` has
 `"include": ["src"]`), so the edition's sources are outside every typecheck the
 core runs. The bundler does not fill the gap: TypeScript is erased, and a free
-identifier — a typo like `registerThemee` — compiles into the bundle as an
+identifier — a typo such as `registerTheme` with one `e` too many — compiles into the bundle as an
 assumed **global**. The build succeeds, the type check stays green, and the app
 throws `ReferenceError` at module load. Because the composition root runs
 before `App` mounts, that is a blank page, not a broken widget.
@@ -279,7 +279,10 @@ will never run it for you:
 `paths` relative to the config that declares them), so the edition's
 `import { registerTheme } from '@/hooks/useTheme'` typechecks against the real
 core sources. With this in place the typo above is caught at build time:
-`TS2552: Cannot find name 'registerThemee'. Did you mean 'registerTheme'?`
+
+```text
+TS2552: Cannot find name 'registerThemee'. Did you mean 'registerTheme'?
+```
 
 ### A default theme needs configuration, not a seam
 

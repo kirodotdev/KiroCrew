@@ -145,12 +145,10 @@ oauth_application_policy
 runner_group_name
 validateUniqueCategory
 
-# Playwright config, Obsidian, the MCP Apps SDK
+# Obsidian, the MCP Apps SDK
 applyDocumentTheme
 applyHostStyleVariables
 attachmentFolderPath
-testIgnore
-testMatch
 useHostStyleVariables
 
 # Python stdlib, pytest, Hypothesis
@@ -160,12 +158,13 @@ eval_str
 reproduce_failure
 restore_signals
 
-# Slack and Feishu APIs
+# Slack and Feishu APIs, and Slack MCP server tool names (mochi-slack SKILL.md)
 agent_content_hash
 bad_redirect_uri
 group_at_msg
 include_bot
 invalid_team_for_non_distributed_app
+lookup_user
 send_as_bot
 share_chat
 
@@ -209,3 +208,92 @@ root_readwrite
 summary_template_id
 tenantId
 write_heartbeats
+
+# AWS: IAM / EC2 actions and policy terms, KMS (cloud.md, build/release.md)
+AuthorizeSecurityGroup
+GetPublicKey
+implicitDeny
+
+# AWS Documentation MCP server tools (reference/kiro-cli/mcp/examples.md)
+read_documentation
+search_documentation
+
+# Windows: UIA, WIC, shell folders, registry (computer-use.md)
+AddImage
+AppRepository
+AppsFolder
+ignoreDefaultValue
+
+# Python stdlib `os` (memory-skills-hooks.md); only called, under `_vendor/`
+add_dll_directory
+
+# pytest-xdist scheduler (testing-conventions.md)
+LoadGroupScheduling
+
+# Agent Client Protocol spec types (acp-client.md)
+PermissionOption
+
+# The separate KiroCrewApps repository (app-kit-platform.md)
+EditorialAssets
+
+# Browser File System Access API (md-notebook.md)
+showDirectoryPicker
+
+# neonize, the WhatsApp client library (messaging.md)
+build_audio_message
+build_poll_vote_creation
+decrypt_poll_vote
+interactive_message
+send_interactive_message
+
+# WeCom message wire format (messaging.md)
+template_card
+
+# Microsoft Teams / Bot Framework file-consent wire format (messaging.md)
+fileConsent
+uploadInfo
+uploadUrl
+
+# Beacon analytics infrastructure outside this repo: aggregator Lambda, Athena,
+# CloudWatch (metrics.md)
+ActiveByArch
+ActiveByChannel
+ActiveByCountry
+ActiveByDistribution
+ActiveByPython
+ActiveByVersion
+AppInstallations
+BeaconPings
+DailyActiveInstances
+NewInstallations
+beacon_daily
+kirocrew_analytics
+
+# CloudFront log configuration (metrics.md)
+recordFields
+
+# OpenTelemetry SDK exponential histogram (metrics.md)
+zero_count
+
+# Antigravity settings file (onboarding-import.md)
+userSettings
+
+# Prometheus Alertmanager config (ops-mission-control.md)
+webhook_config
+
+# macOS dyld `@loader_path` (pptx-maker.md)
+loader_path
+
+# electron-updater (build/release.md)
+DebUpdater
+RpmUpdater
+
+# Kubernetes probes (guides/docker-troubleshooting.md)
+initialDelaySeconds
+livenessProbe
+
+# Rust `url` crate (reference/kiro-cli/mcp/oauth-token-storage.md)
+ascii_serialization
+
+# Primer design system (website/docs/narrow-viewport.md)
+ActionBar
