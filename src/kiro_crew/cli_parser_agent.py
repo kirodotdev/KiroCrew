@@ -1070,6 +1070,14 @@ def register_agent_parser(sub: _Commands) -> None:
             "the template's pinned model, then agent.model"
         ),
     )
+    agent_create.add_argument(
+        "--backend",
+        default=None,
+        help=(
+            "Agent harness the agent's own chat and its workers run on (kas, claude, "
+            "codex, ...); omitted, it inherits the harness Settings names for crew agents"
+        ),
+    )
     agent_update = agent_sub.add_parser("update", help="Update a Kiro Crew agent")
     agent_update.add_argument("name", help="Agent name to update")
     agent_update.add_argument("--kiro-agent", help="New kiro agent name")
@@ -1087,6 +1095,13 @@ def register_agent_parser(sub: _Commands) -> None:
         help=(
             "New default model for the agent's sessions; \"\" or 'auto' clears the pin "
             "so it follows the template's pinned model, then agent.model"
+        ),
+    )
+    agent_update.add_argument(
+        "--backend",
+        help=(
+            'New agent harness for the agent\'s own chat and its workers; "" clears '
+            "the pin so it inherits the harness Settings names for crew agents"
         ),
     )
     agent_delete = agent_sub.add_parser("delete", help="Delete a Kiro Crew agent")

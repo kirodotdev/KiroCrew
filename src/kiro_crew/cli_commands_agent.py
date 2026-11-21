@@ -1,7 +1,8 @@
 """``kirocrew agent``: list, create, update and delete crew agents, and reset a model pin.
 
-``_handle_agent`` checks names, labels, ``--model`` (``_agent_model_or_exit``) and
-``--memory-store`` (``_memory_store_or_exit``) against a config snapshot. ``create`` and
+``_handle_agent`` checks names, labels, ``--model`` (``_agent_model_or_exit``),
+``--backend`` (``_agent_backend_or_exit``) and ``--memory-store``
+(``_memory_store_or_exit``) against a config snapshot. ``create`` and
 ``update`` persist through ``memory_stores.persist_member_config``; ``delete`` writes
 through ``cli_commands_workspace._locked_config_write`` and re-checks its precondition
 inside the lock, then runs the dashboard delete's teardown
@@ -93,7 +94,34 @@ def _agent_list_label(label: str) -> str:
     return safe_terminal_line(label)
 
 
-def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig, crew: str = "") -> str:
+def _agent_backend_or_exit(raw: str, cfg: KiroCrewConfig) -> str:
+    """The ``--backend`` value to store as an agent's harness pin, or exit with the reason.
+
+    ``""`` clears the pin. Anything else must be a harness a crewmate can be pinned
+    to on this install, the same list the crew editor's save accepts
+    (``crewmate_harness.harness_pin_rejected``).
+    """
+    # Read here, not at module level: the cli_commands facade serves every
+    # module-level name of this owner, and its composition contract
+    # (test_every_served_name_is_defined_by_the_owner_serving_it) refuses a
+    # served name this module does not define.
+    from kiro_crew.crewmate_harness import harness_pin_rejected
+
+    reason = harness_pin_rejected(raw, cfg)
+    if reason:
+        print(f"Error: {reason}", file=sys.stderr)
+        sys.exit(1)
+    return raw.strip()
+
+
+def _agent_model_or_exit(
+    raw: str,
+    cfg: KiroCrewConfig,
+    crew: str = "",
+    acp_backend: str | None = None,
+    *,
+    for_workers: bool = False,
+) -> str:
     """The ``--model`` value to store on an agent, or exit with the reason.
 
     ``""`` and ``auto`` both mean "no pin", stored as ``""`` the way the crew
@@ -108,7 +136,9 @@ def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig, crew: str = "") -> str:
     catalog). Entitlement itself needs a live session's advertised list, which
     this offline command does not have, so an unknown id is accepted, as the
     crew editor accepts it with no live session. *crew* names the agent being
-    updated, so a crewmate that pins its own harness is judged against it.
+    updated, so a crewmate that pins its own harness is judged against it;
+    *acp_backend* is a pin about to be stored (``None`` reads *crew*'s record), and
+    *for_workers* judges a worker model on the worker's harness.
     """
     model = normalize_agent_model(raw)
     if not model:
@@ -134,7 +164,7 @@ def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig, crew: str = "") -> str:
     from kiro_crew.dashboard.handlers.agents import _pin_entitlement_backend
 
     try:
-        backend = _pin_entitlement_backend(cfg, crew)
+        backend = _pin_entitlement_backend(cfg, crew, acp_backend, for_workers=for_workers)
     except CrewmateHarnessUnavailable as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -236,7 +266,8 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        model = _agent_model_or_exit(getattr(args, "model", None) or "", cfg)
+        acp_backend = _agent_backend_or_exit(getattr(args, "backend", None) or "", cfg)
+        model = _agent_model_or_exit(getattr(args, "model", None) or "", cfg, "", acp_backend)
         from kiro_crew.mate_config import user_agent_named
 
         if args.kiro_agent == args.name or user_agent_named(args.name):
@@ -276,6 +307,7 @@ def _handle_agent(args: argparse.Namespace) -> None:
             memory_store=memory_store,
             display_name=display_name,
             model=model,
+            acp_backend=acp_backend,
             # `kirocrew agent create` supplies no avatar, so default to the same
             # name-seeded ICON the UI posts rather than the trait ghost a missing
             # override renders as. Seeded from the shown name
@@ -325,6 +357,8 @@ def _handle_agent(args: argparse.Namespace) -> None:
         print(f"Workspace: {created.workspace}")
         if created.model:
             print(f"Model: {created.model}")
+        if created.acp_backend:
+            print(f"Harness: {created.acp_backend}")
         # The same eager copy the create route runs, so a crewmate made here
         # chats on the conductor and hands its work to its worker.
         from kiro_crew.mate_config import MateConfigError, adopt_own_file
@@ -362,15 +396,19 @@ def _handle_agent(args: argparse.Namespace) -> None:
             and new_workspace is None
             and getattr(args, "model", None) is None
             and getattr(args, "display_name", None) is None
+            and getattr(args, "backend", None) is None
         ):
             # Nothing to write: saying "Updated" here would report a change
             # that never happened. Exit 0 stays, so a script calling it keeps working.
             print(
                 f"Warning: nothing to update for agent '{args.name}'; pass --kiro-agent, "
-                "--workspace, --display-name or --model",
+                "--workspace, --display-name, --model or --backend",
                 file=sys.stderr,
             )
             return
+        new_backend = getattr(args, "backend", None)
+        if new_backend is not None:
+            new_backend = _agent_backend_or_exit(new_backend, cfg)
         if new_workspace is not None:
             from kiro_crew.member_workspace import DEFAULT_WORKSPACE
 
@@ -389,7 +427,18 @@ def _handle_agent(args: argparse.Namespace) -> None:
             agent.workspace = new_workspace
         new_model = getattr(args, "model", None)
         if new_model is not None:
-            agent.model = _agent_model_or_exit(new_model, cfg, args.name)
+            agent.model = _agent_model_or_exit(new_model, cfg, args.name, new_backend)
+        if new_backend is not None and new_backend != (agent.acp_backend or ""):
+            # The stored pins are re-judged as the crew editor re-judges them: a
+            # model the new harness cannot serve would refuse every session.
+            if new_model is None and agent.model:
+                _agent_model_or_exit(agent.model, cfg, args.name, new_backend)
+            if agent.worker_model:
+                _agent_model_or_exit(
+                    agent.worker_model, cfg, args.name, new_backend, for_workers=True
+                )
+        if new_backend is not None:
+            agent.acp_backend = new_backend
         new_label = getattr(args, "display_name", None)
         if new_label is not None:
             try:
@@ -403,6 +452,8 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 for field in ("kiro_agent", "workspace", "display_name", "model")
                 if getattr(args, field, None) is not None
             }
+            if new_backend is not None:
+                changed_fields.add("acp_backend")
             if new_workspace is None:
                 changed_fields.discard("workspace")
             if agent.memory_store != prior_memory_store:
@@ -425,6 +476,8 @@ def _handle_agent(args: argparse.Namespace) -> None:
             print(f"Updated agent: {args.name}")
         if new_model is not None:
             print(f"Model: {agent.model or '(inherit)'}")
+        if new_backend is not None:
+            print(f"Harness: {agent.acp_backend or '(inherit)'}")
 
     elif action == "delete":
         if args.name not in cfg.agents:

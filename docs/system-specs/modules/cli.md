@@ -133,7 +133,7 @@ leaves the pin alone; `""` or `auto` stores `""` (inherit), through
 `normalize_agent_model`. An update publishes only the fields it was given
 (`persist_member_config(changed_fields=...)`), so a concurrent edit to another
 field survives. An `agent update` given no `--kiro-agent`, `--workspace` (a blank one
-counts as none), `--display-name` or `--model`, and a `workspace update` given
+counts as none), `--display-name`, `--model` or `--backend`, and a `workspace update` given
 no `--dir`, change nothing, so each warns `nothing to update` on stderr, writes
 nothing, logs no success event, and exits 0 as it did before. The value is judged on shape (`validation._MODEL_NAME_RE`, as
 the cron job `--model` flag is), then, unless the provider is `claude_code`, refused
@@ -148,6 +148,11 @@ is there. Entitlement
 needs a live session's advertised list, which the offline CLI does not have, so an
 unknown id is accepted, as `_validate_role_model` accepts with no evidence.
 `agent list` prints a `MODEL` column: the pin, or `(inherit)`.
+
+`--backend <id>` on `agent create` and `agent update` writes the member's harness
+pin, `agents.<name>.acp_backend`, under the crew editor's `harness_pin_rejected`
+rule; `""` clears it. A `--model` given with it is judged on that harness. The
+rules are in [crew-mode](crew-mode.md) ("A Bot's own harness").
 
 `kirocrew doctor` reports the configured member, store and integrity failures
 without provisioning, repairing or replacing databases. A missing, corrupt or
