@@ -188,10 +188,11 @@ def _share_sibling_settings_seed(self: ClaudeAcpClient, local_settings: Path, pa
     Only the model half (``availableModels``, ``model``) may differ from
     *payload*. It grants no permission, and :meth:`_apply_startup_model` pushes
     this session's model live -- a push the adapter accepts only for an
-    ``availableModels`` entry. So the seed must list *payload*'s ``model``, name none
-    when *payload* names none, or, when neither carries ``availableModels``, leave the
-    adapter on its own list, where the push is accepted. Its bytes are read only as the
-    durable record's, and the share then validates exactly those bytes.
+    ``availableModels`` entry. So the seed must list the model this session runs (its
+    adopted substitute, else its pin), name none when this session runs neither, or,
+    when neither carries ``availableModels``, leave the adapter on its own list, where
+    the push is accepted. Its bytes are read only as the durable record's, and the
+    share then validates exactly those bytes.
     """
     if self._share_settings_seed_if_identical(local_settings, payload):
         return True
@@ -208,16 +209,21 @@ def _share_sibling_settings_seed(self: ClaudeAcpClient, local_settings: Path, pa
     if not isinstance(seed, dict):
         return False
     own = json.loads(payload)
-    model = own.get("model")
+    # The model this session runs: an adopted substitute, else the pin it pushes
+    # live, on the spelling the push sends.
+    pin = own.get("model")
+    if pin is None and self._model and self._model != DEFAULT_MODEL:
+        pin = model_registry.resolve_wire_model_id(self._model, self._model_registry_namespace)
     offered = seed.get("availableModels")
-    if model is None:
+    if pin is None:
+        # Pushing nothing, this session would start on a substitute the seed names.
         runs_own_model = "model" not in seed
     elif offered is None and "availableModels" not in own:
         # Neither seed carries a list, so the adapter offers its own advertised
         # list and accepts the live push of this session's model.
         runs_own_model = True
     else:
-        runs_own_model = isinstance(offered, list) and model in offered
+        runs_own_model = isinstance(offered, list) and pin in offered
     same_permissions = all(
         seed.get(key) == own.get(key)
         for key in seed.keys() | own.keys()
@@ -309,13 +315,19 @@ def _render_claude_settings_payload(self: ClaudeAcpClient) -> str:
     # backend actually advertised (cached from a prior session/new), so the seed
     # reflects what the account is served and a served-but-unregistered model
     # gets its real window. A cold cache returns nothing rather than falling
-    # back to the static registry. Both keys need a warm cache. ``model`` is then
-    # written whenever the session pinned one: with Crew's list beside it the
-    # folded id is one of its entries, and without one the adapter resolves it
-    # against its own advertised list. ``availableModels`` is written only when
-    # another settings source already defines one: a specific id in Crew's list
-    # would disable that family's alias wildcard (haiku would resolve to an older
-    # model), which a ``model`` key never does.
+    # back to the static registry. ``availableModels`` needs a warm cache and is
+    # written only when another settings source already defines one: a specific
+    # id in Crew's list would disable that family's alias wildcard (haiku would
+    # resolve to an older model).
+    #
+    # A session's pinned model is NOT written as ``model``. Claude Code reads a
+    # settings ``model`` as a pin and folds that model's whole family into one
+    # alias row, so a session pinned to Opus 4.8 is offered one ``opus`` row and
+    # no Opus 5 or Opus 5.5; Crew would then cache that short list as what the
+    # account is served. The pin reaches the session over
+    # ``session/set_config_option`` instead (``_apply_startup_model``), which
+    # narrows nothing. The one ``model`` this payload carries is a substitute the
+    # backend itself named, below.
     allowlist = model_registry.seed_available_models(self._model_registry_namespace)
     if allowlist:
         if other_sources_define_available_models(Path(self._work_dir)):
@@ -331,23 +343,6 @@ def _render_claude_settings_payload(self: ClaudeAcpClient) -> str:
                 "so family aliases keep resolving to their current model.",
                 self._claude_local_settings_path(),
             )
-        # DEFAULT_MODEL ("auto") is not a provider id, and omitting the key is
-        # what lets the adapter pick its default.
-        if self._model and self._model != DEFAULT_MODEL:
-            # Folded onto the advertised spelling HERE rather than trusting a
-            # caller to have folded self._model first. The re-seed runs beside
-            # the model-cache persist, which is BEFORE _apply_startup_model, so
-            # depending on that fold would be an ordering coupling between two
-            # distant steps -- and the failure it buys is silent (a bare id
-            # names no model the adapter advertised and resolves to the base
-            # window). The advertised list is non-empty here, so the cache is
-            # warm and the fold is the same one _apply_startup_model and
-            # set_model perform. The key is written whether or not
-            # availableModels is written beside it: a model key never narrows
-            # a family alias.
-            data["model"] = model_registry.resolve_wire_model_id(
-                self._model, self._model_registry_namespace
-            )
     else:
         # Cold advertised-model cache -- the first session on this install,
         # before any session/new has been captured. Both model keys are
@@ -358,13 +353,13 @@ def _render_claude_settings_payload(self: ClaudeAcpClient) -> str:
         # matches nothing in it resolves to the base window. Writing neither
         # key leaves the adapter on its own provider list, which already
         # carries the versioned [1m] ids. This session's capture then warms the
-        # cache, and the post-capture re-seed writes ``model`` (and ``availableModels``
-        # when another settings source defines one).
+        # cache, and the post-capture re-seed writes ``availableModels`` when
+        # another settings source defines one.
         logger.info(
             "advertised-model cache is cold; the settings payload for %s omits "
-            "availableModels/model so claude-agent-acp resolves the model from its own "
-            "provider list. The re-seed after this session's model capture writes model, "
-            "and availableModels too when another settings source defines one.",
+            "availableModels so claude-agent-acp resolves the model from its own "
+            "provider list. The re-seed after this session's model capture writes "
+            "availableModels when another settings source defines one.",
             self._claude_local_settings_path(),
         )
         # The names the user's own settings cover come from no cache. Under the
@@ -373,14 +368,32 @@ def _render_claude_settings_payload(self: ClaudeAcpClient) -> str:
             covered = user_models_a_family_entry_covers()
             if covered:
                 data["availableModels"] = covered
-        # The one model written on a cold cache: the one the backend itself
-        # named in a substitution advisory, so it is served. Left out, the
-        # user's own settings keep naming the restricted model the retry is
-        # meant to replace.
-        adopted = getattr(self, "_adopted_substitute_model", None)
-        if adopted and self._model == adopted:
-            data["model"] = adopted
+    # The one model ever written: the one the backend itself named in a
+    # substitution advisory, so it is served. Left out, the user's own settings
+    # keep naming the restricted model the retry is meant to replace, and
+    # session/new refuses it again.
+    adopted = getattr(self, "_adopted_substitute_model", None)
+    if adopted and self._model == adopted:
+        data["model"] = adopted
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
+
+def _substitution_retry_model(self: ClaudeAcpClient, substitute: str) -> str:
+    """The model a substitution retry's seed names: the session's pin when served, else *substitute*.
+
+    The seed carries no pinned ``model``, so ``session/new`` starts on the user's
+    inherited default, and a policy that restricts that default answers with an
+    advisory naming *substitute*. A pin the backend advertised is served (the
+    adapter's advertised list already applies the policy allowlist), so the retry
+    names the pin on the spelling the push sends, and the session keeps it. A pin
+    not advertised, no pin, or a cold cache (nothing to check against) adopts
+    *substitute*, the model the backend itself said it serves.
+    """
+    if not self._model or self._model == DEFAULT_MODEL:
+        return substitute
+    namespace = self._model_registry_namespace
+    pin = model_registry.resolve_wire_model_id(self._model, namespace)
+    return pin if pin in model_registry.advertised_models(namespace) else substitute
 
 
 def _write_claude_local_settings(self: ClaudeAcpClient) -> None:
