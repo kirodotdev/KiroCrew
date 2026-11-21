@@ -600,6 +600,13 @@ def _publish_usage(
     set_login_email(payload.get("email"))
 
 
+def _drop_for_account_change() -> None:
+    """Drop the reading for a changed account: served as loading (``{}``), refreshed next poll."""
+    global _usage_cache_ts
+    _publish_usage({})
+    _usage_cache_ts = 0.0
+
+
 def _cache_vault_failure(
     vault_fp: str, reason: str | None = None, *, stamp: str | None = None
 ) -> None:
@@ -841,8 +848,8 @@ async def _refresh_from_vault() -> None:
 
         ``reason`` describes the attempt made for ``before``; when the sign-in
         changed underneath it the failure says nothing about the new account, so
-        only the plain unavailable marker is published and the next refresh reads
-        the new identity afresh.
+        the reading is dropped (:func:`_drop_for_account_change`) and the next poll
+        reads the new identity afresh.
         """
         after = await _vault_fingerprint()
         if after != before:
@@ -850,7 +857,7 @@ async def _refresh_from_vault() -> None:
                 "Kiro usage: the Crew sign-in changed during the credential refresh; "
                 "discarding the previous identity's reading"
             )
-            _cache_vault_failure(after)
+            _drop_for_account_change()
             return
         _cache_vault_failure(after, reason, stamp=stamp)
 
@@ -892,7 +899,7 @@ async def _refresh_from_vault() -> None:
             "Kiro usage: the Crew sign-in changed during the refresh; "
             "discarding the reading fetched for the previous identity"
         )
-        _cache_vault_failure(after)
+        _drop_for_account_change()
         return
     usage = result.usage
     if usage and usage.get("credits_plan") is not None:
@@ -1775,13 +1782,11 @@ async def _fetch_usage_then_alert(state: DashboardState, *, vault_owned: bool) -
     A move seen while it ran makes a kiro-cli reading the old account's: dropped, refreshed
     again. A vault reading is judged by the vault fingerprint inside its own refresh.
     """
-    global _usage_cache_ts
     ran = not _usage_fetching
     account_before = _usage_account_fp
     outcome = await _fetch_usage_bg(vault_owned=vault_owned)
     if ran and not vault_owned and identity_stamp_mismatch(account_before, _usage_account_fp):
-        _publish_usage({"available": False})
-        _usage_cache_ts = 0.0
+        _drop_for_account_change()
         return outcome
     if ran:
         await _alert_on_cached_reading(state)
@@ -1833,11 +1838,11 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
             return blocked
     # Before the snapshot, so a concurrent GET cannot serve what this one drops. A
     # `kiro-cli login` to another account makes the reading the old account's:
-    # dropped (no preserve may keep it) and refreshed now. The vault path judges
-    # its readings by the vault fingerprint below.
+    # dropped (no preserve may keep it), served as loading and refreshed now. The
+    # vault path judges its readings by the vault fingerprint below.
     account_moved = await _note_account(request) and not vault_owned
     if account_moved:
-        _publish_usage({"available": False})
+        _drop_for_account_change()
     # Payload and the fingerprint it was published under, taken in one step (no
     # await between them, and _publish_usage writes both without yielding), so
     # the foreign check below judges exactly what this response serves.
@@ -1846,8 +1851,9 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
     not_servable = await _reading_not_servable(vault_owned, served, served_fp)
     if not_servable == "foreign":
         # The cached reading belongs to another identity (an earlier Crew
-        # sign-in, or the kiro-cli path): never serve it, refresh now.
-        served = {"available": False}
+        # sign-in, or the kiro-cli path): never serve it, refresh now. Served as
+        # loading (``{}``), not as "no reading": the new account's is on its way.
+        served = {}
         refresh_now = True
     elif vault_owned:
         if await _signin_marker_is_stale(served):
@@ -1861,7 +1867,7 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
         # kiro-cli account's reading, so never serve it, refresh now. Dropped,
         # not just hidden, so the kiro-cli path's same-identity preserve can
         # never keep it and re-trigger this refresh on every poll.
-        _publish_usage({"available": False})
+        _drop_for_account_change()
         served = _usage_cache
         refresh_now = True
     now = time.time()
@@ -1920,7 +1926,7 @@ async def api_sessions_usage_refresh(request: web.Request) -> web.Response:
     # Recorded here too, so a GET during this refresh neither serves the old
     # account's reading nor later drops this one's as a move.
     if await _note_account(request) and not vault_owned:
-        _publish_usage({"available": False})
+        _drop_for_account_change()
     if _usage_fetching:
         return web.json_response(
             {"error": "A refresh is already running", "code": "refresh_in_flight"},
