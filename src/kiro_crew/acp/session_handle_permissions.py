@@ -817,6 +817,25 @@ def _claude_mcp_identity_servers(
     return tuple(state._harness_mcp_server_names()), _bridged_servers(state)
 
 
+def _stamp_parent_limits(handle: AcpSessionHandle, event: AcpEvent) -> None:
+    """Stamp the session agent's gate-only LIMITS on a native KAS sub-agent's request.
+
+    The shell and write allowlists, the read-only flag beside the shell allowlist,
+    the Bot worker's unjudged denies, and the deny record with every grant it
+    carries emptied (``spec_denied_grant.denies_only``). The ``spec_granted_*`` and
+    ``spec_hook_held`` grants stay off: a sub-agent gets its parent's ceiling or a
+    tighter one, never a grant.
+    """
+    from kiro_crew.platform.spec_denied_grant import denies_only
+
+    event.spec_shell_allowlist = getattr(handle, "kas_spec_shell_allowlist", None)
+    event.spec_write_allowlist = getattr(handle, "kas_spec_write_allowlist", None)
+    event.spec_write_cwd = str(getattr(handle, "_bound_cwd", "") or "")
+    event.spec_shell_readonly = bool(getattr(handle, "kas_spec_shell_readonly", False))
+    event.spec_unjudged_denies = tuple(getattr(handle, "kas_spec_unjudged_denies", ()))
+    event.spec_denied_grant = denies_only(getattr(handle, "kas_spec_denies", None))
+
+
 def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpEvent | None:
     """Build an AcpEvent for a permission request via the shared parser.
 
@@ -890,13 +909,16 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
         event.native_child_call = True
     elif self._runtime.acp_backend == ACP_BACKEND_KAS and _is_native_child_call(self, event):
         # A native KAS sub-agent's call carries this session's id, so mark it:
-        # the dashboard keeps the parent's deny overrides away from it.
+        # the dashboard keeps the parent's deny overrides away from it. It runs
+        # inside this session's agent, so it is held to that agent's gate-only
+        # limits (its allowlists and denies) and given none of its grants.
         event.native_child_call = True
+        _stamp_parent_limits(self, event)
     elif self._runtime.acp_backend == ACP_BACKEND_KAS:
         # What this session's own agent granted and the KAS policy kept at ask,
         # so the gate can answer the request itself after its checks. A child's
-        # request runs another agent's spec, so it never carries this: neither
-        # one under a foreign sessionId, nor a native KAS sub-agent's tool call,
+        # request never carries these grants: neither one under a foreign
+        # sessionId, nor a native KAS sub-agent's tool call (the branch above),
         # which shares this session's id and is told apart by the id its
         # agentSubtaskId frame recorded.
         event.spec_granted_builtins = frozenset(getattr(self, "kas_crew_answered", ()))

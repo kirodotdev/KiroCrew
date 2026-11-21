@@ -3233,10 +3233,40 @@ spec the same way kiro-cli v2 does where the wire allows it:
 - The agent's `availableAgents` names are registered in the same batch
   (`acp/kas_subagent_targets.py`, appended by `KasHarness.session_extras`, so
   `session/load` re-sends them too). KAS's `invoke_sub_agent` looks a name up only
-  in the session's registry, the batch plus the on-disk profiles it keeps, and it
-  keeps no profile written for kiro-cli (`allowedTools` or `toolsSettings` and no
+  in the session's registry, the batch plus the on-disk profiles it keeps. It keeps
+  no profile written for kiro-cli (`allowedTools` or `toolsSettings` and no
   `permissions`), so a name the batch lacks is answered `Agent '<name>' not found
-  in registry`. Only when the agent's projected entry mounts `invoke_sub_agent`,
+  in registry`; it does keep a profile that carries a `permissions` block, which is
+  why every entry that mounts the tool also carries a `subagent` deny over Kiro
+  Crew's own agent names (`kas_subagent_targets.deny_own_agents`, applied last by
+  `acp/kas_native_batch.native_batch`), listed or not. Before that deny,
+  `native_batch` applies `agent.subagents`: on `"engine"` (the default) and only
+  when `kas_engine_subagents.engine_subagents_on` holds (a `dashboard:` /
+  `dashboard_` key that is not a crew member's, the default agent `kirocrew`, no
+  member dispatch or Crew panel, the chat-runtime-sharing preview off), the default
+  agent's entry gains `invoke_sub_agent` in `tools`, a `subagent` deny on every name
+  but `kirocrew-helper`, and `@kirocrew-core/spawn_sub_agents` in `excludedTools`,
+  and the in-memory helper entry (`acp/kas_engine_subagent_target.py`) is appended,
+  carrying every `deny` and `ask` rule of the default agent's entry (never an
+  allow) and withholding auto-approval for what that agent's own spec PreToolUse
+  hooks cover, as a registered target's entry does. The helper's ceiling is never
+  wider than its parent's: a default-agent spec carrying a restriction the helper
+  cannot mirror (`kas_engine_subagents.unmirrored_restriction`: an unreadable spec,
+  an `excludedTools` entry that withdraws a built-in or names no known MCP server,
+  any `toolsSettings`, a `tools` or `allowedTools` narrower than the helper's)
+  refuses the mount, and that chat keeps Kiro Crew's own sub-agents exactly as on
+  main. A mount records one `kas_engine_subagent_mounted` security event (source
+  `kas_agent_projection`) naming the agent and how many of its rules the helper
+  carries (`kas_subagent_targets.audit_subagent_policy`).
+  A batch that already holds that id, or an agent file of that name in the user's
+  or the project's agents folder, refuses the mount with a session-start notice.
+  The config is read in the projection thread; an unreadable config mounts
+  nothing. The spec on disk is never written, and the process-sharing check
+  (`chat_runtime_sharing.agent_spawns_native_subagents`) reads that spec, so it is
+  unchanged by the mount, which the preview keeps off anyway. The Tool Search
+  never-defer list stays the agent's (`tool_search.JOB_TOOLS`): it is sent at the
+  runtime's handshake, before any session is known, and an excluded tool it names
+  is not on the entry's surface. Only when the agent's projected entry mounts `invoke_sub_agent`,
   read as the engine's tool filter reads it: `tools` is `"*"` or holds an entry
   equal to the tool's id or one of its tags (`@builtin`, `@subagent`), or a `*` or
   `?` pattern matching one, and no `excludedTools` entry does the same. An
@@ -4195,6 +4225,24 @@ session: it is counted there, cancelled there, and recovered there. Concretely:
   `taskq` nor `admission` (structural pin), and a child's frames yield only
   `EVENT_SUBAGENT_ACTIVITY` / `EVENT_SUBAGENT_LIST` — no `EVENT_TOOL_CALL`,
   `EVENT_COMPLETE` or `EVENT_STRUCTURED_STATUS` a runner would act on.
+- **A KAS child's finished call.** On the FIRST terminal frame of a KAS child's
+  nested tool call (status in `TERMINAL_TOOL_STATUSES`, or `completed`), its
+  `EVENT_SUBAGENT_ACTIVITY` event also carries these existing `AcpEvent` fields,
+  copied from the shared parser's result and the call's caches before they are
+  released (`acp/kas_child_finished.mark_child_call_finished`): `tool_final`,
+  `tool_status`, `tool_output`, `is_shell`, `tool_name`, `mcp_server_name`,
+  `harness_tool_id`, and `title` (the last title the call's frames stated). A later
+  terminal frame of the same call, and every non-terminal frame, carries none of
+  them; the per-handle set that records marked calls is cleared with the turn's
+  other per-call caches. `is_finished_child_call` reads the mark. Three consumers
+  fire the session agent's `PostToolUse` on it, once, with the same redaction,
+  2000-character output cut and names as for the turn's own call, and drop the
+  hooks' output as they do for that call: the dashboard turn
+  (`chat_turn/tool_results._on_child_tool_finished`), a channel turn
+  (`messaging/tool_hooks.ChannelTurnHooks.on_child_result`) and a Kiro Crew
+  sub-agent run (`subagent_manager/run_turn.py`). Every other consumer of the
+  event reads only `sub_session_id`, `tool_call_id`, `title` or `text`
+  (`messaging/directive_tracker`, `acp/client_turn`) or routes it by kind.
 - **One cancel.** `cancel()` sends a single `session/cancel` naming the parent;
   the tool-stall watchdog recovers a stalled parent with that same single cancel
   however many children it fanned out. No recovery path sends a per-child cancel; a person's Stop on a claude child's card is the one per-child request (`AcpClient.cancel_native_child`).

@@ -90,9 +90,14 @@ async def test_a_project_spec_grants_nothing(layout):
 
     for key in ("mcpServers", "includeMcpJson", "includePowers", "resources"):
         assert key not in entry, key
-    # The one rule this spec gets is Crew's own skill scope, and it only takes away:
-    # a ``tools: ["*"]`` agent with no mapping loads no skill on kiro-cli either.
-    assert entry["permissions"] == {"rules": [{"capability": "skill", "effect": "deny"}]}
+    # The rules this spec gets are Crew's own and only take away: its skill scope
+    # (a ``tools: ["*"]`` agent with no mapping loads no skill on kiro-cli either),
+    # and the deny on Kiro Crew's own agents every sub-agent tool carries.
+    rules = entry["permissions"]["rules"]
+    assert [r for r in rules if r["capability"] != "subagent"] == [
+        {"capability": "skill", "effect": "deny"}
+    ]
+    assert [r["effect"] for r in rules if r["capability"] == "subagent"] == ["deny"]
     assert "planted" not in json.dumps(entry)
     spec, _ = resolve_projected_spec(paths_mod.kiro_agents_dir(), "proj", checkout)
     assert set(spec) == {"name", "prompt", "tools"}

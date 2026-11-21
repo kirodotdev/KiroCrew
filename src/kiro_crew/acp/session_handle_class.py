@@ -766,6 +766,11 @@ class AcpSessionHandle:
         # Parent-scoped cache keys populated by tagged native-child tool calls.
         # Cleared per turn beside the sibling per-call caches below.
         self._native_child_tool_call_ids: set[str] = set()
+        # The native-child calls whose finished frame was already marked
+        # (``kas_child_finished``), so each fires PostToolUse once. Cleared with it.
+        self._native_child_finished: set[str] = set()
+        # The title each native-child call's frames last stated, for that mark.
+        self._native_child_titles: dict[str, str] = {}
         # Server names for which a mid-session MCP OAuth banner was already
         # emitted, so we don't spam duplicates. Discarded on the matching
         # server_initialized / server_init_failure so a later token-expiry

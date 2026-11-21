@@ -72,6 +72,14 @@ describe('SubagentProgressBar — in-chat stop controls', () => {
     expect(screen.queryByLabelText('Stop all running subagents')).not.toBeInTheDocument()
   })
 
+  it('offers no Stop control when the only sub-agents are engine-run (native) children', () => {
+    // KAS engine sub-agents stop with the turn's Stop; stop-all reaches only
+    // Kiro Crew's own, so a control here would answer "stopped 0".
+    renderBar(makeStore(['native:sess-x', 'native:sess-y']))
+    expect(screen.queryByRole('button', { name: /stop/i })).not.toBeInTheDocument()
+    expect(api.spawnStopAll).not.toHaveBeenCalled()
+  })
+
   it('excludes native (nested) kiro-cli subagents from the count and rows so it matches "spawned N"', async () => {
     // 2 top-level managed agents + 2 native:* nested agents surfaced from the
     // kiro-cli list_update. The chip must show only the 2 managed ones.
