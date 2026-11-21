@@ -393,30 +393,23 @@ async def set_model(self: AcpSessionHandle, model_id: str, *, inherit: bool = Fa
     self.inherited_model = ""
     if self._runtime.acp_backend == ACP_BACKEND_KAS:
         model_id = _kas_model_spelling(model_id, self._advertised_model_ids())
-        # KAS takes any id on ``set_config_option`` and fails every later prompt
-        # on one the account is not served, so judge the pin against the
-        # ``model`` select here. ``auto`` is judged against the session's full
-        # select, else (a reopened chat, whose select names one model) the
-        # catalog recorded for this session's account; with neither known it is
-        # sent unjudged, as a concrete pin on a reopened chat is.
-        # shortcut: a select that lists only ``auto`` is not trusted as the
-        # account's list; judge it too once an auto-only account is captured.
-        served = self._kas_served_ids
+        # ``auto`` is judged against the session's full select, else (a reopened
+        # chat, whose select names one model) the catalog recorded for this
+        # session's account; with neither known it is sent unjudged. ``auto`` is
+        # pinned in every picker, so a select without it is an account not served
+        # it, and KAS fails every later prompt on such an ``auto``.
         if model_id == DEFAULT_MODEL and kas_select_refuses_auto(kas_auto_judged_ids(self)):
             logger.warning("KAS model select lists no auto; staying on the session's current model")
             self.model_pin_refused = model_id
             return
-        if model_id and model_id != DEFAULT_MODEL and any(m != DEFAULT_MODEL for m in served):
-            listed = resolve_pin_spelling(model_id, served)
-            if not listed:
-                logger.warning(
-                    "KAS model %s is not in this session's model select; "
-                    "staying on the session's current model",
-                    redact_log_via_context(str(model_id)),
-                )
-                self.model_pin_refused = model_id
-                return
-            model_id = listed
+        # A concrete pin is not judged: the select is the account's picker, not
+        # its entitlement. A model the user hid from the picker is left out of it
+        # and is still served, and KAS takes any id on ``set_config_option``. So
+        # the select only folds the pin's spelling to the listed one; a pin it
+        # does not list goes on the wire as spelled, and one the account is not
+        # served fails its turn with ``InvalidModelError``, as on a reopened chat.
+        if model_id and model_id != DEFAULT_MODEL:
+            model_id = resolve_pin_spelling(model_id, self._kas_served_ids) or model_id
     # Backend-aware: on a ``<model>[<effort>]`` pair-id harness the advertised
     # list is the picker's vocabulary while the ``model`` config option's is
     # the BARE id, so a bare pin misses the list yet is exactly what the wire

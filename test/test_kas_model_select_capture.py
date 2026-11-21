@@ -211,7 +211,7 @@ def test_kiro_does_not_adopt_the_raw_select_as_served() -> None:
     assert handle.served_model == ""
 
 
-# ── A pin the select does not list is withheld, not sent ──
+# ── The select folds a pin's spelling; it never withholds one ──
 
 
 def _with_select(values: list[str]) -> AcpSessionHandle:
@@ -220,12 +220,15 @@ def _with_select(values: list[str]) -> AcpSessionHandle:
     return handle
 
 
-def test_unlisted_pin_is_withheld_and_recorded() -> None:
+def test_a_pin_the_select_leaves_out_is_sent_as_spelled() -> None:
+    """The select is the account's picker: a model the user hid is left out of it
+    and still served, so the pin goes on the wire and the engine judges it."""
     handle = _with_select(["auto", "claude-haiku-4.5"])
-    asyncio.run(handle.set_model("claude-nonexistent-9"))
-    handle.set_config_option.assert_not_awaited()  # type: ignore[attr-defined]
-    assert handle.model_pin_refused == "claude-nonexistent-9"
-    assert handle.served_model == "auto"
+    asyncio.run(handle.set_model("claude-sonnet-4.5"))
+    handle.set_config_option.assert_awaited_once_with(  # type: ignore[attr-defined]
+        "model", "claude-sonnet-4.5"
+    )
+    assert (handle.model_pin_refused, handle.served_model) == ("", "claude-sonnet-4.5")
     # The select still is not the picker's list.
     assert handle._advertised_model_ids() == []
 
@@ -248,7 +251,7 @@ def test_namespace_qualified_pin_is_sent_in_the_listed_spelling() -> None:
     assert handle.served_model == "claude-haiku-4.5"
 
 
-def test_an_auto_only_select_does_not_withhold() -> None:
+def test_an_auto_only_select_sends_the_pin() -> None:
     handle = _with_select(["auto"])
     asyncio.run(handle.set_model("claude-haiku-4.5"))
     handle.set_config_option.assert_awaited_once_with(  # type: ignore[attr-defined]
@@ -260,10 +263,11 @@ def test_an_auto_only_select_does_not_withhold() -> None:
 def test_a_response_without_a_select_keeps_the_earlier_list() -> None:
     handle = _with_select(["auto", "claude-haiku-4.5"])
     handle.store_session_config({"sessionId": "sess-kas", "configOptions": []})
-    asyncio.run(handle.set_model("claude-nonexistent-9"))
-    handle.set_config_option.assert_not_awaited()  # type: ignore[attr-defined]
+    asyncio.run(handle.set_model("acp::Claude-Haiku-4.5"))
     assert handle._kas_served_ids == ["auto", "claude-haiku-4.5"]
-    assert handle.model_pin_refused == "claude-nonexistent-9"
+    handle.set_config_option.assert_awaited_once_with(  # type: ignore[attr-defined]
+        "model", "claude-haiku-4.5"
+    )
 
 
 def test_kiro_does_not_judge_pins_against_the_raw_select() -> None:

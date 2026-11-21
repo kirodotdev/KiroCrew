@@ -587,6 +587,38 @@ class TestTransientMarkerCoupling:
         ok = dict(error, data="ValidationException: Invalid model ID: glm-5")
         assert "does not have access" not in _format_acp_error(ok, served)
 
+    def test_kas_invalid_model_error_is_terminal_without_a_served_list(self):
+        """KAS answers a model the account is not served with the capacity
+        sentence plus ``data.errorType: "InvalidModelError"``. It advertises no
+        served list, so the token alone must make the verdict terminal and the
+        message name the model; otherwise the turn is retried as a throttle and
+        the rate-limit fallback moves it onto ``auto`` with a "throttled" notice.
+        """
+        from kiro_crew.acp.client import _format_acp_error, _is_transient_raw_error
+
+        error = {
+            "code": -32000,
+            "message": (
+                "The model 'claude-nonexistent-9' is not available. Please select a "
+                "different model and try again. (Request ID: 78d0559a)"
+            ),
+            "data": {
+                "errorType": "InvalidModelError",
+                "retryErrorType": "CLIENT_ERROR",
+                "requestId": "78d0559a",
+            },
+        }
+        assert _is_transient_raw_error(error, []) is False
+        assert _is_transient_raw_error(error, None) is False
+        formatted = _format_acp_error(error, [])
+        assert "'claude-nonexistent-9' is not available on your account" in formatted
+        assert "Retrying will not help" in formatted
+        assert "Available to you" not in formatted
+        # The same sentence without the token keeps the capacity-blip verdict.
+        blip = dict(error, data=error["message"])
+        assert _is_transient_raw_error(blip, []) is True
+        assert "unavailable on the backend right now" in _format_acp_error(blip, [])
+
     def test_capacity_blip_drops_the_auto_step_where_auto_is_not_served(self):
         """The two capacity-blip messages share the "(2) set agent.model to
         'auto'" remedy. On a partition whose served list lacks ``auto`` that

@@ -821,14 +821,19 @@ def _app_with(*providers: object) -> web.Application:
     return app
 
 
-class TestKasSelectJudgesASavedPin:
-    """KAS lists its models only in the select, so the select judges a saved pin."""
+class TestKasSelectDoesNotJudgeASavedPin:
+    """The KAS ``model`` select is the account's picker, not its entitled models.
+
+    A model the user hid from the picker is left out of the select and still
+    served, so with no ``models`` list on the KAS session a pin's entitlement is
+    unknown and the save is accepted; the engine judges the pin on its first turn.
+    """
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("method", ["post", "put"])
-    @pytest.mark.parametrize("model, status", [("claude-sonnet-4.5", 200), ("gpt-x", 400)])
-    async def test_the_kas_select_decides(
-        self, seeded_agent, kas_account, method: str, model: str, status: int
+    @pytest.mark.parametrize("model", ["claude-sonnet-4.5", "gpt-x"])
+    async def test_a_pin_outside_the_select_is_saved(
+        self, seeded_agent, kas_account, method: str, model: str
     ) -> None:
         from kiro_crew.config.loader import KiroCrewConfig
 
@@ -842,24 +847,9 @@ class TestKasSelectJudgesASavedPin:
                 "/api/agents" if method == "post" else f"/api/agents/{name}",
                 json=body,
             )
-            assert response.status == status, await response.text()
-            if status == 400:
-                payload = await response.json()
-                assert payload["code"] == "invalid_model"
-                assert "claude-sonnet-4.5" in payload["error"]
-
-        agents = KiroCrewConfig.load().agents
-        stored = agents[name].model if name in agents else None
-        assert (stored == model) is (status == 200)
-
-    @pytest.mark.asyncio
-    async def test_another_accounts_select_is_no_evidence(self, seeded_agent, kas_account) -> None:
-        """After a sign-in switch the retained select belongs to the old account."""
-        kas_account("acct-b")
-
-        async with TestClient(TestServer(_app_with(_kas_session()))) as client:
-            response = await client.put(f"/api/agents/{seeded_agent}", json={"model": "gpt-x"})
             assert response.status == 200, await response.text()
+
+        assert KiroCrewConfig.load().agents[name].model == model
 
     @pytest.mark.asyncio
     async def test_the_registered_acp_provider_wrapper_is_read_through(
@@ -874,18 +864,19 @@ class TestKasSelectJudgesASavedPin:
 
         async with TestClient(TestServer(_app_with(provider))) as client:
             response = await client.put(f"/api/agents/{seeded_agent}", json={"model": "gpt-x"})
-            assert response.status == 400, await response.text()
-            assert (await response.json())["code"] == "invalid_model"
+            assert response.status == 200, await response.text()
 
     @pytest.mark.asyncio
-    async def test_another_harness_session_reads_no_kas_select(
+    async def test_a_kas_session_advertising_a_models_list_still_judges(
         self, seeded_agent, kas_account
     ) -> None:
-        """Only a live KAS session lets the KAS select judge; kiro's empty list stays unknown."""
-        async with TestClient(TestServer(_app_with(_kas_session(ACP_BACKEND_KIRO)))) as client:
-            response = await client.put(f"/api/agents/{seeded_agent}", json={"model": "gpt-x"})
+        """A ``models`` list is the account's entitlement wherever a session carries one."""
+        provider = _catalog_provider(ACP_BACKEND_KAS, "claude-sonnet-4.5")
 
-        assert response.status == 200
+        async with TestClient(TestServer(_app_with(provider))) as client:
+            response = await client.put(f"/api/agents/{seeded_agent}", json={"model": "gpt-x"})
+            assert response.status == 400, await response.text()
+            assert (await response.json())["code"] == "invalid_model"
 
 
 class TestNoCatalogRefusesAPinKiroHasNoIdFor:
