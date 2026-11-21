@@ -282,6 +282,7 @@ class RunEventCoordinator(ManagerComponent):
     _should_use_session_sharing_impl = _run_start._should_use_session_sharing_impl
     _sharing_plan_impl = _run_start._sharing_plan_impl
     _aws_profile_split_possible = _run_start._aws_profile_split_possible
+    _aws_profile_rules_out_sharing = _run_start._aws_profile_rules_out_sharing
     _resolve_child_aws_profile = _run_start._resolve_child_aws_profile
     _ensure_dedicated_start_priced_impl = _run_start._ensure_dedicated_start_priced_impl
     _gate_exit_reset_impl = _run_start._gate_exit_reset_impl

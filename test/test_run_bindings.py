@@ -352,6 +352,11 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
         "(self, info: 'SubagentInfo') -> 'bool'",
         "run_start",
     ),
+    "_aws_profile_rules_out_sharing": (
+        "function",
+        "(self, info: 'SubagentInfo', child_aws_profile: 'ResolvedAwsProfile | None') -> 'bool'",
+        "run_start",
+    ),
     "_resolve_child_aws_profile": (
         "coroutine",
         "(self, info: 'SubagentInfo') -> 'ResolvedAwsProfile | None'",

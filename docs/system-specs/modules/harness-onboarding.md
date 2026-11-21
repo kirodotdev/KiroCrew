@@ -88,6 +88,7 @@ vocabulary.
 | Set | Grants |
 |---|---|
 | `ACP_BACKENDS_SESSION_SHARING` | One process may serve several sessions. Wrong membership hands a second session to a process that cannot hold it. |
+| `ACP_BACKENDS_MODEL_PER_SESSION` | The model request names the session it is for, so each session of one process can run its own model (`SessionCapabilities.takes_model_per_session`). A member's model-pinned sub-agent takes a session on its parent's process; a non-member's takes a process of its own. Wrong membership leaves a shared sub-agent on its parent's process without the model it was started on. |
 | `ACP_BACKENDS_SERIAL_SESSION_STARTS` | Diagnostic only: the harness starts sessions one at a time, so a slow start is attributed as "queued behind" an earlier one rather than as a stall. Membership is measured, and only kiro-cli is a member. It changes no scheduling. |
 | `ACP_BACKENDS_INDEPENDENT_SETUP` | First-run setup may finish without Kiro CLI: the setup picker offers "Use other coding agents", the dashboard bypass applies, and a durable marker records the choice. A new adapter opts in only after its install and its sandbox path are verified. KAS is excluded. |
 | `ACP_BACKENDS_STEER` | The `_session/steer` extension. A steer sent to a non-implementer answers `-32601`. Also the deny-notice gate (`supports_refusal_steer`). |
