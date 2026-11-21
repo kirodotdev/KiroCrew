@@ -907,15 +907,22 @@ class TestArgparse:
         assert args.hide_in_chat is False
         assert args.at is None and args.script == "" and args.shell_command == ""
 
+    def test_agent_parses_with_script_so_a_bot_can_be_named(self, monkeypatch):
+        # _cron_add, not argparse, decides: a Bot binds the job, a template is refused.
+        args = self._main_with(
+            ["n", "", "--every", "300", "--agent", "ops", "--script", "a.py:run"], monkeypatch
+        )
+        assert args is not None
+        assert (args.agent, args.script) == ("ops", "a.py:run")
+
     @pytest.mark.parametrize(
         "argv",
         [
             ["n", "m", "--every", "300", "--cron", "0 9 * * *"],
             ["n", "m", "--every", "300", "--at", "5pm"],
             ["n", "", "--every", "300", "--script", "a.py:run", "--command", "ls"],
-            ["n", "m", "--every", "300", "--agent", "ops", "--script", "a.py:run"],
         ],
-        ids=["every+cron", "every+at", "script+command", "agent+script"],
+        ids=["every+cron", "every+at", "script+command"],
     )
     def test_exclusive_groups_are_a_parse_error(self, argv, monkeypatch, capsys):
         with pytest.raises(SystemExit) as exc:

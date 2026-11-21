@@ -31,6 +31,8 @@ kirocrew cron add "weekday-9am" "check tickets" --cron "0 9 * * MON-FRI" --appro
 kirocrew cron add "reminder" "call the vet" --at "tomorrow 9am"          # one-shot, deletes itself after firing
 kirocrew cron add "version-check" "" --every 3600 \
   --script ~/.kiro/crew/crons/check.py:run --no-persistent-session --minimal-context   # zero-token script job
+kirocrew cron add "board" "" --every 1800 --script ~/.kiro/crew/crons/board.py:run \
+  --agent <bot-name> --no-persistent-session --minimal-context   # script job bound to a Bot
 kirocrew cron add "disk" "" --every 600 --command "df -h /" --timeout 30 --timeout-secs 60  # zero-token command job
 kirocrew cron add "digest" "summarize the news" --every 86400 --folder "Veille"  # filed in a Schedule-page folder
 kirocrew cron update <job-id> --name "new name" --message "new prompt" --approval-mode auto
@@ -43,7 +45,9 @@ kirocrew cron remove <id>
 
 `--folder` takes a Schedule-page folder name or id, as the `cron_add` and `cron_update` tools do. A missing name is created, then the job is filed in it; an unknown id and a name several folders share are refused. The folder is created through the running gateway (the dashboard owns the folder list), so with no gateway running only an existing folder can be named. `cron list` shows each job's folder, and its `--folder` filter only reads: it never creates one. A job whose run is still going shows `[running since HH:MM UTC]`, because its last run time and status are written only when the run ends. The `cron_list` tool's `json` output carries the same `folder` field (`{id, name}`, or `null` when ungrouped).
 
-A `--script` file must already live under `~/.kiro/crew/crons/`; the CLI registers it, it does not copy it. `--script`/`--command` and `--agent` are mutually exclusive, as are `--every`/`--cron`/`--at`. Every refusal prints on stderr and exits non-zero with nothing written (2 for a flag-combination error, 1 for a validation, security or store refusal), so an installer can register a job headlessly.
+With `--script`, `--agent` must name a Bot. The job is then bound to that Bot, as a `cron_add` call with `member_id` binds one, so each `ctx.crew_log_append()` record lands on the Bot's Dashboard page with no model turn. A template name is refused with `--script`, and `--agent` is refused with `--command`. `cron list` shows the binding as `bot: <id>`.
+
+A `--script` file must already live under `~/.kiro/crew/crons/`; the CLI registers it, it does not copy it. `--script` and `--command` are mutually exclusive, as are `--every`/`--cron`/`--at`; `--agent` goes with `--script` only as a Bot name (above). Every refusal prints on stderr and exits non-zero with nothing written (2 for a flag-combination error, 1 for a validation, security or store refusal), so an installer can register a job headlessly.
 
 `cron update` changes a job in place, so its id and run history stay. It takes `--model`, `--timezone`, `--[no-]persistent-session`, `--[no-]minimal-context`, `--[no-]hide-in-chat` and `--[no-]silent`, with the meanings they have on `cron add`; a flag left out leaves its setting alone. `--model ""` clears the model override and `--timezone ""` puts the job back on the configured timezone.
 
