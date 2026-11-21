@@ -14,6 +14,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.shared_crew.attribution import author_stamp
 from kiro_crew.shared_crew.contracts import (
     ACTOR_REQUEST_KEY,
     ActorContext,
@@ -92,7 +93,7 @@ async def test_a_teammates_first_message_queued_on_a_new_session_names_them(busy
             resp = await client.post("/api/chat", json={"slot": "new-chat", "message": "hi"})
             assert resp.status == 200 and (await resp.json()).get("queued") is True
     pop = await _drain(state, slot)
-    assert pop["meta"]["author"] == BOB.to_public_dict()
+    assert pop["meta"]["author"] == author_stamp(BOB)
     stored = [m for m in slot.messages if m.get("role") == "user"]
     assert stored[-1]["meta"]["author"]["id"] == BOB.id
 

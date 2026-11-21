@@ -19,7 +19,7 @@ from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.shared_crew import attribution as attr
 from kiro_crew.shared_crew import people
 from kiro_crew.shared_crew.contracts import SessionQuery
-from kiro_crew.shared_crew.owner import owner_principal, viewer_ids
+from kiro_crew.shared_crew.owner import owner_principal, writes_as_ids
 from kiro_crew.shared_crew.session_query import query_sessions
 
 pytestmark = pytest.mark.usefixtures("host_isolation")
@@ -118,7 +118,7 @@ def catalog(tmp_path, monkeypatch):
 def test_the_session_list_files_channel_sessions_under_unattributed(catalog):
     owner = owner_principal()
     mine = SessionQuery.from_query({"creator": "mine", "limit": "50"})
-    page = query_sessions(catalog, mine, owner, viewer_ids=viewer_ids(owner))
+    page = query_sessions(catalog, mine, owner, viewer_ids=writes_as_ids(owner))
     assert {i["key"] for i in page.items} == {"dashboard_old"}
     unattributed = SessionQuery.from_query({"creator": "unattributed", "limit": "50"})
     page = query_sessions(catalog, unattributed, owner)

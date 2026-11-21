@@ -344,6 +344,14 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             )
             return slot_not_found()
 
+        # Only the message's author may rewrite it for everyone in the session
+        # (``shared_crew.edit_rule``). After the app 404s, before any mutation.
+        from kiro_crew.shared_crew.edit_rule import refuse_unless_author
+
+        not_author = refuse_unless_author(request, msgs[index])
+        if not_author is not None:
+            return not_author
+
         # A hold a restart restored into this idle slot is owed to this turn, above
         # its user row. Flushed on the LIVE slot, not the scratch copy below: the
         # copy shares the hold and its note dicts, so a flush there would retire

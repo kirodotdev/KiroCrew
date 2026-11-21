@@ -14,6 +14,8 @@ import type { ChatMessage } from '../../../types'
 import { i18nT } from '../../../i18n/t'
 import { buildMessageToDisplayIdx, supersededSuccessorIdx } from '../groupDisplayItems'
 import { userResendText } from '../userMessageText'
+import { mayEdit } from '../../../api/editRule'
+import { useEditRuleViewer } from '../../../hooks/sharedCrew/useSharedCrew'
 
 /**
  * The row a jump to `messages[idx]` should land on. A superseded steer is not
@@ -100,6 +102,8 @@ export function useTranscriptPins({
   isWelcomeState, activeSlotRemoteBound, scrollerRef, search, navToDisplayIndex, pinnedJumpChrome, scrollToPinnedPrompt, markStep, markJump, splitFeatureEnabled, regenerating, setEditLast, editSeqRef,
   renderedDisplayItems, renderedTranscript, insertIntoComposer,
 }: TranscriptPinsOptions) {
+  // Who may edit which row, for the Cmd/Ctrl+Up target below.
+  const editViewer = useEditRuleViewer()
   // Search, pins, tool focus, and deep links navigate the rows the virtualizer
   // actually renders, including post-defer MCP App coalescing.
   const messageToDisplayIdx = useMemo(
@@ -204,13 +208,15 @@ export function useTranscriptPins({
       if (msgs[i].role !== 'user') continue
       // A steer taken back draws no bubble, so it has nothing to edit.
       if (msgs[i].meta?.steerState === 'retracted') continue
+      // Only the viewer's own rows are editable (`api/editRule`): the newest of those.
+      if (!mayEdit(editViewer, msgs[i].meta as Record<string, unknown> | undefined)) continue
       const di = messageToDisplayIdxRef.current.get(i)
       if (di === undefined) return
       navToDisplayIndex(di, { behavior: 'auto', align: 'center' })
       setEditLast({ seq: ++editSeqRef.current, ts: msgs[i].ts || '', index: i })
       return
     }
-  }, [activeSlot, slotRunning, regenerating, activeSlotRemoteBound, navToDisplayIndex, editSeqRef, messagesRef, setEditLast])
+  }, [activeSlot, slotRunning, regenerating, activeSlotRemoteBound, navToDisplayIndex, editSeqRef, messagesRef, setEditLast, editViewer])
   const handleJumpToPinnedMessage = useCallback((messageTs: string, mid: string | undefined, { origin, fill }: { origin: PendingJumpOrigin; fill?: boolean }) => {
     // A jump that lands at once replaces a pending one, so its fill cannot fire later.
     if (jumpToLoadedPinnedMessage(messageTs, mid, fill, origin === 'link')) { setPendingPinnedJump(null); return }

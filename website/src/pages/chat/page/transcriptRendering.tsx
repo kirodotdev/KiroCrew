@@ -46,6 +46,8 @@ import type { useActiveSlotState } from './activeSlotState'
 import type { RefusedPressAction } from './turnActions'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
 import { continuesAuthorRun } from '../../../api/sharedCrewUi'
+import { mayEdit } from '../../../api/editRule'
+import { useEditRuleViewer } from '../../../hooks/sharedCrew/useSharedCrew'
 import type { SteerRetractAction, SteerRetractRefusalNotice } from '../../../hooks/useSteerRetract'
 import { isToolCallRow } from '../../../lib/toolRowContract'
 
@@ -196,6 +198,8 @@ export function useTranscriptRendering({
   handleTogglePinForMessage, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
   editSkillAgent, editSkillProject,
 }: TranscriptRenderingOptions) {
+  // Only a row's author may edit it or rewind to it (`api/editRule`).
+  const editViewer = useEditRuleViewer()
   // Precomputed O(n) map from message index → visible (user/assistant) index,
   // used by the fork button. Avoids a per-row O(i) filter that would make the
   // renderer O(n²) overall.
@@ -401,7 +405,7 @@ export function useTranscriptRendering({
               timestamp={chatConfig.showTimestamps ? msgTime : undefined}
               timestampTitle={msgTimeFull}
               renderContent={renderUserContentCb}
-              canEdit={!slotRunning && !regenerating && !!activeSlot && !activeSlotRemoteBound}
+              canEdit={!slotRunning && !regenerating && !!activeSlot && !activeSlotRemoteBound && mayEdit(editViewer, m.meta as Record<string, unknown> | undefined)}
               slotRunning={slotRunning}
               showQueuedSend={queuedSendRow(ctx.messages) === i}
               continuesRun={continuesAuthorRun(ctx.messages, i)}
@@ -556,7 +560,7 @@ export function useTranscriptRendering({
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleForkWithModel, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, landedTs, jumpMid, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, kiroSignedIn, kasStatusError, kasStatusOutage, framed, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
+  }, [editViewer, slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleForkWithModel, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, landedTs, jumpMid, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, kiroSignedIn, kasStatusError, kasStatusOutage, framed, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role

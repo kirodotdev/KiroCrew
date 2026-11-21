@@ -71,7 +71,7 @@ describe('ChatPage – crew-bound offer gates', () => {
   })
 
   it('withholds the Edit affordance (canEdit) on a crew-bound slot', () => {
-    expect(chatPageSrc).toMatch(/canEdit=\{!slotRunning && !regenerating && !!activeSlot && !activeSlotRemoteBound\}/)
+    expect(chatPageSrc).toMatch(/canEdit=\{!slotRunning && !regenerating && !!activeSlot && !activeSlotRemoteBound && mayEdit\(editViewer, /)
   })
 
   it('withholds the Regenerate offer on a crew-bound slot', () => {
