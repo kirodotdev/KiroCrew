@@ -162,7 +162,7 @@ class TestTheBatchAnswersAtTheFirstRefusal:
         release_b = asyncio.Event()
         b_task: list[asyncio.Task] = []
 
-        async def _send(prompt, timeout=0):
+        async def _send(prompt, timeout=0, *, should_stop=None):
             if prompt == "a":
                 await b_started.wait()  # refuse only once b is in flight
                 raise KnowledgeKiroCliSignedOut()
