@@ -21,6 +21,7 @@ import re
 from typing import TYPE_CHECKING, NamedTuple
 
 from .call_views import once_per_call
+from .shell_heredoc_lines import READ_CHARS, HeredocReader
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -558,39 +559,47 @@ class _ShellChar(NamedTuple):
 
 
 def _iter_shell_chars(
-    text: str, state: int = 0, ansi: bool = False, start: int = 0
+    text: str,
+    state: int = 0,
+    ansi: bool = False,
+    start: int = 0,
+    *,
+    bodies: "list[tuple[int, int]] | None" = None,
 ) -> "Iterator[_ShellChar]":
-    """THE shell quote/escape state machine. Every push-path reading of shell
-    quoting walks through this one generator.
-
-    Four readings each keeping their own copy would not agree. A word splitter
-    with no ANSI-C awareness where the boundary walk has it reads the ESCAPED
-    quote in ``git push origin feature > >(echo $'a\\'b') main`` as a real
-    closer, reopens on the next quote, and fuses the trailing ``main`` into one
-    unterminated word -- the boundary walk then proves its parenthesis
-    correctly, but the protected refspec is already trapped inside the word it
-    was handed. That is the two-scanners defect this module is structurally
-    cured of: one machine, several consumers, no second opinion to drift from.
+    """THE shell quote/escape state machine. Every reading of shell quoting walks
+    through this one generator, so no two readings disagree on where a quote ends.
 
     Bash's rules, once: a backslash escapes the next character outside quotes,
     inside double quotes, and inside ``$'...'``, but is LITERAL inside a plain
-    single quote; an escaped quote is data and closes nothing. The ``$'``
-    lookback is within-text, which is correct because whitespace cannot sit
-    between the ``$`` and its quote, and it is EXACT: only a literal, unpaired
-    ``$`` (an odd run -- ``$$`` is the PID parameter, ``\\$`` is data) opens
-    ANSI-C. That exactness is load-bearing now that the segment split and the
-    program anchor read this state in the allow direction: a walk that ends
-    "still open" where bash closed hides a separator or a ``git`` word.
+    single quote; an escaped quote is data and closes nothing. Only a literal,
+    unpaired ``$`` (an odd run: ``$$`` is the PID parameter, ``\\$`` is data) opens
+    ANSI-C, and exactly: the segment split and the program anchor read this state in
+    the allow direction, so a walk that ends "still open" where bash closed hides a
+    separator or a ``git`` word.
 
-    *state* and *ansi* resume a walk, which is what lets a quoted word spanning
-    whitespace be read without desyncing; *start* resumes it at that offset of
-    *text* without copying the rest, and every offset stays one of *text*'s own.
+    A ``<<`` outside quotes, a comment and an arithmetic span opens a here-document
+    body on the next line, up to its closing line (:class:`HeredocReader`), as bash
+    reads it, inside a ``$(...)`` or a backtick too. The body's steps are yielded as
+    usual, so a shell fed the body is still read, and the walk starts unquoted where
+    the closing line ends: a quote in the body does not reach the text after it.
+
+    *state* and *ansi* resume a walk, so a quoted word spanning whitespace is read
+    without desyncing; *start* resumes it at that offset of *text* without copying
+    the rest. *bodies*, when given, receives ``(start, end)`` of each closed body.
     """
     i = start
     n = len(text)
     dollar_run = 0  # consecutive LITERAL ``$`` immediately before this char
+    docs = HeredocReader(text, bodies)
+    ends = docs.ends
     while i < n:
+        while ends and i >= ends[0]:
+            state, ansi, dollar_run = 0, False, 0
+            ends.pop(0)
         ch = text[i]
+        if state == 0 and not ends and ch in READ_CHARS:
+            docs.read(i, ch)
+            ends = docs.ends
         if ch == "\\" and (state != 1 or ansi):
             dollar_run = 0  # an escaped ``$`` is data and introduces nothing
             if i + 1 >= n:
@@ -603,15 +612,8 @@ def _iter_shell_chars(
         if state == 0:
             if ch == "'":
                 state = 1
-                # ``$'`` opens an ANSI-C string only when the ``$`` is itself
-                # literal and unpaired: an escaped ``\$`` is data, and in a run
-                # of dollars the shell pairs them off (``$$`` is the PID
-                # parameter), so only an ODD run leaves a ``$`` to introduce the
-                # quote. The plain ``text[i - 1] == "$"`` lookback read
-                # ``\$'foo\'`` as ANSI-C, kept the quote open across a ``;``, and
-                # hid the publish behind it -- with the segment split and the
-                # program anchor now reading this state, a false "still open" is
-                # an ALLOW-direction error, not a mere over-flag.
+                # ``$'`` opens an ANSI-C string only after an ODD run of literal
+                # ``$``: an escaped ``\$`` is data, and the shell pairs dollars off.
                 ansi = dollar_run % 2 == 1
             elif ch == '"':
                 state = 2
@@ -1049,13 +1051,7 @@ def _matching_close_backtick(text: str, start: int) -> "tuple[int, bool]":
     A backtick inside DOUBLE quotes really is a closer (``"`cmd`"`` runs ``cmd``),
     so only single-quoted and escaped ones are data. Read through the same
     ``in_single`` idiom the argv walk uses, rather than a second reading of the
-    state.
-
-    HARDENING, not a patched hole: no payload this module refuses was reachable
-    through the pairwise version -- the strings it mis-read are ones bash itself
-    rejects, because backticks do not nest unescaped. It is fixed so the two
-    closers cannot disagree, not because a bypass was measured.  Sibling
-    scanner: :func:`_backtick_closer` is the exact bash-faithful variant
+    state. Sibling scanner: :func:`_backtick_closer` is the exact bash-faithful variant
     (backslash-only, returns ``-1``) -- reach for it when the caller needs the
     closer bash itself would pick rather than a fail-closed span.
     """

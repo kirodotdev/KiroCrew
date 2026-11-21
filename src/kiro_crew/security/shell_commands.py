@@ -25,6 +25,7 @@ from . import shell_normalizer_walk as _walk
 # One gate call's payloads per frame text are kept in ``_CALL_VIEWS`` under the plain
 # text; ``shell_normalizer._shell_payload_walk`` keeps its frames there under tuple keys.
 from .call_views import _CALL_VIEWS, sharing_views  # noqa: F401  (also served to importers)
+from .shell_heredoc_lines import heredoc_closing_line, heredoc_tag
 
 #: The step standing for a substitution read on its own: it may expand to nothing.
 SUBST = "\1"
@@ -248,7 +249,7 @@ def read_commands(
                 if not heredocs:
                     stop = "<<"
                     break
-                pending.append([None, *_heredoc_tag(text, step.offset + 2)])
+                pending.append([None, *heredoc_tag(text, step.offset + 2)])
                 if arith and frames and frames[-1][0] == "((":
                     frames[-1][2].append(pending[-1])  # a shift if the span closes first
             if live_syntax and step.char == "#" and _shell._opens_comment(text, step.offset):
@@ -317,43 +318,17 @@ def read_commands(
     return out
 
 
-def _heredoc_tag(text: str, at: int) -> "tuple[str, bool, bool]":
-    """``(tag, strip tabs, quoted)`` of the heredoc whose ``<<`` ends at *at*."""
-    strip = text.startswith("-", at)
-    at += strip
-    while text[at : at + 1] in _BLANKS and at < len(text):
-        at += 1
-    end = at
-    for ch in _shell._iter_shell_chars(text[at:]):
-        if ch.active and (ch.char in _BLANKS or ch.char in _CUT_CHARS or ch.char in "<>"):
-            break
-        end = at + ch.offset + len(ch.text)
-    raw = text[at:end]
-    tokens = _shell._shell_tokens(raw)
-    return (tokens[0] if tokens else ""), strip, any(c in raw for c in "'\"\\")
-
-
 def _read_bodies(
     command: str, at: int, pending: "list[list]", out: "list[ShellCommand]", track: bool, base: int
 ) -> int:
     """Take each pending body from *at* up to its tag line, attach it to its command,
     read the substitutions of an unquoted one, and return the offset past the last tag line."""
     for owner, tag, strip, quoted in pending:
-        start = body_end = tail = at
-        while at < len(command):
-            newline = command.find("\n", at)
-            end = len(command) if newline < 0 else newline
-            line = command[at:end]
-            while not quoted and newline >= 0 and (len(line) - len(line.rstrip("\\"))) % 2:
-                newline = command.find("\n", end + 1)  # bash folds a backslash-newline first
-                joined = len(command) if newline < 0 else newline
-                line, end = line[:-1] + command[end + 1 : joined], joined
-            if (line.lstrip("\t") if strip else line) == tag:
-                body_end, tail, at = at, end, end + 1
-                break
-            at = end + 1
-        else:
-            body_end = tail = at = len(command)  # an unclosed body runs to the end, as in bash
+        start = at
+        line = heredoc_closing_line(command, at, tag, strip, quoted)
+        # an unclosed body runs to the end, as in bash
+        body_end, tail = line if line is not None else (len(command), len(command))
+        at = tail + 1
         body = command[start:body_end]
         doc = HereDoc(body, base + start, base + body_end, quoted, base + tail)
         out[owner] = out[owner]._replace(heredocs=out[owner].heredocs + (doc,))

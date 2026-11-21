@@ -1004,23 +1004,46 @@ def _self_tokens(text_lower: str, *, resolve: bool = True) -> "list[str]":
     would join the two, mangle the ``python`` token, and hide the mint from the
     argv check while bash still runs it. ``_fold_line_continuations`` folds only
     the lone case and leaves the escaped run intact, matching bash.
+
+    Text after a heredoc's closing line is read as bash reads it: unquoted, so a
+    quote character in the body does not carry over to the next command line
+    (:func:`_heredoc_line_pieces`).
     """
     try:
         # shlex treats bare newlines as whitespace, which joins separate
         # commands into one argv. Preserve those boundaries after folding
         # continuations; quoted newlines remain part of their operand.
         command = _fold_line_continuations(text_lower)
-        if "\n" in command:
-            command = "".join(
-                " ; " if step.active and step.char == "\n" else step.text
-                for step in _iter_shell_chars(command)
-            )
-        tokens = normalize_shell_command(command)
+        pieces = _heredoc_line_pieces(command) if "\n" in command else [command]
+        tokens = []
+        for piece in pieces:
+            tokens += normalize_shell_command(piece)
         if not resolve:
             return tokens
         return _resolve_function_aliases(_resolve_local_assignments(tokens))
     except Exception:
         return []
+
+
+def _heredoc_line_pieces(command: str) -> "list[str]":
+    """*command* cut before each heredoc body and where its closing line ends, with each
+    live newline read as `` ; ``, in one walk.
+
+    The quote walk starts unquoted after a body (:func:`_iter_shell_chars`), and shlex
+    reads each piece on its own, so a lone ``'`` or ``"`` in a body reaches neither
+    the line before it nor the lines after it. The body is still a piece: a shell fed
+    it is judged as before.
+    """
+    bodies: "list[tuple[int, int]]" = []
+    pieces: "list[str]" = []
+    out: "list[str]" = []
+    cut = 0  # the next cut is bodies[cut // 2][cut % 2]
+    for step in _iter_shell_chars(command, bodies=bodies):
+        while cut < 2 * len(bodies) and step.offset >= bodies[cut // 2][cut % 2]:
+            pieces.append("".join(out))
+            out, cut = [], cut + 1
+        out.append(" ; " if step.active and step.char == "\n" else step.text)
+    return [*pieces, "".join(out)]
 
 
 def _protected_name_in_substitution(tokens: "list[str]", start: int) -> str:

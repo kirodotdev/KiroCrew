@@ -1849,7 +1849,6 @@ class TestSandboxEscapeSshSelf:
             'echo "$(echo "it\'s")" # bash -c \'x=ssh; $x %s id\'',
             # Heredoc text keeps its old reading, a quote in a spliced output included.
             "cat > f.sh <<'EOF'\necho \"$(echo 'a\"b')\" # c\nDon't ssh %s\nEOF\necho 'ssh %s id'",
-            "cat > f.sh <<'EOF'\necho \"$(echo 'a\"b')\" # c\nEOF\n# ssh %s id",
             "# don't run this\ncat <<'EOF' > notes.txt\nIt's fine\nEOF\necho 'then ssh %s'",
         ],
     )

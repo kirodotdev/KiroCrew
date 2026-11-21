@@ -1,0 +1,16 @@
++250
+The shared shell quote walk (_iter_shell_chars) reads here-documents as bash
+does: a << outside quotes opens a body on the next line, and the walk starts
+unquoted where the body's closing line ends, so every reader built on the walk
+(the $(...) and backtick close-finders among them) inherits it. A new module,
+shell_heredoc_lines, reads the tag and each closing line from raw lines, with no
+call to the substitution close-finder; shell_commands.read_commands reads its
+tags and closing lines from it too, which removes its own copies. It decodes a
+$'...' tag with the shared ANSI-C decoder, as bash does before it compares lines.
+shell_normalizer._self_tokens tokenizes in pieces cut around each body, in the
+same walk (_heredoc_line_pieces), and the ssh floor's separator mask starts
+fresh after a body's closing line (heredoc_body_spans). The argv_floor mirror
+facade's TYPE_CHECKING manifest lists heredoc_body_spans. Its HeredocReader opens
+no body for a << in a # comment or inside an arithmetic span that runs over
+several lines, and reads the tag and closing lines in the case the command was
+submitted in (is_denied keeps it in the call memo), as bash compares them.

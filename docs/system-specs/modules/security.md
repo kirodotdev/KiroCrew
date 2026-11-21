@@ -1117,6 +1117,25 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   calls, judgements or sessions. `test_deny_gate_call_sharing.py` judges a corpus with the
   memo and without and requires one verdict. A leaf: it imports nothing from the package,
   so `shell_normalizer_walk.py` and every reader above it can import it.
+- `shell_heredoc_lines.py` — heredoc lines as bash reads them: the tag after a `<<`
+  outside quotes (`heredoc_opener`, `heredoc_tag`), and each body's closing line
+  (`heredoc_closing_line`, `heredoc_bodies`). `HeredocReader` decides which `<<` the
+  walk opens a body for: not a `<<<` here-string, not one in a `#` comment, and not a
+  shift inside `$((…))` or `((…))`, whose nesting it carries across lines. bash
+  compares a body's lines with its tag case-sensitively, and the floors read a
+  lower-cased copy, so `is_denied` keeps the command as submitted for its call
+  (`keep_submitted_case`, in the call memo) and the reader reads the tag and the
+  closing lines on that text at the same offsets (`cased_view`). For a text whose
+  submitted case it cannot find, such as a payload with its escapes removed, a `<<`
+  whose tag the command spells in two cases opens no body (`case_varies`). It reads
+  raw lines only and never looks for the close of a `$(…)` or a backtick, so the quote walk
+  (`shell_normalizer_walk._iter_shell_chars`) calls it and `shell_commands.read_commands`
+  reads its tags and closing lines from it. A `$'…'` tag is decoded with
+  `shell_normalizer_escapes._decode_ansi_c_body` before lines are compared with it, as
+  bash decodes it (`$'e\x6ff'` closes on `eof`). `heredoc_body_spans(text)` lists the
+  bodies a walk of the text meets. At import time it reads only
+  `shell_normalizer_escapes.py` and `call_views.py`, both leaves; the functions that
+  need the walk's helpers import them when they run.
 - `shell_commands.py` — the shared quote-aware command reader. `read_commands(text, track)`
   walks the text once with `shell_normalizer._iter_shell_chars` and returns one `ShellCommand`
   per command: its steps (raw text, raw offsets, quote state), its words (split at live
@@ -2780,6 +2799,22 @@ formatting expression containing `$1` can then be misclassified as a dynamic
 kill program targeting a later command's `$KIROCREW_SCRATCH` path. Quoted
 newlines remain inside their operand, and escaped continuations still join the
 command. Local assignments remain available across the preserved separators.
+Text after a heredoc's closing line is read as bash reads it: unquoted, whatever
+quote characters the body held. The quote walk itself does this
+(`_iter_shell_chars`): a `<<` it meets outside quotes opens a body on the next
+line, found line by line up to its closing line (`shell_heredoc_lines`), and the
+walk starts unquoted where that line ends. The body's steps are still yielded, so a
+shell fed the body is judged as before. Every reader built on the walk inherits
+this, the `$(…)` close (`_matching_close_paren`) and backtick close
+(`_matching_close_backtick`) included: a walk that starts inside a substitution
+reads a heredoc there the same way, so a quote in its body does not hide the `)`
+that closes the substitution. The body search reads raw lines and never the
+substitution close, and each walk reads each body once, so the cost stays linear in
+the text. `_self_tokens` tokenizes the text in pieces cut before each body and
+where its closing line ends (`shell_normalizer._heredoc_line_pieces`, in the same
+walk), so `shlex` does not pair a quote in a body with one outside it. The ssh
+floor's separator mask reads the same bodies (`heredoc_body_spans`): it keeps a
+body's line breaks and starts fresh after its closing line.
 The existing deny catalog, nested-payload checks and real self-kill checks
 continue to apply.
 
