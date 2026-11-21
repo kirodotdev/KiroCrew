@@ -514,13 +514,13 @@ async def test_apps_a_release_installed_authenticate_on_the_first_start(
 ):
     async with _release_home(gateway_boot, integration_home, tmp_path) as (gw, server):
         await _check_gateway_managed_apps(gw)
-        # The owner turns the self-managed app off and on once, as the refusal's
-        # hint asks; the next test covers its launch without that step.
+        # The owner turns the self-managed app off and on once, the step a record
+        # that v0.13.0 registered again needs. The next test covers its launch
+        # without that step.
         await _toggle(gw, SELF_MANAGED)
         await _check_self_managed_app(gw, server, version="1.0.0")
 
 
-@pytest.mark.xfail(strict=True, reason="GH #39593")
 @pytest.mark.asyncio
 async def test_a_self_managed_app_the_release_registered_authenticates_on_its_next_launch(
     gateway_boot, integration_home, tmp_path

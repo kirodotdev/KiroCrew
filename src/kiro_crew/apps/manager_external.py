@@ -510,15 +510,23 @@ def register_external_app(
     if is_new_secret:
         secret = generate_app_secret()
         write_app_secret(name, secret)
-        if not existing and meta.enabled:
-            # A first registration is an owner-authenticated install+enable (the
-            # route requires an owner dashboard request), so it records the owner-
-            # enable marker the token exchange reads (``validate_app_secret``). A
-            # re-registration never does: it would read ``enabled`` back from the
-            # agent-writable installed.json.
+        # A first registration is an owner-authenticated install+enable (the route
+        # requires an owner dashboard request), so it records the owner-enable marker
+        # the token exchange reads (``validate_app_secret``). A re-registration records
+        # it only for a record carried over from a release that kept the secret in the
+        # app's folder and wrote no marker at registration: one with no stored secret
+        # whose sealed grant set the upgrade's one-time import wrote
+        # (``_import_app_tree_grants``). A record an agent planted after the upgrade
+        # has no sealed grant set, and one this version registered has a stored
+        # secret, so neither gets a marker here. ``enabled`` is already off while an
+        # owner disable stands (``_read_installed``), and the import carried every
+        # disable the release recorded into that store, so a record rewritten to read
+        # enabled does not turn an app the owner turned off back on.
+        carried_over = existing is not None and prior_grants_text is not None
+        if meta.enabled and (not existing or carried_over):
             if not grant_host_exec(name):
                 # The record is written; enabling it (the "already enabled" path)
-                # retries the marker, which a re-registration would not.
+                # retries the marker.
                 return AppResult(
                     ok=False,
                     name=name,
