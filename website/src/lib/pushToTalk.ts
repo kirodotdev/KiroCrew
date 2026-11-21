@@ -57,6 +57,20 @@ export interface PttConfig {
   binding: PttBinding
   /** Hold duration that separates a tap from a hold, in ms. Hybrid mode only. */
   holdMs: number
+  /**
+   * Whether pressing and holding a mouse or trackpad button on the message box
+   * starts dictation (`usePointerHoldToTalk`). Off by default: a press on a text
+   * box places the caret, and a stored config that predates this field must keep
+   * doing only that. Independent of `enabled`, which governs the KEY alone.
+   */
+  pointerHold: boolean
+  /**
+   * How long the button stays down before that press becomes a hold, in ms.
+   * Its own value rather than `holdMs`: a trackpad press and a key press are
+   * different gestures, and the one cutoff a user tunes for a bare modifier key
+   * need not suit a click that also has to place the caret. Same bounds.
+   */
+  pointerHoldMs: number
 }
 
 export const PTT_STORAGE_KEY = 'mc-ptt-config'
@@ -108,7 +122,7 @@ export function defaultBinding(mac: boolean = IS_MAC): PttBinding {
 }
 
 export function defaultConfig(mac: boolean = IS_MAC): PttConfig {
-  return { enabled: true, mode: 'hybrid', binding: defaultBinding(mac), holdMs: HOLD_MS_DEFAULT }
+  return { enabled: true, mode: 'hybrid', binding: defaultBinding(mac), holdMs: HOLD_MS_DEFAULT, pointerHold: false, pointerHoldMs: HOLD_MS_DEFAULT }
 }
 
 /**
@@ -399,7 +413,13 @@ export function normalizeConfig(raw: unknown, mac: boolean = IS_MAC): PttConfig 
   // written before this one existed) or any non-boolean reads as ENABLED, so the
   // historical default — the key has always been on — survives the upgrade.
   const enabled = o.enabled !== false
-  return { enabled, mode, binding: normalizeBinding(o.binding, mac), holdMs: clampHoldMs(o.holdMs) }
+  // Only an explicit `true` turns the pointer hold on: it is opt-in, so a
+  // missing field or any non-boolean reads as OFF.
+  const pointerHold = o.pointerHold === true
+  return {
+    enabled, mode, binding: normalizeBinding(o.binding, mac), holdMs: clampHoldMs(o.holdMs),
+    pointerHold, pointerHoldMs: clampHoldMs(o.pointerHoldMs),
+  }
 }
 
 /**
