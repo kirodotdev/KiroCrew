@@ -305,9 +305,9 @@ describe('ChatInput approval Trust menu and receipts', () => {
   // main sends at 06345d8ebb, option by option. The site row is the command
   // tier for the host, with no lifetime: no Duration choice, no ttl_seconds.
   it.each([
-    ['read', 'Trust reading pages on www.example.com for this session'],
-    ['act', 'Trust reading, clicking and typing on www.example.com for this session'],
-  ] as const)('a %s site grant is the command tier for the host, for the session only, as on main', async (cls, label) => {
+    ['read', 'Trust reading pages on www.example.com for this session', 'ApprovedTrusted reading pages on www.example.com for the rest of this session'],
+    ['act', 'Trust reading, clicking and typing on www.example.com for this session', 'ApprovedTrusted reading, clicking and typing on www.example.com for the rest of this session'],
+  ] as const)('a %s site grant is the command tier for the host, for the session only, as on main', async (cls, label, receipt) => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(siteCard(cls)) })
     openTrust()
     expect(screen.queryAllByRole('menuitemradio')).toHaveLength(0)
@@ -320,17 +320,95 @@ describe('ChatInput approval Trust menu and receipts', () => {
       )
     })
     expect(api.approveChatSlot).toHaveBeenCalledTimes(1)
+    // A read grant covers reading the host's pages only, so its receipt says
+    // what the row said, not that the whole host is trusted.
+    expect(await screen.findByTestId('approval-receipt')).toHaveTextContent(new RegExp(`^${receipt}$`))
   })
 
-  it('on a site grant card, Trust all tools sends the session grant, as on main', async () => {
+  it('a site grant card shows the call it runs, not the host as if it were the call', () => {
+    // `full_command` is the grant's scope (the host); Allow once runs the click.
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(siteCard('act')) })
+    expect(screen.queryByTestId('approval-command')).not.toBeInTheDocument()
+    expect(screen.getByTestId('approval-input')).toHaveTextContent('click')
+  })
+
+  it('on a site grant card, Trust all tools takes a second click, then sends the session grant as on main', async () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(siteCard('act')) })
     openTrust()
+    // The first click only arms the row, as on every other card: nothing is sent.
     clickTrustRow('Trust all tools for this session')
+    expect(api.approveChatSlot).not.toHaveBeenCalled()
+    expect(screen.getAllByRole('menuitem').map(b => b.textContent)).not.toContain('Trust all tools for this session')
+    clickTrustRow('Click again to confirm — every tool runs without asking')
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
         'slot-1', 'trust', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123' }
       )
     })
+  })
+
+  it('a heading cut at two lines can be opened whole from the keyboard, and closed again', () => {
+    // jsdom lays nothing out: the title reports more text than its box shows.
+    const sh = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
+    const ch = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
+    const title = (el: Element) => (el as HTMLElement).dataset?.testid === 'approval-title'
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get() { return title(this) ? 60 : 0 } })
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get() { return title(this) ? 40 : 0 } })
+    onTestFinished(() => {
+      if (sh) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', sh)
+      else delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight
+      if (ch) Object.defineProperty(HTMLElement.prototype, 'clientHeight', ch)
+      else delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight
+    })
+    reduceMotion()
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(mcpStateWithPurpose()) })
+    const toggle = screen.getByRole('button', { name: 'Show more' })
+    expect(toggle.tagName).toBe('BUTTON')
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByTestId('approval-title').className).toContain('line-clamp-2')
+    act(() => { toggle.focus() })
+    expect(document.activeElement).toBe(toggle)
+    // A native button: Enter and Space click it.
+    fireEvent.click(toggle)
+    expect(screen.getByTestId('approval-title').className).not.toContain('line-clamp-2')
+    expect(screen.getByRole('button', { name: 'Show less' })).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Show less' }))
+    expect(screen.getByTestId('approval-title').className).toContain('line-clamp-2')
+  })
+
+  it('offers no Show more when the heading fits', () => {
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(mcpStateWithPurpose()) })
+    expect(screen.queryByTestId('approval-title-toggle')).not.toBeInTheDocument()
+  })
+
+  it('the card\'s input box is a named region keyboard users can focus and scroll', () => {
+    reduceMotion()
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(mcpStateWithPurpose()) })
+    const box = screen.getByRole('region', { name: 'Input' })
+    expect(box).toBe(screen.getByTestId('approval-input'))
+    expect(box).toHaveAttribute('tabindex', '0')
+    act(() => { box.focus() })
+    expect(document.activeElement).toBe(box)
+  })
+
+  it('draws Show in chat as a live control, not in the muted look of a disabled one', async () => {
+    // Its transcript row is out of view (no pill registered), so the chip shows.
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
+    const chip = await screen.findByRole('button', { name: 'Show pending tool call in chat' })
+    expect(chip.className.split(/\s+/)).toContain('text-text')
+    expect(chip.className.split(/\s+/)).not.toContain('text-muted')
+    expect(chip.className.split(/\s+/)).toContain('font-medium')
+  })
+
+  it('wraps a grant receipt that names a long family or command', async () => {
+    const shell = stateWithApproval()
+    Object.assign(shell.chat!.messages[1].meta!, { full_command: '/work/bin/repository_automation_and_release_management --help', base_command: '/work/bin/repository_automation_and_release_management' })
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(shell) })
+    openTrust()
+    fireEvent.click(screen.getByTestId('trust-base-scope').closest('[role="menuitem"]')!)
+    const receipt = await screen.findByTestId('approval-receipt')
+    expect(receipt.querySelector(':scope > span:last-child')!.className).toContain(COMMAND_WRAP)
+    expect(receipt.querySelector('.font-mono')!.className).toContain(COMMAND_WRAP)
   })
 
   it('wraps the card\'s command and tool name at spaces, never mid-word', () => {
@@ -497,6 +575,39 @@ describe('ChatInput approval Trust menu and receipts', () => {
     renderWithProviders(<>{result.current.approvalNotice}</>)
     expect(document.body.textContent).toContain('Allowed once')
     expect(document.body.textContent).not.toContain('Trusted')
+  })
+
+  it('Reject all on a coordinator request sends reject, and its receipt says only that call was refused', async () => {
+    // The coordinator refuses the one request it was asked about: there is no
+    // batch behind it to cascade to, so its later calls still ask.
+    const state = stateWithApproval()
+    const row = (state.chat!.messages as unknown as { meta: Record<string, unknown> }[])[1]
+    row.meta = { ...row.meta, mid: undefined, registry: 'coordinator', approval_target: { origin: 'coordinator', id: 'ap-123', slot: 'slot-1', instance: 'inst-123' } }
+    const store = createTestStore(state)
+    const { result } = renderHookWithProviders(() => useToolApproval({ slotId: 'slot-1', slotApprovalChrome: true, approvalMode: 'normal', dispatch: store.dispatch }), { store })
+    await act(async () => { result.current.handleApprovalAction('rejected') })
+    expect(api.decideApproval).toHaveBeenCalledWith(expect.objectContaining({ origin: 'coordinator', id: 'ap-123' }), 'reject', expect.stringMatching(/^r_/))
+    await waitFor(() => expect(result.current.approvalNoticeKind).toBe('rejected'))
+    renderWithProviders(<>{result.current.approvalNotice}</>)
+    expect(document.body.textContent).toBe('Rejected once — Kiro Crew keeps asking about the rest')
+  })
+
+  it('a trust verb for a coordinator request with no pane slot is sent as a reject, and its receipt says so', async () => {
+    // Defence in depth, as above. With no slot there is no grant route and no
+    // downgrade, so `toApiDecision` fails closed to a reject: the receipt names
+    // that refusal, of this one request, not the grant that was clicked.
+    const state = stateWithApproval()
+    const row = (state.chat!.messages as unknown as { meta: Record<string, unknown> }[])[1]
+    row.meta = { ...row.meta, mid: undefined, registry: 'coordinator', approval_target: { origin: 'coordinator', id: 'ap-123', slot: '', instance: 'inst-123' } }
+    const store = createTestStore(state)
+    const { result } = renderHookWithProviders(() => useToolApproval({ slotId: null, slotApprovalChrome: true, approvalMode: 'normal', dispatch: store.dispatch }), { store })
+    expect(result.current.approvalId).toBe('ap-123')
+    await act(async () => { result.current.handleApprovalAction('trust_command', 'ls /tmp') })
+    expect(api.approveChatSlot).not.toHaveBeenCalled()
+    expect(api.decideApproval).toHaveBeenCalledWith(expect.objectContaining({ origin: 'coordinator', id: 'ap-123' }), 'reject', expect.stringMatching(/^r_/))
+    await waitFor(() => expect(result.current.approvalNoticeKind).toBe('rejected'))
+    renderWithProviders(<>{result.current.approvalNotice}</>)
+    expect(document.body.textContent).toBe('Rejected once — Kiro Crew keeps asking about the rest')
   })
 
   it('a one-shot receipt does not show under the next request when the resolve frame lands first', async () => {
@@ -826,6 +937,26 @@ describe('ChatInput approval Trust menu and receipts', () => {
     expect(back.inert).toBe(true)
     await waitFor(() => expect(back).not.toHaveAttribute('data-settling'), CARD_FADE_SETTLED)
     expect(back.inert).toBe(false)
+  })
+
+  it('a queued request that takes the card in place waits for its own fade-in, so a double click cannot approve it', async () => {
+    // Two requests queued: answering the first puts the second on the same
+    // mounted card in the same render. The second click of a double click on
+    // Allow once lands there, and must find nothing to press.
+    const state = stateWithApproval()
+    state.chat!.messages.push({ role: 'permission', content: 'Running: ls /var', meta: { approval_id: 'ap-456', request_id: 'req-456', mid: 'mid-456', tool_input: '{"command":"ls /var"}', is_shell: '1', full_command: 'ls /var', base_command: 'ls', trust_command_grantable: '1', trust_base_grantable: '1', trust_grantable: '1', tool_call_id: 'tc-2' } })
+    const store = createTestStore(state)
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    await waitFor(() => expect(screen.getByTestId('approval-card-motion')).not.toHaveAttribute('data-settling'), CARD_FADE_SETTLED)
+    // The newest request holds the card; the older one waits behind it.
+    expect(screen.getByTestId('approval-command')).toHaveTextContent('ls /var')
+    act(() => { store.dispatch(resolveApprovalRow({ target: { origin: 'native', id: 'ap-456', slot: 'slot-1', mid: 'mid-456' }, decision: 'approved' })) })
+    expect(screen.getByTestId('approval-command')).toHaveTextContent('ls /tmp')
+    const next = screen.getByTestId('approval-card-motion')
+    expect(next).toHaveAttribute('data-settling')
+    expect(next.inert).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('approval-card-motion')).not.toHaveAttribute('data-settling'), CARD_FADE_SETTLED)
+    expect(screen.getByTestId('approval-card-motion').inert).toBe(false)
   })
 
   it('the Trust menu re-cues its edge when a row grows at the menu\'s cap', () => {

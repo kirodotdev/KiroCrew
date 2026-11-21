@@ -357,8 +357,10 @@ function DropdownMenuRadioSegments({ className, ...props }: React.ComponentProps
     <DropdownMenuPrimitive.RadioGroup
       // One line: a segment that drops to a second row reads as a second
       // setting. Labels are short, and a caller puts anything longer (an end
-      // time) in a caption beside the track.
-      className={cn('inline-flex flex-nowrap gap-0.5 rounded-lg border border-border bg-bg p-0.5', className)}
+      // time) in a caption beside the track. Where one line does not fit (a
+      // narrow screen, a long language), the caller sets `data-stacked` and the
+      // choices become full-width rows, all of them, never a ragged wrap.
+      className={cn('inline-flex flex-nowrap gap-0.5 rounded-lg border border-border bg-bg p-0.5 data-[stacked]:flex-col data-[stacked]:w-full data-[stacked]:[&>*]:w-full data-[stacked]:[&>*]:whitespace-normal', className)}
       {...props}
     />
   )

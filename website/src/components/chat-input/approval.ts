@@ -29,6 +29,7 @@ import { useRaisedBy } from '../../pages/chat/shared-crew/useRaisedBy'
 import { REJECT_APPROVAL_EVENT } from '../../pages/chat/composerFocus'
 import { refusalText } from '../../utils/toolGrantRefusal'
 import { stripToolCallLead } from '../../lib/toolRowContract'
+import { COMMAND_WRAP } from './commandWrap'
 
 /* The slot's approval chrome as state: the pending tool approval (its
    decision submit, the approval-mode discovery hint and nudge, the ghost
@@ -67,29 +68,38 @@ const EMPTY_SPAWN_APPROVALS: ReturnType<typeof selectSlotPendingSpawnApprovals> 
 export const approvalBtnClass = 'inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border border-border text-text text-[12px] cursor-pointer font-body hover:bg-[color-mix(in_srgb,var(--warn)_25%,transparent)] hover:text-text hover:border-border-strong transition-colors disabled:opacity-50'
 
 /** The one line shown once a decision made in this tab lands, or null for a
- *  decision that has its own surface (a security-rule override).
+ *  decision with no line here: a security-rule override (it has its own
+ *  surface) and Always allow this tool.
  *
- *  `kind` picks the strip (`granted` wears the Approved pill, `rejected` the
- *  Rejected one). `standing` is true for a grant that outlives the call. The
- *  timed lines are the two the bar already had; the command is always the
- *  `<mono/>` chip's child, never a `values` entry, since `<Trans>` parses its
- *  values as markup. */
-function decisionReceipt(decision: string, ttlSeconds: number | undefined, fullCommand: string, baseCommand: string): { kind: 'granted' | 'rejected'; standing: boolean; line: ReactNode } | null {
+ *  `decision` is what the server was asked for, not what was clicked. `kind`
+ *  picks the strip (`granted` wears the Approved pill, `rejected` the Rejected
+ *  one). `standing` is true for a grant that outlives the call. The timed lines
+ *  are the two the bar already had; the command is always the `<mono/>` chip's
+ *  child, never a `values` entry, since `<Trans>` parses its values as markup.
+ *  Only a native request's Reject all refuses the rest of its batch: the
+ *  coordinator refuses the one request it was asked about. A site grant
+ *  (`siteClass`) names the host and what it covers there, since a read grant
+ *  does not cover acting on the host. */
+function decisionReceipt(decision: string, origin: string | undefined, ttlSeconds: number | undefined, fullCommand: string, baseCommand: string, siteClass: '' | 'read' | 'act'): { kind: 'granted' | 'rejected'; standing: boolean; line: ReactNode } | null {
   const commandLine = (i18nKey: string, values?: Record<string, string>) => createElement(Trans, {
     i18nKey, values,
-    components: { mono: createElement('span', { className: 'bg-bg-elevated px-1.5 py-0.5 rounded font-mono break-all border border-border' }, truncateCommandLabel(fullCommand, 80)) },
+    components: { mono: createElement('span', { className: `bg-bg-elevated px-1.5 py-0.5 rounded font-mono ${COMMAND_WRAP} border border-border` }, truncateCommandLabel(fullCommand, 80)) },
   })
   const time = ttlSeconds !== undefined ? fmtTime(Date.now() + ttlSeconds * 1000) : ''
   // The family as the Trust menu's family row prints it (a mono span, no
   // quotes), so the receipt names it the same way the row did.
   const baseLine = (i18nKey: string, values?: Record<string, string>) => createElement(Trans, {
     i18nKey, values,
-    components: { mono: createElement('span', { className: 'font-mono' }, baseCommandLabel(baseCommand)) },
+    components: { mono: createElement('span', { className: `font-mono ${COMMAND_WRAP}` }, baseCommandLabel(baseCommand)) },
   })
   switch (decision) {
     case 'approved':
       return { kind: 'granted', standing: false, line: i18nT('components.chatInput.receipt_allowed_once') }
     case 'trust_command':
+      // A site grant has no lifetime: the server refuses one with a ttl.
+      if (siteClass) return { kind: 'granted', standing: true, line: commandLine(siteClass === 'read'
+        ? 'components.chatInput.receipt_trusted_site_read_session'
+        : 'components.chatInput.receipt_trusted_site_act_session') }
       return { kind: 'granted', standing: true, line: time
         ? commandLine('components.chatInput.trusted_command_until', { time })
         : commandLine('components.chatInput.receipt_trusted_command_session') }
@@ -104,7 +114,9 @@ function decisionReceipt(decision: string, ttlSeconds: number | undefined, fullC
     case 'rejected_once':
       return { kind: 'rejected', standing: false, line: i18nT('components.chatInput.receipt_rejected_once') }
     case 'rejected':
-      return { kind: 'rejected', standing: false, line: i18nT('components.chatInput.receipt_rejected_all') }
+      return { kind: 'rejected', standing: false, line: i18nT(origin === 'native'
+        ? 'components.chatInput.receipt_rejected_all'
+        : 'components.chatInput.receipt_rejected_once') }
     default:
       return null
   }
@@ -436,7 +448,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
       // standing was recorded. A timed grant's time is the client's estimate
       // from the click: the server's deadline starts on receipt, so the grant
       // never ends before the time shown here.
-      const receipt = decisionReceipt(effective, effective === decision ? ttlSeconds : undefined, approvalFullCommand, approvalBaseCommand)
+      const receipt = decisionReceipt(effective, approvalTarget?.origin, effective === decision ? ttlSeconds : undefined, approvalFullCommand, approvalBaseCommand, approvalBrowserTrustClass)
       // Not shown when the composer has moved to another session since the
       // click: the line would sit over a session it says nothing about.
       const answered = approvalKey
@@ -548,9 +560,13 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
       }
       api.approveChatSlot(activeSlot, decision, extra).then(finish).catch(fail)
     } else {
+      // `toApiDecision` fails closed: anything but an allow or a reject-once
+      // (a trust verb with no slot to hold it) goes out as a reject, so the
+      // receipt names a reject.
+      if (decision !== 'approved' && decision !== 'rejected_once') effective = 'rejected'
       api.decideApproval(approvalTarget, toApiDecision(decision), responseId).then(finish).catch(fail)
     }
-  }, [approvalId, approvalKey, approvalTarget, approvalMeta, pendingApproval, pendingApprovalIndex, activeSlot, approvalIsUnattended, approvalSource, approvalMode, approvalFullCommand, approvalBaseCommand, dispatch, teamAttribution, viewerId, markSettled, qc])
+  }, [approvalId, approvalKey, approvalTarget, approvalMeta, pendingApproval, pendingApprovalIndex, activeSlot, approvalIsUnattended, approvalSource, approvalMode, approvalFullCommand, approvalBaseCommand, approvalBrowserTrustClass, dispatch, teamAttribution, viewerId, markSettled, qc])
 
   // The reject-approval chord reaches this pane's bar as an event on its action
   // row (`rejectPendingApproval`). State, not a ref: the row mounts with the
