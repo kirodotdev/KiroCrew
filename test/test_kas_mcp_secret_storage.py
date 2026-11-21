@@ -3,7 +3,8 @@
 With the key on, the KAS handshake declares ``_meta.kiro.secretStorage`` and the
 engine stores each MCP server's OAuth state through ``_kiro/secret/*`` requests.
 These tests pin that the key is off by default and then declares nothing, that
-``client``, ``kiro-path-client`` and ``tokens`` persist in a dedicated vault that
+``client``, ``kiro-path-client``, ``tokens`` and the organization sign-in
+``session`` persist in a dedicated vault that
 is neither the user Secrets vault nor agent-readable, that ``verifier`` and ``discovery`` stay in
 memory, that only the engine's MCP key namespace is served, and that no stored
 value reaches a log or the raw-frame recorder.
@@ -32,6 +33,7 @@ _PATH_CLIENT_KEY = f"kiro.mcp.{_HASH}.kiro-path-client"
 _ENGINE_KINDS = ("client", "kiro-path-client", "tokens", "verifier", "discovery")
 _VERIFIER_KEY = f"kiro.mcp.{_HASH}.verifier"
 _DISCOVERY_KEY = f"kiro.mcp.{_HASH}.discovery"
+_IDP_SESSION_KEY = f"kiro.mcp.idp.{_HASH}.session"
 _TOKEN_VALUE = (
     '{"access_token":"tok-SECRET-4f1c","token_type":"Bearer","refresh_token":"rt-SECRET-9a2e"}'
 )
@@ -45,7 +47,7 @@ def _server(tmp_path) -> kss.SecretStorageServer:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", [_TOKENS_KEY, _CLIENT_KEY, _PATH_CLIENT_KEY])
+@pytest.mark.parametrize("key", [_TOKENS_KEY, _CLIENT_KEY, _PATH_CLIENT_KEY, _IDP_SESSION_KEY])
 async def test_client_and_tokens_outlive_the_engine_process(tmp_path, key):
     first = _server(tmp_path)
     assert await first.answer(kss.METHOD_SECRET_GET, {"key": key}) == {}
@@ -127,6 +129,12 @@ async def test_verifier_and_discovery_stay_in_this_process(tmp_path, key):
         {"key": f"kiro.mcp.{'ab' * 31}.tokens"},
         {"key": f"kiro.mcp.{_HASH}.tokens\n"},
         {"key": f"x.kiro.mcp.{_HASH}.tokens"},
+        {"key": f"kiro.mcp.idp.{_HASH}.tokens"},
+        {"key": f"kiro.mcp.idp.{_HASH}.client"},
+        {"key": f"kiro.mcp.idp.{'AB' * 32}.session"},
+        {"key": f"kiro.mcp.idp.{'ab' * 31}.session"},
+        {"key": f"kiro.mcp.idp.{_HASH}.session\n"},
+        {"key": f"kiro.mcp.{_HASH}.session"},
         {"key": 7},
         {},
         "not-an-object",
