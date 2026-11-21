@@ -12012,7 +12012,7 @@
       "retry": "重试",
       "enable_and_allow_chat_control": "启用并允许控制聊天",
       "session_approval_confirm_title": "允许“{{name}}”控制你的聊天？",
-      "session_approval_reconsent_notice": "{{name}} 已被禁用，因为它新增了控制你对话的请求。请在此页面查看该权限，然后再启用它。",
+      "session_approval_reconsent_notice": "{{name}} 需要你同意后才能控制你的对话，在此之前保持关闭。请在此页面查看该权限，然后再启用它。",
       "approve_new_permissions": "批准新权限",
       "grants_reconsent_notice": "此版本的 {{name}} 请求了新权限。在你批准之前，它们保持关闭。",
       "grants_reconsent_keep": "忽略此提示，{{name}} 将继续只使用你已批准的权限。",

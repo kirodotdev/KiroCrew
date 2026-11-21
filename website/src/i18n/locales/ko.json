@@ -12012,7 +12012,7 @@
       "retry": "다시 시도",
       "enable_and_allow_chat_control": "활성화하고 채팅 제어 허용",
       "session_approval_confirm_title": "‘{{name}}’에 채팅 제어를 허용할까요?",
-      "session_approval_reconsent_notice": "{{name}} 앱이 새로 채팅 제어 권한을 요청하여 비활성화되었습니다. 활성화하기 전에 이 페이지에서 권한을 검토하세요.",
+      "session_approval_reconsent_notice": "{{name}} 앱은 채팅 제어를 허용할 때까지 꺼져 있습니다. 활성화하기 전에 이 페이지에서 권한을 검토하세요.",
       "approve_new_permissions": "새 권한 승인",
       "grants_reconsent_notice": "이 버전의 {{name}}이(가) 새 권한을 요청합니다. 승인하기 전까지는 꺼져 있습니다.",
       "grants_reconsent_keep": "무시하면 {{name}}은(는) 이미 승인한 권한으로 계속 실행됩니다.",

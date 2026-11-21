@@ -5485,7 +5485,7 @@
       "retry": "Retry",
       "enable_and_allow_chat_control": "Enable and allow chat control",
       "session_approval_confirm_title": "Allow “{{name}}” to control your chats?",
-      "session_approval_reconsent_notice": "{{name}} is disabled because it newly asks to control your chats. Review the permission on this page before enabling it.",
+      "session_approval_reconsent_notice": "{{name}} stays off until you allow it to control your chats. Review the permission on this page before enabling it.",
       "approve_new_permissions": "Approve new permissions",
       "grants_reconsent_notice": "This version of {{name}} asks for new permissions. They stay off until you approve them.",
       "grants_reconsent_keep": "Ignore this to keep {{name}} on the permissions you already approved.",

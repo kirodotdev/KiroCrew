@@ -12558,7 +12558,7 @@
       "retry": "Reintentar",
       "enable_and_allow_chat_control": "Activar y permitir el control del chat",
       "session_approval_confirm_title": "¿Permitir que “{{name}}” controle tus chats?",
-      "session_approval_reconsent_notice": "{{name}} está desactivada porque ahora solicita controlar tus chats. Revisa el permiso en esta página antes de activarla.",
+      "session_approval_reconsent_notice": "{{name}} sigue desactivada hasta que le permitas controlar tus chats. Revisa el permiso en esta página antes de activarla.",
       "approve_new_permissions": "Aprobar los nuevos permisos",
       "grants_reconsent_notice": "Esta versión de {{name}} pide permisos nuevos. Siguen desactivados hasta que los apruebes.",
       "grants_reconsent_keep": "Ignora esto para que {{name}} siga con los permisos que ya aprobaste.",
