@@ -56,7 +56,6 @@ if TYPE_CHECKING:
         consume_reinjection,
         context_meter_reading,
         dataclass,
-        declared_mcp_not_ready_change,
         declared_mcp_not_ready_note,
         declared_mcp_note_change,
         effective_job_approval_mode,
@@ -989,10 +988,6 @@ async def _cron_run_single(
         result_text = _annotate_model_fallback(
             result_text, client, stop_reason=_turn_stop["reason"]
         )
-        # Keyed on the job, not the session: a stateless job's key changes every fire.
-        _missing = declared_mcp_not_ready_change(client, f"cron:{job.id}")
-        if _missing:
-            result_text = f"⚠ {_missing}.\n\n{result_text}"
         if _directive_refusals:
             result_text = "\n\n".join([*_directive_refusals, result_text])
         # Before set_run_result and the dedup hash below, so the stored
@@ -1002,7 +997,15 @@ async def _cron_run_single(
         result_text = _annotate_partial_block(result_text, _gate)
         # The spec notices for this run's session, as a dashboard chat says them.
         # The same notices lead every run, so the dedup key is taken without them.
-        _dedup_source = result_text
+        # The MCP warning prints only when its set changes, so the key carries
+        # the run's full missing-server note instead: the same answer with the
+        # same missing set is still a duplicate, and a changed set is posted.
+        _mcp_note = declared_mcp_not_ready_note(client)
+        _dedup_source = f"{_mcp_note}\n\n{result_text}" if _mcp_note else result_text
+        # Keyed on the job, not the session: a stateless job's key changes every fire.
+        _missing = declared_mcp_note_change(f"cron:{job.id}", _mcp_note)
+        if _missing:
+            result_text = f"⚠ {_missing}.\n\n{result_text}"
         _notices = _hook_turn.notices()
         if _notices:
             result_text = f"{_notices}\n\n{result_text}"
