@@ -124,6 +124,21 @@ def _server_id(key: str) -> str:
     return key[len(_KEY_PREFIX) :][:_SERVER_ID_CHARS]
 
 
+#: A refused key's last segment is named in the refusal only when it has this
+#: shape, so an engine/gateway kind mismatch shows in gateway.log while an
+#: arbitrary key (which could carry anything) is never echoed.
+_KIND_LABEL_RE = re.compile(r"\A[a-z][a-z0-9-]{0,31}\Z")
+
+
+def _namespace_refusal(key: str) -> SecretStorageRefused:
+    """The refusal for a *key* outside the namespace, naming its kind when safe."""
+    if key.startswith(_KEY_PREFIX):
+        kind = key.rsplit(".", 1)[-1]
+        if _KIND_LABEL_RE.match(kind) is not None:
+            return SecretStorageRefused(f"key kind {kind!r} is outside the MCP sign-in namespace")
+    return SecretStorageRefused("key is outside the MCP sign-in namespace")
+
+
 def _is_tokens_key(key: str) -> bool:
     return key.endswith("." + _TOKENS_KIND)
 
@@ -241,7 +256,7 @@ class SecretStorageServer:
         elif _IDP_SESSION_RE.match(key) is not None:
             persisted = True
         else:
-            raise SecretStorageRefused("key is outside the MCP sign-in namespace")
+            raise _namespace_refusal(key)
 
         if persisted:
             async with self._locks.setdefault(key, asyncio.Lock()):
