@@ -3483,6 +3483,10 @@ goal, never as `description` (the `POST /api/agents` step sends none). The goal
 is its own apply step after the create (`CREWMATE_CREATE_GOAL_STEP`): a `PUT
 .../goals/long-term` with `expected: ""`, its path segment filled from the
 `member_id` step 0 returned and its `member` from step 0's `name`. Its optional
+`model` rides the step 0 body, so the Bot is pinned when it is made and the
+create route's own model check judges it: an id the account cannot serve fails
+step 0 (`invalid_model`) and no Bot exists. The card shows it as a read-only
+Model row; omitted, `""` and `auto` send no pin. Its optional
 `schedule` is the Bot's work schedule and follows as the last step
 (`CREWMATE_CREATE_SCHEDULE_STEP`), unchanged: the same job name and message, never
 a goal check-in. A failed step stops the plan, so a goal write that fails leaves
