@@ -2780,6 +2780,18 @@ formatting expression containing `$1` can then be misclassified as a dynamic
 kill program targeting a later command's `$KIROCREW_SCRATCH` path. Quoted
 newlines remain inside their operand, and escaped continuations still join the
 command. Local assignments remain available across the preserved separators.
+Text after a heredoc's closing line is read as bash reads it: unquoted, whatever
+quote characters the body held. `_self_tokens` cuts the text around each body
+(`shell_commands.heredoc_closing_lines`) whose `<<` sits outside any quote: the
+text before the body, the body with its closing line, and the text after it are
+separate pieces, each tokenized from a fresh quote state
+(`shell_normalizer._heredoc_line_pieces`). A lone `'` or `"` in a body therefore
+reaches neither the command line before it nor the lines after it. One forward
+walk carries the quote state, and a cut body is skipped rather than walked again,
+so the cost stays linear in the text. The body stays in the token list, so a
+shell fed the body is judged as before. The ssh floor's separator mask reads
+heredocs the same way: it keeps an unquoted-start body's line breaks and starts
+fresh after its closing line.
 The existing deny catalog, nested-payload checks and real self-kill checks
 continue to apply.
 

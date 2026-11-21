@@ -466,6 +466,23 @@ def heredoc_text_spans(text: str) -> "list[tuple[int, int]]":
     ]
 
 
+def heredoc_closing_lines(text: str) -> "list[tuple[int, int]]":
+    """Raw ``(start, tail)`` of each closed here-document body in *text*, in order.
+
+    *tail* is the offset just past the body's closing line. bash reads the text
+    from there with no quote open, whatever quote characters the body held, so a
+    quote walk over *text* starts fresh at *tail* when it was unquoted at *start*.
+    """
+    if "<<" not in text:
+        return []
+    return sorted(
+        (doc.start, doc.tail)
+        for cmd in read_commands(text, heredocs=True)
+        for doc in cmd.heredocs
+        if doc.start < doc.tail < len(text)
+    )
+
+
 def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]":
     """``(start, end, proven)`` of each ``$(...)`` directly inside double quotes in *text*.
 

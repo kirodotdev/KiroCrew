@@ -1004,23 +1004,57 @@ def _self_tokens(text_lower: str, *, resolve: bool = True) -> "list[str]":
     would join the two, mangle the ``python`` token, and hide the mint from the
     argv check while bash still runs it. ``_fold_line_continuations`` folds only
     the lone case and leaves the escaped run intact, matching bash.
+
+    Text after a heredoc's closing line is read as bash reads it: unquoted, so a
+    quote character in the body does not carry over to the next command line
+    (:func:`_heredoc_line_pieces`).
     """
     try:
         # shlex treats bare newlines as whitespace, which joins separate
         # commands into one argv. Preserve those boundaries after folding
         # continuations; quoted newlines remain part of their operand.
         command = _fold_line_continuations(text_lower)
-        if "\n" in command:
-            command = "".join(
-                " ; " if step.active and step.char == "\n" else step.text
-                for step in _iter_shell_chars(command)
-            )
-        tokens = normalize_shell_command(command)
+        pieces = _heredoc_line_pieces(command) if "\n" in command else [command]
+        tokens = []
+        for piece in pieces:
+            if "\n" in piece:
+                piece = "".join(
+                    " ; " if step.active and step.char == "\n" else step.text
+                    for step in _iter_shell_chars(piece)
+                )
+            tokens += normalize_shell_command(piece)
         if not resolve:
             return tokens
         return _resolve_function_aliases(_resolve_local_assignments(tokens))
     except Exception:
         return []
+
+
+def _heredoc_line_pieces(command: str) -> "list[str]":
+    """*command* cut before each heredoc body and after its closing line, as bash reads it.
+
+    Each piece is read from an unquoted start, so a lone ``'`` or ``"`` in a body reaches
+    neither the line before it nor the lines after it; the body is still read (a shell
+    fed it is judged as before). A body whose ``<<`` sits in an open quote is not cut.
+    One forward walk carries the quote state; a cut body is skipped, never re-walked.
+    """
+    from .shell_commands import heredoc_closing_lines  # circular: the reader imports this module
+
+    pieces, at, pos, state, ansi = [], 0, 0, 0, False
+    for start, tail in heredoc_closing_lines(command):
+        if start < pos:
+            continue
+        for step in _iter_shell_chars(command, state, ansi, pos):
+            if step.offset >= start:
+                break
+            state, ansi = step.state, step.ansi
+        pos = start
+        if state != 0:
+            continue
+        pieces += [command[at:start], command[start:tail]]
+        at = pos = tail
+    pieces.append(command[at:])
+    return pieces
 
 
 def _protected_name_in_substitution(tokens: "list[str]", start: int) -> str:

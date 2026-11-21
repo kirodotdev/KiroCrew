@@ -46,6 +46,7 @@ from .argv_floor_ssh_gate import (  # noqa: F401  (served under these names from
 from .shell_commands import (
     _double_quoted_substitution_bodies,
     _proven_body_spans,
+    heredoc_closing_lines,
     heredoc_text_spans,
 )
 from .shell_normalizer import (
@@ -253,10 +254,23 @@ def _mask_quoted_separators(text: str, *, blank_bodies: bool = False) -> str:
     # *blank_bodies* its quotes become ``_`` so the shlex walk cannot pair two bodies'
     # quotes; the function-call binder reads the copy that keeps them.
     spans = {} if _MAIN_READING.get() else _proven_body_spans(text)
+    # A heredoc body that starts unquoted keeps its line breaks, and the text after its
+    # closing line starts unquoted, as bash reads it: a quote character in the body
+    # does not carry over to the next command line.
+    closes = dict(heredoc_closing_lines(text))
+    body_tail = -1
     i = 0
     n = len(text)
     while i < n:
         ch = text[i]
+        if i == body_tail:
+            quote, body_tail = None, -1
+        if i in closes and quote is None and body_tail < 0:
+            body_tail = closes[i]
+        if ch == "\n" and body_tail >= 0:
+            out.append(ch)
+            i += 1
+            continue
         if quote == '"' and i in spans:
             body = text[i : spans[i]]
             body = body.replace('"', "_").replace("'", "_") if blank_bodies else body
