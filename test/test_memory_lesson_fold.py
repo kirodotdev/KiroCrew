@@ -1,9 +1,9 @@
 """``memory.lesson_fold``: near-duplicate rules folded out of the rule block at render.
 
 Pinned: ``off`` renders today's block byte for byte and records no stage field;
-``shadow`` renders the same block and records ``(leader, folded)`` id pairs;
-``enforce`` leaves folded rows out, prints the fold line and does not count them as
-budget omissions, on the default and the private store alike. A user-taught row is
+``enforce`` leaves folded rows out, records their ``(leader, folded)`` id pairs,
+prints the fold line and does not count them as budget omissions, on the default
+and the private store alike; a stored ``shadow`` reads as ``enforce``. A user-taught row is
 never folded; a missing, zero, mismatched or unattributed vector never folds; a
 row with a NOT-clause its leader lacks stays; and leaders never chain.
 """
@@ -125,7 +125,7 @@ def _block(store, mode: str | None, *, budget: int = 20_000, project=None) -> tu
 
 
 def _pairs(store) -> list[list[str]]:
-    return _block(store, "shadow")[1][STAGE]["pairs"]
+    return _block(store, "enforce")[1][STAGE]["pairs"]
 
 
 NOTICE_1 = memory_lesson_fold.FOLD_NOTICE.format(count=1)
@@ -141,22 +141,6 @@ class TestTheModes:
         assert off_receipts == default_receipts
         assert STAGE not in off_receipts
 
-    def test_shadow_keeps_the_block_and_records_the_pairs(self, store):
-        older = _put(store, "Run the linter before every commit", _vec(0.0))
-        newer = _put(store, "Lint before you commit", _vec(0.1))
-        off, off_receipts = _block(store, "off")
-        shadow, receipts = _block(store, "shadow")
-        assert shadow == off
-        assert receipts[injection_receipts.LESSONS] == off_receipts[injection_receipts.LESSONS]
-        # Newest first: the newer row leads, the older one folds into it.
-        assert receipts[STAGE] == {
-            "mode": "shadow",
-            "policy": memory_lesson_fold.POLICY_VERSION,
-            "would_add": [],
-            "would_drop": [older],
-            "pairs": [[newer, older]],
-        }
-
     def test_enforce_leaves_the_copy_out_and_says_so(self, store):
         older = _put(store, "Run the linter before every commit", _vec(0.0))
         newer = _put(store, "Lint before you commit", _vec(0.1))
@@ -170,22 +154,20 @@ class TestTheModes:
         assert receipts[injection_receipts.LESSONS] == {"ids": [other, newer], "omitted": 0}
         assert receipts[STAGE]["pairs"] == [[newer, older]]
 
-    def test_enforce_leaves_out_exactly_what_shadow_logged(self, store):
-        _put(store, "Run the linter before every commit", _vec(0.0))
-        _put(store, "Lint before you commit", _vec(0.1))
-        _put(store, "Write tests first", _vec(1.5))
-        _put(store, "Always write the tests first", _vec(1.55))
+    def test_enforce_leaves_out_exactly_what_its_receipt_names(self, store):
+        older = _put(store, "Run the linter before every commit", _vec(0.0))
+        newer = _put(store, "Lint before you commit", _vec(0.1))
+        tests = _put(store, "Write tests first", _vec(1.5))
+        always = _put(store, "Always write the tests first", _vec(1.55))
         _, off_receipts = _block(store, "off")
-        _, shadow_receipts = _block(store, "shadow")
         _, receipts = _block(store, "enforce")
-        logged = shadow_receipts[STAGE]
-        assert len(logged["would_drop"]) == 2
+        logged = receipts[STAGE]
+        assert logged["mode"] == "enforce"
+        assert logged["would_drop"] == sorted([older, tests])
+        assert sorted(logged["pairs"]) == sorted([[newer, older], [always, tests]])
         shown = off_receipts[injection_receipts.LESSONS]["ids"]
         expected = [key for key in shown if key not in logged["would_drop"]]
         assert receipts[injection_receipts.LESSONS]["ids"] == expected
-        assert {k: v for k, v in receipts[STAGE].items() if k != "mode"} == {
-            k: v for k, v in logged.items() if k != "mode"
-        }
 
     def test_enforce_without_a_copy_is_todays_block(self, store):
         _put(store, "Run the linter before every commit", _vec(0.0))
@@ -259,7 +241,7 @@ class TestNeverFolded:
         (project / "src" / "pkg").mkdir(parents=True)
         _put(store, "Run the linter before every commit", _vec(0.0))
         _put(store, "Run the linter before every commit", _vec(0.0), scope="src/pkg")
-        out, receipts = _block(store, "shadow", project=project)
+        out, receipts = _block(store, "enforce", project=project)
         assert receipts[STAGE]["pairs"] == []
         assert len(receipts[injection_receipts.LESSONS]["ids"]) == 2
 
@@ -446,9 +428,16 @@ class TestTheFlag:
         assert lesson_fold_mode_from(raw) == "enforce"
         assert _build_memory_config({"lesson_fold": raw}).lesson_fold == "enforce"
 
-    @pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
+    @pytest.mark.parametrize("mode", ["off", "enforce"])
     def test_a_known_value_is_kept(self, mode):
         assert _build_memory_config({"lesson_fold": mode}).lesson_fold == mode
+
+    def test_a_stored_shadow_reads_as_the_default_enforce(self, store):
+        assert lesson_fold_mode_from("shadow") == "enforce"
+        assert _build_memory_config({"lesson_fold": "shadow"}).lesson_fold == "enforce"
+        _put(store, "Run the linter before every commit", _vec(0.0))
+        _put(store, "Lint before you commit", _vec(0.1))
+        assert _block(store, "shadow") == _block(store, "enforce")
 
     def test_the_default_is_enforce(self):
         assert MemoryConfig().lesson_fold == "enforce"
@@ -477,7 +466,7 @@ class TestTheRecord:
             injection_receipts.replay(
                 {
                     STAGE: {
-                        "mode": "shadow",
+                        "mode": "enforce",
                         "policy": 1,
                         "would_add": [],
                         "would_drop": ["lesson.b"],
@@ -491,7 +480,7 @@ class TestTheRecord:
         receipts = {
             injection_receipts.LESSONS: {"ids": ["lesson.a"], "omitted": 0},
             STAGE: {
-                "mode": "shadow",
+                "mode": "enforce",
                 "policy": 1,
                 "would_add": [],
                 "would_drop": ["lesson.b"],
@@ -540,7 +529,7 @@ class TestBothRenderersPassTheMode:
         return store.get_lessons_context.call_args.kwargs
 
     @pytest.mark.parametrize("member", [True, False])
-    @pytest.mark.parametrize("mode", ["shadow", "enforce"])
+    @pytest.mark.parametrize("mode", ["enforce"])
     def test_a_stage_mode_reaches_the_store(self, monkeypatch, mode, member):
         assert self._render(monkeypatch, mode, member=member)["lesson_fold"] == mode
 

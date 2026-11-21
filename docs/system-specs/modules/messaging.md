@@ -4006,13 +4006,22 @@ dashboard token auth.
   answers `/kirocrew` and every `/kirocrew-<alias>` as they are, and a caller
   that passes `?alias=` saves the returned name as `slack.command` (live, no
   restart) so a later no-alias render keeps it. Settings →
-  Messaging Channels → Slack passes no alias, so its one-click app registers
-  `/kirocrew`.
+  Messaging Channels → Slack's own form passes no alias, so its one-click app
+  registers `/kirocrew`; the setup wizard passes the alias the user typed and
+  saves the returned `command`.
+  The body also carries `org_guide_url`: `slack.setup_guide_url` when it is
+  a bounded `https://` URL with no whitespace (the server check), else
+  `null`; the dashboard renders it only after its own stricter check (a
+  parsed `https:` URL with a host and no credentials).
 - `GET /api/slack/manifest/status` — whether the installed app is current:
   compares the bot scopes `auth.test` reports for the stored bot token with the
   manifest the saved Slack Code switches render, and names the app so Settings
   can link its App Manifest page (`?refresh=1` skips the short cache). Reads
   only, never echoes the token, and is readable from a remote session.
+  The body also returns `app_basic_info_url` (the app's Basic Information
+  page, where app-level tokens are generated) and `app_dm_url`
+  (`https://slack.com/app_redirect?app=<A>[&team=<T>]`, the bot's DM), both
+  built only from regex-checked ids and `null` without a bot token.
 - `GET /api/slack/code-channel-agents?folder=` — the agents a Slack Code
   defaults save accepts with that default folder (empty = the auto folder), so
   the picker can follow a folder picked but not yet saved; `{"agents": null}`

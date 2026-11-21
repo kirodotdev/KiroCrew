@@ -925,7 +925,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         coerce_config_field,
         coerce_dict_section,
         config_content_stamp,
-        kas_bundle_build_default,
+        kas_bundle_declared,
         member_acp_backend_declared,
         read_config_for_update,
         refresh_config_meta_stamp,

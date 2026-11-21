@@ -71,6 +71,9 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "session_harness",
     "visual_refresh",
     "webhooks",
+    # Has server behavior: kiro_crew.widgets_preview gates `widgets` on
+    # dashboard_save (schema, tool and save route) and the guide agents read.
+    "widgets",
     "worker_grill",
 )
 

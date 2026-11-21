@@ -835,8 +835,8 @@ async def _consolidate(
             )
             from kiro_crew.memory_kind_routing import configured_kind_routing_mode
 
-            # The prompt asks for no kind under any mode: shadow and enforce label
-            # the items in one separate call, so enforce drops what shadow measured.
+            # The prompt asks for no kind under any mode: enforce labels the items
+            # in one separate call.
             routing_mode = configured_kind_routing_mode()
             deletion_policy = (
                 'To propose removal of a stale/invalidated key, set "delete": true. '
@@ -1020,8 +1020,8 @@ async def _consolidate(
         # lessons path's dedup and checks instead of a duplicate semantic row.
         result = _reroute_lesson_semantic_keys(result, self._logger)
 
-        # Kind routing's enforce labels: the shadow label call, on the same fenced
-        # items, before the writes and before the write-boundary check below, so a
+        # Kind routing's enforce labels: one label call on the fenced items,
+        # before the writes and before the write-boundary check below, so a
         # transcript that moved during the call still discards the whole pass.
         from kiro_crew import memory_kind_routing as _kinds
 
@@ -1067,19 +1067,6 @@ async def _consolidate(
             result, _prompt_rows(chunk), tier_mode, session_key=key
         )
         result = tier.result
-
-        # Kind routing's shadow: the routed items and what the store held for them, read
-        # before any write. Both write paths then run as under off; the items are
-        # labelled once they are done.
-        shadow_kinds = None
-        # The mode the prompt was built under, so the prompt and the log agree.
-        if vector_store is not None and routing_mode == _kinds.MODE_SHADOW:
-            fenced, _ = _withhold_unseen_deletes(result, semantic_visible, None)
-            routed = _kinds.route_semantic_by_kind(fenced, _kinds.MODE_SHADOW)
-            if routed.decisions:
-                shadow_kinds = await _run_in_memory_background_pool(
-                    _kinds.capture_prior, vector_store, routed
-                )
 
         if member_memory:
             stage = "member memory"
@@ -1355,21 +1342,6 @@ async def _consolidate(
                         publication.mark_committed()
 
             await _run_in_memory_background_pool(_record_tier)
-
-        # Kind routing's shadow labels, after the pass's last memory write so the call
-        # widens no write's window: one small call on the items already written,
-        # never the transcript, feeding only the log (memory_kind_routing.log_shadow_kinds).
-        if shadow_kinds is not None and vector_store is not None:
-            stage = "kind labels"
-            store_kw = {"memory_store": store_name} if member_memory else {}
-            await _kinds.log_shadow_kinds(
-                shadow_kinds,
-                vector_store,
-                lambda prompt: self._call_llm(prompt, session_key=key, **store_kw),
-                lambda: self._publication_hold_checked(key, commit_state),
-                f"consolidation:{key}",
-                session_key=key,
-            )
 
         # Auto skill detection — a SEPARATE LLM pass over the full-session
         # window (see _run_skill_detection), not the incremental tail. Runs

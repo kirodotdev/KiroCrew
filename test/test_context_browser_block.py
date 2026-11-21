@@ -245,7 +245,7 @@ class TestThePremise:
             lambda *a, **k: (200, {"ok": False, "code": "not_installed", "error": "x"}),
         )
         for op in tool.BROWSER_OPS:
-            args = {"url": "https://example.com"} if op == "navigate" else {}
+            args = {"url": "https://example.com"} if op in ("navigate", "http_get") else {}
             out = tool.browser("browser", {"op": op, "args": args})
             assert out.startswith("Error: browsing is not set up"), (op, out)
 

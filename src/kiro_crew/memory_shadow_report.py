@@ -2,21 +2,19 @@
 
 Read-only. It reads only what the stages already record and writes nothing:
 
-* the render stages (rule authority order, lesson fold, relevance rule) from the
-  injection receipts under ``<data home>/usage/injections``: the daily counters
+* the render stage (relevance rule) from the injection receipts under ``<data home>/usage/injections``: the daily counters
   and the policy window in ``stage-log.json``, and the sampled stage fields on the
   ``YYYY-MM-DD.jsonl`` lines;
-* the write stages (kind routing, origin gate, tier policy, fact origin gate,
-  private dedup, Dreaming) from the store's ``memory_meta`` counter rows (``<prefix>counts:<day>``)
+* the write stages (origin gate, tier policy, fact origin gate, private dedup,
+  Dreaming) from the store's ``memory_meta`` counter rows (``<prefix>counts:<day>``)
   and window keys (``rules_changed_at``, ``rules_version``), through a
   ``mode=ro`` connection.
 
 The report carries ids-free counts only. The counters come from ``read_meta``,
 which never selects a sample row, an id row or the Dreaming approval list. The
 outcome scorecard comes from ``read_trace``, which pulls only the ``key``,
-``path``, ``kind``, ``sk``, ``at`` and ``ts`` fields out of the id, control and
-kind-sample rows inside SQLite (``json_each``), so a sample's value text never
-leaves the database. A missing or unreadable source is "no data", never an error.
+``path``, ``sk``, ``at`` and ``ts`` fields out of the id and control rows inside
+SQLite (``json_each``), so an entry's value text never leaves the database. A missing or unreadable source is "no data", never an error.
 
 Session starts come from the receipts (``phase == "session_start"`` lines of the
 store) since each stage's window start. The stage-log counters are per data home,
@@ -88,22 +86,7 @@ class Stage:
 
 
 STAGES: Final[tuple[Stage, ...]] = (
-    Stage(
-        "rule_authority_order",
-        SOURCE_RECEIPTS,
-        _modes.rule_authority_order_mode_from,
-        "inflated while lesson_origin_gate is not enforce: "
-        "an agent's own learn_add counts as user-taught",
-    ),
     Stage("relevance_rule", SOURCE_RECEIPTS, _modes.relevance_rule_mode_from),
-    Stage("lesson_fold", SOURCE_RECEIPTS, _modes.lesson_fold_mode_from),
-    Stage(
-        "kind_routing",
-        "memory_kind_log:",
-        _modes.kind_routing_mode_from,
-        "rules version 3 and later label in a separate call after the writes; "
-        "samples of version 2 and before were tagged inside the consolidation prompt",
-    ),
     Stage("lesson_origin_gate", "memory_origin_log:", _modes.lesson_origin_gate_mode_from),
     Stage(
         "lesson_tier_policy",
@@ -119,7 +102,6 @@ STAGES: Final[tuple[Stage, ...]] = (
 STAGE_NAMES: Final[tuple[str, ...]] = tuple(s.name for s in STAGES)
 #: Stages with no outcome trace yet: Dreaming proposes but records nothing to join.
 _UNTRACED: Final = frozenset({"dream"})
-_KIND_STATE: Final = "state"
 #: Outcome receipt kinds, as :mod:`kiro_crew.injection_receipts` names them.
 _OUTCOMES: Final = ("recall", "learn_add")
 
@@ -254,12 +236,12 @@ def read_meta(db_path: Path | None) -> dict[str, str]:
 
 
 def read_trace(db_path: Path | None) -> list[tuple[str, str, dict]]:
-    """``(row key, role, fields)`` for every id, control and kind-sample entry.
+    """``(row key, role, fields)`` for every id and control entry.
 
     Opened ``mode=ro``. ``json_each`` unpacks each row inside SQLite and only the
-    ``key``, ``path``, ``kind``, ``sk``, ``at`` and ``ts`` fields are selected, so a
-    sample's value text is never read. *role* is ``ids``, ``control`` or
-    ``samples``. A missing file or table is ``[]``.
+    ``key``, ``path``, ``sk``, ``at`` and ``ts`` fields are selected, so an entry's
+    value text is never read. *role* is ``ids`` or ``control``. A missing file or
+    table is ``[]``.
     """
     if db_path is None or not db_path.exists():
         return []
@@ -267,11 +249,10 @@ def read_trace(db_path: Path | None) -> list[tuple[str, str, dict]]:
     for stage in STAGES:
         if stage.source == SOURCE_RECEIPTS or stage.name in _UNTRACED:
             continue
-        role = "samples" if stage.name == "kind_routing" else "ids"
-        patterns.append(f"{stage.source}{role}:*")
+        patterns.append(f"{stage.source}ids:*")
         patterns.append(f"{stage.source}control:*")
     where = " OR ".join("m.key GLOB ?" for _ in patterns)
-    fields = ("key", "path", "kind", "sk", "at", "ts")
+    fields = ("key", "path", "sk", "at", "ts")
     select = ", ".join(f"json_extract(j.value, '$.{name}')" for name in fields)
     try:
         conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
@@ -359,7 +340,6 @@ def _render_units(stage: Stage, lines: list[dict], store: str, start) -> tuple[d
             continue
         tag = session_tag(line.get("session_key"))
         drops = [k for k in field.get("would_drop") or () if isinstance(k, str)]
-        drops += [p[1] for p in field.get("pairs") or () if isinstance(p, list) and len(p) == 2]
         for key in drops:
             if _traceable(key):
                 _first_seen(dropped, (tag, key), line["ts"])
@@ -391,9 +371,6 @@ def _write_units(stage: Stage, trace: list, start) -> tuple[dict, dict]:
             continue
         if role == "control":
             _first_seen(control, ("", key), at)
-        elif role == "samples":
-            target = dropped if fields.get("kind") == _KIND_STATE else control
-            _first_seen(target, ("", key), at)
         elif stage.drop_paths is None or fields.get("path") in stage.drop_paths:
             _first_seen(dropped, ("", key), at)
     return dropped, control
@@ -490,9 +467,7 @@ def _receipt_stage(stage: Stage, stage_log: dict, lines: list[dict], store: str,
         if not _store_matches(line, store) or (start is not None and line["ts"] < start):
             continue
         sampled += 1
-        changed += int(
-            bool(field.get("would_add") or field.get("would_drop") or field.get("pairs"))
-        )
+        changed += int(bool(field.get("would_add") or field.get("would_drop")))
     detail = {
         "lines": sum(v["lines"] for v in by_day.values()),
         "would_add": sum(v["would_add"] for v in by_day.values()),
@@ -528,7 +503,7 @@ def _day_tally(stage: Stage, counts: dict) -> dict[str, int]:
         _sum_into(total, counts)
         return total
     by_mode = _dict(counts.get(_SHADOW_MODE))
-    if stage.name in ("member_lesson_dedup", "kind_routing"):
+    if stage.name == "member_lesson_dedup":
         _sum_into(total, by_mode)
     else:
         for fields in by_mode.values():
@@ -538,8 +513,6 @@ def _day_tally(stage: Stage, counts: dict) -> dict[str, int]:
 
 def _base_and_changed(stage: Stage, total: dict[str, int]) -> tuple[int, int | None]:
     """Checks or rows seen, and changes where the counters measure them."""
-    if stage.name == "kind_routing":
-        return sum(total.get(k, 0) for k in ("fact", "event", "state")), total.get("state", 0)
     if stage.name in ("lesson_origin_gate", "lesson_tier_policy"):
         return total.get("lessons", 0), total.get("demoted", 0)
     if stage.name == "fact_origin_gate":

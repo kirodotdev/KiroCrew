@@ -193,7 +193,11 @@ describe('SharedCrewsCards', () => {
     vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
     renderWithProviders(<SharedCrewsCards />)
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Open Platform team' }))
-    expect(await screen.findByTestId('shared-crew-refusal')).toHaveTextContent('Sign in to Kiro to see your Shared Crews.')
+    expect(await screen.findByTestId('shared-crew-refusal')).toHaveTextContent('Sign in to Kiro to open this Crew.')
     expect(screen.getByRole('link', { name: 'Go to Kiro account' })).toHaveAttribute('href', KIRO_SIGN_IN_PATH)
+    // Signed out is a state, not a failure (Bug Bash row 62): a status, no alert, no hand-off.
+    expect(screen.getByTestId('shared-crew-refusal')).toHaveAttribute('role', 'status')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Ask the agent/ })).toBeNull()
   })
 })

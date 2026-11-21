@@ -1484,7 +1484,9 @@ A stage field may also carry `control`: up to 20 ids of the block the stage keep
 task facts both policies keep, passed as `record_stage(kept=...)`, for
 `relevance_rule`; `kept` itself is never written), picked when the first 4 bytes of SHA-256 over the session tag and
 key, read as an integer and taken modulo 100, are below `CONTROL_PERCENT` (10) (`memory_shadow_trace.control_keys`), so every render
-of one session picks the same rows. While any memory stage flag is on, two outcome
+of one session picks the same rows. While any stage flag the shadow report lists
+(`memory_shadow_report.STAGES`; not `kind_routing`, `lesson_fold` or
+`rule_authority_order`, which have no shadow mode) is on, two outcome
 lines join the shards (`injection_receipts.OUTCOME_KINDS`): `phase: "recall"` with
 the memory keys a tool `memory_recall` delivered (the lessons its lesson block
 rendered, named through a private collection, then its facts), and `phase:

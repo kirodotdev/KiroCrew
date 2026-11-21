@@ -1012,10 +1012,7 @@ def register_memory_parser(sub: _Commands) -> None:
         "--stage",
         default=None,
         choices=[
-            "rule_authority_order",
             "relevance_rule",
-            "lesson_fold",
-            "kind_routing",
             "lesson_origin_gate",
             "lesson_tier_policy",
             "fact_origin_gate",

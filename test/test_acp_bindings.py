@@ -106,6 +106,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "defer_replay_sid_promotion": ("property", False, "a6632a57e602", "acp"),
     "discard_unanswered_prompt": ("function", True, "a6632a57e602", "acp"),
     "disown_work_dir": ("function", False, "b60c5fea256e", "acp_lifecycle"),
+    "engine_fallback_notice": ("property", False, "bb418bb7ece8", "acp"),
     "exit_code": ("property", False, "8dc15be1dfda", "acp"),
     "fast_mode_enabled": ("function", False, "16180c63d5e6", "acp_model_effort"),
     "fast_mode_unavailable": ("function", False, "f21e39ec5ffb", "acp_model_effort"),

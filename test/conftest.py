@@ -301,6 +301,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _fake_computer_use_backend,
     _forget_app_declared_row_listings,
     _forget_app_turn_approver,
+    _forget_declared_mcp_not_ready_notes,
     _forget_enterprise_profile_pin,
     _forget_gatewayd_telemetry_override,
     _forget_legacy_auth_sweep_clean_roots,
@@ -338,6 +339,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _published_redaction_verdict_on,
     _release_source_corpus_after_module,
     _release_stt_engine,
+    _reset_browser_host_approvals,
     _reset_channel_turn_ceiling,
     _reset_cjk_segmenter,
     _reset_create_rate_limit_buckets,
@@ -719,9 +721,11 @@ def _relay_unless_a_test_opens_the_kas_route(_floor_monkeypatch):
     state are process slots, rebound per test so one test's spawn is not the next
     one's.
     """
-    from kiro_crew.acp import kas_engine_install, kas_route
+    from kiro_crew.acp import kas_build_default, kas_engine_install, kas_route
 
     _floor_monkeypatch.setattr(kas_route, "automatic_switch_allowed", lambda pin="": False)
+    _floor_monkeypatch.setattr(kas_build_default, "_FIRST_SWITCH_FAILED_AT", 0.0)
+    _floor_monkeypatch.setattr(kas_build_default, "_ENGINE_RAN", False)
     _floor_monkeypatch.setattr(kas_route, "_PREVIEW_BUNDLE_FAILED", "")
     _floor_monkeypatch.setattr(kas_route, "_PREVIEW_BUNDLE_FAILED_AT", 0.0)
     _floor_monkeypatch.setattr(kas_route, "_PREVIEW_SKIP_LOGGED", "")

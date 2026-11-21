@@ -6,7 +6,7 @@ ceiling owner edits and imports share. That block holds ``caps.semantic`` charac
 for ALL facts together, so a value over the bound can never be shown there whole. The
 bound is inclusive, counted in characters rather than bytes, and applied in each write
 path on the answer kind routing returned, to the window of items its writer reads and
-no further, so routing counts and samples every item as it would without the bound and
+no further, so routing counts every item as it would without the bound and
 a ``state`` item ``enforce`` keeps out keeps ``work_state``. A value is refused for
 size only when every check its writer applies to the item alone would let it through:
 an item ``validate_semantic``, the writer's confidence or metadata check, or one of its
@@ -156,7 +156,7 @@ async def _run(
     async def fake_llm(prompt: str, *, memory_store: str = "", session_key: str = "") -> dict:
         prompts.append(prompt)
         if prompt.startswith("Label stored memory items."):
-            # Kind routing's label call (shadow and enforce): each item's own tag, by
+            # Kind routing's label call (enforce): each item's own tag, by
             # its index. Read without route_semantic_by_kind, which a test may spy on.
             from kiro_crew.memory_kind_routing import is_routed, item_kind
             from kiro_crew.vector_memory_constants import _MAX_SEMANTIC_PER_CONSOLIDATION
@@ -1162,11 +1162,11 @@ def _route_as(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
 
 
 def _kind_log(store: VectorMemoryStore) -> dict:
-    """The routing log the pass wrote: its day's counters and, under shadow, samples."""
+    """The routing log the pass wrote: its day's counters."""
     with store._db_lock:
         rows = store.db.execute(
-            "SELECT key, value FROM memory_meta WHERE key IN (?, ?)",
-            ("memory_kind_log:counts:2026-10-01", "memory_kind_log:samples:2026-10-01"),
+            "SELECT key, value FROM memory_meta WHERE key = ?",
+            ("memory_kind_log:counts:2026-10-01",),
         ).fetchall()
     return {str(key).rsplit(":", 2)[1]: json.loads(value) for key, value in rows}
 
@@ -1213,17 +1213,16 @@ async def test_enforce_refuses_a_state_item_over_the_bound_as_work_state(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["v1", "member"])
-@pytest.mark.parametrize("mode", ["shadow", "enforce"])
-async def test_routing_counts_and_samples_every_item_the_bound_refuses(
+async def test_routing_counts_every_item_the_bound_refuses(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
     opened,
     caplog: pytest.LogCaptureFixture,
     path: str,
-    mode: str,
 ) -> None:
     from kiro_crew.memory_kind_routing import route_semantic_by_kind
 
+    mode = "enforce"
     _route_as(monkeypatch, mode)
     store, c = _store_for(path, tmp_path, monkeypatch, opened)
     answer = [
@@ -1246,16 +1245,9 @@ async def test_routing_counts_and_samples_every_item_the_bound_refuses(
 
     assert outcome is None
     log = _kind_log(store)
-    assert log["counts"] == {mode: counts}
-    if mode == "shadow":
-        # Every decision is sampled in answer order, the refused values among them.
-        assert [(s["key"], s["kind"], s["value"]) for s in log["samples"]] == [
-            (d.key, d.kind, d.value[:200]) for d in decided
-        ]
-    else:
-        assert "samples" not in log, "enforce keeps no samples"
+    assert log == {"counts": {mode: counts}}
     over = [item["key"] for item in answer if len(item["value"]) > _BOUND]
-    kept_out = [_STATE_KEY, "project.short_state"] if mode == "enforce" else []
+    kept_out = [_STATE_KEY, "project.short_state"]
     # Nothing over the bound is written, and each value is refused under one code.
     written = [k for k in ("project.short_state", _SMALL_KEY) if k not in kept_out]
     assert _stored(store, answer) == written
@@ -1273,7 +1265,7 @@ async def test_the_bound_screens_the_answer_routing_returned(
     from kiro_crew import memory_kind_routing
 
     # Enforce: the mode whose routing hands the writers an answer of its own; under
-    # shadow they get the model's answer itself, as under off.
+    # off they get the model's answer itself.
     _route_as(monkeypatch, "enforce")
     store, c = _store_for(path, tmp_path, monkeypatch, opened)
     route = memory_kind_routing.route_semantic_by_kind
@@ -1853,7 +1845,7 @@ def test_a_v1_pass_whose_only_routed_item_is_over_the_bound_is_committed_as_with
 ) -> None:
     from kiro_crew.history_consolidation import _RunCommitState
 
-    # Enforce: the mode whose log the V1 writer itself writes; a shadow log is the pass's.
+    # Enforce: the mode whose log the V1 writer itself writes.
     _route_as(monkeypatch, "enforce")
     store, c = _store_for("v1", tmp_path, monkeypatch, opened)
     commit_state = _RunCommitState()

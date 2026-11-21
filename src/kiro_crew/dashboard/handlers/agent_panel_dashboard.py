@@ -753,6 +753,18 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
     # that leaves the key out keeps what is stored, as before widgets existed.
     widgets_sent = "widgets" in args
     if widgets_sent:
+        from kiro_crew import widgets_preview
+
+        # Behind the `widgets` feature preview: refused before anything is read or
+        # written. A save without `widgets` is not gated and keeps stored widgets.
+        if not await asyncio.to_thread(widgets_preview.widgets_enabled):
+            return web.json_response(
+                {
+                    "error": widgets_preview.PREVIEW_OFF_MESSAGE,
+                    "code": widgets_preview.PREVIEW_OFF_CODE,
+                },
+                status=403,
+            )
         package["widgets"] = args["widgets"]
     where = _credential_shaped_names(package)
     if where:

@@ -497,13 +497,13 @@ async def test_patch_stores_a_null_on_a_nullable_int(tmp_config, path) -> None:
 
 async def test_patch_writes_a_generic_enum_and_refuses_a_value_outside_it(tmp_config) -> None:
     assert _editable_config_spec("memory.kind_routing")["generic"] is True
-    status, body = await _send({"path": "memory.kind_routing", "value": "shadow"})
+    status, body = await _send({"path": "memory.kind_routing", "value": "off"})
     assert status == 200, body
-    assert _stored(tmp_config)["memory"]["kind_routing"] == "shadow"
+    assert _stored(tmp_config)["memory"]["kind_routing"] == "off"
 
     status, body = await _send({"path": "memory.kind_routing", "value": "loud"})
     assert status == 400, body
-    assert _stored(tmp_config)["memory"]["kind_routing"] == "shadow"
+    assert _stored(tmp_config)["memory"]["kind_routing"] == "off"
 
 
 @pytest.mark.parametrize("value", [True, "300", 1.5, None])

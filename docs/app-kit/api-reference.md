@@ -897,8 +897,8 @@ manifest's `permissions.api`:
 The two are siblings, not parent and child, so declaring one does not declare the
 other. Without the list's path, or outside an app, `SessionChanges` renders a refusal
 naming it, with the **Ask the agent** hand-off, and sends nothing. With the list's path
-alone, the list shows and picking a file renders the same refusal for the diff's path
-in the diff's place, sending nothing. The diff is the change the session recorded; when
+alone, the list shows and picking a file renders a refusal naming the diff's path in
+the diff's place, sending nothing. The diff is the change the session recorded; when
 its record holds no whole before-and-after copy, the pane says so. Both reads are
 read-only. A built-in page keeps the dashboard's client. The list draws no **Browse**
 hand-off and picking a row does not open the file in a tab: those belong to the chat
@@ -2245,8 +2245,8 @@ stay yours. The owner sees the declaration, with the source id, at the trust pro
 
 ### Browser (`ctx.browser`)
 
-The browser tabs of your app's own chat slots (step 1a of
-[rfc-app-sdk-browser](../request-for-change/rfc-app-sdk-browser.md)). Present only
+The browser tabs of your app's own chat slots
+([rfc-app-sdk-browser](../request-for-change/rfc-app-sdk-browser.md)). Present only
 when the manifest declares `permissions.browser` and the owner turned on **App
 browser access** (`dashboard.feature_previews.app_browser_sdk`) in Settings >
 Developer > Feature previews; `None` otherwise, so feature-detect it:
@@ -2260,13 +2260,69 @@ if browser is None or "read" not in browser.verbs():
 | Member | Returns | Description |
 |--------|---------|-------------|
 | `verbs()` | `tuple[str, ...]` | The verbs your app holds now: declared, approved by the owner on your app's page, the app turned on, and the preview on. Blocking: call it from a worker thread. Empty when any of these is missing; turning the app off keeps the approvals, and they apply again when it is turned on. |
+| `page(slot, *, state=None)` | `PagePort` | The page of `slot`, one of your app's own live chat slots (opened through `ctx.chat_slots`). Pass the route's `request.app["state"]`; without it the SDK reads the Gateway's own, which only a `backend.hooks.routes` app is handed. Raises `BrowserRefused` (a `PermissionError` with a `code`: `not_your_slot`, `no_state`) when the slot is not yours: the key's prefix AND the Gateway's stamp must both match, so `foo` does not get `foo-bar-1`. |
 
 Installing approves no verb: the owner approves them on your app's page, and an
 update that adds a verb holds that verb back while the ones already approved keep
 working. `ctx.browser` itself and the answer of `verbs()` are re-read at each use, so
 an approval, a removed verb or the preview turned on or off applies at once, with no
-restart. This step adds only the grant and the gate; the
-page operations (`page(slot)`, `slots()`) follow in step 1b of the RFC.
+restart.
+
+**`PagePort`.** Every method is `async` and answers a dict, never an exception:
+`{"ok": True, ...}`, or `{"ok": False, "code": ..., "error": ...}`. Each call checks
+again that the slot is still yours, the preview is on, and the verb is approved and
+your app is on, so a port you kept stops working the moment any of them changes.
+`read` and `act` calls then go through the same Gateway function as the Bot's own
+`browser` tool: the browse switch for the slot's session, the address check, your
+`browserSites`, the takeover hold and the shared browser lock.
+
+| Method | Verb | Answers (when `ok`) |
+|--------|------|---------------------|
+| `aim(x, y, label="")` | `view` | `shown`: whether a live view shows the cursor now (viewport CSS px) |
+| `view_state()` | `view` | `state`, `url`, `title`, `user_holds`, `viewport` |
+| `tabs()` | `read` | `tabs`: the slot's own tabs only |
+| `outline(*, budget=6000)` | `read` | `snapshot`: the page outline the Bot reads, cut to `budget` characters (`truncated` when cut) |
+| `screenshot(*, region=None)` | `read` | `png`: the image bytes, at most 8 MiB |
+| `pick(x, y)` | `read` | `ref`, `tag`, `text`, `box` of the element drawn at that viewport point; the `ref` is one `click` and `type` take. `text` is the element's own drawn text (no form field value, secret-named element, hidden text or script; never a label or `aria-labelledby` target), else its own `aria-label`, `title`, `alt` or `placeholder`. A protected field (password, secret-named, one-time code, quick-ask), or a point inside one, answers `password_field`. An iframe answers as itself |
+| `locate(texts)` | `read` | `found`: one `{text, boxes}` per text, in order, a box per visible occurrence in the page and its open shadow roots (at most 20 per text). Text inside a protected field, a form field or a script is never searched, and same-origin frames are not searched |
+| `navigate(url)` | `act` | the `navigate` result |
+| `click(ref)` | `act` | the `click` result; `ref` comes from `outline` |
+| `type(ref, text)` | `act` | the `type` result |
+
+Every refusal, from `page(slot)` or from a `PagePort` method, writes a `denied` row in
+the Gateway's browser audit under your app's name, as the Bot's refusals do.
+
+Every string you get back (outline text, a tab's address and title, an op's result or
+error, `view_state`'s address and title, `pick`'s name) is redacted whole, as the Bot's
+own tool redacts it, before anything is cut to a length.
+
+`pick`, `locate` and `view_state` also answer `viewport`: the streamed viewport's
+`{w, h}` in CSS px (`None` before the first frame). Boxes and points are viewport CSS
+px; a live view draws frame pixels, whose width differs and changes, so scale by
+`viewport.w / frame_width` to mark or point at what the person sees.
+
+An app's call never uses up what the Bot in that slot is owed: a popup that opened
+or closed is reported on your answer and still on the Bot's next one, and your calls
+do not count against the chat's `browser.run` step limits. Until one of your answers
+has reported such a move, a `click` or `type` by ref is refused (`popup_opened`,
+`popup_closed`), since the ref belongs to the page that was left; take a fresh
+`outline` and act again.
+
+Refusal codes: `not_your_slot`, `preview_off`, `permission_denied` (the verb is not
+approved, or your app is off), `policy_denied` (browsing is off for that slot),
+`url_blocked`, `site_not_allowed`, `password_field`, `user_holds` (the person has
+taken over the page; try again later, nothing waits), `browser_busy`, plus the
+browser operation's own codes. A working app is
+[examples/browser-reader](examples/browser-reader/README.md):
+
+```python
+async def outline(request, ctx):
+    try:
+        page = ctx.browser.page(request.match_info["slot"], state=request.app["state"])
+    except PermissionError as exc:
+        return web.json_response({"ok": False, "code": exc.code, "error": str(exc)})
+    return web.json_response(await page.outline(budget=2000))
+```
 
 ### App token (`ctx.app_token()`)
 

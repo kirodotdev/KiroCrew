@@ -320,10 +320,19 @@ Three structural facts explain most of the rest:
   hours, so a flaky test does not file one issue per flake. At most 3 are open
   at once and a test is in one of them only. It reads nothing more while a `Main is red:` issue is open, reads at
   most the newest 10 other failed pull request runs of the last 3 hours, reads
-  no other run when fewer than 1,500 API requests are left for the token, changes nothing on
-  a pull request and cannot fail a job. It holds `actions: read`,
+  no other run when fewer than 1,500 API requests are left for the token, and
+  cannot fail a job. A pull request that fails a suspected test is told so in
+  one comment per suspected issue: the 3 the issue names when it is filed, and
+  any other once its failed run is among the newest 10 a later run reads (so a
+  queued run that a newer one replaced is still told), when that run is on its current head, fails
+  the test with the same message start, the pull request does not change the
+  test's file and its base contains the issue's recorded base. The comment is a
+  hint that the same test fails on other pull requests, with the issue link, and
+  says the pull request's own change may still be the cause; it is never edited,
+  changes no check, label or assignee, and a fork's pull request never gets one. It holds `actions: read`,
   `checks: read`, `contents: read`, `pull-requests: read` and `issues: write`.
-  `test/test_main_red_suspect.py` pins each rule with `gh` faked.
+  `test/test_main_red_suspect.py` and `test/test_main_red_suspect_notice.py` pin
+  each rule with `gh` faked (`test/main_red_suspect_fake.py`).
 - **A pull request does not run the tests that are red on main.** The `changes`
   job of `ci.yml` reads the open `Main is red:` issue once per run
   (`scripts/ci_main_red_skip.py decide`), and every `Backend Tests` shard, Linux

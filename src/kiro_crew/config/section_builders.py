@@ -809,6 +809,7 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         tracking_channels=_validate_tracking_channels(section.get("tracking_channels")),
         open_channels=[c for c in section.get("open_channels") if isinstance(c, str)],
         command=section.get("command"),
+        setup_guide_url=str(section.get("setup_guide_url") or "").strip(),
         forward_to_agent_callback=str(
             section.get("forward_to_agent_callback") or section.default("forward_to_agent_callback")
         ).strip(),

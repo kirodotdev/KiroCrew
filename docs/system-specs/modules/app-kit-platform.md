@@ -6257,17 +6257,20 @@ the way §18g chooses the pull-request client:
 - **external**: a client over the app's scoped transport (`scopedSessionFilesClient`),
   each member sending the query the dashboard client sends. The list mounts once
   `apiPathAllowed` admits `/api/project/session-files`; without it the export renders an
-  `ErrorNotice` naming the path, with the agent hand-off on, and mounts nothing, so no
-  request is sent. The diff of a picked file needs `/api/project/session-file-diff`;
-  without it the diff's place shows the same refusal naming that path and the diff is
-  never mounted. The two paths are siblings at a slash boundary, so neither declaration
+  `ErrorNotice` naming the path, centred in the component's area, with the agent hand-off
+  on, and mounts nothing, so no request is sent. The diff of a picked file needs
+  `/api/project/session-file-diff`; without it the diff's place shows its own refusal,
+  worded as that file's diff and naming the path, and the diff is never mounted. The two paths are siblings at a slash boundary, so neither declaration
   admits the other, and the scoped transport still checks each request.
 - **builtin**: the dashboard's client, as §18g keeps it for a builtin page.
 - **none**: the external answer with nothing declared, the refusal.
 
 This grants nothing the app does not have already: both reads are the ones `useAppApi()`
-would send for the same declaration, and each handler refuses an app token's foreign slot
-(`dashboard/session_files.py`, `_gated_slot`). The list's `onBrowse` and its file-open
+would send for the same declaration. The declaration is the in-page guardrail the scoped
+transport applies, not a gateway boundary: an in-page request carries the owner's session
+with no app claim, so `SessionChanges` reads whatever slot it is given, as `ChatEmbed`
+does. The handlers' foreign-slot refusal (`dashboard/session_files.py`, `_gated_slot`)
+applies to app tokens, the requests an app's backend sends. The list's `onBrowse` and its file-open
 hand-off are not offered: they open tabs in the chat window's side panel. Picking a row,
 or its Show changes control, shows that file's recorded change; the diff query's key
 carries the row's change time, so a newer edit reads the diff again. The list and diff
@@ -10375,8 +10378,13 @@ access, so turning the preview on or off needs no restart. Its `verbs()` re-read
 preview, whether the app is on, the live manifest and the approved set at each call, so
 a verb approved or withdrawn applies to an already built context. Turning the app off
 keeps the approved set and holds every verb back until the app is on again; the trust
-prompt says so. This step carries no
-page operation: those go through one gateway function in step 1b.
+prompt says so. `BrowserSDK.page(slot, *, state)` hands out a
+`browser_page_port.PagePort` for one of the app's own live slots (key prefix AND
+`_app` stamp, else `BrowserRefused` `not_your_slot`; no state at hand is `no_state`),
+built with a `verb_gate` that runs `browser_sdk.verb_refusal` off the loop at every
+call: `preview_off`, then `permission_denied` for a verb not held now (which covers an
+app turned off). Its read and act methods then go through `run_browser_op`
+(`browser.md`). The example app `docs/app-kit/examples/browser-reader` calls it.
 
 Writers: `apps/browser_sdk.py`, `apps/manifest_sections.py` (`Permissions.browser`),
 `apps/point_grants.py`, `apps/manager_records.py`, `apps/manager_lookup.py`,

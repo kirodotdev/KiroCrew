@@ -21,7 +21,10 @@ superseded-by: []
   (`memory.lesson_fold`) and kind routing (`memory.kind_routing`, from
   [rfc-memory-hygiene.md](rfc-memory-hygiene.md)) default `enforce` on early
   shadow data, before the 14-day, 200-session bar in section 5.2; `off` is the
-  rollback. The other stages stay default off and are not decided. Checked at `0c5d8bd5f3`.
+  rollback. Once that landed, the owner removed `shadow` from those three flags
+  ahead of the 30-day retirement in P6: each takes `off` or `enforce`, a stored
+  `shadow` reads as `enforce`, and `kirocrew memory shadow report` no longer
+  lists them. The other stages stay default off and are not decided. Checked at `0c5d8bd5f3`.
 - Author: iamwhatever
 - Created: 2026-11-09
 - Code is cited by symbol and file at `79bff1f741`; the docs lint keeps line
@@ -338,7 +341,9 @@ standing rule applies whatever the topic.
   existing row, so no rollback needs a data migration.
 - A flag is retired when its `enforce` has been the default for 30 days with no
   rollback: one follow-up pull request deletes the flag, its `off` and `shadow`
-  code and its receipt fields.
+  code and its receipt fields. R1, R4 and kind routing are the exception the
+  Status line records: their `shadow` code went early, by the owner's decision,
+  and their `off` stays as the rollback.
 
 ### 4.3 The stages, as instances of the primitives
 
@@ -608,10 +613,10 @@ R4's rules, as built (`memory_lesson_fold.py`; default `enforce` since 2026-11-2
   P2 level, then newest first; each is compared only with kept leaders. An L1
   row is always a leader. A row with a NOT-clause its leader lacks stays a
   leader, so no clause leaves the prompt.
-- **Modes.** `shadow` renders today's block and records `(leader, folded)` id
-  pairs in the receipt field `lesson_fold`. `enforce` drops folded rows before
-  the 37,000 budget is fitted and prints the fold line; the omission line counts
-  only rows that did not fit.
+- **Modes.** `off` renders today's block. `enforce` records `(leader, folded)` id
+  pairs in the receipt field `lesson_fold`, drops folded rows before the 37,000
+  budget is fitted and prints the fold line; the omission line counts only rows
+  that did not fit. The `shadow` mode it shipped with is removed (Status line).
 - **Fixture.** The golden test embedder gives each topic-less row its own vector.
 
 R1 comes next because it fixes S2 on existing stores without rewriting a row.

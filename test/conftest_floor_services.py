@@ -20,6 +20,7 @@ import subprocess
 import sys
 
 import pytest
+from conftest_floor_guards import floor_guard
 
 #: Service managers whose *mutating* subcommands reconfigure, start, or stop a
 #: real service. Matched on BASENAME against every token of the argv, not just
@@ -441,7 +442,7 @@ def _no_engine_install_at_gateway_start():
         yield
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _fail_on_refused_real_reclaim_write(_no_real_cgroup_reclaim_write):
     """Disarm the slice reclaim for the test, and fail it if a real write was refused.
 

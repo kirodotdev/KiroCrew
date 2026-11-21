@@ -90,6 +90,7 @@ from kiro_crew.relay_client.protocol import (
     is_loopback_host,
 )
 from kiro_crew.relay_client.token_source import (
+    HOST_TOKEN_NOT_ISSUED_YET,
     ConnectedPeople,
     HostCredential,
     HostTokenRetryLater,
@@ -879,7 +880,7 @@ class LeaseHostTokenSource:
                 self._ensure_timer()
             held = self._usable()
         if held is None:
-            raise HostTokenRetryLater("the lease service has not issued a host token yet")
+            raise HostTokenRetryLater(HOST_TOKEN_NOT_ISSUED_YET)
         return held
 
     async def _call(
@@ -955,7 +956,7 @@ class LeaseHostTokenSource:
             if self._send_version and self._usable() is None:
                 # A service that needs the version mints when a token is due, not on
                 # request, so asking again before the next renewal only repeats this.
-                self._hold(self._next_at, "the lease service has not issued a host token yet")
+                self._hold(self._next_at, HOST_TOKEN_NOT_ISSUED_YET)
             return
         if status == 401:
             # The one status read before the exception name: a sign-in failure from

@@ -56,7 +56,6 @@ from kiro_crew.config.loader_document import (
     _invalidate_config_cache,
     _shadowed_base_sections,
     _store_validated_data,
-    kas_bundle_build_default,
 )
 from kiro_crew.config.loader_locations import (
     config_local_path,
@@ -873,8 +872,6 @@ def build_config(
             agent_defaults, {}, "member_acp_backend", inherit=cfg.agent.acp_backend
         )
         mark_member_backend_inherited(cfg.agent, True)
-        # An absent key, so a nightly build's default applies to a fresh home too.
-        cfg.agent.kas_bundle = kas_bundle_build_default()
         cfg._base_unreadable = doc.base_unreadable
         cfg._overlay_unreadable = doc.overlay_unreadable
         if (

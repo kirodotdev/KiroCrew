@@ -33,6 +33,7 @@ import { DataHomeOwnerStatusNotice } from '../components/DataHomeOwnerNotice'
 import ErrorNotice from '../components/ErrorNotice'
 import ErrorBoundary from '../components/ErrorBoundary'
 import { AGENT_HARNESS_SETTINGS_TAB, isKiroSignInHighlight, KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
+import { isKasEngineHighlight, KAS_ENGINE_PATH } from './developer/kasEngineLink'
 import { useKiroSignInOffered } from './developer/useKiroSignInOffered'
 import { KiroCreditsCard } from './developer/KiroCreditsCard'
 import { useKiroAccountReading } from '../hooks/useKiroAccountReading'
@@ -336,6 +337,11 @@ export default function SettingsPage() {
   const legacySignInTab = releasesSegments[0] || memorySelection.get('tab')
   if (legacySignInTab === AGENT_HARNESS_SETTINGS_TAB && isKiroSignInHighlight(memorySelection.get('highlight'))) {
     return <Navigate replace to={KIRO_SIGN_IN_PATH} />
+  }
+  // The engine switch used to sit in Developer > Feature previews; links to it
+  // there land on the KAS row's engine choice instead.
+  if (legacySignInTab === 'developer' && isKasEngineHighlight(memorySelection.get('highlight'))) {
+    return <Navigate replace to={KAS_ENGINE_PATH} />
   }
 
   return (

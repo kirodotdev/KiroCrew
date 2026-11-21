@@ -181,8 +181,9 @@ platform, or a glibc older than the engine needs), Kiro Crew stays installed and
 the installer says why a chat on the default agent cannot start there in place
 of its next steps. A first install then exits 3; a re-run over an existing
 install, which is what `kirocrew update` does, exits 0. Pass `--no-kas` (or set
-`KIROCREW_INSTALL_KAS=0`) to skip the download during the install; the gateway
-then installs the engine when it starts:
+`KIROCREW_INSTALL_KAS=0`) to use Kiro CLI only: the installer skips the download
+and saves `agent.kas_bundle` off, and the gateway installs the engine when it
+starts. Settings → Agent Harness changes the choice later:
 
 ```bash
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --no-kas
@@ -701,19 +702,21 @@ version that included kiro-cli and never installed your own, install it from
 <https://kiro.dev/cli/>; your sign-in carries over, since both copies read the
 same account store.
 
-The built-in KAS engine is an alternative that needs no Kiro CLI. It is in
-shadow testing: the switch is off by default on every platform and nothing turns
-it on for you. The one-line install (`cli.sh`) and `bash install.sh` download
+The built-in KAS engine is an alternative that needs no Kiro CLI. A packaged
+install (the desktop app or the one-line install) prefers it once you are
+signed in to Kiro Crew; a host signed in only to kiro-cli keeps kiro-cli and the
+chat asks you to sign in once. The one-line install (`cli.sh`) and `bash install.sh` download
 the engine version this release pins by default, by running `kirocrew kas
 install` once Kiro Crew is installed, unless the platform wheel already carries
-it. `--no-kas` skips that download, and the gateway then installs the engine when
+it. `--no-kas` skips that download and saves the Kiro CLI choice
+(`agent.kas_bundle: false`), and the gateway then installs the engine when
 it starts; a failed install is reported as an error by `kirocrew kas status` and
 `kirocrew doctor`. To retry, run `kirocrew kas install` yourself. The desktop app ships that engine inside the app
-(`BUNDLE_KAS=1` at build time), so there is nothing to download. To try the
-route, turn on **Run KAS on Kiro Crew's own engine** under Settings → Developer →
-Feature Previews (or `kirocrew config set agent.kas_bundle true`) and restart; you
-then sign in from the **Kiro sign-in** card on Settings → Kiro account, and
-`kiro-cli login` is not used.
+(`BUNDLE_KAS=1` at build time), so there is nothing to download. To pick the
+engine yourself, choose **Built-in engine** or **Kiro CLI** on the KAS row of
+Settings → Agent Harness (or `kirocrew config set agent.kas_bundle true|false`)
+and restart; on the built-in engine you sign in from the **Kiro sign-in** card on
+Settings → Kiro account, and `kiro-cli login` is not used.
 
 Then start Kiro Crew:
 

@@ -24,6 +24,7 @@ import time
 import warnings
 
 import pytest
+from conftest_floor_guards import floor_guard
 
 
 def _join_install_receipt_workers() -> None:
@@ -284,7 +285,7 @@ def _stop_leaked_exporter(thread) -> None:
         )
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _no_leaked_telemetry_exporter():
     """Fail the test that leaves an OTel exporter thread alive, then clean up.
 
@@ -346,7 +347,7 @@ def _live_embed_evictors() -> set:
     return {t for t in threading.enumerate() if t.name == _EMBED_EVICTOR_THREAD and t.is_alive()}
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _no_leaked_embed_evictor():
     """Fail the test that leaves an embedding model's idle evictor running, then stop it.
 
@@ -387,7 +388,7 @@ def _no_leaked_embed_evictor():
 # ── the logging record factory goes back after every test ─────────────
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _restore_log_record_factory():
     """Put ``logging``'s record factory back, so one test cannot rewrite every later record.
 
@@ -449,7 +450,7 @@ def _restore_log_record_factory():
 # ── the CLI log queue listener goes back after every test ────────────
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _restore_log_queue_listener():
     """Stop the ``QueueListener`` a test leaves running, so no later test inherits it.
 
@@ -522,7 +523,7 @@ def _restore_log_queue_listener():
 # ── the hooks system's process-wide dispatcher goes back after every test ──
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _restore_hooks_integration_globals():
     """Put ``hooks_integration._lifecycle_dispatcher`` / ``_route_registry`` back.
 
@@ -588,7 +589,7 @@ _BOOT_WIRED_GLOBALS: tuple[tuple[str, str], ...] = (
 )
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _restore_boot_wired_globals():
     """Put back the module globals production wires once at boot (``_BOOT_WIRED_GLOBALS``).
 
@@ -637,7 +638,7 @@ def _logger_levels() -> dict[str, tuple[int, bool]]:
     return snapshot
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _restore_logger_levels():
     """Put every logger's level and ``disabled`` flag back after each test.
 
@@ -783,7 +784,7 @@ def close_skill_indexes_built_this_test() -> int:
     return len(open_indexes)
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _close_skills_loaders_the_test_opened(_isolate_kirocrew_home, _record_skill_search_indexes):
     """Close every ``SkillsLoader`` this test built, wherever it was built.
 

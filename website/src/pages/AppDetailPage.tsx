@@ -108,6 +108,7 @@ export default function AppDetailPage() {
    * Stays until the next action, which is the user's chance to act on it.
    */
   const [backendRefusedMsg, setBackendRefusedMsg] = useState('')
+  // A fresh install and a widening update set this same flag, so the copy must hold for both.
   const reconsentMsg = app?.sessionApprovalConsentPending
     ? i18nT('pages.appDetailPage.session_approval_reconsent_notice', { name: appDisplayName(app) })
     : ''
@@ -121,6 +122,7 @@ export default function AppDetailPage() {
   const stagedBots = stagedBotScopes(app)
   const hasStagedGrants = hasOtherStagedGrants || stagedBots.length > 0
   const firstKiroApproval = firstKiroOnly && stagedBots.length === 0
+  const reconsentInGrantsBox = !!reconsentMsg && !!app?.installed && !app.enabled && hasStagedGrants
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
   const enableLabel = app?.sessionApprovalConsentPending
@@ -1105,8 +1107,8 @@ export default function AppDetailPage() {
         {/* Re-consent after an update that widened the session-approval grant.
             Warn-styled like the PR's other session-approval surfaces -- the text
             says "it is now disabled", so a green box would contradict it. Cleared
-            when the user enables the app again (the action the notice asks for). */}
-        {reconsentMsg && (
+            when the user enables the app again; heads the grants box when that one shows. */}
+        {reconsentMsg && !reconsentInGrantsBox && (
           <div
             role="status"
             className="mb-4 flex items-start gap-2 rounded-lg border border-warn/30 bg-warn-subtle p-3 animate-rise"
@@ -1136,6 +1138,7 @@ export default function AppDetailPage() {
               <span>
                 {app.enabled
                   ? i18nT(firstKiroApproval ? 'pages.appDetailPage.kiro_operations_first_notice' : 'pages.appDetailPage.grants_reconsent_notice', { name: appDisplayName(app) })
+                  : reconsentInGrantsBox ? reconsentMsg
                   : i18nT('pages.appDetailPage.grants_reconsent_notice_disabled', { name: appDisplayName(app) })}
               </span>
               {app.enabled && !firstKiroApproval && (

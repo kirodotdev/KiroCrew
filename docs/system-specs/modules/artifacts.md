@@ -1758,8 +1758,14 @@ widgets-only edit is a new version, and `revert_package` brings the target
 version's widgets back with the rest of its layout. `dashboard_save` takes an
 optional `widgets` argument: sent, it replaces the stored widgets (`[]` removes
 them); left out, the save carries the stored widgets forward and refuses a new
-model that would break them. The dashboard skill's "Phone widgets" section is
-what an agent reads to write one, and its example is validated by a test.
+model that would break them. All of this sits behind the `widgets` feature
+preview (`dashboard.feature_previews.widgets`, default off, `widgets_preview.py`):
+off, the `dashboard_save` schema has no `widgets`, the tool and the save route
+refuse one (`widgets_preview_off`) and store nothing, and a save that leaves it
+out still keeps stored widgets. The guide an agent writes one from
+(`widgets_preview.GUIDE`, its example validated by a test) is not in the
+dashboard skill, which is copied to disk whole; it rides in the `widgets`
+argument's description, so only an agent offered the argument reads it.
 
 ### Canvases (`kind="canvas"`)
 
@@ -1860,7 +1866,8 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   Custom colour is open. On desktop the selection toolbar stays inside the canvas
   horizontally, opens below the selection when there is more room there, and
   right-aligns panels that would cross the right edge, clamping them at the left
-  edge when needed.
+  edge when needed; in a pane narrower than a panel it caps the panel's width so
+  its rows wrap.
 - **Zoom is one menu.** Its trigger shows the zoom; zoom in, zoom out, 100% and
   fit are its items, as in FigJam's corner control.
 - **Read-only where a save could do harm.** A past version opens pan-and-zoom

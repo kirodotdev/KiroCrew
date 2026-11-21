@@ -403,5 +403,5 @@ def build_app_context(
         turns=turns,
         chat_slots=chat_slots,
         webhook_source=webhook_source,
-        browser_sdk=browser_sdk_for(app_name, perms),
+        browser_sdk=browser_sdk_for(app_name, perms, http_app=http_app),
     )

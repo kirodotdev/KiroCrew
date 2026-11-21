@@ -291,6 +291,26 @@ def _forget_offered_instance_types():
 
 
 @per_test_guard
+def _forget_declared_mcp_not_ready_notes():
+    """Give every test no scheduled-run MCP note printed before it.
+
+    ``mcp_problems._last_notes`` keeps the last not-ready note each cron job or
+    heartbeat task printed, so the same note is not repeated on every run. A test
+    that runs ``cron:j1`` with a missing server leaves that note recorded, and a
+    later test on the same worker running the same job would get ``""`` instead of
+    its first warning. Cleared before and after, so a test that never imported the
+    module pays one dict lookup.
+    """
+    problems = sys.modules.get("kiro_crew.agent_sdk.mcp_problems")
+    if problems is not None:
+        problems._last_notes.clear()
+    yield
+    problems = sys.modules.get("kiro_crew.agent_sdk.mcp_problems")
+    if problems is not None:
+        problems._last_notes.clear()
+
+
+@per_test_guard
 def _forget_gatewayd_telemetry_override():
     """Give every test the platform-context telemetry provider, not gatewayd's.
 
@@ -1201,6 +1221,14 @@ def _reset_session_switch_locks(_floor_monkeypatch):
     _floor_monkeypatch.setattr(
         llm_helpers, "_slot_switch_session_locks", weakref.WeakValueDictionary()
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_browser_host_approvals(_floor_monkeypatch):
+    """The op route's pending site-grant approvals are module state; each test starts empty."""
+    from kiro_crew import browser_host_trust
+
+    _floor_monkeypatch.setattr(browser_host_trust, "_pending", {})
 
 
 @pytest.fixture(scope="session", autouse=True)
