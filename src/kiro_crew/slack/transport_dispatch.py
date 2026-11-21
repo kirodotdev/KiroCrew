@@ -37,7 +37,7 @@ from kiro_crew.executors import (
     run_in_embed_pool,
 )
 from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_kwargs
-from kiro_crew.llm_helpers import save_conversation_turn_off_loop
+from kiro_crew.llm_helpers import record_interaction_event, save_conversation_turn_off_loop
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, turn_ceiling
 from kiro_crew.messaging.dashboard_live import DashboardLiveRenderer, TeeRenderer
@@ -1239,6 +1239,9 @@ async def handle_message_transport(
         _turn_landed = driver_turn_landed(driver)
         if _turn_landed:
             note_turn_landed(sessions, session_key)
+            # Per-interaction telemetry, on the landed verdict alone: a Stop
+            # or a stream with no completion returns normally but did not land.
+            record_interaction_event(client, session_key, "slack")
         if _unfinished:
             Stats().inc_message_failed()
         else:
