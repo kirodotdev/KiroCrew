@@ -5,6 +5,7 @@ the sidebar. A pinned parent sits in the pinned group, so the fork takes the pin
 as well and stays in that group with it. The human route
 (``POST /api/chat/slots/{slot}/fork``) carries the pin over; the agent
 ``session_fork`` path does not (see ``test_session_control_fork.py``).
+``dashboard.fork_inherits_pin`` turns the human route's pin off.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ from __future__ import annotations
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+
+from kiro_crew.config.loader import KiroCrewConfig
 
 
 def _seeded_state(tmp_path, *, pinned: bool):
@@ -74,3 +77,30 @@ async def test_the_pin_is_in_the_birth_save(tmp_path, monkeypatch) -> None:
 
     assert child is not None
     assert child.pinned is True
+
+
+def _set_fork_inherits_pin(monkeypatch, value: bool) -> None:
+    cfg = KiroCrewConfig()
+    cfg.dashboard.fork_inherits_pin = value
+    monkeypatch.setattr("kiro_crew.dashboard.chat_fork.KiroCrewConfig.load", lambda: cfg)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_the_setting_decides_whether_a_pinned_parents_fork_is_pinned(
+    tmp_path, monkeypatch, enabled
+) -> None:
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    _set_fork_inherits_pin(monkeypatch, enabled)
+    state = _seeded_state(tmp_path, pinned=True)
+
+    status, body = await _fork(state)
+
+    assert status == 200
+    assert body["pinned"] is enabled
+    assert state._slots[body["key"]].pinned is enabled
+    assert state._slots["parent"].pinned is True
+
+
+def test_the_setting_defaults_to_pinning_forks() -> None:
+    assert KiroCrewConfig().dashboard.fork_inherits_pin is True
