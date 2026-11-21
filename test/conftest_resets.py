@@ -1659,3 +1659,28 @@ def _published_redaction_verdict_on():
     seams = sys.modules.get("kiro_crew.redaction_seams")
     if seams is not None:
         seams.publish(False)
+
+
+@per_test_guard
+def _forget_kas_cli_floor_saved_pick():
+    """Start and end each test with no gateway floor's saved-pick subscription.
+
+    ``_start_kas_cli_floor`` keeps an ``agent.acp_backend`` subscription in the
+    gateway's ``_KAS_CLI_FLOOR_PICK_SUB`` for the process lifetime. A test that
+    starts the floor would leave that callback on the live watcher, asking a later
+    test's Kiro CLI pick about a floor it never started. Cancelled and cleared on
+    both sides; a test that never imported the gateway pays one dict lookup.
+    """
+
+    def clear():
+        gateway = sys.modules.get("kiro_crew.slack.gateway")
+        held = getattr(gateway, "_KAS_CLI_FLOOR_PICK_SUB", None)
+        if held is not None:
+            held.cancel()
+            gateway._KAS_CLI_FLOOR_PICK_SUB = None
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
