@@ -1861,3 +1861,33 @@ custom-rules:
       Allowed (do NOT flag): rows whose text is the model's or a tool's own
       output, rows a dedicated card draws from structured meta, and assistant
       rows carrying the compaction card's own notice markers.
+
+  - id: a-wheel-install-job-pins-its-python
+    blocking: false
+    file-patterns:
+      - ".github/workflows/**"
+    rule: |
+      A workflow job that installs this project (`pip install` of the built
+      wheel, of `.`, or of `-e .`) resolves the wheel's pins against whatever
+      interpreter runs pip. The runner image's own `python3` moves with the
+      image: on ubuntu 26.04 it is 3.14, where the only `pysqlite3-binary`
+      wheel is a version `setup.cfg` excludes, so the nightly platform-wheel
+      gate #39770 added failed on its first scheduled run (#40371). PR CI
+      never ran it, because `publish-cli.yml` runs only on the nightly and
+      release path. See "A job that installs the project's wheel pins its
+      Python" in docs/ci/ci-and-reviews.md.
+
+      - FLAG a new or edited step that runs `pip install` of this project, or
+        creates the venv such an install goes into, when the job has no
+        earlier SHA-pinned `actions/setup-python` step with an explicit
+        `python-version`, or when the step calls bare `python3` / `python`
+        instead of that step's interpreter.
+      - FLAG a PR that adds or changes a job in a workflow only the nightly
+        schedule, a release or a manual dispatch reaches (`nightly.yml`,
+        `publish-cli.yml`, `release.yml`, `release-lts.yml`, or a reusable
+        workflow only they call) when its description does not say how the
+        changed job was exercised or that it could not be.
+
+      Allowed (do NOT flag): stdlib-only steps that install nothing from this
+      project; installs of unrelated tools (`pip install zizmor`); comment-only
+      edits.

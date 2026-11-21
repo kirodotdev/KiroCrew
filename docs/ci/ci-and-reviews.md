@@ -3134,6 +3134,37 @@ and runs the 24.04 build. The real fix is to bump Playwright from 1.58.2 to a
 release with a native ubuntu26.04 host entry (1.65.1 has one), then remove the
 guard and its test together.
 
+### A job that installs the project's wheel pins its Python
+
+Every workflow job that `pip install`s this project (the built wheel, or `.`)
+selects its interpreter first with the SHA-pinned `actions/setup-python` and an
+explicit `python-version`, then runs pip, `venv` and the scripts from that
+interpreter. It never uses the runner image's own `python3`. That interpreter moves
+with the image, and the wheel's pins are resolved against it. When
+`kirocrew-linux-4-core` moved to ubuntu 26.04, its `python3` became 3.14. The
+only cp314 x86_64 wheel of `pysqlite3-binary` is `0.5.4.post2`, which
+`setup.cfg` excludes (#32424). So the platform-wheel gate that #39770 added to
+`publish-cli.yml` without `setup-python` failed on the scheduled nightly with
+`No matching distribution found for pysqlite3-binary!=0.5.4.post2,>=0.5.4`
+(#40371, fixed by #40354). Use the version the lane that built the wheel uses
+(`build-wheel.yml`, `build-platform-wheels.yml`: `3.12`). A stdlib-only step that
+installs nothing may still use the image's `python3`.
+
+### A change to a nightly-only or release-only workflow says how it was verified
+
+PR CI never runs the jobs that only the nightly schedule, a release push or a
+manual dispatch reach: `nightly.yml`, `publish-cli.yml`, `release.yml`,
+`release-lts.yml` and the reusable workflows only they call. A green PR therefore
+proves nothing about a job added or changed there, and the first run is the
+scheduled nightly, after merge. A PR that adds or changes such a job says in its
+description how the changed job was exercised: a test that extracts and runs the
+`run:` block, the exact local reproduction of the step against the same
+interpreter and inputs, or, for a workflow that publishes nothing, a
+`workflow_dispatch` run of the branch (link it). Never dispatch a publishing
+workflow from a branch to prove a change. If none
+of these was possible, the description says so. A change that only edits
+comments or a guard already covered by a test needs no extra proof.
+
 ## `build.yml`: the artifacts still build
 
 PR-time proof only, no publishing.
