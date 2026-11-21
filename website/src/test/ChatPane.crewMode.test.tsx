@@ -114,6 +114,23 @@ describe('ChatPane in Split View (Crew Mode)', () => {
     expect(within(cards).getByRole('button', { name: /Approve/ })).toBeInTheDocument()
     expect(within(cards).getByRole('button', { name: /Reject/ })).toBeInTheDocument()
   })
+
+  it('a conductor pane shows the Conductor Mode bolt in place of the agent picker', async () => {
+    setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
+    try {
+      renderPane('c1', [row('c1', { title: 'Conductor', agent: 'kirocrew-conductor', agent_kind: 'template', crew_mode_root: true })], [{ role: 'user', content: 'go', cls: '' }])
+      expect(await screen.findByTestId('crew-mode-composer-chip')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /^Agent: / })).toBeNull()
+    } finally {
+      setCrewModeCatalog(undefined, undefined)
+    }
+  })
+
+  it('a plain chat pane draws no Conductor Mode bolt', async () => {
+    renderPane('plain', [row('plain', { title: 'Plain' })], [])
+    await waitFor(() => expect(screen.getAllByRole('textbox').length).toBeGreaterThan(0))
+    expect(screen.queryByTestId('crew-mode-composer-chip')).toBeNull()
+  })
 })
 
 describe('ChatPane in Split View in a build without conductor mode (LTS)', () => {
