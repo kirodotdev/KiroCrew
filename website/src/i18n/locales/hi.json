@@ -11290,6 +11290,8 @@
       "kind_crewmate_dashboard_page": "डैशबोर्ड पेज",
       "primary_crewmate_dashboard_page": "हाँ, मेरा पेज बनाओ",
       "primary_crewmate_check_ins": "ये नियमित जाँच चालू करो",
+      "primary_crewmate_check_ins_off": "ये नियमित जाँच बंद करो",
+      "primary_crewmate_check_ins_save": "ये नियमित जाँच सहेजो",
       "field_key_results": "माइलस्टोन",
       "decline_crewmate_import": "आयात मत करो",
       "note_crewmate_import": "आयात करने पर कुछ नहीं चलता: वह जानकारी खुद देखता है और बाकी हर काम से पहले पूछता है, तय काम बंद हालत में आते हैं, और स्किल तब तक रुकी रहती हैं जब तक तुम Bot के वर्कस्पेस फ़ोल्डर पर भरोसा न करो। दबाने के बाद इस कार्ड का पूर्ववत उसे हटा देता है।",

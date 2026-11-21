@@ -11549,6 +11549,8 @@
       "kind_crewmate_dashboard_page": "Página do painel",
       "primary_crewmate_dashboard_page": "Sim, crie minha página",
       "primary_crewmate_check_ins": "Ativar estas verificações",
+      "primary_crewmate_check_ins_off": "Desativar estas verificações",
+      "primary_crewmate_check_ins_save": "Salvar estas verificações",
       "field_key_results": "Marcos",
       "decline_crewmate_import": "Não importar",
       "note_crewmate_import": "Nada é executado ao importar: ele busca informações sozinho e pergunta antes de fazer qualquer outra coisa, as tarefas agendadas chegam desligadas e as habilidades esperam você confiar na pasta de trabalho do Bot. Depois, Desfazer neste cartão o remove.",

@@ -11031,6 +11031,8 @@
       "kind_crewmate_dashboard_page": "대시보드 페이지",
       "primary_crewmate_dashboard_page": "네, 제 페이지를 만들어 주세요",
       "primary_crewmate_check_ins": "이 정기 점검 켜기",
+      "primary_crewmate_check_ins_off": "이 정기 점검 끄기",
+      "primary_crewmate_check_ins_save": "이 정기 점검 저장",
       "field_key_results": "마일스톤",
       "decline_crewmate_import": "가져오지 않기",
       "note_crewmate_import": "가져와도 아무것도 실행되지 않습니다. 찾아보는 일은 스스로 하고 그 외에는 하기 전에 묻고, 예약된 작업은 꺼진 상태로 오며, 스킬은 Bot 작업 공간 폴더를 신뢰할 때까지 기다립니다. 누른 뒤에는 이 카드의 실행 취소로 삭제할 수 있습니다.",

@@ -11290,6 +11290,8 @@
       "kind_crewmate_dashboard_page": "ড্যাশবোর্ড পেজ",
       "primary_crewmate_dashboard_page": "হ্যাঁ, আমার পেজ বানাও",
       "primary_crewmate_check_ins": "এই নিয়মিত চেকগুলো চালু করো",
+      "primary_crewmate_check_ins_off": "এই নিয়মিত চেকগুলো বন্ধ করো",
+      "primary_crewmate_check_ins_save": "এই নিয়মিত চেকগুলো সংরক্ষণ করো",
       "field_key_results": "মাইলফলক",
       "decline_crewmate_import": "আমদানি কোরো না",
       "note_crewmate_import": "আমদানি করলে কিছুই চলে না: এটি তথ্য নিজে খোঁজে আর অন্য যেকোনো কিছুর আগে জিজ্ঞেস করে, নির্ধারিত কাজগুলো বন্ধ অবস্থায় আসে, আর Bot-এর ওয়ার্কস্পেস ফোল্ডারে তুমি আস্থা না দেওয়া পর্যন্ত স্কিল অপেক্ষা করে। চাপার পরে এই কার্ডের পূর্বাবস্থায় ফেরাও এটি মুছে দেয়।",

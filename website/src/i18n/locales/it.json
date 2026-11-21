@@ -11549,6 +11549,8 @@
       "kind_crewmate_dashboard_page": "Pagina della dashboard",
       "primary_crewmate_dashboard_page": "Sì, crea la mia pagina",
       "primary_crewmate_check_ins": "Attiva questi controlli",
+      "primary_crewmate_check_ins_off": "Disattiva questi controlli",
+      "primary_crewmate_check_ins_save": "Salva questi controlli",
       "field_key_results": "Traguardi",
       "decline_crewmate_import": "Non importare",
       "note_crewmate_import": "All'importazione non parte nulla: cerca informazioni da solo e chiede prima di fare qualsiasi altra cosa, le attività pianificate arrivano disattivate e le skill aspettano finché non ti fidi della cartella di lavoro del Bot. Dopo, Annulla su questa scheda lo rimuove.",
