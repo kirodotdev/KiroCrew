@@ -429,7 +429,12 @@ therefore injected at most once and never queued back; on the Goose, request and
 concurrent-prompt (Pi, OpenCode) paths a steer the adapter took just as its turn
 ended is reported False and can run once more from the queue. A turn that ends
 first hands the unmarked held steers to the queue,
-and the next turn starts in the same hand-off. With the key on, the peer's steer is held
+and the next turn starts in the same hand-off. A held steer that a later re-check
+refuses, at a boundary (the gate refuses the sender, or the key resolves to another
+session) or when its turn ends and the queue fallback refuses it, reads
+`refused@<time>`, and its sender gets one `SEND_DISCARD_REFUSED_STEER` notice that
+it was not delivered and will not run; a steer a hard stop discarded first keeps the
+stop's one notice. With the key on, the peer's steer is held
 as the composer's is: it counts as delivered only when its turn ends cleanly,
 and the turn's teardown otherwise requeues it as a queue card that runs as the
 next turn, so it can run twice.

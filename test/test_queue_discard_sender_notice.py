@@ -385,6 +385,7 @@ def test_an_unknown_discard_cause_writes_nothing_and_does_not_raise(tmp_path):
     [
         (sc.SEND_DISCARD_QUEUE_CANCEL, "send_discarded"),
         (sc.SEND_DISCARD_HARD_STOP, "send_discarded"),
+        (sc.SEND_DISCARD_REFUSED_STEER, "send_discarded"),
         # The steer sentence does not fit the "discarded before it ran" frame,
         # so it carries no token and the card shows its English content.
         (sc.SEND_DISCARD_HARD_STOP_STEER, None),

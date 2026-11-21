@@ -1417,3 +1417,98 @@ async def test_a_hard_stop_of_an_injected_unmarked_held_steer_tells_its_sender(
     assert receipt.startswith("unconfirmed@"), receipt
     notices = [m["content"] for m in caller.messages if m.get("role") == "notice"]
     assert len(notices) == 1, notices
+
+
+def _refuse_sender(monkeypatch):
+    """The gate refuses the sender from here on, as it does after a revoked grant."""
+
+    def _refused(*_a, **_k):
+        raise sc.SessionControlError("not allowed", status=403, code="not_allowed")
+
+    monkeypatch.setattr(sc, "authorize_target", _refused)
+
+
+def _sender_notices(caller):
+    return [m["content"] for m in caller.messages if m.get("role") == "notice"]
+
+
+@pytest.mark.asyncio
+async def test_a_held_steer_refused_at_a_boundary_tells_its_sender(tmp_path, monkeypatch):
+    """(aw) The sender was told pending-steer; a refusal at the boundary owes it a notice."""
+    from kiro_crew.dashboard import deferred_steer
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _running(_peer_target(state, "chat-2", caller))
+    out = await _send(state, caller)
+    assert out.get("pending_steer") is True
+
+    _refuse_sender(monkeypatch)
+    target._acp_client = _steerable(accepted=True)
+    await deferred_steer.flush_at_boundary(state, target)
+
+    target._acp_client.steer.assert_not_awaited()
+    assert target._deferred_steer_receipts[out["steer_id"]]["state"].startswith("refused@")
+    notices = _sender_notices(caller)
+    assert len(notices) == 1, notices
+    assert "It was not delivered and will not run." in notices[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refusal", ["raises", "returns_false"])
+async def test_a_held_steer_refused_at_the_turn_end_tells_its_sender(
+    tmp_path, monkeypatch, refusal
+):
+    """(ax) The end-of-turn queueing refuses the held steer: one notice, receipt refused."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _running(_peer_target(state, "chat-2", caller))
+    out = await _send(state, caller)
+    assert out.get("pending_steer") is True
+
+    if refusal == "raises":
+        _refuse_sender(monkeypatch)
+    else:
+        # The target resolves to another session: the queue fallback answers False.
+        monkeypatch.setattr(sc, "authorize_target", lambda *_a, **_k: MagicMock())
+    spawn = await _hand_off(state, target)
+
+    assert spawn.call_count == 0 and not target._queue
+    assert target._deferred_steer_receipts[out["steer_id"]]["state"].startswith("refused@")
+    notices = _sender_notices(caller)
+    assert len(notices) == 1, notices
+    assert "It was not delivered and will not run." in notices[0]
+
+
+@pytest.mark.asyncio
+async def test_a_steer_a_hard_stop_discarded_during_its_attempt_gets_only_the_stop_notice(
+    tmp_path, monkeypatch
+):
+    """(ay) Discarded while its gate awaited, then refused: the stop's one notice, no second."""
+    from kiro_crew.dashboard import deferred_steer
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _running(_peer_target(state, "chat-2", caller))
+    out = await _send(state, caller)
+    assert out.get("pending_steer") is True
+
+    async def _discard_while_gating():
+        deferred_steer.discard_all(
+            target,
+            lambda held: sc.notify_send_origin_discarded(
+                state,
+                entry_meta=held.origin_meta,
+                target_slot=target,
+                text=held.text,
+                cause=sc.SEND_DISCARD_HARD_STOP,
+            ),
+        )
+
+    monkeypatch.setattr(sc, "prewarm_enabled_check", _discard_while_gating)
+    _refuse_sender(monkeypatch)
+    await deferred_steer.flush_at_boundary(state, target)
+
+    assert target._deferred_steer_receipts[out["steer_id"]]["state"].startswith("discarded@")
+    notices = _sender_notices(caller)
+    assert len(notices) == 1 and "hard stop" in notices[0], notices

@@ -73,7 +73,7 @@ class DeferredSteer:
     #: The end-of-turn path for a steer the turn outlived.
     to_queue: Callable[..., Awaitable[bool]] = field(repr=False)
     #: The sender's stamp (``send_origin_meta``) and the text, for the notice a hard
-    #: stop owes the sender.
+    #: stop or a refusal owes the sender.
     origin_meta: dict = field(default_factory=dict, repr=False)
     text: str = field(default="", repr=False)
     attempts: int = 0
@@ -166,6 +166,30 @@ def _settle(slot: "_ChatSlot", held: DeferredSteer, state: str) -> None:
         receipts.pop(next(iter(receipts)))
 
 
+def _settle_refused(state: "DashboardState", slot: "_ChatSlot", held: DeferredSteer) -> None:
+    """Settle *held* ``refused`` and tell its sender, who was told ``pending-steer``.
+
+    Best-effort, as the hard stop's notice is: a failing notice is logged and the
+    steer is still settled.
+    """
+    from kiro_crew.dashboard.session_control import (
+        SEND_DISCARD_REFUSED_STEER,
+        notify_send_origin_discarded,
+    )
+
+    try:
+        notify_send_origin_discarded(
+            state,
+            entry_meta=held.origin_meta,
+            target_slot=slot,
+            text=held.text,
+            cause=SEND_DISCARD_REFUSED_STEER,
+        )
+    except Exception:  # noqa: BLE001 - the refusal stands; the notice is best-effort
+        logger.warning("refused notice for steer %s failed", held.steer_id, exc_info=True)
+    _settle(slot, held, "refused")
+
+
 def settle_held(slot: "_ChatSlot", steer_id: str, state: str) -> None:
     """Settle the held entry named *steer_id* (no-op when it is not held)."""
     for held in list(slot._deferred_steers):
@@ -248,7 +272,7 @@ async def flush_at_boundary(state: "DashboardState", slot: "_ChatSlot") -> None:
         if outcome in (DELIVERED, QUEUED):
             _settle(slot, held, outcome)
         elif outcome == DROPPED:
-            _settle(slot, held, "refused")
+            _settle_refused(state, slot, held)
 
 
 async def requeue_all(state: "DashboardState", slot: "_ChatSlot") -> None:
@@ -271,7 +295,10 @@ async def requeue_all(state: "DashboardState", slot: "_ChatSlot") -> None:
             logger.warning("deferred steer %s could not be queued", held.steer_id, exc_info=True)
             queued = False
         if held in slot._deferred_steers:
-            _settle(slot, held, QUEUED if queued else "refused")
+            if queued:
+                _settle(slot, held, QUEUED)
+            else:
+                _settle_refused(state, slot, held)
         # else: a hard stop discarded it during the await; its receipt stays "discarded".
 
 

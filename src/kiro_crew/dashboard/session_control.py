@@ -219,6 +219,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         SEND_DISCARD_HARD_STOP,
         SEND_DISCARD_HARD_STOP_STEER,
         SEND_DISCARD_QUEUE_CANCEL,
+        SEND_DISCARD_REFUSED_STEER,
         SEND_DISCARD_UNCONFIRMED_STEER,
         SEND_DROP_EXCERPT_CHARS,
         SEND_ORIGIN_META_KEY,
