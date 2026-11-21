@@ -160,12 +160,11 @@ weighs explicit save as the alternative.
   ordinary JSON save is never re-typed as a canvas.
 - **New canvas** stores an empty document with `kind="canvas"` named, so the
   first save is not re-typed as `json`.
-- The editor opens read-only for a past version, a file-backed canvas, a canvas
-  whose shown text was masked by the detail read's redaction (an autosave would
-  write the placeholders back), and a document it cannot parse. The masking
-  case has one exception: content masked only in bytes this page itself saved
-  stays editable. Letting the owner edit masked text in general is
-  [#36836](https://github.com/kirodotdev/KiroCrew/issues/36836).
+- The editor opens read-only for a past version, a file-backed canvas and a
+  document it cannot parse. A canvas whose shown text was masked by the detail
+  read's redaction stays editable: the save carries the placeholders and the
+  server puts the hidden values back under them
+  ([#36836](https://github.com/kirodotdev/KiroCrew/issues/36836)).
 
 ## 6. Security considerations
 

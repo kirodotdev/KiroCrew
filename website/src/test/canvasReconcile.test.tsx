@@ -51,7 +51,7 @@ async function nextSave(change: (canvas: Canvas) => void, token: string) {
   change(document('Next'))
   await tick()
   expect(api.updateArtifact).toHaveBeenLastCalledWith('board', {
-    content: serializeCanvas(document('Next')), snapshot: false, expected_token: token,
+    content: serializeCanvas(document('Next')), snapshot: false, expected_token: token, placeholders_token: token,
   })
   expect(screen.getByTestId('canvas-save-status')).toHaveTextContent('Saved')
   expect(screen.queryByText('This canvas changed somewhere else')).toBeNull()
@@ -198,53 +198,18 @@ describe('canvas read reconciliation', () => {
     await nextSave(change, 'tS')
   })
 
-  it.each([false, true])('adopts redaction status independently of identical bytes after Reload (masked: %s)', async masked => {
+  it('a masked Reload stays editable, and its next save names the reloaded token', async () => {
     vi.mocked(api.updateArtifact).mockRejectedValueOnce(new ApiError(409, 'stale', '{}'))
-    const { read, change } = mount()
+    const { change } = mount()
     change(B)
     await tick()
-    const hidden = document('[REDACTED]')
+    const hidden = document('[REDACTED: credential]')
     vi.mocked(api.artifact).mockResolvedValueOnce(artifact(hidden, 'tReload', true))
     await act(async () => { fireEvent.click(screen.getByText('Reload the canvas')) })
-    expect(editor().readOnly).toBe(true)
-    expect(screen.getByTestId('canvas-readonly-note')).toHaveTextContent('Hidden text')
-    const epoch = editor().epoch
-    read(hidden, 'tForeign', masked)
+    expect(editor().readOnly).toBe(false)
+    expect(screen.queryByTestId('canvas-readonly-note')).toBeNull()
     expect(canvasDocument('board')).toBe(serializeCanvas(hidden))
-    expect(editor().epoch).toBe(epoch)
-    expect(editor().readOnly).toBe(masked)
-    if (masked) {
-      expect(screen.getByTestId('canvas-readonly-note')).toHaveTextContent('Hidden text')
-      change(C)
-      await tick()
-      expect(canvasDocument('board')).toBe(serializeCanvas(hidden))
-      expect(api.updateArtifact).toHaveBeenCalledTimes(1)
-    } else {
-      expect(screen.queryByTestId('canvas-readonly-note')).toBeNull()
-      await nextSave(change, 'tForeign')
-    }
-  })
-
-  it.each([
-    ['base-token echo', 'tReload', false],
-    ['untokened identical read', undefined, false],
-    ['untokened changed read', undefined, true],
-  ] as const)('does not clear Reload redaction from a %s', async (_, token, changed) => {
-    vi.mocked(api.updateArtifact).mockRejectedValueOnce(new ApiError(409, 'stale', '{}'))
-    const { read, change } = mount()
-    change(B)
-    await tick()
-    const hidden = document('[REDACTED]')
-    vi.mocked(api.artifact).mockResolvedValueOnce(artifact(hidden, 'tReload', true))
-    await act(async () => { fireEvent.click(screen.getByText('Reload the canvas')) })
-    read(changed ? C : hidden, token)
-    // An untokened read may refresh the view, but cannot clear Reload's mask state.
-    read(changed ? C : hidden, 'tReload')
-    expect(editor().readOnly).toBe(true)
-    expect(screen.getByTestId('canvas-readonly-note')).toHaveTextContent('Hidden text')
-    change(A)
-    await tick()
-    expect(api.updateArtifact).toHaveBeenCalledTimes(1)
+    await nextSave(change, 'tReload')
   })
 
   it('keeps a deferred read out during conflict and reloads the fresh response ahead of the page read', async () => {

@@ -10,7 +10,9 @@
  *
  * A past version, and a document that is not a canvas, open read-only. The
  * second matters: saving over content the editor cannot read would replace it
- * with an empty canvas.
+ * with an empty canvas. A canvas whose read masked some text stays editable: the
+ * save carries the placeholders, and the server puts the hidden text back under
+ * each one the save still holds (`artifact_masked_merge.py`).
  *
  * The page's own exits and its Snapshot reach these saves through
  * `canvasPending`: they flush what is waiting first, and ask before dropping
@@ -37,7 +39,32 @@ type SaveState = 'saved' | 'pending' | 'saving' | 'conflict' | 'failed'
 
 const isConflict = (err: unknown) => err instanceof ApiError && err.status === 409
 
+/** Which masked-merge refusal a 400 is, from the route's `code`; `null` for any other error. */
+function maskedRefusal(err: unknown): 'stale' | 'refused' | null {
+  if (!(err instanceof ApiError) || err.status !== 400) return null
+  try {
+    const code = (JSON.parse(err.body) as { code?: unknown }).code
+    return code === 'masked_merge_stale' ? 'stale' : code === 'masked_merge_refused' ? 'refused' : null
+  } catch {
+    return null
+  }
+}
+
 const isOwnToken = (own: ReadonlySet<string>, token: string | undefined) => !!token && own.has(token)
+
+/**
+ * A draft made while a save was on the wire, with the text the reply masked masked
+ * in it too: a shape whose text the draft still holds as sent takes the reply's
+ * text. A shape edited since keeps its text, which the server may refuse.
+ */
+function withMaskedText(draft: Canvas, sent: Canvas, reply: Canvas): Canvas {
+  const text = (c: Canvas) => new Map(c.shapes.map(s => [s.id, s.text]))
+  const [was, now] = [text(sent), text(reply)]
+  return {
+    ...draft,
+    shapes: draft.shapes.map(s => (s.text === was.get(s.id) && now.has(s.id) && now.get(s.id) !== s.text ? { ...s, text: now.get(s.id) as string } : s)),
+  }
+}
 
 export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: Artifact; isCurrent: boolean }) {
   const { t } = useTranslation()
@@ -55,19 +82,20 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
   // Every save names the token of the content it was based on, which is what
   // stops it overwriting a change made elsewhere. A canvas that mirrors a file
   // on disk has no token to name (the store compares nothing for it), so it
-  // opens read-only rather than saving blind over the file. A canvas whose
-  // shown content had text masked is read-only too: an autosave writes the whole
-  // document, so it would put the placeholders over the text they hide.
-  const redacted = !!artifact.content_redacted && !ownMasked
-  // Set by Reload, which adopts a read of its own ahead of the page's copy.
-  const [readRedacted, setReadRedacted] = useState(false)
-  const editable = isCurrent && !!artifact.content_token && !redacted && !readRedacted
+  // opens read-only rather than saving blind over the file.
+  const editable = isCurrent && !!artifact.content_token
   const editableRef = useRef(editable)
   editableRef.current = editable
   const parsed = useMemo(() => parseCanvas(content), [content])
   const [canvas, setCanvas] = useState<Canvas | null>(parsed.ok ? parsed.canvas : null)
   const [state, setStateNow] = useState<SaveState>('saved')
   const [error, setError] = useState<string | null>(null)
+  // A refused masked merge fails the same way on every retry, so its notice
+  // offers a reload instead.
+  const [refusal, setRefusal] = useState<'stale' | 'refused' | null>(null)
+  // A save whose reply masked text the page sent (a credential typed in): the
+  // page now shows placeholders, so it says the values are still stored.
+  const [maskedSaved, setMaskedSaved] = useState(false)
   const resolvingRef = useRef(false)
   const [resolving, setResolving] = useState(false)
   // Bumped whenever content from outside replaces the canvas, so the editor
@@ -79,6 +107,11 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
   // written, and the token that names them.
   const baseRef = useRef(content)
   const tokenRef = useRef(artifact.content_token)
+  // The token of the read whose placeholders the canvas holds. It moves with
+  // tokenRef except on "Keep mine", which saves the old draft against the live
+  // token: the server then refuses a merge that would pair old placeholders with
+  // the newer version's hidden values.
+  const placeholdersRef = useRef(artifact.content_token)
   const liveBeforeHistory = useRef<string | null>(null)
   const draftRef = useRef<Canvas | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -92,18 +125,18 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
   }, [])
   // Only a new page read replaces this ref; a local render cannot replace a
   // newer Reload response with the page's still-stale copy.
-  const latest = useRef({ content, parsed, token: artifact.content_token, redacted: !!artifact.content_redacted })
+  const latest = useRef({ content, parsed, token: artifact.content_token })
   useEffect(() => {
     const body = artifact.content ?? ''
-    latest.current = { content: body, parsed: parseCanvas(body), token: artifact.content_token, redacted: !!artifact.content_redacted }
-  }, [artifact.content, artifact.content_token, artifact.content_redacted])
+    latest.current = { content: body, parsed: parseCanvas(body), token: artifact.content_token }
+  }, [artifact.content, artifact.content_token])
 
   // A deferred read is reconsidered whenever the draft becomes clean. Own
   // tokens and the base token are ignored as a whole, bytes included, so an
   // echo cannot roll back either the canvas or its next save's token.
   const reconcile = useCallback(() => {
     if (draftRef.current || inFlight.current) return
-    const { content: body, parsed: read, token, redacted: readIsRedacted } = latest.current
+    const { content: body, parsed: read, token } = latest.current
     if (!isCurrent) {
       // Keep the live bytes and token together while snapshots replace the view.
       if (liveBeforeHistory.current === null) liveBeforeHistory.current = baseRef.current
@@ -119,8 +152,7 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
       if (token) {
         if (isOwnToken(ownTokens.current, token) || token === tokenRef.current) return
         tokenRef.current = token
-        // The adopted read's mask status can change even when its bytes do not.
-        setReadRedacted(readIsRedacted)
+        placeholdersRef.current = token
       }
     }
     // Untokened file reads reconcile by bytes without replacing the save token.
@@ -134,7 +166,7 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
     setState('saved')
   }, [isCurrent, setState])
   // The save's finally clears inFlight before this post-render effect runs.
-  useEffect(reconcile, [artifact.content, artifact.content_token, artifact.content_redacted, isCurrent, state, reconcile])
+  useEffect(reconcile, [artifact.content, artifact.content_token, isCurrent, state, reconcile])
 
   const save = useCallback((): Promise<void> => {
     timer.current = null
@@ -147,17 +179,39 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
     const run = (async () => {
       try {
         const expected = tokenRef.current
-        const saved = await api.updateArtifact(artifact.slug, { content: body, snapshot: false, expected_token: expected })
-        baseRef.current = body
+        const saved = await api.updateArtifact(artifact.slug, {
+          content: body, snapshot: false, expected_token: expected, placeholders_token: placeholdersRef.current,
+        })
+        // The reply is the masked read of what was stored. Where it differs from what
+        // was sent (a credential typed into the canvas is masked on a read), the page
+        // takes it, a newer draft included, so its next save matches the server's copy.
+        const reply = (saved as Artifact | undefined)?.content
+        const masked = typeof reply === 'string' && reply !== body ? parseCanvas(reply) : null
+        const adopted = masked?.ok && draftRef.current === draft ? reply as string : null
+        const kept = adopted ?? body
+        baseRef.current = kept
         const token = (saved as Artifact | undefined)?.content_token
         tokenRef.current = token
+        placeholdersRef.current = token
         if (token) {
           ownTokens.current.add(token)
           if (expected) ownTokens.current.add(expected)
-          setOwn({ tokens: new Set(ownTokens.current), body })
+          setOwn({ tokens: new Set(ownTokens.current), body: kept })
         } else {
           ownTokens.current.clear()
           setOwn(null)
+        }
+        if (masked?.ok) setMaskedSaved(true)
+        if (adopted !== null) {
+          setCanvas(masked?.ok ? masked.canvas : null)
+          setEpoch(e => e + 1)
+        } else if (masked?.ok && draftRef.current) {
+          const sent = parseCanvas(body)
+          if (sent.ok) {
+            const queued = withMaskedText(draftRef.current, sent.canvas, masked.canvas)
+            draftRef.current = queued
+            setCanvas(queued)
+          }
         }
         if (draftRef.current === draft) draftRef.current = null
         setError(null)
@@ -168,6 +222,7 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
           setState('conflict')
         } else {
           setState('failed')
+          setRefusal(maskedRefusal(err))
           setError(err instanceof Error ? err.message : String(err))
         }
       } finally {
@@ -276,15 +331,14 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
       const live = await api.artifact(artifact.slug) as Artifact
       const body = live.content ?? ''
       const next = parseCanvas(body)
-      latest.current = { content: body, parsed: next, token: live.content_token, redacted: !!live.content_redacted }
+      latest.current = { content: body, parsed: next, token: live.content_token }
       draftRef.current = null
       baseRef.current = body
       liveBeforeHistory.current = null
       tokenRef.current = live.content_token
+      placeholdersRef.current = live.content_token
       ownTokens.current.clear()
       setOwn(null)
-      // What was read may be masked before the page's own copy refreshes to say so.
-      setReadRedacted(!!live.content_redacted)
       setCanvas(next.ok ? next.canvas : null)
       setEpoch(e => e + 1)
       setError(null)
@@ -292,6 +346,7 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
       void qc.invalidateQueries({ queryKey: ['artifact', artifact.slug] })
     } catch (err) {
       setState('failed')
+      setRefusal(null)
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       resolvingRef.current = false
@@ -313,6 +368,7 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
       await save()
     } catch (err) {
       setState('failed')
+      setRefusal(null)
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       resolvingRef.current = false
@@ -358,9 +414,16 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
       {state === 'failed' && (
         <ErrorNotice
           title={t('components.canvas.save_failed_title')}
-          message={error}
+          message={refusal === 'stale' ? t('components.canvas.masked_stale_message')
+            : refusal === 'refused' ? t('components.canvas.masked_refused_message') : error}
           // No hand-off: the failed save is still only on this page, and the hand-off navigates away.
-          footer={<div className="mt-2"><Btn onClick={retry}>{t('components.canvas.save_retry')}</Btn></div>}
+          footer={(
+            <div className="mt-2">
+              {refusal
+                ? <Btn disabled={resolving} onClick={() => { void reload() }}>{t('components.canvas.conflict_reload')}</Btn>
+                : <Btn onClick={retry}>{t('components.canvas.save_retry')}</Btn>}
+            </div>
+          )}
         />
       )}
       <div
@@ -376,11 +439,18 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
             {status}
           </div>
         )}
+        {editable && (artifact.content_redacted || maskedSaved) && (
+          <div data-testid="canvas-masked-note"
+            className="pointer-events-none absolute left-3 top-10 rounded-md bg-bg-elevated px-2 py-0.5 text-[11px] text-muted shadow-sm"
+            style={{ zIndex: 9 }}>
+            {t('components.canvas.masked_saved_note')}
+          </div>
+        )}
         {!editable && (
           <div data-testid="canvas-readonly-note"
             className="pointer-events-none absolute left-3 top-3 rounded-md bg-bg-elevated px-2 py-0.5 text-[11px] text-muted shadow-sm"
             style={{ zIndex: 9 }}>
-            {!isCurrent ? t('components.canvas.past_version') : redacted || readRedacted ? t('components.canvas.hidden_text') : t('components.canvas.linked_file')}
+            {!isCurrent ? t('components.canvas.past_version') : t('components.canvas.linked_file')}
           </div>
         )}
       </div>
