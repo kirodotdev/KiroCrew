@@ -52,7 +52,9 @@ Candidates, by code:
   merged sentence, under :data:`MODEL_INPUT_TOKENS` input tokens a run.
 * ``work_state`` -- a ``project.*`` row whose key names a PR, issue, CI run,
   branch, round, SHA, status, next step or worktree, which GitHub, git or the work
-  ledger already holds (the classes kind routing tags ``state``).
+  ledger already holds (the classes kind routing tags ``state``). A key that names
+  only a topic (PR, CI, issue) and ends in a decision, rule, gate or contract word,
+  with no status word and no number, is a lasting fact and is not proposed.
 * ``numbered_family`` -- ``project.*`` keys that differ only by their numbers,
   grouped for review; nothing would change.
 * ``legacy_tier`` -- an agent-inferred lesson (L3) in the rule tier, which would
@@ -208,6 +210,39 @@ _STATE_WORDS: Final = frozenset(
 _STATE_PAIRS: Final = frozenset(
     {"pr_number", "pr_status", "next_action", "next_step", "next_steps", "in_progress"}
 )
+#: The words of :data:`_STATE_WORDS` that name a status itself, not a topic.
+_STATUS_WORDS: Final = frozenset({"status", "pending", "blocked", "blocker", "sha", "head", "wip"})
+#: Last key words that name a lasting decision, rule or contract (a kind routing
+#: ``fact``), as in ``ci.error_code_contract_gate`` or ``prepare_pr.rule_files_decision``.
+_DURABLE_HEADS: Final = frozenset(
+    {
+        "decision",
+        "decisions",
+        "contract",
+        "contracts",
+        "rule",
+        "rules",
+        "policy",
+        "convention",
+        "conventions",
+        "gate",
+        "gates",
+        "invariant",
+        "invariants",
+        "design",
+        "pattern",
+        "protocol",
+        "workflow",
+        "approval",
+        "guideline",
+        "guidelines",
+        "principle",
+        "principles",
+        "approach",
+        "strategy",
+        "rationale",
+    }
+)
 _ASCII_DIGITS: Final = "0123456789"
 
 
@@ -342,16 +377,28 @@ def _rule_text(row: Row) -> str:
 
 
 def is_work_state_key(key: str) -> bool:
-    """Whether ``project.*`` *key* names work state another system already holds."""
+    """Whether ``project.*`` *key* names work state another system already holds.
+
+    A key that only names a topic word (a PR, CI, an issue) and ends in a durable
+    word (:data:`_DURABLE_HEADS`) is a decision or contract about that topic, not
+    its status, so it is not work state. A status word or a number (a work-item
+    number, a date) anywhere in the key keeps it work state: like kind routing's
+    mixed-item rule, it reads true only while that item is open.
+    """
     if not key.startswith("project."):
         return False
     parts = key[len("project.") :].replace(".", "_").split("_")
+    topic = False
     for i, part in enumerate(parts):
-        if _before_digit(part) in _STATE_WORDS:
+        word = _before_digit(part)
+        if word in _STATUS_WORDS:
             return True
         if i + 1 < len(parts) and f"{part}_{_before_digit(parts[i + 1])}" in _STATE_PAIRS:
             return True
-    return False
+        topic = topic or word in _STATE_WORDS
+    if not topic:
+        return False
+    return parts[-1] not in _DURABLE_HEADS or any(c in _ASCII_DIGITS for c in key)
 
 
 def _before_digit(part: str) -> str:
