@@ -256,6 +256,10 @@ def _declares_server(spec: dict) -> bool:
 # program" comparison, not string equality.
 _COMMAND_UNIT_KEYS = ("args", "env")
 
+#: What an edition server's entry takes from the edition only. Its ``env`` is merged
+#: key by key instead (see the store loop in :func:`merge_mcp_sources`).
+_EDITION_INVOCATION_KEYS = ("command", "args")
+
 
 def _merge_command_unit(existing: dict, spec: dict) -> dict | None:
     """Project *spec*'s ``command``/``args``/``env`` onto *existing* as one unit.
@@ -510,9 +514,20 @@ def merge_mcp_sources(config: dict) -> McpSources:
                     mcps[name].pop(key, None)
                 mcps[name].update(_replaced.pop(name))
             if name in mcps and isinstance(mcps[name], dict):
+                # An edition-supplied name keeps the edition's invocation, as it
+                # does against a scope global (_merge_source_owned): a store copy
+                # of the user's own entry (often `"args": []`) would otherwise
+                # drop the args that pick its tool surface, e.g. the tool tags
+                # some of its tools need, while the dashboard's probe, which runs
+                # the edition's args, still lists them.
+                own = (
+                    {k: v for k, v in spec.items() if k not in _EDITION_INVOCATION_KEYS}
+                    if name in edition_names
+                    else spec
+                )
                 # mcps[name] is a private copy (globals were copied in above),
                 # so update() does not mutate any source dict.
-                mcps[name].update(spec)
+                mcps[name].update(own)
                 # An edition-supplied name keeps the env keys the edition ships:
                 # the store's own env keys win, but a same-named store entry
                 # must not drop the keys the server needs to run as shipped.
