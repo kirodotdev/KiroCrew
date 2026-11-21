@@ -505,10 +505,11 @@ prefix the build with `DOCKER_BUILDKIT=1`.
 ### Baking in the KAS engine (`BUNDLE_KAS`)
 
 The `agent.kas_bundle` route runs Kiro Crew's own pinned KAS engine instead of
-going through kiro-cli. By default the image does not carry that engine: the
-gateway downloads it (about 55 MB) into the home volume at the first spawn that
-takes the route, or `docker exec <container> kirocrew kas install` fetches it
-ahead of time. To build an image with the engine already inside:
+going through kiro-cli. By default the image does not carry that engine: when
+the gateway starts and finds none, it downloads it (about 55 MB) into the home
+volume, whatever `agent.kas_bundle` says. If that start-time download fails,
+the next chat that takes the route tries again, and `docker exec <container> kirocrew kas install`
+fetches it on demand. To build an image with the engine already inside:
 
 ```
 docker build -f docker/Dockerfile --build-arg BUNDLE_KAS=1 -t kirocrew:dev-kas .
