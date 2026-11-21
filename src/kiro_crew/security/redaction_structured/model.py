@@ -39,6 +39,8 @@ LABEL_BEATS_RULES = frozenset({"git.object_name"})
 TAIL_ALL = "all"
 TAIL_B64RUN = "b64run"
 TAIL_ENCRUN = "encrun"
+# ``line`` covers the rest of a header line, up to its CR or LF.
+TAIL_LINE = "line"
 
 
 @dataclass(frozen=True, slots=True)

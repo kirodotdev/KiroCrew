@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import re
 import string
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.jwt_header import is_jwt_header
 from kiro_crew.security import _submodule
@@ -141,6 +141,25 @@ _PEM_HOLD_RE = re.compile(
 # the start of a JWT, we raise the cap to this larger ceiling so the whole token
 # is rejoined before emission while still keeping the buffer bounded.
 _STREAM_HOLDBACK_JWT_MAX = 4096
+# The structured stream's tails this stream drops by: a header line, the whole text.
+_ENGINE_LINE_TAIL = "line"
+_ENGINE_ALL_TAIL = "all"
+
+# A Cookie header name with its line not ended yet: the structured detectors hold
+# that line from the name, so a drop inside it runs to the line's CR or LF (the
+# structured stream's ``line`` tail).
+
+
+def _open_cookie_line(buf: str, carrier: int) -> bool:
+    """Whether a Cookie header name before *carrier* (the dropped credential's
+    start) opens a line that is still running, read by the cookie reader's grammar."""
+    from kiro_crew.security.redaction_structured.headers import opens_cookie_header
+
+    line_start = max(buf.rfind("\n", 0, carrier), buf.rfind("\r", 0, carrier)) + 1
+    if "\n" in buf[carrier:] or "\r" in buf[carrier:]:
+        return False
+    return opens_cookie_header(buf, line_start, carrier)
+
 
 # A sticky discard consumes only bytes that the ARMING anchor defines as value
 # bytes. These two classes are the existing classes from the partial JWT and
@@ -328,6 +347,7 @@ class StreamRedactor:
         "_discard_kind",
         "_discarded",
         "_ctx",
+        "_engine_line",
         "_engine_tail",
         "_engine_pad",
         "_boundary",
@@ -345,6 +365,7 @@ class StreamRedactor:
         self._ctx = ""
         self._engine_tail = ""
         self._engine_pad = 0
+        self._engine_line: object | None = None
         self._boundary = False
 
     def _redact_window(self, text: str) -> str:
@@ -367,15 +388,28 @@ class StreamRedactor:
     def _engine_discard(self) -> str | None:
         """Drop a structured unit's continuation; None once the unit has ended."""
         seam = _submodule(_SEAM)
-        dropped, self._engine_pad, done = seam.discard_run(
-            self._engine_tail, self._engine_pad, self._buf
-        )
+        if self._engine_tail == _ENGINE_LINE_TAIL:
+            # A Cookie line drop: read, never emitted, and carried through any unit
+            # anchored on the line that runs past its end (the structured stream's
+            # shared line drop).
+            line: Any = self._engine_line
+            if line is None:
+                line = self._engine_line = seam.line_drop()
+            dropped, done = line.step(self._ctx, self._buf)
+            if line.tail_all:
+                self._engine_tail, self._engine_line = _ENGINE_ALL_TAIL, None
+                dropped, done = len(self._buf), False
+        else:
+            dropped, self._engine_pad, done = seam.discard_run(
+                self._engine_tail, self._engine_pad, self._buf
+            )
         self._left(self._buf[:dropped])
         self._buf = self._buf[dropped:]
         if not done:
             return ""
         self._engine_tail = ""
         self._engine_pad = 0
+        self._engine_line = None
         return None
 
     def feed(self, chunk: str) -> str:
@@ -670,9 +704,34 @@ class StreamRedactor:
                         aws_keyed_anchor.start("val"),
                         len(self._buf) - stream_aws_anchor.LABEL_CARRY,
                     )
+                carriers = [
+                    m.start()
+                    for m in (token_anchor, bearer_anchor, aws_keyed_anchor, partial_jwt)
+                    if m is not None
+                ]
+                if _open_cookie_line(self._buf, min(carriers, default=i)):
+                    # A Cookie line still open is held from its name: a later pair
+                    # is read from it, so the drop runs through the line's end.
+                    self._discarding = False
+                    self._discard_kind = None
+                    from kiro_crew.security.redaction_structured.model import TAIL_LINE
+
+                    self._engine_tail, self._engine_pad = TAIL_LINE, 0
+                    drop_end = len(self._buf)
                 commit, dropped = self._buf[:i], self._buf[i:drop_end]
                 self._buf = self._buf[drop_end:]
                 out = self._redact_window(commit) if commit else ""
+                if self._engine_tail == _ENGINE_LINE_TAIL:
+                    # The line drop reads the window it drops before the look-behind
+                    # loses it, so a block anchored anywhere on the line is carried to
+                    # its END. Its unread tail goes back to the buffer for the next step.
+                    line: Any = _submodule(_SEAM).line_drop()
+                    seen, _ = line.step(self._ctx, dropped)
+                    if line.tail_all:
+                        self._engine_tail, line, seen = _ENGINE_ALL_TAIL, None, len(dropped)
+                    self._engine_line = line
+                    self._buf = dropped[seen:] + self._buf
+                    dropped = dropped[:seen]
                 self._left(dropped)
                 return out + _redaction._REDACTED_CREDENTIAL_TAG
             i = len(self._buf) - cap
@@ -776,6 +835,7 @@ class StreamRedactor:
         self._ctx = ""
         self._engine_tail = ""
         self._engine_pad = 0
+        self._engine_line = None
 
     @property
     def held(self) -> str:

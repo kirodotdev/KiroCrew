@@ -97,6 +97,29 @@ def _begin_groups(rows: tuple[ArmourRow, ...]) -> tuple[tuple[str, tuple[ArmourR
     return tuple((b, tuple(r for r in rows if r.begin == b)) for b in begins)
 
 
+def end_search(row: ArmourRow, header_end: int, key_type: str) -> tuple[str, int, int]:
+    """``(END line, lo, hi)``: where the END line that closes a block whose header ends
+    at *header_end* is searched, ``text.find(end_line, lo, hi)``. The one rule both
+    :func:`detect_armour` and ``stream.LineDrop`` read, so their views cannot differ."""
+    end_line = row.end + key_type + row.suffix
+    return end_line, header_end, header_end + row.max_block + len(end_line)
+
+
+def end_line_at(text: str, p: int, rows: tuple[ArmourRow, ...]) -> tuple[str, int, int] | None:
+    """:func:`end_search` for the block whose BEGIN header starts at *p*, with ``lo``
+    and ``hi`` relative to *p*, once the header is whole; None while it is not
+    (``stream.LineDrop`` finds the END by that line)."""
+    for begin, group in cached(rows, _begin_groups):
+        if not text.startswith(begin, p):
+            continue
+        for row in group:
+            found = _header_end(text, p, row)
+            if isinstance(found, tuple):
+                end_line, lo, hi = end_search(row, *found)
+                return end_line, lo - p, hi - p
+    return None
+
+
 def detect_armour(
     text: str, rows: tuple[ArmourRow, ...], final: bool
 ) -> tuple[list[Hit], list[int]]:
@@ -117,10 +140,9 @@ def detect_armour(
                 if not found:
                     continue
                 header_end, key_type = found
-                end_line = row.end + key_type + row.suffix
-                limit = header_end + row.max_block + len(end_line)
+                end_line, lo, limit = end_search(row, header_end, key_type)
                 # An END line right after the header ends an empty block.
-                idx = text.find(end_line, header_end, limit)
+                idx = text.find(end_line, lo, limit)
                 if idx != -1:
                     start = _body_start(text, header_end, idx)
                     end = _body_end(text, start, idx)
