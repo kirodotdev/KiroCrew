@@ -185,6 +185,71 @@ def test_a_bare_volume_folds_to_the_drive_root(volume: str) -> None:
     assert security.path_contains_sensitive(volume, base_dir=r"C:\work")
 
 
+def _loopback_shares(path: str) -> list[str]:
+    """The loopback administrative-share spellings of a ``C:\\...`` path."""
+    rest = path[len("C:\\") :]
+    back = [
+        "\\\\localhost\\C$\\",
+        "\\\\127.0.0.1\\c$\\",
+        "\\\\?\\UNC\\localhost\\C$\\",
+        "\\\\.\\UNC\\LOCALHOST\\C$\\",
+        "\\??\\UNC\\localhost\\C$\\",
+    ]
+    return [prefix + rest for prefix in back] + ["//localhost/C$/" + rest.replace("\\", "/")]
+
+
+@pytest.mark.usefixtures("windows")
+@pytest.mark.parametrize("path", _loopback_shares(CRED) + _loopback_shares(LEAF))
+def test_a_loopback_admin_share_spelling_is_refused(path: str) -> None:
+    assert security.is_sensitive_path(path)
+    assert security.is_sensitive_canonical_path(path)
+    assert security.sensitive_path_refusal(path) is not None
+
+
+@pytest.mark.usefixtures("windows")
+@pytest.mark.parametrize("path", _loopback_shares(HOME))
+def test_the_contains_gate_refuses_a_loopback_admin_share_root(path: str) -> None:
+    assert security.path_contains_sensitive(path)
+
+
+@pytest.mark.usefixtures("windows")
+@pytest.mark.parametrize("share", ["\\\\localhost\\C$", "\\\\127.0.0.1\\C$\\", "//localhost/c$"])
+def test_a_bare_loopback_admin_share_folds_to_the_drive_root(share: str) -> None:
+    assert security.paths._fold_windows_alias(share) == "C:\\"
+
+
+@pytest.mark.usefixtures("windows")
+@pytest.mark.parametrize(
+    "path",
+    [
+        r"\\fileserver\C$\Users\alice\.aws\credentials",  # another host's drive
+        r"\\?\UNC\fileserver\C$\Users\alice\.aws\credentials",
+        r"\\localhost\share\Users\alice\.aws\credentials",  # not a drive share
+        r"\\localhost.evil.example\C$\Users\alice\.aws\credentials",
+        r"\\127.0.0.1.evil.example\C$\Users\alice\.aws\credentials",
+    ],
+)
+def test_other_shares_stay_lexical_and_unfolded(path: str) -> None:
+    assert security.paths._fold_windows_alias(path) == path
+    assert not security.is_sensitive_path(path)
+
+
+@pytest.mark.usefixtures("windows")
+@pytest.mark.parametrize("path", _loopback_shares(HOME + r"\proj\a.txt"))
+def test_an_ordinary_file_behind_a_loopback_share_stays_allowed(path: str) -> None:
+    assert not security.is_sensitive_path(path)
+
+
+@pytest.mark.usefixtures("windows")
+@pytest.mark.parametrize("path", _loopback_shares(CRED))
+def test_without_the_fold_a_loopback_share_is_allowed(
+    monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    """Mutation check: the loopback fold is what refuses these spellings."""
+    monkeypatch.setattr(security.paths, "_fold_windows_alias", lambda p: p)
+    assert not security.is_sensitive_path(path)
+
+
 @pytest.mark.usefixtures("windows")
 def test_the_raw_spelling_stays_a_candidate() -> None:
     raw = "\\\\?\\" + LEAF
