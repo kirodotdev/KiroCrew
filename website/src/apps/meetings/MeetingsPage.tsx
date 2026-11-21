@@ -21,6 +21,7 @@ import {
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
+import { useConfirm } from '../../components/ConfirmDialog'
 import { fmtDateFields } from '../../i18n/format'
 import Clickable from '../../components/Clickable'
 import {
@@ -159,6 +160,8 @@ function useNotifier(): (message: string, opts?: { type?: 'info' | 'success' | '
 const LIST_REFRESH_MS = 60_000
 
 export default function MeetingsPage() {
+  const { confirm, confirmDialog } = useConfirm()
+  const deleting = useRef(false)
   const notify = useNotifier()
   const queryClient = useQueryClient()
   const [route, setRoute] = useState<Route>({ view: 'list' })
@@ -220,31 +223,39 @@ export default function MeetingsPage() {
 
   if (route.view === 'meeting') {
     return (
-      <MeetingView
-        // Keyed by meeting, so opening the meeting a refused start names
-        // mounts a fresh view instead of reusing this one's session state.
-        key={route.eventId}
-        eventId={route.eventId}
-        fallbackTitle={route.title}
-        config={configQuery.data?.config}
-        onBack={() => {
-          setRoute({ view: 'list' })
-          void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
-        }}
-        onOpenSettings={() => setRoute({ view: 'settings' })}
-        onOpenMeeting={(eventId, title) => {
-          // The shared client never refetches on mount, so a cached copy of this
-          // meeting (say, still idle) would hide the review it now has.
-          void queryClient.invalidateQueries({ queryKey: ['meetings', safeMeetingId(eventId)] })
-          setRoute({ view: 'meeting', eventId, title })
-        }}
-        notify={notify}
-      />
+      <>
+        {confirmDialog}
+        <MeetingView
+          // Keyed by meeting, so opening the meeting a refused start names
+          // mounts a fresh view instead of reusing this one's session state.
+          key={route.eventId}
+          eventId={route.eventId}
+          fallbackTitle={route.title}
+          config={configQuery.data?.config}
+          onBack={() => {
+            setRoute({ view: 'list' })
+            void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
+          }}
+          onOpenSettings={() => setRoute({ view: 'settings' })}
+          onOpenMeeting={(eventId, title) => {
+            // The shared client never refetches on mount, so a cached copy of this
+            // meeting (say, still idle) would hide the review it now has.
+            void queryClient.invalidateQueries({ queryKey: ['meetings', safeMeetingId(eventId)] })
+            setRoute({ view: 'meeting', eventId, title })
+          }}
+          notify={notify}
+        />
+      </>
     )
   }
 
   if (route.view === 'settings') {
-    return <SettingsView onBack={() => setRoute({ view: 'list' })} notify={notify} />
+    return (
+      <>
+        {confirmDialog}
+        <SettingsView onBack={() => setRoute({ view: 'list' })} notify={notify} />
+      </>
+    )
   }
 
   const startAdHoc = () => {
@@ -254,15 +265,25 @@ export default function MeetingsPage() {
     setRoute({ view: 'meeting', eventId, title: i18nT('apps.meetings.list.adHocTitle') })
   }
 
-  const requestDelete = (event: MouseEvent<HTMLButtonElement>, row: Row) => {
+  const requestDelete = async (event: MouseEvent<HTMLButtonElement>, row: Row) => {
     event.stopPropagation()
-    if (window.confirm(i18nT('apps.meetings.list.deleteConfirm', { title: row.title }))) {
-      deleteMeeting.mutate({ eventId: row.eventId, title: row.title })
-    }
+    if (deleting.current || deleteMeeting.isPending || LIVE_STATUSES.has(row.status)) return
+    const { eventId, title } = row
+    deleting.current = true
+    try {
+      if (await confirm({
+        title: i18nT('apps.meetings.list.deleteMeetingButton'),
+        body: i18nT('apps.meetings.list.deleteConfirm', { title }),
+        confirmLabel: i18nT('apps.meetings.list.deleteMeetingButton'),
+      }) !== true) return
+      await deleteMeeting.mutateAsync({ eventId, title })
+    } catch { /* The meeting row renders the mutation error. */ }
+    finally { deleting.current = false }
   }
 
   return (
     <>
+      {confirmDialog}
       <PageHeader
         title={i18nT('apps.meetings.list.title')}
         subtitle={i18nT('apps.meetings.list.subtitle')}
