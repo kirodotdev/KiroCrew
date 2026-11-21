@@ -1090,18 +1090,19 @@ class TestGatewaySetStub:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("stub", [True, False])
     async def test_apply_result_is_merged_into_the_response(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, stub: bool
     ) -> None:
         monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
-        apply_cb = AsyncMock(return_value={"applied": True, "sessions_relinked": 2})
+        apply_cb = AsyncMock(return_value={"applied": True, "sessions_reset": 2})
         state = SimpleNamespace(_mcp_gateway_apply_stub=apply_cb)
         resp = await mcp_mod.api_mcp_gateway_set_stub(
-            _request({"name": "ok-mcp", "stub": True}, state=state)
+            _request({"name": "ok-mcp", "stub": stub}, state=state)
         )
         assert resp.status == 200
-        assert _payload(resp)["sessions_relinked"] == 2
-        apply_cb.assert_awaited_once_with()
+        assert _payload(resp)["sessions_reset"] == 2
+        apply_cb.assert_awaited_once_with(launch_approved=stub)
 
     @pytest.mark.asyncio
     async def test_apply_failure_is_500_and_audited(self, monkeypatch: pytest.MonkeyPatch) -> None:

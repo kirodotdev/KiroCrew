@@ -51,7 +51,9 @@ logger = logging.getLogger(__name__)
 #: ``request_server`` operation name, in :data:`handlers.guide._USER_TURN_OPERATIONS`.
 OP_REQUEST_SERVER = "cards.request_server"
 
-_BODY_KEYS = frozenset({"server", "source", "registry_id", "reason"})
+_BODY_KEYS = frozenset(
+    {"server", "source", "registry_id", "reason", "action", "entry", "uses_chat_folder"}
+)
 
 #: The opt-in managed sets an owner may mount on the default agent with no
 #: ``entry`` in the body, each with the ``mcp-*`` subcommand it runs. The gateway
@@ -355,9 +357,19 @@ async def api_cards_agent_request_server(request: web.Request) -> web.Response:
         return _caller_refusal(exc)
     unknown = sorted(set(body) - _BODY_KEYS)
     if unknown:
-        # A command, url, template or session is never the caller's to give.
+        # A template or session is never the caller's to give, and a launch line
+        # only for a server on the MCP page (``entry``, shown in full on its card).
         _audit(sk, OP_REQUEST_SERVER, "denied", "unknown_field")
         return _deny(400, "invalid_body", f"unknown field '{unknown[0][:64]}'")
+    from kiro_crew.dashboard.handlers import request_server_page
+
+    if request_server_page.is_page_request(body):
+        # A server on the MCP page, added with its entry, changed or removed.
+        return await request_server_page.request_page_change(request, slot_key, sk, body)
+    if "entry" in body or "uses_chat_folder" in body:
+        # A gateway or registry server's entry is the gateway's to build.
+        _audit(sk, OP_REQUEST_SERVER, "denied", "unknown_field")
+        return _deny(400, "invalid_body", "entry is only for source 'custom'")
     state = request.app["state"]
     template, code, message = await asyncio.to_thread(_caller_template, state, slot_key, sk)
     if not template:

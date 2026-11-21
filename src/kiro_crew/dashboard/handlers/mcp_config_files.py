@@ -590,10 +590,18 @@ def _atomic_write(path: Path, data: dict) -> None:
         _refuse_commented_config(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path == _kirocrew_mcp_json():
+        # Imported here so the facade serves no extra module names.
+        import os
+
+        from kiro_crew.config import write_provenance
+
+        # The store is sealed read-only in every sandbox, and a save is a new inode, so
+        # the save is recorded for the launcher's pin (``config.write_provenance``).
         atomic_write(
             path,
             (json.dumps(data, indent=2) + "\n").encode("utf-8"),
             restrict_to_owner=True,
+            on_staged=write_provenance.staging_hook(path) if os.name == "posix" else None,
         )
     else:
         _atomic_json_write(path, data)

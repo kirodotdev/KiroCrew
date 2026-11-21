@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from kiro_crew import change_card_mcp_server as _mcp_server_kind
 from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
 from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES
@@ -53,6 +54,9 @@ KIND_TEMPLATE_MCP_SERVER = "template.mcp_server"
 KIND_MCP_INSTALL = "mcp.install"
 KIND_MCP_ADD_CUSTOM = "mcp.add_custom"
 KIND_MCP_TOGGLE = "mcp.toggle"
+#: Add, change or remove one server on the MCP page (:mod:`kiro_crew.change_card_mcp_server`),
+#: raised only by ``request_server``.
+KIND_MCP_SERVER = _mcp_server_kind.KIND_MCP_SERVER
 KIND_CONNECTION_CONNECT = "connection.connect"
 KIND_SECRET_SAVE = "secret.save"
 KIND_TRUST_APP = "trust.app"
@@ -81,8 +85,11 @@ SELF_ONLY_KINDS = frozenset({KIND_CREWMATE_DASHBOARD_PAGE})
 #: loaded servers or the official registry plan), so an agent never names them
 #: through ``propose_change``: a caller-supplied entry would be a launch line the
 #: agent wrote. Raised only by ``POST /api/cards/agent/request-server``;
-#: :func:`list_kinds` leaves them out.
-GATEWAY_RESOLVED_KINDS = frozenset({KIND_TEMPLATE_MCP_SERVER})
+#: :func:`list_kinds` leaves them out. ``mcp.server`` and ``mcp.add_custom`` are here
+#: for the same refusal: an agent asks to change an MCP registry only through
+#: ``request_server``, which raises ``mcp.server``; ``mcp.add_custom`` cards already
+#: raised still render and apply.
+GATEWAY_RESOLVED_KINDS = frozenset({KIND_TEMPLATE_MCP_SERVER, KIND_MCP_SERVER, KIND_MCP_ADD_CUSTOM})
 #: Where a ``template.mcp_server`` entry came from (``mate_capability_catalog``'s sources).
 TEMPLATE_SERVER_SOURCES = ("gateway", "registry")
 #: The ``.crewmate`` ``formatVersion`` values this version reads. Any added
@@ -708,6 +715,13 @@ KINDS: dict[str, KindDef] = {
             "Enable/disable an MCP server ({name, enabled}) or one tool ({server, tool, enabled}).",
             _obj({"name": _STR, "server": _STR, "tool": _STR, "enabled": _BOOL}, ["enabled"]),
             ("enabled",),
+        ),
+        KindDef(
+            KIND_MCP_SERVER,
+            "Add, change or remove one MCP server on the MCP page. Raised only by "
+            "request_server.",
+            _mcp_server_kind.params_schema(),
+            _mcp_server_kind.EDITABLE,
         ),
         KindDef(
             KIND_TEMPLATE_MCP_SERVER,
@@ -1683,6 +1697,8 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
         if not isinstance(enable, bool):
             raise _fail("invalid_param", "'enable' must be a boolean")
         return {"servers": clean, "enable": enable}
+    if kind == KIND_MCP_SERVER:
+        return _mcp_server_kind.clean_params(p)
     if kind == KIND_MCP_TOGGLE:
         _only(p, {"name", "server", "tool", "enabled"})
         enabled = _clean_bool(p, "enabled")

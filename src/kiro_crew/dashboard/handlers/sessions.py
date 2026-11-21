@@ -183,6 +183,7 @@ if TYPE_CHECKING:
         _SHUTDOWN_TIMEOUT_SECS,
         _reset_all_sessions,
         api_sessions_restart,
+        reset_sessions,
     )
     from kiro_crew.dashboard.handlers.sessions_parts.memory_route import (  # noqa: F401
         _memory_sampler,

@@ -110,8 +110,8 @@ outside every session sandbox, as the user, while the same command run per
 chat runs inside the sandbox. The approval
 therefore covers exactly the launch that existed at the press, never what an
 agent writes afterwards: a later change to the command, args or declared env
-text under an approved name (agent specs and `~/.kiro/crew/mcp.json` are
-agent-writable) is refused as `changed_needs_reapproval` and stays on the
+text under an approved name (agent specs and kiro-cli's `~/.kiro/settings/mcp.json`
+are still writable from an agent shell) is refused as `changed_needs_reapproval` and stays on the
 session's sandboxed path until the operator presses **Approve update**, which
 reads the new launch and pins it. Only a `${VAR}` expansion moving under
 unchanged declared text is re-recorded (the rebind), because its values come
@@ -136,6 +136,44 @@ under the sealed `run/` parent. The existing validated runtime carve-out grants
 that child write access to only the random staging directory; it cannot cover
 `record.json` or another resolution. After validating the tree, the gateway
 process renames it into `mcp/resolved/` and writes `record.json`.
+
+The MCP registries are the person's, not the agent's
+([decision](../../decisions/2026-11-20-agents-ask-before-changing-gateway-trusted-files.md)).
+Kiro Crew's own store, `<data home>/mcp.json` (the MCP page's servers), is on the
+file-tool write tier (`paths_lists._CREW_MCP_REGISTRY_ROWS`) and mounted read-only in
+every sandbox (`_CREW_READONLY_LEAVES`, pre-created as `{}` so an absent store cannot
+be created from inside one). Its gateway saves go through
+`mcp_config_files._atomic_write`, which records each one in `config.write_provenance`
+like a `config.json` save, so a page save landing between a spawn's pre-pass and its
+pin is not refused. kiro-cli's `~/.kiro/settings/mcp.json` stays on the file-tool tier
+only (see the discovery-endpoint residual below). A refusal on either path names the
+way forward (`paths_lists.MCP_REGISTRY_REMEDY`): the agent calls `request_server`
+with `action` `add` (`source` `custom` and the entry), `change` or `remove`, which
+raises an `mcp.server` card showing the entry's change (env and header values go
+through the credential redactor, and an env change marks the card as running new
+code, like a launch-line change); Apply runs the MCP page's own routes, then `POST
+/api/sessions/restart` while **Restart open chats to use it** is checked
+(`change_card_mcp_server`, `dashboard.handlers.request_server_page`). `propose_change`
+cannot raise that kind, nor `mcp.add_custom`. The card offers **Share this server with
+other chats and Bots**, ticked on an add card, only for a server that is safe to share
+(`change_card_mcp_server.safe_to_share`): a local command, no other source
+declaring the name (`share_exclusive`), the asking agent's required
+`uses_chat_folder` claim false, no recorded `uses_cwd` answer, and Kiro Crew's own
+reading (`detects_chat_folder`: an arg or env value that is `.`, a relative path or
+a folder placeholder; the server and package names are not read) finding no sign of
+the chat's folder. Any Apply that stops sharing a server shows a **Sharing** On ->
+Off change line, and a stop never rewrites a recorded `cwd_use` answer: it records
+`uses_cwd` only for a server with no answer yet. Checked, the same Apply turns MCP
+server sharing on for the install when it is off (a broker restart, never a gateway restart), reads the launch
+the write produced and shares the server with that launch as the expected one and
+the card's command, args and env as `expected_entry`: the stub route refuses
+`launch_differs_from_card` unless the whole resolved set is exactly that one launch
+(`launch_resolve.matches_entry`), so the press approves only what the card shows. A
+server that is not safe to share keeps one copy per chat. Relative script paths,
+including bare names such as `server.py` and `index.js`, count as using the chat's
+folder. A per-server share that restarts the broker resets open chats even with
+**Restart open chats to use it** unchecked: subscribed stubs cannot reconnect.
+The reset defers busy chats until their turn ends and reports `sessions_reset`.
 
 The `template-mcp-additions/` directory holds the servers the user approved for
 an agent template on a change card (`template_mcp_additions`), which the next

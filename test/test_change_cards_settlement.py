@@ -608,10 +608,13 @@ def test_propose_refuses_a_card_whose_params_carry_a_credential(world, tmp_path)
 
     async def go(c):
         r = await c.post(
-            "/api/cards/agent/propose",
+            "/api/cards/agent/request-server",
             json={
-                "kind": "mcp.add_custom",
-                "params": {"servers": {"gh": {"command": "npx", "env": {"T": _FAKE_TOKEN}}}},
+                "action": "add",
+                "source": "custom",
+                "server": "gh",
+                "entry": {"command": "npx", "env": {"T": _FAKE_TOKEN}},
+                "uses_chat_folder": False,
             },
             headers=AGENT,
         )

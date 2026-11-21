@@ -303,7 +303,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(self, register: 'Callable[[], Awaitable[bool]] | None' = None) -> 'dict'",
         ),
         ("_apply_mcp_gateway_enabled", "async method", "(self, enabled: 'bool') -> 'dict'"),
-        ("_apply_mcp_stub", "async method", "(self) -> 'dict'"),
+        (
+            "_apply_mcp_stub",
+            "async method",
+            "(self, *, launch_approved: 'bool' = False) -> 'dict'",
+        ),
         ("_wire_mcp_gateway_dashboard", "method", "(self) -> 'None'"),
     ),
     "memory_lifecycle": (
