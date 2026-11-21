@@ -914,11 +914,19 @@ def session_mcp_disabled_tools(
     :func:`_global_settings`). kiro-cli reads both for enforcement; so does this.
     A union is the only safe combination: a restriction can only ever restrict.
 
+    Keys are read as each source spells them, and a raw slash key
+    (``npm:@playwright/mcp``) also names its kiro-safe alias (``playwright-mcp``),
+    the name the spec mounts it under, unless that alias is itself a key in the
+    same source: then it is a different server's entry. The dashboard's tool-off
+    action writes to the raw key the file already holds.
+
     ``spec`` and ``settings`` let a caller hand in what it has ALREADY parsed; an
     explicit ``None`` spec means "there is no spec" and is honoured as such, never
     re-read (see :class:`_Unread`). Never raises: an unreadable source switches
     nothing off from that source.
     """
+    from kiro_crew.mcp_utils import mcp_server_alias
+
     if isinstance(spec, _Unread):
         spec = _session_spec_and_snapshot_for(agent, work_dir)[0] if agent else None
     if isinstance(settings, _Unread):
@@ -936,9 +944,13 @@ def session_mcp_disabled_tools(
             disabled = entry.get("disabledTools")
             if not isinstance(disabled, list):
                 continue
+            names = {str(name)}
+            alias = mcp_server_alias(str(name))
+            if alias not in raw:
+                names.add(alias)
             for tool in disabled:
                 if isinstance(tool, str) and tool:
-                    pairs.add((str(name), tool))
+                    pairs.update((n, tool) for n in names)
     return frozenset(pairs)
 
 

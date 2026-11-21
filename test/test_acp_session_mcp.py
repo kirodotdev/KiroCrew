@@ -393,6 +393,37 @@ class TestMounting:
         (tmp_path / "settings-mcp.json").write_text("[not a dict]", encoding="utf-8")
         assert session_mcp.session_mcp_disabled_tools("kirocrew") == frozenset()
 
+    def test_a_raw_slash_key_restriction_reaches_the_alias_the_session_mounts(
+        self, tmp_path, agents_dir
+    ):
+        """The tool-off route writes ``disabledTools`` under the raw key the file
+        holds (``npm:@playwright/mcp``) while the spec mounts the alias
+        (``playwright-mcp``), so the pair must name the alias too or the mounted
+        tool stays on. A raw key whose alias is itself a key in the same file is a
+        different server's entry and lends that server nothing."""
+        _write_spec(
+            agents_dir,
+            servers={"playwright-mcp": {"command": "/p"}, "team-foo": {"command": "/t"}},
+            tools=["@playwright-mcp", "@team-foo"],
+        )
+        (tmp_path / "settings-mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "npm:@playwright/mcp": {"command": "/p", "disabledTools": ["nav"]},
+                        "team-foo": {"command": "/t"},
+                        "team/foo": {"command": "/u", "disabledTools": ["x"]},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        pairs = session_mcp.session_mcp_disabled_tools("kirocrew")
+        assert ("playwright-mcp", "nav") in pairs
+        assert ("npm:@playwright/mcp", "nav") in pairs
+        assert ("team/foo", "x") in pairs
+        assert ("team-foo", "x") not in pairs
+
     def test_an_explicit_none_spec_is_honoured_not_re_read(self, agents_dir, monkeypatch):
         """``None`` means "there is no spec"; only "not supplied" reads.
 

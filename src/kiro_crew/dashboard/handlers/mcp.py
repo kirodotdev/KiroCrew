@@ -725,7 +725,18 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
             return _mcp_config_corrupt()
 
         servers = data.setdefault("mcpServers", {})
-        if server not in servers:
+        # By the ONE key the row stands for, as POST /api/mcp/toggle does: the
+        # table names ``playwright-mcp`` while the file may hold
+        # ``npm:@playwright/mcp``, and a stub beside the raw entry would hold
+        # disabledTools that the mounted entry never reads. An alias of
+        # several raw keys is refused rather than guessed.
+        try:
+            key = _config_key_for(servers, server)
+        except AmbiguousServerKey as exc:
+            return web.json_response(
+                {"error": str(exc), "code": "mcp_server_name_ambiguous"}, status=409
+            )
+        if key is None:
             # Server may exist in another scope (agent config, ~/.claude.json)
             # but not in kiro global mcp.json. Create a stub entry to hold
             # disabledTools state — kiro-cli reads this file for enforcement.
@@ -737,11 +748,12 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
             if server not in known:
                 return _mcp_server_not_found(server)
             servers[server] = {}
+            key = server
 
-        spec = servers[server]
+        spec = servers[key]
         if not isinstance(spec, dict):
             if isinstance(spec, str):
-                servers[server] = spec = {"command": spec}
+                servers[key] = spec = {"command": spec}
             else:
                 return _mcp_spec_invalid(server, spec)
         disabled_tools: list[str] = spec.get("disabledTools", [])

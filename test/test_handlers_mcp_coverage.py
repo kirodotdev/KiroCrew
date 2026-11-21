@@ -533,6 +533,35 @@ class TestToggleTool:
         assert _read_global(sandbox)["elsewhere"] == {"disabledTools": ["T"]}
 
     @pytest.mark.asyncio
+    async def test_alias_edits_the_raw_key_entry_without_a_stub(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The table's alias reaches the raw slash key, not a new stub."""
+        _known(monkeypatch, "playwright-mcp")
+        _write_global(sandbox, {"npm:@playwright/mcp": {"command": "x"}})
+        resp = await mcp_mod.api_mcp_toggle_tool(
+            _request({"server": "playwright-mcp", "tool": "T", "enabled": False})
+        )
+        assert resp.status == 200
+        assert _read_global(sandbox) == {
+            "npm:@playwright/mcp": {"command": "x", "disabledTools": ["T"]}
+        }
+
+    @pytest.mark.asyncio
+    async def test_alias_of_two_raw_keys_is_409_and_writes_nothing(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _known(monkeypatch, "team-foo")
+        before = {"team/foo": {"command": "a"}, "other:team/foo": {"command": "b"}}
+        _write_global(sandbox, before)
+        resp = await mcp_mod.api_mcp_toggle_tool(
+            _request({"server": "team-foo", "tool": "T", "enabled": False})
+        )
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "mcp_server_name_ambiguous"
+        assert _read_global(sandbox) == before
+
+    @pytest.mark.asyncio
     async def test_string_spec_is_coerced(self, sandbox: SimpleNamespace) -> None:
         _write_global(sandbox, {"srv": "run-me"})
         resp = await mcp_mod.api_mcp_toggle_tool(
