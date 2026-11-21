@@ -3835,6 +3835,16 @@ real sign-in or a team key, and a Crew with a team key hosts through the Kiro re
 by default, so without this every such gateway would register with the production
 relay. `cli_gateway_boot._resolve_gateway_args` forces `no_tunnel` for both.
 
+**A `--test-mode` gateway on its own data home gets its own Kiro home too.**
+`KIROCREW_HOME` moves only the data home; `config.paths.kiro_home()` still names the
+real `~/.kiro`, so the Bots a test gateway creates would land in the real
+`~/.kiro/mates/agents` and its owner record. Before the platform boot resolves it,
+`cli_gateway_boot._isolate_test_mode_kiro_home` sets `KIRO_HOME` to
+`<data home>/kiro`, the value a pod gets (`pod.runtime.build_pod_env`). It leaves
+alone a run without `--test-mode`, one whose `KIRO_HOME` is already set, and one whose
+data home is unset or is a main gateway home (`seed._protected_homes`: `~/.kiro/crew`
+or the legacy `~/.kirocrew`), which shares the real Kiro home on purpose.
+
 **`--approval yolo` refuses to start unless `KIROCREW_HOME` is explicitly set to a
 non-default path.** The flag disables every per-call approval, so pointing it at the
 real data home would let a test drive an operator's live sessions and credentials.
