@@ -52,7 +52,7 @@ function inputs(rows: Slot[], over: InputOverrides = {}): SidebarRowInputs {
     rows,
     local: {
       folderOf: {}, pinned: new Set(), pinnedRank: new Map(), unread: new Set(), running: new Set(), recent: new Set(),
-      searchRanks: null, manualRank: new Map(), drawnIndex: new Map(),
+      searchRanks: null, manualRank: new Map(), drawnIndex: new Map(), openKey: null,
       ...over.local,
     },
     filters: {
@@ -101,7 +101,7 @@ const keys = (rows: Slot[]) => rows.map(s => s.peer_id ? `${s.peer_id}:${s.key}`
 const FULL_LOCAL: SidebarRowInputs['local'] = {
   folderOf: { k: 'F1' }, pinned: new Set(['k']), pinnedRank: new Map([['k', 0]]), unread: new Set(['k']),
   running: new Set(['k']), recent: new Set(['k']), searchRanks: null,
-  manualRank: new Map([['k', 0]]), drawnIndex: new Map([['k', 0]]),
+  manualRank: new Map([['k', 0]]), drawnIndex: new Map([['k', 0]]), openKey: 'k',
 }
 const FULL_SCENE_LOCAL: RowScene['local'] = {
   recentRank: new Map([['k', 1]]), subagentCounts: { k: 2 }, subagentApprovalCounts: { k: 1 }, poppedOut: new Set(['k']),
@@ -510,6 +510,49 @@ describe('a pinned session is exempt from the property filters', () => {
   })
 })
 
+describe('the open chat is exempt from the status chips', () => {
+  const opened = local('open', { title: 'alpha' })
+  const unreadRow = local('unread', { title: 'beta' })
+  const peerTwin = peer('open', { title: 'gamma' })
+  const build = (filters: InputOverrides['filters'], openKey: string | null = 'open') =>
+    buildSidebarRows(inputs([opened, unreadRow, peerTwin], { local: { unread: new Set(['unread']), openKey }, filters }))
+  const unreadOnly = { status: { active: new Set<SessionFilterKey>(['unread']) } }
+
+  it('stays listed under Unread after opening it marked it read', () => {
+    const rows = build(unreadOnly)
+    expect(keys(rows.filteredSlots)).toEqual(['open', 'unread'])
+    expect(rows.revealBlockingFilters[2].hides(opened)).toBe(false)
+  })
+
+  it('drops out once another chat is opened', () => {
+    expect(keys(build(unreadOnly, 'unread').filteredSlots)).toEqual(['unread'])
+  })
+
+  it('lends nothing to a peer row whose key collides with it', () => {
+    expect(keys(build(unreadOnly).filteredSlots)).not.toContain('inst-a:open')
+  })
+
+  it('gets no pass from a chip that opening a chat does not change', () => {
+    expect(keys(build({ status: { active: new Set<SessionFilterKey>(['running']) } }).filteredSlots)).toEqual([])
+  })
+
+  it('is not blamed on the status chips when the search drops it, so a reveal clears only the search', () => {
+    const rows = build({ ...unreadOnly, search: { text: 'beta' } })
+    expect(keys(rows.filteredSlots)).toEqual(['unread'])
+    expect(rows.revealBlockingFilters[1].hides(opened)).toBe(true)
+    expect(rows.revealBlockingFilters[2].hides(opened)).toBe(false)
+  })
+
+  it('is still dropped by the search and by a status hide', () => {
+    expect(keys(build({ ...unreadOnly, search: { text: 'beta' } }).filteredSlots)).toEqual(['unread'])
+    const hidden = buildSidebarRows(inputs([opened, unreadRow], {
+      local: { running: new Set(['open']), openKey: 'open' },
+      filters: { status: { hidden: new Set<SessionFilterKey>(['running']) } },
+    }))
+    expect(keys(hidden.filteredSlots)).toEqual(['unread'])
+  })
+})
+
 describe('the status hides', () => {
   const running = local('run', { title: 'alpha' })
   const pinnedRunning = local('pinrun', { pinned: true, title: 'beta' })
@@ -847,6 +890,7 @@ describe('each output keeps its identity while its own inputs hold still', () =>
     ['local.running', withLocal('running', new Set(['b', 'c']))],
     ['local.recent', withLocal('recent', new Set(['a']))],
     ['local.searchRanks', withLocal('searchRanks', new Map([['b', 0], ['d', 1]]))],
+    ['local.openKey', withLocal('openKey', 'c')],
     ['filters.tags.resolved', withFilter('tags', 'resolved', new Set(['t2']))],
     ['filters.tags.raw', withFilter('tags', 'raw', new Set(['t2']))],
     ['filters.search.text', withFilter('search', 'text', 'beta')],
