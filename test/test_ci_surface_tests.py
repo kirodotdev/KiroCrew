@@ -7,6 +7,7 @@ so a miss costs CI time instead of silently dropping a cross-surface parity guar
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import importlib.util
 import os
@@ -478,9 +479,23 @@ def test_any_host_can_name_the_list_a_windows_run_gets(selector, monkeypatch, ca
     assert capsys.readouterr().out.splitlines() == selector.collect("backend")
 
 
+def _glob_ignoring_case(monkeypatch) -> None:
+    """Make ``Path.rglob`` match names whatever their case, as it does on Windows."""
+    strict = Path.rglob
+
+    def loose(self, pattern, **_kwargs):
+        wanted = pattern.lower()
+        return (p for p in strict(self, "*") if fnmatch.fnmatchcase(p.name.lower(), wanted))
+
+    monkeypatch.setattr(Path, "rglob", loose)
+
+
+# Each seed under both glob rules: this test runs on the Windows shards too, where
+# the host's glob ignores case, and no list may follow the host it is computed on.
+@pytest.mark.parametrize("host_glob_ignores_case", [False, True])
 @pytest.mark.parametrize("seed", range(6))
 def test_a_windows_shard_and_the_linux_job_name_one_digest_for_one_commit(
-    tmp_path, monkeypatch, capsys, seed
+    tmp_path, monkeypatch, capsys, seed, host_glob_ignores_case
 ) -> None:
     """The Linux job's ``--for-windows`` digest is the one a Windows shard computes.
 
@@ -494,6 +509,8 @@ def test_a_windows_shard_and_the_linux_job_name_one_digest_for_one_commit(
     rng = random.Random(seed)
     selector = _load_selector()
     monkeypatch.setattr(selector, "_repo_root", lambda: tmp_path)
+    if host_glob_ignores_case:
+        _glob_ignoring_case(monkeypatch)
     guard = "import os\n\n\ndef test_x():\n    assert os.path.isfile('website/src/a.ts')\n"
     pure = "from kiro_crew import config\n\n\ndef test_x():\n    assert config\n"
     # Spellings a Windows glob matches and a POSIX one does not, a name whose

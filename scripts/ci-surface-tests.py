@@ -137,24 +137,22 @@ def _iter_files(
     """Files under ``rel_dir`` whose name matches one of ``globs``.
 
     ``ignore_case`` matches the name whatever its case, which is how a glob
-    behaves on Windows. It is done here, by name, and not left to ``rglob``,
-    whose case rule follows the host: the Windows list then comes out the same
-    on a Windows shard and on the Linux job that names its digest.
+    behaves on Windows; without it the case must match, as on POSIX. Either
+    way the name is matched here and never by ``rglob``, whose case rule
+    follows the host: each list then comes out the same on any host, a Windows
+    shard and the Linux job that names its digest included.
     """
     base = root / rel_dir
     if not base.is_dir():
         return []
-    found: list[Path] = []
-    if ignore_case:
-        wanted = [pattern.lower() for pattern in globs]
-        found.extend(
-            path
-            for path in base.rglob("*")
-            if any(fnmatch.fnmatchcase(path.name.lower(), pattern) for pattern in wanted)
-        )
-    else:
-        for pattern in globs:
-            found.extend(base.rglob(pattern))
+    wanted = [pattern.lower() if ignore_case else pattern for pattern in globs]
+
+    def matches(name: str) -> bool:
+        if ignore_case:
+            name = name.lower()
+        return any(fnmatch.fnmatchcase(name, pattern) for pattern in wanted)
+
+    found = [path for path in base.rglob("*") if matches(path.name)]
     return [p for p in found if p.is_file() and "node_modules" not in p.parts]
 
 
@@ -268,10 +266,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.summary:
         root = _repo_root()
+        # Counted by the rule the list above was selected by.
+        loose = args.for_windows or _is_windows()
         if args.surface == "backend":
-            total = sum(len(_iter_files(root, d, _BACKEND_GLOBS)) for d in _BACKEND_ROOTS)
+            total = sum(len(_iter_files(root, d, _BACKEND_GLOBS, loose)) for d in _BACKEND_ROOTS)
         else:
-            total = sum(len(_iter_files(root, d, g)) for d, g in _FRONTEND_SPECS)
+            total = sum(len(_iter_files(root, d, g, loose)) for d, g in _FRONTEND_SPECS)
         print(
             f"{args.surface}: {len(paths)} must-run / {total} total "
             f"({total - len(paths)} provably single-surface, skippable)",
