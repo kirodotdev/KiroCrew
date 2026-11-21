@@ -871,6 +871,15 @@ now defines is a `dead-identifier` finding against the list file, and unlike a d
 dead identifier it fails the run without `--strict-identifiers`, until the line is
 deleted.
 
+A name one doc owns is declared in that doc, on its own line outside a fence:
+`<!-- docs-lint: defines a, b -->` for keys the doc defines itself (an output
+schema it specifies, fields an agent writes into free-form notes), and
+`<!-- docs-lint: wrong-on-purpose a -->` for a name it cites so a reader avoids it
+(a retired task type, a deliberate typo). The comment does not render on GitHub,
+covers only that doc, and only `dead-identifier` reads it. It is held to the same
+rule as the external list: a declared name the code defines, or one the doc no
+longer cites in a code span, fails the run until the name leaves the comment.
+
 The builtin app tree is the mirror image of that exemption: it keeps every fact
 check and every link check, and drops only the two CURATION rules, reachability and
 the per-directory index. A `SKILL.md` is a skill definition an agent loads verbatim,

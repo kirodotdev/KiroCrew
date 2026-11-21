@@ -74,7 +74,12 @@ answer on a repository this size is "mostly, with a recorded backlog":
 * ``dead-identifier`` -- a backticked identifier that appears nowhere in the code
   trees. Report-only unless ``--strict-identifiers``, because the class is
   genuinely noisy: a doc may name a wire field, a vendor symbol or a deliberately
-  wrong example.
+  wrong example. A doc that owns such a name declares it on its own line, outside
+  fences: ``<!-- docs-lint: defines a, b -->`` for keys it defines itself (its
+  output schema, fields an agent writes) or ``<!-- docs-lint: wrong-on-purpose a -->``
+  for a name it cites so a reader avoids it. The declaration covers that doc and
+  this check only, and fails the run once the code defines the name or the doc
+  stops citing it.
 * ``anchor-exists`` -- a link written under ``docs/`` whose ``#fragment`` names no
   heading slug and no explicit ``id`` in its markdown target. The file resolves,
   so check 1 stays green while the reader lands at the top of the page.
