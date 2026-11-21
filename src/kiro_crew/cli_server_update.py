@@ -571,12 +571,25 @@ def _update(force: bool = False) -> None:
         line for line in status.stdout.strip().splitlines() if not line.startswith("??")
     ]
     if tracked_changes:
-        print("  ⚠️  Local tracked-file changes will be discarded:")
+        count = len(tracked_changes)
+        files = "1 file" if count == 1 else f"{count} files"
+        rerun = "kirocrew update --force" if force else "kirocrew update"
+        print(f"  ⚠️  You have uncommitted changes in {files}. Updating will discard them:")
         for line in tracked_changes[:10]:
             print(f"      {line}")
-        resp = input("  Continue? [y/N] ").strip().lower()
+        if count > 10:
+            print(f"      … and {count - 10} more")
+        # The folder goes on a line of its own, not into a command: no one
+        # quoting keeps every legal path literal in sh, cmd.exe and PowerShell.
+        print("  Answer N to keep them. To keep them and still update, go to the checkout:")
+        print(f"      {proj}")
+        print("  and run there:")
+        print("      git stash")
+        print(f"      {rerun}")
+        print("      git stash pop")
+        resp = input("  Discard these changes and update anyway? [y/N] ").strip().lower()
         if resp != "y":
-            print("  Aborted.")
+            print("  Aborted. Your changes were kept; nothing was updated.")
             sys.exit(0)
 
     # Re-classify immediately before the reset. The verdict above is a
