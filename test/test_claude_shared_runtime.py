@@ -774,6 +774,55 @@ def test_a_served_pin_is_named_on_the_retry_and_not_adopted_twice(harness, tmp_p
     assert asyncio.run(scenario()) == (True, True)
 
 
+_ADOPTED = "global.anthropic.claude-opus-4-8[1m]"
+_OFFERED = "global.anthropic.claude-sonnet-4-6[1m]"
+
+
+@pytest.mark.parametrize(
+    ("advertised", "substitute", "adopts", "model"),
+    [
+        pytest.param((), _OFFERED, True, _OFFERED, id="no_cache"),
+        pytest.param((_OFFERED,), _OFFERED, True, _OFFERED, id="cache_agrees"),
+        pytest.param((_ADOPTED, _OFFERED), _OFFERED, True, _OFFERED, id="cache_stale"),
+        pytest.param((_ADOPTED,), _ADOPTED, False, _ADOPTED, id="adopted_model_offered_again"),
+    ],
+)
+def test_a_model_adopted_earlier_and_refused_now_falls_back_to_the_offered_one(
+    harness, tmp_path, monkeypatch, advertised, substitute, adopts, model
+):
+    """The per-chat client's case on the shared host: a model the seed already adopted
+    and the policy now refuses is not named again, even when an advertised list older
+    than that policy still names it; the offered model is."""
+    import json
+
+    from kiro_crew import model_registry
+    from kiro_crew.acp import seed_provenance as sp
+
+    # Each case starts with no live claim on the seed: a state an earlier case
+    # left behind would otherwise hold the file and decline this case's write.
+    monkeypatch.setattr(sp, "_RECORDS", {})
+    monkeypatch.setattr(sp, "_LIVE", {})
+    monkeypatch.setattr(sp, "_SHARERS", {})
+    monkeypatch.setattr(sp, "_sidecar_path", lambda: tmp_path / "seeds.json")
+
+    async def scenario() -> bool:
+        state = await _prepared_for_envelope(harness, tmp_path)
+        monkeypatch.setattr(
+            model_registry,
+            "_ADVERTISED_MODELS",
+            {state._model_registry_namespace: advertised},
+        )
+        state._model = _ADOPTED
+        state._adopted_substitute_model = _ADOPTED
+        adopted = await harness.adopt_substituted_model(state, substitute)
+        assert state._model == model
+        if adopted:
+            assert json.loads(_seed(tmp_path).read_text()).get("model") == model
+        return adopted
+
+    assert asyncio.run(scenario()) is adopts
+
+
 @pytest.mark.parametrize(
     ("refusals", "starts", "started"),
     [(2, 3, True), (99, 3, False)],

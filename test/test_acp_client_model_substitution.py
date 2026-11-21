@@ -556,6 +556,37 @@ class TestSubstitutionFollow:
         assert retry["_meta"]["claudeCode"]["options"]["settings"]["model"] == self._PIN
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("advertised", "substitute", "refusals", "seeded_after", "started", "model"),
+        [
+            pytest.param([], _OTHER, 1, [_OTHER], True, _OTHER, id="no_cache"),
+            pytest.param([_OTHER], _OTHER, 1, [_OTHER], True, _OTHER, id="cache_agrees"),
+            pytest.param([_PIN, _OTHER], _OTHER, 1, [_OTHER], True, _OTHER, id="cache_stale"),
+            pytest.param(
+                [_PIN, _OTHER], _OTHER, 9, [_OTHER], False, _OTHER, id="offered_refused_too"
+            ),
+            pytest.param([_PIN], _PIN, 1, [], False, _PIN, id="adopted_model_offered_again"),
+            pytest.param([_PIN], _OTHER, 0, [], True, _PIN, id="adopted_model_still_allowed"),
+        ],
+    )
+    async def test_a_model_adopted_earlier_and_refused_now_falls_back_to_the_offered_one(
+        self, tmp_path, monkeypatch, advertised, substitute, refusals, seeded_after, started, model
+    ):
+        # An earlier start adopted _PIN. The policy now refuses it and offers
+        # _OTHER, and the process restarted on the same client. An advertised
+        # list older than the policy may still name _PIN: the retry must name
+        # _OTHER and never re-send _PIN.
+        client = self._warm_pinned_client(tmp_path, monkeypatch, advertised)
+        client._adopted_substitute_model = self._PIN
+        client._write_claude_local_settings()
+        seeded, response = await self._start_refused(
+            client, tmp_path, substitute, refusals=refusals
+        )
+        assert seeded == [self._PIN, *seeded_after]
+        assert response == ({"sessionId": "retry-session"} if started else {})
+        assert client._model == model
+
+    @pytest.mark.asyncio
     async def test_a_refusal_of_the_model_the_seed_names_is_not_retried(
         self, tmp_path, monkeypatch
     ):

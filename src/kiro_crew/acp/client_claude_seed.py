@@ -388,11 +388,20 @@ def _substitution_retry_model(self: ClaudeAcpClient, substitute: str) -> str:
     names the pin on the spelling the push sends, and the session keeps it. A pin
     not advertised, no pin, or a cold cache (nothing to check against) adopts
     *substitute*, the model the backend itself said it serves.
+
+    A pin the seed already names (adopted in this start or an earlier one) and the
+    backend refused again is not named twice, whatever the advertised list still
+    says: that list can be older than the policy that now refuses it, so
+    *substitute* is named instead. The result equals the adopted model only when
+    the backend refused *substitute* itself, which no retry can fix.
     """
     if not self._model or self._model == DEFAULT_MODEL:
         return substitute
     namespace = self._model_registry_namespace
     pin = model_registry.resolve_wire_model_id(self._model, namespace)
+    adopted = getattr(self, "_adopted_substitute_model", None)
+    if adopted and adopted in (self._model, pin):
+        return substitute
     return pin if pin in model_registry.advertised_models(namespace) else substitute
 
 
