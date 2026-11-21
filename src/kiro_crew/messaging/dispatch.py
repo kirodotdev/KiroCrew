@@ -54,6 +54,7 @@ from kiro_crew.executors import (
 from kiro_crew.hooks import (
     HOOK_REPLY,
 )
+from kiro_crew.llm_helpers import record_interaction_event
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import turn_ceiling
 from kiro_crew.messaging.dispatch_admission import (
@@ -1425,6 +1426,9 @@ class ChannelTurns:
                         )
             else:
                 _record_success(sessions, session_key, channel)
+                # Per-interaction telemetry, as every landed-turn engine reports
+                # it, on the provider this turn ran on (a retry may swap it).
+                record_interaction_event(_turn_provider, session_key, channel)
                 verdict = Verdict.ANSWERED
 
             await self._after_answer(

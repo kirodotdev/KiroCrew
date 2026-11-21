@@ -1637,6 +1637,11 @@ async def _run_inner_impl(
     def _count_success() -> None:
         # The one success bookkeeping, for a claimed ending and the tail's alike.
         self._manager._sessions.record_success(session_key)
+        # Per-interaction telemetry, as every landed-turn engine reports it.
+        # Imported here like ActiveModelLine above.
+        from kiro_crew.llm_helpers import record_interaction_event
+
+        record_interaction_event(client, session_key, "subagent")
         Stats().inc_subagent_completed()
         logger.info("Subagent %s completed", info.id)
 

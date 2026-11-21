@@ -55,6 +55,7 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.llm_helpers import (
     provider_last_turn_usage,
+    record_interaction_event,
     stream_and_collect_json,
 )
 from kiro_crew.messaging.commands import compact_unsupported_backend
@@ -1047,6 +1048,8 @@ async def execute_task(
                     retryable=bool(_stop.retryable),
                 )
             sessions.record_success(session_key)
+            # Per-interaction telemetry, as every landed-turn engine reports it.
+            record_interaction_event(client, session_key, "task")
             # The prompt (with any re-injected context) reached the model and
             # the turn completed, so the finally must NOT restore the flag. A
             # cancelled or stalled stream, or one that ended without any

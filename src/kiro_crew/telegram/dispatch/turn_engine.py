@@ -36,6 +36,7 @@ from kiro_crew.executors import (
 )
 from kiro_crew.history import _redact_at_write_boundary, mint_row_mid
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_kwargs
+from kiro_crew.llm_helpers import record_interaction_event
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
 from kiro_crew.messaging.attachments import IngestLimits, append_attachment_context
 from kiro_crew.messaging.commands import (
@@ -566,6 +567,9 @@ async def _run_turn(
                     )
         else:
             self.sessions.record_success(session_key)
+            # Per-interaction telemetry, as every landed-turn engine reports it,
+            # on the provider this turn ran on (a retry may have swapped it).
+            record_interaction_event(_turn_provider, session_key, "telegram")
             # Beside the counter it stands in for: a landed turn clears the
             # shared-death streak exactly as it clears the consecutive-failure
             # count, so the streak stays a consecutive run rather than a lifetime

@@ -1146,6 +1146,10 @@ async def _run_hook_inner(
             _complete_event = event
             break
     state.sessions.record_success(session_key)  # sync; record_failure is async
+    # Per-interaction telemetry, as every landed-turn engine reports it.
+    from kiro_crew.llm_helpers import record_interaction_event
+
+    record_interaction_event(client, session_key, "webhook")
 
     # ── Per-turn usage row: attribute webhook spend. ──
     try:
