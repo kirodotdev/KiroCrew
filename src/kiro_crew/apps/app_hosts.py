@@ -141,14 +141,20 @@ def normalized_hosts(raw: object) -> list[str]:
     return out
 
 
-def host_list_errors(where: str, hosts: list[str], bad_hosts: bool, limit: int) -> list[str]:
-    """The validation errors of a point entry's ``hosts``, already normalized."""
+def host_list_errors(
+    where: str, hosts: list[str], bad_hosts: bool, limit: int, required: bool = True
+) -> list[str]:
+    """The validation errors of a point entry's ``hosts``, already normalized.
+
+    *required* False lets ``hosts`` be empty, for a point that fires on something
+    else too (a link-preview provider with text patterns).
+    """
     errors: list[str] = []
     if bad_hosts:
         # Coerced to [] this would read as "no links", and the point would install
         # clean and never fire.
         errors.append(f"{where}: hosts must be an array of hostnames")
-    elif not hosts:
+    elif not hosts and required:
         errors.append(f"{where}: hosts must list at least one hostname")
     elif len(hosts) > limit:
         errors.append(f"{where}: {len(hosts)} hosts exceeds the limit of {limit}")
