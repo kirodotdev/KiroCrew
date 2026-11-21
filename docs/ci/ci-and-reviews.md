@@ -651,21 +651,36 @@ shared 15,000 requests an hour the section above is about, returns at most
 1,000 runs a search, and carries no count of a run's red jobs.
 
 **The budget.** The census reads by GraphQL with the job's `GITHUB_TOKEN`. That
-token has a GraphQL primary limit of its own, apart from the REST one: 15,000
-points an hour per repository for a repository of a GitHub Enterprise Cloud
-account, 1,000 otherwise
-([GitHub's GraphQL rate limits](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#primary-rate-limit)).
-Every workflow of the repository shares it.
+token has a GraphQL primary limit of its own, apart from the REST one, and
+every workflow of the repository shares it. Its size is read, not assumed:
+this repository's Actions token has 10,000 points an hour, where
+[GitHub's page](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#primary-rate-limit)
+gives 1,000 or 15,000 for `GITHUB_TOKEN`.
 
-| Flag | Value | What it bounds |
-|---|---|---|
-| `--max-points` | 4,800 | The most one run spends: a third of the bucket, less 200 points for the calls already sent when the census stops (one for each worker, about 30 points at most). A weekday is about 3,000, and a day up to about three days back still fits |
-| `--reserve-points` | 7,700 | It stops before a call that would start with less: half the bucket, and the same 200 points for the calls already sent |
-| `--gh-timeout-seconds` | 900 | One `gh` call: the 600 seconds the `gh` wrapper may sleep inside it on a spent limit, and 300 for the call itself. The wrapper charges a sleep before it starts, so a call ended mid-sleep would have spent the wait budget and read nothing |
+The step before the census runs `scripts/ci_red_census_budget.py`. It reads the
+bucket from `/rate_limit`, which costs nothing, and sizes the census's two
+limits to it:
 
-A step before the census reads the bucket's size from `/rate_limit`, which
-costs nothing, and fails the job when it is under 10,500 points (the reserve
-and a weekday). The census never waits for a bucket: a job that sleeps holds a
+| Limit | Rule | On 10,000 points | What it bounds |
+|---|---|---|---|
+| reserve (`--reserve-points`) | half the bucket, plus 120 | 5,120 | The census stops, and says Partial, before a call that would start with less: other workflows keep half of every hour's bucket |
+| most (`--max-points`) | two fifths of the bucket, less 120 | 3,880 | The most one run spends. A weekday is about 3,000 |
+
+The 120 points are one call for each of the 4 workers at about 30 points, the
+dearest query: the census checks its budget before a call and learns the cost
+after it, so the calls already sent when it stops land past the line.
+
+The step refuses, the census is not started and the job fails when the read
+would not fit: two fifths of the bucket hold less than a weekday (any bucket
+under 7,800 points an hour), what is left above the reserve holds less than a
+weekday (other jobs spent this hour's bucket), or the bucket cannot be read.
+The census step takes both numbers from that step and starts nothing without
+them. `--gh-timeout-seconds 900` gives one `gh` call the 600 seconds the `gh`
+wrapper may sleep inside it on a spent limit and 300 for the call itself: the
+wrapper charges a sleep before it starts, so a call ended mid-sleep would have
+spent the wait budget and read nothing.
+
+The census never waits for a bucket: a job that sleeps holds a
 runner. A `schedule` event carries no inputs and no `repository` object, so
 an empty `day` means yesterday and the default branch falls back to
 `github.ref_name`; a test evaluates every step's `env:` under both events.
@@ -685,7 +700,7 @@ the days it has. Any other exit fails the job, and
 
 **Filling a day in.** GitHub may delay or drop a scheduled run, and nothing
 re-reads a missed night by itself. Run the workflow by hand with `day` set to
-the missing day (up to about three days back fits one run's budget), then once
+the missing day (yesterday and the day before fit one run's budget), then once
 more with `week` ticked and `day` set to the last day of that week.
 
 **What adding days up does and does not do.** A run belongs to the day it was

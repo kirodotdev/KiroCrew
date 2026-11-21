@@ -11,9 +11,10 @@ job summary. What is pinned, for every job of the workflow unless said:
 * WHEN IN THE DAY -- every tick is in the hours this repository runs least, off
   the top of the hour; the week is added up on exactly one of them, a weekend
   one, after that night's read whatever became of it.
-* BUDGET -- one night's read takes at most a third of a 15,000-point bucket and
-  never starts a call under half of it; the bucket is read, for nothing, before
-  any point is spent.
+* BUDGET -- the census's reserve and its cap are not written in the workflow:
+  the step before it sizes them to the bucket the token has, the census step
+  takes them from that step and starts nothing without them. The sizing rule
+  has its own tests (``test_ci_red_census_budget.py``).
 * BOTH EVENTS -- every expression a step's ``env:`` holds has a value under a
   ``schedule`` payload (no inputs, no ``repository`` object) and under a
   dispatch, and the executed steps below get their environment from those
@@ -30,10 +31,12 @@ The executed tests skip where there is no POSIX bash.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -45,19 +48,17 @@ WORKFLOW = ROOT / ".github" / "workflows" / "ci-red-census.yml"
 RATE_LIMIT_ACTION = "./.github/actions/gh-rate-limit"
 DAY_STEP = "Take the census"
 WEEK_STEP = "Add the week up"
-PROBE_STEP = "Read the GraphQL bucket"
+BUDGET_STEP = "Size the budget to the bucket"
 
-# What GitHub gives the Actions token for a repository of an Enterprise Cloud
-# account, in GraphQL points an hour; the workflow's header cites the page.
-BUCKET_POINTS = 15000
+# What this repository's Actions token has, in GraphQL points an hour, and what
+# was left of it when the first scheduled run read it.
+BUCKET_POINTS = 10000
+BUCKET_LEFT = 9353
 # One weekday of this repository: the points it cost and the seconds it took.
 WEEKDAY_POINTS = 2786
 WEEKDAY_SECONDS = 1279
 # The UTC hours with the fewest runs created, on the weekday that was counted.
 QUIET_HOURS = range(5, 9)
-# The dearest query the census sends, ten check suites of up to 100 red jobs
-# each, as GitHub prices it: connections asked for, divided by 100.
-MOST_POINTS_A_CALL = 25
 # What the census allows one `gh` call that waits for nothing.
 CALL_SECONDS = 300
 
@@ -250,32 +251,41 @@ def test_the_week_is_added_up_on_one_weekend_tick_after_the_nights_read() -> Non
 # ── The budget ───────────────────────────────────────────────────────────────
 
 
-def test_one_night_takes_a_third_of_the_bucket_at_most_and_leaves_half_alone() -> None:
-    """The census checks its budget before a call and learns the cost after it, so
-    the calls already sent when it stops, one a worker, land past the line.
-    Both flags leave room for them."""
-    reserve, most = _flag(DAY_STEP, "--reserve-points"), _flag(DAY_STEP, "--max-points")
-    in_flight = _flag(DAY_STEP, "--workers") * MOST_POINTS_A_CALL
-    assert (reserve - in_flight) * 2 >= BUCKET_POINTS
-    assert (most + in_flight) * 3 <= BUCKET_POINTS
-    assert most + reserve <= BUCKET_POINTS, "an untouched bucket holds the most a run may spend"
-    assert most * 2 >= 3 * WEEKDAY_POINTS, "a day half as heavy again still fits"
-    assert "--logs never " in _step(DAY_STEP)["run"]
+def test_the_budget_is_sized_by_the_step_before_the_census_not_written_here() -> None:
+    names = [step.get("name") for step in _jobs()["day"]["steps"]]
+    assert names.index(BUDGET_STEP) < names.index(DAY_STEP)
+    census = _step(DAY_STEP)
+    run = census["run"]
+    # No number of points is written in the census step: both come from the
+    # step that read the bucket.
+    assert not re.search(r"--(reserve|max)-points \d", run)
+    step_id = _step(BUDGET_STEP)["id"]
+    given = {
+        flag: name
+        for flag in ("--reserve-points", "--max-points")
+        for name, value in census["env"].items()
+        if f'{flag} "${name}"' in run and f"steps.{step_id}.outputs." in value
+    }
+    assert sorted(given) == ["--max-points", "--reserve-points"]
+    assert given["--reserve-points"] != given["--max-points"]
+    assert "--logs never " in run
+
+
+def test_the_budget_is_sized_for_the_workers_the_census_runs() -> None:
+    """The room left for calls in flight is one call a worker."""
+    sized = re.search(r"--workers (\d+)\b", _step(BUDGET_STEP)["run"])
+    assert sized and int(sized.group(1)) == _flag(DAY_STEP, "--workers")
+
+
+def test_the_budget_step_expects_a_weekday() -> None:
+    needs = _flag(BUDGET_STEP, "--needs-points")
+    assert WEEKDAY_POINTS <= needs <= WEEKDAY_POINTS * 5 // 4
 
 
 def test_the_census_never_waits_for_a_bucket() -> None:
-    run = _step(DAY_STEP)["run"]
-    assert "sleep" not in run and "--max-wait" not in run
-
-
-def test_a_bucket_too_small_for_a_day_fails_before_a_point_is_spent() -> None:
-    names = [step.get("name") for step in _jobs()["day"]["steps"]]
-    assert names.index(PROBE_STEP) < names.index(DAY_STEP)
-    probe = _step(PROBE_STEP)
-    needed = int(probe["env"]["NEEDED_POINTS"])
-    assert _flag(DAY_STEP, "--reserve-points") + WEEKDAY_POINTS <= needed <= BUCKET_POINTS
-    assert "gh api rate_limit" in probe["run"], "the one read that costs nothing"
-    assert "graphql" not in probe["run"].replace(".resources.graphql", "")
+    for name in (BUDGET_STEP, DAY_STEP):
+        run = _step(name)["run"]
+        assert "sleep" not in run and "--max-wait" not in run
 
 
 def test_the_week_spends_no_graphql_point() -> None:
@@ -311,6 +321,8 @@ def test_no_job_asks_for_a_larger_runner() -> None:
 # ── Both events ──────────────────────────────────────────────────────────────
 
 SUNDAY_TICK = "17 7 * * 0"
+# What the budget step hands the census step when the bucket holds a read.
+BUDGET_OUTPUTS = {"reserve": "5120", "most": "3880"}
 
 
 def _context(event: str, **inputs: Any) -> dict[str, Any]:
@@ -321,11 +333,13 @@ def _context(event: str, **inputs: Any) -> dict[str, Any]:
     default branch.
     """
     github = {"token": "stub", "repository": "example/repo", "ref_name": "main"}
+    steps = {"budget": {"outputs": dict(BUDGET_OUTPUTS)}}
     if event == "schedule":
-        return {"github": {**github, "event": {"schedule": SUNDAY_TICK}}, "inputs": {}}
+        schedule = {**github, "event": {"schedule": SUNDAY_TICK}}
+        return {"github": schedule, "inputs": {}, "steps": steps}
     given = {"day": "", "week": False, **inputs}
     payload = {"inputs": given, "repository": {"default_branch": "main"}}
-    return {"github": {**github, "event": payload}, "inputs": given}
+    return {"github": {**github, "event": payload}, "inputs": given, "steps": steps}
 
 
 def _evaluate(value: str, context: dict[str, Any]) -> str:
@@ -407,7 +421,12 @@ COUNTS = "GraphQL calls: 1900 (2900 points)\nREST calls: 1\nRun time: 1300.0s\n"
 
 
 def _run_script(
-    tmp_path: Path, step: str, status: int, wrote: bool = True, **inputs: str
+    tmp_path: Path,
+    step: str,
+    status: int,
+    wrote: bool = True,
+    context: dict[str, Any] | None = None,
+    **inputs: str,
 ) -> tuple[subprocess.CompletedProcess[str], str, str]:
     """Run one script step with ``python3`` stubbed, under the environment its own
     ``env:`` gives it: a ``schedule`` event with no ``inputs``, a dispatch with.
@@ -441,7 +460,7 @@ def _run_script(
     )
     stub.chmod(0o755)
     job_summary = tmp_path / "job-summary.md"
-    event = _context("workflow_dispatch", **inputs) if inputs else _context("schedule")
+    event = context or (_context("workflow_dispatch", **inputs) if inputs else _context("schedule"))
     env = dict(os.environ)
     env.update(_env(step, event))
     env.update(
@@ -554,61 +573,113 @@ def test_any_other_exit_fails_the_job_and_says_so(tmp_path: Path, step: str, sta
     assert "REST calls: 1" in written
 
 
-def _run_probe(tmp_path: Path, reply: str, gh_exit: int = 0) -> subprocess.CompletedProcess[str]:
-    """Run the bucket step with a ``gh`` stub that prints ``reply`` and exits ``gh_exit``."""
+def _run_budget(
+    tmp_path: Path, limit: Any, remaining: Any, gh_exit: int = 0
+) -> tuple[subprocess.CompletedProcess[str], dict[str, str], str]:
+    """Run the budget step: the real sizing script, with ``gh`` stubbed to report a
+    bucket of ``limit`` points with ``remaining`` left.
+
+    Returns the finished step, the outputs it set and the job summary.
+    """
     stubs = tmp_path / "stubs"
     stubs.mkdir()
+    reply = json.dumps({"resources": {"graphql": {"limit": limit, "remaining": remaining}}})
+    (tmp_path / "rate_limit.json").write_text(reply, encoding="utf-8", newline="\n")
     stub = stubs / "gh"
     stub.write_text(
-        f"#!/usr/bin/env bash\nprintf '%s\\n' '{reply}'\nexit {gh_exit}\n",
+        f'#!/usr/bin/env bash\ncat "{tmp_path / "rate_limit.json"}"\nexit {gh_exit}\n',
         encoding="utf-8",
         newline="\n",
     )
     stub.chmod(0o755)
-    probe = _step(PROBE_STEP)
+    python = stubs / "python3"
+    python.write_text(f'#!/usr/bin/env bash\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+    python.chmod(0o755)
+    (tmp_path / "scripts").mkdir()
+    shutil.copy(ROOT / "scripts" / "ci_red_census_budget.py", tmp_path / "scripts")
+    outputs = tmp_path / "outputs.txt"
+    job_summary = tmp_path / "job-summary.md"
     env = dict(os.environ)
+    env.update(_env(BUDGET_STEP, _context("schedule")))
     env.update(
         {
             "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}",
-            "GH_TOKEN": "stub",
-            "NEEDED_POINTS": probe["env"]["NEEDED_POINTS"],
-            "GITHUB_STEP_SUMMARY": str(tmp_path / "job-summary.md"),
+            "GITHUB_OUTPUT": str(outputs),
+            "GITHUB_STEP_SUMMARY": str(job_summary),
         }
     )
-    return subprocess.run(
-        ["bash", "-c", probe["run"]],
+    done = subprocess.run(
+        ["bash", "-c", _step(BUDGET_STEP)["run"]],
         cwd=tmp_path,
         env=env,
         capture_output=True,
         encoding="utf-8",
         check=False,
     )
+    lines = outputs.read_text(encoding="utf-8").splitlines() if outputs.exists() else []
+    given = dict(line.split("=", 1) for line in lines)
+    written = job_summary.read_text(encoding="utf-8") if job_summary.exists() else ""
+    return done, given, written
 
 
 @posix_bash
-def test_an_enterprise_bucket_is_large_enough(tmp_path: Path) -> None:
-    done = _run_probe(tmp_path, f"{BUCKET_POINTS} 14990")
+def test_the_bucket_this_repository_has_runs_a_weekday(tmp_path: Path) -> None:
+    """The first scheduled run read 10,000 points an hour with 9,353 left."""
+    done, given, written = _run_budget(tmp_path, BUCKET_POINTS, BUCKET_LEFT)
 
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "::error::" not in done.stdout
+    assert f"{BUCKET_POINTS} points an hour, {BUCKET_LEFT} left" in written
+    reserve, most = int(given["reserve"]), int(given["most"])
+    assert most >= WEEKDAY_POINTS and BUCKET_LEFT - reserve >= WEEKDAY_POINTS
+    assert reserve * 2 >= BUCKET_POINTS and most * 5 <= BUCKET_POINTS * 2
+
+    # What the step set is what the census is started with.
+    context = _context("schedule")
+    context["steps"]["budget"]["outputs"] = given
+    census = tmp_path / "census-step"
+    census.mkdir()
+    done, argv, _ = _run_script(census, DAY_STEP, status=0, context=context)
     assert done.returncode == 0, done.stderr
-    assert "::" not in done.stdout
-    assert "15000" in done.stdout and "14990" in done.stdout
-    assert (tmp_path / "job-summary.md").read_text(encoding="utf-8") == done.stdout
+    words = argv.split()
+    assert words[words.index("--reserve-points") + 1] == given["reserve"]
+    assert words[words.index("--max-points") + 1] == given["most"]
 
 
 @posix_bash
-def test_a_thousand_point_bucket_fails_the_job_before_the_census(tmp_path: Path) -> None:
-    done = _run_probe(tmp_path, "1000 1000")
+@pytest.mark.parametrize(
+    ("limit", "remaining", "gh_exit"),
+    [
+        (1000, 1000, 0),  # a bucket no census fits
+        (BUCKET_POINTS, 6000, 0),  # other jobs spent this hour's bucket
+        (BUCKET_POINTS, BUCKET_LEFT, 1),  # the read failed
+        (None, None, 0),  # the reply names no bucket
+        ("many", "some", 0),
+    ],
+)
+def test_a_bucket_that_does_not_hold_the_read_starts_no_census(
+    tmp_path: Path, limit: Any, remaining: Any, gh_exit: int
+) -> None:
+    done, given, written = _run_budget(tmp_path, limit, remaining, gh_exit)
 
     assert done.returncode == 1
-    assert "::error::" in done.stdout and "1000 points an hour" in done.stdout
+    assert given == {}, "a refused budget hands the census nothing"
+    assert "::error::" in done.stdout
+    assert "Refused:" in written and "Nothing was read." in written
 
 
 @posix_bash
-@pytest.mark.parametrize(("reply", "gh_exit"), [("", 1), ("null null", 0), ("gh: HTTP 502", 1)])
-def test_a_bucket_that_cannot_be_read_leaves_the_guard_to_the_census(
-    tmp_path: Path, reply: str, gh_exit: int
+@pytest.mark.parametrize(
+    "outputs",
+    [{}, {"reserve": "5120"}, {"reserve": "", "most": ""}, {"reserve": "5120", "most": "3880 --x"}],
+)
+def test_the_census_is_not_started_without_a_whole_budget(
+    tmp_path: Path, outputs: dict[str, str]
 ) -> None:
-    done = _run_probe(tmp_path, reply, gh_exit)
+    context = _context("schedule")
+    context["steps"]["budget"]["outputs"] = outputs
+    done, argv, written = _run_script(tmp_path, DAY_STEP, status=0, context=context)
 
-    assert done.returncode == 0, done.stderr
-    assert done.stdout.startswith("::warning::")
+    assert done.returncode == 1
+    assert argv == "" and written == ""
+    assert done.stdout.startswith("::error::") and done.stdout.count("\n") == 1

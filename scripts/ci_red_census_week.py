@@ -70,7 +70,7 @@ MEMBERS = ("summary.json", "red-jobs.csv", "ci-pushes.csv")
 PARTIAL_EXIT = 3
 HOW_TO_READ_A_DAY = (
     "To fill a day in: run this workflow by hand with `day` set to it, which reads that "
-    "day again (a day up to about three days back fits one run's budget), then once more "
+    "day again (yesterday and the day before fit one run's budget), then once more "
     "with `week` ticked and `day` set to the last day of this week."
 )
 _STAMP = "%Y-%m-%dT%H:%M:%SZ"
