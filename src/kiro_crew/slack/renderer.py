@@ -97,6 +97,7 @@ from kiro_crew.slack.handler import (
 from kiro_crew.slack.no_stream_reply import markdown_blocks, post_markdown, seal_placeholder
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.renderer_session_status import ApprovalSessionStatus
+from kiro_crew.slack.renderer_stream_age import StreamHandover
 from kiro_crew.slack.renderer_stream_debt import StreamDebtNotice
 from kiro_crew.slack.renderer_thinking import ThinkingReply
 from kiro_crew.slack.reply_pieces import (  # noqa: F401 -- re-exported
@@ -512,7 +513,9 @@ class SlackApprovalDecider:
         return dec.session_key
 
 
-class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Renderer):
+class SlackRenderer(
+    ApprovalSessionStatus, StreamDebtNotice, StreamHandover, ThinkingReply, Renderer
+):
     """Renders abstract output events onto a Slack thread.
 
     Holds (and exposes) the underlying ``SlackClientOps`` so the inline
@@ -534,6 +537,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         capabilities: TransportCapabilities | None = None,
         decider: SlackApprovalDecider | None = None,
         now: Callable[[], float] | None = None,
+        stream_clock: Callable[[], float] | None = None,
         user_id: str = "",
         uploads_allowed: bool = True,
         upload_root: str = "",
@@ -568,6 +572,8 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         # Monotonic clock seam: injectable so tool timing is deterministic
         # in tests and harness-controllable once handle_message drives this.
         self._now = now or time.monotonic
+        #: Its own clock: the stream's age must not draw on the step timer's reads.
+        self._stream_clock = stream_clock or time.monotonic
         self._stream_ts: str | None = None
         self._use_slack_stream = True  # False => chat.update cursor fallback
         # Set at turn end when this turn's footer carried an OPTIONS control, so
@@ -624,6 +630,9 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         #: Last ``(title, status)`` each step was drawn with, so a step can be
         #: redrawn unchanged when its details arrive late.
         self._task_state: dict[str, tuple[str, str]] = {}
+        #: When the current stream opened (``self._stream_clock()``), for ``StreamHandover``.
+        self._stream_born = 0.0
+        self._rotate_lock = asyncio.Lock()
         #: Steps already drawn with details (see ``_append_task``).
         self._task_with_details: set[str] = set()
         #: Error outcomes held for a step whose narration is pending (``_outcome``).
@@ -720,6 +729,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
             ts = await self._start_stream_if_threaded()
             if ts:
                 self._stream_ts = ts
+                self._stream_born = self._stream_clock()
                 self._use_slack_stream = True
             else:
                 # No streaming surface — fall back to chat.update on a posted
@@ -773,6 +783,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         handled outcome (``new_ts`` None → demote), so map a raise onto it
         rather than letting it reach the transport catch-all.
         """
+        running = await self._park_running_task() if self._stream_ts else None
         if self._stream_ts:
             try:
                 await self.slack.stop_stream(self.channel, self._stream_ts)
@@ -784,6 +795,12 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         new_ts = await self._start_stream_if_threaded(initial_text=_STREAM_CONTINUED)
         if new_ts:
             self._stream_ts = new_ts
+            self._stream_born = self._stream_clock()
+            if running is not None:
+                # The tool is still running: show it on the message that continues.
+                # Its id is drawn afresh there, so its details start clean.
+                self._task_with_details.discard(running[0])
+                await self._append_task(running[0], running[1], "in_progress", rotate_if_aged=False)
         else:
             self._use_slack_stream = False
         return new_ts
@@ -792,6 +809,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         """Append to the stream, rotating once on failure (native ``_append_stream``)."""
         if not text or not self._stream_ts:
             return True
+        await self._rotate_if_aged()
         # The last sink an appended string passes, so the floor lands here too:
         # appended text on this path is FINAL (chat.stopStream does not replace
         # it), which makes an unscanned append unrecoverable.
@@ -1003,7 +1021,15 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
             # over-limit answer announce fewer placeholders than it shipped.
             self._delivered += part
 
-    async def _append_task(self, task_id: str, title: str, status: str, details: str = "") -> bool:
+    async def _append_task(
+        self,
+        task_id: str,
+        title: str,
+        status: str,
+        details: str = "",
+        *,
+        rotate_if_aged: bool = True,
+    ) -> bool:
         """Append a task card. Never rotates (native ``_append_task``).
 
         The card is progress decoration and ``_tool_elapsed_updater`` re-sends it
@@ -1020,6 +1046,8 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         Something went wrong (transport path)" reply on a turn that is still
         live.
         """
+        if rotate_if_aged:
+            await self._rotate_if_aged()
         if not self._stream_ts:
             return False
         # Model-authored (a purpose, a narration), so it meets the same display

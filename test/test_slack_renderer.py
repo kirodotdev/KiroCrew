@@ -79,6 +79,10 @@ class _RecSlack:
         self.calls.append(("append_task", {"title": title, "status": status, "details": details}))
         return True
 
+    async def set_plan_title(self, channel, ts, title):
+        self.calls.append(("set_plan_title", {"title": title}))
+        return True
+
     async def set_thread_status(self, channel, thread_ts, status):
         self.calls.append(("set_thread_status", {"status": status}))
 
@@ -940,6 +944,87 @@ class TestStreamMachinery:
         assert "The answer is 42." in final and "Saving it to notes." in final, final
         assert final.rstrip().endswith("Saved."), final
         assert "append_stream" not in [m for m, _ in rec.calls]
+
+
+class _Ticker:
+    """A settable monotonic clock for the stream's age."""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+class TestStreamAge:
+    """Slack ends a streaming message at ten minutes; the renderer hands over first."""
+
+    def test_a_stream_is_handed_on_before_slack_ends_it(self):
+        async def scenario():
+            rec = _RecSlack()
+            clock = _Ticker()
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, stream_clock=clock)
+            await renderer.on_turn_start()
+            await renderer.on_tool_call("a", "grep", "")
+            clock.t = 541.0
+            await renderer.on_tool_call("b", "cat", "")
+            return rec, renderer
+
+        rec, renderer = asyncio.run(scenario())
+        names = [m for m, _ in rec.calls]
+        assert names.count("start_stream") == 2, rec.calls
+        assert "continued" in [kw for m, kw in rec.calls if m == "start_stream"][1]["initial_text"]
+        stop = names.index("stop_stream")
+        # The step open on the old message is closed as done, with a note, before the
+        # stop: Slack would turn it into an error and title the message "Something
+        # went wrong".
+        closed = [kw for m, kw in rec.calls[:stop] if m == "append_task"][-1]
+        assert closed["status"] == "complete", rec.calls
+        assert "continues" in closed["details"], closed
+        assert [kw["title"] for m, kw in rec.calls[:stop] if m == "set_plan_title"] == [
+            "Continued in the next message"
+        ]
+        # The running tool is drawn again on the message that continues.
+        assert any(
+            m == "append_task" and kw["status"] == "in_progress" for m, kw in rec.calls[stop:]
+        ), rec.calls
+        assert names.count("stop_stream") == 1  # the new stream is still open
+
+    def test_a_young_stream_is_left_alone(self):
+        async def scenario():
+            rec = _RecSlack()
+            clock = _Ticker()
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, stream_clock=clock)
+            await renderer.on_turn_start()
+            await renderer.on_tool_call("a", "grep", "")
+            clock.t = 539.0
+            await renderer.on_tool_call("b", "cat", "")
+            return rec
+
+        names = [m for m, _ in asyncio.run(scenario()).calls]
+        assert names.count("start_stream") == 1 and "stop_stream" not in names
+
+    def test_set_plan_title_sends_a_plan_update_chunk(self):
+        calls = []
+
+        class _Web:
+            async def api_call(self, method, json=None):
+                calls.append((method, json))
+                return {"ok": True}
+
+        client = RealSlackClient.__new__(RealSlackClient)
+        client._web = _Web()
+        assert asyncio.run(client.set_plan_title("C1", "1.1", "Running")) is True
+        assert calls == [
+            (
+                "chat.appendStream",
+                {
+                    "channel": "C1",
+                    "ts": "1.1",
+                    "chunks": [{"type": "plan_update", "title": "Running"}],
+                },
+            )
+        ]
 
 
 class TestToolTimerAndWait:
