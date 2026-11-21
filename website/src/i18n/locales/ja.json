@@ -343,8 +343,8 @@
       "not_declared": "このアプリはプロジェクトピッカーを表示できません。権限に {{path}} が宣言されていません。"
     },
     "sessionChanges": {
-      "not_declared": "このアプリはこのチャットの変更を表示できません。権限に {{path}} が宣言されていません。",
-      "diff_not_declared": "このアプリはこのファイルの差分を表示できません。権限に {{path}} が宣言されていません。",
+      "not_declared": "このアプリはこのチャットの変更を表示できません。このアプリの開発者が許可していません。権限に {{path}} が宣言されていません。アプリの開発者に追加を依頼してください。",
+      "diff_not_declared": "このアプリはこのファイルの変更を表示できません。このアプリの開発者が許可していません。権限に {{path}} が宣言されていません。アプリの開発者に追加を依頼してください。",
       "pick_a_file": "ファイルを選ぶと変更が表示されます。",
       "diff_unavailable": "このチャットはこの変更の前後のファイル全体を記録していないため、表示できる差分がありません。"
     },
@@ -7649,9 +7649,10 @@
       "new_crew": "新規",
       "seen_not_saved": "確認済みとして保存できませんでした。また新規として表示されます。",
       "open_crew_failed": "{{name}} を開けませんでした。",
-      "connect": "接続",
       "connect_crew": "{{name}} に接続",
-      "connected": "接続済み"
+      "connected": "接続済み",
+      "not_connected": "未接続",
+      "connecting": "接続中…"
     },
     "instancesViewport": {
       "connecting": "接続中…",
@@ -10706,6 +10707,7 @@
       "conductor_mode_ms_waiting_pr": "PR #{{n}} を待機中",
       "conductor_mode_ms_waiting_no_reason": "一時停止中（理由の記載なし）",
       "conductor_mode_ms_done_fold": "{{n}} 件完了",
+      "conductor_mode_ms_dropped_fold": "{{n}} 件取り下げ",
       "conductor_mode_ms_pr": "· PR #{{n}}",
       "conductor_mode_run_working": "作業中",
       "conductor_mode_run_waiting": "あなたの対応待ち",

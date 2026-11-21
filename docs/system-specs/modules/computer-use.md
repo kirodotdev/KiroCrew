@@ -1486,7 +1486,7 @@ type-check `CFGetTypeID(v)` against `CFStringGetTypeID()`/`CFArrayGetTypeID()`
 **before** using a value — a wrong-type read is another segfault, not an
 exception.
 
-**2. Electron/Chromium apps need an explicit opt-in.** Chrome returned
+**2. Electron apps need an explicit opt-in.** A cold-started Chrome once returned
 `kAXErrorCannotComplete = -25204` for every attribute read. Setting
 `AXManualAccessibility = kCFBooleanTrue` on the app element and waiting ~2s
 unlocked **1431 nodes in 0.07s**. Without this, Slack, VS Code, Obsidian and
@@ -1501,6 +1501,27 @@ but a secure field that any walk saw still sets `has_secure`), then raise naming
 raw AX code so a support thread is diagnosable. The first `computer_get_state`
 on an Electron app is inherently slow; the skill says so, so a model does not
 read it as a hang.
+
+Chromium browsers need a second attribute. On macOS 14+ a client that just reads
+from Chrome gets the browser's tabs, toolbar and bookmarks with no page in the tree.
+That window is far above the stub threshold, so the `AXManualAccessibility` retry
+never runs. Chrome's own `accessibilitySetValue:forAttribute:` handles
+`AXEnhancedUserInterface`, so for a bundle id in `CHROMIUM_BROWSER_BUNDLE_IDS` a
+walk with no `AXWebArea` sets `AXEnhancedUserInterface`, waits out Chrome's 2s
+debounce, and re-walks for up to `CHROMIUM_OPT_IN_WAIT_SECS`. If the page never
+appears, the browser-UI walk stands. Once the write is accepted or a page appears,
+the opt-in never runs again for that browser process (pid plus start time), so a window that has no page (Task
+Manager, picture-in-picture) does not pay the wait on every snapshot and every
+pre-action fingerprint walk. A refused write that shows no page is retried after
+`CHROMIUM_OPT_IN_RETRY_SECS`, and a walk cut short by its time budget does not trigger
+the opt-in. Chrome keeps the mode on until the attribute is set back
+to false or VoiceOver toggles, so only the first snapshot after an accepted opt-in
+pays the wait; after a VoiceOver toggle the page stays out until the browser restarts.
+Nothing sets it back to false: once opted in, that Chrome process stays in enhanced
+accessibility mode for the rest of its life, as it would with a screen reader running.
+The cost is Chrome's, not Computer Use's: every renderer in that process builds and
+updates its accessibility tree on each page change, which uses more CPU and memory
+and can slow heavy pages, until the browser quits.
 
 **3. `pgrep` is the wrong way to resolve an app to a pid.**
 `pgrep -n "Google Chrome"` returned 47492 — a short-lived helper that vanished
@@ -2777,7 +2798,7 @@ computer use.
 | `computer_use/macos_ffi_ax.py` | Accessibility reads, actions and settable writes, with the messaging timeout and the Create Rule |
 | `computer_use/macos_ffi_window.py` | The CoreGraphics window list, `executable_path`, in-process window capture and the JPEG size check |
 | `computer_use/apps_macos.py` | Window-list app enumeration + pid resolution (never `pgrep`). Bundle `Info.plist` reads honour `security.is_sensitive_path`, so a bundle planted under a protected directory resolves to "identity unknown" rather than being opened |
-| `computer_use/snapshot_macos.py` | Iterative AX walk, `AXManualAccessibility` retry, secure detection |
+| `computer_use/snapshot_macos.py` | Iterative AX walk, `AXManualAccessibility` and Chromium `AXEnhancedUserInterface` retries, secure detection |
 | `computer_use/capture_macos.py` | In-process capture + ImageIO encode + `0o700` persistence + ring trim |
 | `computer_use/screencast.py` | Live-view (PiP) relay: `frame_scope`, the three suppressions, `build_frame_payload`, the loopback POST |
 | `computer_use/cursor_motion.py` | Cursor Motion PATH MODEL — pure geometry (Bezier + arc + progress spring), plus `drag_points` for a multi-point drag. No ctypes, no AppKit, no config |

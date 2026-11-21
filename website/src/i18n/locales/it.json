@@ -373,8 +373,8 @@
       "not_declared": "Questa app non può mostrare il selettore di progetti: le sue autorizzazioni non dichiarano {{path}}."
     },
     "sessionChanges": {
-      "not_declared": "Questa app non può mostrare le modifiche di questa chat: le sue autorizzazioni non dichiarano {{path}}.",
-      "diff_not_declared": "Questa app non può mostrare il diff di questo file: le sue autorizzazioni non dichiarano {{path}}.",
+      "not_declared": "Questa app non può mostrare le modifiche di questa chat. Lo sviluppatore di questa app non l'ha consentito: le autorizzazioni dell'app non dichiarano {{path}}. Chiedi allo sviluppatore dell'app di aggiungerlo.",
+      "diff_not_declared": "Questa app non può mostrare le modifiche di questo file. Lo sviluppatore di questa app non l'ha consentito: le autorizzazioni dell'app non dichiarano {{path}}. Chiedi allo sviluppatore dell'app di aggiungerlo.",
       "pick_a_file": "Scegli un file per vederne le modifiche.",
       "diff_unavailable": "Questa chat non ha registrato il file intero prima e dopo questa modifica, quindi non c'è un diff da mostrare."
     },
@@ -8067,9 +8067,10 @@
       "new_crew": "Nuovo",
       "seen_not_saved": "Impossibile salvare che l’hai visto. Verrà mostrato di nuovo come nuovo.",
       "open_crew_failed": "Impossibile aprire {{name}}.",
-      "connect": "Connetti",
       "connect_crew": "Connetti {{name}}",
-      "connected": "Connesso"
+      "connected": "Connesso",
+      "not_connected": "Non connesso",
+      "connecting": "Connessione…"
     },
     "instancesViewport": {
       "connecting": "Connessione in corso…",
@@ -11204,6 +11205,7 @@
       "conductor_mode_ms_waiting_pr": "In attesa della PR #{{n}}",
       "conductor_mode_ms_waiting_no_reason": "In pausa, nessun motivo indicato",
       "conductor_mode_ms_done_fold": "{{n}} completati",
+      "conductor_mode_ms_dropped_fold": "{{n}} scartati",
       "conductor_mode_ms_pr": "· PR #{{n}}",
       "conductor_mode_run_working": "In lavorazione",
       "conductor_mode_run_waiting": "In attesa di te",

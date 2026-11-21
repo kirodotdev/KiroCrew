@@ -484,6 +484,22 @@ function paneChordIndex(input, platform) {
   return digit >= 1 && digit <= PANE_CHORD_DIGITS ? digit - 1 : -1;
 }
 
+// A relay Crew's page has no preload to say it has drawn, so after its load
+// the shell asks it every PANE_ROOT_PROBE_MS: once its root holds text and its
+// theme is applied (`data-mode`, which the app sets in an effect after its first
+// render; before that the stylesheet's dark fallback shows), the probe answers
+// that mode and the pane shows. Any host answers this, an older build's too.
+// A page that never does shows PANE_PAINT_BACKSTOP_MS after its load.
+const PANE_PAINT_BACKSTOP_MS = 3000;
+const PANE_ROOT_PROBE_MS = 100;
+const PANE_ROOT_PROBE = "(() => { const r = document.getElementById(\"root\"); "
+  + "if (!r || r.childElementCount === 0 || r.textContent.trim() === \"\") return \"\"; "
+  + "return document.documentElement.dataset.mode || \"\"; })()";
+
+// The page's applied mode, read again whenever its theme colour changes: the
+// colour is the palette's background, which says nothing reliable about the mode.
+const PANE_MODE_READ = "document.documentElement.dataset.mode || \"\"";
+
 // shortcut: one pane per Crew, and none while the Crew is open in a window:
 // both would use the Crew's one partition.
 const openPanes = new Map();
@@ -516,6 +532,14 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   view.setVisible(false);
   parent.contentView.addChildView(view);
   const chordListeners = [];
+  const themeListeners = [];
+  const loadedListeners = [];
+  // The page has drawn the app (or failed to load, or a notice took its place).
+  // Until then the pane stays hidden, so the dashboard's connecting cover shows
+  // instead of the empty view's black.
+  let loaded = false;
+  let backstop = null;
+  let probe = null;
   // The notice view (which focuses its own button) reads the chord too, so
   // the keyboard can leave a tab that shows one.
   const readChord = (event, input) => {
@@ -525,7 +549,7 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
     crew.notify(chordListeners, index);
   };
   const crew = attachRelayCrew({ endpointId, ...parts }, {
-    add: (v) => { parent.contentView.addChildView(v); v.setVisible(shown); v.webContents.on("before-input-event", readChord); },
+    add: (v) => { parent.contentView.addChildView(v); markLoaded(); v.setVisible(shown); v.webContents.on("before-input-event", readChord); },
     remove: (v) => parent.contentView.removeChildView(v),
     place: (v) => { if (rect) v.setBounds(rect); },
   }, deps);
@@ -545,7 +569,7 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   // the hide, and make it after.
   const sync = () => {
     const was = shown;
-    shown = computeVisible({ open: true, overlayActive: overlay, inactive, bounds: rect });
+    shown = loaded && computeVisible({ open: true, overlayActive: overlay, inactive, bounds: rect });
     const reclaim = !shown && holdsFocus();
     for (const v of crew.views()) v.setVisible(shown);
     if (reclaim) handBack();
@@ -569,6 +593,8 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
     parent.removeListener("closed", close);
     for (const event of dashboardEvents) dashboard.webContents.removeListener(event, close);
     openPanes.delete(endpointId);
+    for (const timer of [backstop, probe]) if (timer) clearTimeout(timer);
+    backstop = probe = null;
     try { parent.contentView.removeChildView(view); } catch { /* mid-teardown */ }
     crew.teardown("pane");
     if (reclaim) handBack();
@@ -581,6 +607,48 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
     if (!isClosed() && !shown && parent.isFocused()) handBack();
   }));
   wc.on("before-input-event", readChord);
+  // The page's theme, so the local top bar above it can match (the page has no
+  // preload to say so itself).
+  const markLoaded = () => {
+    if (backstop) { clearTimeout(backstop); backstop = null; }
+    if (probe) { clearTimeout(probe); probe = null; }
+    if (loaded || isClosed()) return;
+    loaded = true;
+    // Only a pane the dashboard already asked to show has anything to change.
+    if (!inactive) sync();
+    // shortcut: 2-3 dark frames can still show as the cover goes; fix in #40292.
+    crew.notify(loadedListeners);
+  };
+  // A page could answer early, and all that does is show its own pane sooner;
+  // only "dark" or "light" leaves main, as the theme it paints.
+  const probeRoot = () => {
+    probe = null;
+    if (loaded || isClosed()) return;
+    Promise.resolve(wc.executeJavaScript(PANE_ROOT_PROBE)).then((mode) => {
+      if (loaded || isClosed()) return;
+      if (mode === "dark" || mode === "light") {
+        crew.notify(themeListeners, mode === "dark");
+        markLoaded();
+      } else probe = setTimeout(probeRoot, PANE_ROOT_PROBE_MS);
+    }, () => {});
+  };
+  wc.once("did-finish-load", () => {
+    if (loaded) return;
+    backstop = setTimeout(markLoaded, PANE_PAINT_BACKSTOP_MS);
+    probeRoot();
+  });
+  wc.once("did-fail-load", markLoaded);
+  // Before the page has drawn, its theme colour is the boot page's dark one.
+  // Only the latest read counts, so an earlier answer arriving late cannot win.
+  let modeRead = 0;
+  wc.on("did-change-theme-color", () => {
+    if (!loaded) return;
+    const read = ++modeRead;
+    Promise.resolve(wc.executeJavaScript(PANE_MODE_READ)).then((mode) => {
+      if (read !== modeRead || isClosed()) return;
+      if (mode === "dark" || mode === "light") crew.notify(themeListeners, mode === "dark");
+    }, () => {});
+  });
   setBounds(bounds);
 
   const handle = {
@@ -603,6 +671,8 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
     setOverlay: (active) => { if (isClosed()) return; overlay = active === true; sync(); },
     setInactive: (value) => { if (isClosed()) return; inactive = value === true; sync(); },
     onChord: (cb) => { chordListeners.push(cb); },
+    onThemeDark: (cb) => { themeListeners.push(cb); },
+    onLoaded: (cb) => { loadedListeners.push(cb); },
   };
   openPanes.set(endpointId, handle);
   Promise.resolve(wc.loadURL(`${parts.origin}/`)).catch(() => crew.log("first load failed"));
@@ -629,5 +699,6 @@ module.exports = {
   createRelayCrewView,
   openRelayCrewWindow,
   paneChordIndex,
+  PANE_ROOT_PROBE,
   openRelayCrewPane,
 };

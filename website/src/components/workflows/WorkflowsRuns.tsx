@@ -41,6 +41,7 @@ import WorkflowSourceCode from './WorkflowSourceCode'
 
 import { i18nT } from '../../i18n/t'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
+import { apiTransport } from '../../api/apiTransport'
 // Gateway CORE API base — distinct from the builtin-app proxy used by the
 // author/validate/run flow (`/apps/workflows/api/*`).
 const CORE_API_BASE = '/api/workflows'
@@ -54,7 +55,7 @@ async function coreGet<T>(path: string): Promise<T> {
 }
 
 async function corePost<T>(path: string): Promise<T> {
-  const r = await fetch(`${CORE_API_BASE}${path}`, {
+  const r = await apiTransport.request(`${CORE_API_BASE}${path}`, {
     method: 'POST',
     credentials: 'same-origin',
   })

@@ -57,7 +57,13 @@ against a workspace holding one document per mode with a unique marker in each:
 | `manual`, referenced from the prompt as `#<name>` | no — there is no ACP-side way to invoke one |
 | `fileMatch`, with a file under its pattern read in the same turn | no — withheld, and never matched |
 | `auto`, with a request unrelated to its `description` | yes — loaded regardless |
-| an unrecognized value (`inclusion: totallyBogusMode`) | yes |
+| an unrecognized value (the made-up mode below) | yes |
+
+The unrecognized-value document declared:
+
+```yaml
+inclusion: totallyBogusMode
+```
 
 **The table above is a snapshot of 2.19.1, and the harness has moved since.** On
 **2.20.0** a maintainer reports that kiro-cli pulls a `fileMatch` document in by

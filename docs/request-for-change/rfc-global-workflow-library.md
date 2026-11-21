@@ -77,7 +77,7 @@ Verified at `749468d42` on 2026-08-25.
 `WorkflowRunStore` persists one JSON record per invocation under
 `<workflows.dir>/runs/`. The record includes the authored script, event stream,
 result, and resume cache, and is rehydrated after a gateway restart
-(`src/kiro_crew/workflows/store.py:1-17`, `81-170`). This is the right automatic
+(the `src/kiro_crew/workflows/store.py` module docstring and `WorkflowRunStore`). This is the right automatic
 behavior: a user can inspect a run, edit its source, rerun it, or resume a prefix
 without first deciding whether the script deserves a permanent name.
 

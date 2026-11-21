@@ -225,6 +225,29 @@ def _forget_tracing_switch():
 
 
 @per_test_guard
+def _reset_browser_media_watches():
+    """Start each test with no media watch and no ending already handed over.
+
+    ``dashboard.handlers.browser_media_watch`` keeps one task per slot key and the
+    ending each slot last reported, process-wide. Tests reuse slot keys, so a task
+    from a closed loop would stop ``ensure_watch`` starting one, and a kept ending
+    would hide the next test's first one.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.dashboard.handlers.browser_media_watch")
+        if module is not None:
+            module._WATCHES.clear()
+            module._ENDED.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _forget_pending_trace_links():
     """Start each test with no pending worker-creation or patrol report links.
 
@@ -1131,6 +1154,27 @@ def _reset_subagent_not_due_memo():
         module = sys.modules.get("kiro_crew.subagent_persistence")
         if module is not None:
             module._NOT_DUE_MEMO.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
+def _reset_chromium_opt_in_record():
+    """Start each test with no browser pid already opted in to page content.
+
+    Tests reuse fake pids, so a record one test left would make the next test's
+    snapshot of a Chromium browser skip the opt-in it should run.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.computer_use.snapshot_macos")
+        record = getattr(module, "_CHROMIUM_OPT_IN_RETRY_AT", None)
+        if record is not None:
+            record.clear()
 
     clear()
     try:

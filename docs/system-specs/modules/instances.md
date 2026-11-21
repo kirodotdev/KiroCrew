@@ -895,7 +895,15 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   switch instance, readiness and boot, chained-crew, crew pin, stable order,
   focus mode and chrome, cursor-away watch and cancel, scroll-touch watch and
   cancel, clipboard image, drag gaps, native notify, pane active slot);
-  a switch target is re-validated against the known instance list. `mc-native-notify`
+  a switch target is re-validated against the known instance list; a
+  `relay:<endpointId>` target (a pane's Remote Crews row) brings an open relay tab
+  forward, or for a Crew this window lists brings Local forward and opens it from
+  the top bar (`?relay_crew=`), whose cover and refusal notice say how it went;
+  any other id does nothing (`lib/paneRelayCrews.ts`). In the desktop app the host
+  model sent to the pane in front carries those rows (`relayCrews`: endpoint ID, name, type, the relay's
+  state words, last seen, open and current; never the Crew's URL, a token or
+  the account), so the
+  switcher an SSH Crew draws lists the Remote Crews too. `mc-native-notify`
   carries user-visible text, so it is accepted only from a resolved tunnel origin
   and only when every field has exactly the expected type
   (`parseNativeNotifyEnvelope`), with title, body and tag bounded.
@@ -2163,7 +2171,10 @@ Two SSM-specific behaviours:
 credentials, `ssm:StartSession` denial, missing plugin, target not a connected
 managed node, local bind conflict) rather than running SSM stderr through the ssh
 auth/transport matchers, which would mislabel an `AccessDenied` as an ssh auth
-failure.
+failure. The detail it quotes is cut to 200 characters (`_BANNER_DETAIL_MAX_CHARS`),
+except an `ssm:StartSession` denial, which keeps 400
+(`_SSM_DENIAL_DETAIL_MAX_CHARS`) so AWS's one sentence still names the action,
+the resource to grant and the policy gap.
 
 Stderr is not the only input. The plugin exits `0` with an empty stderr whether
 the session went idle, the transport was lost, or the session never started, so
@@ -2430,8 +2441,8 @@ versions is what lets a v2 instance still receive a copy from a v1 one.
 | `POST /api/chat/slots/import` | Receiving side, for BOTH arrival routes. Accepts a bundle — gzipped or plain JSON, sniffed from its own bytes — and materialises a new slot. Answers `{ok, key, title, messages, resume_mode, folder_id}`; `folder_id` is the arrival folder in THIS instance's own tree (`""` when unfiled), so the client can open its path. See §14.5a. |
 
 `send-session` goes through the same `_guard()` as every other route in §6
-(owner-only, never Slack, feature-gated, SEL-audited as
-`instances_send_session`). It returns `{ok, instance, remote_key, messages, resume_mode}` (`resume_mode` is the peer's, `""` from an older peer).
+(owner-only, never Slack, feature-gated, SEL-audited by `_audit` as `instances_<operation>` with
+operation `send_session`). It returns `{ok, instance, remote_key, messages, resume_mode}` (`resume_mode` is the peer's, `""` from an older peer).
 
 Status codes: `404` unknown instance or unknown local slot, `400` a
 non-persistent source session or a malformed body, `503` the manager is not

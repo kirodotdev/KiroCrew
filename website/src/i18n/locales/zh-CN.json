@@ -343,8 +343,8 @@
       "not_declared": "此应用无法显示项目选择器：其权限未声明 {{path}}。"
     },
     "sessionChanges": {
-      "not_declared": "此应用无法显示此聊天的改动：其权限未声明 {{path}}。",
-      "diff_not_declared": "此应用无法显示此文件的差异：其权限未声明 {{path}}。",
+      "not_declared": "此应用无法显示此聊天的改动。此应用的开发者未允许此操作：其权限未声明 {{path}}。请让应用开发者添加它。",
+      "diff_not_declared": "此应用无法显示此文件的改动。此应用的开发者未允许此操作：其权限未声明 {{path}}。请让应用开发者添加它。",
       "pick_a_file": "选择一个文件以查看其改动。",
       "diff_unavailable": "此聊天没有记录这次改动前后的完整文件，因此没有可显示的差异。"
     },
@@ -7649,9 +7649,10 @@
       "new_crew": "新",
       "seen_not_saved": "无法保存你已查看的状态，它会再次显示为新的。",
       "open_crew_failed": "无法打开 {{name}}。",
-      "connect": "连接",
       "connect_crew": "连接 {{name}}",
-      "connected": "已连接"
+      "connected": "已连接",
+      "not_connected": "未连接",
+      "connecting": "正在连接…"
     },
     "instancesViewport": {
       "connecting": "正在连接…",
@@ -10706,6 +10707,7 @@
       "conductor_mode_ms_waiting_pr": "等待 PR #{{n}}",
       "conductor_mode_ms_waiting_no_reason": "已暂停，未说明原因",
       "conductor_mode_ms_done_fold": "{{n}} 项已完成",
+      "conductor_mode_ms_dropped_fold": "{{n}} 项已放弃",
       "conductor_mode_ms_pr": "· PR #{{n}}",
       "conductor_mode_run_working": "进行中",
       "conductor_mode_run_waiting": "等待你处理",

@@ -373,8 +373,8 @@
       "not_declared": "Esta app no puede mostrar el selector de proyectos: sus permisos no declaran {{path}}."
     },
     "sessionChanges": {
-      "not_declared": "Esta app no puede mostrar los cambios de este chat: sus permisos no declaran {{path}}.",
-      "diff_not_declared": "Esta app no puede mostrar el diff de este archivo: sus permisos no declaran {{path}}.",
+      "not_declared": "Esta app no puede mostrar los cambios de este chat. El desarrollador de esta app no lo ha permitido: los permisos de la app no declaran {{path}}. Pídele al desarrollador de la app que lo añada.",
+      "diff_not_declared": "Esta app no puede mostrar los cambios de este archivo. El desarrollador de esta app no lo ha permitido: los permisos de la app no declaran {{path}}. Pídele al desarrollador de la app que lo añada.",
       "pick_a_file": "Elige un archivo para ver sus cambios.",
       "diff_unavailable": "Este chat no registró el archivo completo antes y después de este cambio, así que no hay diff que mostrar."
     },
@@ -8067,9 +8067,10 @@
       "new_crew": "Nuevo",
       "seen_not_saved": "No se pudo guardar que ya lo viste. Volverá a aparecer como nuevo.",
       "open_crew_failed": "No se pudo abrir {{name}}.",
-      "connect": "Conectar",
       "connect_crew": "Conectar {{name}}",
-      "connected": "Conectado"
+      "connected": "Conectado",
+      "not_connected": "No conectado",
+      "connecting": "Conectando…"
     },
     "instancesViewport": {
       "connecting": "Conectando…",
@@ -11204,6 +11205,7 @@
       "conductor_mode_ms_waiting_pr": "Esperando el PR #{{n}}",
       "conductor_mode_ms_waiting_no_reason": "En pausa, sin motivo indicado",
       "conductor_mode_ms_done_fold": "{{n}} hechos",
+      "conductor_mode_ms_dropped_fold": "{{n}} descartados",
       "conductor_mode_ms_pr": "· PR #{{n}}",
       "conductor_mode_run_working": "Trabajando",
       "conductor_mode_run_waiting": "Esperándote",

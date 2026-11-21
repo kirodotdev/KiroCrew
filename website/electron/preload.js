@@ -384,8 +384,9 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("fileOpenAPI", {
 // The pane calls show a Crew in this window instead, below the local top bar:
 // they carry the endpoint ID, the pane's rect with this page's viewport size,
 // or whether a local overlay covers the pane or another tab is in front of it.
-// `onPaneEvent(cb)` hears a pane's switch chord or its close, as `{ type,
-// endpointId, index }` and nothing more, and returns its unsubscribe. An
+// `onPaneEvent(cb)` hears a pane's switch chord, whether its theme is dark, or
+// its close, as `{ type, endpointId, index, dark }` and nothing more, and
+// returns its unsubscribe. An
 // `openPane` from another dashboard window is handed to the main window's
 // dashboard, which hears it through `onOpenRequest(cb)` (the endpoint ID only)
 // while it is subscribed; one subscriber at a time, the newest.
@@ -399,11 +400,14 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("relayCrewAPI", {
   setPaneOverlay: (endpointId, active) => ipcRenderer.invoke("relay-crew:pane-overlay", String(endpointId || ""), !!active),
   setPaneInactive: (endpointId, inactive) => ipcRenderer.invoke("relay-crew:pane-inactive", String(endpointId || ""), !!inactive),
   closePane: (endpointId) => ipcRenderer.invoke("relay-crew:pane-close", String(endpointId || "")),
+  // This shell sends a pane's `loaded` event, so the dashboard may wait for it.
+  paneLoadEvents: true,
   onPaneEvent: (cb) => {
     const handler = (_e, m) => cb({
       type: String(m?.type || ""),
       endpointId: String(m?.endpointId || ""),
       index: Number.isInteger(m?.index) ? m.index : -1,
+      dark: typeof m?.dark === "boolean" ? m.dark : null,
     });
     ipcRenderer.on("relay-crew:pane-event", handler);
     return () => ipcRenderer.removeListener("relay-crew:pane-event", handler);

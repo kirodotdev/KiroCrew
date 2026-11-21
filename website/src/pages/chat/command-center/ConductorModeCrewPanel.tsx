@@ -327,7 +327,9 @@ export function milestoneState(item: WorkBoardItem, waiting: boolean): Milestone
   // session working again reads as running even after an earlier "done"
   // report. A report counts only until the conductor decides on it
   // (`decided_at` at or after the report hands it back).
-  if (item.state === 'accepted') return 'done'
+  // A comment on a doc an accepted milestone made wakes its session again; while
+  // that session works or waits on an approval, the row says so instead of done.
+  if (item.state === 'accepted') return waiting ? 'needs_you' : item.alive === 'running' ? 'running' : 'done'
   if (item.terminal) return 'not_done'
   const open = item.status === 'progress' || item.status === 'blocked' || item.status === 'question'
   // Needs you only when the person must act: a pending approval of the item's
@@ -485,6 +487,8 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen, onRemove }: { item:
     // A worker idle inside its own loop reads one way, typed: "In progress · PR #N".
     const text = state === 'needs_you' ? waitingOn
       : state === 'running' && item.alive !== 'running' && item.pr != null ? `${i18nT('components.crewMode.conductor_mode_ms_running')} ${i18nT('components.crewMode.conductor_mode_ms_pr', { n: item.pr })}`
+      // An accepted milestone's summary is its done report, so a woken one says only Running.
+      : state === 'running' && item.state === 'accepted' ? i18nT('components.crewMode.conductor_mode_ms_running')
       : state === 'running' ? (firstSentence(item.summary) || i18nT('components.crewMode.conductor_mode_ms_running'))
         : i18nT('components.crewMode.conductor_mode_ms_not_started')
     sub = <span className={WRAP} title={text}>{text}</span>
@@ -882,6 +886,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   )
   const [view, setView] = useState<'status' | 'list'>('status')
   const [doneOpen, setDoneOpen] = useState(false)
+  const [droppedOpen, setDroppedOpen] = useState(false)
   // The work ledger through the Crew page's own read (GET /api/crew-board), same key and cadence.
   // A board shown in the last CREW_BOARD_GC_MS paints at once on entry, and every
   // entry still reads it again (`refetchOnMount: 'always'`), so the cached copy is
@@ -965,6 +970,10 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   // Plus the rows below that wait on the person (kept out of `needsYouRows`).
   const needCount = needYou + forYou.length
   const openMs = milestones.filter(m => m.state !== 'done')
+  // Dropped milestones (closed as abandoned) fold into one row below the open
+  // ones, as done ones do above, so a goal that changed course keeps live work on screen.
+  const droppedMs = openMs.filter(m => m.state === 'not_done' && m.item.state === 'abandoned')
+  const listMs = openMs.filter(m => !droppedMs.includes(m))
   const msDone = doneMs.length
   const lastReport = items.map(i => i.last_report_at).filter(Boolean).sort().pop() || null
   // Stuck: a milestone with nothing left to move it. Quiet: one idle with
@@ -989,6 +998,23 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
     const w = workers.find(x => x.ledger_item === item.item_id)
     return w && !w.remote_crew ? () => open(w) : undefined
   }
+  // One folded row for a closed group: done milestones above the open ones,
+  // dropped ones below, so what is open stays on screen. No rows, no fold.
+  const shownListMs = listMs.filter(m => !hidden.has(m.item.item_id))
+  // The done fold's bottom rule already divides it from the dropped fold when no open row sits between them.
+  const dropTopRule = shownListMs.length > 0 || doneMs.length === 0
+  const milestoneFold = (kind: 'done' | 'dropped', rows: typeof milestones, isOpenFold: boolean, setOpenFold: (open: boolean) => void) => rows.length > 0 && (
+    <details className={`group border-border ${kind === 'done' ? 'mt-0.5 border-b' : dropTopRule ? 'border-t' : ''}`} data-testid={`conductor-mode-milestones-${kind}`} open={isOpenFold}
+      onToggle={e => setOpenFold((e.currentTarget as HTMLDetailsElement).open)}>
+      <summary className="flex items-center gap-2.5 py-1.5 cursor-pointer list-none">
+        <span className="shrink-0">{STATE_ICON[kind === 'done' ? 'done' : 'not_done']}</span>
+        <span className={`flex-1 min-w-0 text-[13px] ${kind === 'done' ? 'text-text' : 'text-muted'}`}>{i18nT(kind === 'done' ? 'components.crewMode.conductor_mode_ms_done_fold' : 'components.crewMode.conductor_mode_ms_dropped_fold', { n: rows.length })}</span>
+        <ChevronRight size={14} aria-hidden="true" className="shrink-0 text-muted transition-transform group-open:rotate-90" />
+      </summary>
+      <ol className="divide-y divide-border pl-2">{rows.map(m => <MilestoneRow key={m.item.item_id} {...m} now={now} onOpen={openItem(m.item)}
+        onRemove={kind === 'dropped' && milestoneRemovable(m.item) ? () => setRemoved(ids => [...ids, m.item.item_id], 'restore') : undefined} />)}</ol>
+    </details>
+  )
   const waitingMs = milestones.filter(m => m.state === 'needs_you')
   // An approval already named by its milestone is not repeated as a worker.
   // Unbound approvals and the main chat's own asks still belong in the Recap.
@@ -1080,22 +1106,13 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
               ? <p className="text-[12px] text-muted mt-1">{i18nT('components.crewMode.conductor_mode_milestones_none')}</p>
               : <>
                 {/* Finished milestones fold into one row, so what is open stays on screen. */}
-                {doneMs.length > 0 && (
-                  <details className="group mt-0.5 border-b border-border" data-testid="conductor-mode-milestones-done" open={doneOpen}
-                    onToggle={e => setDoneOpen((e.currentTarget as HTMLDetailsElement).open)}>
-                    <summary className="flex items-center gap-2.5 py-1.5 cursor-pointer list-none">
-                      <span className="shrink-0">{STATE_ICON.done}</span>
-                      <span className="flex-1 min-w-0 text-[13px] text-text">{i18nT('components.crewMode.conductor_mode_ms_done_fold', { n: doneMs.length })}</span>
-                      <ChevronRight size={14} aria-hidden="true" className="shrink-0 text-muted transition-transform group-open:rotate-90" />
-                    </summary>
-                    <ol className="divide-y divide-border pl-2">{doneMs.map(m => <MilestoneRow key={m.item.item_id} {...m} now={now} onOpen={openItem(m.item)} />)}</ol>
-                  </details>
-                )}
+                {milestoneFold('done', doneMs, doneOpen, setDoneOpen)}
                 <ol className="divide-y divide-border">
                   {/* A hidden milestone loses only its row here; the count and the Recap keep it. */}
-                  {openMs.filter(m => !hidden.has(m.item.item_id)).map(m => <MilestoneRow key={m.item.item_id} {...m} now={now} onOpen={openItem(m.item)}
+                  {shownListMs.map(m => <MilestoneRow key={m.item.item_id} {...m} now={now} onOpen={openItem(m.item)}
                     onRemove={milestoneRemovable(m.item) ? () => setRemoved(ids => [...ids, m.item.item_id], 'restore') : undefined} />)}
                 </ol>
+                {milestoneFold('dropped', droppedMs.filter(m => !hidden.has(m.item.item_id)), droppedOpen, setDroppedOpen)}
               </>}
             {hidden.size > 0 && (
               <p role="status" className="mt-1 flex flex-wrap items-baseline gap-x-1.5 text-[11px] text-muted" data-testid="conductor-mode-milestones-removed">

@@ -103,7 +103,9 @@ def mark_notice_owed(name: str, changes: str = "") -> None:
     and what it withheld; empty when the worker grants exactly what the old agent did.
     """
     try:
-        record = {"member": name, "changes": changes} if changes else {"member": name}
+        record: dict[str, object] = (
+            {"member": name, "changes": changes} if changes else {"member": name}
+        )
         _write_owed(name, NOTICE_OWED_FILENAME, record)
     except Exception:  # noqa: BLE001 - no notice is the safe direction
         logger.warning("could not record the upgrade notice owed by %r", name, exc_info=True)

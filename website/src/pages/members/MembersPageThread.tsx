@@ -1137,6 +1137,9 @@ export function MembersPageThreadColumn({
                         // the hidden chat.
                         // ...and gives it up while the side panel's open session holds focus.
                         pushToTalk={threadView.chatUncovered && !sidePanel.panelSessionFocused}
+                        // ⌘F / Ctrl+F: Find in chat, on the same terms as the
+                        // dictation key above (#39585).
+                        findInChat={threadView.chatUncovered && !sidePanel.panelSessionFocused}
                         // The failure notice above owns the verdict on this thread
                         // while a repair has failed; the pane's own "Session
                         // ready" would contradict it one line down.

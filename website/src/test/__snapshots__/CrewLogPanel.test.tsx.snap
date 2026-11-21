@@ -164,7 +164,7 @@ exports[`CrewLogTab > draws the subagents table 1`] = `
             kill failed: pid 8821 still alive
           </span>
           <span
-            class="inline-flex text-danger-ink"
+            class="inline-flex shrink-0 text-danger-ink"
           >
             <button
               class="inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors text-[12px] font-medium text-inherit bg-transparent border-none p-0 underline decoration-current/30 hover:decoration-current underline-offset-2 "

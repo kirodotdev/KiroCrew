@@ -41,7 +41,7 @@ const UpdatePill = lazy(() => import('../../components/UpdatePill'))
 const TeamCrewsSwitcher = lazy(() => import('../../components/TeamCrewsGroup'))
 
 /** The Crew switcher with Team Crews (the plain one until its code loads); an SSH
- *  pane's own bar is the plain one, as it never lists Team Crews. */
+ *  pane's own bar lists the Remote Crews its window relays (lib/paneRelayCrews.ts). */
 function CrewSwitcher() {
   return !isEmbeddedPane() ? (
     <Suspense fallback={<InstanceTabBar variant="inline" />}>

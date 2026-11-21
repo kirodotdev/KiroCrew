@@ -119,7 +119,11 @@ describe('the App SDK SessionChanges', () => {
   it('refuses an external app that does not declare the list, and sends nothing', async () => {
     // The diff's path, or a neighbour, is not the list's read.
     render(externalApp(['/api/apps/changes-app', SESSION_CHANGES_PATHS.sessionFileDiff, '/api/project/tree'], changes))
-    expect(await screen.findByTestId('app-session-changes-not-declared')).toHaveTextContent(SESSION_CHANGES_PATHS.sessionFiles)
+    const listRefusal = await screen.findByTestId('app-session-changes-not-declared')
+    expect(listRefusal).toHaveTextContent(SESSION_CHANGES_PATHS.sessionFiles)
+    // The reason comes before the path, and it ends on who can fix it.
+    expect(listRefusal).toHaveTextContent("can't show this chat's changes. This app's developer hasn't allowed it")
+    expect(listRefusal).toHaveTextContent("Ask the app's developer to add it.")
     expect(screen.queryByTestId('session-file-row')).toBeNull()
     expect(fetchMock).not.toHaveBeenCalled()
     expect(mockApi.sessionFiles).not.toHaveBeenCalled()
@@ -152,8 +156,11 @@ describe('the App SDK SessionChanges', () => {
     await showChanges()
     const diffRefusal = await screen.findByTestId('app-session-changes-diff-not-declared')
     expect(diffRefusal).toHaveTextContent(SESSION_CHANGES_PATHS.sessionFileDiff)
-    // Said as the one file's diff: the list of changes beside it does show.
-    expect(diffRefusal).toHaveTextContent("can't show this file's diff")
+    // Said as the one file's changes, the row's "Show changes": the list of
+    // changes beside it does show. The reason comes before the path, and it
+    // ends on who can fix it.
+    expect(diffRefusal).toHaveTextContent("can't show this file's changes. This app's developer hasn't allowed it")
+    expect(diffRefusal).toHaveTextContent("Ask the app's developer to add it.")
     expect(screen.queryByTestId('pierre-pair')).toBeNull()
     const paths = fetchMock.mock.calls.map(pathOf)
     expect(paths).toContain(SESSION_CHANGES_PATHS.sessionFiles)

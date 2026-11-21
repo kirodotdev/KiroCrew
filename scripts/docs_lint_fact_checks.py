@@ -176,8 +176,10 @@ _COUPLING_AMBIGUOUS_NAMES: frozenset[str] = frozenset({"README.md"})
 # `website/electron/` holds the desktop shell, so a doc naming one of its symbols
 # (`checkForUpdates`) cites something real. `website/public/` holds the service
 # worker and the hand-written app shims served as-is (`fetchAssetWithRetry`), and
-# `website/playwright/` the browser E2E specs (`reapplyConfirm`). The repo-root
-# Python files in `_IDENT_CODE_FILES` are first-party code that no tree holds.
+# `website/playwright/` the browser E2E specs (`reapplyConfirm`). The files in
+# `_IDENT_CODE_FILES` are first-party code or config that no tree holds: the
+# repo-root Python helpers, `setup.cfg` (flake8's `max_line_length`), and the two
+# website build configs (`vendorRuntimePlugin`, Playwright's `webServer`).
 _IDENT_SNAKE_RE = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
 _IDENT_CAMEL_RE = re.compile(r"\b[A-Za-z][a-z0-9]*(?:[A-Z][a-z0-9]+)+\b")
 _IDENT_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
@@ -198,7 +200,13 @@ _IDENT_CODE_TREES: tuple[str, ...] = (
     "site",
     ".github",
 )
-_IDENT_CODE_FILES: tuple[str, ...] = ("conftest.py", "xdist_budget.py")
+_IDENT_CODE_FILES: tuple[str, ...] = (
+    "conftest.py",
+    "xdist_budget.py",
+    "setup.cfg",
+    "website/vite.config.ts",
+    "website/playwright.config.ts",
+)
 # Markdown and plain text are deliberately ABSENT. Documentation is what this
 # check is auditing, so counting a doc as a definition lets one stale page keep a
 # renamed symbol "alive" for every other page -- exactly the rot being hunted.

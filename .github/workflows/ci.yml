@@ -2080,7 +2080,13 @@ jobs:
         run: python scripts/ci_main_red_skip.py summary
 
       # Same experiment and contract as backend-test's prewarm step (#39368),
-      # with the Windows pin file and the test step's shell.
+      # with the Windows pin file and the test step's shell. --compile-product
+      # also compiles every module under src/ to the import cache under the same
+      # root, which is empty on a fresh runner: each worker would otherwise
+      # compile the ~3,900 product modules one shard's collection imports, all
+      # six the same ones at once. Windows only: measured on CI it shortened a
+      # Windows worker's collection by about 16% and did not change a Linux
+      # worker's, whose collection is dominated by the coverage tracer.
       - name: Prewarm assertion rewrites (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         if: ${{ steps.scope.outputs.reduced == 'false' }}
         shell: bash
@@ -2089,7 +2095,8 @@ jobs:
         run: |
           python -m scripts.ci_rewrite_prewarm \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
-            --file-shard-pins scripts/ci_file_shard_pins_windows.txt
+            --file-shard-pins scripts/ci_file_shard_pins_windows.txt \
+            --compile-product
 
       - name: Run tests (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         # bash (Git Bash on windows-latest), not pwsh: the invocation shares

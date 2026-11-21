@@ -50,6 +50,7 @@ from kiro_crew.acp.types import (
     steering_outcome,
     wrap_user_message,
 )
+from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_USER, steer_params
 from kiro_crew.tracing import steps as trace_steps
 
 if TYPE_CHECKING:
@@ -66,7 +67,7 @@ logger = logging.getLogger("kiro_crew.acp.session_handle")
 _STEERING_SETTLE_SECS = 5.0
 
 
-async def steer(self: AcpSessionHandle, message: str) -> bool:
+async def steer(self: AcpSessionHandle, message: str, *, origin: str = STEER_ORIGIN_USER) -> bool:
     """Inject a mid-turn steer into the running turn.
 
     Two transports. kiro-cli takes its ``_session/steer`` ext-method
@@ -81,6 +82,9 @@ async def steer(self: AcpSessionHandle, message: str) -> bool:
     turn's clean terminal, and a steer never reported consumed is queued by
     the caller. Returns False for an empty message or no active session on
     either transport.
+
+    *origin* says who wrote the text (``STEER_ORIGIN_*``); only kiro's
+    ``_session/steer`` carries it, and only when it is not the user's.
     """
     text = (message or "").strip()
     if not text or not self._session_id:
@@ -115,8 +119,7 @@ async def steer(self: AcpSessionHandle, message: str) -> bool:
         return sent
     wrapped = wrap_user_message(text)
     await self._runtime.send_request(
-        "_session/steer",
-        {"sessionId": self._session_id, "message": wrapped},
+        "_session/steer", steer_params(self._session_id, wrapped, origin)
     )
     batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
     # Stamped HERE, at the innermost write, because this is the one point

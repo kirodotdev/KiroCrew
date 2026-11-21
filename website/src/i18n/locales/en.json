@@ -71,8 +71,8 @@
       "not_declared": "This app can't show the project picker: its permissions don't declare {{path}}."
     },
     "sessionChanges": {
-      "not_declared": "This app can't show this chat's changes: its permissions don't declare {{path}}.",
-      "diff_not_declared": "This app can't show this file's diff: its permissions don't declare {{path}}.",
+      "not_declared": "This app can't show this chat's changes. This app's developer hasn't allowed it: the app's permissions don't declare {{path}}. Ask the app's developer to add it.",
+      "diff_not_declared": "This app can't show this file's changes. This app's developer hasn't allowed it: the app's permissions don't declare {{path}}. Ask the app's developer to add it.",
       "pick_a_file": "Pick a file to see its changes.",
       "diff_unavailable": "This chat didn't record the whole file before and after this change, so there's no diff to show."
     },
@@ -5166,9 +5166,10 @@
       "new_crew": "New",
       "seen_not_saved": "Couldn't save that you've seen this. It will show as new again.",
       "open_crew_failed": "Couldn't open {{name}}.",
-      "connect": "Connect",
       "connect_crew": "Connect {{name}}",
-      "connected": "Connected"
+      "connected": "Connected",
+      "not_connected": "Not connected",
+      "connecting": "Connecting…"
     },
     "instancesViewport": {
       "loading_pane": "Loading pane…",

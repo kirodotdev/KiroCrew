@@ -6257,10 +6257,13 @@ the way §18g chooses the pull-request client:
 - **external**: a client over the app's scoped transport (`scopedSessionFilesClient`),
   each member sending the query the dashboard client sends. The list mounts once
   `apiPathAllowed` admits `/api/project/session-files`; without it the export renders an
-  `ErrorNotice` naming the path, centred in the component's area, with the agent hand-off
-  on, and mounts nothing, so no request is sent. The diff of a picked file needs
+  `ErrorNotice`, centred in the component's area, with the agent hand-off on, and mounts
+  nothing, so no request is sent. The diff of a picked file needs
   `/api/project/session-file-diff`; without it the diff's place shows its own refusal,
-  worded as that file's diff and naming the path, and the diff is never mounted. The two paths are siblings at a slash boundary, so neither declaration
+  worded as that file's changes, the row's Show changes, and the diff is never mounted.
+  Each refusal gives its reason first (this app's developer has not allowed it), names
+  the undeclared path after it, and ends by telling the person to ask the app's developer
+  to add it. The two paths are siblings at a slash boundary, so neither declaration
   admits the other, and the scoped transport still checks each request.
 - **builtin**: the dashboard's client, as §18g keeps it for a builtin page.
 - **none**: the external answer with nothing declared, the refusal.
@@ -10340,9 +10343,26 @@ page check. A play the browser refuses gets one click on the element, after the 
 through the scoped client, so the app declares `/api/browser/media`. Its `onEnded` option
 is the continuous-play cue: called once per ending, derived in the page from the `ended`
 field of the state it already polls, so it adds no route, no event and nothing the agent
-can reach. With the page closed nothing reads the tab, so no ending is seen; an app
-backend has no way to read the state (the route refuses app tokens) and no gateway
-watcher reports an ending.
+can reach. With the page closed the gateway itself reports the ending to the app's
+backend, when the app declares `backend.hooks.on_browser_media_ended`
+(`dashboard/handlers/browser_media_watch.py`): a successful op of the app's own agent
+(`browser_ops.run_browser_op`, a slot with approved sites) starts one watch per slot,
+which every `WATCH_S` (3 s) makes the same `state` read on the slot's own tab, skipping
+the tick while an agent op, a media request or a takeover holds the tab, and calls the
+hook once per ending with `(ctx, {"event": "browser_media_ended", "session_key",
+"origin", "duration"})` through `hooks_integration.dispatch_app_event` and
+`LifecycleDispatcher.start_event` / `finish_event`. The checks below and the hook's start
+run under `app_lifecycle_lock(app)`, and the started task joins `_DETACHED_HOOK_TASKS`,
+so a disable, uninstall or trust withdrawal either runs first (the event is refused) or
+waits for the running hook as it does for a retained startup hook (bounded, and failing
+closed, on trust withdrawal); a module nothing imported yet is loaded off the loop. The event names the app's own slot, the page's
+origin and the element's duration, nothing else of the page; the hook gets only the
+context the app's other hooks get, and wakes no agent itself. Delivery goes only to the
+app that owns the slot, only while its hooks are loaded, it is enabled and allowed to
+execute; the watch ends on the first tick that finds the slot no longer the app's, the
+app without approved sites (disabled, uninstalled, untrusted, sites withdrawn), the hook
+undeclared, or the tab closed. An ending already handed over is not handed over again
+by a restarted watch until the element is seen playing.
 
 Writers: `apps/browser_sites.py`, `apps/manifest_sections.py` (`Permissions.browserSites`),
 `apps/manifest.py`, `apps/point_grants.py`, `apps/manager_records.py`,

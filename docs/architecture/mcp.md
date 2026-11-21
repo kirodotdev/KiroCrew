@@ -5678,8 +5678,8 @@ capability; it is a human debug and repro harness that runs the eleven existing
 them in one process, so `element_index` values stay resolvable across calls). The
 MCP-first rule exists so the model gets a structured tool instead of shelling
 out, and the model already has all eleven. A tool that runs other tools would let a
-model launder one per-call gate decision into many, so do NOT add
-`computer_call`.
+model launder one per-call gate decision into many, so do NOT add an MCP tool
+for `kirocrew computer call`.
 
 ## MCP tools MUST be stateless
 

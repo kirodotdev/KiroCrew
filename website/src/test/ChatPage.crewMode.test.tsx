@@ -298,6 +298,17 @@ describe('Conductor mode on ChatPage', () => {
     expect(screen.getByRole('button', { name: /^Agent: kirocrew-conductor/ })).toBeInTheDocument()
   })
 
+  it('shows a new conductor chat that another session opened outside any crew as a plain chat, not Crew Mode', async () => {
+    // session_create opens it empty, so it has no message yet: the composer must
+    // not say Crew Mode (pressed chip, welcome) beside the agent picker it offers.
+    await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template', createdBy: 'slot-parent', crewModeRootStamp: false })
+    expect(screen.getByRole('button', { name: /^Agent: kirocrew-conductor/ })).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-mode-welcome')).toBeNull()
+    expect(screen.queryByTestId('crew-mode-chip')).toBeNull()
+    expect(screen.queryByTestId('crew-mode-composer-chip')).toBeNull()
+    expect(screen.getByTestId('memory-mode-chip')).toBeInTheDocument()
+  })
+
   it('V1: a worker opened from Workers while Split View is on leaves the split and shows the worker', async () => {
     dashboardConfig.mockResolvedValue({ session_grid: true })
     const store = await renderWith({ messages: [{ role: 'user', content: 'do part 2' }], agent: 'kirocrew-worker', agentKind: 'template', createdBy: 'root-1', crewRoot: 'root-1', slotKeys: ['slot-a', 'root-1'] })

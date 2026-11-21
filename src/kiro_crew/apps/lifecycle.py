@@ -10,16 +10,18 @@ import asyncio
 import importlib
 import logging
 from functools import partial
-from typing import Any
+from typing import Any, Callable
 
 from kiro_crew.apps.context import AppContext, build_app_context, manifest_declares_routes
 from kiro_crew.apps.execution import shipped_builtin_app_root
+from kiro_crew.apps.job_sdk import get_sdk
 from kiro_crew.apps.manager import app_dir, approved_manifest_permissions
 from kiro_crew.apps.module_loader import (
     cache_http_app_grant,
     cache_shutdown_callable,
     cached_http_app_grant,
     load_app_module,
+    loaded_callable,
     resolve_loaded_callable,
 )
 from kiro_crew.sel import sel
@@ -361,6 +363,85 @@ class LifecycleDispatcher:
             return False
         return True
 
+    async def start_event(
+        self, app_info: dict[str, Any], hook_name: str, event: dict[str, Any]
+    ) -> asyncio.Task[Any] | None:
+        """Start the app's ``backend.hooks.<hook_name>`` with ``(ctx, event)``; its task.
+
+        The caller holds the app's lifecycle lock, so a disable, uninstall or trust
+        withdrawal either ran before this (the caller's checks refuse) or starts after
+        it and finds the task: it is owned exactly like a retained startup hook
+        (``_DETACHED_HOOK_TASKS``), so teardown waits for it before it succeeds. The
+        callable comes from the module the app already loaded, so it sees the state
+        its routes and startup built; a module nothing imported yet is loaded off the
+        loop. ``None`` when no hook is declared or it could not be started.
+        """
+        name = app_info.get("name", "")
+        hook_path = self._get_hook(app_info, hook_name)
+        if not name or not hook_path:
+            return None
+        try:
+            ctx = await self._prepare_context(app_info, phase="event")
+            # The job runners the app registered at startup live on the SDK its
+            # load published; a fresh one would know none of its kinds.
+            registered_jobs = get_sdk(name) if ctx.job is not None else None
+            if registered_jobs is not None:
+                ctx.job = registered_jobs
+            loaded = loaded_callable(name, hook_path)
+            func: Callable[..., Any] = (
+                loaded
+                if loaded is not None
+                else await asyncio.to_thread(self._resolve_hook, name, hook_path)
+            )
+        except Exception:
+            logger.exception("App event hook %s did not load for app %s", hook_path, name)
+            self._audit_event(name, hook_name, hook_path, "failed")
+            return None
+
+        async def _run() -> None:
+            result = func(ctx, dict(event))
+            if asyncio.iscoroutine(result):
+                await result
+
+        task = asyncio.ensure_future(_run())
+        _DETACHED_HOOK_TASKS.setdefault(name, set()).add(task)
+        task.add_done_callback(partial(_observe_detached_hook_task, name, {"timed_out": False}))
+        return task
+
+    async def finish_event(
+        self, app_name: str, hook_name: str, hook_path: str, task: asyncio.Task[Any]
+    ) -> bool:
+        """Wait up to ``_HOOK_TIMEOUT_SEC`` for an event *task*; ``True`` when it succeeded.
+
+        A task still running then is left to finish, still owned, so teardown keeps
+        waiting for it.
+        """
+        done, _pending = await asyncio.wait({task}, timeout=_HOOK_TIMEOUT_SEC)
+        if task not in done:
+            outcome = "timeout"
+        elif task.cancelled() or task.exception() is not None:
+            if not task.cancelled():
+                logger.error(
+                    "App event hook %s failed for app %s",
+                    hook_path,
+                    app_name,
+                    exc_info=task.exception(),
+                )
+            outcome = "failed"
+        else:
+            outcome = "ok"
+        self._audit_event(app_name, hook_name, hook_path, outcome)
+        return outcome == "ok"
+
+    @staticmethod
+    def _audit_event(app_name: str, hook_name: str, hook_path: str, outcome: str) -> None:
+        sel().log_api_access(
+            caller=f"app:{app_name}",
+            operation="app_event_hook_invoke",
+            outcome=outcome,
+            resources=f"{hook_name}:{hook_path}",
+        )
+
     def _get_hook(self, app_info: dict[str, Any], hook_name: str) -> str:
         """Extract a hook path from app info."""
         manifest = app_info.get("manifest", {})
@@ -416,7 +497,7 @@ class LifecycleDispatcher:
     def _build_context(self, app_info: dict[str, Any], *, phase: str) -> AppContext:
         """Build an AppContext for the given app.
 
-        ``phase`` is ``"startup"`` or ``"shutdown"`` and is REQUIRED, because it
+        ``phase`` is ``"startup"``, ``"shutdown"`` or ``"event"`` and is REQUIRED, because it
         decides where the ``http_app`` answer comes from. A startup context reads
         the manifest in front of it and records that answer; a shutdown context
         reuses the recorded one. Recomputing at teardown would read a manifest the
@@ -434,13 +515,14 @@ class LifecycleDispatcher:
         # Created by ``_prepare_context`` off the loop before this runs.
         data_path = app_dir(name) / "data"
 
-        if phase == "shutdown":
-            granted = cached_http_app_grant(name)
-            if granted is None:
-                granted = manifest_declares_routes(manifest)
-        else:
+        if phase == "startup":
             granted = manifest_declares_routes(manifest)
             cache_http_app_grant(name, granted)
+        else:
+            # Shutdown and an event hook (:meth:`dispatch_event`) reuse the answer the
+            # running load recorded, so they see the handle its startup saw.
+            cached = cached_http_app_grant(name)
+            granted = manifest_declares_routes(manifest) if cached is None else cached
 
         return build_app_context(
             app_name=name,

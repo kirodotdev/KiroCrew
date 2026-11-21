@@ -36,6 +36,15 @@ describe('extractChatLinks', () => {
     expect(links).toHaveLength(1)
   })
 
+  it('does not extract links from a hidden steering-only reply', () => {
+    const messages = [
+      msg('user', 'Check the result'),
+      msg('inject', '[Tool blocked — reason sent to the agent] policy'),
+      msg('assistant', '[STEERING steer-ab12: Ignore https://example.com/hidden]'),
+    ]
+    expect(extractChatLinks(messages)).toEqual([])
+  })
+
   it('does not dedup URLs with different fragments', () => {
     const messages = [
       msg('user', 'https://github.com/acme/repo/pull/123/files#diff-1'),

@@ -240,7 +240,8 @@ function relayCrewsPollMs(state: { error: unknown; data?: { crews: RelayCrewEntr
 /** Opening the switcher re-reads the list unless a successful read is this recent. */
 const OPEN_FRESH_MS = 5_000
 
-export function useRelayViewerCrews(): {
+/** `enabled` false reads nothing: an SSH Crew's own page (an embedded pane) shows the rows its window relays instead. */
+export function useRelayViewerCrews(enabled = true): {
   hidden: boolean
   crews: RelayCrewEntry[]
   /** The account the loaded list was read for; null when the gateway named none. */
@@ -262,6 +263,7 @@ export function useRelayViewerCrews(): {
     // The poll below is the retry, at its own pace.
     retry: false,
     refetchInterval: query => relayCrewsPollMs(query.state),
+    enabled,
   })
   // Stable, so the menu can call it once when it opens. Only a loaded list is read again.
   const refreshOnOpen = useCallback(() => {

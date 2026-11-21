@@ -555,13 +555,46 @@ Both gateway entry points (`cli.main`'s gateway command and `gatewayd.main`) pas
 so every `create_subprocess_exec` / `create_subprocess_shell` on the gateway loop
 (ACP agent start, MCP server start, the Windows script-hook shell arm) is covered
 without a per-call-site change. The owned ACP spawn in `platform_compat_wintree`
-calls `make_subprocess_transport_off_loop` with its capturing `Popen`. Off Windows
-the factory is `None` (the default loop), so POSIX behaviour does not change. If an
+calls `make_subprocess_transport_off_loop` with its capturing `Popen`. If an
 interpreter's `_start` no longer spawns through `windows_utils.Popen`, the spawn
 refuses before creation rather than silently spawning on the loop. The guards are in
 `test/test_windows_spawn_off_loop.py`: a slow simulated build must leave a heartbeat
 on the loop ticking, on POSIX through the same helper and on the Windows CI shards
 through a real Proactor loop with `CreateProcess` delayed.
+
+## POSIX gateway spawns build their child off the event loop
+
+The Unix loop has the same shape: `_UnixSubprocessTransport._start` calls
+`subprocess.Popen`, which returns only after the child forked and exec'd. Off
+Windows, `gateway_loop_factory()` returns a factory for
+`OffLoopSpawnUnixSelectorEventLoop`, which builds each child on the same worker
+pool with `make_subprocess_transport_off_loop` and the stock Unix transport, then
+registers it with the loop's child watcher (`after_init`). The watcher comes from
+`_posix_child_watcher`: the loop's own on CPython 3.14, the policy's on 3.12 and
+3.13. A `FastChildWatcher` (it reaps with `waitpid(-1)` and drops the exit of a pid
+registered late) or an inactive watcher sends the spawn down the stock path, and
+that fallback logs one warning per process. The factory calls `set_event_loop` on
+the loop it builds, as `asyncio.run` does for its own loop; on 3.12 and 3.13 that is
+what attaches the macOS SIGCHLD watcher `_install_child_watcher` installs.
+
+The worker removes the wait for the child's exec, not the fork itself: CPython holds
+the GIL for the whole `fork()`, and on macOS (no `vfork`) a fork copies the gateway's
+memory map. So the App Store's git children, which run in bursts, start without a
+fork. Inside `sandbox_rlimit.fork_free_spawns()` -- opened per row by the manifest
+fan-out `_gather_bounded` -- `create_subprocess_limited` passes `close_fds=False` and
+no `cwd` / `start_new_session`, which lets `Popen` start the spawn shim with
+`posix_spawn`, and the shim does those three jobs itself (`--setsid`, `--chdir=`,
+`--close-fds`) before it execs the command. A spawn that needs `pass_fds`,
+`process_group`, `umask`, `user`/`group`, or a `chdir_fd` keeps the fork start, as
+does every spawn outside that scope (ACP sessions included). With a 3 GB heap and
+`vfork` off, a `git --version` spawn held the loop 144 ms on the stock loop, 62 ms
+built on the worker with a fork, and 0.5 ms with `posix_spawn`.
+
+The guards are `test/test_spawn_off_loop.py` (a held `Popen` must leave the gateway
+loop turning; cancellation reaps; the fallback logs once) and
+`test/test_fork_free_spawn.py` (no fork start inside the scope; cwd, session and
+inherited-descriptor closing match `Popen`'s; the scope is per task; the manifest
+fan-out opens it).
 
 ## Windows session-tree teardown
 

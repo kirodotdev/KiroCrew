@@ -238,7 +238,23 @@ Three structural facts explain most of the rest:
   run unfiled, so the log is read only for a job whose annotations cannot be
   read or, on a backend test job, name no test. A failed read says why in a
   notice and in the job summary; a read the API rate limit refused is named as
-  that, with the reset time, and ends the reading. The annotations name at most 10
+  that, with the reset time, and ends the reading. Every `gh` call of the step
+  goes through `.github/actions/gh-rate-limit` (below) with a 20-minute budget,
+  so a refused label call, issue lookup or job read waits for the reset and is
+  retried; a reset past the budget fails the call, and the run ends red having
+  written nothing or files what it had read. Nothing marks such a run. Every
+  red run that names a test reads the run list and replays the red verdict runs
+  directly before it that no issue's record holds (the open issue's, or with
+  none open the newest among the closed watcher issues, read from the labelled
+  list and from the 200 newest closed issues of any label, since an issue
+  closed while main was red leaves no green run), back to the first green run,
+  the last run a record holds, or 5 runs
+  (`.github/scripts/main_red_previous.py`, one job list and one annotation read
+  per failed job for each), under the same rules as a live run, so the issue
+  names the first red commit and the whole streak even when a watcher run was
+  lost to the rate limit or dropped from the queue. The replay opens no issue:
+  with none open, the run opens one only by the two rules below. A replay that
+  cannot read a run or the closed issues counts none. The annotations name at most 10
   failing tests per job. With no issue open it files one only when a test is red
   in two failed jobs of the run (the Linux and the Windows shard that both carry
   it), so a test that fails once on one leg, which is as often a flake as a
@@ -552,7 +568,8 @@ fleet, so one `gh` call made while it is spent fails the run, although the limit
 resets within the hour. The same holds for an event-triggered check that fails
 closed and is recomputed only by the PR's next event: Fork PR Description and
 Sensitive Change Review install the wrapper too, from their default-branch
-checkout. `.github/actions/gh-rate-limit` puts a `gh` wrapper on
+checkout. So does the main-red watcher, whose lost run leaves a red main
+unrecorded until the next run of main ends. `.github/actions/gh-rate-limit` puts a `gh` wrapper on
 PATH for the rest of the job: it retries only a call whose error names a rate
 limit, at most twice, waiting for the earliest reported reset (60 s for a
 secondary limit) inside one job-wide budget (`max-wait`, 20 minutes by default).
@@ -1186,13 +1203,26 @@ and every `conftest.py` (the two loaded before the conftest redirects
 bytecode, the rootdir one and `test/conftest.py`, are still read from the
 in-tree `__pycache__` by a process that starts without the redirect). It parses and compiles source and imports no test
 module, conftest or `kiro_crew`, which is what separates it from the serial
-`--collect-only` prewarm that measured slower. It does not choose what a shard
+`--collect-only` prewarm that measured slower. On Windows the step passes
+`--compile-product` and then also compiles every `*.py` under the ini's
+`pythonpath` (`src`) with `py_compile`, to the ordinary import cache under that
+root. The redirected root is empty on a fresh runner, so without this each
+worker compiles every product module it imports while it collects (about 3,900
+for one shard), and all workers compile the same ones at the same time. The
+Linux step does not pass it: on CI a Windows worker's collection got about 16%
+shorter (65 s against 77 s) and a Linux worker's did not change (129 s both),
+because the Linux shards run under the coverage tracer, which costs far more
+than compiling does. Third-party and standard-library modules are left to the
+workers on both: a shard imports about a sixth of the installed ones, so
+compiling them all costs about what it saves. It does not choose what a shard
 collects: pytest's discovery and the plugin still do. It is best effort: it
 exits 0 whatever happens, a file it did not cache is rewritten by pytest, and
 the reduced and leaf scopes skip it. Bytecode is never restored from
 `actions/cache` or committed. The step prints its file count and elapsed
-seconds. `test/test_ci_rewrite_prewarm.py` proves pytest reads the prewarmed pyc
-and pins the cache root against the conftest's.
+seconds, and on Windows a second line for the product modules.
+`test/test_ci_rewrite_prewarm.py` proves pytest reads the prewarmed pyc, that an
+import reads a compiled product module without compiling it again, and pins
+the cache root against the conftest's.
 
 The root conftest's import-time telemetry guard fails the offending module's
 collection report on every worker, so pytest/xdist fails the job even when the

@@ -9,6 +9,7 @@ const {
   openRelayCrewWindow,
   openRelayCrewPane,
   paneChordIndex,
+  PANE_ROOT_PROBE,
   shownRelayPane,
 } = require("../relay-crew-window");
 
@@ -75,6 +76,10 @@ function fakeDeps() {
       this.webContents.isFocused = () => this.webContents.hasFocus;
       this.webContents.focus = () => { this.webContents.hasFocus = true; };
       this.webContents.isDestroyed = () => this.webContents.closed;
+      // What the page answers the root probe: "" until its root has text and its theme is on.
+      this.webContents.rootDrawn = "";
+      this.webContents.probes = 0;
+      this.webContents.executeJavaScript = () => { this.webContents.probes += 1; return Promise.resolve(this.webContents.rootDrawn); };
       this.visible = true;
       this.setVisible = (v) => { this.visible = v; };
       this.setBounds = (b) => { this.bounds = b; };
@@ -643,7 +648,11 @@ function openPane(f, extra = {}) {
     endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, getToken: () => TOKEN,
     parent, dashboard, bounds: PANE_RECT, platform: "linux",
   }, f.deps);
-  return { parent, dashboard, handle, view: f.views[f.views.length - 1] };
+  const view = f.views[f.views.length - 1];
+  // Past the load gate, so the pane may show (a failed load is the one synchronous way
+  // through it); `unloaded` keeps it before that.
+  if (!extra.unloaded) view.webContents.emit("did-fail-load");
+  return { parent, dashboard, handle, view };
 }
 
 test("pane: built by the window's own view factory, so its isolation is the window's", () => {
@@ -875,6 +884,117 @@ test("pane: main reads the Crew-switch chord before the page and reports its tab
   assert.strictEqual(paneChordIndex({ type: "keyDown", control: true, code: "Digit3" }, "darwin"), -1);
   assert.strictEqual(paneChordIndex({ type: "keyUp", control: true, code: "Digit3" }, "linux"), -1);
   assert.strictEqual(paneChordIndex(null, "linux"), -1);
+  p.handle.close();
+});
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+test("pane: stays hidden until its page has drawn the app with its theme on, then shows and says so (row 73)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fakeDeps();
+  const p = openPane(f, { unloaded: true });
+  const told = [];
+  const themes = [];
+  p.handle.onLoaded(() => told.push(p.view.visible));
+  p.handle.onThemeDark((dark) => themes.push(dark));
+  p.handle.setInactive(false);
+  p.view.webContents.emit("dom-ready");
+  p.view.webContents.emit("did-change-theme-color", {}, "#0d0f12");
+  p.view.webContents.emit("did-finish-load");
+  await flush();
+  assert.strictEqual(p.view.visible, false, "a loaded page whose root is empty, or whose theme is not on, stays hidden");
+  p.view.webContents.rootDrawn = "light";
+  t.mock.timers.tick(100);
+  await flush();
+  assert.strictEqual(p.view.visible, true, "the next probe shows it");
+  assert.deepStrictEqual(themes, [false], "the boot page's dark colour is dropped; the theme is the page's own mode");
+  assert.deepStrictEqual(told, [true], "and says so, once");
+  const probes = p.view.webContents.probes;
+  t.mock.timers.tick(5000);
+  await flush();
+  assert.strictEqual(p.view.webContents.probes, probes, "no probe after it showed");
+  p.view.webContents.rootDrawn = "dark";
+  p.view.webContents.emit("did-change-theme-color", {}, "#fafafa");
+  await flush();
+  assert.deepStrictEqual(themes, [false, true], "after it has drawn, a theme change passes on the page's mode");
+  p.handle.close();
+});
+
+test("pane: the probe answers the page's mode only once its root has text and its theme is on", () => {
+  const vm = require("node:vm");
+  const answer = (root, mode) => vm.runInNewContext(PANE_ROOT_PROBE, {
+    document: { getElementById: () => root, documentElement: { dataset: mode ? { mode } : {} } },
+  });
+  const filled = { childElementCount: 1, textContent: " Sessions " };
+  assert.strictEqual(answer(null, "light"), "");
+  assert.strictEqual(answer({ childElementCount: 0, textContent: "" }, "light"), "");
+  assert.strictEqual(answer({ childElementCount: 1, textContent: "  " }, "light"), "");
+  assert.strictEqual(answer(filled, undefined), "", "drawn but on the stylesheet's dark fallback");
+  assert.strictEqual(answer(filled, "light"), "light");
+  assert.strictEqual(answer(filled, "dark"), "dark");
+});
+
+test("pane: a failed load or a notice shows it at once", () => {
+  const f = fakeDeps();
+  const p = openPane(f, { unloaded: true });
+  p.handle.setInactive(false);
+  p.view.webContents.emit("did-fail-load");
+  assert.strictEqual(p.view.visible, true);
+  p.handle.close();
+  const g = fakeDeps();
+  const q = openPane(g, { unloaded: true });
+  q.handle.setInactive(false);
+  q.handle.showNotice(PANE_NOTICE);
+  assert.strictEqual(g.views[1].visible, true, "a notice in place of the page shows");
+  q.handle.close();
+});
+
+test("pane: a page that never answers shows a while after its load finished", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fakeDeps();
+  const p = openPane(f, { unloaded: true });
+  p.handle.setInactive(false);
+  p.view.webContents.emit("did-finish-load");
+  for (let i = 0; i < 29; i += 1) { t.mock.timers.tick(100); await flush(); }
+  t.mock.timers.tick(99);
+  assert.strictEqual(p.view.visible, false);
+  t.mock.timers.tick(1);
+  assert.strictEqual(p.view.visible, true);
+  p.handle.close();
+  const g = fakeDeps();
+  const q = openPane(g, { unloaded: true });
+  let told = 0;
+  q.handle.onLoaded(() => { told += 1; });
+  q.view.webContents.emit("did-finish-load");
+  q.handle.close();
+  t.mock.timers.tick(5000);
+  await flush();
+  assert.strictEqual(told, 0, "a closed pane's timers do nothing");
+});
+
+test("pane: on a theme change it passes on the page's own mode, not a guess from the colour, latest read only", async () => {
+  const f = fakeDeps();
+  const p = openPane(f);
+  const seen = [];
+  p.handle.onThemeDark((dark) => seen.push(dark));
+  const wc = p.view.webContents;
+  // A light page on a custom palette whose background is mid grey.
+  wc.rootDrawn = "light";
+  wc.emit("did-change-theme-color", {}, "#777777");
+  await flush();
+  assert.deepStrictEqual(seen, [false]);
+  wc.rootDrawn = "";
+  wc.emit("did-change-theme-color", {}, "#0d0d0d");
+  await flush();
+  assert.deepStrictEqual(seen, [false], "no applied mode, nothing passed on");
+  const answers = [];
+  wc.executeJavaScript = () => new Promise((resolve) => answers.push(resolve));
+  wc.emit("did-change-theme-color", {}, "#0d0d0d");
+  wc.emit("did-change-theme-color", {}, "#fafafa");
+  answers[1]("light");
+  answers[0]("dark");
+  await flush();
+  assert.deepStrictEqual(seen, [false, false], "the earlier read answering late is dropped");
   p.handle.close();
 });
 

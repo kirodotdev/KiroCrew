@@ -398,7 +398,17 @@ def _read_info_plist(path: str) -> dict:
     """
     try:
         from kiro_crew.hooks import safe_read_prefix
-
+    except ImportError:
+        # Not an unreadable plist: without the hardened reader EVERY bundle id
+        # resolves empty, so every bundle-id rule stops matching. Still return {}
+        # (the gate denies an unidentified target), but say why above DEBUG.
+        logger.warning(
+            "cannot read any app bundle identity: the hardened file reader "
+            "(kiro_crew.hooks) failed to import, so every bundle id resolves empty",
+            exc_info=True,
+        )
+        return {}
+    try:
         # Through ``safe_read_prefix``, not a bare ``open``. A bare
         # check-then-open (``is_sensitive_path`` then a separate open) is a
         # TOCTOU hole: the agent chooses which process to target, so it can also

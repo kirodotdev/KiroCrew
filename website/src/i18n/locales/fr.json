@@ -373,8 +373,8 @@
       "not_declared": "Cette app ne peut pas afficher le sélecteur de projet : ses autorisations ne déclarent pas {{path}}."
     },
     "sessionChanges": {
-      "not_declared": "Cette app ne peut pas afficher les modifications de ce chat : ses autorisations ne déclarent pas {{path}}.",
-      "diff_not_declared": "Cette app ne peut pas afficher le diff de ce fichier : ses autorisations ne déclarent pas {{path}}.",
+      "not_declared": "Cette app ne peut pas afficher les modifications de ce chat. Le développeur de cette app ne l'a pas autorisé : les autorisations de l'app ne déclarent pas {{path}}. Demande au développeur de l'app de l'ajouter.",
+      "diff_not_declared": "Cette app ne peut pas afficher les modifications de ce fichier. Le développeur de cette app ne l'a pas autorisé : les autorisations de l'app ne déclarent pas {{path}}. Demande au développeur de l'app de l'ajouter.",
       "pick_a_file": "Choisis un fichier pour voir ses modifications.",
       "diff_unavailable": "Ce chat n'a pas enregistré le fichier entier avant et après cette modification, il n'y a donc pas de diff à afficher."
     },
@@ -8067,9 +8067,10 @@
       "new_crew": "Nouveau",
       "seen_not_saved": "Impossible d’enregistrer que tu l’as vu. Il apparaîtra de nouveau comme nouveau.",
       "open_crew_failed": "Impossible d’ouvrir {{name}}.",
-      "connect": "Connecter",
       "connect_crew": "Connecter {{name}}",
-      "connected": "Connecté"
+      "connected": "Connecté",
+      "not_connected": "Non connecté",
+      "connecting": "Connexion…"
     },
     "instancesViewport": {
       "connecting": "Connexion…",
@@ -11204,6 +11205,7 @@
       "conductor_mode_ms_waiting_pr": "En attente de la PR #{{n}}",
       "conductor_mode_ms_waiting_no_reason": "En pause, sans raison donnée",
       "conductor_mode_ms_done_fold": "{{n}} terminés",
+      "conductor_mode_ms_dropped_fold": "{{n}} abandonnés",
       "conductor_mode_ms_pr": "· PR #{{n}}",
       "conductor_mode_run_working": "En cours",
       "conductor_mode_run_waiting": "En attente de toi",

@@ -18,26 +18,36 @@ off this one flag: value redaction in the renderer, input refusal in
 all three at once, which is why the derivation lives in one function
 (:func:`_is_secure`) that a test pins directly.
 
-Electron/Chromium apps (Slack, VS Code, Obsidian, and KiroCrew's own desktop app)
-need ``AXManualAccessibility`` before they expose anything useful, and the symptom
-has two shapes — both reproduced live:
+Electron apps (Slack, VS Code, Obsidian, and Kiro Crew's own desktop app) need
+``AXManualAccessibility`` before they expose anything useful, and the symptom has
+two shapes — both reproduced live:
 
-* a hard ``kAXErrorCannotComplete`` (-25204) for every attribute read (Chrome);
+* a hard ``kAXErrorCannotComplete`` (-25204) for every attribute read (seen once
+  from a cold-started Chrome, which this retry then unlocked);
 * a *successful* read that returns a 13-node stub (Obsidian, before the opt-in;
   574 nodes after it).
 
 So the retry triggers on either an error OR an implausibly small tree, which is
 the only way to catch the second shape.
+
+Chromium BROWSERS show a third shape and need a second attribute. On macOS 14+ a
+client that merely reads from Chrome gets the browser's own tabs, toolbar and
+bookmarks with no page in the tree at all. That window is far above the stub
+threshold, so the ``AXManualAccessibility`` retry never runs; the browser opt-in keys
+on the missing page root instead and sets ``AXEnhancedUserInterface``, the attribute
+Chrome's own ``accessibilitySetValue:forAttribute:`` handles.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Iterator
 
+from kiro_crew import platform_compat
 from kiro_crew.computer_use import macos_ffi
 from kiro_crew.computer_use.types import (
     AX_CHILD_ATTRIBUTES,
@@ -101,6 +111,48 @@ MIN_TITLE_STEM_LEN = 8
 # this small (a bare alert) simply pay one bounded retry.
 ELECTRON_STUB_NODE_THRESHOLD = 24
 
+# The opt-in that exposes a Chromium browser's page: ``accessibilitySetValue:
+# forAttribute:`` in Chrome's ``chrome_browser_application_mac.mm`` handles it.
+AX_ENHANCED_USER_INTERFACE = "AXEnhancedUserInterface"
+# The role of a page's root. A browser window walked without one shows only the
+# browser's own UI.
+AX_WEB_AREA = "AXWebArea"
+# Bundle ids that get the browser opt-in: Google Chrome's channels and Chromium,
+# which all build that file. It is a screen-reader-level switch, so other Chromium
+# browsers stay off the list until someone checks that they handle it the same way.
+CHROMIUM_BROWSER_BUNDLE_IDS = frozenset(
+    {
+        "com.google.Chrome",
+        "com.google.Chrome.beta",
+        "com.google.Chrome.dev",
+        "com.google.Chrome.canary",
+        "org.chromium.Chromium",
+    }
+)
+# Chrome turns page content on only once the attribute has held still for two
+# seconds (its ``kTwoSecondDelay`` debounce), so a walk any sooner can only see
+# the browser UI again.
+CHROMIUM_OPT_IN_DEBOUNCE_SECS = 2.0
+# After the debounce, how long each renderer gets to send its tree.
+CHROMIUM_OPT_IN_WAIT_SECS = 2.0
+CHROMIUM_OPT_IN_POLL_SECS = 0.25
+# After an opt-in whose write failed and that never showed a page, how long before
+# the next snapshot of that browser tries again. A failed write may be transient, and
+# retrying on every snapshot would add the wait to every pre-action fingerprint walk.
+CHROMIUM_OPT_IN_RETRY_SECS = 60.0
+# Browser process -> the ``time.monotonic()`` after which it may be opted in again.
+# An accepted write or a page seen pins it at infinity: Chrome keeps the mode on, so a
+# window with no page after that (Task Manager, picture-in-picture) really has none.
+# Keyed by pid AND start identity, so a new browser that reuses a recorded pid is a
+# new key and gets its own opt-in.
+_CHROMIUM_OPT_IN_RETRY_AT: dict[tuple[int, str | None], float] = {}
+
+
+def _browser_process(pid: int) -> tuple[int, str | None]:
+    """The opt-in record's key: *pid* plus its start identity (``None`` if unknown)."""
+    return (pid, platform_compat.get_process_start_id(pid))
+
+
 # Per-node child cap. Bounds one pathological container (a table with 100k rows)
 # before the global node budget notices, so a single element cannot make one walk
 # materialise a huge Python list of CF pointers.
@@ -149,6 +201,10 @@ class WalkStats:
     # incomplete) so a diagnostic can tell "this app is wedged" apart from "the
     # model asked for a small budget".
     time_truncated: bool = False
+    # A page root (:data:`AX_WEB_AREA`) was classified somewhere in the window.
+    # Like ``saw_secure`` it ignores the reporting budget, so a small
+    # ``max_tree_nodes`` cannot make a browser look as if its page were missing.
+    saw_web_area: bool = False
 
 
 def build_snapshot(app: AppRef, req: SnapshotRequest) -> Snapshot:
@@ -166,7 +222,10 @@ def build_snapshot(app: AppRef, req: SnapshotRequest) -> Snapshot:
        ``AXManualAccessibility``, poll for up to
        :data:`macos_ffi.ELECTRON_OPT_IN_WAIT_SECS` in
        :data:`macos_ffi.ELECTRON_OPT_IN_POLL_SECS` steps, and retry **once**;
-    4. still nothing usable -> raise :class:`ComputerUseError` naming the RAW AX
+    4. for a Chromium browser whose walk found no page root, set
+       ``AXEnhancedUserInterface``, wait out the browser's debounce, and re-walk
+       until the page appears or :data:`CHROMIUM_OPT_IN_WAIT_SECS` runs out;
+    5. still nothing usable -> raise :class:`ComputerUseError` naming the RAW AX
        code, because that number is the only thing that makes a support thread
        diagnosable.
 
@@ -220,6 +279,15 @@ def build_snapshot(app: AppRef, req: SnapshotRequest) -> Snapshot:
                     # actually relative to. Electron windows resize as they finish
                     # loading, so this is not hypothetical.
                     bounds = _window_bounds(window)
+
+                if _needs_chromium_web_content(app, window, stats):
+                    exposed = _expose_chromium_web_content(
+                        app_elem, app, req, focused=focused, saw_secure=stats.saw_secure
+                    )
+                    if exposed is not None:
+                        macos_ffi.release_all([window] if window is not None else [])
+                        window, elements, stats = exposed
+                        bounds = _window_bounds(window)
 
                 if window is None and err == AX_SELF_REFERENCE_ONLY:
                     # ``AXWindows`` answered, but every entry was the application
@@ -495,8 +563,8 @@ def _needs_manual_accessibility(window: "object | None", err: int, stats: WalkSt
 
     Two triggers, because the symptom has two shapes:
 
-    * ``window is None`` with ``-25204`` — Chrome's behaviour, a hard error on
-      every attribute read;
+    * ``window is None`` with ``-25204`` — a hard error on every attribute read,
+      seen from a cold-started Chrome;
     * a window that walked to fewer than :data:`ELECTRON_STUB_NODE_THRESHOLD`
       nodes — Obsidian's behaviour, a *successful* read of a 13-node stub. An
       error-only check misses this one entirely, which is how an Electron app ends
@@ -582,6 +650,87 @@ def _retry_with_manual_accessibility(
     return best_window, err, best_elements, replace(best_stats, saw_secure=saw_secure)
 
 
+def _needs_chromium_web_content(app: AppRef, window: "object | None", stats: WalkStats) -> bool:
+    """True when a Chromium browser's window walked without its page.
+
+    The browser UI alone is hundreds of nodes, so :func:`_needs_manual_accessibility`
+    sees a healthy tree. Only the missing :data:`AX_WEB_AREA` tells the two apart,
+    and only for a known browser: a native app has no page root to miss. A walk cut
+    short by its time budget may simply not have reached the page, and re-walking an
+    app that slow would only cost another budget.
+    """
+    return (
+        window is not None
+        and app.bundle_id in CHROMIUM_BROWSER_BUNDLE_IDS
+        and time.monotonic() >= _CHROMIUM_OPT_IN_RETRY_AT.get(_browser_process(app.pid), 0.0)
+        and not stats.saw_web_area
+        and not stats.time_truncated
+    )
+
+
+def _expose_chromium_web_content(
+    app_elem: object,
+    app: AppRef,
+    req: SnapshotRequest,
+    *,
+    focused: object = None,
+    saw_secure: bool = False,
+) -> "tuple[object, tuple[ElementRec, ...], WalkStats] | None":
+    """Set ``AXEnhancedUserInterface``, then re-walk until the page is in the tree.
+
+    Returns ``(window, elements, stats)`` from the first walk that saw a page root,
+    with *window* a +1 reference the caller releases. When the page never appeared it
+    returns the last re-walk instead, so a secure field that showed up during the wait
+    still reaches ``has_secure`` and suppresses the screenshot; the browser UI is a
+    correct answer about that window. ``None`` means no re-walk found the window, and
+    the caller keeps the walk it already had.
+
+    The returned ``saw_secure`` covers every walk, not only the returned one: a
+    password field that the caller's first walk (*saw_secure*) or an earlier re-walk
+    saw must still suppress the screenshot.
+
+    Runs once per browser process when the write is accepted or the page appears
+    (:data:`_CHROMIUM_OPT_IN_RETRY_AT`). Chrome keeps the mode on until the attribute
+    is set back to false or VoiceOver is toggled, so only the first snapshot of a
+    running browser pays the wait; after a VoiceOver toggle the page stays out of the
+    tree until the browser restarts. The cost is that the browser keeps building page
+    trees for as long as it runs.
+
+    A failed set is not fatal: the attribute is undocumented, so its return code is
+    not a reliable signal, and the re-walk is what decides. A failed set that never
+    shows a page is retried after :data:`CHROMIUM_OPT_IN_RETRY_SECS`.
+    """
+    browser = _browser_process(app.pid)
+    set_err = macos_ffi.ax_set_true(app_elem, AX_ENHANCED_USER_INTERFACE)
+    if set_err == macos_ffi.AX_ERR_SUCCESS:
+        _CHROMIUM_OPT_IN_RETRY_AT[browser] = math.inf
+    else:
+        logger.debug("AXEnhancedUserInterface not settable (AX error %s)", set_err)
+        _CHROMIUM_OPT_IN_RETRY_AT[browser] = time.monotonic() + CHROMIUM_OPT_IN_RETRY_SECS
+
+    time.sleep(CHROMIUM_OPT_IN_DEBOUNCE_SECS)
+    deadline = time.monotonic() + CHROMIUM_OPT_IN_WAIT_SECS
+    latest: "tuple[object, tuple[ElementRec, ...], WalkStats] | None" = None
+    while True:
+        window, _ = _frontmost_window(
+            app_elem, window_id=app.window_id, window_title=app.window_title
+        )
+        if window is not None:
+            elements, stats, _ = _walk(
+                window, req, window_bounds=_window_bounds(window), focused=focused
+            )
+            saw_secure = saw_secure or stats.saw_secure
+            if latest is not None:
+                macos_ffi.release_all([latest[0]])
+            latest = (window, elements, replace(stats, saw_secure=saw_secure))
+            if stats.saw_web_area:
+                _CHROMIUM_OPT_IN_RETRY_AT[browser] = math.inf
+                return latest
+        if time.monotonic() >= deadline:
+            return latest
+        time.sleep(CHROMIUM_OPT_IN_POLL_SECS)
+
+
 def _walk(
     window: object,
     req: SnapshotRequest,
@@ -665,6 +814,7 @@ def _walk(
     depth_truncated = False
     time_truncated = False
     saw_secure = False
+    saw_web_area = False
     visited = 0
 
     def read_children(element: object, role: str = "") -> list:
@@ -765,6 +915,8 @@ def _walk(
                 secure = _is_secure(role, subrole)
                 if secure:
                     saw_secure = True
+                if role == AX_WEB_AREA:
+                    saw_web_area = True
 
                 if depth > req.max_depth:
                     # Same reasoning as the node-budget branch below, and the same
@@ -871,6 +1023,7 @@ def _walk(
             depth_truncated=depth_truncated,
             saw_secure=saw_secure,
             time_truncated=time_truncated,
+            saw_web_area=saw_web_area,
         ),
         kept,
     )

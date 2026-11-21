@@ -358,8 +358,8 @@
       "not_declared": "Diese App kann die Projektauswahl nicht anzeigen, denn ihre Berechtigungen deklarieren {{path}} nicht."
     },
     "sessionChanges": {
-      "not_declared": "Diese App kann die Änderungen dieses Chats nicht anzeigen, denn ihre Berechtigungen deklarieren {{path}} nicht.",
-      "diff_not_declared": "Diese App kann den Diff dieser Datei nicht anzeigen, denn ihre Berechtigungen deklarieren {{path}} nicht.",
+      "not_declared": "Diese App kann die Änderungen dieses Chats nicht anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Bitte den Entwickler der App, es hinzuzufügen.",
+      "diff_not_declared": "Diese App kann die Änderungen dieser Datei nicht anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Bitte den Entwickler der App, es hinzuzufügen.",
       "pick_a_file": "Wähle eine Datei, um ihre Änderungen zu sehen.",
       "diff_unavailable": "Dieser Chat hat die ganze Datei vor und nach dieser Änderung nicht aufgezeichnet, daher gibt es keinen Diff."
     },
@@ -7858,9 +7858,10 @@
       "new_crew": "Neu",
       "seen_not_saved": "Konnte nicht speichern, dass du das gesehen hast. Es wird wieder als neu angezeigt.",
       "open_crew_failed": "{{name}} konnte nicht geöffnet werden.",
-      "connect": "Verbinden",
       "connect_crew": "{{name}} verbinden",
-      "connected": "Verbunden"
+      "connected": "Verbunden",
+      "not_connected": "Nicht verbunden",
+      "connecting": "Verbinde…"
     },
     "instancesViewport": {
       "connecting": "Wird verbunden…",
@@ -10955,6 +10956,7 @@
       "conductor_mode_ms_waiting_pr": "Wartet auf PR #{{n}}",
       "conductor_mode_ms_waiting_no_reason": "Pausiert, kein Grund angegeben",
       "conductor_mode_ms_done_fold": "{{n}} erledigt",
+      "conductor_mode_ms_dropped_fold": "{{n}} verworfen",
       "conductor_mode_ms_pr": "· PR #{{n}}",
       "conductor_mode_run_working": "In Arbeit",
       "conductor_mode_run_waiting": "Wartet auf dich",
