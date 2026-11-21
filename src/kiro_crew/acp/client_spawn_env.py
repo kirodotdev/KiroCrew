@@ -666,6 +666,29 @@ def _kiro_cli_app_bundle_target(executable: str) -> str | None:
     return real
 
 
+def bypass_launcher_shim(argv: list[str], *, sandbox_mode: str) -> list[str] | None:
+    """*argv* with the kiro-cli launcher shim swapped for its bundle binary, or ``None``.
+
+    For a spawn that must run with zero tools (the knowledge pool). The shim
+    starts a sandbox tool that, on every launch, adds its own MCP server to every
+    spec in the agents directories, the alias this spawn is about to load
+    included, so the harness mounts that server and the post-start zero-tool
+    check refuses the worker every time. The bundle binary is what the shim's
+    own fallback runs (:func:`_kiro_cli_bundle_binary`), so no spec is rewritten.
+
+    The caller must then let Kiro Crew's own sandbox wrap the child (no
+    delegation): the shim's sandbox does not run for this child. ``None`` keeps the shim:
+    no bundle binary next to it, or ``sandbox_mode`` is ``"off"``, where Crew
+    would not wrap the child and the shim's sandbox is the only one left.
+    """
+    if not argv or sandbox_mode == "off":
+        return None
+    bundle = _kiro_cli_bundle_binary(argv[0])
+    if bundle is None:
+        return None
+    return [bundle, *argv[1:]]
+
+
 def apply_pod_bundle_spawn(
     argv: list[str],
     *,
