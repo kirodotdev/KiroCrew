@@ -148,7 +148,11 @@ falls back to the name-seeded gradient). Keep art as plain committed files under
 the size caps: an art file over 8 MiB is never served, so its card falls back to
 the gradient, and an owner-tier row prewarms only the first 12 paths of each
 screenshots field. This limitation applies only to pre-install store art: the install
-and update paths are not masked and check out LFS content as usual.
+and update paths are not masked and check out LFS content as usual, from the host
+the app is cloned from only: every registry git command pins `lfs.url` to the
+endpoint Git LFS derives from the clone URL, so a committed `.lfsconfig` that sets
+`lfs.url` or `remote.<name>.lfsurl` is overridden. Keep LFS objects on the same
+forge as the repository.
 
 ## 5. Setup and lifecycle scripts
 

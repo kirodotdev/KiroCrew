@@ -3074,7 +3074,7 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 | POST | `/api/apps/{name}/disable` | Disable app (owner only) |
 | POST | `/api/apps/{name}/dev` | Toggle dev mode (live reload) — body `{"enabled": bool}` |
 | POST | `/api/apps/{name}/open` | Launch app via openCommand (owner only) |
-| GET | `/apps/{name}/ui/{path}` | Serve app UI bundle files |
+| GET | `/apps/{name}/ui/{path}` | Serve app UI bundle files. `{path}` is a forward-slash relative path: one holding `..`, a backslash or a colon, or starting with `/`, answers 400 `invalid path` before any file-system call |
 | * | `/apps/{name}/api/{path}` | Reverse proxy to app backend (HMAC-signed). An ordinary response is bounded at 30s total. A `text/event-stream` response has no total, but must emit an event or a `:` comment at least every 60s, or it is cut |
 
 "Owner only" routes answer 403 `owner_only` to a dashboard subject that is not
