@@ -115,7 +115,7 @@ class TestFailedReadsInTheWakeSweep(unittest.IsolatedAsyncioTestCase):
         await self._sweep(client)  # first sight: the backlog is marked, nobody woken
         # A crew first seen while the read fails has no mark yet: a sweep that took
         # the failure for an empty page would seed it below the backlog.
-        _crew(self.root, name="Bode")
+        bode = _crew(self.root, name="Bode")
         client.add_issue(6, ["bug"])
         before = self.checks_file.read_bytes()
 
@@ -130,5 +130,14 @@ class TestFailedReadsInTheWakeSweep(unittest.IsolatedAsyncioTestCase):
         woken, wake = await self._sweep(client)
 
         # The scoped crew finds the new issue; the new crew seeds at the backlog's top.
-        self.assertEqual(self._reasons(wake), ["#6 scope-label"])
-        self.assertEqual(woken, {scoped["id"]: [cr.SIG_SCOPE_LABEL]})
+        # Both have room, so each also gets its pickup: the arrival turn carries it.
+        self.assertEqual(
+            sorted(self._reasons(wake)),
+            [
+                "#6 scope-label; pickup-due (2 claimable, 3 of 3 slots free)",
+                "pickup-due (3 claimable, 3 of 3 slots free)",
+            ],
+        )
+        self.assertEqual(
+            woken, {scoped["id"]: [cr.SIG_SCOPE_LABEL], bode["id"]: [cr.SIG_PICKUP_DUE]}
+        )
