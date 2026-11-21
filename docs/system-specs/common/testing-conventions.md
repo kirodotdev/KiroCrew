@@ -1454,7 +1454,20 @@ raises at collection for a guard the import block does not bind.
 `test/test_conftest_guards.py` pins that every guard runs, that one guard's failure
 does not skip another's teardown, and that a fixture named like a guard fails the test
 that defines it. A guard a test must override or request by name stays a fixture, and
-its name is added to `SEGMENT_BOUNDS`. The local related-test selection matches the name `conftest.py`
+its name is added to the set's bounds. The rootdir floors run the same way: a per-test
+floor is a `@floor_guard` in its `test/conftest_floor_*.py` part, six autouse fixtures
+in `test/conftest_floor_guards.py` (`_c_floors` to `_rest_floors`) run them for every
+testpath, and `seal_floor_guards` ends the rootdir `conftest.py`. A floor may name a
+fixture its segment requests or an earlier floor, which then runs first. Six rootdir
+floors stay fixtures and cut the segments: `_block_host_service_mutation` (it creates
+`_floor_monkeypatch` before `_isolation_dirs` exists), `_isolate_agent_spec_home` and
+`_isolate_kiro_sessions_dir` (an opt-in fixture requests each by name),
+`_reset_platform_context` (a test module replaces it), and the two that exist only
+under a switch (`_crew_log_read_budget_check`, `_isolate_tempfile_base_per_test`).
+`test/test_host_isolation_floor_guards.py` pins the segments on the live conftest, and
+`_autouse_floor_generator` in `test_host_isolation_floor_restores.py` fails a floor
+that no autouse segment runs. Both guard sets are built on `test/per_test_guards.py`,
+which the rootdir conftest loads by path so the in-package suites reach it. The local related-test selection matches the name `conftest.py`
 only, so after editing a part also run the floor's own tests
 (`test/test_host_isolation_floor*.py`, `test/test_host_service_guard.py`,
 `test/test_testing_determinism_helpers.py`, `test/test_conftest_parts_reach.py`).
@@ -3129,7 +3142,8 @@ teardown to every test. Merge a new guard into an existing autouse fixture of th
 scope before adding a name. Measured on 2,000 no-op tests (`-n0 --no-cov`, three runs
 each side on one host): running 87 of `test/conftest.py`'s guards behind five names
 took setup plus teardown from 9.8-10.6 ms to 7.1-7.6 ms per test, with the guards'
-call order unchanged.
+call order unchanged. Running 29 rootdir floors behind six names took it from
+6.1-6.6 ms to 5.2-5.9 ms on the same probe.
 
 **The per-item cost is budgeted.** The rootdir conftest records the process RSS after
 configure and the VmHWM at collection finish, and
@@ -4004,7 +4018,7 @@ fixture that patched through it, and the rest of that test runs on the host's re
 The rootdir conftest's `_floor_monkeypatch` is undone independently, so an autouse
 fixture requests it instead; no autouse fixture in either conftest patches through the
 shared instance. A `@per_test_guard` is handed `_floor_monkeypatch` the same way, and
-the decorator refuses a guard that names any other fixture. `test/conftest.py`'s `_a_shared_monkeypatch_first` requests it only so
+sealing the set fails collection for a guard that names any other fixture. `test/conftest.py`'s `_a_shared_monkeypatch_first` requests it only so
 that it is created before the others there and undone after their teardowns, which read
 the test's patches while they unwind.
 

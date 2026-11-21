@@ -21,6 +21,7 @@ import sys
 import tempfile
 
 import pytest
+from conftest_floor_guards import floor_guard
 
 # ── how this run names the directories it leaves in the platform temp root ────
 #
@@ -387,7 +388,7 @@ _isolation_dirs.seq = 0  # type: ignore[attr-defined]
 _HOME_PIN_ARMED = pytest.StashKey[bool]()
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _isolate_kirocrew_home(request, _isolation_dirs, _floor_monkeypatch):
     """Pin ``KIROCREW_HOME`` and ``KIROCREW_WORKSPACE`` to per-test tmp dirs, for EVERY testpath.
 
@@ -801,7 +802,7 @@ _SHARED_KIRO_PATHS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _isolate_shared_kiro_paths(_isolation_dirs, _floor_monkeypatch):
     """Redirect the import-time ``~/.kiro`` bindings to a per-test tmp tree.
 
@@ -877,7 +878,7 @@ def _operators_dirs_dropped(home: pathlib.Path, dirs: list[str]) -> list[str]:
     return kept
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _hide_the_operators_kiro_cli(_floor_monkeypatch):
     """Keep the operator's own kiro-cli out of the fixed install directories.
 
@@ -932,7 +933,7 @@ def _hide_the_operators_kiro_cli(_floor_monkeypatch):
 # and one that reached the embeddings boot path could start a 610MB download.
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _isolate_subagents_dir(_isolation_dirs, _floor_monkeypatch):
     """Pin the subagent registry dir to a tmp dir for the whole suite.
 
