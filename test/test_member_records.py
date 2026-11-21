@@ -122,6 +122,7 @@ def test_the_spelled_names_match_their_owners() -> None:
         bot_grant_store.APP_BOT_GRANTS_KIND,
         local_authorization.LOCAL_GRANTS_KIND,
         protected_app_ui.APP_UI_KIND,
+        protected_app_state.APP_STARTUP_KIND,
     )
     assert member_records.MIGRATED_KINDS == (
         members.RULES_DIR_NAME,

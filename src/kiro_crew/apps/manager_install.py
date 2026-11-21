@@ -514,9 +514,20 @@ def install_app(
     # The approved set is put back as it was rather than removed. An installed app
     # was refused above, so no prior record exists to lose, but an approved set can
     # outlive its record, and that set is restored byte for byte.
-    prior_grants_text = _approved_grants_snapshot(name)
+    try:
+        prior_grants_text = _approved_grants_snapshot(name)
+        prior_startup_text = protected_app_state.read_startup_text(name)
+    except (OSError, ValueError) as exc:
+        return AppResult(
+            ok=False,
+            name=name,
+            error=f"could not read the approved permissions or startup approval of {name!r}: {exc}",
+            error_code="app_install_approvals_unreadable",
+        )
     try:
         _write_approved_grants(name, _consented_grant_entries(grant_source(manifest)))
+        if not manifest.ui.startup:
+            protected_app_state.write_startup_text(name, None)
         _write_installed(name, meta)
 
         # Generate and write app secret for token-based auth (App Kit §5.1)
@@ -528,6 +539,7 @@ def install_app(
         try:
             (dest / INSTALLED_META_FILENAME).unlink(missing_ok=True)
             _restore_approved_grants(name, prior_grants_text)
+            protected_app_state.write_startup_text(name, prior_startup_text)
         except OSError as undo_exc:
             logger.error("Failed to undo the install record of app %s: %s", name, undo_exc)
         # The record's write asked for a refresh that may have read it; ask again.
@@ -551,12 +563,19 @@ def install_app(
         resources=f"name={name!r} version={manifest.version}",
     )
 
+    from kiro_crew.apps.startup_modules import withdrawal_notice
+
+    startup_notice = (
+        withdrawal_notice(name, "install")
+        if prior_startup_text is not None and not manifest.ui.startup
+        else ""
+    )
     refresh_app_config_keys()
     logger.info("Installed app %s v%s from %s", name, manifest.version, source)
     return AppResult(
         ok=True,
         name=name,
-        message=f"installed {name} v{manifest.version}",
+        message=f"installed {name} v{manifest.version}" + startup_notice,
         notice=("session_approval_reconsent" if manifest.permissions.sessionApproval else ""),
     )
 
@@ -862,9 +881,12 @@ def update_app(
     # read refuses the update with nothing changed and no marker left behind.
     try:
         prior_grants_text = _approved_grants_snapshot(name)
+        prior_startup_text = protected_app_state.read_startup_text(name)
     except (OSError, ValueError) as exc:
         return AppResult(
-            ok=False, name=name, error=f"could not read the approved permissions of {name!r}: {exc}"
+            ok=False,
+            name=name,
+            error=f"could not read the approved permissions or startup approval of {name!r}: {exc}",
         )
     prior_owner_disabled = protected_app_state.owner_disabled(name)
     try:
@@ -920,6 +942,8 @@ def update_app(
             previous_ui = protected_app_ui.record(name, source / "ui", source, allow_hardlinks=True)
             ui_recorded = True
             _write_approved_grants(name, approved_grants)
+            if not manifest.ui.startup:
+                protected_app_state.write_startup_text(name, None)
             _write_installed(name, meta)
         except (OSError, shutil.Error, ValueError, InstalledTreeRefused) as exc:
             rollback_error = ""
@@ -942,6 +966,7 @@ def update_app(
                     _remove_any_shape(restored_secret)
                     shutil.move(str(tmp_secret), str(restored_secret))
                 _restore_approved_grants(name, prior_grants_text)
+                protected_app_state.write_startup_text(name, prior_startup_text)
                 protected_app_state.set_owner_disabled(name, prior_owner_disabled)
                 _write_installed(name, existing)
             except (OSError, shutil.Error, ValueError) as rollback_exc:
@@ -987,6 +1012,13 @@ def update_app(
         manifest.version,
         source,
     )
+    from kiro_crew.apps.startup_modules import withdrawal_notice
+
+    startup_notice = (
+        withdrawal_notice(name, "update")
+        if prior_startup_text is not None and not manifest.ui.startup
+        else ""
+    )
     if session_control_widening is not None:
         sel().log_api_access(
             caller="app_update",
@@ -1001,7 +1033,7 @@ def update_app(
             message=(
                 f"updated {name} v{old_version} -> v{manifest.version}; "
                 f"disabled because this version newly requests {session_control_widening.words}"
-                " -- review it on the app page and enable again"
+                " -- review it on the app page and enable again" + startup_notice
             ),
             notice="session_approval_reconsent",
         )
@@ -1019,11 +1051,11 @@ def update_app(
             message=(
                 f"updated {name} v{old_version} -> v{manifest.version}; "
                 "this version requests new permissions, which stay off until you "
-                "approve them on the app page"
+                "approve them on the app page" + startup_notice
             ),
         )
     return AppResult(
         ok=True,
         name=name,
-        message=f"updated {name} v{old_version} -> v{manifest.version}",
+        message=f"updated {name} v{old_version} -> v{manifest.version}" + startup_notice,
     )
