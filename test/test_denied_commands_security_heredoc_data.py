@@ -150,3 +150,117 @@ def test_python_body_is_data_rejects_executable(body):
     from kiro_crew.security import argv_floor_self as mod
 
     assert not mod._python_body_is_data(body.lower())
+
+
+_RESTART = f"{_NAME} restart"
+_SSH = "ssh -p 22 localhost id"
+
+
+def _quote_body_shapes(command: str, quote: str) -> "list[str]":
+    """A data heredoc whose body holds one *quote*, then *command* on the line after
+    the closing line, then a line that holds the matching quote."""
+    return [
+        f"cat <<'EOF'\nit{quote}s\nEOF\n{command}\n# {quote}",
+        f"cat <<EOF\nit{quote}s\nEOF\n{command}\n# {quote}",
+        f"cat <<-'EOF'\n\tit{quote}s\n\tEOF\n{command}\n# {quote}",
+        f"tee out.txt <<'EOF'\nit{quote}s\nEOF\n{command}\n# {quote}",
+        f"cat <<'A'\nit{quote}s\nA\ncat <<'B'\nok\nB\n{command}\n# {quote}",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("cmd", "rule"),
+    [
+        (cmd, rule)
+        for command, rule in (
+            (_RESTART, "self-protection-restart"),
+            (_SSH, "sandbox-escape-ssh-self"),
+        )
+        for quote in ("'", '"')
+        for cmd in _quote_body_shapes(command, quote)
+    ]
+    + [
+        (f"cat <<'EOF'\nhello\nEOF\n{_RESTART}", "self-protection-restart"),
+        (f"cat <<'EOF'\nhello\nEOF\n{_SSH}", "sandbox-escape-ssh-self"),
+        # The floor does not model ``#`` comments, so a comment line after the body
+        # reads as it does after a body with no quote in it.
+        (
+            f"cat > f.sh <<'EOF'\necho \"$(echo 'a\"b')\" # c\nEOF\n# {_SSH}",
+            "sandbox-escape-ssh-self",
+        ),
+    ],
+)
+def test_line_after_closing_line_starts_unquoted(cmd, rule):
+    # bash ends the body at its closing line, and reads the next line with no
+    # quote open, whatever quote characters the body held.
+    head = _floor(cmd)
+    by_pattern = {r.pattern: r.id for r in security.BUILTIN_DENIED_RULES}
+    assert by_pattern.get(head, head) == rule
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "cat <<'EOF'\nit's fine\nEOF",
+        "cat <<'EOF'\nit's fine\nEOF\necho done",
+        'cat <<EOF > notes.md\nsay "hi\nEOF\nls -la',
+        "python3 - <<'EOF'\nprint('it''s', \"x\")\nEOF",
+    ],
+)
+def test_quote_in_data_body_allows_ordinary_next_lines(cmd):
+    assert _floor(cmd) is None
+
+
+@pytest.mark.parametrize(
+    ("cmd", "rule"),
+    [
+        ("s's'h -p 22 localhost id\ncat <<'EOF'\nit's\nEOF\n# '", "sandbox-escape-ssh-self"),
+        (
+            f"{_NAME[:4]}'{_NAME[4:]}' restart\ncat <<'EOF'\nit's\nEOF\n# '",
+            "self-protection-restart",
+        ),
+    ],
+)
+def test_line_before_body_is_read_without_the_body_quote(cmd, rule):
+    # The command line before a body is read up to the body, so a quote in the body
+    # does not pair with a quote after the closing line around that line's words.
+    head = _floor(cmd)
+    by_pattern = {r.pattern: r.id for r in security.BUILTIN_DENIED_RULES}
+    assert by_pattern.get(head, head) == rule
+
+
+def test_ssh_to_another_host_after_quoted_body_is_allowed(monkeypatch):
+    # The host is not this machine; the stub keeps the test off real name lookups.
+    from kiro_crew.security import argv_floor
+
+    monkeypatch.setattr(argv_floor, "_resolved_host_verdict", lambda host, **_kw: False)
+    cmd = "cat > notes.md <<'EOF'\nit's done\nEOF\nssh deploy@build.example.com uptime"
+    assert _floor(cmd) is None
+
+
+def test_heredoc_pieces_walk_the_text_once(monkeypatch):
+    from kiro_crew.security import shell_commands, shell_normalizer
+
+    # Bodies that open inside a quote are not cut, so the walk crosses each of them.
+    command = "".join(f"echo \"$(cat <<'E{i}'\nit's\nE{i}\n)\"\n" for i in range(400))
+    command += "cat <<'A'\nit's\nA\nls\n"
+    # The body offsets are read first, so only the quote walk itself is counted.
+    closes = shell_commands.heredoc_closing_lines(command)
+    monkeypatch.setattr(shell_commands, "heredoc_closing_lines", lambda text: closes)
+    reads = []
+
+    class Counted(str):
+        """Text that counts each character read from it, slices included."""
+
+        def __getitem__(self, key):
+            if isinstance(key, slice):
+                return Counted(str.__getitem__(self, key))
+            reads.append(key)
+            return str.__getitem__(self, key)
+
+    pieces = shell_normalizer._heredoc_line_pieces(Counted(command))
+    assert "".join(pieces) == command
+    assert pieces[-1] == "\nls\n"
+    assert reads
+    # The quote walk reads each character a bounded number of times, not once per body.
+    assert len(reads) <= 3 * len(command)

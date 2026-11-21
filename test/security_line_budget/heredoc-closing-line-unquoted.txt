@@ -1,0 +1,10 @@
++66
+The argv floors read text after a heredoc's closing line as bash reads it:
+unquoted, whatever quote characters the body held. shell_commands gains
+heredoc_closing_lines (each closed body's start and the offset past its closing
+line); shell_normalizer._self_tokens tokenizes the text in pieces cut before each
+body and after its closing line, in one forward walk (_heredoc_line_pieces), so
+neither the line before a body nor the lines after it read as quoted text; and
+the ssh floor's separator mask keeps such a body's line breaks and starts fresh
+after its closing line. The argv_floor mirror facade's TYPE_CHECKING manifest
+lists heredoc_closing_lines, as the facade-mirror guard requires.

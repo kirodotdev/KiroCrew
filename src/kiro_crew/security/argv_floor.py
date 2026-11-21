@@ -328,6 +328,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _heredoc_body_substitutions,
         _proven_body_spans,
         _without_quoted_heredoc_text,
+        heredoc_closing_lines,
         heredoc_text_spans,
         read_commands,
     )
