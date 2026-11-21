@@ -27,7 +27,6 @@ import signal
 import subprocess
 import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import NoReturn
 
@@ -304,25 +303,31 @@ def _list_tests(pw_bin: Path, *, cwd: Path, env: dict, out: Path, shard: str | N
     )
     detail = proc.stderr[-2000:]
     assert proc.returncode == 0, f"{' '.join(argv[1:])} exited {proc.returncode}: {detail}"
-    return _report_tests(json.loads(out.read_text(encoding="utf-8")))
+    data = json.loads(out.read_text(encoding="utf-8"))
+    errors = data.get("errors") or []
+    assert not errors, f"{' '.join(argv[1:])} reported {len(errors)} error(s): {errors[:3]}"
+    return _report_tests(data)
 
 
 def _prove_shard_share(
     pw_bin: Path, *, cwd: Path, env: dict, tmp: Path, shard: tuple[int, int]
 ) -> frozenset:
-    """List the suite and all K shards, twice, and return this shard's proven share."""
+    """List the suite and all K shards, twice, and return this shard's proven share.
+
+    One listing at a time. Playwright processes that start together on a runner
+    with no transform cache race to write it, and a listing that loses the race
+    leaves out a whole spec file while exiting 0.
+    """
     current, total = shard
     pinned_env = {**env, "LC_ALL": "C"}
     jobs = [("full", env, None)]
     jobs += [(f"shard-{i}", env, f"{i}/{total}") for i in range(1, total + 1)]
     jobs += [(f"pinned-{i}", pinned_env, f"{i}/{total}") for i in range(1, total + 1)]
 
-    def run(job: tuple[str, dict, str | None]) -> dict:
-        name, job_env, flag = job
-        return _list_tests(pw_bin, cwd=cwd, env=job_env, out=tmp / f"list-{name}.json", shard=flag)
-
-    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
-        full, *rest = pool.map(run, jobs)
+    full, *rest = (
+        _list_tests(pw_bin, cwd=cwd, env=job_env, out=tmp / f"list-{name}.json", shard=flag)
+        for name, job_env, flag in jobs
+    )
     share = _shard_share(full, rest[:total], rest[total:], current)
     digest = hashlib.sha256("\n".join(sorted(f"{p} {i}" for p, i in share)).encode()).hexdigest()
     print(
@@ -1015,6 +1020,32 @@ def test_a_division_that_depends_on_the_locale_fails() -> None:
     pinned[0][("chromium", "t1")] = pinned[1].pop(("chromium", "t1"))
     with pytest.raises(AssertionError, match="differently under LC_ALL=C"):
         _shard_share(full, shards, pinned, 1)
+
+
+def test_the_suite_and_its_shards_are_listed_one_at_a_time(tmp_path: Path, monkeypatch) -> None:
+    """Listings that overlap can each lose a spec file; the suite is listed first."""
+    import threading
+
+    full, shards = _division()
+    listings = {None: full, "1/2": shards[0], "2/2": shards[1]}
+    calls: list[tuple[str | None, str | None, int]] = []
+
+    def fake_list(pw_bin, *, cwd, env, out, shard):
+        calls.append((shard, env.get("LC_ALL"), threading.get_ident()))
+        return listings[shard]
+
+    monkeypatch.setitem(globals(), "_list_tests", fake_list)
+    share = _prove_shard_share(Path("pw"), cwd=tmp_path, env={}, tmp=tmp_path, shard=(2, 2))
+    assert share == frozenset(shards[1])
+    # Every listing runs on the caller's own thread, so none can overlap another.
+    assert {thread for _shard, _locale, thread in calls} == {threading.get_ident()}
+    assert [call[:2] for call in calls] == [
+        (None, None),
+        ("1/2", None),
+        ("2/2", None),
+        ("1/2", "C"),
+        ("2/2", "C"),
+    ]
 
 
 def _shard_report(tmp_path: Path, tests: dict[str, str], project: str = "chromium") -> Path:

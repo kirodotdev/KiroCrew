@@ -213,6 +213,9 @@ it runs a spec, in `_shard_share()`:
 
 1. It lists the whole suite (`playwright test --list --reporter=json`) and each
    of the K shards (`--list --shard=<j>/<K>`), in the environment the run uses.
+   The listings run one at a time: Playwright processes that start together on a
+   runner with no transform cache race to write it, and the loser lists a spec
+   file short while exiting 0.
 2. The whole suite's list must hold at least `MIN_EXECUTED_SPECS` tests.
 3. Every listed test must be in exactly one shard. A test in no shard, in two
    shards, or in a shard but not in the suite fails the leg before it runs. The
