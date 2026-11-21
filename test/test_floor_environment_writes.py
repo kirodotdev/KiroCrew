@@ -44,6 +44,27 @@ _NORMALLY_ABSENT = ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "K
 _VALUES = ("", "0", "1", "standalone", "Test", "/some/where", "left-by-the-test")
 
 
+def _expect_absent(patcher, name: str) -> None:
+    """Remove *name* for the test, and at undo whatever the test left in it.
+
+    The floor's patcher has a method for it. A plain ``MonkeyPatch`` gets the two
+    writes the floor used to make: ``delenv`` on an absent variable records nothing,
+    so the variable is set to ``""`` first, which leaves the record "was absent".
+    """
+    if isinstance(patcher, floor._FloorMonkeyPatch):
+        patcher.expect_absent(name)
+    elif name in os.environ:
+        patcher.delenv(name)
+    else:
+        patcher.setenv(name, "")
+        patcher.delenv(name)
+
+
+#: What the worker held in each swept variable when this module was imported, at
+#: collection, before any floor ran.
+_INHERITED = {name: os.environ.get(name) for name in _SWEPT}
+
+
 class _Env(dict):
     """A private ``os.environ`` that counts the writes made to it."""
 
@@ -124,7 +145,7 @@ def _run(patcher_type, env_type, program) -> tuple[list[dict], int]:
         patcher = patcher_type()
         for kind, name, value in setup:
             if kind == "absent":
-                floor._expect_absent(patcher, name)
+                _expect_absent(patcher, name)
             elif kind == "setenv":
                 patcher.setenv(name, value)
             else:
@@ -270,14 +291,125 @@ def test_a_prepending_setenv_is_never_skipped(monkeypatch):
     assert env == {"PATH_LIKE": "a"}
 
 
-def test_the_live_floor_runs_on_the_floors_own_patcher(_floor_monkeypatch):
-    """This test's own floor: the eight variables are absent, and each has its undo record."""
-    assert isinstance(_floor_monkeypatch, floor._FloorMonkeyPatch)
-    swept = {
+def _records(patcher) -> tuple[set[str], dict[str, str]]:
+    """``(variables with a "was absent" record, variables with an inherited value to restore)``.
+
+    The two records the floor leaves on the real environment: the write-free one
+    for a variable that was absent, and the ordinary ``delenv`` record, which
+    carries the value, for one that was present.
+    """
+    absent = {
         name
-        for target, name, value in _floor_monkeypatch._setitem
-        if isinstance(target, floor._EnvUndo) and value is floor._ABSENT
+        for target, name, value in patcher._setitem
+        if isinstance(target, floor._EnvUndo)
+        and target.environ is os.environ
+        and value is floor._ABSENT
     }
+    present = {
+        name: value
+        for target, name, value in patcher._setitem
+        if target is os.environ and isinstance(value, str)
+    }
+    return absent, present
+
+
+def test_the_live_floor_runs_on_the_floors_own_patcher(_floor_monkeypatch):
+    """This test's own floor: the eight variables are absent, and each has its undo record.
+
+    Which record depends on what the worker inherited. A shell that exports one of
+    them (an agent sandbox exports its markers) makes the floor record that value to
+    restore; a variable the worker did not have gets the "was absent" record.
+    """
+    assert isinstance(_floor_monkeypatch, floor._FloorMonkeyPatch)
+    absent, present = _records(_floor_monkeypatch)
     for name in _SWEPT:
         assert name not in os.environ
-        assert name in swept or name.upper() in swept, f"{name} would not be swept after this test"
+        if _INHERITED[name] is None:
+            assert name in absent, f"{name} would not be swept after this test"
+        else:
+            assert present.get(name) == _INHERITED[name], f"{name} would not be restored"
+
+
+@pytest.mark.parametrize(
+    "inherited",
+    [
+        (),
+        ("KIROCREW_SANDBOX_ACTIVE",),
+        ("KIROCREW_SANDBOX_ACTIVE", "KIROCREW_SANDBOX_LEVEL", "KIROCREW_PORT"),
+        _SWEPT,
+    ],
+    ids=["none", "one", "three", "all eight"],
+)
+def test_the_floor_answers_for_all_eight_whichever_of_them_the_worker_inherited(inherited):
+    """The real environment, with some of the eight set before the floor runs.
+
+    Each of the eight gets a record whether it was inherited or not, is hidden from
+    the test, and afterwards is back at its inherited value or absent again, with
+    whatever the test left in it gone.
+    """
+    with pytest.MonkeyPatch.context() as worker:
+        for name in _SWEPT:
+            worker.delenv(name, raising=False)
+        for name in inherited:
+            worker.setenv(name, f"inherited-{name}")
+        patcher = floor._FloorMonkeyPatch()
+        own = pytest.MonkeyPatch()
+        try:
+            for name in _SWEPT:
+                _expect_absent(patcher, name)
+            absent, present = _records(patcher)
+            assert absent == set(_SWEPT) - set(inherited)
+            assert {name: present.get(name) for name in inherited} == {
+                name: f"inherited-{name}" for name in inherited
+            }
+            for name in _SWEPT:
+                assert name not in os.environ
+                own.setenv(name, "left-by-the-test")
+        finally:
+            own.undo()  # the test's own patcher first, as pytest undoes it
+            patcher.undo()
+        for name in _SWEPT:
+            assert os.environ.get(name) == (f"inherited-{name}" if name in inherited else None)
+
+
+_OUTER = ("KIROCREW_SANDBOX_ACTIVE", "KIROCREW_SANDBOX_LEVEL", "PYTHONUTF8", "PYTHONIOENCODING")
+
+
+def _floor_patcher_cycle():
+    """One cycle of the real ``_floor_monkeypatch`` fixture, as a generator."""
+    return getattr(floor._floor_monkeypatch, "__wrapped__", floor._floor_monkeypatch)()
+
+
+@pytest.mark.parametrize("env_type", [_Env, _FoldingEnv])
+def test_the_workers_outer_variables_cost_no_write_when_the_test_left_them_alone(
+    monkeypatch, env_type
+):
+    """The fixture puts four of the worker's own variables back after its undo.
+
+    Two are set and two are absent here. A test that changed none of them costs no
+    write, and one that changed a set one and created an absent one costs exactly
+    the two writes that put them right.
+    """
+    env = env_type()
+    dict.__setitem__(env, "PYTHONUTF8", "1")
+    dict.__setitem__(env, "PYTHONIOENCODING", "utf-8")
+    monkeypatch.setattr(os, "environ", env)
+    held = dict(env)
+
+    cycle = _floor_patcher_cycle()
+    next(cycle)
+    env.writes = 0
+    with pytest.raises(StopIteration):
+        next(cycle)
+    assert dict(env) == held
+    assert env.writes == 0, "an untouched variable was written back"
+
+    cycle = _floor_patcher_cycle()
+    next(cycle)
+    dict.__setitem__(env, "PYTHONUTF8", "0")
+    dict.__setitem__(env, "KIROCREW_SANDBOX_ACTIVE", "1")
+    env.writes = 0
+    with pytest.raises(StopIteration):
+        next(cycle)
+    assert dict(env) == held
+    assert env.writes == 2, "one restore of a changed value and one removal"
