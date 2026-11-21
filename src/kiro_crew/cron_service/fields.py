@@ -174,6 +174,20 @@ _CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
     ("secret_env_resurfaced_pin", MAX_SHORT_STRING),
 )
 
+#: A character a job's ``name`` may not carry: every ``Cc`` control character but
+#: TAB, plus the two Unicode line/paragraph separators Python does not end a line
+#: at. The name is interpolated with ``%s`` into dozens of gateway log lines
+#: (``cron_exec``, ``cron_fire``, ``cron_failure``, ``cron_delivery`` and the
+#: rest), so one line break in it splits a single log line in two and the
+#: continuation reads as an unlabelled message. Checked beside the caps table on
+#: purpose: this is the one gate EVERY create and update surface runs -- MCP
+#: tool, REST, CLI, apps SDK, onboarding import -- which is also why the name's
+#: cap lives here (``test/test_cron_name_cap.py``). TAB is kept: it draws on one
+#: line, the same Cc-but-tab rule ``change_card_catalog_kinds`` applies to the
+#: text a card draws. ``message`` deliberately gets no such rule: it is a
+#: multi-line prompt and is meant to carry line breaks.
+_NAME_LINE_BREAK_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029]")
+
 
 # The shape of an installer's provenance key (CronJob.managed_by). Deliberately
 # not in _CRON_STRING_FIELD_CAPS: that table also gates apply_job_update, and
@@ -216,7 +230,7 @@ def _validate_cron_string_fields(
     *,
     required: frozenset[str] = frozenset(),
 ) -> None:
-    """Type+length gate for every caller-supplied string field.
+    """Type+length gate for every caller-supplied string field, plus ``name``'s shape.
 
     Iterates _CRON_STRING_FIELD_CAPS. For each field:
     - If in *required*: always validates (rejects non-str or over-cap).
@@ -224,6 +238,10 @@ def _validate_cron_string_fields(
       other value — including falsy non-strings like ``[]`` or ``0``, which
       a bare truthiness test would silently admit — must be a string within
       the cap.
+
+    ``name`` is then held to one more rule it needs and no other field has:
+    it must be a single line (:data:`_NAME_LINE_BREAK_RE`), because that is
+    the field the gateway's log lines interpolate.
     """
     for field_name, cap in _CRON_STRING_FIELD_CAPS:
         val = values.get(field_name)
@@ -239,6 +257,17 @@ def _validate_cron_string_fields(
                 raise ValueError(f"{field_name} must be a string")
             if len(val) > cap:
                 raise ValueError(f"{field_name} exceeds max length {cap}")
+    # Beside the loop rather than in it: only ``name`` carries a shape rule, and
+    # reading it out of the same dict keeps the table a table of caps. Absent
+    # from ``values`` (an update that does not touch the name) means nothing to
+    # check, and a name the caps already rejected never gets here.
+    name = values.get("name")
+    if isinstance(name, str) and _NAME_LINE_BREAK_RE.search(name):
+        raise ValueError(
+            "name must be on one line: it carries a line break or control "
+            "character, which would split the gateway log line that names the "
+            "job; remove it"
+        )
 
 
 def _check_timeout_secs_range(timeout_secs: int) -> None:
