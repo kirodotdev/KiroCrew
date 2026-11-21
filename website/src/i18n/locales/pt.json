@@ -373,8 +373,8 @@
       "not_declared": "Este app não pode mostrar o seletor de projetos: suas permissões não declaram {{path}}."
     },
     "sessionChanges": {
-      "not_declared": "Este app não pode mostrar as alterações deste chat: suas permissões não declaram {{path}}.",
-      "diff_not_declared": "Este app não pode mostrar o diff deste arquivo: suas permissões não declaram {{path}}.",
+      "not_declared": "Este app não pode mostrar as alterações deste chat. O desenvolvedor dele não permitiu isso: as permissões do app não declaram {{path}}.",
+      "diff_not_declared": "Este app não pode mostrar as alterações deste arquivo. O desenvolvedor dele não permitiu isso: as permissões do app não declaram {{path}}.",
       "pick_a_file": "Escolha um arquivo para ver suas alterações.",
       "diff_unavailable": "Este chat não registrou o arquivo inteiro antes e depois desta alteração, então não há diff para mostrar."
     },
