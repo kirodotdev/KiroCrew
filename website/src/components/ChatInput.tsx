@@ -1129,7 +1129,7 @@ function ChatInput({
           previous session's card, live buttons and all, at once. */}
       <AnimatePresence key={`approval-card:${activeSlot ?? ''}`}>
         {pendingApproval && approvalId && (
-          <ApprovalCardMotion key="approval-card" reduced={reduceMotion}>
+          <ApprovalCardMotion key="approval-card" reduced={reduceMotion} requestKey={approval.approvalKey}>
           <ToolApprovalCard approval={approval} activeSlot={activeSlot} approvalMode={approvalMode} />
           </ApprovalCardMotion>
         )}

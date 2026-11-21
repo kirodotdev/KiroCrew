@@ -1,3 +1,4 @@
+import { COMMAND_WRAP } from './commandWrap'
 import { useCallback, useLayoutEffect, useState, type ComponentPropsWithoutRef, type KeyboardEvent, type ReactNode } from 'react'
 import { useScrollEdgesY, type ScrollEdgesY } from '../../hooks/useScrollEdges'
 import { DropdownMenuContent, DropdownMenuItem } from '../ui/dropdown-menu'
@@ -27,14 +28,18 @@ export function edgeAttrs(edges: ScrollEdgesY) {
 /** A scrolling `div` with the edge cues. A caller that needs the element (a
  *  `<pre>` the menu measures, say) uses the hook with `edgeMask` directly.
  *  `data-cued-scroll` is what `pageScrollBox` finds it by. */
-export function CuedScrollBox({ className, testId, children }: { className: string; testId?: string; children: ReactNode }) {
+/** `label` makes the box a named, focusable region, so a keyboard user can
+ *  reach it and scroll it with the arrow keys (Safari does not focus a
+ *  scroller that has no `tabIndex`). Not for a box inside a menu row, where the
+ *  row holds focus and `pageScrollBox` pages the box. */
+export function CuedScrollBox({ className, testId, label, children }: { className: string; testId?: string; label?: string; children: ReactNode }) {
   const [attach, edges, , attachContent] = useScrollEdgesY<HTMLDivElement>()
   const ref = useCallback((node: HTMLDivElement | null) => { attach(node) }, [attach])
   // The content is observed too: a box already at its cap does not resize when
   // what it holds changes (a Raw/Formatted flip), and its cue must follow.
   const contentRef = useCallback((node: HTMLDivElement | null) => { attachContent(node) }, [attachContent])
   return (
-    <div ref={ref} data-testid={testId} data-cued-scroll="" {...edgeAttrs(edges)} className={`${className} overflow-y-auto ${edgeMask(edges)}`}>
+    <div ref={ref} data-testid={testId} data-cued-scroll="" {...(label ? { tabIndex: 0, role: 'region', 'aria-label': label } : {})} {...edgeAttrs(edges)} className={`${className} overflow-y-auto ${edgeMask(edges)}`}>
       <div ref={contentRef}>{children}</div>
     </div>
   )
@@ -91,13 +96,7 @@ export interface PendingCall { command: string; input: string; tool?: { kind: st
  *  because the open menu covers the card. A menu row that chooses nothing, so a
  *  keyboard user can reach it and page through a call longer than its box, and
  *  the first Enter after opening the menu lands on it, not on a grant. */
-/** How a command, a payload or a tool ref wraps wherever an approval surface
- *  prints it: at its spaces, like the words it is made of, and inside a token
- *  only when that one token is longer than the line (a sha, a base64
- *  argument, a long path). `break-all` split every word at the edge ("hea" /
- *  "d"), so the reader had to reassemble the string they consent to. Spacing
- *  (`whitespace-pre-wrap`) is set where each string is. */
-export const COMMAND_WRAP = 'break-normal wrap-anywhere'
+export { COMMAND_WRAP }
 
 /** Longest string split into per-token boxes; past it the text renders as is.
  *  shortcut: a payload this long is a file body, not a command; upgrade only if
@@ -131,7 +130,7 @@ export function PendingCallItem({ label, call, testId }: { label: string; call: 
         <span className="text-[11px] text-muted">{label}</span>
         {tool && (tool.kind || tool.name) && (
           <span className="flex items-center gap-1.5 flex-wrap min-w-0">
-            {tool.kind && <span className="text-[11px] text-text">{tool.kind}</span>}
+            {tool.kind && <span className={`min-w-0 max-w-full text-[11px] text-text ${COMMAND_WRAP}`}>{tool.kind}</span>}
             {tool.name && <span data-testid={`${testId}-tool`} className={`min-w-0 bg-bg-elevated px-1.5 py-0.5 rounded font-mono ${COMMAND_WRAP} border border-border`}>{tool.name}</span>}
           </span>
         )}

@@ -112,6 +112,33 @@ describe('the approval card\'s menus on a touch device', () => {
     expect(track.getAttribute('aria-describedby')).toBe(ends.id)
   })
 
+  it.each([
+    ['stacks the Duration choices as full-width rows when the one line does not fit', 300, true],
+    ['keeps the Duration choices on one line when it fits', 240, false],
+  ] as const)('in the real menu, %s', async (_name, trackWidth, stacked) => {
+    // jsdom lays nothing out: the track reports its one-line width, the row
+    // its room (262px, a 320px screen's menu; capture/check-approval-narrow.mjs
+    // measures the real widths per language in Chromium).
+    const sw = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollWidth')
+    const cw = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth')
+    Object.defineProperty(HTMLElement.prototype, 'scrollWidth', { configurable: true, get() { return this.getAttribute?.('role') === 'group' ? trackWidth : 0 } })
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get() { return this.querySelector?.(':scope > [role="group"]') ? 262 : 0 } })
+    onTestFinished(() => {
+      if (sw) Object.defineProperty(HTMLElement.prototype, 'scrollWidth', sw)
+      else delete (HTMLElement.prototype as { scrollWidth?: number }).scrollWidth
+      if (cw) Object.defineProperty(HTMLElement.prototype, 'clientWidth', cw)
+      else delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth
+    })
+    stubTouch()
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
+    await tapOpen(screen.getByRole('button', { name: 'Trust' }))
+    const track = screen.getByRole('group')
+    expect(track.hasAttribute('data-stacked')).toBe(stacked)
+    // Either way every choice stays one whole line.
+    for (const segment of screen.getAllByRole('menuitemradio')) expect(segment.className).toContain('whitespace-nowrap')
+    if (stacked) expect(track.className).toContain('data-[stacked]:flex-col')
+  })
+
   it('an open Override menu blocks the page too', async () => {
     stubTouch()
     const state = stateWithApproval()

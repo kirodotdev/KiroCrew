@@ -13,7 +13,9 @@ import type { ComposerTypingLockView } from './props'
  *  person's turn raised it ("Raised by Kyle"). Draws nothing for an empty name. */
 export function RaisedBy({ name }: { name: string }) {
   if (!name) return null
-  return <span role="note" className="shrink-0 rounded-full border border-border px-2 text-[12px] leading-5 text-muted" data-testid="raised-by">{i18nT('sharedCrew.raised_by', { name })}</span>
+  // Never wider than its row: a long name wraps inside the chip rather than
+  // running past the card on a narrow pane.
+  return <span role="note" className="min-w-0 max-w-full break-words rounded-full border border-border px-2 text-[12px] leading-5 text-muted" data-testid="raised-by">{i18nT('sharedCrew.raised_by', { name })}</span>
 }
 
 export function TypingLockBanner({ lock }: { lock: ComposerTypingLockView }) {

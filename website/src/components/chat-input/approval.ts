@@ -29,6 +29,7 @@ import { useRaisedBy } from '../../pages/chat/shared-crew/useRaisedBy'
 import { REJECT_APPROVAL_EVENT } from '../../pages/chat/composerFocus'
 import { refusalText } from '../../utils/toolGrantRefusal'
 import { stripToolCallLead } from '../../lib/toolRowContract'
+import { COMMAND_WRAP } from './commandWrap'
 
 /* The slot's approval chrome as state: the pending tool approval (its
    decision submit, the approval-mode discovery hint and nudge, the ghost
@@ -77,14 +78,14 @@ export const approvalBtnClass = 'inline-flex items-center gap-1 px-2 py-1 rounde
 function decisionReceipt(decision: string, ttlSeconds: number | undefined, fullCommand: string, baseCommand: string): { kind: 'granted' | 'rejected'; standing: boolean; line: ReactNode } | null {
   const commandLine = (i18nKey: string, values?: Record<string, string>) => createElement(Trans, {
     i18nKey, values,
-    components: { mono: createElement('span', { className: 'bg-bg-elevated px-1.5 py-0.5 rounded font-mono break-all border border-border' }, truncateCommandLabel(fullCommand, 80)) },
+    components: { mono: createElement('span', { className: `bg-bg-elevated px-1.5 py-0.5 rounded font-mono ${COMMAND_WRAP} border border-border` }, truncateCommandLabel(fullCommand, 80)) },
   })
   const time = ttlSeconds !== undefined ? fmtTime(Date.now() + ttlSeconds * 1000) : ''
   // The family as the Trust menu's family row prints it (a mono span, no
   // quotes), so the receipt names it the same way the row did.
   const baseLine = (i18nKey: string, values?: Record<string, string>) => createElement(Trans, {
     i18nKey, values,
-    components: { mono: createElement('span', { className: 'font-mono' }, baseCommandLabel(baseCommand)) },
+    components: { mono: createElement('span', { className: `font-mono ${COMMAND_WRAP}` }, baseCommandLabel(baseCommand)) },
   })
   switch (decision) {
     case 'approved':

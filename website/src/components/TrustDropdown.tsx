@@ -1,11 +1,11 @@
-import { Fragment, useEffect, useId, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react'
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react'
 import { Handshake, Shield, ShieldPlus, ShieldCheck, BookOpen, ChevronDown } from 'lucide-react'
 import { Trans } from 'react-i18next'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioItem, DropdownMenuRadioSegments, DropdownMenuSeparator,
 } from './ui/dropdown-menu'
 import { baseCommandLabel, trustBasePattern } from '../utils/trustPatterns'
-import { grantEndsAt, grantTtlSeconds, type GrantDuration } from '../utils/grantDuration'
+import { GRANT_DURATIONS, grantEndsAt, grantTtlSeconds, type GrantDuration } from '../utils/grantDuration'
 import { fmtTime } from '../i18n/format'
 
 import { i18nT } from '../i18n/t'
@@ -53,11 +53,10 @@ interface TrustDropdownProps {
       `<mono/>` slot, which this component fills, and take `labelValues`. */
   trustCommandLabelKey?: string
   trustBaseLabelKey?: string
-  /** The command tier's scope is a host name (#39990). Kept for its callers;
-      every command chip now wraps by `COMMAND_WRAP`, which already moves a host
-      to the next line whole and breaks it only when it cannot fit one, so the
-      chip no longer reads this. */
-  scopeIsHost?: boolean
+  /** The plain menu's all-tools row takes two clicks, as the timed menu's does:
+      the first arms it, the second grants. For the chat approval card when it
+      keeps the plain menu (a browser site grant), so every card asks the same. */
+  confirmTrustAll?: boolean
   /** Extra interpolation values for the tier labels (e.g. `role`). */
   labelValues?: Record<string, string>
   /** Gives the command-scoped tiers a lifetime: the menu opens with one
@@ -101,7 +100,7 @@ interface TrustDropdownProps {
 type Lifetime = GrantDuration | 'session'
 
 /** Menu order: shortest first, so the widest lifetime is the last one read. */
-const LIFETIMES: readonly Lifetime[] = ['hour', 'today', 'session']
+const LIFETIMES: readonly Lifetime[] = [...GRANT_DURATIONS, 'session']
 
 /** Whole-sentence keys per scope and lifetime. A scope and a lifetime are never
  *  glued from two fragments: where the lifetime sits around the scope differs
@@ -137,6 +136,69 @@ const DURATION_KEYS: Record<Lifetime, string> = {
   session: 'components.trustDropdown.duration_session',
 }
 
+/** The all-tools grant as the menu's only control. It is the widest grant and
+ *  names no command, so it takes two clicks: the first arms it and it says what
+ *  the second does. It disarms when it loses focus, on Escape, or on a press
+ *  anywhere else (Safari and Firefox on macOS do not focus a clicked button, so
+ *  it never loses focus there). */
+function LoneTrustAllButton({ disabled, className, idleLabel, confirmLabel, onConfirm }: { disabled?: boolean; className?: string; idleLabel: string; confirmLabel: string; onConfirm: () => void }) {
+  const [armed, setArmed] = useState(false)
+  const ref = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    const button = ref.current
+    if (!armed || !button) return
+    const disarm = (e: PointerEvent) => { if (!(e.target instanceof Node && button.contains(e.target))) setArmed(false) }
+    document.addEventListener('pointerdown', disarm, true)
+    return () => document.removeEventListener('pointerdown', disarm, true)
+  }, [armed])
+  return (
+    <button
+      ref={ref}
+      disabled={disabled}
+      className={className}
+      onClick={() => { if (armed) onConfirm(); else setArmed(true) }}
+      onBlur={() => setArmed(false)}
+      onKeyDown={e => { if (e.key === 'Escape') setArmed(false) }}
+    >
+      <ShieldCheck size={12} className="shrink-0 text-warn" />
+      {/* Both labels share one grid cell, the other one drawn invisibly from
+          an attribute, so the button is as wide armed as idle and the second
+          click lands where the first did. The reserve is not in the text. */}
+      <span className="grid min-w-0">
+        <span className="col-start-1 row-start-1" aria-live="polite">{armed ? confirmLabel : idleLabel}</span>
+        <span aria-hidden className="col-start-1 row-start-1 invisible after:content-[attr(data-reserve)]" data-reserve={armed ? idleLabel : confirmLabel} />
+      </span>
+    </button>
+  )
+}
+
+/** The Duration row's track (`[role="group"]`) on one line while that line
+ *  fits the row, else stacked (`data-stacked`: one full-width row per
+ *  choice). Measured, not a width breakpoint: how wide the one line is depends
+ *  on the language, and a fixed breakpoint that held German or the
+ *  pseudolocale would stack English too. Re-measured on every resize of the
+ *  row, before paint, with the track back on one line first. */
+function useStackWhenOverflowing(open: boolean) {
+  const [row, setRow] = useState<HTMLDivElement | null>(null)
+  useLayoutEffect(() => {
+    if (!open || !row) return
+    const measure = () => {
+      const track = row.querySelector<HTMLElement>('[role="group"]')
+      if (!track) return
+      track.removeAttribute('data-stacked')
+      const s = getComputedStyle(row)
+      const room = row.clientWidth - parseFloat(s.paddingLeft || '0') - parseFloat(s.paddingRight || '0')
+      if (track.scrollWidth > room + 0.5) track.setAttribute('data-stacked', '')
+    }
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(row)
+    return () => ro.disconnect()
+  }, [open, row])
+  return setRow
+}
+
 /** One grant row, at the size both shapes of the menu share. The icon sits
  *  on the label's first line (12px icon in an 18px line), not centred on the
  *  whole row, which on the exact-command row is mostly the command's box. */
@@ -166,8 +228,11 @@ export default function TrustDropdown(props: TrustDropdownProps) {
   return props.timedGrants ? <TimedTrustMenu {...props} /> : <PlainTrustMenu {...props} />
 }
 
-function PlainTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, trustReadsLabelKey, showTrustAll = true, showTrustBase = true, trustCommandLabelKey, trustBaseLabelKey, labelValues, alwaysAllowTool, alwaysAllowRefusal, modal, onAction }: TrustDropdownProps) {
+function PlainTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, trustReadsLabelKey, showTrustAll = true, showTrustBase = true, trustCommandLabelKey, trustBaseLabelKey, labelValues, alwaysAllowTool, alwaysAllowRefusal, confirmTrustAll = false, modal, onAction }: TrustDropdownProps) {
   const [open, setOpen] = useState(false)
+  // `confirmTrustAll`: the all-tools row is armed by its first choice; closing
+  // the menu disarms it.
+  const [armed, setArmed] = useState(false)
 
   // Pattern shaping lives in utils/trustPatterns so every surface that offers
   // tiered trust grants an identical scope for the same click.
@@ -191,6 +256,8 @@ function PlainTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
     body: ReactNode
     /** A row shown with its reason but not choosable. */
     disabled?: boolean
+    /** Replaces `fire` when choosing the row does something else first (arms it). */
+    select?: (e: Event) => void
   }[] = []
   if (hasCommand) {
     tiers.push({
@@ -272,17 +339,21 @@ function PlainTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
       body: <AlwaysAllowBody tool={alwaysAllowTool} refusal={alwaysAllowRefusal} />,
     })
   }
+  const confirmLabel = i18nT('components.trustDropdown.scope_all_confirm')
+  const trustAllLabel = trustAllLabelKey
+    ? i18nT(trustAllLabelKey)
+    : i18nT('components.trustDropdown.trust_all_tools')
   if (showTrustAll) {
-    const label = trustAllLabelKey
-      ? i18nT(trustAllLabelKey)
-      : i18nT('components.trustDropdown.trust_all_tools')
     tiers.push({
       action: 'trust',
       fire: () => onAction('trust'),
+      // With `confirmTrustAll` the first choice only arms the row: the menu
+      // stays open and the row says what the next choice does.
+      select: confirmTrustAll && !armed ? e => { e.preventDefault(); setArmed(true) } : undefined,
       icon: <ShieldCheck size={12} className="shrink-0 text-warn" />,
       // min-w-0 lets a long scope-qualified label wrap inside the menu's
       // viewport-aware width cap instead of overflowing it.
-      body: <span className="min-w-0">{label}</span>,
+      body: <span className={`min-w-0 ${armed ? 'font-semibold' : ''}`} aria-live={confirmTrustAll ? 'polite' : undefined}>{armed ? confirmLabel : trustAllLabel}</span>,
     })
   }
 
@@ -297,6 +368,9 @@ function PlainTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
   // "there are choices behind this".
   if (tiers.length === 1) {
     const only = tiers[0]
+    if (only.action === 'trust' && confirmTrustAll) {
+      return <LoneTrustAllButton disabled={disabled} className={className} idleLabel={trustAllLabel} confirmLabel={confirmLabel} onConfirm={only.fire} />
+    }
     return (
       <button
         disabled={disabled || only.disabled}
@@ -313,7 +387,7 @@ function PlainTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
     // A trust grant is the agent's own ceiling, wherever the menu is used:
     // the provider marks what it portals, the content says so itself as well.
     <GuideTrustRootProvider>
-      <DropdownMenu open={open} onOpenChange={setOpen} modal={modal}>
+      <DropdownMenu open={open} onOpenChange={next => { if (!next) setArmed(false); setOpen(next) }} modal={modal}>
         <DropdownMenuTrigger asChild>
           <button disabled={disabled} className={className}>
             <Handshake size={12} className="shrink-0" />{i18nT('components.trustDropdown.trust')}<ChevronDown size={10} className="shrink-0 opacity-70" />
@@ -324,7 +398,7 @@ function PlainTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
             which hides the very label this menu exists to make readable. */}
         <DropdownMenuContent side="top" align="end" className="min-w-[220px] max-w-[min(450px,calc(100vw-2rem))]" {...guideTrustRoot}>
           {tiers.map(tier => (
-            <TrustRow key={tier.action} disabled={tier.disabled} onSelect={tier.fire}>
+            <TrustRow key={tier.action} disabled={tier.disabled} onSelect={tier.select ?? tier.fire}>
               {tier.icon}
               {tier.body}
             </TrustRow>
@@ -363,20 +437,11 @@ function TimedTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
   // The all-tools grant is the widest one here and names no command, so it
   // takes two clicks: the first arms the row, which then says what a second
   // click does. In the menu, choosing a duration or closing the menu disarms
-  // it; the lone all-tools control disarms when it loses focus, on Escape, or
-  // on a press anywhere else (Safari and Firefox on macOS do not focus a
-  // clicked button, so it never loses focus there).
+  // it; the lone all-tools control is `LoneTrustAllButton`.
   const [armed, setArmed] = useState(false)
-  const loneAllRef = useRef<HTMLButtonElement>(null)
-  useEffect(() => {
-    const button = loneAllRef.current
-    if (!armed || !button) return
-    const disarm = (e: PointerEvent) => { if (!(e.target instanceof Node && button.contains(e.target))) setArmed(false) }
-    document.addEventListener('pointerdown', disarm, true)
-    return () => document.removeEventListener('pointerdown', disarm, true)
-  }, [armed])
   const durationLabelId = useId()
   const durationEndsId = useId()
+  const durationRowRef = useStackWhenOverflowing(open)
   const basePattern = trustBasePattern(baseCommand)
   const baseLabel = baseCommandLabel(baseCommand)
   const showCommand = hasCommand
@@ -422,25 +487,7 @@ function TimedTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
         </button>
       )
     }
-    return (
-      <button
-        ref={loneAllRef}
-        disabled={disabled}
-        className={className}
-        onClick={() => { if (armed) onAction('trust'); else setArmed(true) }}
-        onBlur={() => setArmed(false)}
-        onKeyDown={e => { if (e.key === 'Escape') setArmed(false) }}
-      >
-        <ShieldCheck size={12} className="shrink-0 text-warn" />
-        {/* Both labels share one grid cell, the other one drawn invisibly from
-            an attribute, so the button is as wide armed as idle and the second
-            click lands where the first did. The reserve is not in the text. */}
-        <span className="grid min-w-0">
-          <span className="col-start-1 row-start-1" aria-live="polite">{armed ? allLabel : idleAllLabel}</span>
-          <span aria-hidden className="col-start-1 row-start-1 invisible after:content-[attr(data-reserve)]" data-reserve={armed ? idleAllLabel : allConfirmLabel} />
-        </span>
-      </button>
-    )
+    return <LoneTrustAllButton disabled={disabled} className={className} idleLabel={idleAllLabel} confirmLabel={allConfirmLabel} onConfirm={() => onAction('trust')} />
   }
 
   // One row per scope, built once so the menu renders exactly what was decided
@@ -481,7 +528,7 @@ function TimedTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
       icon: <ShieldPlus size={12} className="shrink-0 text-accent" />,
       body: (
         <span className="min-w-0">
-          <Trans i18nKey={BASE_SCOPE_KEYS[lifetime]} components={{ mono: <span className="font-mono">{baseLabel}</span> }} />
+          <Trans i18nKey={BASE_SCOPE_KEYS[lifetime]} components={{ mono: <span data-testid="trust-base-scope" className={`font-mono ${COMMAND_WRAP}`}>{baseLabel}</span> }} />
         </span>
       ),
       select: () => onAction('trust_base', basePattern, ...ttl()),
@@ -544,10 +591,11 @@ function TimedTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
           {showCall && pendingCall && <PendingCallItem testId="trust-pending-call" label={i18nT('components.trustDropdown.pending_call_label')} call={pendingCall} />}
           {(showCommand || showBase) && (
             // The label sits beside the track, or above it where the menu is
-            // too narrow for both; the track itself is one line, every segment
-            // on it whole.
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 pt-1 pb-1.5">
-              <span id={durationLabelId} className="shrink-0 text-[12px] text-muted">{i18nT('components.trustDropdown.duration_label')}</span>
+            // too narrow for both; the track is one line, every segment on it
+            // whole, or, where that line does not fit, one full-width row per
+            // choice (`useStackWhenOverflowing`).
+            <div ref={durationRowRef} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 pt-1 pb-1.5">
+              <span id={durationLabelId} className="shrink-0 max-w-full text-[12px] text-muted">{i18nT('components.trustDropdown.duration_label')}</span>
               <DropdownMenuRadioSegments value={lifetime} aria-labelledby={durationLabelId} aria-describedby={lifetime === 'hour' ? durationEndsId : undefined}>
                 {LIFETIMES.map(choice => (
                   <DropdownMenuRadioItem

@@ -119,6 +119,47 @@ const SCENES: Record<string, { content: string; meta: Record<string, unknown> }>
       trust_command_grantable: '1', trust_base_grantable: '1', trust_grantable: '1',
     },
   },
+  // A browser call whose command grant is a SITE grant (#39990): `full_command`
+  // is the host, and the card keeps the plain, session-only Trust menu.
+  site: {
+    content: 'Drive browser',
+    meta: {
+      tool_purpose: 'Click the sign-in button on the placeholder site',
+      tool_input: JSON.stringify({ op: 'click', args: { ref: 'e3' } }), is_shell: '', is_read_only: '',
+      tool_title: 'Drive browser', full_command: 'www.example.com', browser_trust_class: 'act',
+      trust_command_grantable: '1', trust_grantable: '1',
+    },
+  },
+  // A description longer than the heading's two lines, so it clamps.
+  'long-purpose': {
+    content: 'Running: find, head',
+    meta: {
+      tool_purpose: 'Find every agent-platform file under the workspace and the crew folder, skipping node_modules, so the next step can compare the two copies and report which placeholder settings differ between them',
+      tool_input: JSON.stringify({ command: SHELL }), is_shell: '1', is_read_only: '',
+      full_command: SHELL, base_command: 'find,head',
+      trust_command_grantable: '1', trust_base_grantable: '1', trust_grantable: '1',
+    },
+  },
+  // Long identities with no break in them: an MCP server and tool name, and a
+  // shell executable whose family row names it. The 320px check runs both.
+  'long-mcp': {
+    content: 'create_or_update_release_notes_for_repository',
+    meta: {
+      tool_purpose: 'Draft the placeholder release notes',
+      tool_input: JSON.stringify({ repository: 'placeholder/repo', tag: 'v0.0.1' }),
+      is_shell: '', tool_kind: 'other', tool_name: 'create_or_update_release_notes_for_repository', mcp_server: 'repository_automation_and_release_management',
+      trust_grantable: '1',
+    },
+  },
+  'long-base': {
+    content: 'Running: repository_automation_and_release_management',
+    meta: {
+      tool_purpose: 'Show the placeholder tool help',
+      tool_input: JSON.stringify({ command: '/work/bin/repository_automation_and_release_management --help' }), is_shell: '1', is_read_only: '',
+      full_command: '/work/bin/repository_automation_and_release_management --help', base_command: '/work/bin/repository_automation_and_release_management',
+      trust_command_grantable: '1', trust_base_grantable: '1', trust_grantable: '1',
+    },
+  },
   // An unattended source: no standing grant can be recorded for it.
   none: {
     content: '[cron] Running: ls',
@@ -184,7 +225,8 @@ function Harness() {
   )
 }
 
-initI18n('en')
+// ?lang=de draws the card in another catalog (the 320px check runs each language).
+initI18n(params.get('lang') || 'en')
 createRoot(document.getElementById('root')!).render(
   <Provider store={store}>
     <QueryClientProvider client={queryClient}>
