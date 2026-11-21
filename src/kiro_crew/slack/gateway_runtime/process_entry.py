@@ -457,6 +457,7 @@ async def run_gateway(
     cfg: KiroCrewConfig,
     *,
     no_dashboard: bool = False,
+    headless: bool = False,
     no_crons: bool = False,
     no_tunnel: bool = False,
     no_open: bool = False,
@@ -773,6 +774,7 @@ async def run_gateway(
     orchestrator = GatewayOrchestrator(
         cfg,
         no_dashboard=no_dashboard,
+        headless=headless,
         no_crons=no_crons,
         no_open=no_open,
         port_override=port_override,

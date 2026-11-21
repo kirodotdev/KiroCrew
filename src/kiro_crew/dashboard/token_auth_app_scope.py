@@ -314,9 +314,10 @@ def _enforce_app_scope(request: web.Request, app_name: str, path: str) -> web.Re
     _log_auth(request, app_name, "denied", f"app token out of scope: {path}")
     # Function-local: the token_auth facade mirrors every module-level name of its
     # owners, and this is not part of its surface.
+    from kiro_crew.dashboard.crew_api_auth import OWNER_ONLY_PUBLIC_ROUTES
     from kiro_crew.dashboard.crew_api_errors import is_owner_path
 
-    # An Owner route refuses every app token as ``owner_only``; this refusal says the
-    # same, so a client does not read an out-of-scope token as an invalid one.
-    code = "owner_only" if is_owner_path(path) else ""
+    # Use the Public gate's own policy too, so a known caller's permission refusal
+    # is never labelled as an invalid credential.
+    code = "owner_only" if is_owner_path(path) or path in OWNER_ONLY_PUBLIC_ROUTES else ""
     return _deny(request, "app token not permitted for this endpoint", code)

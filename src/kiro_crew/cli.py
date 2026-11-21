@@ -139,9 +139,12 @@ def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
     """
     from kiro_crew import lts_signin_gateway as signin
 
-    # A test or scripted start (`--test-mode`, `--json-ready`) waits for a ready
-    # line, not a browser sign-in, so it gets the refusal exit as before.
-    if getattr(args, "test_mode", False) or getattr(args, "json_ready", False):
+    # A scripted or headless start cannot use the browser-only sign-in server.
+    if (
+        getattr(args, "test_mode", False)
+        or getattr(args, "json_ready", False)
+        or getattr(args, "headless", False)
+    ):
         return
     if not signin.applies(exc):
         return
@@ -329,6 +332,124 @@ def _exit_on_pending_save(entry: Callable[[], None]) -> Callable[[], None]:
     return run
 
 
+def add_gateway_arguments(gw_parser: argparse.ArgumentParser) -> None:
+    """Add the ``gateway`` command's arguments to *gw_parser*.
+
+    The one definition of them: ``main()`` registers the command with it, and the
+    restart reads the running gateway's command line with it
+    (``cli_restart_headless.gateway_parser``), so the two cannot disagree on a flag.
+    """
+    gw_parser.add_argument(
+        "--slack-only",
+        action="store_true",
+        help="Slack-only mode — skip dashboard web server and SSH tunnel instructions",
+    )
+    gw_parser.add_argument(
+        "--headless",
+        action="store_true",
+        help=(
+            "Serve the gateway's HTTP services with no dashboard: no dashboard pages or "
+            "assets, no browser opened, no sign-in link printed. Listens on loopback "
+            "only. Cannot be combined with --slack-only. "
+            "Get a credential for a Crew API client with `kirocrew token --bearer`."
+        ),
+    )
+    gw_parser.add_argument(
+        "--no-crons",
+        action="store_true",
+        help="Skip cron scheduler — use when another instance handles cron execution",
+    )
+    gw_parser.add_argument(
+        "--no-tunnel",
+        action="store_true",
+        help=(
+            "Never publish a tunnel — this process refuses to start or provision "
+            "one for its whole life, whatever tunnel.enabled says. Scoped to "
+            "TUNNELS: it does not change where the dashboard binds, so a config "
+            "that widens dashboard.url off loopback still does. Use for an "
+            "instance that must not publish a tunnel (a Dev Fleet pod passes "
+            "this); reach it with `ssh -L` instead."
+        ),
+    )
+    gw_parser.add_argument(
+        "--seed",
+        metavar="FIXTURE",
+        help=(
+            "Seed $KIROCREW_HOME from the named fixture BEFORE starting the "
+            "gateway (dev tool). Fixture must exist under "
+            "src/kiro_crew/tests_fixtures/. The gateway then runs normally "
+            "against the populated $KIROCREW_HOME, with --no-tunnel forced "
+            "on. Refuses when "
+            "$KIROCREW_HOME is the main gateway home (~/.kiro/crew) or "
+            "when the target is non-empty (use --seed-replace to wipe + re-seed)."
+        ),
+    )
+    gw_parser.add_argument(
+        "--seed-replace",
+        action="store_true",
+        help=(
+            "When used with --seed, wipe $KIROCREW_HOME (rmtree) before "
+            "copying the fixture. Ignored without --seed. Does NOT "
+            "override the main-gateway-home rail — ~/.kiro/crew is refused "
+            "regardless."
+        ),
+    )
+    gw_parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Do not auto-open the dashboard URL in the default browser on startup",
+    )
+    gw_parser.add_argument(
+        "--port",
+        metavar="PORT",
+        help=(
+            "Override the dashboard port. Pass an integer (e.g. --port 9999) "
+            "for a fixed port, or --port auto to bind to an ephemeral port "
+            "(OS-assigned). When omitted, falls back to the value in config "
+            "(dashboard.url)."
+        ),
+    )
+    gw_parser.add_argument(
+        "--json-ready",
+        action="store_true",
+        help=(
+            "Print a single line `KIROCREW_READY:{...}` to stdout once the "
+            "dashboard is bound. Payload includes port, token, pid, and "
+            "KIROCREW_HOME. Used by test harnesses to discover the bound "
+            "ephemeral port and authenticate without polling. NOTE: the "
+            "token grants gateway access for up to 20 hours — treat the "
+            "READY line as sensitive and do not commit captured stdout to "
+            "shared logs."
+        ),
+    )
+    gw_parser.add_argument(
+        "--approval",
+        choices=["reads", "yolo", "interactive"],
+        help=(
+            "Default approval mode for tool invocations. 'reads' auto-approves "
+            "read-only tools (read/list/get/search/* prefixes) on background "
+            "turns (cron jobs, the task runner, subagents); a channel turn "
+            "under 'reads' asks about every tool, as under 'interactive'. "
+            "'yolo' auto-approves all tools (refused unless KIROCREW_HOME is "
+            "explicitly set to a non-default location); 'interactive' uses "
+            "the standard Slack/dashboard prompt flow. When omitted, config "
+            "agent.approval_mode (default: auto) decides; 'auto' approves "
+            "every channel tool call the tool gate allows, without asking."
+        ),
+    )
+    gw_parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        help=(
+            "Convenience alias for --port auto --no-open --json-ready "
+            "--no-tunnel --approval reads. An explicit --port or --approval value "
+            "overrides the bundle's default (e.g. --test-mode --approval "
+            "yolo uses yolo). The boolean flags --no-open, --json-ready and "
+            "--no-tunnel are forced on by --test-mode and cannot be opted out of."
+        ),
+    )
+
+
 @_exit_on_pending_save
 def main() -> None:
     """Entry point — parse args and dispatch to the appropriate subcommand."""
@@ -438,114 +559,16 @@ def main() -> None:
 
     # Each command's arguments come from a registrar, called here in registration order: a
     # ``cli_parser_*`` module's, or for ``perf``, ``bench`` and ``desktop`` their own module's.
-    # The ``gateway`` block stays inline (``pod.runtime_boot.target_supports_flag`` reads its
-    # flags from this file's text), and so do the internal ``mcp-*`` servers.
+    # The ``gateway`` arguments stay in this file (``add_gateway_arguments``;
+    # ``pod.runtime_boot.target_supports_flag`` reads its flags from this file's text),
+    # and so do the internal ``mcp-*`` servers.
     cli_parser_agent.register_chat_parser(sub, _jail_opts)
     cli_parser_gateway.register_doctor_parser(sub)
     cli_parser_gateway.register_ledger_sweep_parser(sub)
     cli_parser_gateway.register_tmp_parser(sub)
 
     # gateway
-    gw_parser = cli_help.add_command(sub, "gateway")
-    gw_parser.add_argument(
-        "--slack-only",
-        action="store_true",
-        help="Slack-only mode — skip dashboard web server and SSH tunnel instructions",
-    )
-    gw_parser.add_argument(
-        "--no-crons",
-        action="store_true",
-        help="Skip cron scheduler — use when another instance handles cron execution",
-    )
-    gw_parser.add_argument(
-        "--no-tunnel",
-        action="store_true",
-        help=(
-            "Never publish a tunnel — this process refuses to start or provision "
-            "one for its whole life, whatever tunnel.enabled says. Scoped to "
-            "TUNNELS: it does not change where the dashboard binds, so a config "
-            "that widens dashboard.url off loopback still does. Use for an "
-            "instance that must not publish a tunnel (a Dev Fleet pod passes "
-            "this); reach it with `ssh -L` instead."
-        ),
-    )
-    gw_parser.add_argument(
-        "--seed",
-        metavar="FIXTURE",
-        help=(
-            "Seed $KIROCREW_HOME from the named fixture BEFORE starting the "
-            "gateway (dev tool). Fixture must exist under "
-            "src/kiro_crew/tests_fixtures/. The gateway then runs normally "
-            "against the populated $KIROCREW_HOME, with --no-tunnel forced "
-            "on. Refuses when "
-            "$KIROCREW_HOME is the main gateway home (~/.kiro/crew) or "
-            "when the target is non-empty (use --seed-replace to wipe + re-seed)."
-        ),
-    )
-    gw_parser.add_argument(
-        "--seed-replace",
-        action="store_true",
-        help=(
-            "When used with --seed, wipe $KIROCREW_HOME (rmtree) before "
-            "copying the fixture. Ignored without --seed. Does NOT "
-            "override the main-gateway-home rail — ~/.kiro/crew is refused "
-            "regardless."
-        ),
-    )
-    gw_parser.add_argument(
-        "--no-open",
-        action="store_true",
-        help="Do not auto-open the dashboard URL in the default browser on startup",
-    )
-    gw_parser.add_argument(
-        "--port",
-        metavar="PORT",
-        help=(
-            "Override the dashboard port. Pass an integer (e.g. --port 9999) "
-            "for a fixed port, or --port auto to bind to an ephemeral port "
-            "(OS-assigned). When omitted, falls back to the value in config "
-            "(dashboard.url)."
-        ),
-    )
-    gw_parser.add_argument(
-        "--json-ready",
-        action="store_true",
-        help=(
-            "Print a single line `KIROCREW_READY:{...}` to stdout once the "
-            "dashboard is bound. Payload includes port, token, pid, and "
-            "KIROCREW_HOME. Used by test harnesses to discover the bound "
-            "ephemeral port and authenticate without polling. NOTE: the "
-            "token grants gateway access for up to 20 hours — treat the "
-            "READY line as sensitive and do not commit captured stdout to "
-            "shared logs."
-        ),
-    )
-    gw_parser.add_argument(
-        "--approval",
-        choices=["reads", "yolo", "interactive"],
-        help=(
-            "Default approval mode for tool invocations. 'reads' auto-approves "
-            "read-only tools (read/list/get/search/* prefixes) on background "
-            "turns (cron jobs, the task runner, subagents); a channel turn "
-            "under 'reads' asks about every tool, as under 'interactive'. "
-            "'yolo' auto-approves all tools (refused unless KIROCREW_HOME is "
-            "explicitly set to a non-default location); 'interactive' uses "
-            "the standard Slack/dashboard prompt flow. When omitted, config "
-            "agent.approval_mode (default: auto) decides; 'auto' approves "
-            "every channel tool call the tool gate allows, without asking."
-        ),
-    )
-    gw_parser.add_argument(
-        "--test-mode",
-        action="store_true",
-        help=(
-            "Convenience alias for --port auto --no-open --json-ready "
-            "--no-tunnel --approval reads. An explicit --port or --approval value "
-            "overrides the bundle's default (e.g. --test-mode --approval "
-            "yolo uses yolo). The boolean flags --no-open, --json-ready and "
-            "--no-tunnel are forced on by --test-mode and cannot be opted out of."
-        ),
-    )
+    add_gateway_arguments(cli_help.add_command(sub, "gateway"))
 
     cli_parser_gateway.register_setup_parser(sub)
     cli_parser_gateway.register_manifest_parser(sub)

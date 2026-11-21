@@ -6100,9 +6100,12 @@ label, so `validate()` refuses it on a name longer than 63 characters.
 
 **Routing.** `apps/app_web_origin.py::app_web_origin_middleware` sits in the
 dashboard chain directly inside the deny-audit boundary and outside the host
-canonicalization and the `Host` barrier (§ the chain in
+canonicalization, the headless dashboard filter and the `Host` barrier (§ the chain in
 `dashboard/server_runtime/middleware_chain.py`). A `Host` under `.apps.localhost`
-is decided there and reaches no dashboard layer:
+is decided there and reaches no dashboard layer. Headless mode keeps this dispatch:
+an enabled app's root page, assets and unmatched navigation paths belong to the app,
+not to the removed dashboard. The app's locality, listener and enablement checks
+still decide every request:
 
 - served only to a direct local request (`is_direct_local_request`, and not
   `is_proxied_request`): a loopback peer with no forwarding header, not relayed.

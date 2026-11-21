@@ -6,7 +6,7 @@ created: 2026-10-31
 last-audited: 2026-11-20
 audited-at: c157748343
 doc-pr:
-implementation-prs: [34104, 39564, 39921, 39962]
+implementation-prs: [34104, 39564, 39921, 39962, 39574]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Crew API
 
-- Status: partial. A maintainer accepted the design on 2026-11-14, with open question Q7 decided. The first Owner-tier route is built: [#34104](https://github.com/kirodotdev/KiroCrew/pull/34104) serves `GET /v1/crew/owner/bots` (`src/kiro_crew/dashboard/routes/crew_api.py`), the twin of `GET /api/members`. [#39564](https://github.com/kirodotdev/KiroCrew/pull/39564), merged 2026-11-20, adds phase 1's local authorization: the four routes `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` and `/oauth/revoke` (`src/kiro_crew/dashboard/routes/local_authorization.py`), though no `/v1` route accepts the token yet. The rest is not built. This document changes no code.
+- Status: partial. A maintainer accepted the design on 2026-11-14, with open question Q7 decided. The first Owner-tier route is built: [#34104](https://github.com/kirodotdev/KiroCrew/pull/34104) serves `GET /v1/crew/owner/bots` (`src/kiro_crew/dashboard/routes/crew_api.py`), the twin of `GET /api/members`. [#39564](https://github.com/kirodotdev/KiroCrew/pull/39564), merged 2026-11-20, adds phase 1's local authorization: the four routes `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` and `/oauth/revoke` (`src/kiro_crew/dashboard/routes/local_authorization.py`), though no `/v1` route accepts the token yet. [#39574](https://github.com/kirodotdev/KiroCrew/pull/39574) makes a `/v1/` path other than `POST /v1/chat/completions` take its credential from `Authorization: Bearer` and refuse `?token=` (`src/kiro_crew/dashboard/crew_api_auth.py`), and serves `GET /v1/models` for the owner. The rest is not built. This document changes no code.
 - Machine-readable contract: the OpenAPI 3.1 drafts in [`assets/crew-api/`](assets/crew-api/crew-public.yaml):
   `crew-public.yaml` (the Public tier), `crew-owner.yaml` (the Owner tier) and `components.yaml`
   (shared schemas). Both `openapi-spec-validator` and `@redocly/cli lint` pass on them with the
@@ -354,7 +354,7 @@ concurrency or wake limit was hit).
 | 401 | `authentication_error` | `stale_session_reauth` | Owner tier only: this first-party session signed in before an owner was configured; sign in again |
 | 403 | `permission_error` | `entitlement_required` | The app lacks the entitlement this capability needs; the body's `entitlement` names it. Checked before the scope |
 | 403 | `permission_error` | `insufficient_scope` | Missing scope. The user can grant it on the consent page |
-| 403 | `permission_error` | `owner_only` | A delegated or embed credential called an Owner endpoint |
+| 403 | `permission_error` | `owner_only` | A delegated, embed or local app credential called an Owner endpoint, or a Public endpoint currently restricted to the owner (`GET /v1/models`). A valid credential refused by the app API allowlist gets this permission error too, without a `WWW-Authenticate` challenge |
 | 403 | `permission_error` | `approval_requires_first_party` | A delegated credential tried to answer an approval |
 | 403 | `permission_error` | `tool_not_registered` | A tool in the request is not in the grant's manifest |
 | 403 | `permission_error` | `connector_definition_changed` | The app's manifest changed its tools or permissions and the user has not consented again. The grant is paused with `pause.by: reconsent` and returns only this code |

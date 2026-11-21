@@ -579,7 +579,13 @@ The `tailscale serve` path and mobile setup check a login against a derived set
 
 Before the dashboard binds, the gateway publishes an owner-only placeholder
 (`access_set.install_placeholder`, no I/O); `tailnet_direct_listener.start` reads
-the set after the bind. At the first gateway start with a readable tailnet section,
+the set after the bind. All three start paths install the set this way. The
+ordinary dashboard does it through `prepare_at_start` and `start_after_bind`. A
+`gateway --headless` start calls `prepare_tailnet_path` before the bind, which
+records the tailnet path with `loopback_only` true because that bind is always
+loopback, and `finish_access_set` after it, and starts no direct tailnet listener.
+The reduced `--slack-only` server calls `prepare_access_set` and
+`finish_access_set`. At the first gateway start with a readable tailnet section,
 `access_set.install` copies `allowed_logins` (logins and `tag:` entries) into the set
 as its seed and marks it seeded. After that the seed only shrinks: at each start an
 entry no longer in `allowed_logins` leaves the seed, and an entry added later admits

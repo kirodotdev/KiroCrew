@@ -163,7 +163,16 @@ async def api_token_local(request: web.Request) -> web.Response:
         efp = request.query.get("embed_forward_port", "")
         if efp.isdigit() and 1 <= int(efp) <= 65535:
             extra["embed_forward_port"] = str(int(efp))
-    token = generate_token(owner_id or "local-app", ttl_seconds=ttl, extra=owner_mint_extra(extra))
+    # ``kind=session``: the token IS the session, for a client that sends it in
+    # ``Authorization: Bearer`` and keeps no cookie. It passes the same three gates as
+    # the link, and it never works as a ``?token=`` link.
+    subject, claims = owner_id or "local-app", owner_mint_extra(extra)
+    if request.query.get("kind", "") == "session":
+        token = generate_token(
+            subject, ttl_seconds=ttl, extra=claims, session=True, register_nonce=False
+        )
+    else:
+        token = generate_token(subject, ttl_seconds=ttl, extra=claims)
     _sel().log_api_access(
         caller=request.remote or "unknown",
         operation="token.local",
