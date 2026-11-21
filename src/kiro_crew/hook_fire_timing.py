@@ -6,6 +6,9 @@ thread hop reads ``wait`` (until a pool worker started it), ``run`` (in the work
 and ``resume`` (until the event loop resumed the fire), so a saturated pool or a
 stalled event loop shows apart from slow work. ``other`` is the fire's time outside
 every phase; ``gc runs`` counts collections per generation (0/1/2) during the fire.
+
+:class:`EventFireTiming` times one whole ``ScriptHookStore.fire`` call, so an event
+whose hooks are each under the threshold still logs when together they are not.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from typing import Any, TypeVar
 _T = TypeVar("_T")
 
 #: A hook fire at or above this many milliseconds, matcher to verdict, logs one
-#: warning with its phases.
+#: warning with its phases; an event's whole fire at or above it logs one more.
 SLOW_FIRE_WARN_MS = 1000.0
 
 
@@ -73,6 +76,10 @@ class HookFireTiming:
         self._gc_at_start = _gc_collections()
         self._phases: list[FirePhase] = []
 
+    def elapsed(self) -> float:
+        """Seconds since this hook's fire started."""
+        return time.perf_counter() - self._started
+
     def begin(self, name: str) -> FirePhase:
         phase = FirePhase(name)
         self._phases.append(phase)
@@ -114,6 +121,40 @@ class HookFireTiming:
             gc_runs,
         )
         return True
+
+
+class EventFireTiming:
+    """One event's whole fire: every hook that ran, then the ``hooks.json`` status write."""
+
+    def __init__(self, event: str) -> None:
+        self.event = event
+        self._started = time.perf_counter()
+        self._hooks: list[tuple[str, float]] = []
+
+    def add(self, hook: HookFireTiming) -> None:
+        """Record *hook* as one that ran, with its total up to now."""
+        self._hooks.append((hook.subject, hook.elapsed()))
+
+    def warn_if_slow(self, log: logging.Logger) -> None:
+        """Log one warning when hooks ran and the whole fire took the threshold or longer.
+
+        ``other`` is the fire's time in no hook that ran: matchers that did not
+        match, the bookkeeping between hooks, and the status write.
+        """
+        if not self._hooks:
+            return
+        total = time.perf_counter() - self._started
+        if total * 1000 < SLOW_FIRE_WARN_MS:
+            return
+        in_hooks = sum(secs for _, secs in self._hooks)
+        log.warning(
+            "Slow hook event: %s took %dms; hooks=%d: %s; other=%dms",
+            self.event,
+            _ms(total),
+            len(self._hooks),
+            ", ".join(f"{name}={_ms(secs)}ms" for name, secs in self._hooks),
+            _ms(max(total - in_hooks, 0.0)),
+        )
 
 
 def _ms(seconds: float) -> int:

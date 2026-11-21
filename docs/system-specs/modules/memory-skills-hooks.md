@@ -7498,7 +7498,21 @@ match ends that hook's fire and logs the same way when it was slow. The `hooks.j
 status write after the fire's hooks is timed the same way and logs its own line,
 `hook status write`, when it alone takes 1 s. A faster fire logs nothing, and a
 direct `run_script_hook` call (the dashboard's hook test) is not a fire and never
-logs one. `test_hook_fire_timing.py` pins both sides.
+logs one.
+
+An event's whole fire logs one more WARNING, so hooks that are each under 1 s
+still show when together they hold a call for longer. When one `ScriptHookStore.fire`
+call in which at least one hook ran (every matched hook, then the status write)
+takes 1 s or more, `EventFireTiming` logs
+`Slow hook event: <event> took <n>ms; hooks=<count>: <hook>=<n>ms, ...; other=<n>ms`.
+`other` is the time in no hook that ran: matchers that did not match, the
+bookkeeping between hooks, and the status write. A fire cancelled while a hook's
+script runs logs it too, as the per-hook line does; a hook cancelled before that
+(in its matcher, or in a skills-only hook's governance check) does not count as
+one that ran. One hook that is slow alone logs both its own line and this one. An
+event in which no hook ran never logs it. The per-event line changes no hook's
+behaviour, order or verdict. `test_hook_fire_timing.py` pins both lines on both
+sides of the threshold.
 
 ### `safe_read_file(path: str, *, canonical_gate: bool = False) -> str`
 
