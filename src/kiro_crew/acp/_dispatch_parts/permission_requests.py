@@ -725,6 +725,27 @@ def bridged_title_identity(
     return (fits[0], tool) if tool else ("", "")
 
 
+def _args_name_another_call(own: object, cached: object) -> bool:
+    """Whether a request's own arguments contradict the ones the cache holds.
+
+    Equal arguments are one call, and so are two dicts that agree on every key they
+    share: a harness streams its arguments in pieces, and some (copilot, mimocode)
+    seed the cache with a rewritten form of them (``path`` for ``fileName``), so a
+    key the other side lacks is no evidence of another call.
+    shortcut: a reused id whose arguments share no key with the cached ones is not
+    caught here, nor is a non-string value (a seeded path list); the writer-side
+    eviction covers a repeat ``tool_call`` frame only.
+    """
+    if own == cached:
+        return False
+    if not (isinstance(own, dict) and isinstance(cached, dict)):
+        return True
+    return any(
+        isinstance(v, str) and isinstance(cached.get(k), str) and cached[k] != v
+        for k, v in own.items()
+    )
+
+
 def build_permission_event(
     msg: JsonRpcMessage,
     *,
@@ -922,6 +943,34 @@ def build_permission_event(
     # same-origin repeat frames (re-ask after reject_once, mode-change
     # re-prompt) still find their entry.
     _ck = scoped_tool_cache_key(cache_scope, tool_call_id)
+    # The id is the model's, so a cached entry is evidence about the call that wrote
+    # it, not about this request. A request that states its OWN arguments and they
+    # are not the cached ones names a different call under a reused id: it reads as
+    # a miss in every cache below (no trusted params, shell verdict, MCP identity,
+    # path scope or rendered input of the earlier call), and its own arguments are
+    # what the card, the policy checks and the hooks see. Not for a gate envelope,
+    # whose arguments are the harness's own.
+    if envelope is None and tool_call_id and raw_params_cache is not None:
+        _own_args = next(
+            (v for v in (tool_call.get(k) for k in ("rawInput", "input", "params")) if v),
+            None,
+        )
+        _cached_args = raw_params_cache.get(_ck)
+        if (
+            _own_args is not None
+            and _cached_args is not None
+            and _args_name_another_call(_own_args, _cached_args)
+        ):
+            logger.warning(
+                "Permission request states arguments that differ from the cached call "
+                "(req=%s tool_call_id=%s); ignoring the cached provenance",
+                _loggable_request_id(request_id),
+                _loggable_request_id(tool_call_id),
+            )
+            tool_call = {**tool_call, "input": _own_args}
+            raw_params_cache = shell_cache = tool_input_cache = tool_input_redacted_cache = None
+            mcp_server_name_cache = tool_name_cache = diff_path_cache = tool_kind_cache = None
+            identity_unreadable_cache = harness_tool_name_cache = None
     # A permission frame that names no ``kind`` takes the one its preceding
     # ``tool_call`` frame carried, under the same origin-scoped id. KAS sends
     # ``toolCall: {toolCallId, status, title}`` here and puts ``kind`` on the

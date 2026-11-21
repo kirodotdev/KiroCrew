@@ -1119,3 +1119,123 @@ class TestReadNewToolResultsSync:
             assert results[0].tool_call_id == "tu-ok"
         finally:
             jsonl_path.unlink(missing_ok=True)
+
+
+class TestReusedToolCallId:
+    """A model-authored ``toolCallId`` reused for a different call (CWE-863).
+
+    The caches are keyed by the id, so a later request under it must not be shown,
+    judged or trusted as the earlier call.
+    """
+
+    _OPTIONS = [{"id": "allow_once", "label": "Allow"}]
+
+    @staticmethod
+    def _tool_call(tool_call_id, raw_input, kind="read"):
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        update = {
+            "sessionUpdate": "tool_call",
+            "title": "Read file",
+            "kind": kind,
+            "toolCallId": tool_call_id,
+        }
+        if raw_input is not None:
+            update["rawInput"] = raw_input
+        return JsonRpcMessage(params={"update": update})
+
+    def _permission(self, tool_call_id, **own):
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        return JsonRpcMessage(
+            id=900,
+            method="session/requestPermission",
+            params={
+                "toolCall": {"title": "Read file", "toolCallId": tool_call_id, **own},
+                "options": self._OPTIONS,
+            },
+        )
+
+    @pytest.mark.parametrize("key", ["rawInput", "input", "params"])
+    @pytest.mark.parametrize(
+        "target",
+        [
+            {"path": "~/.ssh/authorized_keys"},
+            {"path": "/etc/kiro/security_policy.json"},
+            {"path": "/Users/kim/other.txt"},  # same key, other value
+        ],
+    )
+    def test_request_with_other_arguments_is_not_judged_as_the_cached_call(self, key, target):
+        client = AcpClient()
+        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/Users/kim/notes.txt"}))
+
+        event = client._build_permission_event(self._permission("tc-Y", **{key: target}))
+
+        assert json.loads(event.tool_input) == target
+        assert event.raw_tool_params == target
+        assert event.raw_params_trusted is False
+        assert event.shell_classified is False
+        assert event.mcp_identity_trusted is False
+        assert event.is_shell is False
+
+    def test_a_string_argument_is_not_judged_as_the_cached_call_either(self):
+        client = AcpClient()
+        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/Users/kim/notes.txt"}))
+
+        event = client._build_permission_event(self._permission("tc-Y", rawInput="wipe-it"))
+
+        assert "notes.txt" not in event.tool_input
+        assert event.raw_params_trusted is False
+
+    def test_request_with_the_same_arguments_keeps_the_cached_provenance(self):
+        client = AcpClient()
+        args = {"path": "/Users/kim/notes.txt"}
+        client._extract_tool_event(self._tool_call("tc-Y", args))
+
+        event = client._build_permission_event(self._permission("tc-Y", rawInput=dict(args)))
+
+        assert event.raw_params_trusted is True
+        assert event.shell_classified is True
+        assert "notes.txt" in event.tool_input
+
+    def test_arguments_extending_the_cached_ones_are_the_same_call(self):
+        client = AcpClient()
+        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/Users/kim/notes.txt"}))
+
+        event = client._build_permission_event(
+            self._permission("tc-Y", rawInput={"path": "/Users/kim/notes.txt", "limit": 5})
+        )
+
+        assert event.raw_params_trusted is True
+
+    def test_request_naming_no_arguments_keeps_the_cached_provenance(self):
+        client = AcpClient()
+        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/Users/kim/notes.txt"}))
+
+        event = client._build_permission_event(self._permission("tc-Y"))
+
+        assert event.raw_params_trusted is True
+        assert "notes.txt" in event.tool_input
+
+    def test_another_id_is_untouched(self):
+        client = AcpClient()
+        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/Users/kim/notes.txt"}))
+        client._extract_tool_event(self._tool_call("tc-Z", {"path": "/tmp/z"}))
+
+        event = client._build_permission_event(self._permission("tc-Z"))
+
+        assert event.raw_params_trusted is True
+        assert "/tmp/z" in event.tool_input
+
+    def test_a_second_tool_call_for_the_id_without_arguments_drops_the_first_ones(self):
+        """The writer replaced an entry only for a frame with non-empty ``rawInput``,
+        so the first call's arguments stayed bound to the reused id."""
+        client = AcpClient()
+        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/Users/kim/notes.txt"}))
+        client._extract_tool_event(self._tool_call("tc-Y", None, kind="delete"))
+
+        event = client._build_permission_event(self._permission("tc-Y"))
+
+        assert "notes.txt" not in event.tool_input
+        assert event.raw_tool_params is None
+        assert event.raw_params_trusted is False

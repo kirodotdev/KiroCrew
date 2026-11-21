@@ -519,6 +519,24 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             scope=getattr(self, "_session_id", "") or "",
             tool_name=identity.tool_name,
         )
+        # A ``tool_call`` frame announces a call and the id is the model's. One for an
+        # id already cached, stating no arguments, is a new call under a reused id:
+        # the earlier call's params, shell verdict, identity and rendered input must
+        # not survive to be read for it. The frame's own writes follow.
+        if tool_call_id and not raw_input:
+            for _stale in (
+                self._tool_call_inputs,
+                self._tool_call_input_redacted,
+                self._tool_call_is_shell,
+                self._tool_call_unclassified,
+                self._tool_call_mcp_server,
+                self._tool_call_tool_name,
+                self._tool_call_harness_tool_name,
+                self._tool_call_identity_unreadable,
+                self._tool_call_params,
+                self._tool_call_diff_path,
+            ):
+                _stale.pop(tool_call_id, None)
         input_str = ""
         if tool_call_id and raw_input:
             input_str = (
