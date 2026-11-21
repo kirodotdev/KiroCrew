@@ -1737,3 +1737,49 @@ async def test_a_held_steer_orphaned_by_a_turn_change_queues_at_the_head(tmp_pat
 
     client.steer.assert_not_awaited()
     assert _queued_order(target, TEXT, later) == [0, 1], [e["content"] for e in target._queue]
+
+
+def _turn_changes_on_call(target, nth):
+    """A ``prewarm_enabled_check`` whose *nth* call is a hand-off: turn G ends, G+1 starts.
+
+    The hand-off closes steer admission for G and the queued turn's task assignment
+    moves ``_turn_generation`` to G+1, as ``_hand_off_queue`` and the ``task`` setter do.
+    """
+    calls = []
+
+    async def _check():
+        calls.append(True)
+        if len(calls) == nth:
+            target._deferred_steer_ended_gen = target._turn_generation
+            target.task.cancel()
+            _running(target)
+
+    return _check
+
+
+@pytest.mark.asyncio
+async def test_a_steer_sent_during_a_turn_change_is_injected_into_the_new_turn(
+    tmp_path, monkeypatch
+):
+    """A steer whose send spans a turn change is held for the turn running at the hold."""
+    from kiro_crew.dashboard import deferred_steer
+
+    state = _make_state(tmp_path)
+    caller, target, client = _loss_recovery_target(state)
+    # Call 1 is the prewarm before the gate; call 2 is the re-gate after the steer RPC.
+    monkeypatch.setattr(sc, "prewarm_enabled_check", _turn_changes_on_call(target, 2))
+    sent_in = target._turn_generation
+
+    out = await _send(state, caller)
+
+    assert target._turn_generation == sent_in + 1, "the turn changed during the send"
+    assert out.get("pending_steer") is True, out
+    try:
+        await deferred_steer.flush_at_boundary(state, target)
+    finally:
+        target.task.cancel()
+
+    client.steer.assert_awaited_once()
+    assert TEXT in client.steer.await_args.args[0]
+    assert not target._queue, [e["content"] for e in target._queue]
+    assert target._deferred_steer_receipts[out["steer_id"]]["state"].startswith("delivered@")

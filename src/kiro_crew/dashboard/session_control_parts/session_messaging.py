@@ -609,8 +609,6 @@ async def send_to_target(
             )
             return True
 
-        held_in_turn = slot._turn_generation
-
         # One retry of a held steer, run at a tool boundary of the turn it was sent
         # into. It repeats what the immediate arm does -- authorize again, record
         # the admission as an audience fence, steer, then compare the audience --
@@ -895,6 +893,11 @@ async def send_to_target(
                 # Never a plain queue for a steer: hold it for the next tool
                 # boundary of this turn. A turn that ended during the RPC leaves
                 # `slot.running` False, and the queue-or-run arm below starts it.
+                # The turn the steer is held for is the one running at the hold:
+                # the RPC and the re-gate await, and a hand-off during them can
+                # start the next turn. `_attempt_at_boundary` reads this name when
+                # it runs, so it compares against this generation.
+                held_in_turn = slot._turn_generation
                 hold_result = deferred_steer.hold(
                     slot,
                     steer_id=steer_id,
