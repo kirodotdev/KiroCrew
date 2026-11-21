@@ -151,6 +151,7 @@ from kiro_crew.hook_runtime.hook_dispatch import (  # noqa: F401
     dispatch_session_lane_changed_bulk,
     fire_tool_hooks,
     get_global_hook_store,
+    hook_tool_input,
     permission_pre_tool_block,
     persisted_hook_store,
     pre_tool_match_names,
