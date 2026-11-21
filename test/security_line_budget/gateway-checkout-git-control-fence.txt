@@ -1,0 +1,4 @@
++2
+The file-tool write gate in `paths` refuses the gateway checkout's git control files:
+one import and one `or` clause. The matcher lives outside the package
+(`kiro_crew.sandbox_git_control`).
