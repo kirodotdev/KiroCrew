@@ -502,9 +502,15 @@ backend spelled it otherwise: no pin, a pin not advertised, or a cold cache
 (`_substitution_retry_model`). The session runs that model. Without the key the user's own
 `settings.json` still names X, so the retry would be refused the same way. That is
 the state of every install whose pinned model is restricted from its first session,
-because no `session/new` has ever succeeded to warm the cache. A refusal of the model
-the seed already names is not retried, since a retry cannot help; this holds when Y
-equals the pin too, because the pin never reached the refused request. When the
+because no `session/new` has ever succeeded to warm the cache. A pin the seed already
+adopted (in this start or an earlier one, `_adopted_substitute_model`) and the backend
+now refuses is never named again, even when the advertised list still names it: that
+list can be older than the policy, so the retry names Y. Only a refusal of Y itself,
+when the seed already names Y, is not retried, since a retry cannot help; this holds
+when Y equals the pin too, because the pin never reached the refused request. The two
+`test_a_model_adopted_earlier_and_refused_now_falls_back_to_the_offered_one` tests
+(`test/test_acp_client_model_substitution.py`, `test/test_claude_shared_runtime.py`)
+pin this on both paths. When the
 retry named the pin and the backend refuses that too, the start falls back ONCE to
 the model the second advisory offers, as before the pin left the seed: a session on
 the offered model beats one that never starts. So one start sends `session/new` at
