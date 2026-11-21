@@ -1726,3 +1726,20 @@ def _published_redaction_verdict_on():
     seams = sys.modules.get("kiro_crew.redaction_seams")
     if seams is not None:
         seams.publish(False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_http_proxy_warned_schemes():
+    """Every test starts and ends with no unusable-proxy warning given yet.
+
+    ``http_proxy.resolve_proxy`` warns once per process per proxy scheme it
+    cannot use (a Windows ``socks=`` system proxy), so a test that drives that
+    warning would otherwise silence it for every later test on the same worker.
+    """
+    mod = sys.modules.get("kiro_crew.http_proxy")
+    if mod is not None:
+        mod._warned_schemes.clear()
+    yield
+    mod = sys.modules.get("kiro_crew.http_proxy")
+    if mod is not None:
+        mod._warned_schemes.clear()
