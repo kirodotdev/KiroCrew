@@ -68,6 +68,82 @@ def _scratch_http_auth_pairs(proj: str) -> list[tuple[str, str]]:
     return pairs
 
 
+#: The config scopes whose ``credential.*`` entries are carried into the
+#: scratch fetch. The repository's own scopes stay out: its helpers are pinned
+#: or refused, and the scratch fetch never read its other credential keys.
+_FORWARDED_CREDENTIAL_SCOPES = frozenset({"system", "global"})
+
+
+def _env_pins_credential_helper(env: Mapping[str, str]) -> bool:
+    """Whether *env*'s ``GIT_CONFIG_*`` entries set ``credential.helper``."""
+    count = int(env.get("GIT_CONFIG_COUNT") or 0)
+    return any(
+        env.get(f"GIT_CONFIG_KEY_{index}", "").lower() == "credential.helper"
+        for index in range(count)
+    )
+
+
+def _scratch_credential_pairs(proj: str, env: Mapping[str, str] | None) -> list[tuple[str, str]]:
+    """``(key, value)`` pairs giving the scratch fetch the checkout's credential view.
+
+    An *env* that leaves ``credential.helper`` unpinned reads the operator's own
+    global and system config, but the scratch git dir sits outside the checkout,
+    has a synthetic HEAD and names no remote, so every ``includeIf`` (``gitdir:``,
+    ``onbranch:``, ``hasconfig:remote.*.url:``) that selects a helper for this
+    checkout misses there. So the ``credential.*`` entries of those scopes are
+    resolved against *proj* itself, under the same *env*, and returned in git's
+    order behind an empty ``credential.helper`` reset, which clears the list the
+    scratch read on its own before the resolved one replaces it. ``git config``
+    only reads files, so resolving runs no helper. An *env* that pins
+    ``credential.helper`` (the isolated default) forwards nothing: its pin clears
+    every helper anyway.
+    """
+    if env is None or _env_pins_credential_helper(env):
+        return []
+    listing = _git_probe(
+        proj, "config", "--show-scope", "-z", "--get-regexp", r"^credential\.", env=dict(env)
+    )
+    if not listing:
+        return []
+    fields = listing.split("\0")
+    pairs: list[tuple[str, str]] = []
+    # `-z` prints `<scope>\0<key>\n<value>\0` per entry; a key with no `=` has no value.
+    # A value keeps its own newlines (a multi-line helper snippet): GIT_CONFIG_VALUE_<n>
+    # is never re-split.
+    for scope, entry in zip(fields[0::2], fields[1::2]):
+        key, sep, value = entry.partition("\n")
+        if scope not in _FORWARDED_CREDENTIAL_SCOPES:
+            continue
+        pairs.append((key, value if sep else "true"))
+    return [("credential.helper", ""), *pairs] if pairs else []
+
+
+def _scratch_fetch_env(
+    env: Mapping[str, str], scratch: str, objects_dir: str, auth_pairs: list[tuple[str, str]]
+) -> dict[str, str]:
+    """The environment the fetch into *scratch* runs with; see :func:`fetch_and_pin_upstream`."""
+    fetch_env = dict(env)
+    fetch_env["GIT_DIR"] = scratch
+    fetch_env["GIT_OBJECT_DIRECTORY"] = objects_dir
+    # PATH is pinned for this fetch only (callers pass a trusted absolute
+    # git). git resolves a transport helper and `ssh` off PATH at exec time,
+    # and a gateway PATH can lead with an agent-writable directory. Not in
+    # git_command_env: callers there may spawn a bare `git` found on PATH.
+    trusted_path = platform_compat.trusted_system_path()
+    if trusted_path is not None:
+        fetch_env["PATH"] = trusted_path
+    # Forward the checkout's credential and http auth config at `-c` precedence
+    # via the GIT_CONFIG_* env (git never re-splits these), appended after the
+    # pins git_command_env already set.
+    count = int(fetch_env.get("GIT_CONFIG_COUNT", "0"))
+    for key, value in auth_pairs:
+        fetch_env[f"GIT_CONFIG_KEY_{count}"] = key
+        fetch_env[f"GIT_CONFIG_VALUE_{count}"] = value
+        count += 1
+    fetch_env["GIT_CONFIG_COUNT"] = str(count)
+    return fetch_env
+
+
 class _ScratchHandoff:
     """Who removes the throwaway git dir when the fetch is cancelled mid-prepare.
 
@@ -97,13 +173,19 @@ def _abandon(handoff: _ScratchHandoff) -> None:
 
 
 def _prepare_isolated_fetch(
-    proj: str, remote: str, branch: str, handoff: _ScratchHandoff | None = None
+    proj: str,
+    remote: str,
+    branch: str,
+    handoff: _ScratchHandoff | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[str, str, str, list[tuple[str, str]]] | None:
     """Resolve the URL and build the throwaway git dir, off the event loop.
 
-    Returns ``(url, objects_dir, scratch, http_auth_pairs)`` or ``None`` when the
+    Returns ``(url, objects_dir, scratch, auth_pairs)`` or ``None`` when the
     remote has no usable URL or the object store cannot be located, or when
     *handoff* was abandoned while the dir was built (the dir is then removed).
+    *env* is the environment the fetch will run with; ``auth_pairs`` are the
+    ``GIT_CONFIG_*`` entries it adds (credential config, then http auth headers).
 
     The object store is asked of git (``rev-parse --git-path objects``), not
     hard-coded to ``proj/.git``, so a linked worktree or a submodule -- whose
@@ -135,7 +217,7 @@ def _prepare_isolated_fetch(
     scratch = tempfile.mkdtemp(prefix="kirocrew-update-fetch-", dir=str(root))
     try:
         prepared = _fill_isolated_fetch(
-            proj, remote, branch, url, objects_dir, object_format, scratch
+            proj, remote, branch, url, objects_dir, object_format, scratch, env
         )
     except BaseException:
         # The scratch sweep leaves a directory with no owner record and no
@@ -163,6 +245,7 @@ def _fill_isolated_fetch(
     objects_dir: str,
     object_format: str,
     scratch: str,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[str, str, str, list[tuple[str, str]]] | None:
     """Write the throwaway git dir's files into *scratch*; see :func:`_prepare_isolated_fetch`."""
     for sub in ("objects/info", "objects/pack", "refs/heads", "refs/tags", "refs/kirocrew-have"):
@@ -205,7 +288,8 @@ def _fill_isolated_fetch(
         if _OID_RE.match(have):
             with open(os.path.join(scratch, "refs", "kirocrew-have", str(index)), "w") as handle:
                 handle.write(have + "\n")
-    return url, objects_dir, scratch, _scratch_http_auth_pairs(proj)
+    auth_pairs = _scratch_credential_pairs(proj, env) + _scratch_http_auth_pairs(proj)
+    return url, objects_dir, scratch, auth_pairs
 
 
 def _read_fetched_commit(proj: str, scratch: str) -> str | None:
@@ -267,7 +351,10 @@ async def fetch_and_pin_upstream(
     the checkout, while ``GIT_DIR`` keeps the fetch's own ref write in the
     scratch dir. A repo-local ``http.*.extraHeader`` is forwarded through
     ``GIT_CONFIG_*`` env (never a re-splittable ``-c``) so an authenticating
-    checkout still fetches.
+    checkout still fetches, and so, when *env* leaves ``credential.helper``
+    unpinned, are the global and system ``credential.*`` entries as resolved in
+    *proj* (:func:`_scratch_credential_pairs`), so a helper an ``includeIf``
+    selects for the checkout signs the fetch in.
 
     The scratch dir is assembled in Python with no ``git`` subprocess, so the
     only child this spawns is the network fetch itself -- the process a timeout
@@ -277,34 +364,17 @@ async def fetch_and_pin_upstream(
     """
     handoff = _ScratchHandoff()
     try:
-        prepared = await asyncio.to_thread(_prepare_isolated_fetch, proj, remote, branch, handoff)
+        prepared = await asyncio.to_thread(
+            _prepare_isolated_fetch, proj, remote, branch, handoff, env
+        )
     except asyncio.CancelledError:
         _abandon(handoff)
         raise
     if prepared is None:
         return None
-    url, objects_dir, scratch, http_auth_pairs = prepared
+    url, objects_dir, scratch, auth_pairs = prepared
     try:
-        fetch_env = dict(env)
-        fetch_env["GIT_DIR"] = scratch
-        fetch_env["GIT_OBJECT_DIRECTORY"] = objects_dir
-        # PATH is pinned for this fetch only (callers pass a trusted absolute
-        # git). git resolves a transport helper and `ssh` off PATH at exec time,
-        # and a gateway PATH can lead with an agent-writable directory. Not in
-        # git_command_env: callers there may spawn a bare `git` found on PATH.
-        trusted_path = platform_compat.trusted_system_path()
-        if trusted_path is not None:
-            fetch_env["PATH"] = trusted_path
-        # Forward the checkout's http auth headers at `-c` precedence via the
-        # GIT_CONFIG_* env (git never re-splits these), appended after the pins
-        # git_command_env already set.
-        count = int(fetch_env.get("GIT_CONFIG_COUNT", "0"))
-        for key, value in http_auth_pairs:
-            fetch_env[f"GIT_CONFIG_KEY_{count}"] = key
-            fetch_env[f"GIT_CONFIG_VALUE_{count}"] = value
-            count += 1
-        fetch_env["GIT_CONFIG_COUNT"] = str(count)
-
+        fetch_env = _scratch_fetch_env(env, scratch, objects_dir, auth_pairs)
         proc = await asyncio.create_subprocess_exec(
             git,
             "fetch",
