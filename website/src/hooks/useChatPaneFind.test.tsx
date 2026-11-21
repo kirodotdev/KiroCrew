@@ -133,7 +133,7 @@ describe('useChatPaneFind', () => {
       const navigation = realHook(options)
       return {
         ...navigation,
-        navToDisplayIndex: (...args) => { order.push('nav'); navigation.navToDisplayIndex(...args) },
+        navToMessage: (...args) => { order.push('nav'); return navigation.navToMessage(...args) },
       }
     }, () => {
       render(<Parent />)
@@ -181,6 +181,11 @@ describe('useChatPaneFind', () => {
     const displayItemsRef = { current: messages.map((msg, idx): DisplayItem => ({ kind: 'single', msg, idx })) }
     const listRef = { current: list }
     const scrollerRef = { current: scroller }
+    // Each navigation announces itself once; the row never mounts here, so the
+    // jump's poll keeps asking for its mount, and the mount count says nothing.
+    let jumps = 0
+    const onJump = () => { jumps++ }
+    window.addEventListener('mc-chat-scroll-jump', onJump)
     const { result, rerender } = renderHook(({ messages }) => useChatPaneFind({
       enabled: true, messages, slotKey: 'member-bot-term', displayItemsRef, listRef, scrollerRef,
     }), { initialProps: { messages } })
@@ -189,28 +194,29 @@ describe('useChatPaneFind', () => {
     act(() => { result.current.search.setTerm('alpha') })
     act(() => { vi.advanceTimersByTime(50) })
     expect(result.current.search.matches).toEqual([{ msgIdx: 0, occ: 0 }])
-    expect(list.mountIndex).toHaveBeenCalledTimes(1)
+    expect(jumps).toBe(1)
 
     act(() => { result.current.search.setTerm('beta') })
     // The old term's matches remain until the debounce finishes.
-    expect(list.mountIndex).toHaveBeenCalledTimes(1)
+    expect(jumps).toBe(1)
     act(() => { vi.advanceTimersByTime(50) })
     expect(result.current.search.matches).toEqual([{ msgIdx: 0, occ: 0 }])
-    expect(list.mountIndex).toHaveBeenCalledTimes(2)
-    expect(list.mountIndex).toHaveBeenLastCalledWith(0, undefined)
+    expect(jumps).toBe(2)
+    expect(list.mountIndex.mock.calls.at(-1)?.[0]).toBe(0)
 
     const previousMatches = result.current.search.matches
     rerender({ messages: [...messages, { role: 'assistant', content: 'streamed reply', cls: '', ts: 'b' }] })
     act(() => { vi.advanceTimersByTime(50) })
     expect(result.current.search.matches).not.toBe(previousMatches)
     expect(result.current.search.matches).toEqual([{ msgIdx: 0, occ: 0 }])
-    expect(list.mountIndex).toHaveBeenCalledTimes(2)
+    expect(jumps).toBe(2)
 
     act(() => { result.current.search.setTerm('alpha') })
-    expect(list.mountIndex).toHaveBeenCalledTimes(2)
+    expect(jumps).toBe(2)
     act(() => { vi.advanceTimersByTime(50) })
     expect(result.current.search.matches).toEqual([{ msgIdx: 0, occ: 0 }])
-    expect(list.mountIndex).toHaveBeenCalledTimes(3)
+    expect(jumps).toBe(3)
+    window.removeEventListener('mc-chat-scroll-jump', onJump)
   })
 
   it('leaves a narrowed term in a mounted row to the message, which keeps scroll ownership', () => {
@@ -396,5 +402,111 @@ describe('ChatPane find bar and pinned prompt', () => {
     expect(band().style.top).toBe('88px')
     press({ key: 'Escape' })
     expect(band().style.top).toBe('40px')
+  })
+})
+
+// A Bot's chat pages older history in while the reader is near the top, with
+// the find bar open. A page landing renumbers every loaded message and row. It
+// must leave the current match on its message and the reader where they are,
+// and a jump that is still settling when the page lands must stay on the
+// message it was for.
+describe('useChatPaneFind when an older page lands', () => {
+  const at = (n: number) => String(n).padStart(2, '0')
+  /** The loaded messages: L00 to L19, the word only where `needle` says. */
+  const loadedChat = (needle: number): ChatMessage[] => Array.from({ length: 20 }, (_, i) => ({
+    role: i % 2 === 0 ? 'user' : 'assistant',
+    content: i === needle ? `L${at(i)} asks about the needle` : `L${at(i)} text`,
+    cls: '',
+    ts: `2026-11-20T11:${at(i)}:00Z`,
+  }))
+  /** The older page: P0 to P4, the word in P2 when `withMatch`. */
+  const olderPage = (withMatch: boolean): ChatMessage[] => Array.from({ length: 5 }, (_, i) => ({
+    role: i % 2 === 0 ? 'user' : 'assistant',
+    content: withMatch && i === 2 ? 'P2 also has the needle' : `P${i} text`,
+    cls: '',
+    ts: `2026-11-20T10:0${i}:00Z`,
+  }))
+  const rowsOf = (messages: ChatMessage[]): DisplayItem[] => messages.map((msg, idx) => ({ kind: 'single', msg, idx }))
+  const ROW_H = 100
+  const VIEW_H = 600
+  /** Where the jump puts the scroller to center display row `di` (rows are ROW_H apart). */
+  const centered = (di: number) => di * ROW_H - VIEW_H / 2
+
+  function mountPane(loaded: ChatMessage[]) {
+    vi.useFakeTimers()
+    const scroller = document.createElement('div')
+    Object.defineProperty(scroller, 'clientHeight', { value: VIEW_H })
+    Object.defineProperty(scroller, 'scrollHeight', { value: 100000 })
+    const scrolls: number[] = []
+    scroller.scrollTo = ((o: ScrollToOptions) => { scrolls.push(o.top ?? -1) }) as typeof scroller.scrollTo
+    /** The rows the list has mounted, as a commit of the list draws them. */
+    const draw = (count: number) => scroller.replaceChildren(...Array.from({ length: count }, (_, i) => {
+      const row = document.createElement('div')
+      row.setAttribute('data-display-index', String(i))
+      row.getBoundingClientRect = () => ({ top: i * ROW_H, height: ROW_H, bottom: (i + 1) * ROW_H, left: 0, right: 0, width: 0, x: 0, y: i * ROW_H, toJSON: () => ({}) })
+      return row
+    }))
+    const list = { mountIndex: vi.fn(() => false) } as unknown as VirtualTranscriptHandle
+    const displayItemsRef = { current: rowsOf(loaded) }
+    draw(loaded.length)
+    const hook = renderHook(({ messages }) => useChatPaneFind({
+      enabled: true, messages, slotKey: 'member-bot-landing', displayItemsRef, listRef: { current: list }, scrollerRef: { current: scroller },
+    }), { initialProps: { messages: loaded } })
+    /** The page lands: the list draws the longer list in one commit. */
+    const land = (all: ChatMessage[]) => act(() => {
+      displayItemsRef.current = rowsOf(all)
+      draw(all.length)
+      hook.rerender({ messages: all })
+    })
+    return { ...hook, list, scrolls, land, displayItemsRef }
+  }
+
+  it('moves nobody to a match that no row on screen draws, and spends its find action', () => {
+    const loaded = loadedChat(19)
+    const pane = mountPane(loaded)
+    pane.displayItemsRef.current = rowsOf(loaded.slice(0, 19))
+    act(() => { pane.result.current.search.setTerm('needle') })
+    act(() => { vi.advanceTimersByTime(60) })
+    const { reveal, revealLedger } = pane.result.current.highlight
+    expect(reveal).toBeGreaterThan(0)
+    expect(pane.list.mountIndex).not.toHaveBeenCalled()
+    expect(pane.scrolls).toEqual([])
+    // Spent, so L19's row cannot use it when the reader's own scroll mounts it.
+    expect(revealLedger.pending(reveal)).toBe(false)
+  })
+
+  it('keeps L19 the current match and moves nobody when the page brings an older one (P2)', () => {
+    const loaded = loadedChat(19)
+    const pane = mountPane(loaded)
+    act(() => { pane.result.current.search.setTerm('needle') })
+    act(() => { vi.advanceTimersByTime(60) })
+    expect(pane.result.current.highlight.currentMessageIdx).toBe(19)
+    expect(pane.list.mountIndex).toHaveBeenCalledTimes(1)
+
+    pane.scrolls.length = 0
+    pane.land([...olderPage(true), ...loaded])
+    act(() => { vi.advanceTimersByTime(500) })
+    expect(pane.result.current.search.matches).toHaveLength(2)
+    // L19, at its new index, is still the match the reader is on.
+    expect(pane.result.current.highlight.currentMessageIdx).toBe(5 + 19)
+    expect(pane.list.mountIndex).toHaveBeenCalledTimes(1)
+    // Whatever still scrolls is the jump to L19, on its new row.
+    expect(pane.scrolls.every((top) => top === centered(5 + 19))).toBe(true)
+  })
+
+  it('keeps a jump that is still settling on its message when the page lands', () => {
+    const loaded = loadedChat(5)
+    const pane = mountPane(loaded)
+    act(() => { pane.result.current.search.setTerm('needle') })
+    act(() => { vi.advanceTimersByTime(60) })
+    act(() => { vi.advanceTimersByTime(48) })
+    expect(pane.scrolls.at(-1)).toBe(centered(5))
+
+    pane.scrolls.length = 0
+    pane.land([...olderPage(false), ...loaded])
+    // Within the search's debounce: the row that now holds number 5 is L00.
+    act(() => { vi.advanceTimersByTime(32) })
+    expect(pane.scrolls.length).toBeGreaterThan(0)
+    expect(new Set(pane.scrolls)).toEqual(new Set([centered(5 + 5)]))
   })
 })

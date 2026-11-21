@@ -536,6 +536,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     handleSurveyLayoutChange,
     composerBandRef,
     navToDisplayIndex,
+    navToMessage,
+    rowOfMessage,
     cancelNavScroll,
     displayItemsRef,
     pinFoldRef,
@@ -932,6 +934,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const { renderedTranscript, renderedDisplayItems } = useTranscriptRows({
     messages, transcriptLoaded: !slotLoading && slotSwitchTarget !== activeSlot, slotRunning, activeSlot, appToolCallIds, displayItemsRef, scrollerRef,
   })
+  // The rows draw the deferred snapshot, which trails the live list while a
+  // landed page waits to render: in that window a loaded message can have no
+  // row yet, and the jumps wait for the rows instead of giving the message up.
+  const rowsTrailList = renderedTranscript.messages !== messages
+  // The find's indices point into the live list. A row knows it holds the
+  // current match by comparing its own index with the match's, so the rows get
+  // the index of the match's message in their own list. A message the store
+  // replaced in that window marks no row until the rows catch up.
+  const rowsSearchCtx = useMemo(() => {
+    const live = searchCtxValue.currentMessageIdx
+    if (live < 0 || !rowsTrailList) return searchCtxValue
+    const match = messages[live]
+    return { ...searchCtxValue, currentMessageIdx: match ? renderedTranscript.messages.indexOf(match) : -1 }
+  }, [searchCtxValue, messages, renderedTranscript.messages, rowsTrailList])
 
   // Pinned prompt: keep the enablement ref in sync (updatePinnedPrompt is declared
   // above chatConfig and reads it through a ref), and recompute after the list
@@ -1025,19 +1041,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   )
   const {
     messageToDisplayIdx, navigateToTurn, chatNav, turnStepAnnouncement, chatPins, chatPinsLoading, isPinned, setPendingPinnedJump, handleEditLastRequest, handleJumpToPinnedMessage, handleJumpToQuote,
-    handleJumpToPin, handlePutPinInComposer, handleTogglePinForMessage, handleUnpinById, pinError, pinStatus, dismissPinStatus, messageToDisplayIdxRef,
+    handleJumpToPin, handlePutPinInComposer, handleTogglePinForMessage, handleUnpinById, pinError, pinStatus, dismissPinStatus,
   } = useTranscriptPins({
     embedded, dispatch, isMobile, activeSlot, messages, messagesRef, slotRunning, splitMode, crewWindow, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, activeViewIsBoundedPage,
-    isWelcomeState, activeSlotRemoteBound, scrollerRef, search, navToDisplayIndex, pinnedJumpChrome, scrollToPinnedPrompt, markStep, markJump, splitFeatureEnabled, regenerating, setEditLast, editSeqRef,
-    renderedDisplayItems, renderedTranscript, insertIntoComposer: insertDashboardReply,
+    isWelcomeState, activeSlotRemoteBound, scrollerRef, search, navToDisplayIndex, navToMessage, pinnedJumpChrome, scrollToPinnedPrompt, markStep, markJump, splitFeatureEnabled, regenerating, setEditLast, editSeqRef,
+    renderedDisplayItems, renderedTranscript, rowsTrailList, insertIntoComposer: insertDashboardReply,
   })
   // Search steps and clicks, the approval bar's "Show in chat", and ?msg= deep links.
   const { jumpToSearchResult } = useTranscriptJumps({
     search,
     messages,
+    messagesRef,
     messageToDisplayIdx,
-    messageToDisplayIdxRef,
-    navToDisplayIndex,
+    rowsTrailList,
+    navToMessage,
+    rowOfMessage,
+    scrollerRef,
     activeSlot,
     cursorIsForActiveSlot,
     slotHasMore,
@@ -1230,7 +1249,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             closedElsewhere={!!ownChatClosedElsewhere} inPopout={!!popout}
           />
         ) : (
-          <SearchHighlightContext.Provider value={searchCtxValue}>
+          <SearchHighlightContext.Provider value={rowsSearchCtx}>
           <JumpRevealContext.Provider value={jumpReveal}>
           <div className="relative flex flex-col flex-1 min-h-0" {...dropTargetProps}>
             <ChatTitleOverlay
