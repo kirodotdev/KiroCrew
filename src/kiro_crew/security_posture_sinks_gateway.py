@@ -1095,4 +1095,15 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "address and title and a picked element's name. Each passes the "
         "exfiltration-URL and credential redactors whole before any cut to a length.",
     ),
+    (
+        "The work a restart is waiting on",
+        "work_holders.py",
+        "The names a busy restart idle check lists to the CLI on the gateway "
+        "host: dashboard slot keys and cron job names. Terminal control "
+        "sequences and format characters are dropped, then the active "
+        "credential policy (`redact_via_context`) masks credentials, inside "
+        "URLs too, before the name is cut to 64 characters; a host whose "
+        "policy cannot be composed lists no name. The CLI repeats it on what "
+        "it prints.",
+    ),
 )
