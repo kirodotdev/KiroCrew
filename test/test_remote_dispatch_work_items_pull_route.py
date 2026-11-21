@@ -153,6 +153,8 @@ async def test_preview_off_answers_as_if_the_route_did_not_exist(state, preview)
         {"conductor_key": HUB_CONDUCTOR, "items": {"it_0000abcd": {"slot": "s", "after": ["x"]}}},
         {"conductor_key": HUB_CONDUCTOR, "items": {"it_0000abcd": {"slot": "s", "stamp": 5}}},
         {"conductor_key": HUB_CONDUCTOR, "items": {"it_0000abcd": {"slot": "s", "digest": 5}}},
+        {"conductor_key": HUB_CONDUCTOR, "items": {}, "held_skip": "s"},
+        {"conductor_key": HUB_CONDUCTOR, "items": {}, "held_skip": [5]},
     ],
 )
 @pytest.mark.asyncio

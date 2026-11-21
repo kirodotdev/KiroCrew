@@ -1702,6 +1702,12 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # one call. It reads the conductor's own board's fold and remote records to
         # build the cursor, takes no identity and writes nothing itself.
         "dashboard/handlers/remote_batch_pull.py",
+        # Its reclaim of a worker a lost create reply left on a crew. It reads the one
+        # item the crew named on the conductor's own board (``read_work_item``, then
+        # ``open_unbound_item``'s read of it and its remote record), takes no supplied
+        # identity, and writes only through the recorded ``bind`` the create would
+        # have written (``_record_conductor_write``).
+        "dashboard/handlers/remote_reclaim.py",
         # The peer's batch read for one hub conductor, the owner-gated sibling of
         # ``remote_work_item.py``: it reads that conductor's ``hub:`` mailbox board
         # only, and writes nothing.

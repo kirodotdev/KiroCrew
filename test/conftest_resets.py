@@ -225,6 +225,28 @@ def _forget_tracing_switch():
 
 
 @per_test_guard
+def _forget_remote_close_boards():
+    """Start and end each test with no remote close remembered against a board.
+
+    ``remote_batch_pull.CLOSE_BOARD`` maps each peer slot whose close ran to its
+    board, and only a close that succeeds drops its key. A failed or backing-off
+    close one test left would put that slot in a later test's ``held_skip`` on the
+    same xdist worker. A test that never imported the module pays one dict lookup.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.dashboard.handlers.remote_batch_pull")
+        if module is not None:
+            module.CLOSE_BOARD.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _forget_pending_trace_links():
     """Start each test with no pending worker-creation or patrol report links.
 

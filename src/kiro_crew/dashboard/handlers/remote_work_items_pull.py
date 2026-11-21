@@ -8,6 +8,12 @@ crew in one call:
   ``pending_approval`` / ``trust_active``, and its peer copy and events only when
   something is new since the hub's cursor (``changes``). Nothing new, no copy: a
   tick with no news carries only booleans.
+* ``held`` -- each copy, open or closed, whose worker the hub did not name, while
+  that worker's slot is live here: ``{slot}`` (plus ``closed`` for a closed copy),
+  at most :data:`MAX_HELD_ITEMS`, with the count of the rest as ``held_omitted``.
+  Slots the hub lists in ``held_skip`` (it is already closing them) are left out,
+  so successive pulls reach the rest with nothing stored here. A create whose reply never reached
+  the hub leaves one; the hub binds it or closes it (``remote_reclaim``).
 
 The cursor is the hub's, folded from its crew log: per item it sends the peer event
 ids it filed on that binding (newest last) and the newest peer stamp it filed. This
@@ -60,6 +66,18 @@ MAX_PULL_ITEMS = 32
 #: Most filed peer ids the hub sends per item. Only the tail matters: the peer
 #: coalesces only its newest ``progress``.
 MAX_AFTER_IDS = 16
+
+#: Most ``held`` rows one reply carries; the count of the rest rides as
+#: ``held_omitted``, and the hub reclaims them on a later pull.
+MAX_HELD_ITEMS = MAX_PULL_ITEMS
+
+#: Most slots one pull's ``held_skip`` may name: at or above the crew's live-slot
+#: ceiling (``slot_directory.MAX_LIVE_SLOTS``), so a hub never has to cut its
+#: list short and a skipped slot can never crowd an unreached one out of ``held``.
+MAX_HELD_SKIP = 512
+
+#: Request bytes: the default JSON cap plus room for a full ``held_skip``.
+_MAX_BODY_BYTES = 64 * 1024 + MAX_HELD_SKIP * (work_ledger.MAX_PEER_SLOT_CHARS + 4)
 
 #: Bytes of ``changes`` one reply carries before the rest are only flagged
 #: ``more``, well under the hub's 8 MiB reply cap; the hub reads those one by one.
@@ -182,6 +200,49 @@ def _read(board: str, hints: list[_Hint], flags: dict[str, dict[str, bool]]) -> 
     return {"items": items}
 
 
+def _unnamed(board: str, hints: list[_Hint]) -> list[tuple[str, str, bool]]:
+    """``(item_id, worker slot, closed)`` for each copy on *board*, open or closed,
+    whose worker the hub did not name: a closed copy's worker may still be live.
+    BLOCKING; hold the board lock."""
+    named = {(h[0], ledger_key(h[1])) for h in hints}
+    return [
+        (item.item_id, item.worker_session_key, item.is_terminal)
+        for item in work_ledger.list_work_items(board)
+        if item.worker_session_key and (item.item_id, item.worker_session_key) not in named
+    ]
+
+
+def _held(
+    state: Any, unnamed: list[tuple[str, str, bool]], skip: frozenset[str] = frozenset()
+) -> tuple[dict[str, dict[str, Any]], int]:
+    """``(held rows, omitted)``: each *unnamed* copy whose worker slot is live and
+    not in *skip*, at most :data:`MAX_HELD_ITEMS`, and how many more there were. A
+    closed copy's row says ``closed``. On the event loop, as :func:`_flags`.
+
+    *skip* is the hub's ``held_skip``: the slots it is already closing or backing
+    off on, so the cap fills with workers it has not reached yet.
+    """
+    held: dict[str, dict[str, Any]] = {}
+    omitted = 0
+    for item_id, slot, closed in unnamed:
+        if slot in skip or not _slot_flags(state, slot)["live"]:
+            continue
+        if len(held) >= MAX_HELD_ITEMS:
+            omitted += 1
+        else:
+            held[item_id] = {"slot": slot, **({"closed": True} if closed else {})}
+    return held, omitted
+
+
+def _skip(raw: Any) -> frozenset[str] | None:
+    """The body's ``held_skip`` as a set of slot keys; ``None`` when malformed."""
+    if not isinstance(raw, list) or len(raw) > MAX_HELD_SKIP:
+        return None
+    if not all(isinstance(s, str) and 0 < len(s) <= work_ledger.MAX_PEER_SLOT_CHARS for s in raw):
+        return None
+    return frozenset(ledger_key(s) for s in raw)
+
+
 def _redacted(doc: dict[str, Any]) -> Any:
     """*doc* with every key and string redacted. BLOCKING."""
     return _redact_deep(doc)
@@ -195,7 +256,7 @@ async def api_chat_work_items_pull(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, operation)
     if denied is not None:
         return denied
-    body, body_err = await read_bounded_json(request)
+    body, body_err = await read_bounded_json(request, _MAX_BODY_BYTES)
     if body_err is not None:
         return body_err
     assert body is not None
@@ -217,6 +278,13 @@ async def api_chat_work_items_pull(request: web.Request) -> web.Response:
         if hint is None:
             return _refuse_400(_CODE, f"item {str(item_id)[:64]!r} is malformed", field="items")
         hints.append(hint)
+    skip = _skip(body.get("held_skip", []))
+    if skip is None:
+        return _refuse_400(
+            _CODE,
+            f"held_skip must be a list of at most {MAX_HELD_SKIP} slot keys",
+            field="held_skip",
+        )
     board = mailbox.mailbox_key(conductor)
     state = request.app["state"]
     async with _board_lock(board):
@@ -225,6 +293,10 @@ async def api_chat_work_items_pull(request: web.Request) -> web.Response:
             return dirty
         try:
             doc = await asyncio.to_thread(_read, board, hints, _flags(state, hints))
+            unnamed = await asyncio.to_thread(_unnamed, board, hints)
+            doc["held"], omitted = _held(state, unnamed, skip)
+            if omitted:
+                doc["held_omitted"] = omitted
         except (OSError, work_ledger.WorkLedgerError):
             logger.warning("remote work items pull: mailbox read failed", exc_info=True)
             return web.json_response(
