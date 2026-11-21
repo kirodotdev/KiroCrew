@@ -123,9 +123,7 @@ describe('the App SDK SessionChanges', () => {
     expect(listRefusal).toHaveTextContent(SESSION_CHANGES_PATHS.sessionFiles)
     // The reason comes before the path, and it ends on who can fix it.
     expect(listRefusal).toHaveTextContent("can't show this chat's changes. This app's developer hasn't allowed it")
-    expect(listRefusal).toHaveTextContent("Only the app's developer can change this.")
-    // The hand-off says what the agent does, not a second person to fix it.
-    expect(within(listRefusal).getByRole('button', { name: 'Ask the agent to explain this' })).toBeInTheDocument()
+    expect(listRefusal).toHaveTextContent("Ask the app's developer to add it.")
     expect(screen.queryByTestId('session-file-row')).toBeNull()
     expect(fetchMock).not.toHaveBeenCalled()
     expect(mockApi.sessionFiles).not.toHaveBeenCalled()
@@ -162,8 +160,7 @@ describe('the App SDK SessionChanges', () => {
     // changes beside it does show. The reason comes before the path, and it
     // ends on who can fix it.
     expect(diffRefusal).toHaveTextContent("can't show this file's changes. This app's developer hasn't allowed it")
-    expect(diffRefusal).toHaveTextContent("Only the app's developer can change this.")
-    expect(within(diffRefusal).getByRole('button', { name: 'Ask the agent to explain this' })).toBeInTheDocument()
+    expect(diffRefusal).toHaveTextContent("Ask the app's developer to add it.")
     expect(screen.queryByTestId('pierre-pair')).toBeNull()
     const paths = fetchMock.mock.calls.map(pathOf)
     expect(paths).toContain(SESSION_CHANGES_PATHS.sessionFiles)

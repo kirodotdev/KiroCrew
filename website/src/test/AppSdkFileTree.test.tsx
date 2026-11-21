@@ -30,6 +30,7 @@ import { AppApiProvider, FileTree, type AppApi } from '../app-sdk/index'
 import { AppIdentityProvider } from '../app-sdk/identity'
 import { appQueryClient } from '../app-sdk/appQueryClient'
 import { AppScopedApiProvider } from '../app-sdk/scopedApi'
+import { ApiError } from '../api/apiError'
 import { FILE_TREE_PATHS, scopedWorkspaceTreeClient } from '../app-sdk/FileTree'
 import { PierreWorkspaceTreeImpl } from '../pierre/PierreWorkspaceTreeImpl'
 import { WorkspaceTreeClientProvider } from '../pierre/workspaceTreeClient'
@@ -48,6 +49,8 @@ let statusStatus = 200
 let treeBody: object = TREE
 // A folder whose own listing (`?dir=`) answers 500.
 let failDir: string | null = null
+// 500 (a failed read the notice can retry) or 403 (a refused folder no retry can change).
+let failDirStatus: 403 | 500 = 500
 let appSeq = 0
 
 function pathOf(call: unknown[]): string {
@@ -63,11 +66,14 @@ beforeEach(() => {
   statusStatus = 200
   treeBody = TREE
   failDir = null
+  failDirStatus = 500
   fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), 'http://localhost')
     const path = url.pathname
     if (path === FILE_TREE_PATHS.tree && failDir && url.searchParams.get('dir') === failDir) {
-      return new Response(JSON.stringify({ error: 'deadline exceeded' }), { status: 500 })
+      return failDirStatus === 403
+        ? new Response(JSON.stringify({ error: 'Folder cannot be listed', code: 'dir_refused' }), { status: 403 })
+        : new Response(JSON.stringify({ error: 'deadline exceeded' }), { status: 500 })
     }
     if (path === FILE_TREE_PATHS.tree && treeStatus !== 200) {
       return new Response(JSON.stringify({ error: 'boom' }), { status: treeStatus })
@@ -436,6 +442,9 @@ describe('the App SDK FileTree', () => {
   it('says why the changed-file colours are missing when the declared status read fails', async () => {
     statusStatus = 503
     render(externalApp([FILE_TREE_PATHS.tree, FILE_TREE_PATHS.gitStatus], <FileTree projectDir={ROOT} />))
+    // The 15 s wait below covers a chain: the status read starts only after the
+    // tree has listed (it is enabled on `baseTree.repo`), and the app client's
+    // failed read takes one real 1 s retry before the query settles on error.
     expect(await screen.findByTestId('file-tree', {}, LAZY_TREE)).toBeInTheDocument()
     // The tree stays usable; the notice sits above it.
     // It says what the failure costs: the rows lose their changed-file marks.
@@ -529,6 +538,43 @@ describe('the App SDK FileTree', () => {
     expect(await screen.findByTestId('file-tree', {}, LAZY_TREE)).toBeInTheDocument()
     await openBig()
     expect(await screen.findByTestId('workspace-tree-folder-listing-retry')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
+  })
+
+  it("offers no agent hand-off from a refused folder's notice on an external app's page", async () => {
+    const cut = { ...TREE, paths: ['README.md'], directories: ['big'], truncated: true, truncatedDirectories: ['big'] }
+    const openBig = async () => {
+      await waitFor(() => expect(treeMock.last().calls.resetPaths.length).toBeGreaterThan(0))
+      act(() => {
+        treeMock.last().simulateExpanded(['big'])
+        treeMock.last().simulateVisibleRows([{ kind: 'directory', path: 'big/', isExpanded: true }])
+      })
+    }
+    // A 403 `dir_refused` folder: no retry can change it, so it gets the refused notice.
+    treeBody = cut
+    failDir = 'big'
+    failDirStatus = 403
+    const { unmount } = render(externalApp([FILE_TREE_PATHS.tree], <FileTree projectDir={ROOT} />))
+    expect(await screen.findByTestId('file-tree', {}, LAZY_TREE)).toBeInTheDocument()
+    await openBig()
+    expect(await screen.findByTestId('workspace-tree-folder-refused')).toHaveTextContent('big')
+    expect(screen.queryByRole('button', { name: 'Ask the agent' })).toBeNull()
+    unmount()
+
+    // Control: a builtin page keeps the hand-off on the same notice.
+    mockApi.projectTree.mockImplementation(async (_p: string, dir?: string) => {
+      if (dir === 'big') throw new ApiError(403, 'Folder cannot be listed')
+      return cut
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <AppIdentityProvider appId="files-app" origin="builtin"><FileTree projectDir={ROOT} /></AppIdentityProvider>
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByTestId('file-tree', {}, LAZY_TREE)).toBeInTheDocument()
+    await openBig()
+    expect(await screen.findByTestId('workspace-tree-folder-refused')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
   })
 

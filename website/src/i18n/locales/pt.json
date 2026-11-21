@@ -375,20 +375,19 @@
       "create_returned_no_session": "A sessão foi criada, mas o servidor não a devolveu. Tente novamente."
     },
     "pullRequestPanel": {
-      "not_declared": "Este app não pode mostrar pull requests. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso."
+      "not_declared": "Este app não pode mostrar pull requests: suas permissões não declaram {{path}}."
     },
     "fileTree": {
-      "not_declared": "Este app não pode mostrar os arquivos do projeto. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso.",
+      "not_declared": "Este app não pode mostrar os arquivos do projeto: suas permissões não declaram {{path}}.",
       "refresh_failed": "Não foi possível atualizar a árvore de arquivos; mostrando a última lista.",
       "status_failed": "Não foi possível verificar quais arquivos mudaram, então os arquivos alterados não estão marcados."
     },
     "projectPicker": {
-      "not_declared": "Este app não pode mostrar o seletor de projetos. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso."
+      "not_declared": "Este app não pode mostrar o seletor de projetos: suas permissões não declaram {{path}}."
     },
     "sessionChanges": {
-      "not_declared": "Este app não pode mostrar as alterações deste chat. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso.",
-      "diff_not_declared": "Este app não pode mostrar as alterações deste arquivo. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso.",
-      "ask_agent": "Pedir ao agente para explicar",
+      "not_declared": "Este app não pode mostrar as alterações deste chat. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Peça ao desenvolvedor do app para adicioná-lo.",
+      "diff_not_declared": "Este app não pode mostrar as alterações deste arquivo. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Peça ao desenvolvedor do app para adicioná-lo.",
       "pick_a_file": "Escolha um arquivo para ver suas alterações.",
       "diff_unavailable": "Este chat não registrou o arquivo inteiro antes e depois desta alteração, então não há diff para mostrar."
     },
@@ -416,7 +415,7 @@
       "loading": "Carregando issues…",
       "loading_more": "Carregando…",
       "more_people": "+{{n}}",
-      "not_declared": "Este app não pode mostrar issues. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso.",
+      "not_declared": "Este app não pode mostrar issues: suas permissões não declaram {{path}}.",
       "open_in": "Abrir no {{provider}}",
       "opened_by": "Aberta por {{name}}",
       "priority": "Prioridade: {{priority}}",

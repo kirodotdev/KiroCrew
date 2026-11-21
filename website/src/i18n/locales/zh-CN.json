@@ -341,20 +341,19 @@
       "create_returned_no_session": "会话已创建，但服务器没有返回它。请重试。"
     },
     "pullRequestPanel": {
-      "not_declared": "此应用无法显示拉取请求。此应用的开发者未允许此操作：其权限未声明 {{path}}。只有应用开发者可以更改此设置。"
+      "not_declared": "此应用无法显示拉取请求：其权限未声明 {{path}}。"
     },
     "fileTree": {
-      "not_declared": "此应用无法显示项目文件。此应用的开发者未允许此操作：其权限未声明 {{path}}。只有应用开发者可以更改此设置。",
+      "not_declared": "此应用无法显示项目文件：其权限未声明 {{path}}。",
       "refresh_failed": "无法刷新文件树，正在显示上次的列表。",
       "status_failed": "无法检查哪些文件已更改，因此未标记已更改的文件。"
     },
     "projectPicker": {
-      "not_declared": "此应用无法显示项目选择器。此应用的开发者未允许此操作：其权限未声明 {{path}}。只有应用开发者可以更改此设置。"
+      "not_declared": "此应用无法显示项目选择器：其权限未声明 {{path}}。"
     },
     "sessionChanges": {
-      "not_declared": "此应用无法显示此聊天的改动。此应用的开发者未允许此操作：其权限未声明 {{path}}。只有应用开发者可以更改此设置。",
-      "diff_not_declared": "此应用无法显示此文件的改动。此应用的开发者未允许此操作：其权限未声明 {{path}}。只有应用开发者可以更改此设置。",
-      "ask_agent": "请代理解释原因",
+      "not_declared": "此应用无法显示此聊天的改动。此应用的开发者未允许此操作：其权限未声明 {{path}}。请让应用开发者添加它。",
+      "diff_not_declared": "此应用无法显示此文件的改动。此应用的开发者未允许此操作：其权限未声明 {{path}}。请让应用开发者添加它。",
       "pick_a_file": "选择一个文件以查看其改动。",
       "diff_unavailable": "此聊天没有记录这次改动前后的完整文件，因此没有可显示的差异。"
     },
@@ -378,7 +377,7 @@
       "loading": "正在加载议题…",
       "loading_more": "正在加载…",
       "more_people": "+{{n}}",
-      "not_declared": "此应用无法显示议题。此应用的开发者未允许此操作：其权限未声明 {{path}}。只有应用开发者可以更改此设置。",
+      "not_declared": "此应用无法显示议题：其权限未声明 {{path}}。",
       "open_in": "在 {{provider}} 中打开",
       "opened_by": "创建者：{{name}}",
       "priority": "优先级：{{priority}}",
