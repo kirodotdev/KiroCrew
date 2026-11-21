@@ -306,6 +306,7 @@ from kiro_crew.platform.tool_paths import (  # noqa: F401  (re-exported for call
 )
 from kiro_crew.security import (  # noqa: F401 - the path owners read these
     audit_bash_exfiltration,
+    caller_canonicalised,
     canonical_path_refusal,
     is_sensitive_bash_command,
     is_sensitive_canonical_path,
