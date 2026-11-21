@@ -3,7 +3,7 @@
  *
  * `?state=` picks the board: `working` (the patrol is still on), `waiting` (an item
  * asks the person), `done` (every milestone accepted), `done-some` (one rejected,
- * one abandoned), `stopped` (milestones open, no patrol) or `paused` (Pause all). `?theme=light` for the
+ * one abandoned), `dropped` (open work above a two-row dropped fold), `only-abandoned` (the done fold right above the dropped fold), `stopped` (milestones open, no patrol) or `paused` (Pause all). `?theme=light` for the
  * light palette. The panel is the real component; only the reads are fixtures.
  */
 import { createRoot } from 'react-dom/client'
@@ -13,14 +13,11 @@ import { api } from '../src/api/client'
 import { store } from '../src/store'
 import { initI18n } from '../src/i18n/all'
 import ConductorModeCrewPanel from '../src/pages/chat/command-center/ConductorModeCrewPanel'
-import { PREVIEW_CREW_MODE } from '../src/utils/previewFlags'
 import '../src/index.css'
 
 const params = new URLSearchParams(location.search)
 document.documentElement.setAttribute('data-theme', params.get('theme') === 'light' ? 'light' : 'dark')
 const state = params.get('state') || 'done'
-// Pause all is drawn behind the conductor mode preview, as on a real gateway.
-localStorage.setItem(PREVIEW_CREW_MODE, '1')
 
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString()
 const item = (id: string, title: string, over: Record<string, unknown>) => ({
@@ -36,6 +33,8 @@ const ITEMS: Record<string, unknown[]> = {
   done: [item('a', 'Rename the chip', {}), item('b', 'Update the docs', {}), item('c', 'Fix the tests', {})],
   'done-some': [item('a', 'Rename the chip', {}), item('b', 'Port the old gate', { state: 'rejected', verdict: 'fail', summary: 'Checks still red.' }), item('c', 'Try a new icon', { state: 'abandoned', verdict: null, summary: 'Dropped by the plan.' })],
   stopped: [item('a', 'Rename the chip', {}), item('b', 'Update the docs', { ...open, status: 'progress', summary: 'Half the pages done.', alive: 'idle' })],
+  dropped: [item('a', 'Rename the chip', {}), item('b', 'Update the docs', { ...open, status: 'progress', summary: 'Editing the guide.', alive: 'running' }), item('r', 'Port the old gate', { state: 'rejected', verdict: 'fail', summary: 'Checks still red.' }), item('c', 'Try a new icon', { state: 'abandoned', verdict: null, summary: 'Dropped by the plan.' }), item('d', 'Move the badge', { state: 'abandoned', verdict: null, summary: 'Dropped by the plan.' })],
+  'only-abandoned': [item('a', 'Rename the chip', {}), item('c', 'Try a new icon', { state: 'abandoned', verdict: null, summary: 'Dropped by the plan.' }), item('d', 'Move the badge', { state: 'abandoned', verdict: null, summary: 'Dropped by the plan.' })],
   paused: [item('a', 'Rename the chip', {}), item('b', 'Update the docs', { ...open, status: 'progress', summary: 'Half the pages done.', alive: 'idle' })],
 }
 const RUN: Record<string, unknown> = {
@@ -44,6 +43,8 @@ const RUN: Record<string, unknown> = {
   done: { settled: 'done', open: 0, accepted: 3, not_done: 0, at_limit: false, patrol_on: false },
   'done-some': { settled: 'done', open: 0, accepted: 1, not_done: 2, at_limit: false, patrol_on: false },
   stopped: { settled: 'stopped', open: 1, accepted: 1, not_done: 0, at_limit: false, patrol_on: false },
+  dropped: { settled: '', open: 1, accepted: 1, not_done: 3, at_limit: false, patrol_on: true },
+  'only-abandoned': { settled: 'done', open: 0, accepted: 1, not_done: 2, at_limit: false, patrol_on: false },
   paused: { settled: '', open: 1, accepted: 1, not_done: 0, at_limit: false, patrol_on: true },
 }
 const conductor = { schema: 1, slot_key: 'root', goal: 'Rename the mode in the app. Done when: every surface uses the new name.', round: 1, depth: 0, parent_item: null, created_at: ago(120) }

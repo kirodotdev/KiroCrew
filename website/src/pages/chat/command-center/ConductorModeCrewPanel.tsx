@@ -996,8 +996,11 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   }
   // One folded row for a closed group: done milestones above the open ones,
   // dropped ones below, so what is open stays on screen. No rows, no fold.
+  const shownListMs = listMs.filter(m => !hidden.has(m.item.item_id))
+  // The done fold's bottom rule already divides it from the dropped fold when no open row sits between them.
+  const dropTopRule = shownListMs.length > 0 || doneMs.length === 0
   const milestoneFold = (kind: 'done' | 'dropped', rows: typeof milestones, isOpenFold: boolean, setOpenFold: (open: boolean) => void) => rows.length > 0 && (
-    <details className={`group border-border ${kind === 'done' ? 'mt-0.5 border-b' : 'border-t'}`} data-testid={`conductor-mode-milestones-${kind}`} open={isOpenFold}
+    <details className={`group border-border ${kind === 'done' ? 'mt-0.5 border-b' : dropTopRule ? 'border-t' : ''}`} data-testid={`conductor-mode-milestones-${kind}`} open={isOpenFold}
       onToggle={e => setOpenFold((e.currentTarget as HTMLDetailsElement).open)}>
       <summary className="flex items-center gap-2.5 py-1.5 cursor-pointer list-none">
         <span className="shrink-0">{STATE_ICON[kind === 'done' ? 'done' : 'not_done']}</span>
@@ -1102,7 +1105,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
                 {milestoneFold('done', doneMs, doneOpen, setDoneOpen)}
                 <ol className="divide-y divide-border">
                   {/* A hidden milestone loses only its row here; the count and the Recap keep it. */}
-                  {listMs.filter(m => !hidden.has(m.item.item_id)).map(m => <MilestoneRow key={m.item.item_id} {...m} now={now} onOpen={openItem(m.item)}
+                  {shownListMs.map(m => <MilestoneRow key={m.item.item_id} {...m} now={now} onOpen={openItem(m.item)}
                     onRemove={milestoneRemovable(m.item) ? () => setRemoved(ids => [...ids, m.item.item_id], 'restore') : undefined} />)}
                 </ol>
                 {milestoneFold('dropped', droppedMs.filter(m => !hidden.has(m.item.item_id)), droppedOpen, setDroppedOpen)}
