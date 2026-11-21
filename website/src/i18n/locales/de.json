@@ -12285,7 +12285,7 @@
       "retry": "Wiederholen",
       "enable_and_allow_chat_control": "Aktivieren und Chat-Steuerung erlauben",
       "session_approval_confirm_title": "„{{name}}“ die Steuerung deiner Chats erlauben?",
-      "session_approval_reconsent_notice": "{{name}} ist deaktiviert, weil die App neu darum bittet, deine Chats zu steuern. Prüfe die Berechtigung auf dieser Seite, bevor du sie aktivierst.",
+      "session_approval_reconsent_notice": "{{name}} bleibt aus, bis du der App erlaubst, deine Chats zu steuern. Prüfe die Berechtigung auf dieser Seite, bevor du sie aktivierst.",
       "approve_new_permissions": "Neue Berechtigungen genehmigen",
       "grants_reconsent_notice": "Diese Version von {{name}} fordert neue Berechtigungen an. Sie bleiben aus, bis du sie genehmigst.",
       "grants_reconsent_keep": "Ignoriere dies, damit {{name}} bei den bereits genehmigten Berechtigungen bleibt.",

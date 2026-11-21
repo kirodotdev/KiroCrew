@@ -12012,7 +12012,7 @@
       "retry": "再試行",
       "enable_and_allow_chat_control": "有効にしてチャット操作を許可",
       "session_approval_confirm_title": "「{{name}}」にチャットの操作を許可しますか？",
-      "session_approval_reconsent_notice": "{{name}} は新たにチャットの制御を要求するため、無効になっています。有効にする前に、このページで権限を確認してください。",
+      "session_approval_reconsent_notice": "{{name}} は、チャットの制御を許可するまでオフのままです。有効にする前に、このページで権限を確認してください。",
       "approve_new_permissions": "新しい権限を承認",
       "grants_reconsent_notice": "このバージョンの {{name}} は新しい権限を求めています。承認するまでオフのままです。",
       "grants_reconsent_keep": "無視すると、{{name}} は承認済みの権限のまま動作します。",
