@@ -2259,6 +2259,17 @@ against sweep completeness, and are torn down at `close_all`.
   (`dashboard:{slot_key}`) idle-expire like any other session. A Bot's worker
   session is one of them: its process is released, its conversation resumes on
   the next send, and `session_status` reports it as `process: released`.
+  `session.automated_idle_timeout_secs` (default 0, off) is the timeout for a
+  session whose last turn automation started: `release(key)` stamps
+  `_Session.last_turn_automated` from `session_idle_clock.turn_was_automated()`,
+  which reads the releasing turn's declared trigger
+  (`metrics.usage_attrs.current_trigger`) and is true only for a declared
+  trigger other than `user`, so a context that declared none keeps
+  `session.timeout_secs`. `session_idle_clock.idle_limit` applies it only when
+  it is shorter than `session.timeout_secs`, and the passive-frame grace above is
+  then one window of that shorter timeout. A person's next turn clears the
+  stamp. The sweep reads the value at every pass; with `session.timeout_secs`
+  at 0 the sweep does not run, so it has no effect.
   A key listed in `session.idle_exempt_keys` never expires on the idle clock,
   for a chat that automation wakes hours apart and that would otherwise pay a
   cold start on every wake. `SessionCleanup._idle_exempt_keys()` reads the list
