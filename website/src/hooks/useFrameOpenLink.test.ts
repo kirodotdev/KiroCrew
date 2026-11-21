@@ -33,7 +33,8 @@ describe('useFrameOpenLink', () => {
     renderHook(() => useFrameOpenLink([{ current: frame }], accept, open, () => true))
     post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, frame.contentWindow)
     expect(open).toHaveBeenCalledTimes(1)
-    expect(open).toHaveBeenCalledWith(URL_A, frame)
+    // The message rides along, so the bridge can read a new-tab request off it.
+    expect(open).toHaveBeenCalledWith(URL_A, frame, { type: OPEN_MESSAGE_TYPE, url: URL_A })
   })
 
   it('opens nothing the accept rule refuses', () => {

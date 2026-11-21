@@ -48,7 +48,8 @@ const NavigationLeaveGuardContext = React.createContext<Channel | null>(null)
  * every prose link built on it (also through `useGuardedLeave`) — a navigation
  * intent a popout window forwards to the main window (`applyNavIntentInMain`) —
  * a native desktop-menu or Companion navigation (`subscribeNativeNavigate`) —
- * and the
+ * an in-app link in a message or an agent-written page (`openInternalLink`,
+ * through the same shell function as the native navigation) — and the
  * browser's own Back/Forward button (through `NavigationBackGuard`, which needs
  * the page to publish a stake — see `usePublishNavigationStake`).
  *
