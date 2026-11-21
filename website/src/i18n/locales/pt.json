@@ -8340,7 +8340,8 @@
       "pending_cancel_unsettled": "Conectado, mas não foi possível cancelar o login que você iniciou aqui. Ele continua aberto até expirar.",
       "card_intro": "O Kiro Agent e outros recursos do Kiro funcionam com esta conta Kiro, qualquer que seja o harness do agente que você use. O Kiro CLI mantém o próprio login do kiro-cli, então entrar aqui não o altera.",
       "previous_sign_in_not_removed": "Conectado, mas não foi possível remover o login anterior",
-      "previous_sign_in_not_removed_body": "A nova conta foi salva, mas a conta da qual você estava saindo ainda está lá e tem prioridade. Saia dela e depois confira o login mostrado aqui."
+      "previous_sign_in_not_removed_body": "A nova conta foi salva, mas a conta da qual você estava saindo ainda está lá e tem prioridade. Saia dela e depois confira o login mostrado aqui.",
+      "skip_for_now": "Ignorar por enquanto"
     },
     "kiroCliSignInInTerminal": {
       "copy_sign_in": "Copiar o comando de entrada",

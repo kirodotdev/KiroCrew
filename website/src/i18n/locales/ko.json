@@ -7920,7 +7920,8 @@
       "pending_cancel_unsettled": "로그인했지만 여기서 시작한 로그인을 취소할 수 없습니다. 시간이 초과될 때까지 열려 있습니다.",
       "card_intro": "Kiro Agent와 다른 Kiro 기능은 어떤 에이전트 하네스를 사용하든 이 Kiro 계정으로 실행됩니다. Kiro CLI는 자체 kiro-cli 로그인을 유지하므로 여기서 로그인해도 바뀌지 않습니다.",
       "previous_sign_in_not_removed": "로그인했지만 이전 로그인을 제거할 수 없음",
-      "previous_sign_in_not_removed_body": "새 계정은 저장되었지만 전환하기 전의 계정이 여전히 남아 있고 우선 적용됩니다. 그 계정에서 로그아웃한 뒤 여기 표시된 로그인을 확인하세요."
+      "previous_sign_in_not_removed_body": "새 계정은 저장되었지만 전환하기 전의 계정이 여전히 남아 있고 우선 적용됩니다. 그 계정에서 로그아웃한 뒤 여기 표시된 로그인을 확인하세요.",
+      "skip_for_now": "지금은 건너뛰기"
     },
     "kiroCliSignInInTerminal": {
       "copy_sign_in": "로그인 명령 복사",
