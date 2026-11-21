@@ -774,7 +774,11 @@ def _sync_read_state(
             raw_disabled = entry.get("disabledTools")
             disabled = raw_disabled if isinstance(raw_disabled, list) else []
             return {"exists": exists, "enabled": p["tool"] not in disabled}
-        return {"exists": exists, "enabled": not bool(entry.get("disabled"))}
+        from kiro_crew.dashboard.handlers import mcp as mcp_handlers
+        from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+
+        store_off = mcp_handlers._kirocrew_entry_is_muted(server)
+        return {"exists": exists, "enabled": not (mcp_entry_is_muted(entry) or store_off)}
     if kind == catalog.KIND_SECRET_SAVE:
         from kiro_crew.config.loader import config_dir
         from kiro_crew.secrets import SecretVault
