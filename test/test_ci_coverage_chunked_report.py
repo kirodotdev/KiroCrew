@@ -385,7 +385,20 @@ def test_the_script_imports_nothing_the_combine_job_does_not_install() -> None:
             roots.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
             roots.add(node.module.split(".")[0])
-    assert roots - set(sys.stdlib_module_names) == {"coverage"}
+    third_party = roots - set(sys.stdlib_module_names)
+    assert "xml" not in roots, "chunk reports are parsed through defusedxml"
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]
+    installs = " ".join(
+        str(step.get("run", ""))
+        for step in jobs["coverage-combine"]["steps"]
+        if "pip install" in str(step.get("run", ""))
+    )
+    installed = {
+        re.split(r"[=<>!~\[]", word.strip("'\""))[0]
+        for word in installs.split()
+        if not word.startswith("-")
+    }
+    assert third_party and third_party <= installed, sorted(third_party - installed)
 
 
 def test_the_plan_refuses_a_file_named_twice() -> None:

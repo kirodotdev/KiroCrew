@@ -32,16 +32,17 @@ import re
 import subprocess
 import sys
 import time
-import xml.etree.ElementTree as ET
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 MAX_CHUNKS = 8
 ROOT_COUNTS = ("lines-valid", "lines-covered", "branches-valid", "branches-covered")
 NO_DATA = "No data to report."
 _CONDITION = re.compile(r"^\d+% \((\d+)/(\d+)\)$")
 _DIGITS = re.compile(r"(\d+)")
+_COMMENT = re.compile(r"<!--(.*?)-->", re.DOTALL)
 
 # (argv, file that receives stdout or None) -> (exit status, captured stderr and stdout)
 Runner = Callable[[Sequence[str], "Path | None"], "tuple[int, str]"]
@@ -155,62 +156,52 @@ def _line_counts(
     return valid, covered, branches, branches_covered
 
 
-def _children(element: ET.Element) -> list[ET.Element]:
-    return [child for child in element if child.tag is not ET.Comment]
-
-
-def _expect(element: ET.Element, tag: str, where: str) -> ET.Element:
+def _expect(element: Any, tag: str, where: str) -> Any:
     if element.tag != tag or (element.text or "").strip():
         raise ChunkError(f"{where}: expected <{tag}> with no text, found <{element.tag}>")
     return element
 
 
-class _ReportBuilder(ET.TreeBuilder):
-    """Builds the tree, keeps comments, and refuses a document type declaration."""
-
-    def __init__(self) -> None:
-        super().__init__(insert_comments=True)
-
-    def doctype(self, name: str, pubid: str | None, system: str | None) -> None:
-        raise ET.ParseError("a document type declaration is not part of a coverage report")
-
-
 def read_chunk(path: Path) -> ChunkReport:
     """Parse one chunk's XML report and check it against its own totals.
 
-    The standard-library parser is enough here: the file was written a moment
-    ago by ``coverage xml`` in this same job, not handed over by another one.
-    A document type declaration is refused all the same, and without one a
-    document can define no entity, so nothing is expanded or fetched.
+    Parsed with defusedxml, as every Cobertura report in this repository is,
+    and with a document type declaration refused: without one a document can
+    define no entity. The parser drops comments, so the two that coverage
+    writes under the root are read from the head of the file as text.
     """
+    from defusedxml import DefusedXmlException
+    from defusedxml.ElementTree import ParseError, parse
+
     where = path.name
-    parser = ET.XMLParser(target=_ReportBuilder())
     try:
-        root = ET.parse(path, parser=parser).getroot()
-    except (ET.ParseError, OSError) as exc:
+        root = parse(path, forbid_dtd=True).getroot()
+        with open(path, encoding="utf-8") as handle:
+            head = handle.read(4096).split("<sources", 1)[0]
+    except (ParseError, DefusedXmlException, OSError, UnicodeDecodeError) as exc:
         raise ChunkError(f"{where}: not a readable XML report ({exc})") from None
     if root.tag != "coverage":
         raise ChunkError(f"{where}: root element is <{root.tag}>, not <coverage>")
-    comments = tuple(child.text or "" for child in root if child.tag is ET.Comment)
-    parts = _children(root)
+    comments = tuple(_COMMENT.findall(head))
+    parts = list(root)
     if [part.tag for part in parts] != ["sources", "packages"]:
         raise ChunkError(f"{where}: <coverage> does not hold exactly <sources> and <packages>")
-    sources = tuple(_expect(source, "source", where).text or "" for source in _children(parts[0]))
+    sources = tuple(_expect(source, "source", where).text or "" for source in list(parts[0]))
     # Data measured without branch arcs is written with these two attributes the other way round.
     keys = [key for key in root.attrib if key in ("branches-valid", "branches-covered")]
     arcs = keys != ["branches-covered", "branches-valid"]
     report = ChunkReport(root.attrib.get("version", ""), comments, sources, arcs)
     totals = [0, 0, 0, 0]
-    for package in _children(parts[1]):
+    for package in list(parts[1]):
         _expect(package, "package", where)
         name = package.attrib.get("name")
-        holders = _children(package)
+        holders = list(package)
         if name is None or [holder.tag for holder in holders] != ["classes"]:
             raise ChunkError(f"{where}: a <package> has no name or does not hold exactly <classes>")
-        for element in _children(holders[0]):
+        for element in list(holders[0]):
             _expect(element, "class", where)
             filename = element.attrib.get("filename")
-            inner = _children(element)
+            inner = list(element)
             if (
                 not filename
                 or [part.tag for part in inner] != ["methods", "lines"]
@@ -218,7 +209,7 @@ def read_chunk(path: Path) -> ChunkReport:
             ):
                 raise ChunkError(f"{where}: a <class> has no filename or an unexpected shape")
             lines = []
-            for line in _children(inner[1]):
+            for line in list(inner[1]):
                 if len(_expect(line, "line", where)):
                     raise ChunkError(f"{where}: a <line> of {filename} has children")
                 lines.append(tuple(line.attrib.items()))
