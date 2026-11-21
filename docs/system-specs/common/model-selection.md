@@ -802,10 +802,15 @@ its own once the cache refreshes with a list that carries it.
   inherits a model reaches its session through the session manager's own
   config, which that rebuild replaces); the Bot editor sends
   both fields on every save, renaming included, and the Bot's `set_model` card
-  goes through the same route. That route is the only caller: a change of a
-  Bot's model or effort from `kirocrew agent update --model` or a hand edit of
-  `config.json` does not clear the chat's own value yet (#36614), and a fix must
-  not let a dashboard save clear twice through the config watcher. A
+  goes through the same route. A change of `agents.<name>.model` or
+  `agents.<name>.reasoning_effort` from any other writer (`kirocrew agent update
+  --model`, `kirocrew config set`, a hand edit of `config.json`) clears it through
+  the config watcher's `bot_chat.follow` applier, which runs after the session
+  manager's applier has rebuilt the factory for a changed Bot effort. Each Bot
+  value is followed once: every follow records the value it applied, the watcher
+  skips a value already recorded, and a save skips a field the watcher followed
+  to the same value after the save began, so a dashboard save never clears twice
+  and a `/model` pick made between the two is kept. A
   cleared value that differed from the Bot's, or a save of the Bot's model while
   a throttle or refusal fallback serves the chat (whether or not the chat keeps a
   model of its own), queues the reset a model pick queues, so a

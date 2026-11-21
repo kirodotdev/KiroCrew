@@ -342,6 +342,11 @@ def _register_config_watch(
 
         await crewmate_harness_notice.deliver(state, change.new)
 
+    def _follow_bot_chat(change: ConfigChange) -> None:
+        from kiro_crew.dashboard.bot_chat_follow import follow_config_change
+
+        follow_config_change(state, change)
+
     async def _apply_voice_reply(change: ConfigChange) -> None:
         from kiro_crew.slack.handler import apply_voice_reply_change
 
@@ -414,6 +419,14 @@ def _register_config_watch(
             "dashboard.terminal.enabled",
             callback=_apply_terminal_enabled,
             name="dashboard.terminal.enabled",
+        ),
+        # A Bot's model or effort changed by the CLI or a hand edit clears the Bot's
+        # chat's own pick, as an editor save does. After the session manager's
+        # applier, whose subscription predates this one, has rebuilt the factory.
+        live.subscribe(
+            "agents",
+            callback=_follow_bot_chat,
+            name="bot_chat.follow",
         ),
     ]
     # Closures are held strongly by the registry; keep the handles on the app so

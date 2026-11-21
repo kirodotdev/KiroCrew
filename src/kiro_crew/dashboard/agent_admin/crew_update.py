@@ -452,6 +452,11 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             )
     harness_changed = False
     harness_refreshed = False
+    from kiro_crew.dashboard.bot_chat_follow import follow_bot_save, follow_mark
+
+    # Before the write: the config watcher sees it too, and a follow it makes after
+    # this mark means the chat is already on the saved value.
+    follow_since = follow_mark()
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         if name not in cfg.agents:
@@ -1119,9 +1124,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         # On every save that carries the field, an unchanged value included. After
         # the refresh, so a turn that consumes the chat's reset restarts through a
         # factory that already holds the saved effort.
-        from kiro_crew.dashboard.bot_chat_follow import follow_bot_save
-
-        await follow_bot_save(request.app.get("state"), name, cfg, changed)
+        await follow_bot_save(request.app.get("state"), name, cfg, changed, since=follow_since)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="agent.update",

@@ -104,9 +104,12 @@ async def _on_config_change(self: SessionManager, change: ConfigChange) -> None:
     # A crewmate's harness pin (``agents.<name>.acp_backend``) is read by the
     # provider factory from the config it was built with, so editing it outside
     # the crew editor (``kirocrew config set``, ``$EDITOR``) rebuilds the factory
-    # the same way, or the edit would wait for the next gateway start.
+    # the same way, or the edit would wait for the next gateway start. Its effort
+    # pin is read the same way, and the Bot's chat reset the dashboard's applier
+    # arms after this one must restart through a factory that holds it.
     if change.touched(*self._FACTORY_CONFIG_PATHS) or any(
-        path.rsplit(".", 1)[-1] == "acp_backend" for path in change.under("agents")
+        path.rsplit(".", 1)[-1] in ("acp_backend", "reasoning_effort")
+        for path in change.under("agents")
     ):
         await self.refresh_defaults(cfg=change.new)
         if change.touched("agent.env"):

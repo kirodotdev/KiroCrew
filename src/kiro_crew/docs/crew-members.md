@@ -42,10 +42,10 @@ choice wins: saving the Bot's model clears the model that chat picked for
 itself (with `/model`, for example), and saving its reasoning effort clears
 the chat's own effort, so the chat's next reply uses the Bot's values. This
 happens on every save from the Bot's editor, which always sends both fields,
-so renaming the Bot or saving it unchanged resets them too. A change made
-outside the dashboard, with `kirocrew agent update --model` or by editing
-`config.json`, does not reset the chat's own model or effort; save the Bot
-in its editor to bring the chat back onto it. A `/model` typed in the chat
+so renaming the Bot or saving it unchanged resets them too. A change of the
+Bot's model or effort made outside the dashboard, with
+`kirocrew agent update --model` or by editing `config.json`, resets them the
+same way once the running Kiro Crew picks up the file. A `/model` typed in the chat
 after the save wins again until the next save.
 Other chats and the sessions the Bot starts keep their own picks.
 
