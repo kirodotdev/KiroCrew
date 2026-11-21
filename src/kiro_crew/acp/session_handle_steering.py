@@ -117,9 +117,9 @@ async def steer(self: AcpSessionHandle, message: str, *, origin: str = STEER_ORI
         if sent:
             trace_steps.steered(trace_steps.STEER_INTERRUPT, source=self)
         return sent
-    wrapped = wrap_user_message(text)
     await self._runtime.send_request(
-        "_session/steer", steer_params(self._session_id, wrapped, origin)
+        "_session/steer",
+        steer_params(self._session_id, text, origin, self._runtime.acp_backend),
     )
     batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
     # Stamped HERE, at the innermost write, because this is the one point

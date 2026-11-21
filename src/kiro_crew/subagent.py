@@ -88,6 +88,9 @@ from kiro_crew.agent_sdk.spec_hooks import (
     reproject_claimed_session,
     turn_spec_hooks,
 )
+from kiro_crew.agent_sdk.steer_origin import (  # noqa: F401 - resolved by continuation.py via bind_component_globals
+    STEER_ORIGIN_AUTOMATION,
+)
 from kiro_crew.agent_spec_format import is_markdown_spec, iter_agent_spec_files
 from kiro_crew.atomic_write import on_event_loop  # noqa: F401
 from kiro_crew.config import live

@@ -193,7 +193,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "settings_withheld_cause": ("function", False, "bb418bb7ece8", "acp"),
     "shutdown": ("function", True, "b60c5fea256e", "acp_lifecycle"),
     "start": ("function", True, "b60c5fea256e", "acp_lifecycle"),
-    "steer": ("function", True, "b0a837a37097", "acp_turns"),
+    "steer": ("function", True, "19314a5fce4a", "acp_turns"),
     "steer_needs_loss_recovery": ("property", False, "a6632a57e602", "acp"),
     "steer_upgrade_notice": ("property", False, "bb418bb7ece8", "acp"),
     "stream": ("function", "agen", "fa113e1bf480", "acp_turns"),

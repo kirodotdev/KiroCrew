@@ -547,7 +547,7 @@ def test_busy_session_folds_into_current_reply_when_steerable():
         def has_active_turn(self):
             return True
 
-        async def steer(self, text):
+        async def steer(self, text, *, origin: str = "user"):
             self.steered.append(text)
             return True
 
@@ -576,7 +576,7 @@ def test_a_busy_message_whose_text_names_its_media_is_not_steered(tmp_path, voic
         def has_active_turn(self):
             return True
 
-        async def steer(self, text):
+        async def steer(self, text, *, origin: str = "user"):
             self.steered.append(text)
             return True
 
@@ -958,7 +958,7 @@ def test_a_non_operator_cannot_steer_the_running_turn():
         def has_active_turn(self) -> bool:
             return True
 
-        async def steer(self, text: str) -> bool:
+        async def steer(self, text: str, *, origin: str = "user") -> bool:
             self.steered.append(text)
             return True
 
@@ -980,7 +980,7 @@ def test_the_operator_can_still_steer():
         def has_active_turn(self) -> bool:
             return True
 
-        async def steer(self, text: str) -> bool:
+        async def steer(self, text: str, *, origin: str = "user") -> bool:
             self.steered.append(text)
             return True
 

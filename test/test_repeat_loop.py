@@ -122,7 +122,7 @@ class _Client:
         self.supports_refusal_steer = capable
         self.sent: list[str] = []
 
-    async def steer(self, text: str) -> bool:
+    async def steer(self, text: str, *, origin: str = "user") -> bool:
         self.sent.append(text)
         return True
 

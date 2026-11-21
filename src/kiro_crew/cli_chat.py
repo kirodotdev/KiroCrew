@@ -16,6 +16,7 @@ from kiro_crew.acp._dispatch import is_shell_kind
 from kiro_crew.acp.client import AcpError, AcpTimeoutError
 from kiro_crew.agent_sdk.drivers.acp_vocab import AcpRuntimeError, continue_timed_out_calls
 from kiro_crew.agent_sdk.host_auth import for_terminal
+from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_USER
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     CONTEXT_WARN_MARGIN_PCT,
@@ -864,7 +865,7 @@ async def _steer_user_reply(provider: LLMProvider, event: LLMEvent, reply: str) 
     prompt's own session-abort contract (see :func:`_answer_permission`).
     """
     return await steer_notice_into_refused_turn(
-        provider, _user_reply_notice(event.title or "", reply)
+        provider, _user_reply_notice(event.title or "", reply), origin=STEER_ORIGIN_USER
     )
 
 

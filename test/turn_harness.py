@@ -563,7 +563,7 @@ class ScriptedProvider(LLMProvider):
     async def reject_tool(self, request_id: str | int) -> None:
         self.record("reject_tool", request_id)
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = "user") -> bool:
         self.record("steer", message)
         self._last_steer = time.monotonic()
         return True

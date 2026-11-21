@@ -55,7 +55,7 @@ class TestSteerRun:
         with patch("kiro_crew.subagent.sel"):
             ok, detail = await manager.steer_run("a1", "course correct")
         assert ok and detail == "ok"
-        provider.steer.assert_awaited_once_with("course correct")
+        provider.steer.assert_awaited_once_with("course correct", origin="automation")
 
     @pytest.mark.asyncio
     async def test_steer_shared_provider(self) -> None:
@@ -69,7 +69,7 @@ class TestSteerRun:
         with patch("kiro_crew.subagent.sel"):
             ok, _ = await manager.steer_run("a1", "adjust")
         assert ok
-        shared.steer.assert_awaited_once_with("adjust")
+        shared.steer.assert_awaited_once_with("adjust", origin="automation")
 
     @pytest.mark.asyncio
     async def test_a_session_that_can_lose_a_delivered_steer_is_refused(self) -> None:

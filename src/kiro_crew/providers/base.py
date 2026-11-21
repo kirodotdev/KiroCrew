@@ -30,6 +30,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     EVENT_TOOL_RESULT,
 )
 from kiro_crew.acp.types import AcpEvent as LLMEvent  # noqa: F401
+from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_USER
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.essential_delivery import EssentialDelivery
 
@@ -752,9 +753,10 @@ class LLMProvider(ABC):
         reason. Default: no turn to wait for — return immediately with ``""``."""
         return ""
 
-    async def steer(self, message: str) -> bool:
+    async def steer(self, message: str, *, origin: str = STEER_ORIGIN_USER) -> bool:
         """Inject a mid-turn steer; return True if accepted. Default False for a
-        provider with no steer extension (granted by opt-in, never inherited)."""
+        provider with no steer extension (granted by opt-in, never inherited).
+        *origin* says who wrote the text (``kiro_crew.agent_sdk.steer_origin``)."""
         return False
 
     async def discard_unanswered_prompt(self) -> bool:

@@ -31,7 +31,7 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_steer_audience_fences``, ``_steer_automation``, ``_steer_channel_origin``,
 ``_steer_clear``, ``_steer_confirmed``,
 ``_steer_decision_strips``, ``_steer_delivery_ids``, ``_steer_owner_origin``,
-``_steer_possibly_delivered``,
+``_steer_peer_origin``, ``_steer_possibly_delivered``,
 ``_steer_retract``, ``_steer_rpc_in_flight``, ``_steer_segment_cut``, ``_steer_send_ids``,
 ``_steer_user_origin``, ``_subagent_deliveries_inflight``,
 ``_subagents_inline_collected``, ``_synthesis_armers``,
@@ -407,6 +407,9 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # that turn may read a peer crew's sessions (`_turn_owner_sent` below).
     # Absent means NOT the owner, which fails closed.
     self._steer_owner_origin = {}
+    # Pending steers another session sent (``session_send``): their re-send keeps
+    # the automation origin kiro's ``_session/steer`` is told.
+    self._steer_peer_origin = set()
     # Whether a CHANNEL steer has been admitted into the turn this slot is
     # running. Set by `steer_into_running_turn(channel_origin=True)` at
     # admission -- before its RPC, since the client can inject the text and the

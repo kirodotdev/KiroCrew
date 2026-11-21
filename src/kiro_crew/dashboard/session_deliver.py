@@ -437,7 +437,13 @@ async def _deliver_peer(
         )
 
         outcome = await steer_into_running_turn(
-            state, slot, text, user_origin=False, admission=admission, relay_meta=relay_meta
+            state,
+            slot,
+            text,
+            user_origin=False,
+            peer_origin=True,
+            admission=admission,
+            relay_meta=relay_meta,
         )
         if outcome == STEER_STEERED:
             return DELIVERED_STEERED
