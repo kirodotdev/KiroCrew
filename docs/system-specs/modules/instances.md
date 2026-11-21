@@ -2163,7 +2163,10 @@ Two SSM-specific behaviours:
 credentials, `ssm:StartSession` denial, missing plugin, target not a connected
 managed node, local bind conflict) rather than running SSM stderr through the ssh
 auth/transport matchers, which would mislabel an `AccessDenied` as an ssh auth
-failure.
+failure. The detail it quotes is cut to 200 characters (`_BANNER_DETAIL_MAX_CHARS`),
+except an `ssm:StartSession` denial, which keeps 400
+(`_SSM_DENIAL_DETAIL_MAX_CHARS`) so AWS's one sentence still names the action,
+the resource to grant and the policy gap.
 
 Stderr is not the only input. The plugin exits `0` with an empty stderr whether
 the session went idle, the transport was lost, or the session never started, so
