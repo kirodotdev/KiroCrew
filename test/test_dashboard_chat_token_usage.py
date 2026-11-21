@@ -325,7 +325,7 @@ class TestTokenPersistenceBackfill:
         slot.model = ""  # CC has not yet emitted init when _run_chat begins
 
         # The backfill must run as claude_code for canonicalize_for_provider to map 'opus'
-        # -> 'opus-4.8-1m'. The label comes from the client's
+        # -> 'opus-5.5-1m'. The label comes from the client's
         # ``SessionCapabilities.provider_seam``: cfg.agent.provider only allows "acp".
         _cc_cfg = KiroCrewConfig()
         _cc_cfg.dashboard.merge_queued_messages = False
@@ -370,8 +370,8 @@ class TestTokenPersistenceBackfill:
         slot_key, model, provider = captured[0]
         assert slot_key == "s1"
         # The backfill canonicalizes the provider's model via from_provider_id so
-        # it matches the canonical-keyed dropdown: 'opus' alias -> 'opus-4.8-1m'.
-        assert model == "opus-4.8-1m", "late backfill should populate canonical model"
+        # it matches the canonical-keyed dropdown: 'opus' alias -> 'opus-5.5-1m'.
+        assert model == "opus-5.5-1m", "late backfill should populate canonical model"
         # An inheriting slot is recorded but never pinned, so it keeps following
         # the default.
         assert slot.model == ""
