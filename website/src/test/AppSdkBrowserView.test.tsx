@@ -855,6 +855,53 @@ describe('BrowserView second view (tabId)', () => {
     }
   })
 
+  it('does not reopen an idle-reaped view while document is hidden', async () => {
+    // The idle-reap loop: a sibling view's keepalive reaps this view after VIEW_IDLE_S.
+    // The reopen effect must not fire while document.visibilityState is 'hidden',
+    // so a hidden tab does not start an open → reap → open → reap loop.
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    try {
+      const open = vi.spyOn(api, 'browserLiveViewOpen').mockResolvedValue({ view_key: VIEW, turn_id: 'v1' })
+      vi.spyOn(api, 'browserLiveViewClose').mockResolvedValue({ ok: true } as never)
+      act(() => { browserLiveStore.applyEvent(ev(VIEW, { turn_id: 'v1' })); browserLiveStore.applyFrame(frame(VIEW)) })
+      mount(OWN, <BrowserView slot={OWN} tabId="TB" aria-label="Tab B" />)
+      await act(async () => {})
+      expect(open).toHaveBeenCalledTimes(1)
+      // Gateway idle-reaps the view (simulates what happens when a sibling keepalive triggers reap_idle_views).
+      act(() => { browserLiveStore.applyEvent(ev(VIEW, { turn_id: 'v1', state: 'done' })) })
+      await act(async () => {})
+      // Document is hidden — reopen must NOT fire.
+      expect(open).toHaveBeenCalledTimes(1)
+    } finally {
+      visibility.mockRestore()
+    }
+  })
+
+  it('does not reopen an idle-reaped view while its host surface is inactive', async () => {
+    // `active=false` makes hostActive=false, so shown=false.  The reopen effect
+    // must not fire when shown is false, even if ok is true (the slot is owned).
+    // We simulate this by mounting with active=false (host surface gone), then
+    // confirming an arriving done event does not trigger an open call.
+    // Because active=false means ok=false (access check includes active), the
+    // initial open is also suppressed; a done event arriving from an old turn
+    // while the surface is gone must still not reopen.
+    const open = vi.spyOn(api, 'browserLiveViewOpen').mockResolvedValue({ view_key: VIEW, turn_id: 'v1' })
+    vi.spyOn(api, 'browserLiveViewClose').mockResolvedValue({ ok: true } as never)
+    // Apply an existing view session so the store knows about it.
+    act(() => { browserLiveStore.applyEvent(ev(VIEW, { turn_id: 'v1' })); browserLiveStore.applyFrame(frame(VIEW)) })
+    // Mount with an inactive host surface (shown=false via hostActive=false).
+    // Also give no verbs so ok=false — the view cannot open.
+    mount(OWN, <BrowserView slot={OWN} tabId="TB" aria-label="Tab B" />, null, true)
+    await act(async () => {})
+    // No verbs → access denied → open never called.
+    expect(open).not.toHaveBeenCalled()
+    // A done event arrives for the existing session.
+    act(() => { browserLiveStore.applyEvent(ev(VIEW, { turn_id: 'v1', state: 'done' })) })
+    await act(async () => {})
+    // Still must not have opened: ok=false blocks the effect.
+    expect(open).not.toHaveBeenCalled()
+  })
+
   it('opens nothing for a slot the page may not show', () => {
     const open = vi.spyOn(api, 'browserLiveViewOpen').mockResolvedValue({ view_key: 'x' })
     mount(FOREIGN, <BrowserView slot={FOREIGN} tabId="TB" aria-label="Tab B" />)

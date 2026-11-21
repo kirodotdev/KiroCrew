@@ -28,10 +28,11 @@ if TYPE_CHECKING:
 
 #: The most second views one session may hold open.
 VIEW_CAP = 8
-#: A view nobody has looked at (visibility or a frame ack) for this long is ended at
-#: the parent's next :func:`free_view_key`: a page that reloads or closes runs no
-#: cleanup, and its view would otherwise hold a key until the chat closes. The page
-#: of a mounted view says it still looks well inside this (``useBrowserSecondView``).
+#: A view nobody has looked at (positive visibility heartbeat only; frame acks do not
+#: refresh idle time for views) for this long is ended at the parent's next
+#: :func:`free_view_key`: a page that reloads or closes runs no cleanup, and its view
+#: would otherwise hold a key until the chat closes. The page of a mounted view sends
+#: its visibility every 30 s well inside this (``useBrowserSecondView`` keepalive).
 VIEW_IDLE_S = 120.0
 
 
@@ -61,7 +62,7 @@ def reap_idle_views(hub: LiveHub, parent_key: str) -> list[str]:
 
 
 def free_view_key(hub: LiveHub, parent_key: str) -> str:
-    """A fresh ``<parent>.view<hex>`` for a new view of *parent_key*, or "" at the cap.
+    """A fresh ``<parent[:110]>#view<12-hex>`` for a new view of *parent_key*, or "" at the cap.
 
     Keys are never reused: each opening gets a unique suffix so a stale component
     subscribed to an earlier key never accidentally displays or closes a later view.

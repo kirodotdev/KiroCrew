@@ -176,6 +176,7 @@ export default function BrowserView({
   // that is on screen, and the store, having said "on", never says it again.
   const visibleTurn = ok ? turnId : null
   const reported = useRef<{ slot: string; turnId: string } | null>(null)
+  const documentVisible = useDocumentVisible()
   useEffect(() => {
     const was = reported.current
     if (was && (was.slot !== slot || !visibleTurn)) {
@@ -218,15 +219,17 @@ export default function BrowserView({
     return () => clearInterval(id)
   }, [ok, tabId, key, shown])
   // Once per ended turn: a reopened view starts a new turn, so a view that keeps
-  // failing to open is not retried in a loop.
+  // failing to open is not retried in a loop. Only reopen when the view is on
+  // screen and the browser tab is visible: an off-screen view idle-reaped by its
+  // sibling's keepalive should not reopen until the user scrolls back to it.
   const viewEnded = !!tabId && turn?.state === 'done'
   const endedTurn = viewEnded ? turnId : null
   const reopenedFor = useRef<string | null>(null)
   useEffect(() => {
-    if (!ok || !endedTurn || reopenedFor.current === endedTurn) return
+    if (!ok || !shown || !documentVisible || !endedTurn || reopenedFor.current === endedTurn) return
     reopenedFor.current = endedTurn
     reopenView()
-  }, [ok, endedTurn, reopenView])
+  }, [ok, shown, documentVisible, endedTurn, reopenView])
 
   // The picture box's size, for useBrowserCoords.
   useEffect(() => {
@@ -300,7 +303,6 @@ export default function BrowserView({
   // stayLive: the same reopen the "Show the live page" button sends, for the turn
   // this view already holds. Once per turn id, so a refusal, or the person folding
   // the reopened view, never starts a loop; a later turn that folds gets its own.
-  const documentVisible = useDocumentVisible()
   const foldedOpen = turn?.state === 'done' && turn.tab === 'open'
   const autoReopened = useRef<string | null>(null)
   // The turn whose auto reopen is in flight: the live face holds its last frame

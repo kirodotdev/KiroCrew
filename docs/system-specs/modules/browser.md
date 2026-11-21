@@ -1445,7 +1445,7 @@ component that draws it is the RFC's step 1c), and it never enters the page.
 
 `live_hub_views.start_view(hub, parent, view_key, target)` streams one of the parent's own
 tabs (`targets_of`, still in the relay's ledger) under a second key
-`<parent[:118]>#view<4-hex>` (unique per open; at most `VIEW_CAP`, 8), for two tabs side
+`<parent[:110]>#view<12-hex>` (unique per open; at most `VIEW_CAP`, 8), for two tabs side
 by side. A view owns no tab and no turn and is for looking only: `browser_live.py` accepts
 a view key on visibility, acks and open in browser, and refuses it (404 `unknown_session`)
 on take over, input and reopen, because the person would drive the parent's tab outside
@@ -1458,8 +1458,9 @@ follows the agent's page reports while the agent is on that tab
 route) and `/api/browser/live/views/close` (requires `turn_id` matching the view's own)
 all stop it, and the parent's next open — or any sibling view posting a positive visibility
 heartbeat — first ends any view that nobody looked at (positive visibility heartbeat only;
-frame acks do not count) for `VIEW_IDLE_S` (120 s): a reloaded page runs no cleanup. A
-mounted view on screen re-posts its visibility every 30 s and opens again if it was ended.
+frame acks do not refresh idle time for views) for `VIEW_IDLE_S` (120 s): a reloaded page runs no cleanup. A
+mounted view on screen re-posts its visibility every 30 s and opens again if it was ended,
+but only while on screen.
 The owner routes `/api/browser/live/views/tabs` and `/open`
 (`handlers/browser_live_views.py`) run the card routes' gates, then need an app slot,
 the `app_browser_sdk` preview and the app's approved `view` verb; `tabs` lists through
