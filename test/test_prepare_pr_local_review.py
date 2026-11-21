@@ -1069,6 +1069,7 @@ def test_default_out_and_stage_dirs_are_unique_per_run(parity_repo, tmp_path, mo
     scratch = tmp_path / "systmp"
     scratch.mkdir()
     monkeypatch.setattr(local_review.tempfile, "tempdir", str(scratch))
+    monkeypatch.delenv("KIROCREW_SCRATCH", raising=False)
     seen = []
     real = local_review.assemble
 
@@ -1089,6 +1090,33 @@ def test_default_out_and_stage_dirs_are_unique_per_run(parity_repo, tmp_path, mo
     for out_dir, stage_dir in seen:
         assert str(scratch) in out_dir
         assert str(scratch) in stage_dir
+
+
+@pytest.mark.parametrize("scratch", ["set", "unset", "missing"])
+def test_default_dirs_follow_kirocrew_scratch(
+    parity_repo, tmp_path, monkeypatch, capsys, no_gh, scratch
+):
+    """Reviewer subagents share ``$KIROCREW_SCRATCH`` but not this process's
+    ``$TMPDIR``, so default briefs land under the scratch dir when it exists,
+    else under ``$TMPDIR`` (re-read because ``tempfile.tempdir`` is cleared)."""
+    process_tmp, shared, missing = tmp_path / "tmpdir", tmp_path / "scratch", tmp_path / "gone"
+    process_tmp.mkdir()
+    shared.mkdir()
+    monkeypatch.setenv("TMPDIR", str(process_tmp))
+    monkeypatch.setattr(local_review.tempfile, "tempdir", None)
+    if scratch == "unset":
+        monkeypatch.delenv("KIROCREW_SCRATCH", raising=False)
+    else:
+        monkeypatch.setenv("KIROCREW_SCRATCH", str(shared if scratch == "set" else missing))
+    capsys.readouterr()
+    assert local_review.main(["--worktree", str(parity_repo), "--base", "main", "--json"]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    paths = [Path(p) for p in summary["tasks"].values()] + [Path(summary["diff"]["path"])]
+    assert len(paths) > 1 and all(p.is_file() for p in paths)
+    expected, other = (shared, process_tmp) if scratch == "set" else (process_tmp, shared)
+    for path in paths:
+        assert path.resolve().is_relative_to(expected.resolve()), path
+    assert list(other.iterdir()) == [] and not missing.exists()
 
 
 def test_malformed_profile_is_an_environment_error_not_a_traceback(
