@@ -1352,9 +1352,10 @@ interface BuildSrcdocOptions {
   /** Answer the host's ping (see FRAME_ALIVE_REPLY_BODY), for a host that
    * re-mints a frame whose document stopped answering. Off by default. */
   aliveReply?: boolean
-  /** The Tailwind runtime's own text, written inline instead of the same-origin
-   *  `<script src>`, for a document opened away from the dashboard (a saved file).
-   *  Unset by default, so no rendered surface changes. */
+  /** The Tailwind runtime's source, carried inside the document instead of
+   * linked. Set by surfaces that open the document as a blob or save it as a
+   * file (lib/tailwindRuntimeInline.ts says why); the link stays when it is
+   * unset. */
   inlineRuntime?: string
 }
 
