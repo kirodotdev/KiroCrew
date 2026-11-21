@@ -475,6 +475,20 @@ function createManagedLane({
       checkFailed(new Error("managed check command produced no version"));
       return;
     }
+    // A command that prints the version already installed (a package manager's
+    // "latest" query rather than "newer than mine") offers nothing: offering it
+    // would show "Update available" for the build the person is running. An
+    // unrankable pair stays offered, so a version we cannot compare is not hidden.
+    let runningVersion = "";
+    try { runningVersion = String(app.getVersion() || ""); } catch { runningVersion = ""; }
+    if (isNewerVersion(version, runningVersion) === false) {
+      log.info(`[update] managed check: ${version} is not newer than running ${runningVersion} — up to date`);
+      disarmManagedQuit();
+      emit("not-available");
+      // The gateway may still hold an arm for a version this app has passed.
+      syncArmFromGateway().catch(() => {});
+      return;
+    }
     foundVersion = version;
     // Re-check governance: if the policy provider became active while the
     // check command was running, discard the result so two update paths do

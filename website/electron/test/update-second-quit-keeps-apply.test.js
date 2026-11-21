@@ -42,7 +42,7 @@ function spawnSpy() {
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
     setImmediate(() => {
-      if (command === "check") child.stdout.emit("data", Buffer.from("0.5.0.5"));
+      if (command === "check") child.stdout.emit("data", Buffer.from("1.5.0.5"));
       child.emit("close", 0, null);
     });
     return child;

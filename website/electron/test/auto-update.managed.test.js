@@ -116,7 +116,7 @@ test("managed check() with updateCommand+checkCommand emits found with the print
   });
   // Sibling contract: exit 0 and stdout IS the version (the packager authors
   // checkCommand to print the target version alone).
-  const { commands, restore } = stubSpawn({ code: 0, out: "0.5.0.5\n" });
+  const { commands, restore } = stubSpawn({ code: 0, out: "1.5.0.5\n" });
   t.after(restore);
   const u = initAutoUpdate(deps);
   assert.strictEqual(u.disabled, undefined, "a marker with an updateCommand is NOT disabled");
@@ -124,7 +124,7 @@ test("managed check() with updateCommand+checkCommand emits found with the print
   assert.deepStrictEqual(commands, ["pkgtool check kirocrew"], "check must shell the checkCommand");
   const found = states.find((s) => s.state === "found");
   assert.ok(found, "an available update must surface a 'found' state");
-  assert.strictEqual(found.version, "0.5.0.5", "trimmed stdout is the version");
+  assert.strictEqual(found.version, "1.5.0.5", "trimmed stdout is the version");
   assert.strictEqual(
     found.installHandoff,
     "automatic-relaunch",
@@ -168,6 +168,42 @@ test("managed check(): non-zero exit -> not-available (ran, nothing new)", async
   assert.ok(!states.some((s) => s.state === "found"));
 });
 
+test("managed check(): a printed version that is not newer than the running app -> not-available", async (t) => {
+  // A checkCommand that answers "the latest version" rather than "a newer one"
+  // prints the build already installed; offering it shows "Update available"
+  // for the version the person is on.
+  for (const [appVersion, printed] of [["1.0.0", "1.0.0"], ["1.0.0", "0.9.0"], ["0.13.0-11", "0.13.0.11"]]) {
+    const { deps, states, appOnce } = makeDeps({
+      appVersion,
+      externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+    });
+    deps.getAutoDownloadPreference = () => true;
+    const { restore } = stubSpawn({ code: 0, out: `${printed}\n` });
+    try {
+      const u = initAutoUpdate(deps);
+      await u.check();
+      assert.ok(states.some((s) => s.state === "not-available"), `${printed} on ${appVersion} is up to date`);
+      assert.ok(!states.some((s) => s.state === "found"), `${printed} on ${appVersion} must not be offered`);
+      assert.ok(!appOnce.some((r) => r.ev === "before-quit"), "nothing to apply on quit");
+    } finally {
+      restore();
+    }
+  }
+});
+
+test("managed check(): a newer build on an edition-stamped shell is still offered", async (t) => {
+  const { deps, states } = makeDeps({
+    appVersion: "0.13.0-11",
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  const { restore } = stubSpawn({ code: 0, out: "0.13.0.12" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  const found = states.find((s) => s.state === "found");
+  assert.ok(found && found.version === "0.13.0.12");
+});
+
 test("managed check(): exit 0 but no version printed -> check error (not 'latest')", async (t) => {
   const { deps, states } = makeDeps({
     externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
@@ -204,7 +240,7 @@ test("managed check(): a discovered update that later clears disarms the quit-ap
   deps.getAutoDownloadPreference = () => true;
   deps.app.relaunch = () => relaunches.push(true);
   const { restore } = stubSpawn(() =>
-    phase === "found" ? { code: 0, out: "0.5.0.5" } : { code: 1, out: "" });
+    phase === "found" ? { code: 0, out: "1.5.0.5" } : { code: 1, out: "" });
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check(); // discovers -> arms before-quit
@@ -225,7 +261,7 @@ test("managed check(): no checkCommand -> check error (cannot discover, not 'lat
   const { deps, states } = makeDeps({
     externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "" },
   });
-  const { commands, restore } = stubSpawn({ code: 0, out: "0.5.0.5" });
+  const { commands, restore } = stubSpawn({ code: 0, out: "1.5.0.5" });
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check();
@@ -235,7 +271,7 @@ test("managed check(): no checkCommand -> check error (cannot discover, not 'lat
   assert.ok(!states.some((s) => s.state === "not-available"));
 });
 
-// A spawn script for an apply that installs: the check offers 0.5.0.5 until
+// A spawn script for an apply that installs: the check offers 1.5.0.5 until
 // `applyCommand` runs, then reports up to date (non-zero), as a real check does
 // once the version is installed.
 function installsOnApply(applyCommand) {
@@ -245,7 +281,7 @@ function installsOnApply(applyCommand) {
       applied = true;
       return { code: 0, out: "" };
     }
-    return applied ? { code: 1 } : { code: 0, out: "0.5.0.5" };
+    return applied ? { code: 1 } : { code: 0, out: "1.5.0.5" };
   };
 }
 
@@ -264,7 +300,7 @@ test("managed auto-on-restart: pref false does NOT arm before-quit", async (t) =
     externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
   });
   deps.getAutoDownloadPreference = () => false;
-  const { restore } = stubSpawn({ code: 0, out: "0.5.0.5" });
+  const { restore } = stubSpawn({ code: 0, out: "1.5.0.5" });
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check();
@@ -281,7 +317,7 @@ test("managed auto-on-restart: pref flipped OFF between check and quit is honore
   deps.getAutoDownloadPreference = () => pref;
   deps.app.relaunch = () => relaunches.push(true);
   const { commands, restore } = stubSpawn((cmd) =>
-    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+    cmd === "check" ? { code: 0, out: "1.5.0.5" } : { code: 0, out: "" });
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check();
@@ -304,13 +340,13 @@ test("managed check(): the version comes from stdout only, ignoring stderr warni
   const { deps, states } = makeDeps({
     externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
   });
-  const { restore } = stubSpawn({ code: 0, out: "0.5.0.5\n", err: "WARNING: config deprecated\n" });
+  const { restore } = stubSpawn({ code: 0, out: "1.5.0.5\n", err: "WARNING: config deprecated\n" });
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check();
   const found = states.find((s) => s.state === "found");
   assert.ok(found, "an exit-0 check with a version on stdout is 'found'");
-  assert.strictEqual(found.version, "0.5.0.5", "a stderr warning must not leak into the version");
+  assert.strictEqual(found.version, "1.5.0.5", "a stderr warning must not leak into the version");
 });
 
 test("managed download() lights the Install action (downloaded) without applying", async (t) => {
@@ -318,12 +354,12 @@ test("managed download() lights the Install action (downloaded) without applying
     externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
   });
   const { commands, restore } = stubSpawn((cmd) =>
-    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+    cmd === "check" ? { code: 0, out: "1.5.0.5" } : { code: 0, out: "" });
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.download(); // no prior check -> discovers first
   const dl = states.find((s) => s.state === "downloaded");
-  assert.ok(dl && dl.version === "0.5.0.5", "download surfaces 'downloaded' with the found version");
+  assert.ok(dl && dl.version === "1.5.0.5", "download surfaces 'downloaded' with the found version");
   assert.ok(!commands.includes("apply"), "download must NOT run the apply command");
 });
 
@@ -334,7 +370,7 @@ test("managed check(): overlapping calls share ONE run and emit ONE verdict", as
   const { deps, states } = makeDeps({
     externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
   });
-  const { commands, restore } = stubSpawn({ code: 0, out: "0.5.0.5" });
+  const { commands, restore } = stubSpawn({ code: 0, out: "1.5.0.5" });
   t.after(restore);
   const u = initAutoUpdate(deps);
   await Promise.all([u.check(), u.check()]);
@@ -347,7 +383,7 @@ test("managed check(): a check finishing after Download keeps the ready state", 
   const { deps, states } = makeDeps({
     externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
   });
-  const { restore } = stubSpawn({ code: 0, out: "0.5.0.5" });
+  const { restore } = stubSpawn({ code: 0, out: "1.5.0.5" });
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check();
@@ -355,7 +391,7 @@ test("managed check(): a check finishing after Download keeps the ready state", 
   await u.check(); // e.g. the poll, or Check clicked again while the dialog is up
   const last = states[states.length - 1];
   assert.strictEqual(last.state, "downloaded", "the same version must not demote the ready dialog");
-  assert.strictEqual(last.version, "0.5.0.5");
+  assert.strictEqual(last.version, "1.5.0.5");
 });
 
 test("managed check(): a later check after Download never leaves the ready state", async (t) => {
@@ -365,7 +401,7 @@ test("managed check(): a later check after Download never leaves the ready state
   const { deps, states } = makeDeps({
     externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
   });
-  const { restore } = stubSpawn({ code: 0, out: "0.5.0.5" });
+  const { restore } = stubSpawn({ code: 0, out: "1.5.0.5" });
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check();
@@ -382,7 +418,7 @@ test("managed check(): a check that fails after Download keeps the ready state",
   const { deps, states } = makeDeps({
     externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
   });
-  const { restore } = stubSpawn(() => (checkWorks ? { code: 0, out: "0.5.0.5" } : { error: true }));
+  const { restore } = stubSpawn(() => (checkWorks ? { code: 0, out: "1.5.0.5" } : { error: true }));
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check();
@@ -405,7 +441,7 @@ test("managed check(): the Check button over a ready update brings the card back
     const { deps, states } = makeDeps({
       externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
     });
-    const { restore } = stubSpawn(() => (checkWorks ? { code: 0, out: "0.5.0.5" } : failure));
+    const { restore } = stubSpawn(() => (checkWorks ? { code: 0, out: "1.5.0.5" } : failure));
     try {
       const u = initAutoUpdate(deps);
       await u.check();
@@ -415,7 +451,7 @@ test("managed check(): the Check button over a ready update brings the card back
       await u.check();
       const after = states.slice(clearedAt);
       assert.deepStrictEqual(after.map((s) => s.state), ["downloaded"], `${JSON.stringify(failure)}: the ready state must come back`);
-      assert.strictEqual(after[0].version, "0.5.0.5");
+      assert.strictEqual(after[0].version, "1.5.0.5");
     } finally {
       restore();
     }
@@ -426,7 +462,7 @@ test("managed check(): the Check button over a ready update brings the card back
 
 
 test("managed check(): a NEWER version after Download supersedes the ready state", async (t) => {
-  let version = "0.5.0.5";
+  let version = "1.5.0.5";
   const { deps, states } = makeDeps({
     externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
   });
@@ -435,11 +471,11 @@ test("managed check(): a NEWER version after Download supersedes the ready state
   const u = initAutoUpdate(deps);
   await u.check();
   await u.download();
-  version = "0.5.0.6";
+  version = "1.5.0.6";
   await u.check();
   const last = states[states.length - 1];
   assert.strictEqual(last.state, "found", "a different version is offered anew");
-  assert.strictEqual(last.version, "0.5.0.6");
+  assert.strictEqual(last.version, "1.5.0.6");
 });
 
 test("managed updater auto-checks on launch + arms a poll (no user action needed)", async (t) => {
@@ -455,7 +491,7 @@ test("managed updater auto-checks on launch + arms a poll (no user action needed
   // real timers immediately after init, before running the captured callback.
   global.setTimeout = (fn) => { launchCb = fn; return { unref() {} }; };
   global.setInterval = () => { pollArmed = true; return { unref() {} }; };
-  const { commands, restore } = stubSpawn({ code: 0, out: "0.5.0.6" });
+  const { commands, restore } = stubSpawn({ code: 0, out: "1.5.0.6" });
   t.after(() => { global.setTimeout = realST; global.setInterval = realSI; restore(); });
   initAutoUpdate(deps);
   global.setTimeout = realST;
@@ -466,7 +502,7 @@ test("managed updater auto-checks on launch + arms a poll (no user action needed
   await new Promise((r) => setImmediate(() => setImmediate(r)));
   assert.deepStrictEqual(commands, ["check"], "the scheduled launch check shells checkCommand");
   const found = states.find((s) => s.state === "found");
-  assert.ok(found && found.version === "0.5.0.6", "the background check discovers the update on its own");
+  assert.ok(found && found.version === "1.5.0.6", "the background check discovers the update on its own");
 });
 
 test("readExternallyManaged: absent marker -> null", (t) => {
@@ -1049,7 +1085,7 @@ test("managed command env is CONSTRUCTED: nothing the shell reads as code is inh
   const { deps } = makeDeps({
     externallyManaged: { managedBy: "m", updateCommand: "/usr/bin/apply", checkCommand: "/usr/bin/check" },
   });
-  const { optsList, restore } = stubSpawn({ code: 0, out: "0.5.0.5" });
+  const { optsList, restore } = stubSpawn({ code: 0, out: "1.5.0.5" });
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check();
@@ -1206,14 +1242,14 @@ const EDITION_PROMPTS = {
 test("updatePrompts edition: the found push, the arm's downloaded push and getInfo all carry it", async (t) => {
   const { deps, states } = makeDeps({ externallyManaged: EDITION_PROMPTS });
   const { commands, restore } = stubSpawn((cmd) =>
-    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+    cmd === "check" ? { code: 0, out: "1.5.0.5" } : { code: 0, out: "" });
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check();
   await u.install();
   const found = states.find((s) => s.state === "found");
   const armed = states.find((s) => s.state === "downloaded" && s.armed === true);
-  assert.ok(found && armed, "the check finds 0.5.0.5 and the click arms it");
+  assert.ok(found && armed, "the check finds 1.5.0.5 and the click arms it");
   for (const s of states) assert.strictEqual(s.updatePrompts, "edition", `the ${s.state} push carries it`);
   assert.strictEqual(u.getInfo().updatePrompts, "edition");
   assert.strictEqual(u.getInfo().lastState.updatePrompts, "edition", "the replay seed too");
@@ -1225,12 +1261,12 @@ test("updatePrompts absent: no managed-lane push and no getInfo carries the key"
   delete marker.updatePrompts;
   const { deps, states } = makeDeps({ externallyManaged: marker });
   const { restore } = stubSpawn((cmd) =>
-    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+    cmd === "check" ? { code: 0, out: "1.5.0.5" } : { code: 0, out: "" });
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check();
   await u.install();
-  assert.ok(states.some((s) => s.state === "downloaded" && s.armed === true), "the click arms 0.5.0.5");
+  assert.ok(states.some((s) => s.state === "downloaded" && s.armed === true), "the click arms 1.5.0.5");
   for (const s of states) assert.ok(!("updatePrompts" in s), `the ${s.state} push keeps its shape`);
   assert.ok(!("updatePrompts" in u.getInfo()));
 });
