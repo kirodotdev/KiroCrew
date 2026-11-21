@@ -34,7 +34,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import __version__, acp_tool_gate, agent_scratch
 from kiro_crew import kiro_cli as kiro_cli_mod
@@ -50,6 +50,7 @@ from kiro_crew.acp.client_spawn_env import (
     _KiroExecutableTrustError,
     _launch_tools,
     _resolve_kiro_bin_for_spawn,
+    _resolve_spawn_env,
     finish_suspended_spawn,
     kiro_cli_not_found_message,
 )
@@ -139,10 +140,6 @@ if TYPE_CHECKING:
 
 #: The client's own logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.client")
-
-#: Bound by ``kiro_crew.acp.client``, which defines it: the spawn audit, the
-#: subprocess-encoding baseline and the cross-platform gate key it on that path.
-_resolve_spawn_env: Callable[..., dict[str, str]]
 
 
 #: The name sent as ``clientInfo.name``. It IS the kiro-cli client-application
