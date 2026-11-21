@@ -481,8 +481,9 @@ already open keep their own copies until you reload them: the banner under the
 switch offers to reload them, and skips a chat that is busy.
 
 When servers wait for your OK, a card counts them. **Review and approve** opens
-them in a dialog, each with **Approve** (one copy runs it for all chats, outside
-their sandbox) and **Skip** (it keeps running inside each chat). There is no
+them in a dialog, each with **Share across chats** (one copy runs it for all
+chats, outside their sandbox) and **Don't share** (it keeps running inside
+each chat). There is no
 approve-all.
 
 The **Sharing** view, beside **Servers** under the card, holds the rest. In
@@ -499,7 +500,7 @@ the folders added and removed. A row's state is one of:
 | **direct** | Each chat starts its own copy. A row with Share on also reads **direct** while the switch at the top is off, when its env names a vault secret, or when it needs a setting each chat keeps |
 | **Can't share** | It has no stdio pipe, it hands out credentials, or its command cannot be approved here |
 | **Paused · command changed** | Its command or settings changed since you approved it, so it runs inside each chat until you press **Approve update** |
-| **Paused · not approved yet** | It was added in a config file and never approved here; **Approve** shares it |
+| **Paused · not approved yet** | It was added in a config file and never approved here; **Share across chats** shares it |
 
 A paused row has no switch. It offers its approve button and **Don't share this
 server**, which takes the mark off and approves nothing. A row that cannot share
