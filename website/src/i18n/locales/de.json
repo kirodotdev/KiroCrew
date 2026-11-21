@@ -358,8 +358,8 @@
       "not_declared": "Diese App kann die Projektauswahl nicht anzeigen, denn ihre Berechtigungen deklarieren {{path}} nicht."
     },
     "sessionChanges": {
-      "not_declared": "Diese App kann die Änderungen dieses Chats nicht anzeigen. Ihr Entwickler hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht.",
-      "diff_not_declared": "Diese App kann die Änderungen dieser Datei nicht anzeigen. Ihr Entwickler hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht.",
+      "not_declared": "Diese App kann die Änderungen dieses Chats nicht anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Bitte den Entwickler der App, es hinzuzufügen.",
+      "diff_not_declared": "Diese App kann die Änderungen dieser Datei nicht anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Bitte den Entwickler der App, es hinzuzufügen.",
       "pick_a_file": "Wähle eine Datei, um ihre Änderungen zu sehen.",
       "diff_unavailable": "Dieser Chat hat die ganze Datei vor und nach dieser Änderung nicht aufgezeichnet, daher gibt es keinen Diff."
     },

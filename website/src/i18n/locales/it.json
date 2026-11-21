@@ -373,8 +373,8 @@
       "not_declared": "Questa app non può mostrare il selettore di progetti: le sue autorizzazioni non dichiarano {{path}}."
     },
     "sessionChanges": {
-      "not_declared": "Questa app non può mostrare le modifiche di questa chat. Il suo sviluppatore non l'ha consentito: le autorizzazioni dell'app non dichiarano {{path}}.",
-      "diff_not_declared": "Questa app non può mostrare le modifiche di questo file. Il suo sviluppatore non l'ha consentito: le autorizzazioni dell'app non dichiarano {{path}}.",
+      "not_declared": "Questa app non può mostrare le modifiche di questa chat. Lo sviluppatore di questa app non l'ha consentito: le autorizzazioni dell'app non dichiarano {{path}}. Chiedi allo sviluppatore dell'app di aggiungerlo.",
+      "diff_not_declared": "Questa app non può mostrare le modifiche di questo file. Lo sviluppatore di questa app non l'ha consentito: le autorizzazioni dell'app non dichiarano {{path}}. Chiedi allo sviluppatore dell'app di aggiungerlo.",
       "pick_a_file": "Scegli un file per vederne le modifiche.",
       "diff_unavailable": "Questa chat non ha registrato il file intero prima e dopo questa modifica, quindi non c'è un diff da mostrare."
     },
