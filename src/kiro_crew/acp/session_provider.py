@@ -73,6 +73,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
 )
 from kiro_crew.agent_sdk import host_auth
+from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_USER
 from kiro_crew.agent_sdk.tool_gate import ADAPTER_EXPOSED_CREDENTIAL_LEAVES
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway.claim import (  # noqa: F401 - session_provider_claim reads it here
@@ -917,8 +918,8 @@ class AcpSessionProvider(LLMProvider):
             return None
         return await self._guarded(call(command, params))
 
-    async def steer(self, message: str) -> bool:
-        """Forward a mid-turn steer to the session handle (kiro _session/steer).
+    async def steer(self, message: str, *, origin: str = STEER_ORIGIN_USER) -> bool:
+        """Forward a mid-turn steer, and who wrote it, to the session handle (kiro _session/steer).
 
         A failed steer is ambiguous only when its OWN frame was left buffered:
         the session's outstanding prompt says nothing about a steer that was
@@ -926,7 +927,7 @@ class AcpSessionProvider(LLMProvider):
         delivered would make the next turn skip an instruction that never
         reached the backend.
         """
-        return await self._guarded(self._handle.steer(message), own_write_only=True)
+        return await self._guarded(self._handle.steer(message, origin=origin), own_write_only=True)
 
     @property
     def last_steer_monotonic(self) -> float:
