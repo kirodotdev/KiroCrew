@@ -146,6 +146,7 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'SecurityPanelTrust.tsx': 'security',
   'SecurityPanelRedaction.tsx': 'security',
   'SecurityPanelSafetySwitches.tsx': 'security',
+  'SecurityPanelSshAgent.tsx': 'security',
   'SecurityPanelLayers.tsx': 'security',
   'SecurityPanelGovernance.tsx': 'security',
   'SecurityPanelBodyFields.tsx': 'security',
