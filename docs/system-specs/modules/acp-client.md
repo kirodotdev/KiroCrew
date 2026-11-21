@@ -2770,10 +2770,17 @@ key is not settled. The same names satisfy a `tools` ref on
 notice names, because `problem_summary()` already names a failed or
 awaiting-authorization server with its reason. A cron run, which prints no
 problem summary, names every not-ready declared server at the top of its
-result. A task-runner step, a workflow agent step (cold, pooled after each reset,
+result when that set changes from the job's last run
+(`declared_mcp_not_ready_change`, keyed on the job, so a stateless job's fresh
+session per fire does not reset it; an agent sequence keeps one combined note
+per run, naming each step's missing servers, under the job's key and records it
+only once the run's result is stored). A task-runner step, a workflow agent step
+(cold, pooled after each reset,
 or unpooled) and a heartbeat turn wait the same way on a new session. A task-runner
 step adds `missing_mcp_notice()` to the MCP notice it already sends; a heartbeat names every
-not-ready declared server at the top of its result, as cron does; a workflow
+not-ready declared server at the top of its result when the set changes, as
+cron does, and a `HEARTBEAT_KEEP` result, which is not delivered, does not count
+as printed; a workflow
 step's value is data the script computes with (parsed under `schema=`), so only
 the wait's own warning log names the server there. Left out: a sub-agent, whose
 first turn already carries the servers it cannot use (`_spawn_mcp_notice`) and
