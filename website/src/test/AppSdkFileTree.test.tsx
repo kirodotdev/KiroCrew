@@ -500,6 +500,20 @@ describe('the App SDK FileTree', () => {
     expect(reads()).toBeGreaterThanOrEqual(2)
   })
 
+  it('keeps a listed tree mounted under an inline notice when a refresh fails', async () => {
+    render(externalApp([FILE_TREE_PATHS.tree], <FileTree projectDir={ROOT} />))
+    expect(await screen.findByTestId('file-tree', {}, LAZY_TREE)).toBeInTheDocument()
+    const listed = treeMock.last()
+    await waitFor(() => expect(listed.calls.resetPaths.at(-1)).toEqual(TREE.paths))
+    // The next read of the listed tree fails (a poll, a focus refetch, a gateway restart).
+    treeStatus = 500
+    await act(async () => { await appQueryClient(`file-tree-app-${appSeq}`).refetchQueries({ queryKey: ['project-tree', ROOT], exact: true }) })
+    expect(await screen.findByTestId('app-file-tree-error')).toBeInTheDocument()
+    // Same mount, same model: its loaded folders and selection are kept.
+    expect(screen.getByTestId('file-tree')).toBeInTheDocument()
+    expect(treeMock.last()).toBe(listed)
+  })
+
   it('keeps the dashboard client and its row actions for a builtin page', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     client.setQueryData(['apps'], CONTRIBUTING_APPS)
