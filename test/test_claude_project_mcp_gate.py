@@ -1192,7 +1192,9 @@ class TestSession:
             if not fired and os.fspath(p) == os.fspath(path) and flags & os.O_EXCL:
                 fired.append(1)
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(payload, encoding="utf-8")
+                # Bytes, not text: text mode writes CRLF on Windows, so the
+                # recorded digest would not match the file.
+                path.write_bytes(payload.encode("utf-8"))
                 assert seed_provenance.record(path, payload, "winner-session") is True
             return real_open(p, flags, *args, **kwargs)
 
