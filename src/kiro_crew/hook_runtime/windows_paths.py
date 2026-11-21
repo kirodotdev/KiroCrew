@@ -35,10 +35,13 @@ def is_unc_shape(raw: str) -> bool:
     and other extended namespaces (``\\\\?\\GLOBALROOT\\...``, ``\\\\?\\Volume{guid}\\...``,
     device paths) stay shaped-as-UNC so they are refused fail-closed rather than admitted as
     local. The fold is case-insensitive because the OS honours the ``UNC`` component that way.
+
+    The NT-namespace prefix ``\\??\\`` gets the same answer: ``\\??\\UNC\\server\\share`` names
+    a share and ``\\??\\C:\\...`` a local drive, so only a drive-absolute remainder is local.
     """
-    if len(raw) >= 4 and raw[:4] == "\\\\?\\":
-        # Extended-length prefix. A drive-absolute remainder is a plain local path, not a share;
-        # ``\\?\UNC\...`` and every other extended namespace remain UNC-shaped (refused).
+    if len(raw) >= 4 and raw[:4] in ("\\\\?\\", "\\??\\"):
+        # Extended-length or NT-namespace prefix. A drive-absolute remainder is a plain local
+        # path, not a share; ``UNC\...`` and every other namespace remain UNC-shaped (refused).
         return not _DRIVE_ABS_RE.match(raw[4:])
     return len(raw) >= 2 and raw[0] in "\\/" and raw[1] in "\\/"
 
