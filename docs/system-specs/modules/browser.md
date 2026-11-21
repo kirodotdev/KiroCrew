@@ -1662,7 +1662,11 @@ browser is touched, and a page that lands off them is moved to `about:blank` by 
 landing checks above. The owner's media buttons on that app's page reach the tab through
 `POST /api/browser/media` (`handlers/browser_media.py`; the state read is a `GET`), which runs the walker's `media`
 method (play, pause, seek, volume, state of the main `<video>`/`<audio>`) in the
-isolated world after the same page check (`browser_harness/media.py`).
+isolated world after the same page check (`browser_harness/media.py`). When the app
+declares `backend.hooks.on_browser_media_ended`, `handlers/browser_media_watch.py` makes
+that same `state` read every 3 s on the slot's tab after the agent's first successful op,
+never queueing for the op lock (a busy tick is skipped), and hands each ending to the
+owning app's backend ([app-kit-platform §45](app-kit-platform.md)).
 
 **A person's site grant.** A chat's own `browser` card offers, inside its Trust
 menu, a grant on the site the call acts on: "Trust reading pages on `<host>`" on a

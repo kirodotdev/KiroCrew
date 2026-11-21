@@ -1135,9 +1135,46 @@ sdk.useBrowserMedia(sessionKey, {
 because every read takes the browser lock your agent's ops wait on. A value that is not
 a finite number above 0 (`0`, `-1`, `NaN`, `Infinity`) reads once.
 
-The signal is derived from the state your page reads, so it only exists while your page is
-mounted and polling. Your backend learns of it when your page posts to one of your own
-routes; with the page closed nothing reads the tab, so nothing fires.
+`onEnded` is derived from the state your page reads, so it only exists while your page is
+mounted and polling. To keep playing with the page closed, let your backend hear the
+ending instead: declare `backend.hooks.on_browser_media_ended` in your manifest.
+
+```json
+{ "backend": { "hooks": { "routes": "backend.routes:register_routes",
+                          "on_browser_media_ended": "backend.routes:on_media_ended" } } }
+```
+
+```python
+async def on_media_ended(ctx, event):
+    # event == {"event": "browser_media_ended", "session_key": "mood-music-dj-1",
+    #           "origin": "https://www.youtube.com", "duration": 213.4}
+    slots = getattr(ctx, "chat_slots", None)
+    ...  # e.g. send "That song ended. Play the next one." to the slot event["session_key"] names
+```
+
+| Field | Value |
+|---|---|
+| `event` | always `"browser_media_ended"` |
+| `session_key` | your app's own slot whose tab played (the one its agent browsed in) |
+| `origin` | the page's `scheme://host[:port]`, `""` when the tab reported none |
+| `duration` | the element's length in seconds, `null` when it did not know |
+
+The gateway calls it once per ending, whether or not your page is open: after your
+agent's first successful `browser` op in a slot, it reads that tab's media state every 3
+seconds (the read `useBrowserMedia` makes, skipped while the browser is busy or the
+person has taken the tab over) and calls your hook when an element newly shows
+`ended`. The same ending is not reported twice; a new song that plays and ends is a new
+call. The hook runs in the gateway like your other hooks, with the same `ctx`; an async
+hook gets 30 seconds before the gateway stops waiting for it. Keep it short: turning
+your app off or uninstalling it waits for a hook that is still running, and
+withdrawing its trust fails until the hook returns. Nothing of the page is
+passed beyond its origin, and no agent is woken: what happens next is your hook's.
+
+Only your app hears of its own slots, never another app's and never a person's chat.
+The watch stops when the tab closes, when your app is turned off, uninstalled or loses
+its trust or its approved `browserSites`, or when the manifest drops the hook; your
+agent's next op starts it again. A host that predates the hook ignores the key, so a
+manifest that declares it still installs there.
 
 The route acts on the element that is playing, else the largest one shown, in the page's
 top document. It reads no page text. A play may be refused by the
