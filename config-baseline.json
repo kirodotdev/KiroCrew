@@ -6510,7 +6510,21 @@
         "mint_timeout_secs": null,
         "max_recovery_attempts": 8,
         "recover_backoff_max_secs": 30.0,
-        "probe_failure_threshold": 3
+        "probe_failure_threshold": 3,
+        "managed_env_endpoint": "",
+        "managed_env_start_url": "",
+        "managed_env_profile_arn": "",
+        "managed_env_scopes": [],
+        "managed_env_ssh_region": "",
+        "managed_env_kas_endpoint": "",
+        "managed_env_kas_control_plane_endpoint": "",
+        "managed_env_kas_region": "",
+        "managed_env_mcp_registry_mode": false,
+        "managed_env_box_token_path": "",
+        "managed_env_box_token_env": "",
+        "managed_env_box_env_drop": [],
+        "managed_env_box_unset_env": [],
+        "managed_env_box_openssl": ""
       }
     },
     {
@@ -6670,6 +6684,286 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3
+    },
+    {
+      "path": "instances.managed_env_endpoint",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "remote-crew",
+        "managed-environment"
+      ],
+      "label": "Managed Environment Service Endpoint",
+      "help": "HTTPS base URL of the Kiro web service that lists, creates and connects your managed environments. Empty (the default) leaves the managed-environment lane unconfigured: every call is refused and names this key. Read only while the crew_client feature preview is on.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "instances.managed_env_start_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "remote-crew",
+        "managed-environment"
+      ],
+      "label": "Managed Environment Sign-in Start URL",
+      "help": "IAM Identity Center start URL whose Crew sign-in (Settings > Kiro account) the managed-environment lane uses. Only that sign-in's token is sent to the service endpoint. Empty (the default): the lane is signed out.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "instances.managed_env_profile_arn",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "remote-crew",
+        "managed-environment"
+      ],
+      "label": "Managed Environment Kiro Profile",
+      "help": "Kiro profile ARN sent with every managed-environment call and pinned on the sign-in above, so that sign-in asks no control plane for a profile. Empty (the default): every call is refused and names this key.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "instances.managed_env_scopes",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "remote-crew",
+        "managed-environment"
+      ],
+      "label": "Managed Environment Sign-in Scopes",
+      "help": "OAuth scopes the sign-in above registers with. Empty (the default) uses Crew's own sign-in scopes.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "instances.managed_env_scopes.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "instances.managed_env_ssh_region",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "remote-crew",
+        "managed-environment"
+      ],
+      "label": "Managed Environment SSH Region",
+      "help": "AWS Region the Session Manager plugin is started in when ssh reaches a managed environment. Empty (the default): a connect is refused and names this key.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "instances.managed_env_kas_endpoint",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "remote-crew",
+        "managed-environment"
+      ],
+      "label": "Managed Environment Engine Endpoint",
+      "help": "HTTPS runtime endpoint written as agent.kas_endpoint on a new managed environment's Crew, which runs on that environment's machine token. Empty (the default): a launch is refused and names this key.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "instances.managed_env_kas_control_plane_endpoint",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "remote-crew",
+        "managed-environment"
+      ],
+      "label": "Managed Environment Engine Control Plane",
+      "help": "HTTPS control-plane endpoint written as agent.kas_control_plane_endpoint on a new managed environment's Crew. Empty (the default): a launch is refused and names this key.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "instances.managed_env_kas_region",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "remote-crew",
+        "managed-environment"
+      ],
+      "label": "Managed Environment Engine Region",
+      "help": "Region written as agent.kas_region on a new managed environment's Crew. Empty (the default): a launch is refused and names this key.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "instances.managed_env_mcp_registry_mode",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "remote-crew",
+        "managed-environment"
+      ],
+      "label": "Managed Environment MCP Registry Mode",
+      "help": "Also write agent.mcp_registry_mode true on a new managed environment's Crew, for a profile whose MCP servers are governed by a registry. Off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "instances.managed_env_box_token_path",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "remote-crew",
+        "managed-environment"
+      ],
+      "label": "Managed Environment Machine Token File",
+      "help": "Absolute path, on the managed environment, of the machine token file its image keeps fresh; written as agent.kas_token_path. Empty (the default): a launch is refused and names this key.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "instances.managed_env_box_token_env",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "remote-crew",
+        "managed-environment"
+      ],
+      "label": "Managed Environment Machine Token Variable",
+      "help": "Name of the environment variable that carries the same machine token on the managed environment; written as agent.kas_machine_token_env and cleared by the boot hook. Empty (the default): nothing is written for it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "instances.managed_env_box_env_drop",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "remote-crew",
+        "managed-environment"
+      ],
+      "label": "Managed Environment Engine Variables to Drop",
+      "help": "Environment variable names the managed environment's image sets for its own agent, dropped from Crew's engine there (agent.kas_machine_env_drop). Empty by default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "instances.managed_env_box_env_drop.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "instances.managed_env_box_unset_env",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "remote-crew",
+        "managed-environment"
+      ],
+      "label": "Managed Environment Credential Variables",
+      "help": "Extra environment variable names (the image's own credentials) the boot hook clears before it starts Crew's gateway, on top of the AWS credential names it always clears. Empty by default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "instances.managed_env_box_unset_env.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "instances.managed_env_box_openssl",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "remote-crew",
+        "managed-environment"
+      ],
+      "label": "Managed Environment OpenSSL Path",
+      "help": "Absolute path of an openssl binary on the managed environment's image, linked for Crew's installer when none is on its PATH. Empty (the default): nothing is linked, and an image with no openssl on PATH fails the install by its own error.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "heartbeat",

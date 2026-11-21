@@ -38,7 +38,6 @@ from kiro_crew.platform.defaults import (
     DefaultCapabilityManager,
     DefaultCloudInstancePolicyProvider,
     DefaultCredentialPolicy,
-    DefaultDashboardContributor,
     DefaultDeniedRuleProvider,
     DefaultEmbeddingSource,
     DefaultExternalAccessPolicy,
@@ -373,6 +372,13 @@ def build_default_context(
     the standalone load does not consult a bundled resource here.
     """
     governance = load_security_policy()
+    # circular import: the lane's provider module subclasses this package's defaults, so it is
+    # read here, at composition, rather than while ``kiro_crew.platform`` initialises.
+    from kiro_crew.managed_env.provider import (
+        ManagedEnvDashboardContributor,
+        ManagedEnvProvisionerProvider,
+    )
+
     return PlatformContext(
         contract_version=CONTRACT_VERSION,
         profile=profile,
@@ -405,10 +411,13 @@ def build_default_context(
         memory_files=DefaultMemoryFilesProvider(),
         tunnel=_public_tunnel_provider(cfg),
         telemetry=DefaultTelemetryProvider(),
-        dashboard=DefaultDashboardContributor(),
+        # The default contributor plus the managed-environment lane, which mounts its
+        # routes always and stays inert (404, no sign-in profile) while the crew_client
+        # preview is off.
+        dashboard=ManagedEnvDashboardContributor(),
         jail=DefaultJailProvider(),
         mobile_connect=DefaultMobileConnectProvider(),
-        remote_provisioners=DefaultRemoteProvisionerProvider(),
+        remote_provisioners=ManagedEnvProvisionerProvider(DefaultRemoteProvisionerProvider()),
         cloud_instance_policy=DefaultCloudInstancePolicyProvider(),
         feedback=DefaultFeedbackTrackerProvider(),
         browser_credentials=DefaultBrowserCredentialProvider(),

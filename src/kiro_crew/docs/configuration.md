@@ -1152,6 +1152,27 @@ Headers sent with each trace export to `telemetry.traces_otlp_endpoint`.
 | `tunnel.name_override` | Explicit tunnel name (overrides name_mode). Note: some tunnel providers prefix your username (e.g. 'foo' becomes '<user>-foo'). | `""` |
 | `tunnel.relay_handle_email_domains` | Email domains, for example example.com, whose addresses label a relayed person by the part before the @ when the relay sent no name. The whole domain must match, ignoring case, so a subdomain or a longer domain keeps the full address. Empty (the default) labels everyone by their full address. Display only: it never changes who a person is or what they may do. | `[]` |
 
+### Remote Crew managed environments
+
+The managed-environment lane lets Remote Crew create, connect, stop, resume, rename and delete Kiro managed environments, each running its own Crew. It is read only while the `crew_client` feature preview is on (Settings > Developer > Feature previews); off, and always on an LTS build, the lane shows no launch row and its `/api/managed-environments/*` routes answer 404. Every key is empty by default and nothing is guessed: a step that needs a missing value is refused, and the refusal names the keys to set. The routes listen on the dashboard's own loopback port and act only for the signed-in owner.
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `instances.managed_env_endpoint` | HTTPS base URL of the Kiro web service that lists, creates and connects your managed environments. Empty leaves the lane unconfigured: every call is refused and names this key. | `""` |
+| `instances.managed_env_start_url` | IAM Identity Center start URL whose Crew sign-in (Settings > Kiro account) the lane uses. Only that sign-in's token is sent to the service endpoint. Empty: the lane is signed out. | `""` |
+| `instances.managed_env_profile_arn` | Kiro profile ARN sent with every lane call and pinned on the sign-in above. Empty: every call is refused and names this key. | `""` |
+| `instances.managed_env_scopes` | OAuth scopes the sign-in above registers with. Empty uses Crew's own sign-in scopes. | `[]` |
+| `instances.managed_env_ssh_region` | AWS Region the Session Manager plugin is started in when ssh reaches a managed environment. Empty: a connect is refused and names this key. | `""` |
+| `instances.managed_env_kas_endpoint` | HTTPS runtime endpoint written as `agent.kas_endpoint` on a new managed environment's Crew, which runs on that environment's machine token. Empty: a launch is refused and names this key. | `""` |
+| `instances.managed_env_kas_control_plane_endpoint` | HTTPS control-plane endpoint written as `agent.kas_control_plane_endpoint` on a new managed environment's Crew. Empty: a launch is refused and names this key. | `""` |
+| `instances.managed_env_kas_region` | Region written as `agent.kas_region` on a new managed environment's Crew. Empty: a launch is refused and names this key. | `""` |
+| `instances.managed_env_mcp_registry_mode` | Also write `agent.mcp_registry_mode` true on a new managed environment's Crew, for a profile whose MCP servers are governed by a registry. | `false` |
+| `instances.managed_env_box_token_path` | Absolute path, on the managed environment, of the machine token file its image keeps fresh; written as `agent.kas_token_path`. Empty: a launch is refused and names this key. | `""` |
+| `instances.managed_env_box_token_env` | Name of the environment variable that carries the same machine token on the managed environment; written as `agent.kas_machine_token_env` and cleared by the boot hook. Empty: nothing is written for it. | `""` |
+| `instances.managed_env_box_env_drop` | Environment variable names the image sets for its own agent, dropped from Crew's engine there (`agent.kas_machine_env_drop`). | `[]` |
+| `instances.managed_env_box_unset_env` | Extra environment variable names (the image's own credentials) the boot hook clears before it starts Crew's gateway, on top of the AWS credential names it always clears. | `[]` |
+| `instances.managed_env_box_openssl` | Absolute path of an openssl binary on the image, linked for Crew's installer when none is on its PATH. Empty: nothing is linked. | `""` |
+
 ### Messaging channels
 
 Each channel is set up from its Settings page; its own doc covers credentials and setup. The keys below are the ones not covered elsewhere on this page.

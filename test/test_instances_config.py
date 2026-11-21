@@ -55,6 +55,21 @@ class TestConfig:
             "recover_backoff_max_secs": 30.0,
             "probe_failure_threshold": 3,
             "default_destination": "",
+            # The managed-environment lane's keys: all empty, nothing guessed.
+            "managed_env_endpoint": "",
+            "managed_env_start_url": "",
+            "managed_env_profile_arn": "",
+            "managed_env_scopes": [],
+            "managed_env_ssh_region": "",
+            "managed_env_kas_endpoint": "",
+            "managed_env_kas_control_plane_endpoint": "",
+            "managed_env_kas_region": "",
+            "managed_env_mcp_registry_mode": False,
+            "managed_env_box_token_path": "",
+            "managed_env_box_token_env": "",
+            "managed_env_box_env_drop": [],
+            "managed_env_box_unset_env": [],
+            "managed_env_box_openssl": "",
         }
         paths = {e.path for e in SCHEMA_REGISTRY}
         for p in (

@@ -1148,6 +1148,149 @@ class InstancesConfig:
             "(zombie) tunnel is torn down to trigger self-heal.",
         ),
     )
+    # The Kiro managed-environment lane (``kiro_crew.managed_env``), read only while
+    # the ``crew_client`` feature preview is on. Every value is empty by default and
+    # nothing is guessed: a launch with a needed value missing is refused by name.
+    managed_env_endpoint: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Service Endpoint",
+            "HTTPS base URL of the Kiro web service that lists, creates and connects "
+            "your managed environments. Empty (the default) leaves the managed-environment "
+            "lane unconfigured: every call is refused and names this key. Read only while "
+            "the crew_client feature preview is on.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_start_url: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Sign-in Start URL",
+            "IAM Identity Center start URL whose Crew sign-in (Settings > Kiro account) "
+            "the managed-environment lane uses. Only that sign-in's token is sent to the "
+            "service endpoint. Empty (the default): the lane is signed out.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_profile_arn: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Kiro Profile",
+            "Kiro profile ARN sent with every managed-environment call and pinned on the "
+            "sign-in above, so that sign-in asks no control plane for a profile. Empty "
+            "(the default): every call is refused and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_scopes: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Managed Environment Sign-in Scopes",
+            "OAuth scopes the sign-in above registers with. Empty (the default) uses "
+            "Crew's own sign-in scopes.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_ssh_region: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment SSH Region",
+            "AWS Region the Session Manager plugin is started in when ssh reaches a "
+            "managed environment. Empty (the default): a connect is refused and names "
+            "this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_kas_endpoint: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Engine Endpoint",
+            "HTTPS runtime endpoint written as agent.kas_endpoint on a new managed "
+            "environment's Crew, which runs on that environment's machine token. Empty "
+            "(the default): a launch is refused and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_kas_control_plane_endpoint: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Engine Control Plane",
+            "HTTPS control-plane endpoint written as agent.kas_control_plane_endpoint on "
+            "a new managed environment's Crew. Empty (the default): a launch is refused "
+            "and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_kas_region: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Engine Region",
+            "Region written as agent.kas_region on a new managed environment's Crew. "
+            "Empty (the default): a launch is refused and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_mcp_registry_mode: bool = field(
+        default=False,
+        metadata=_meta(
+            "Managed Environment MCP Registry Mode",
+            "Also write agent.mcp_registry_mode true on a new managed environment's "
+            "Crew, for a profile whose MCP servers are governed by a registry. Off by "
+            "default.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_box_token_path: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Machine Token File",
+            "Absolute path, on the managed environment, of the machine token file its "
+            "image keeps fresh; written as agent.kas_token_path. Empty (the default): a "
+            "launch is refused and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_box_token_env: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Machine Token Variable",
+            "Name of the environment variable that carries the same machine token on the "
+            "managed environment; written as agent.kas_machine_token_env and cleared by "
+            "the boot hook. Empty (the default): nothing is written for it.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_box_env_drop: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Managed Environment Engine Variables to Drop",
+            "Environment variable names the managed environment's image sets for its own "
+            "agent, dropped from Crew's engine there (agent.kas_machine_env_drop). Empty "
+            "by default.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_box_unset_env: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Managed Environment Credential Variables",
+            "Extra environment variable names (the image's own credentials) the boot hook "
+            "clears before it starts Crew's gateway, on top of the AWS credential names it "
+            "always clears. Empty by default.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_box_openssl: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment OpenSSL Path",
+            "Absolute path of an openssl binary on the managed environment's image, linked "
+            "for Crew's installer when none is on its PATH. Empty (the default): nothing is "
+            "linked, and an image with no openssl on PATH fails the install by its own "
+            "error.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
 
     def __post_init__(self) -> None:
         if self.warm_set_cap < 0:
