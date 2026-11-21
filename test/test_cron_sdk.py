@@ -210,6 +210,7 @@ class TestCronJobCreation:
             name=job_name,
             message="test",
             cron_expr="* * * * *",
+            agent="app-agent",
             agent_sequence=agent_seq,
             env=env,
             persistent_session=persistent,
@@ -232,6 +233,7 @@ class TestCronJobCreation:
             message="",
             cron_expr="0 22 * * *",
             enabled=False,
+            agent="app-agent",
         ))
 
         assert job.enabled is False
@@ -242,7 +244,7 @@ class TestCronJobCreation:
         svc = MockCronService()
         sdk = CronSDK("my-app", svc)
 
-        job = _run(sdk.add_job(name="my-app/refresh", message="go", cron_expr="* * * * *"))
+        job = _run(sdk.add_job(name="my-app/refresh", message="go", cron_expr="* * * * *", agent="app-agent"))
 
         assert job.enabled is True
         assert getattr(job, "user_paused", False) is False
@@ -258,6 +260,7 @@ class TestCronJobCreation:
             message="",
             cron_expr="0 22 * * *",
             enabled=False,
+            agent="app-agent",
         ))
         assert job.enabled is False
 
@@ -291,6 +294,7 @@ class TestCronCalendarFieldsOnCreate:
             cron_expr="0 6 * * *",
             timezone="America/Los_Angeles",
             skip_dates=["2026-12-25"],
+            agent="app-agent",
         ))
 
         assert job.timezone == "America/Los_Angeles"
@@ -303,6 +307,7 @@ class TestCronCalendarFieldsOnCreate:
 
         job = _run(sdk.add_job(
             name="digest-app/daily", message="go", cron_expr="0 6 * * *",
+            agent="app-agent",
         ))
 
         assert job.timezone == ""
@@ -320,6 +325,7 @@ class TestCronCalendarFieldsOnCreate:
             cron_expr="0 6 * * *",
             timezone="Australia/Sydney",
             skip_dates=["2026-01-01", "2026-01-26"],
+            agent="app-agent",
         )
 
         assert job.timezone == "Australia/Sydney"
@@ -336,6 +342,7 @@ class TestCronCalendarFieldsOnCreate:
             message="go",
             cron_expr="0 6 * * *",
             timezone="Europe/Berlin",
+            agent="app-agent",
         )
 
         assert job is not None
@@ -366,6 +373,7 @@ class TestCronCalendarFieldsAgainstRealService:
             cron_expr="0 6 * * *",
             timezone="America/Los_Angeles",
             skip_dates=["2026-12-25"],
+            agent="app-agent",
         )
 
         assert job.timezone == "America/Los_Angeles"
@@ -389,6 +397,7 @@ class TestCronCalendarFieldsAgainstRealService:
                 message="go",
                 cron_expr="0 6 * * *",
                 timezone="Mars/Olympus_Mons",
+                agent="app-agent",
             )
 
         assert svc.list_jobs(include_disabled=True) == []
@@ -405,6 +414,7 @@ class TestCronCalendarFieldsAgainstRealService:
                 message="go",
                 cron_expr="0 6 * * *",
                 skip_dates=["25/12/2026"],
+                agent="app-agent",
             )
 
         assert svc.list_jobs(include_disabled=True) == []
@@ -419,14 +429,16 @@ class TestCronCalendarFieldsAgainstRealService:
         sdk = CronSDK("digest-app", svc)
 
         job = await sdk.add_job_if_absent_async(
-            name="digest-app/daily", message="go", cron_expr="0 6 * * *"
+            name="digest-app/daily", message="go", cron_expr="0 6 * * *",
+            agent="app-agent",
         )
 
         assert job is not None
         assert job.created_by == "app:digest-app"
         assert [j.id for j in sdk.list_jobs()] == [job.id]
         again = await sdk.add_job_if_absent_async(
-            name="digest-app/daily", message="go", cron_expr="0 6 * * *"
+            name="digest-app/daily", message="go", cron_expr="0 6 * * *",
+            agent="app-agent",
         )
         assert again is None
 
@@ -448,6 +460,7 @@ class TestCronApprovalAndTimeoutFieldsOnCreate:
             message="summarise the last 24 hours",
             every_secs=3600,
             approval_mode="auto",
+            agent="app-agent",
         ))
 
         assert job.approval_mode == "auto"
@@ -459,6 +472,7 @@ class TestCronApprovalAndTimeoutFieldsOnCreate:
 
         job = _run(sdk.add_job(
             name="digest-app/attended", message="go", every_secs=3600,
+            agent="app-agent",
         ))
 
         assert job.approval_mode == ""
@@ -474,6 +488,7 @@ class TestCronApprovalAndTimeoutFieldsOnCreate:
             message="go",
             every_secs=3600,
             approval_mode="auto",
+            agent="app-agent",
         )
 
         assert job.approval_mode == "auto"
@@ -494,6 +509,7 @@ class TestCronApprovalAndTimeoutFieldsOnCreate:
             message="go",
             every_secs=3600,
             approval_mode="auto",
+            agent="app-agent",
         )
 
         assert job is not None
@@ -523,6 +539,7 @@ class TestCronApprovalAndTimeoutFieldsOnCreate:
 
         job = _run(sdk.add_job(
             name="digest-app/probe", message="go", every_secs=3600,
+            agent="app-agent",
         ))
 
         assert job.timeout_secs == 1800
@@ -589,6 +606,7 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
             message="summarise the last 24 hours",
             every_secs=3600,
             approval_mode="auto",
+            agent="app-agent",
         )
 
         assert job.approval_mode == "auto"
@@ -612,6 +630,7 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
                 message="go",
                 every_secs=3600,
                 approval_mode="yolo",
+                agent="app-agent",
             )
 
         assert svc.list_jobs(include_disabled=True) == []
@@ -648,6 +667,7 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
                 message="go",
                 every_secs=3600,
                 timeout_secs=99999,
+                agent="app-agent",
             )
 
         assert svc.list_jobs(include_disabled=True) == []
@@ -699,9 +719,11 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
         unattended = sdk.add_job(
             name="digest-app/unattended", message="go",
             every_secs=3600, approval_mode="auto",
+            agent="app-agent",
         )
         attended = sdk.add_job(
             name="digest-app/attended", message="go", every_secs=3600,
+            agent="app-agent",
         )
 
         def _dispatch(job: Any) -> dict[str, Any]:
@@ -802,7 +824,7 @@ class TestCronOwnershipEnforcement:
         sdk_a = CronSDK(app_a, svc)
         sdk_b = CronSDK(app_b, svc)
 
-        job = _run(sdk_a.add_job(name="test-job", message="msg", cron_expr="* * * * *"))
+        job = _run(sdk_a.add_job(name="test-job", message="msg", cron_expr="* * * * *", agent="app-agent"))
 
         with pytest.raises(PermissionError):
             _run(sdk_b.remove_job(job.id))
@@ -821,7 +843,7 @@ class TestCronOwnershipEnforcement:
         sdk_a = CronSDK(app_a, svc)
         sdk_b = CronSDK(app_b, svc)
 
-        job = _run(sdk_a.add_job(name="test-job", message="msg", cron_expr="* * * * *"))
+        job = _run(sdk_a.add_job(name="test-job", message="msg", cron_expr="* * * * *", agent="app-agent"))
 
         with pytest.raises(PermissionError):
             _run(sdk_b.update_job(job.id, message="hacked"))
@@ -858,9 +880,9 @@ class TestCronListFiltering:
         sdk_b = CronSDK(app_b, svc)
 
         for i in range(n_a):
-            _run(sdk_a.add_job(name=f"a-job-{i}", message="a", cron_expr="* * * * *"))
+            _run(sdk_a.add_job(name=f"a-job-{i}", message="a", cron_expr="* * * * *", agent="app-agent"))
         for i in range(n_b):
-            _run(sdk_b.add_job(name=f"b-job-{i}", message="b", cron_expr="* * * * *"))
+            _run(sdk_b.add_job(name=f"b-job-{i}", message="b", cron_expr="* * * * *", agent="app-agent"))
 
         assert len(sdk_a.list_jobs()) == n_a
         assert len(sdk_b.list_jobs()) == n_b
@@ -883,7 +905,7 @@ class TestCronRemoveAll:
         sdk = CronSDK(app_name, svc)
 
         for i in range(n_jobs):
-            _run(sdk.add_job(name=f"job-{i}", message="msg", cron_expr="* * * * *"))
+            _run(sdk.add_job(name=f"job-{i}", message="msg", cron_expr="* * * * *", agent="app-agent"))
 
         assert len(sdk.list_jobs()) == n_jobs
         removed = _run(sdk.remove_all())
@@ -901,8 +923,8 @@ class TestCronRemoveAll:
         sdk_a = CronSDK(app_a, svc)
         sdk_b = CronSDK(app_b, svc)
 
-        _run(sdk_a.add_job(name="a-job", message="a", cron_expr="* * * * *"))
-        _run(sdk_b.add_job(name="b-job", message="b", cron_expr="* * * * *"))
+        _run(sdk_a.add_job(name="a-job", message="a", cron_expr="* * * * *", agent="app-agent"))
+        _run(sdk_b.add_job(name="b-job", message="b", cron_expr="* * * * *", agent="app-agent"))
 
         _run(sdk_a.remove_all())
         assert len(sdk_a.list_jobs()) == 0
@@ -1008,7 +1030,7 @@ class TestOwnedCronToggle:
 
     def test_toggle_preserves_id_and_fields(self, service):
         sdk = CronSDK("example", service)
-        job = sdk.add_job(name="example/daily", message="hello", every_secs=600)
+        job = sdk.add_job(name="example/daily", message="hello", every_secs=600, agent="app-agent")
         assert sdk.set_enabled(job.id, False) is True
         saved = json.loads(service._path.read_text(encoding="utf-8"))["jobs"][0]
         assert (saved["id"], saved["enabled"], saved["user_paused"]) == (job.id, False, True)
@@ -1022,7 +1044,7 @@ class TestOwnedCronToggle:
 
         audit = Mock()
         monkeypatch.setattr("kiro_crew.apps.cron_sdk.sel", lambda: audit)
-        other = CronSDK("other", service).add_job(name="other/job", message="hello", every_secs=600)
+        other = CronSDK("other", service).add_job(name="other/job", message="hello", every_secs=600, agent="app-agent")
         sdk = CronSDK("example", service)
         before = service._path.read_bytes()
         for job_id in [other.id, "missing"]:
@@ -1033,7 +1055,7 @@ class TestOwnedCronToggle:
 
     def test_owner_is_rechecked_after_store_reload(self, service):
         sdk = CronSDK("example", service)
-        job = sdk.add_job(name="example/job", message="hello", every_secs=600)
+        job = sdk.add_job(name="example/job", message="hello", every_secs=600, agent="app-agent")
         state = json.loads(service._path.read_text(encoding="utf-8"))
         state["jobs"][0]["created_by"] = "app:other"
         service._path.write_text(json.dumps(state), encoding="utf-8")
@@ -1047,7 +1069,7 @@ class TestOwnedCronToggle:
         from kiro_crew.apps.cron_sdk import CronSyncOnLoopError
 
         sdk = CronSDK("example", service)
-        job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600)
+        job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600, agent="app-agent")
         with pytest.raises(CronSyncOnLoopError, match="set_enabled_async"):
             sdk.set_enabled(job.id, False)
         assert await sdk.set_enabled_async(job.id, False)
@@ -1061,7 +1083,7 @@ class TestOwnedCronToggle:
     @pytest.mark.parametrize("field,value", [("enabled", False), ("user_paused", True)])
     def test_pause_update_is_not_silently_ignored(self, service, field, value):
         sdk = CronSDK("example", service)
-        job = sdk.add_job(name="example/job", message="hello", every_secs=600)
+        job = sdk.add_job(name="example/job", message="hello", every_secs=600, agent="app-agent")
         before = service._path.read_bytes()
         with pytest.raises(ValueError, match="set_enabled"):
             sdk.update_job(job.id, message="changed", **{field: value})
@@ -1074,7 +1096,7 @@ class TestOwnedCronToggle:
         import asyncio
 
         sdk = CronSDK("example", service)
-        job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600)
+        job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600, agent="app-agent")
         before = await asyncio.to_thread(service._path.read_bytes)
         with pytest.raises(ValueError, match="set_enabled"):
             await sdk.update_job_async(job.id, message="changed", **{field: value})
@@ -1099,7 +1121,7 @@ class TestOwnedCronRunNow:
     @pytest.mark.asyncio
     async def test_an_owned_job_runs_once_and_keeps_its_schedule(self, service):
         sdk = CronSDK("example", service)
-        job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600)
+        job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600, agent="app-agent")
         with patch.object(service, "_run_job_isolated") as run:
             assert await sdk.run_job_async(job.id) is True
             # The claim is taken before the first await, so the run is in flight.
@@ -1117,7 +1139,8 @@ class TestOwnedCronRunNow:
         audit = MagicMock()
         monkeypatch.setattr("kiro_crew.apps.cron_sdk.sel", lambda: audit)
         other = await CronSDK("other", service).add_job_async(
-            name="other/job", message="hello", every_secs=600
+            name="other/job", message="hello", every_secs=600,
+            agent="app-agent",
         )
         with pytest.raises(PermissionError):
             await CronSDK("example", service).run_job_async(other.id)
@@ -1127,7 +1150,7 @@ class TestOwnedCronRunNow:
     @pytest.mark.asyncio
     async def test_the_run_rechecks_the_owner_in_the_store(self, service):
         sdk = CronSDK("example", service)
-        job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600)
+        job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600, agent="app-agent")
         state = json.loads(await asyncio.to_thread(service._path.read_text, encoding="utf-8"))
         state["jobs"][0]["created_by"] = "app:other"
         await asyncio.to_thread(service._path.write_text, json.dumps(state), encoding="utf-8")

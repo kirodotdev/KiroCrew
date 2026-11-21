@@ -96,6 +96,7 @@ async def test_shipped_builtin_cron_registers_with_default_off(
             "name": "refresh",
             "every": 3600,
             "message": "refresh builtin state",
+            "agent": "builtin-cron-app-agent",
         }],
     )
     manifest = json.loads((shipped_root / "app.json").read_text(encoding="utf-8"))

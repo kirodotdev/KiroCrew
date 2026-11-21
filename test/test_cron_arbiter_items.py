@@ -48,7 +48,7 @@ class TestSdkSyncContract:
     def test_sync_add_job_creates_and_persists_loopless(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)
         sdk = CronSDK("myapp", svc)
-        job = sdk.add_job("j", "hello", every_secs=3600)
+        job = sdk.add_job("j", "hello", every_secs=3600, agent="app-agent")
         # Actually executed synchronously — not an un-awaited coroutine.
         assert not asyncio.iscoroutine(job)
         assert job.created_by == "app:myapp"
@@ -60,7 +60,7 @@ class TestSdkSyncContract:
     def test_sync_update_and_remove_loopless(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)
         sdk = CronSDK("myapp", svc)
-        job = sdk.add_job("j", "hello", every_secs=3600)
+        job = sdk.add_job("j", "hello", every_secs=3600, agent="app-agent")
         updated = sdk.update_job(job.id, message="changed")
         assert updated is not None and updated.message == "changed"
         assert sdk.remove_job(job.id) is True
@@ -68,7 +68,7 @@ class TestSdkSyncContract:
 
     def test_sync_ownership_is_enforced(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)
-        other = CronSDK("other", svc).add_job("x", "m", every_secs=3600)
+        other = CronSDK("other", svc).add_job("x", "m", every_secs=3600, agent="app-agent")
         mine = CronSDK("mine", svc)
         with pytest.raises(PermissionError):
             mine.remove_job(other.id)
@@ -77,7 +77,7 @@ class TestSdkSyncContract:
     async def test_async_variants_create_update_remove(self, tmp_path: Path) -> None:
         svc = await CronService.create(base_dir=tmp_path)
         sdk = CronSDK("myapp", svc)
-        job = await sdk.add_job_async("j", "hello", every_secs=3600)
+        job = await sdk.add_job_async("j", "hello", every_secs=3600, agent="app-agent")
         assert job.created_by == "app:myapp"
         assert await sdk.update_job_async(job.id, message="x") is not None
         assert await sdk.remove_job_async(job.id) is True
@@ -94,7 +94,7 @@ class TestRemoveAllAtomic:
         svc = CronService(base_dir=tmp_path)
         sdk = CronSDK("app1", svc)
         for i in range(3):
-            sdk.add_job(f"j{i}", "m", every_secs=3600)
+            sdk.add_job(f"j{i}", "m", every_secs=3600, agent="app-agent")
 
         calls = {"owner": 0, "batch": 0, "single": 0}
         orig_owner = svc.remove_jobs_by_owner_sync
@@ -133,7 +133,7 @@ class TestRemoveAllAtomic:
         the reloaded disk state; otherwise uninstall leaves an ENABLED orphan cron."""
         svc = CronService(base_dir=tmp_path)
         sdk = CronSDK("app1", svc)
-        cached = sdk.add_job("cached", "m", every_secs=3600)
+        cached = sdk.add_job("cached", "m", every_secs=3600, agent="app-agent")
 
         # Populate the in-memory cache/list (simulating a live gateway that has
         # not re-read the store since).
@@ -143,7 +143,8 @@ class TestRemoveAllAtomic:
         # job owned by the SAME app. Our svc's cache does not know about it.
         other_proc = CronService(base_dir=tmp_path)
         sneaky = CronSDK("app1", other_proc).add_job(
-            "sneaky", "m", every_secs=3600
+            "sneaky", "m", every_secs=3600,
+            agent="app-agent",
         )
         # Confirm the setup: our svc's cache still reflects only the first job,
         # yet the store on disk now holds BOTH owned jobs.
@@ -168,7 +169,7 @@ class TestRemoveAllAtomic:
         failure — not remove a subset and report success/``0``."""
         svc = CronService(base_dir=tmp_path)
         sdk = CronSDK("app1", svc)
-        ids = [sdk.add_job(f"j{i}", "m", every_secs=3600).id for i in range(3)]
+        ids = [sdk.add_job(f"j{i}", "m", every_secs=3600, agent="app-agent").id for i in range(3)]
 
         def busy(owner):  # type: ignore[no-untyped-def]
             raise CronStoreBusy("store busy")
@@ -193,7 +194,7 @@ class TestRemoveAllAtomic:
         return ``0`` while owned jobs stay enabled."""
         svc = await CronService.create(base_dir=tmp_path)
         sdk = CronSDK("app1", svc)
-        await sdk.add_job_async("j", "m", every_secs=3600)
+        await sdk.add_job_async("j", "m", every_secs=3600, agent="app-agent")
 
         async def busy(owner):  # type: ignore[no-untyped-def]
             raise CronStoreBusy("store busy")
@@ -256,7 +257,7 @@ class TestLoopSafetyGuard:
         sdk = CronSDK("app1", svc)
         # add_job_async offloads the lock to a worker thread (no running loop
         # there) → guard passes even under strict.
-        job = await sdk.add_job_async("j", "m", every_secs=3600)
+        job = await sdk.add_job_async("j", "m", every_secs=3600, agent="app-agent")
         assert job.id
 
     @pytest.mark.asyncio
@@ -274,9 +275,9 @@ class TestLoopSafetyGuard:
         sdk = CronSDK("app1", svc)
         # An owned job so remove/update reach the mutator (ownership is vetted
         # first and would otherwise raise PermissionError).
-        owned = await sdk.add_job_async("j", "m", every_secs=3600)
+        owned = await sdk.add_job_async("j", "m", every_secs=3600, agent="app-agent")
         for call, sibling in (
-            (lambda: sdk.add_job("j2", "m", every_secs=3600), "add_job_async"),
+            (lambda: sdk.add_job("j2", "m", every_secs=3600, agent="app-agent"), "add_job_async"),
             (lambda: sdk.remove_job(owned.id), "remove_job_async"),
             (lambda: sdk.update_job(owned.id, message="m2"), "update_job_async"),
         ):
@@ -323,7 +324,7 @@ class TestLoopSafetyGuard:
         anything — a half-applied cleanup would orphan still-ENABLED jobs."""
         svc = await CronService.create(base_dir=tmp_path)
         sdk = CronSDK("app1", svc)
-        job = await sdk.add_job_async("j", "m", every_secs=3600)
+        job = await sdk.add_job_async("j", "m", every_secs=3600, agent="app-agent")
         with pytest.raises(CronSyncOnLoopError) as ei:
             sdk.remove_all()
         assert "remove_all_async" in str(ei.value)
@@ -335,7 +336,7 @@ class TestLoopSafetyGuard:
         is what third-party App Kit apps overwhelmingly use."""
         svc = CronService(base_dir=tmp_path)
         sdk = CronSDK("app1", svc)
-        job = sdk.add_job("j", "m", every_secs=3600)
+        job = sdk.add_job("j", "m", every_secs=3600, agent="app-agent")
         assert not asyncio.iscoroutine(job)
         assert job.created_by == "app:app1"
         assert [j.id for j in sdk.list_jobs()] == [job.id]

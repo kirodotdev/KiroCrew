@@ -1567,6 +1567,16 @@ app stamp is owner-only. A create whose `agent` or `member_id` names one of the
 owner's Bots that has memory of its own or a chat of its own answers the same
 403 and stores nothing; the `cron_add` tool answers an agent in your app's
 sessions with an error for the same create. Name an agent of your own instead.
+A job that runs a model turn must also name one of your app's own agents: a
+create with no `agent` (or the default agent's name, `kirocrew`) answers 400
+`app_cron_agent_required` and stores nothing, and so does an update that clears
+the agent of such a job. Without an agent the job would run on the owner's default
+agent with all of the owner's tools. `ctx.cron.add_job` and `ctx.cron.update_job`
+raise `ValueError` for the same job, and the `cron_add` and `cron_update` tools
+answer an agent in your app's sessions with an error, unless that session itself
+runs on one of your agents (then the job does too). A `command` or `script` job
+runs no agent and needs none. A job your app stored before this rule is refused
+when it fires until you give it an agent.
 `POST /api/spawn` holds the same rule: `crew` or `target_member` naming such a
 Bot answers 404 `unknown_member`, and a `parent_session` that is such a Bot's
 answers 409 `member_identity_unavailable`. An acknowledgement's `ts` must name a cron

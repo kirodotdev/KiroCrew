@@ -150,12 +150,12 @@ async def test_the_owner_still_schedules_a_job_as_a_bot(svc, bot, sel_calls) -> 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("agent", ["shop--helper", SHARED_ROW, ""])
+@pytest.mark.parametrize("agent", ["shop--helper", SHARED_ROW])
 async def test_an_app_token_still_schedules_its_own_job(
     svc, bot, grant_crons, sel_calls, agent
 ) -> None:
-    """An agent of the app's own, a shared-store row, or no agent at all."""
-    status, payload = await _create_cron(svc, APP, **({"agent": agent} if agent else {}))
+    """An agent of the app's own, or a shared-store row."""
+    status, payload = await _create_cron(svc, APP, agent=agent)
 
     assert status == 200, payload
     (job,) = svc.list_jobs()
@@ -878,10 +878,8 @@ def test_a_schedule_with_no_agent_does_not_name_a_bot(bot) -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_app_token_schedules_and_edits_a_job_with_no_agent(
-    svc, bot, grant_crons, sel_calls
-) -> None:
-    status, payload = await _create_cron(svc, APP)
+async def test_an_app_token_edits_a_job_of_its_own_agent(svc, bot, grant_crons, sel_calls) -> None:
+    status, payload = await _create_cron(svc, APP, agent=APP_WORKER)
     assert status == 200, payload
     job_id = payload["id"]
 
@@ -890,7 +888,7 @@ async def test_an_app_token_schedules_and_edits_a_job_with_no_agent(
         assert status == 200, payload
 
     (job,) = svc.list_jobs()
-    assert (job.created_by, job.agent_id, job.member_id) == (f"app:{APP}", "", "")
+    assert (job.created_by, job.agent_id, job.member_id) == (f"app:{APP}", APP_WORKER, "")
     assert job.message == "another task"
     assert job.schedule.every_secs == 7200
     assert _denials(sel_calls) == []
@@ -991,10 +989,16 @@ def test_ops_mission_control_registers_all_four_manifest_crons(tmp_path, bot, mo
 
     created, jobs = asyncio.run(_go())
 
-    names = {f"{app}/{n}" for n in ("dispatch", "reconcile", "rotation-check", "ledger-hygiene")}
-    assert set(created) == names
-    assert set(jobs) == names
-    assert {(job.created_by, job.agent_id) for job in jobs.values()} == {(f"app:{app}", "")}
+    from pathlib import Path
+
+    from kiro_crew.apps.manifest import AppManifest
+
+    root = Path(__file__).resolve().parents[1] / "src/kiro_crew/apps/builtins/ops_mission_control"
+    shipped = AppManifest.from_json_file(root / "app.json").crons
+    expected = {f"{app}/{c.name}": (f"app:{app}", c.agent) for c in shipped}
+    assert expected
+    assert set(created) == set(expected)
+    assert {name: (job.created_by, job.agent_id) for name, job in jobs.items()} == expected
 
 
 # ── Authorization sees the values that tool validation will store ──

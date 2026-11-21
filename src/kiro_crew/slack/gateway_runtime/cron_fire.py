@@ -188,6 +188,28 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
             await self._alert_cron_failure(job, APP_JOB_BOT_REFUSAL, denied=True)
             return None
 
+        # ── An app's model turn never falls back to the owner's default agent ──
+        # A job stored before its create was refused, or a manifest entry the
+        # bridge has not yet re-applied. Same policy-denial shape as above.
+        if _app_job_lacks_agent(self, job, cap):
+            from kiro_crew.cron_service.identity import APP_JOB_NEEDS_AGENT
+
+            job.last_status = "error"
+            job.last_error = APP_JOB_NEEDS_AGENT
+            job.fire_time_denied = True
+            try:
+                sel().log_tool_invocation(
+                    session_key=f"cron:{job.id}",
+                    tool_name="cron_dispatch",
+                    tool_kind="cron_message",
+                    outcome="denied",
+                    error=APP_JOB_NEEDS_AGENT,
+                )
+            except Exception:
+                logger.debug("SEL logging failed in the app-job agent deny path", exc_info=True)
+            await self._alert_cron_failure(job, APP_JOB_NEEDS_AGENT, denied=True)
+            return None
+
         # ── Concurrent execution guard ──
         if (job.script or job.command) and job.id in self._running_script_ids:
             logger.info("Cron '%s': previous execution still running, skipping", job.name)
@@ -667,6 +689,66 @@ def _app_job_runs_as_bot(
     return is_bot_own_execution(cron_execution, cfg) or any(
         mate_worker.is_mate_owned_agent(str(name or "").strip()) for name in names
     )
+
+
+def _job_owning_app(
+    self: GatewayOrchestrator, job: CronJob, execution: ExecutionContext | None = None
+) -> str:
+    """The app that made *job*: its ``app:`` tag, the app its capture names, or the app
+    owning its maker session.
+
+    A job the ``cron_add`` tool made from an app's session carries no tag. Its capture
+    keeps the maker's app (*execution*, the record ``/api/spawn`` also reads app
+    identity from), including for a job made by such a job's own run. Failing that,
+    the stored maker key is resolved in its own namespace
+    (``token_auth_callers.app_owner_of_session_key``); a maker the registries no
+    longer hold (a deleted slot, a finished run) resolves to no app.
+    """
+    from kiro_crew.apps.cron_sdk import app_owner_name
+
+    owner = app_owner_name(getattr(job, "created_by", "") or "")
+    if not owner and execution is not None:
+        owner = str(getattr(execution, "app", "") or "")
+    maker = str(getattr(job, "session_key", "") or "")
+    if owner or not maker:
+        return owner
+    from kiro_crew.dashboard.token_auth_callers import app_owner_of_session_key
+
+    state = getattr(self, "dashboard_state", None)
+    if state is None:
+        return ""
+    return app_owner_of_session_key(
+        getattr(state, "_slots", None),
+        maker,
+        getattr(getattr(state, "crons", None), "_jobs", None),
+        getattr(getattr(state, "subagents", None), "_agents", None),
+    )
+
+
+def _app_job_lacks_agent(self: GatewayOrchestrator, job: CronJob, cap: _CronCapture) -> bool:
+    """Whether *job* is an app's model turn that would run on the owner's default agent.
+
+    That is the ``kirocrew`` floor the capture names when no agent was chosen, or the
+    configured ``agent.default_agent`` standing in for it
+    (``cron_service.identity.names_no_agent``), or a dispatching ``agent_sequence``
+    with a step that names no agent. A command or script job runs no agent and a
+    member capture runs its member's, so neither is judged. The owner's own jobs are never judged.
+    """
+    from kiro_crew.cron_service.identity import agent_sequence_dispatches, names_no_agent
+
+    if job.script or job.command:
+        return False
+    if agent_sequence_dispatches(cap.cron_agents):
+        # Each step dispatches as the agent it names; one naming none runs the floor.
+        if not any(names_no_agent(str(step or "")) for step in cap.cron_agents):
+            return False
+        return bool(_job_owning_app(self, job, cap.cron_execution))
+    execution = cap.cron_execution
+    if execution.member_id is not None or execution.selection_kind == "member":
+        return False
+    if not (cap.default_substituted or names_no_agent(cap.cron_agent)):
+        return False
+    return bool(_job_owning_app(self, job, execution))
 
 
 def _app_job_names_bot(job: CronJob, alias: str | None, cfg: Any) -> bool:

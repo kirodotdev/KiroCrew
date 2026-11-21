@@ -2431,6 +2431,30 @@ edit there. Both sources get
 
 PagerDuty has no roster yet. `/oncalls` accepts `since`/`until`, so the same builder applies.
 
+### The crons run on the app's own agents
+
+An app's cron that starts a model turn must name one of the app's agents
+([learn-cron-dashboard](learn-cron-dashboard.md), "An app's job names its own agent"):
+without one it would run on the owner's default agent with every tool the owner has. The
+app ships two, in `agents/`, each with only `fs_read` (for the SOPs and `SKILL.md`) and the
+managed tools its jobs call:
+
+| Agent | Jobs | Tools |
+|---|---|---|
+| `ops-mission-control-heartbeat` | `rotation-check`, `reconcile`, `ledger-hygiene` | `fs_read`, `ops_mission_control_api`, `send_message` |
+| `ops-mission-control-dispatch` | `dispatch`, and the investigations it launches | `fs_read`, `ops_mission_control_api`, `spawn_run`, `send_message` |
+
+An investigation launched with `spawn_run` inherits the dispatch agent, which is all an
+investigation needs: its evidence is in the brief, and every app call is
+`ops_mission_control_api`. The dispatch agent declares
+`toolsSettings.subagent.availableAgents: ["ops-mission-control-dispatch"]`, so the spawn
+gate refuses a child on any other agent, the owner's default included. Neither agent has a shell, the web or a provider credential.
+Neither ships `allowedTools`: no shipped agent pre-authorizes a tool. An unattended run's calls to `ops_mission_control_api` pass the gate's `app-own-tools` row, because the job carries the app's stamp and runs one of the app's shipped agents (pinned by `test_an_ops_cron_calls_the_apps_api_without_a_card`). Its other calls that are not otherwise approved, such as `send_message` and `spawn_run`, ask as before, until the owner sets the job to auto on the Schedule page.
+An install from before the agents existed keeps its jobs: the manifest bridge sees the
+`agent` field changed and re-applies it to each job, which moves the job's captured
+template with it. Pinned by `test/test_app_cron_needs_agent.py` and
+`test_ops_mission_control_registers_all_four_manifest_crons`.
+
 ### Arming is server-side: `POST /rotation/arm`
 
 **The agent does not choose which crons to pause, and no longer holds `cron_pause` at
@@ -2447,9 +2471,8 @@ preventing it was a sentence of SOP prose saying "never pause an always-tier cro
 
 Prose is not an enforcement mechanism, and for this app neither is the manifest:
 `permissions.mcpTools` is enforced only on an app's OWN agents (undeclared managed tools
-land in their `managedToolPolicy.exclude`), and ops-mission-control ships no agent — its
-crons run on the host default agent, which the declaration does not scope — so leaving
-`cron_pause` out of it gates nothing here either. One misfollowed LLM turn was
+land in their `managedToolPolicy.exclude`). The crons now run on the app's own agents
+(below), but the arming decision stays in the route whatever tools those agents hold. One misfollowed LLM turn was
 the whole distance between "armed" and "permanently dead", which is the same
 quiet-versus-broken conflation this app refuses everywhere else ("a source that failed is
 shown as failed, never as quiet").

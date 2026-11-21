@@ -307,7 +307,8 @@ refused.
     {
       "name": "ticket-refresh",
       "every": 300,
-      "message": "Check for new high-severity tickets"
+      "message": "Check for new high-severity tickets",
+      "agent": "ticket-analyst"
     },
     {
       "name": "daily-digest",
@@ -319,6 +320,7 @@ refused.
       "name": "market-open",
       "cron_expr": "30 9 * * 1-5",
       "message": "Summarise the overnight tape",
+      "agent": "digest-agent",
       "timezone": "America/New_York",
       "skip_dates": ["2026-12-25"]
     }
@@ -332,7 +334,7 @@ refused.
 | `every` | number | Interval in seconds (mutually exclusive with `cron_expr`) |
 | `cron_expr` | string | Cron expression (mutually exclusive with `every`) |
 | `message` | string | Prompt sent to the agent on each run |
-| `agent` | string | Agent template to run (optional, uses default if omitted). Name a template, never a Bot: an app cron is never bound to a Bot, so naming one runs that Bot's agent and workspace on the default memory store, not the Bot's own. Only the owner can give a Bot a schedule: `kirocrew cron add NAME MESSAGE --every SECONDS --agent <bot-key>`, or **New schedule** on the Bot's **Schedules** tab |
+| `agent` | string | Agent template to run. Required for a job that runs a model turn (one with no `command`, `script` or multi-step `agent_sequence`, whose steps must each name an agent instead): name one of the app's own agents, declared under `agents`. A job that names none would run on the owner's default agent with all of the owner's tools, so it is not registered, and the gateway log names it. Name a template, never a Bot: an app cron is never bound to a Bot, so naming one runs that Bot's agent and workspace on the default memory store, not the Bot's own. Only the owner can give a Bot a schedule: `kirocrew cron add NAME MESSAGE --every SECONDS --agent <bot-key>`, or **New schedule** on the Bot's **Schedules** tab |
 | `agent_sequence` | string[] | Ordered agents to run |
 | `command` | string | Shell command executed without a model call; mutually exclusive with `script`. A present non-string value is rejected rather than treated as absent |
 | `script` | string | Synchronous Python callable (`file.py:function`) executed without a model call; mutually exclusive with `command`. A present non-string value is rejected rather than treated as absent. The path resolves against the app's own bundle, must stay inside it, must name a `.py` file, and is stored as an absolute path; re-enable the app after its bundle moves |
@@ -2666,7 +2668,8 @@ before it runs your command, which is the same silent failure:
     {
       "name": "ticket-refresh",
       "every": 300,
-      "message": "Check for new high-severity tickets"
+      "message": "Check for new high-severity tickets",
+      "agent": "ticket-analyst"
     }
   ],
   "ui": {

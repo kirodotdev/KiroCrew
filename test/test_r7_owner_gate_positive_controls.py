@@ -319,7 +319,7 @@ async def test_app_token_caller_can_still_create_a_cron() -> None:
     """``GET/POST /api/crons`` is the App Kit manifest's own ``permissions.api`` example."""
     app, add_job = _cron_app()
     async with _client(app, _app_token_claims()) as client:
-        response = await client.post("/api/crons", json=dict(_CRON_BODY))
+        response = await client.post("/api/crons", json=dict(_CRON_BODY, agent="app-agent"))
         status, body = response.status, await _body(response)
 
     _assert_not_owner_refused(status, body, "POST /api/crons (app token)")

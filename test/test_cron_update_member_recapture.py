@@ -177,7 +177,7 @@ def test_sdk_update_job_naming_a_member_stays_a_template(member_with_distinct_te
     from kiro_crew.apps.cron_sdk import CronSDK
 
     sdk = CronSDK("testapp", _svc())
-    job = sdk.add_job("daily", "task", every_secs=60)
+    job = sdk.add_job("daily", "task", every_secs=60, agent="app-agent")
     sdk.update_job(job.id, agent_id="SampleMemberAgent")
 
     updated = _only_job()
