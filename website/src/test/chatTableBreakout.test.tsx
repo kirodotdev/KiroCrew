@@ -48,12 +48,13 @@ describe('transcript table breakout contract', () => {
     // the overflow fade is a `mask-image` on the scroller itself, so no wrapper
     // node sits between the root and the scroller.
     const scroll = container.querySelector(`${TABLE_SELECTOR} > .overflow-x-auto`)
-    // Absolute sr-only status spans must have a containing block inside the
-    // local scroller, or unclipping the bubble lets them widen the transcript.
-    // The browser capture checks scrollWidth; this pins its layout prerequisite
-    // without removing the live region that announces successful copies.
+    // An absolute sr-only status span inside the bubble could widen the
+    // transcript once the bubble is unclipped. The cell chip's live region is
+    // portaled to <body>, so none sits in the table, and the scroller still
+    // gives any absolute descendant a local containing block.
     expect(scroll).toHaveClass('relative')
-    expect(scroll?.querySelector('[role="status"][aria-live="polite"]')).toHaveClass('sr-only')
+    expect(container.querySelector('[role="status"][aria-live="polite"]')).toBeNull()
+    expect(document.querySelector('[role="status"][aria-live="polite"]')).toHaveClass('sr-only')
   })
 
   it('keeps every breakout table out of the turn rail\'s band instead of hiding the rail', () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { createElement } from 'react'
-import { render, waitFor, act, fireEvent } from '@testing-library/react'
+import { render, waitFor, act, fireEvent, cleanup } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import {
@@ -97,6 +97,9 @@ afterEach(() => {
   resetTextPatternsForTest()
   resetAutolinkRulesForTest()
   listApps.mockReset()
+  // Unmount before wiping <body>: a copy chip portals its live region there,
+  // and React cannot remove a node the wipe already took.
+  cleanup()
   document.body.replaceChildren()
   vi.useRealTimers()
   // A failing test must not leave its console spy on the next one.
