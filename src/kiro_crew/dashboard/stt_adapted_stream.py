@@ -34,6 +34,30 @@ async def run_codex_session(
     )
 
 
+async def run_openai_compatible_session(
+    ws: web.WebSocketResponse,
+    cfg: KiroCrewConfig,
+    request: web.Request,
+    caller: str,
+) -> None:
+    """Drive an OpenAI-compatible Realtime socket with core's caps, redaction and audit."""
+    from kiro_crew.dashboard import stt_stream
+    from kiro_crew.stt.openai_compat import CODE_FAILED, SESSION_ERROR_CODES, StreamingSession
+
+    with stt_stream._audited_setup(caller):
+        session = StreamingSession(cfg.stt)
+        endpointer = stt_stream._build_endpointer(ws, cfg, request)
+    await stt_stream._drive_helper_session(
+        ws,
+        caller,
+        session,
+        endpointer,
+        start_failure_code=lambda: session.failure_code or CODE_FAILED,
+        label="openai_compatible",
+        relayed_codes=stt_stream.RELAYED_SESSION_ERROR_CODES | SESSION_ERROR_CODES,
+    )
+
+
 async def _run_registered_session(
     ws: web.WebSocketResponse,
     cfg: KiroCrewConfig,
