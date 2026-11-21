@@ -1497,6 +1497,14 @@
       "hint": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
     },
     {
+      "id": "developer.phone-widgets",
+      "label": "Phone widgets",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.phone-widgets",
+      "description": "Lets your Bots prepare home-screen widgets for the Kiro Mobile app. Nothing reaches your phone yet.",
+      "hint": "Your Bots learn to save home-screen widgets with their Dashboard. The Kiro Mobile app can't show them yet: this Crew doesn't serve widgets to a phone. While this is off, Bots aren't told about widgets and can't save them."
+    },
+    {
       "id": "developer.quick-worker-check-before-a-hard-choice",
       "label": "Quick worker check before a hard choice",
       "tab": "developer",

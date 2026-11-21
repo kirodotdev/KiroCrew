@@ -11179,6 +11179,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.widgets",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: widgets",
+      "help": "Turn on the 'widgets' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.worker_grill",
       "kind": "core",
       "type": "boolean",

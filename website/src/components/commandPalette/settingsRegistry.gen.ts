@@ -2560,6 +2560,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.phone-widgets",
+    "label": "Phone widgets",
+    "labelKey": "pages.developer.featurePreviewsTab.widgets",
+    "description": "Lets your Bots prepare home-screen widgets for the Kiro Mobile app. Nothing reaches your phone yet.",
+    "hint": "Your Bots learn to save home-screen widgets with their Dashboard. The Kiro Mobile app can't show them yet: this Crew doesn't serve widgets to a phone. While this is off, Bots aren't told about widgets and can't save them.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.quick-worker-check-before-a-hard-choice",
     "label": "Quick worker check before a hard choice",
     "labelKey": "pages.developer.featurePreviewsTab.worker_grill",
