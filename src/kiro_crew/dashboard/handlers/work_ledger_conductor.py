@@ -43,6 +43,7 @@ from kiro_crew.dashboard.handlers.work_ledger_recording import (
     _baseline_overflows,
     _board_header,
     _board_lock,
+    _conductor_unit,
     _crew_store,
     _current_item_and_board,
     _drain_before_cancelling,
@@ -1108,7 +1109,7 @@ async def _bootstrap(
 def _set_pair_field(action: str, value: Any) -> Any:
     """A pair field as the entry logs it: a retire that unbound the item logs ``""``,
     since an absent field reads as "unchanged" to the fold."""
-    if action == "retire":
+    if action in ("retire", "release"):
         return value or ""
     return value
 
@@ -1151,6 +1152,14 @@ def _write(key: str, action: str, cleaned: dict[str, Any]) -> dict[str, Any]:
             worker_session_key=cleaned.get("worker_session_key"),
             worker_instance_id=cleaned.get("worker_instance_id"),
             reason=cleaned.get("reason"),
+        )
+    if action == "release":
+        # Reached only from the history delete (``release_deleted_worker``), never
+        # from the record route: ``release`` is not in :data:`RECORD_ACTIONS`.
+        return work_ledger.apply_local_release(
+            key,
+            str(cleaned.get("item_id") or ""),
+            worker_session_key=cleaned.get("worker_session_key"),
         )
     if action == "bind" and cleaned.get("worker_instance_id"):
         # Reached only from the gateway's own remote create, never from the record
@@ -1199,3 +1208,85 @@ def _write(key: str, action: str, cleaned: dict[str, Any]) -> dict[str, Any]:
         concurrency_cap=cleaned.get("concurrency_cap"),
         new_goal=cleaned.get("new_goal"),
     )
+
+
+# ── a deleted worker chat's release ───────────────────────────────────────
+
+#: The history delete's refusal when the worker's open item could not be released.
+CODE_WORKER_RELEASE_UNRECORDED = "worker_release_unrecorded"
+
+
+def _refuse_release(worker: str, why: str) -> web.Response:
+    logger.warning("History delete refused for worker %s: %s", worker, why)
+    return web.json_response(
+        {
+            "error": (
+                "This chat is the worker of an open work-board item, and that item could "
+                f"not be released ({why}), so the chat was not deleted. Deleting it now "
+                "would let a later chat with the same key report into that item. Try again."
+            ),
+            "code": CODE_WORKER_RELEASE_UNRECORDED,
+        },
+        status=409,
+    )
+
+
+async def release_deleted_worker(state: DashboardState, history_key: str) -> web.Response | None:
+    """Release the open LOCAL item *history_key*'s worker chat is bound to.
+
+    Called by the history delete (``sessions_parts.delete_routes``) inside the row's
+    delete-in-flight window and BEFORE the unlink. A worker binding is keyed on the
+    slot key, which is recycled, so a later chat under the same key would otherwise
+    be routed to this item, and a rebuild would write the binding back. The release
+    is a recorded conductor-board ``release`` entry, so the ``work`` fold, and every
+    rebuild from it, holds the item open and unbound.
+
+    ``None`` when nothing needed releasing or the release was recorded; otherwise the
+    409 ``worker_release_unrecorded`` the delete must answer, with nothing unlinked.
+    The worker is ``session_ledger.ledger_key(history_key)``, the exact spelling every
+    bind stores under; no other fold is tried, so a chat whose key only folds alike
+    under another rule keeps its binding.
+
+    Left alone: no binding; a hub mailbox binding (``close_work_item_for_slot`` closes
+    those after the unlink); and a binding whose item is terminal, remote, gone or no
+    longer names this worker, since none of those routes the worker.
+    """
+    # Call-time, as ``remote_work_item`` reads it: the mailbox module is not loaded
+    # at boot.
+    from kiro_crew.remote_dispatch_mailbox import is_mailbox
+
+    worker = session_ledger.ledger_key(history_key)
+    if not worker or "\0" in worker:
+        return None
+    try:
+        binding = await asyncio.to_thread(work_ledger.read_binding, worker, strict=True)
+        if binding is None or is_mailbox(binding[0]):
+            return None
+        board, item_id = binding
+        item = await asyncio.to_thread(work_ledger.read_work_item, board, item_id, strict=True)
+    except (OSError, WorkLedgerError):
+        return _refuse_release(worker, "its binding or item could not be read")
+    if (
+        item is None
+        or item.is_terminal
+        or item.worker_instance_id
+        or item.worker_session_key != worker
+    ):
+        return None
+    if not crew_log_emit.enabled():
+        return _refuse_release(worker, "the crew log is off")
+    unit = await asyncio.to_thread(_conductor_unit, state, board)
+    if not unit:
+        return _refuse_release(worker, "the board's crew log unit is not known")
+    resp = await _record_conductor_write(
+        state,
+        board,
+        unit,
+        "release",
+        {"action": "release", "item_id": item_id, "worker_session_key": worker},
+        operation="history_delete.release",
+    )
+    if resp.status == 200:
+        logger.info("History delete: released item %s of board %s from %s", item_id, board, worker)
+        return None
+    return _refuse_release(worker, f"the board refused it with HTTP {resp.status}")

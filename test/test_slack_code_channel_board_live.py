@@ -690,6 +690,9 @@ _LEDGER_CASES = {
             ],
         }
     ],
+    # The history delete releasing a deleted worker chat's local item: the row
+    # loses its worker, so the board refreshes on it too.
+    "release": [{"action": "release", "item_id": "it_p", "worker_session_key": ""}],
     "close": [{"action": "close", "item_id": "it_p", "state": "abandoned", "decision": "x"}],
     # The conductor recording why a question waits on the person (not its answer).
     "ask": [
@@ -748,6 +751,7 @@ def test_every_ledger_write_and_every_report_status_refreshes_the_board(monkeypa
             "accept",
             "steer",
             "ask",
+            "release",
             "retire",
             "destroy",
             "close",
