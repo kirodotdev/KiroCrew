@@ -2,9 +2,11 @@
 
 A member of :data:`~kiro_crew.agent_sdk.backends.ACP_BACKENDS_MODEL_AT_LAUNCH` (or
 :data:`~kiro_crew.agent_sdk.backends.ACP_BACKENDS_EFFORT_AT_LAUNCH`) reads its model
-(effort) from its argv when it starts and offers no ACP request that changes it. So a
-switch replaces the process, between turns: the client records the new value, which
-the harness's launch reads (``_model``, ``_launch_effort``), and
+(effort) from its argv when it starts and offers no ACP request that changes it; a
+member of :data:`~kiro_crew.agent_sdk.backends.ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH`
+reads its context tier there, so a model switch that changes the tier takes the same
+path. So a switch replaces the process, between turns: the client records the new value,
+which the harness's launch reads (``_model``, ``_launch_effort``), and
 :func:`kiro_crew.acp.relaunch_reload.relaunch_and_reload` ends the process, starts one
 that reads it and ``session/load``s the same session id there. It runs now, so the
 switch lands or fails here rather than on the person's next message.
@@ -28,6 +30,7 @@ from kiro_crew.acp.runtime_models import DEFAULT_MODEL
 from kiro_crew.acp.transport_errors import AcpError, AcpModelUnavailable
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_STRANDS,
+    ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH,
     ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
 )
@@ -65,8 +68,10 @@ def switch_barrier(client: AcpClient) -> AbstractAsyncContextManager[Any]:
     refuses. Only a member of the launch-time sets takes it: every other harness's
     start is unchanged (harness-parity H13).
     """
-    if client.backend in ACP_BACKENDS_MODEL_AT_LAUNCH or (
-        client.backend in ACP_BACKENDS_EFFORT_AT_LAUNCH
+    if (
+        client.backend in ACP_BACKENDS_MODEL_AT_LAUNCH
+        or client.backend in ACP_BACKENDS_EFFORT_AT_LAUNCH
+        or client.backend in ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH
     ):
         lock = getattr(client, "_launch_tuning_lock", None)
         if lock is not None:
@@ -133,6 +138,11 @@ async def switch_launch_tuning(
         session_id = client._session_id
         prior_model, prior_effort = client._model, client._launch_effort
         client._model, client._launch_effort = target_model, target_effort
+        explicit_tier_switch = (
+            model is not None and client.backend in ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH
+        )
+        if explicit_tier_switch:
+            client._launch_model_explicit = True
         try:
             await relaunch_and_reload(client)
         except SessionNotReloadedError as exc:
@@ -143,6 +153,9 @@ async def switch_launch_tuning(
             # A start that failed keeps its own remedy (a refused id, a missing CLI).
             client._model, client._launch_effort = prior_model, prior_effort
             raise
+        finally:
+            if explicit_tier_switch:
+                client._launch_model_explicit = False
     logger.info(
         "%s relaunched for session %s (model=%s effort=%s)",
         client.backend,
@@ -156,15 +169,20 @@ async def switch_launch_tuning(
 async def switch_launch_model(
     client: AcpClient, model_id: str, *, effort: str | None = None
 ) -> None:
-    """``set_model`` for a model-at-launch harness: refuse a foreign id, else relaunch.
+    """Relaunch for a model or context-tier change, preserving explicit-pick semantics.
 
     An id another harness's catalog owns (a kiro-cli id picked before switching
     harness, a fallback chain entry) is never launched on: the Strands launch drops it
     and would run its default while the chat named the foreign model. It is refused
     as unavailable, so a picker answers 4xx and a fallback walk skips it. *effort*,
     when given, rides the same relaunch.
+
+    A context-tier harness instead judges the model on the wire after reload,
+    through the same strict selection path as a switch within the current tier.
     """
-    if _foreign_to(client, model_id):
+    # A context-tier harness selects its model on the wire, where the adapter
+    # judges explicit picks. Another catalog listing that id is no refusal.
+    if client.backend not in ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH and _foreign_to(client, model_id):
         raise AcpModelUnavailable(model_id, [], backend=client.backend)
     if not await switch_launch_tuning(client, model=model_id, effort=effort):
         return

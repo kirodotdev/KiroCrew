@@ -253,6 +253,7 @@ async def _try_live_model_switch(
     wire = _wire_model_id(provider, model_name)
     if not wire:
         return False
+    changes_tier = provider.changes_context_tier(wire) is True
     try:
         await provider.client.set_model(wire)
     except AcpModelUnavailable:
@@ -262,7 +263,7 @@ async def _try_live_model_switch(
         # Propagate so the handler answers 4xx and the slot keeps its old model.
         raise
     except Exception as exc:
-        if provider.switches_by_relaunch is True:
+        if provider.switches_by_relaunch is True or changes_tier:
             # A relaunch that failed put the prior model back on the same chat; a
             # reset would cold-start on the refused model and fail the same way.
             raise
@@ -761,6 +762,10 @@ async def switch_slot_model(
         # the pop: the switch is committed, the response carries an advisory
         # warning (agent-handler precedent via _reset_slot_session_or_warn).
         teardown_incomplete = False
+        changes_tier = (
+            isinstance(provider, AcpProvider)
+            and provider.changes_context_tier(_wire_model_id(provider, model_name)) is True
+        )
         try:
             went_live = await _try_live_model_switch(name, slot, provider, model_name)
         except AcpModelUnavailable as exc:
@@ -776,7 +781,7 @@ async def switch_slot_model(
             logger.warning("Slot %s model rejected: %s", name, exc)
             return web.json_response({"error": str(exc), "code": "model_unavailable"}, status=400)
         except Exception as exc:
-            if provider is None or provider.switches_by_relaunch is not True:
+            if not changes_tier and (provider is None or provider.switches_by_relaunch is not True):
                 raise
             # A relaunching harness refused the pick and kept its model, so the
             # slot keeps it too (same answer as an unavailable model).
