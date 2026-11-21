@@ -5434,8 +5434,33 @@ The mechanism is one extra window plus one env value, applied at three seams:
   logs a warning naming the resolved index path and the session starts, as a resume
   did before the index existed; after a gateway restart the key may rejoin its own earlier
   tree, never another key's. A resume
-  (`resume_sid` set, persistent memory only) reads the binding with `agent_scratch_trees.recorded_tree` as
-  `shared_scratch`; the in-process cache is optional for restart durability.
+  (`resume_sid` set, persistent memory only) reads the binding with `agent_scratch_trees.recorded_tree` and
+  passes it as `shared_scratch` only after an ownership check
+  (`session_allocation_parts.scratch_ownership._recorded_tree_of_own_session_tree`); the
+  in-process cache is optional for restart durability. The check places every key bound to
+  the directory, plus any key in its quarantine mark, in a session tree: a dashboard chat by
+  its live slot, a subagent by the `parent_session` of its run record. A chat with no live slot
+  counts as its own tree. The gateway reader also says whether each placement is verified
+  (`crew_mode.share_tree_placement`): not when a hop came from a metadata line's own unchecked
+  claim or when the root is not a live slot, which covers the unverified-creator sentinel and a
+  `cron:` creator. An unverified chat counts as its own tree. A key that cannot be placed (a cron job, a channel thread, a subagent
+  whose run record was pruned) also counts as its own, unverified tree: a co-owner is never
+  dropped from the comparison. A dedicated subagent's binding also records the
+  parent session the gateway spawned it for; once its run record is pruned, that parent counts
+  only when it resolves, verified, to the same root as another current owner. A subagent whose
+  parent chain (run records, or parent rows where a record is pruned) runs through owners of
+  the same directory to a channel or cron owner takes that owner's identity and flag. Owners that
+  resolve to one tree rejoin. When they disagree, the check loads the persisted lineage (crew
+  log on and its session-tree projection seeded and settled) and places them again. Two or more
+  trees under a settled lineage, with every owner verified, retire every binding to the directory and mark it with those owners in one index write
+  (`agent_scratch_trees.abandon_tree_all`; too large to write, nothing is retired on disk and
+  the mark is held), and the resume starts in a fresh directory. `parent_work_scratch_dir`
+  never hands a marked directory to a new spawn, and a respawn never remounts one (`acp/launch.py`). An
+  unavailable lineage quarantines the directory instead: nothing is retired, and the
+  resume starts in a fresh directory. While a directory carries a mark, any marked owner whose
+  tree cannot be resolved also refuses it, and the mark clears only when every marked owner
+  resolves to the one tree. Retirement and the mark it may need run as one shielded unit, so
+  a cancelled resume cannot leave one without the other.
   A fresh conversation on a reused key, including a provider switch, starts its own tree. The
   index is `.trees.json` in the managed root, not `session_map.json`: the root is
   masked from every sandboxed process, while the session map is agent-writable,

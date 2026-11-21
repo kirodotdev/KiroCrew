@@ -26,6 +26,7 @@ def isolated_tree_bindings(_floor_monkeypatch) -> None:
     _floor_monkeypatch.setattr(trees, "_TREE_INDEX_UNPERSISTED", set(), raising=False)
     _floor_monkeypatch.setattr(trees, "_TREE_INDEX_RETIRED_TICKET", -1, raising=False)
     _floor_monkeypatch.setattr(trees, "_TREE_INDEX_DISK_SNAPSHOT", None, raising=False)
+    _floor_monkeypatch.setattr(trees, "_QUARANTINE_LIVE", {}, raising=False)
 
 
 @pytest.fixture(name="scratch_root")
@@ -42,6 +43,21 @@ class TestAResumedKeyRejoinsItsTree:
     The gateway keeps the index inside the masked root and passes the recorded
     tree as ``shared_scratch`` when the conversation's process starts.
     """
+
+    @pytest.fixture(autouse=True)
+    def settled_lineage(self, _floor_monkeypatch) -> None:
+        """The persisted session-tree lineage reads as loaded unless a test says not."""
+        import importlib.util
+
+        self.real_lineage_reason = None
+        if importlib.util.find_spec("kiro_crew.session_allocation_parts.scratch_ownership") is None:
+            return  # a tree without the check: nothing to stub
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        self.real_lineage_reason = getattr(scratch_ownership, "_lineage_unavailable_reason", None)
+        _floor_monkeypatch.setattr(
+            scratch_ownership, "_lineage_unavailable_reason", lambda: "", raising=False
+        )
 
     def test_the_index_round_trips_and_prunes_reclaimed_trees(self, scratch_root: Path) -> None:
         scratch_root.mkdir(parents=True)
@@ -159,6 +175,843 @@ class TestAResumedKeyRejoinsItsTree:
         finally:
             await mgr.close_all()
         assert factory.call_args.kwargs["shared_scratch"] == tree
+
+    @pytest.mark.asyncio
+    async def test_unrelated_trees_recording_one_directory_resume_into_their_own(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        """Three unrelated trees recorded on one directory each resume without it."""
+        from kiro_crew.acp import chat_runtime_sharing
+
+        monkeypatch.setattr(
+            chat_runtime_sharing, "_tree_placement_reader", lambda key: (key, True), raising=False
+        )
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        keys = ("dashboard:chat-1", "dashboard:chat-2", "dashboard:chat-3")
+        for key in keys:
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()  # a gateway restart: only the disk rows remain
+        bound = []
+        for key in keys:
+            mgr, factory = self._manager("sid-1", None)
+            try:
+                await mgr.get_or_create(key, agent="kirocrew")
+            finally:
+                await mgr.close_all()
+            bound.append(factory.call_args.kwargs.get("shared_scratch"))
+        assert bound == [None, None, None]
+
+    @pytest.mark.asyncio
+    async def test_members_of_one_tree_recording_one_directory_still_rejoin_it(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        from kiro_crew.acp import chat_runtime_sharing
+
+        monkeypatch.setattr(
+            chat_runtime_sharing,
+            "_tree_placement_reader",
+            lambda key: ("dashboard:chat-lead", True),
+            raising=False,
+        )
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-lead-abcdef01"
+        tree.mkdir()
+        for key in ("dashboard:chat-lead", "dashboard:chat-worker"):
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        mgr, factory = self._manager("sid-1", None)
+        try:
+            await mgr.get_or_create("dashboard:chat-worker", agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs["shared_scratch"] == tree
+
+    def _real_reader(
+        self, monkeypatch, slots: dict[str, str], saved: dict[str, str] | None = None
+    ) -> None:
+        """The gateway's own slot readers over *slots* (slot name -> creator)."""
+        from types import SimpleNamespace
+
+        from kiro_crew.acp import chat_runtime_sharing
+        from kiro_crew.dashboard.state_parts import dashboard_state
+
+        state = SimpleNamespace(
+            _slots={
+                name: SimpleNamespace(
+                    key=name,
+                    _created_by=creator,
+                    _saved_created_by=(saved or {}).get(name, ""),
+                    agent="x",
+                )
+                for name, creator in slots.items()
+            }
+        )
+        placement = getattr(dashboard_state, "_share_tree_placement", None)
+        if placement is not None:
+            monkeypatch.setattr(
+                chat_runtime_sharing,
+                "_tree_placement_reader",
+                lambda key: placement(state, key),
+                raising=False,
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("crew_log_on", [False, True])
+    async def test_two_chats_with_an_unverified_creator_never_share_a_directory(
+        self, scratch_root: Path, monkeypatch, crew_log_on: bool
+    ) -> None:
+        """Unverified claims (crew log off, or a forged created_by) end at one sentinel."""
+        from kiro_crew.dashboard.session_control_parts.session_revive import UNVERIFIED_CREATOR
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        monkeypatch.setattr(
+            scratch_ownership,
+            "_lineage_unavailable_reason",
+            (lambda: "") if crew_log_on else (lambda: "the crew log is off"),
+            raising=False,
+        )
+        self._real_reader(
+            monkeypatch,
+            {"chat-1-1790000000": UNVERIFIED_CREATOR, "chat-2-1790000000": UNVERIFIED_CREATOR},
+        )
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        keys = ("dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000")
+        for key in keys:
+            trees.record_tree(key, tree)
+        trees.quarantine_tree(tree, frozenset(keys))  # an earlier refusal's mark
+        trees._TREE_INDEX_LIVE.clear()  # a gateway restart
+        for key in keys:
+            assert (
+                await scratch_ownership._recorded_tree_of_own_session_tree(key, MagicMock()) is None
+            )
+        assert trees.quarantined_keys(tree) == frozenset(keys)  # never cleared
+        assert trees.keys_on_tree(tree) == frozenset(keys)  # nothing retired
+
+    @pytest.mark.asyncio
+    async def test_a_forged_saved_creator_under_a_settled_lineage_never_merges_two_chats(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        """Restore keeps the forged claim as ``_saved_created_by``; the walk uses it."""
+        from kiro_crew import crew_mode
+        from kiro_crew.dashboard.session_control_parts.session_revive import UNVERIFIED_CREATOR
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        monkeypatch.setattr(crew_mode, "lineage_is_settled", lambda: True)
+        monkeypatch.setattr(crew_mode, "persisted_tree_slots", lambda: frozenset())
+        monkeypatch.setattr(crew_mode, "persisted_parents", lambda: {})
+        from kiro_crew.dashboard.session_control_parts import crew_filing
+
+        monkeypatch.setattr(
+            crew_filing, "_frame_parents", lambda state: {k: None for k in state._slots}
+        )
+        self._real_reader(
+            monkeypatch,
+            {
+                "chat-1-1790000000": UNVERIFIED_CREATOR,
+                "chat-2-1790000000": UNVERIFIED_CREATOR,
+                "chat-9-1790000000": "",
+            },
+            saved={
+                "chat-1-1790000000": "chat-9-1790000000",
+                "chat-2-1790000000": "chat-9-1790000000",
+            },
+        )
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        keys = ("dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000")
+        for key in keys:
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        assert (
+            await scratch_ownership._recorded_tree_of_own_session_tree(keys[0], MagicMock()) is None
+        )
+        assert trees.quarantined_keys(tree) == frozenset(keys)
+        assert trees.keys_on_tree(tree) == frozenset(keys)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("creator", ["cron:job-j", "chat-lead-1790000000"])
+    async def test_chats_whose_creator_is_no_live_slot_stay_distinct_owners(
+        self, scratch_root: Path, monkeypatch, creator: str
+    ) -> None:
+        """Two chats of one cron job, or of a lead whose slot did not come back."""
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        self._real_reader(monkeypatch, {"chat-1-1790000000": creator, "chat-2-1790000000": creator})
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        keys = ("dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000")
+        for key in keys:
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        assert (
+            await scratch_ownership._recorded_tree_of_own_session_tree(keys[0], MagicMock()) is None
+        )
+        assert trees.quarantined_keys(tree) == frozenset(keys)  # quarantined, never retired
+        assert trees.keys_on_tree(tree) == frozenset(keys)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("creator", ["", "unverified:creator"])
+    async def test_a_directory_whose_only_owner_is_the_resuming_chat_rejoins(
+        self, scratch_root: Path, monkeypatch, creator: str
+    ) -> None:
+        """Including a crew-log-off chat whose own creator is unverified."""
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        self._real_reader(monkeypatch, {"chat-1-1790000000": creator})
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        trees.record_tree("dashboard:chat-1-1790000000", tree)
+        trees._TREE_INDEX_LIVE.clear()
+        found = await scratch_ownership._recorded_tree_of_own_session_tree(
+            "dashboard:chat-1-1790000000", MagicMock()
+        )
+        assert found == tree
+
+    @pytest.mark.asyncio
+    async def test_a_worker_with_a_verified_shared_creator_still_rejoins_its_lead(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        self._real_reader(
+            monkeypatch, {"chat-1-1790000000": "", "chat-2-1790000000": "chat-1-1790000000"}
+        )
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        for key in ("dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000"):
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        found = await scratch_ownership._recorded_tree_of_own_session_tree(
+            "dashboard:chat-2-1790000000", MagicMock()
+        )
+        assert found == tree
+
+    @pytest.mark.asyncio
+    async def test_a_chat_rejoins_the_directory_its_dedicated_subagent_also_recorded(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        """A subagent key is placed through its run's parent, so it is no foreign tree."""
+        from kiro_crew import subagent_persistence
+
+        self._real_reader(monkeypatch, {"chat-1-1790000000": ""})
+        monkeypatch.setattr(
+            subagent_persistence,
+            "read_state",
+            lambda run_id: (
+                {"parent_session": "dashboard:chat-1-1790000000"} if run_id == "abc123" else None
+            ),
+        )
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        for key in ("dashboard:chat-1-1790000000", "subagent:abc123"):
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        mgr, factory = self._manager("sid-1", None)
+        try:
+            await mgr.get_or_create("dashboard:chat-1-1790000000", agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs["shared_scratch"] == tree
+
+    @pytest.mark.asyncio
+    async def test_a_co_owner_that_cannot_be_placed_quarantines_an_unmarked_directory(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        """GPT's sequence: B's dedicated subagent's run record is pruned, then A resumes."""
+        from kiro_crew import subagent_persistence
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        self._real_reader(monkeypatch, {"chat-1-1790000000": "", "chat-2-1790000000": ""})
+        monkeypatch.setattr(subagent_persistence, "read_state", lambda run_id: None)  # pruned
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        (tree / "staged.txt").write_text("B's file")
+        keys = ("dashboard:chat-1-1790000000", "subagent:b-worker")
+        for key in keys:
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        assert (
+            await scratch_ownership._recorded_tree_of_own_session_tree(keys[0], MagicMock()) is None
+        )
+        assert trees.quarantined_keys(tree) == frozenset(keys)
+        assert trees.keys_on_tree(tree) == frozenset(keys)  # quarantined, never retired
+        assert (tree / "staged.txt").read_text() == "B's file"
+
+    async def _resume_with_pruned_subagent(
+        self, scratch_root: Path, monkeypatch, recorded: str | None
+    ) -> tuple[Path | None, Path]:
+        """Chat A and a dedicated subagent on A's directory; the run record is pruned."""
+        from kiro_crew import subagent_persistence
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        self._real_reader(monkeypatch, {"chat-1-1790000000": "", "chat-2-1790000000": ""})
+        monkeypatch.setattr(subagent_persistence, "read_state", lambda run_id: None)
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        for key in ("dashboard:chat-1-1790000000", "subagent:worker"):
+            trees.record_tree(key, tree)
+        if recorded is not None:
+            assert trees.record_parent("subagent:worker", recorded)
+        trees._TREE_INDEX_LIVE.clear()  # a gateway restart
+        found = await scratch_ownership._recorded_tree_of_own_session_tree(
+            "dashboard:chat-1-1790000000", MagicMock()
+        )
+        return found, tree
+
+    @pytest.mark.asyncio
+    async def test_a_chat_keeps_its_directory_after_its_own_subagents_record_is_pruned(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        found, tree = await self._resume_with_pruned_subagent(
+            scratch_root, monkeypatch, "dashboard:chat-1-1790000000"
+        )
+        assert found == tree
+        assert trees.quarantined_keys(tree) is None
+
+    @pytest.mark.asyncio
+    async def test_a_recorded_parent_in_another_tree_quarantines(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        found, tree = await self._resume_with_pruned_subagent(
+            scratch_root, monkeypatch, "dashboard:chat-2-1790000000"
+        )
+        assert found is None
+        assert trees.quarantined_keys(tree) is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("recorded", [None, "dashboard:chat-gone-1790000000"])
+    async def test_a_missing_or_unresolvable_recorded_parent_quarantines(
+        self, scratch_root: Path, monkeypatch, recorded: str | None
+    ) -> None:
+        found, tree = await self._resume_with_pruned_subagent(scratch_root, monkeypatch, recorded)
+        assert found is None
+        assert trees.quarantined_keys(tree) is not None
+
+    @pytest.mark.asyncio
+    async def test_an_unseeded_lineage_retires_nothing_and_does_not_hand_the_directory_back(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        """Unsettled, a shared directory is neither rejoined nor retired: fresh scratch."""
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        monkeypatch.setattr(
+            scratch_ownership,
+            "_lineage_unavailable_reason",
+            lambda: "the session-tree lineage is not settled",
+            raising=False,
+        )
+        self._real_reader(monkeypatch, {"chat-1-1790000000": ""})
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        fresh = scratch_root / "dashboard-chat-1-fresh002"
+        tree.mkdir()
+        fresh.mkdir()
+        for key in ("dashboard:chat-1-1790000000", "dashboard:chat-closed-1790000000"):
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        mgr, factory = self._manager("sid-1", fresh)
+        try:
+            await mgr.get_or_create("dashboard:chat-1-1790000000", agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs.get("shared_scratch") is None
+        assert tree.is_dir()
+        assert trees.keys_on_tree(tree) == frozenset({"dashboard:chat-closed-1790000000"})
+        assert trees.recorded_tree("dashboard:chat-1-1790000000") == fresh
+
+    @pytest.mark.asyncio
+    async def test_with_the_crew_log_off_two_unrelated_chats_never_share_a_directory(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        monkeypatch.setattr(
+            scratch_ownership,
+            "_lineage_unavailable_reason",
+            self.real_lineage_reason,
+            raising=False,
+        )
+        monkeypatch.setattr(crew_log_emit, "enabled", lambda: False)
+        self._real_reader(monkeypatch, {"chat-1-1790000000": "", "chat-2-1790000000": ""})
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        keys = ("dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000")
+        for key in keys:
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        bound = []
+        for key in keys:
+            mgr, factory = self._manager("sid-1", None)
+            try:
+                await mgr.get_or_create(key, agent="kirocrew")
+            finally:
+                await mgr.close_all()
+            bound.append(factory.call_args.kwargs.get("shared_scratch"))
+        assert bound == [None, None]
+        assert trees.quarantined_keys(tree) == frozenset(keys)
+
+    @pytest.mark.asyncio
+    async def test_a_chat_left_alone_on_a_refused_directory_does_not_rejoin_it(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        """A is refused and moves away; B, now the only binding, is still refused."""
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        monkeypatch.setattr(
+            scratch_ownership,
+            "_lineage_unavailable_reason",
+            self.real_lineage_reason,
+            raising=False,
+        )
+        monkeypatch.setattr(crew_log_emit, "enabled", lambda: False)
+        self._real_reader(monkeypatch, {"chat-1-1790000000": "", "chat-2-1790000000": ""})
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        fresh = scratch_root / "dashboard-chat-1-fresh002"
+        tree.mkdir()
+        fresh.mkdir()
+        a, b = "dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000"
+        for key in (a, b):
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        mgr, factory = self._manager("sid-1", fresh)
+        try:
+            await mgr.get_or_create(a, agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs.get("shared_scratch") is None
+        assert trees.keys_on_tree(tree) == frozenset({b})
+        mgr, factory = self._manager("sid-1", None)
+        try:
+            await mgr.get_or_create(b, agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs.get("shared_scratch") is None
+
+    @pytest.mark.asyncio
+    async def test_a_mark_that_cannot_be_written_still_refuses_the_chat_left_alone(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        monkeypatch.setattr(
+            scratch_ownership,
+            "_lineage_unavailable_reason",
+            self.real_lineage_reason,
+            raising=False,
+        )
+        monkeypatch.setattr(crew_log_emit, "enabled", lambda: False)
+        monkeypatch.setattr(trees, "_write_marks", lambda root, marks, own: False)
+        self._real_reader(monkeypatch, {"chat-1-1790000000": "", "chat-2-1790000000": ""})
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        fresh = scratch_root / "dashboard-chat-1-fresh002"
+        tree.mkdir()
+        fresh.mkdir()
+        a, b = "dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000"
+        for key in (a, b):
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        for key, scratch in ((a, fresh), (b, None)):
+            mgr, factory = self._manager("sid-1", scratch)
+            try:
+                await mgr.get_or_create(key, agent="kirocrew")
+            finally:
+                await mgr.close_all()
+            assert factory.call_args.kwargs.get("shared_scratch") is None
+        # The held mark went out with the next binding write that succeeded.
+        assert trees._MARKS_ROW in json.loads(
+            (scratch_root / trees.TREE_INDEX_FILENAME).read_text()
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_retirement_keeps_the_mark(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        self._real_reader(monkeypatch, {"chat-1-1790000000": "", "chat-2-1790000000": ""})
+        monkeypatch.setattr(trees, "abandon_tree_all", lambda tree, owners: False)
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        a, b = "dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000"
+        trees.record_tree(b, tree)
+        trees.quarantine_tree(tree, frozenset({a, b}))
+        trees._TREE_INDEX_LIVE.clear()
+        mgr, factory = self._manager("sid-1", None)
+        try:
+            await mgr.get_or_create(b, agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs.get("shared_scratch") is None
+        assert trees.quarantined_keys(tree) == frozenset({a, b})
+
+    @pytest.mark.asyncio
+    async def test_a_failed_retirement_write_survives_a_restart_without_mounting(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        """GPT's sequence: retirement write fails, gateway restarts, the owner resumes."""
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        self._real_reader(monkeypatch, {"chat-1-1790000000": "", "chat-2-1790000000": ""})
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        (tree / "staged.txt").write_text("the other tree's file")
+        a, b = "dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000"
+        trees.record_tree(b, tree)
+        trees.quarantine_tree(tree, frozenset({a, b}))
+        trees._TREE_INDEX_LIVE.clear()
+        real_write = trees.atomic_write
+
+        def index_write_fails(path, *args, **kwargs):
+            if Path(path).name == trees.TREE_INDEX_FILENAME:
+                raise OSError("disk full")
+            return real_write(path, *args, **kwargs)
+
+        monkeypatch.setattr(trees, "atomic_write", index_write_fails)
+        mgr, factory = self._manager("sid-1", None)
+        try:
+            await mgr.get_or_create(b, agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs.get("shared_scratch") is None
+        assert trees._QUARANTINE_LIVE[tree.name] == frozenset({a, b})  # held in memory
+        monkeypatch.setattr(trees, "atomic_write", real_write)
+        assert trees.quarantine_tree(tree, frozenset({b}))  # the next refusal retries
+        assert tree.name not in trees._QUARANTINE_LIVE
+        # A gateway restart: only what is on disk remains.
+        trees._TREE_INDEX_LIVE.clear()
+        trees._QUARANTINE_LIVE.clear()
+        monkeypatch.setattr(trees, "_TREE_INDEX_DISK_SNAPSHOT", None)
+        assert trees.quarantined_keys(tree) == frozenset({a, b})
+        monkeypatch.setattr(
+            scratch_ownership, "_lineage_unavailable_reason", lambda: "the crew log is off"
+        )
+        mgr, factory = self._manager("sid-1", None)
+        try:
+            await mgr.get_or_create(b, agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs.get("shared_scratch") is None
+        assert (tree / "staged.txt").is_file()
+
+    @pytest.mark.asyncio
+    async def test_with_the_crew_log_off_a_chat_and_its_own_subagent_rejoin_after_a_restart(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        from kiro_crew import subagent_persistence
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        monkeypatch.setattr(
+            scratch_ownership,
+            "_lineage_unavailable_reason",
+            self.real_lineage_reason,
+            raising=False,
+        )
+        monkeypatch.setattr(crew_log_emit, "enabled", lambda: False)
+        self._real_reader(monkeypatch, {"chat-1-1790000000": ""})
+        monkeypatch.setattr(
+            subagent_persistence,
+            "read_state",
+            lambda run_id: {"parent_session": "dashboard:chat-1-1790000000"},
+        )
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        for key in ("dashboard:chat-1-1790000000", "subagent:abc123"):
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()  # a gateway restart
+        mgr, factory = self._manager("sid-1", tree)
+        try:
+            await mgr.get_or_create("dashboard:chat-1-1790000000", agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs["shared_scratch"] == tree
+        assert trees.quarantined_keys(tree) is None
+
+    @pytest.mark.asyncio
+    async def test_with_the_crew_log_off_a_chat_with_no_live_slot_still_refuses(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        monkeypatch.setattr(
+            scratch_ownership,
+            "_lineage_unavailable_reason",
+            self.real_lineage_reason,
+            raising=False,
+        )
+        monkeypatch.setattr(crew_log_emit, "enabled", lambda: False)
+        self._real_reader(monkeypatch, {"chat-1-1790000000": ""})
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        keys = ("dashboard:chat-1-1790000000", "dashboard:chat-closed-1790000000")
+        for key in keys:
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        mgr, factory = self._manager("sid-1", None)
+        try:
+            await mgr.get_or_create(keys[0], agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs.get("shared_scratch") is None
+        assert trees.quarantined_keys(tree) == frozenset(keys)
+
+    @pytest.mark.asyncio
+    async def test_a_marked_owner_that_can_no_longer_be_placed_keeps_the_directory_refused(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        """GPT's sequence: quarantine, cancel before rebind, prune the run record, resume A."""
+        from kiro_crew import subagent_persistence
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        monkeypatch.setattr(
+            scratch_ownership,
+            "_lineage_unavailable_reason",
+            self.real_lineage_reason,
+            raising=False,
+        )
+        monkeypatch.setattr(crew_log_emit, "enabled", lambda: False)
+        self._real_reader(monkeypatch, {"chat-1-1790000000": "", "chat-2-1790000000": ""})
+        records = {"abc123": {"parent_session": "dashboard:chat-2-1790000000"}}
+        monkeypatch.setattr(subagent_persistence, "read_state", lambda run_id: records.get(run_id))
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        (tree / "staged.txt").write_text("B's file")
+        a, sub = "dashboard:chat-1-1790000000", "subagent:abc123"
+        for key in (a, sub):
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        # A's resume quarantines the directory; it is cancelled before A rebinds.
+        assert await scratch_ownership._recorded_tree_of_own_session_tree(a, MagicMock()) is None
+        assert trees.quarantined_keys(tree) == frozenset({a, sub})
+        records.clear()  # the reaper prunes the finished subagent's run record
+        trees.abandon_tree(sub)
+        assert await scratch_ownership._recorded_tree_of_own_session_tree(a, MagicMock()) is None
+        assert trees.quarantined_keys(tree) == frozenset({a, sub})
+        assert (tree / "staged.txt").read_text() == "B's file"
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_retirement_with_a_failed_write_still_leaves_the_mark(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        """GPT's sequence: the resume is cancelled while the index write fails."""
+        from kiro_crew.session_allocation_parts import scratch_ownership
+
+        self._real_reader(monkeypatch, {"chat-1-1790000000": "", "chat-2-1790000000": ""})
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        (tree / "staged.txt").write_text("A's file")
+        a, b = "dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000"
+        for key in (a, b):
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        real_write = trees.atomic_write
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+
+        def failing_write(path, *args, **kwargs):
+            loop.call_soon_threadsafe(started.set)
+            if not release.wait(30):  # a lost-run bound; the test releases it in finally
+                raise OSError("the test never released the failing write")
+            raise OSError("disk full")
+
+        monkeypatch.setattr(trees, "atomic_write", failing_write)
+        task = asyncio.ensure_future(
+            scratch_ownership._recorded_tree_of_own_session_tree(a, MagicMock())
+        )
+        try:
+            await await_until(started, what="the retirement's index write")
+            task.cancel()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await await_until(task, what="the cancelled resume to finish its shielded write")
+        assert trees._QUARANTINE_LIVE[tree.name] == frozenset({a, b})  # held in memory
+        monkeypatch.setattr(trees, "atomic_write", real_write)
+        assert trees.quarantine_tree(tree, frozenset())  # the writes recover
+        (scratch_root / "dashboard-chat-1-fresh002").mkdir()
+        trees.record_tree(a, scratch_root / "dashboard-chat-1-fresh002")
+        # A gateway restart: B is the only binding left on the directory.
+        trees._TREE_INDEX_LIVE.clear()
+        trees._QUARANTINE_LIVE.clear()
+        monkeypatch.setattr(trees, "_TREE_INDEX_DISK_SNAPSHOT", None)
+        assert await scratch_ownership._recorded_tree_of_own_session_tree(b, MagicMock()) is None
+        assert (tree / "staged.txt").read_text() == "A's file"
+
+    @pytest.mark.asyncio
+    async def test_a_settled_lineage_of_one_tree_clears_the_mark_and_rejoins(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        self._real_reader(
+            monkeypatch, {"chat-1-1790000000": "", "chat-2-1790000000": "chat-1-1790000000"}
+        )
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        lead, worker = "dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000"
+        trees.record_tree(worker, tree)
+        trees.quarantine_tree(tree, frozenset({lead, worker}))
+        trees._TREE_INDEX_LIVE.clear()
+        mgr, factory = self._manager("sid-1", tree)
+        try:
+            await mgr.get_or_create(worker, agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs["shared_scratch"] == tree
+        assert trees.quarantined_keys(tree) is None
+
+    @pytest.mark.asyncio
+    async def test_a_settled_lineage_of_two_trees_retires_a_marked_directory(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        self._real_reader(monkeypatch, {"chat-1-1790000000": "", "chat-2-1790000000": ""})
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        a, b = "dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000"
+        trees.record_tree(b, tree)
+        trees.quarantine_tree(tree, frozenset({a, b}))
+        trees._TREE_INDEX_LIVE.clear()
+        mgr, factory = self._manager("sid-1", None)
+        try:
+            await mgr.get_or_create(b, agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs.get("shared_scratch") is None
+        assert trees.keys_on_tree(tree) == frozenset()
+        assert trees.quarantined_keys(tree) == frozenset({a, b})  # kept for later keys
+
+    @pytest.mark.asyncio
+    async def test_a_settled_lineage_of_two_trees_still_retires_the_directory(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        self._real_reader(monkeypatch, {"chat-1-1790000000": "", "chat-2-1790000000": ""})
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        for key in ("dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000"):
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        mgr, factory = self._manager("sid-1", None)
+        try:
+            await mgr.get_or_create("dashboard:chat-1-1790000000", agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs.get("shared_scratch") is None
+        assert trees.keys_on_tree(tree) == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_two_chats_with_no_live_slot_on_one_directory_are_refused(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        """A chat whose slot is not restored yet is its own tree, not unknown."""
+        self._real_reader(monkeypatch, {})
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        for key in ("dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000"):
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        mgr, factory = self._manager("sid-1", None)
+        try:
+            await mgr.get_or_create("dashboard:chat-1-1790000000", agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs.get("shared_scratch") is None
+        # No live slot: neither placement is verified, so quarantine, never retire.
+        assert trees.keys_on_tree(tree) != frozenset()
+        assert trees.quarantined_keys(tree) is not None
+
+    @pytest.mark.asyncio
+    async def test_two_slot_chats_of_different_trees_on_one_directory_are_refused(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        self._real_reader(monkeypatch, {"chat-1-1790000000": "", "chat-2-1790000000": ""})
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        for key in ("dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000"):
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        mgr, factory = self._manager("sid-1", None)
+        try:
+            await mgr.get_or_create("dashboard:chat-2-1790000000", agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs.get("shared_scratch") is None
+        assert trees.keys_on_tree(tree) == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_two_unrelated_resumes_at_once_neither_mounts_their_shared_directory(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        self._real_reader(monkeypatch, {"chat-1-1790000000": "", "chat-2-1790000000": ""})
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        keys = ("dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000")
+        for key in keys:
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        managers = [self._manager("sid-1", None) for _ in keys]
+        try:
+            await asyncio.gather(
+                *(mgr.get_or_create(key, agent="kirocrew") for (mgr, _), key in zip(managers, keys))
+            )
+        finally:
+            for mgr, _ in managers:
+                await mgr.close_all()
+        assert [f.call_args.kwargs.get("shared_scratch") for _, f in managers] == [None, None]
+
+    @pytest.mark.asyncio
+    async def test_a_resume_racing_the_refusal_of_its_directory_does_not_mount_it(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        """Retired between its two reads, a resume starts fresh instead of rebinding."""
+        self._real_reader(monkeypatch, {"chat-1-1790000000": "", "chat-2-1790000000": ""})
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        for key in ("dashboard:chat-1-1790000000", "dashboard:chat-2-1790000000"):
+            trees.record_tree(key, tree)
+        trees._TREE_INDEX_LIVE.clear()
+        real = trees.recorded_tree
+
+        def recorded_then_refused(key: str):
+            found = real(key)
+            trees.abandon_tree_all(tree, frozenset())  # the other chat's resume refuses it now
+            return found
+
+        monkeypatch.setattr(trees, "recorded_tree", recorded_then_refused)
+        mgr, factory = self._manager("sid-1", None)
+        try:
+            await mgr.get_or_create("dashboard:chat-2-1790000000", agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs.get("shared_scratch") is None
 
     @pytest.mark.asyncio
     async def test_a_resume_keeps_a_cwd_inside_its_rejoined_tree(

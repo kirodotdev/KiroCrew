@@ -620,7 +620,7 @@ class TestBootWiredGlobalsGoBack:
         from kiro_crew.decisions import impl_llm
 
         return [
-            chat_runtime_sharing._tree_root_reader,
+            chat_runtime_sharing._tree_placement_reader,
             subagent._parent_project_resolver,
             impl_llm._runner_factory,
         ]
@@ -637,7 +637,7 @@ class TestBootWiredGlobalsGoBack:
         from kiro_crew.decisions import impl_llm
 
         inherited = object()
-        monkeypatch.setattr(chat_runtime_sharing, "_tree_root_reader", inherited)
+        monkeypatch.setattr(chat_runtime_sharing, "_tree_placement_reader", inherited)
         monkeypatch.setattr(subagent, "_parent_project_resolver", inherited)
         monkeypatch.setattr(impl_llm, "_runner_factory", inherited)
 

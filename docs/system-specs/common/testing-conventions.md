@@ -3286,15 +3286,15 @@ modules when the worker leaves the group. Measured: 361 -> 51 MiB retained after
 `tree_scan` group, stream the read or clear the memo from a module-scoped fixture.
 
 **3. Never leave a closure over a test's state in a module global.** A setter such as
-`set_share_tree_reader(lambda key: ...)` keeps the state, and every `MagicMock` call it
+`set_share_tree_placement_reader(lambda key: ...)` keeps the state, and every `MagicMock` call it
 recorded, until something overwrites the global.
 
 ```python
 # Wrong: the 2,000-slot state and its mocks live until the next test builds a state
-set_share_tree_reader(lambda key: _share_tree_root(self, key))
+set_share_tree_placement_reader(lambda key: _share_tree_placement(self, key))
 
 # Right (test side): put back what the test inherited
-monkeypatch.setattr(sharing, "_tree_root_reader", sharing._tree_root_reader)
+monkeypatch.setattr(sharing, "_tree_placement_reader", sharing._tree_placement_reader)
 ```
 
 A global that production wires once at boot belongs in the floor's

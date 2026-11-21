@@ -1286,6 +1286,26 @@ class TestRoundThirteenFixes:
         assert store._try_write_source_path(str(index), "{}") is False
         assert index.read_text(encoding="utf-8").startswith("{")  # untouched
 
+    def test_a_quarantine_mark_in_the_scratch_index_survives_an_artifact_write(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The marks live in the scratch tree index, which the default-root fence
+        # above already covers: clearing one through artifact_update is refused.
+        from kiro_crew import agent_scratch_trees
+
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        index = scratch / agent_scratch_trees.TREE_INDEX_FILENAME
+        marked = (
+            '{"\\u0000quarantine": {"dashboard-chat-1-abcdef01": ["dashboard:chat-1"]}}'
+        )
+        index.write_text(marked, encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(scratch.parent))
+
+        assert store._try_read_source_path(str(index)) is None
+        assert store._try_write_source_path(str(index), "{}") is False
+        assert index.read_text(encoding="utf-8") == marked  # the mark is untouched
+
     @requires_symlinks
     @pytest.mark.parametrize("verb", ["read", "write"])
     @pytest.mark.parametrize("gate", ["canonical", "descriptor"])

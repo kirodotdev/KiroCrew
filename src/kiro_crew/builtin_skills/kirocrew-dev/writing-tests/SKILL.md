@@ -551,7 +551,7 @@ memory):
   conftest clears its module memos when the group ends), stream the read, or clear the
   memo from a module-scoped fixture.
 - **A closure over a test's state in a module global outlives the test.** A setter
-  such as `set_share_tree_reader(lambda key: ...)` keeps the state, and every mock call
+  such as `set_share_tree_placement_reader(lambda key: ...)` keeps the state, and every mock call
   it recorded, until something overwrites the global. Restore the global with
   `monkeypatch`, or have the floor restore it when production wires it once at boot.
 - **Collection is budgeted per item**

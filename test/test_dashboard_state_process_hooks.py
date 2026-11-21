@@ -28,7 +28,7 @@ from kiro_crew.messaging import turn_ceiling
 def _seams_restored(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """Every seam a state wires goes back to what this test inherited."""
     for module, name in (
-        (chat_runtime_sharing, "_tree_root_reader"),
+        (chat_runtime_sharing, "_tree_placement_reader"),
         (subagent, "_parent_project_resolver"),
         (impl_llm, "_runner_factory"),
     ):
@@ -55,7 +55,7 @@ def _forget(state_ref: weakref.ref) -> None:
 
 def test_the_hooks_answer_through_a_live_state(tmp_path) -> None:
     _wired(tmp_path)
-    assert chat_runtime_sharing._tree_root_reader is not None
+    assert chat_runtime_sharing._tree_placement_reader is not None
     assert chat_runtime_sharing.share_tree_root_of("dashboard:chat-x") == "dashboard:chat-x"
     assert subagent._parent_project_resolver is not None
     assert impl_llm._runner_factory is not None
@@ -64,14 +64,14 @@ def test_the_hooks_answer_through_a_live_state(tmp_path) -> None:
 def test_a_dropped_state_is_collected_and_the_hooks_answer_unwired(tmp_path) -> None:
     wired = _wired(tmp_path)
     state_ref = weakref.ref(wired)
-    reader = chat_runtime_sharing._tree_root_reader
+    reader = chat_runtime_sharing._tree_placement_reader
     resolver = subagent._parent_project_resolver
     factory = impl_llm._runner_factory
     del wired
 
     _forget(state_ref)
 
-    assert reader is not None and reader("dashboard:chat-x") == ""
+    assert reader is not None and reader("dashboard:chat-x") == ("", False)
     assert chat_runtime_sharing.share_tree_root_of("dashboard:chat-x") == "dashboard:chat-x"
     assert resolver is not None and resolver("dashboard:chat-x") == ()
     assert subagent.parent_project_dirs("dashboard:chat-x") == ()

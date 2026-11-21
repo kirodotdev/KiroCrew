@@ -102,29 +102,32 @@ def set_build_info(info: tuple[str, str]) -> None:
     _build_info = info
 
 
-def _share_tree_root(state: Any, session_key: str) -> str:
+def _share_tree_placement(state: Any, session_key: str) -> tuple[str, bool]:
     """The session key of *session_key*'s tree root, over this gateway's live slots.
 
     The provider hands a session key (``dashboard:chat-...``) while the slots, the
     creator edges and the persisted lineage are all keyed by slot name, so the key
     is folded to its slot name before the walk and the root slot is mapped back to
-    the session key its turns run on (the member record is read by that key). No I/O.
+    the session key its turns run on (the member record is read by that key). The
+    flag is :func:`crew_mode.share_tree_placement`'s verdict on the walk. No I/O.
     """
     from kiro_crew import crew_mode
     from kiro_crew.dashboard.chat_utils_slots import _history_key_for, effective_session_key
     from kiro_crew.dashboard.session_control_parts.crew_filing import _frame_parents
 
     slot_key = _slot_directory._normalize_slot_key(session_key)
-    root = crew_mode.share_tree_root(
+    root, verified = crew_mode.share_tree_placement(
         state._slots,
         slot_key,
         _frame_parents(state),
         settled=crew_mode.lineage_is_settled(),
     )
     if root == slot_key:
-        return session_key
+        return session_key, verified
     root_slot = state._slots.get(root)
-    return effective_session_key(root_slot) if root_slot is not None else _history_key_for(root)
+    if root_slot is not None:
+        return effective_session_key(root_slot), verified
+    return _history_key_for(root), verified
 
 
 # ── Constants ──
@@ -140,7 +143,7 @@ def _while_alive(owner: Any, call: Callable[..., Any], gone: Callable[..., Any])
     """A hook for a process-global seam that does not keep *owner* alive.
 
     ``DashboardState`` wires a few module globals that live for the process
-    (``set_share_tree_reader``, ``set_parent_project_resolver``,
+    (``set_share_tree_placement_reader``, ``set_parent_project_resolver``,
     ``impl_llm.set_runner_factory``). A closure over the state there pins the state, and
     everything it holds, until the next state replaces it. The gateway keeps its state for
     the process, so this answers exactly as before; once *owner* is gone the hook returns
@@ -1056,9 +1059,11 @@ class DashboardState:
                 self, key
             )
         # Chat runtime sharing places a chat only inside its own session tree.
-        from kiro_crew.agent_sdk.chat_runtime_sharing import set_share_tree_reader
+        from kiro_crew.agent_sdk.chat_runtime_sharing import set_share_tree_placement_reader
 
-        set_share_tree_reader(_while_alive(self, _share_tree_root, lambda _key: ""))
+        set_share_tree_placement_reader(
+            _while_alive(self, _share_tree_placement, lambda _key: ("", False))
+        )
         if self.context_builder is not None:
             self.context_builder.live_memory_mode_for_session = (
                 lambda key: live_session_memory_mode(self, key)

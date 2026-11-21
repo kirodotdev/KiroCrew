@@ -1642,6 +1642,7 @@ _ALLOCATION_OWNERS: tuple[str, ...] = (
     "kiro_crew.session_allocation_parts.companions",
     "kiro_crew.session_allocation_parts.memory_policy",
     "kiro_crew.session_allocation_parts.eviction",
+    "kiro_crew.session_allocation_parts.scratch_ownership",
     "kiro_crew.session_allocation_parts.get_or_create",
 )
 #: Project names this module bound before the owners existed that only the owners read.

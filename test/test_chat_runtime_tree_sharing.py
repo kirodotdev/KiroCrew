@@ -438,7 +438,7 @@ def test_a_cycle_in_the_records_stops_the_walk():
 def test_the_gateway_reader_finds_the_lead_root_from_a_prefixed_worker_session_key():
     # The provider hands ``dashboard:<slot>`` while slots are keyed by slot name: an
     # unfolded lookup misses every row and each chat becomes its own tree.
-    from kiro_crew.dashboard.state_parts.dashboard_state import _share_tree_root
+    from kiro_crew.dashboard.state_parts.dashboard_state import _share_tree_placement
 
     state = SimpleNamespace(
         _slots={
@@ -447,24 +447,24 @@ def test_the_gateway_reader_finds_the_lead_root_from_a_prefixed_worker_session_k
             WORKER_A: _slot(WORKER_A, CONDUCTOR),
         }
     )
-    sharing.set_share_tree_reader(lambda key: _share_tree_root(state, key))
+    sharing.set_share_tree_placement_reader(lambda key: _share_tree_placement(state, key))
     try:
         assert share_tree_root_of(f"dashboard:{WORKER_A}") == f"dashboard:{LEAD}"
         assert share_tree_root_of(f"dashboard:{CONDUCTOR}") == f"dashboard:{LEAD}"
         assert share_tree_root_of(f"dashboard:{LEAD}") == f"dashboard:{LEAD}"
     finally:
-        sharing.set_share_tree_reader(None)
+        sharing.set_share_tree_placement_reader(None)
 
 
 @pytest.mark.parametrize(
-    "reader", [None, lambda key: "", lambda key: (_ for _ in ()).throw(RuntimeError("x"))]
+    "reader", [None, lambda key: ("", True), lambda key: (_ for _ in ()).throw(RuntimeError("x"))]
 )
 def test_an_unreadable_lineage_is_a_tree_of_one(reader):
-    sharing.set_share_tree_reader(reader)
+    sharing.set_share_tree_placement_reader(reader)
     try:
         assert share_tree_root_of(WORKER_A) == WORKER_A
     finally:
-        sharing.set_share_tree_reader(None)
+        sharing.set_share_tree_placement_reader(None)
 
 
 # -- resolve: Bot trees and the preview ------------------------------------------
@@ -492,7 +492,7 @@ def _resolve(provider, *, on=True, roots=None, scopes=None):
     scopes = scopes or {}
 
     async def scenario():
-        sharing.set_share_tree_reader(lambda key: roots.get(key, key))
+        sharing.set_share_tree_placement_reader(lambda key: (roots.get(key, key), True))
         try:
             with (
                 patch("kiro_crew.config.live.snapshot", return_value=_cfg(on)),
@@ -515,7 +515,7 @@ def _resolve(provider, *, on=True, roots=None, scopes=None):
                     remote_workspace=False,
                 )
         finally:
-            sharing.set_share_tree_reader(None)
+            sharing.set_share_tree_placement_reader(None)
 
     return asyncio.run(scenario())
 
@@ -580,7 +580,7 @@ def test_a_backend_that_never_shares_reads_no_tree_and_no_member_record():
     provider._client.backend = ACP_BACKEND_KIRO
 
     async def scenario():
-        sharing.set_share_tree_reader(lambda key: walked.append(key) or LEAD)
+        sharing.set_share_tree_placement_reader(lambda key: walked.append(key) or (LEAD, True))
         try:
             with (
                 patch("kiro_crew.config.live.snapshot", return_value=_cfg(True)),
@@ -600,7 +600,7 @@ def test_a_backend_that_never_shares_reads_no_tree_and_no_member_record():
                 )
                 return placed, scope.call_count
         finally:
-            sharing.set_share_tree_reader(None)
+            sharing.set_share_tree_placement_reader(None)
 
     placed, scope_reads = asyncio.run(scenario())
     assert placed is None
@@ -618,7 +618,7 @@ def test_the_preview_off_reads_no_tree_and_places_nothing():
     asked: list[str] = []
 
     async def scenario():
-        sharing.set_share_tree_reader(lambda key: asked.append(key) or LEAD)
+        sharing.set_share_tree_placement_reader(lambda key: asked.append(key) or (LEAD, True))
         try:
             with patch("kiro_crew.config.live.snapshot", return_value=_cfg(False)):
                 return await resolve_chat_share(
@@ -634,7 +634,7 @@ def test_the_preview_off_reads_no_tree_and_places_nothing():
                     remote_workspace=False,
                 )
         finally:
-            sharing.set_share_tree_reader(None)
+            sharing.set_share_tree_placement_reader(None)
 
     assert asyncio.run(scenario()) is None
     assert asked == []

@@ -33,6 +33,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import agent_scratch_trees
 from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
 from kiro_crew.aws_project_profiles import configured_project_profiles, resolve_project_profile
 from kiro_crew.kiro_prerequisite import pre_spawn_identity, spawn_pid, stamp_spawn_identity
@@ -115,13 +116,29 @@ def parent_work_scratch_dir(owner: _AllocationOwner, parent_session_key: str) ->
     caller passes it as ``shared_scratch`` to the spawn it makes on the
     parent's behalf -- a companion runtime here, a dedicated subagent process
     in ``subagent_manager/run_turn.py`` -- and the spawn re-validates it at mount
-    time (``agent_scratch.shared_scratch_window``).
+    time (``agent_scratch.shared_scratch_window``). No I/O: the caller checks
+    the directory's quarantine with :func:`admit_shared_scratch` before it
+    mounts it.
     """
     provider = owner.get_provider(parent_session_key)
     if provider is None:
         return None
     path = provider.work_scratch_dir
     return path if isinstance(path, Path) else None
+
+
+async def admit_shared_scratch(path: Path | None) -> Path | None:
+    """*path*, unless it is refused across session trees; checked off the loop.
+
+    The spawns made on a parent's behalf pass the parent's directory through
+    this before mounting it: a directory refused across session trees is never
+    handed to a new spawn, even by a parent still running in it, so the spawn
+    starts in its own.
+    """
+    if path is None:
+        return None
+    refused = await asyncio.to_thread(agent_scratch_trees.refused_across_trees, path)
+    return None if refused else path
 
 
 async def get_subagent_runtime(
@@ -222,6 +239,10 @@ async def get_subagent_runtime(
             selected_agent = (
                 selected_agent or self._owner._get_session_agent(parent_session_key) or "kirocrew"
             )
+            if "shared_scratch" in kwargs:
+                admitted = await admit_shared_scratch(kwargs.pop("shared_scratch"))
+                if admitted is not None:
+                    kwargs["shared_scratch"] = admitted
             # Background work by role: it hosts the parent's sub-agents and task
             # runs, never the parent's own chat. Not when a person opened the
             # task run that starts it (FOREGROUND). shortcut: a person's task run
