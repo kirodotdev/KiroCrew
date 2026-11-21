@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import git_repo_templates as templates
 import pytest
+from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG, git_maintenance_off_entries
 from git_repo_templates import RepoTemplateError, RepoTemplates, copy_repo
 from push_guard_helpers import _git
 
@@ -76,6 +77,9 @@ def _build(root: Path) -> None:
     origin, work = root / "origin.git", root / "work"
     origin.mkdir()
     _git(str(origin), "init", "--bare", "-b", "main")
+    # A push starts receive-pack here without our env (see git_maintenance_helpers).
+    for key, value in GIT_MAINTENANCE_OFF_CONFIG:
+        _git(str(origin), "config", key, value)
     _git(str(root), "clone", str(origin), "work")
     (work / "README.md").write_text("hello\n", encoding="utf-8", newline="\n")
     (work / "sub").mkdir()
@@ -234,6 +238,25 @@ def test_the_first_copy_of_a_template_is_the_only_one_git_checks(
     for name in ("one", "two", "three"):
         copy_repo(world.template, tmp_path / name)
     assert checks == [tmp_path / "one"]
+
+
+def test_every_git_the_helper_starts_runs_with_auto_maintenance_off(
+    world: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    envs: list[dict[str, str]] = []
+
+    def record(argv, **kwargs):  # type: ignore[no-untyped-def]
+        envs.append(kwargs["env"])
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(templates, "_CHECKED", set())
+    monkeypatch.setattr(templates.subprocess, "run", record)
+    copy_repo(world.template, tmp_path / "copy")
+    monkeypatch.undo()
+    assert len(envs) == len(WORKTREES) + 2, "one check per working tree: work, feat, shared, local"
+    for env in envs:
+        assert git_maintenance_off_entries(env) == {}, "the env leaves auto maintenance on"
+        assert env["GIT_CONFIG_GLOBAL"] == os.devnull
 
 
 def _bare_git_dir(root: Path) -> Path:

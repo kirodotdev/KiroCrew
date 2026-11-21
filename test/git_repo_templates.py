@@ -54,6 +54,7 @@ from collections.abc import Callable, Hashable, Iterator
 from pathlib import Path
 
 import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 
 from kiro_crew.testing.wait import default_timeout
 
@@ -396,6 +397,20 @@ def _restat_entries(data: bytearray, count: int, worktree: Path) -> None:
         data[end:] = _git_sha1(data[:end])
 
 
+def _git_env() -> dict[str, str]:
+    """The env every git this module starts runs under: scrubbed, auto maintenance off.
+
+    The scrubbed fixture env already carries the maintenance entries; they are
+    applied here too, so this module's git keeps the floor whatever that
+    helper returns.
+    """
+    from push_guard_helpers import _fixture_git_env
+
+    env = _fixture_git_env()
+    env.update(git_maintenance_off_entries(env))
+    return env
+
+
 def _blob_id(content: bytes) -> bytes:
     return _git_sha1(b"blob %d\0" % len(content) + content)
 
@@ -412,9 +427,7 @@ def _check_first_copy(template: Path, dest: Path, worktrees: list[Path]) -> None
     ``git diff-files`` compares stat data without refreshing the index, so it
     lists an entry the re-stat missed. Run once per template and process.
     """
-    from push_guard_helpers import _fixture_git_env
-
-    env = _fixture_git_env()
+    env = _git_env()
 
     def changed(where: str) -> bytes:
         proc = subprocess.run(
@@ -538,12 +551,10 @@ def session_template(
 
 
 def _surface_git(*args: str, cwd: Path) -> str:
-    from push_guard_helpers import _fixture_git_env
-
     return subprocess.run(
         ["git", *args],
         cwd=cwd,
-        env=_fixture_git_env(),
+        env=_git_env(),
         check=True,
         capture_output=True,
         text=True,
