@@ -741,7 +741,13 @@ export function RemoteCrewPanel() {
   const removeMutation = useMutation({
     mutationFn: async (id: string) => { await api.disconnectInstance(id).catch(() => {}); await api.removeInstance(id) },
     onMutate: () => setActionErr(null),
-    onSuccess: (_r, id) => dispatch(removeWarm(id)),
+    onSuccess: (_r, id) => {
+      dispatch(removeWarm(id))
+      // The crew is gone, so its Diagnose verdict and the remove warning go with it.
+      setDiagNote(null)
+      setDiagReport(null)
+      setConfirmRemoveId(null)
+    },
     onError: (e, id) => setActionErr(i18nT('pages.settings.instancesPanel.remove_failed', { id, error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })),
     onSettled: reloadInstances,
   })

@@ -3246,6 +3246,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Enable remote crew management"
   },
   {
+    "id": "instances.remote-control",
+    "labelKey": "pages.settings.remoteControlCard.title",
+    "tab": "instances",
+    "type": "toggle",
+    "occurrence": 1,
+    "settingId": "instances.remote-control",
+    "label": "Remote Control"
+  },
+  {
     "id": "kiro-account.kiro-sign-in",
     "labelKey": "pages.developer.kiroSignInCard.search_label",
     "tab": "kiro-account",

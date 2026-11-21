@@ -154,6 +154,8 @@ export const SLACK_TOOLS_SWITCH_KEY = 'slack.slack_mcp'
 /** Registry ids of the Instances tab's two rows: RemoteCrewPanel draws the enable
  *  card only while remote crews are off, and the auto-connect switch only while on. */
 export const ENABLE_REMOTE_CREWS_SETTING_ID = 'instances.enable-remote-crew-management'
+/** Settings > Remote Crew's Remote Control card (manual entry in settingsManual.ts). */
+const REMOTE_CONTROL_SETTING_ID = 'instances.remote-control'
 export const AUTO_CONNECT_CREWS_SETTING_ID = 'instances.auto-connect-crews'
 
 /** Registry id of "Reopen where I left off", which DisplayPanel draws only in the installed app. */
@@ -207,6 +209,12 @@ export interface SettingsSearchGovernance {
    * SUCCEEDED and said neither; `undefined` (no answer) keeps the entry.
    */
   slackToolsShown?: boolean
+  /**
+   * Whether Remote Crew draws the Remote Control card: the `['remote-control']`
+   * read SUCCEEDED and said the setting is on or the relay is running. The card
+   * is drawn only then, so its entry is offered only then, as `channelsOn` is.
+   */
+  remoteControlShown?: boolean
 }
 
 /**
@@ -253,6 +261,7 @@ export function settingEntryOffered(
   if (entry.id === ENABLE_REMOTE_CREWS_SETTING_ID) return governance.remoteCrewsEnabled !== true
   if (entry.id === AUTO_CONNECT_CREWS_SETTING_ID) return governance.remoteCrewsEnabled !== false
   if (entry.configKey === CHANNELS_SWITCH_KEY) return governance.channelsOn === true
+  if (entry.id === REMOTE_CONTROL_SETTING_ID) return governance.remoteControlShown === true
   if (entry.id === TERMINAL_CTRL_COPY_PASTE_SETTING_ID) return !isMac
   if (entry.configKey === SLACK_TOOLS_SWITCH_KEY) return governance.slackToolsShown !== false
   if (!DECISIONS_SETTING_IDS.has(entry.id)) return true

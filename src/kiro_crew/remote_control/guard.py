@@ -36,6 +36,9 @@ _DRAIN_POLL_SECONDS = 0.05
 _NOT_RUNNING = "disabled"
 #: ...and this only while the client is connected to the relay.
 _CONNECTED = "connected"
+#: ...and this while a running client is starting or reconnecting, so it connects
+#: on its own with no restart.
+_STARTING = "starting"
 
 
 def _relay_http_idle(provider: Any) -> bool:
@@ -117,6 +120,15 @@ class RemoteControlGuard:
         """Whether the relay client is connected now, so other devices can reach Crew."""
         state = await self._provider.ensure_available(install=False)
         return state == _CONNECTED
+
+    async def connecting(self) -> bool:
+        """Whether the client is still starting, so it connects on its own.
+
+        Its own state, not ``ensure_available``: that answers ``starting`` for a
+        reconnect too, which can be a failure that needs the owner.
+        """
+        snapshot = self._provider.status_snapshot() or {}
+        return snapshot.get("state") == _STARTING
 
     async def tick(self) -> None:
         """Read the setting once and stop the relay if it is off."""

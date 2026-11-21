@@ -111,6 +111,12 @@ class HostTokenUnavailable(Exception):
     """
 
 
+#: What a lease says while it simply has not issued the first host token yet. The
+#: client reads this prefix to tell that wait (still starting) from a failure that
+#: needs the owner (a sign-in that cannot host, an unreachable service).
+HOST_TOKEN_NOT_ISSUED_YET = "the lease service has not issued a host token yet"
+
+
 class HostTokenRetryLater(Exception):
     """No host token right now, for a reason that can pass (the backend is down).
 

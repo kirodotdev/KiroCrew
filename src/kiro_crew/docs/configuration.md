@@ -1014,7 +1014,7 @@ On the `kas` backend, a background helper whose agent mounts no tool
 
 ### Kiro relay viewer
 
-The dev settings of the list of remote Crews you can open through the Kiro relay. The list itself needs no setting. See [Opening a remote Crew through the Kiro relay](remote-crew.md#opening-a-remote-crew-through-the-kiro-relay). The gateway reads all four on every request, so a change saved with `kirocrew config set` needs no restart. A hand edit of `config.json` on a Linux host where the agent sandbox seals that file is held as a pending change, even across a restart, and has no effect until it is applied in Settings → Security. The settings page can't change these keys.
+The dev settings of the list of remote Crews you can open through the Kiro relay. The list itself needs no setting. See [Opening a remote Crew through the Kiro relay](remote-crew.md#opening-a-remote-crew-through-the-kiro-relay). On a network that only lets listed names out, see [Behind a firewall or proxy](remote-crew.md#behind-a-firewall-or-proxy) for the names to allow. The gateway reads all four on every request, so a change saved with `kirocrew config set` needs no restart. A hand edit of `config.json` on a Linux host where the agent sandbox seals that file is held as a pending change, even across a restart, and has no effect until it is applied in Settings → Security. The settings page can't change these keys.
 
 | Key | Description | Default |
 |-----|-------------|---------|

@@ -544,6 +544,23 @@ hosts. **Settings → Remote Crew** shows the state and a **Turn off** button on
 machine; opened through the relay, it shows the state only, because a Crew turned
 off there can only be turned back on at its machine.
 
+### Behind a firewall or proxy
+
+The relay is reached by name over HTTPS and WebSocket on port 443. On a network
+that only lets listed names out, allow these. Allow them by name, not by IP
+address: the addresses change. Do not allow all of `*.on.aws`.
+
+| Machine | Names to allow |
+|---|---|
+| The one opening a Crew (viewer) | `*.kiro-relay.us-east-1.on.aws`, `*.kiro-relay.eu-central-1.on.aws` |
+| The viewer, for the list of Crews | `management.us-east-1.kiro.dev`, `management.eu-central-1.kiro.dev` |
+| The viewer, for Crews still on the old address | `*.us-east-1.relay.kiro.dev` |
+| The one running a Crew (host) | `host.us-east-1.relay.kiro.dev`, `management.us-east-1.kiro.dev` |
+| A host in Frankfurt | `host.eu-central-1.relay.kiro.dev`, `management.eu-central-1.kiro.dev` |
+
+A proxy must pass WebSocket upgrades through: the Crew page and the host's lease
+both stay open as WebSockets.
+
 ## The four things called "crew"
 
 The product's own name is in three of these, which is exactly why they get

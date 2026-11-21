@@ -1906,6 +1906,12 @@
       "configKey": "instances.enabled"
     },
     {
+      "id": "instances.remote-control",
+      "label": "Remote Control",
+      "tab": "instances",
+      "route": "/settings/instances?highlight=instances.remote-control"
+    },
+    {
       "id": "kiro-account.kiro-sign-in",
       "label": "Sign out or switch Kiro account",
       "tab": "kiro-account",

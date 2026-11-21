@@ -11,6 +11,7 @@ import type { DndContext, DragEndEvent, DragStartEvent } from '@dnd-kit/core'
 import { api, ApiError, type MemberRosterRow } from '../../api/client'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
 import dashboardReducer, { markSlotRead, markSlotUnread, sseSlots } from '../../store/dashboardSlice'
+import { setGatewayConnected } from '../../utils/errorReport'
 import chatReducer, { sseSubagentQueued } from '../../store/chatSlice'
 import notificationsReducer from '../../store/notificationsSlice'
 import instancesReducer from '../../store/instancesSlice'
@@ -281,6 +282,22 @@ describe('DockMatesSection', () => {
     expect(members).toHaveBeenCalledTimes(1)
     expect(qc.getQueryData(MEMBERS_ROSTER_QUERY_KEY)).toEqual(partial)
     expect(dockNames()).toEqual(['a', 'c', 'b'])
+  })
+
+  it('says nothing while the gateway is offline, and re-reads once it is back (Bug Bash row 50)', async () => {
+    setGatewayConnected(false)
+    try {
+      const members = vi.spyOn(api, 'members').mockRejectedValue(new TypeError('Failed to fetch'))
+      const { qc } = renderDock(undefined, { collapsed: true, surface: 'both' })
+      await waitFor(() => expect(qc.getQueryState(MEMBERS_ROSTER_QUERY_KEY)?.status).toBe('error'))
+      expect(screen.queryByTestId('dock-mates-load-error')).toBeNull()
+      members.mockResolvedValue(membersReply([row('a', { starred: true })]))
+      act(() => setGatewayConnected(true))
+      await waitFor(() => expect(qc.getQueryState(MEMBERS_ROSTER_QUERY_KEY)?.status).toBe('success'))
+      expect(screen.queryByTestId('dock-mates-load-error')).toBeNull()
+    } finally {
+      setGatewayConnected(true)
+    }
   })
 
   it('shows one dismissible load failure with agent hand-off when no roster is cached', async () => {
