@@ -20,13 +20,14 @@ import html as html_mod
 import json
 import logging
 import re
-import sqlite3
 import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.apps.builtins.auto_research.campaign import LOGGER_NAME, storage, untrusted
+from kiro_crew.dashboard.handlers.knowledge_sync import _add_source_unique
 from kiro_crew.knowledge.ingestion import ImportChunkBudgetError
 from kiro_crew.knowledge.store import PENDING_REASON_IMPORT_BUDGET, PENDING_REASON_PROP
 
@@ -533,8 +534,11 @@ def _knowledge_source_name(row: sqlite3.Row | None, cid: str) -> str:
     )
 
 
-def _add_source_marked_syncing(store: Any, name: str, uri: str) -> str:
+def _add_source_marked_syncing(store: Any, name: str, uri: str) -> tuple[str, bool]:
     """Register the findings as a Knowledge Library source, marked syncing.
+
+    Returns ``(source_id, created)``; ``created`` is False when a concurrent
+    export inserted the same URI first, and that export's source id is returned.
 
     The store hands out one connection per thread, so all statement work for
     the request runs off-loop in a single worker: a lock wait on the store's
@@ -542,10 +546,14 @@ def _add_source_marked_syncing(store: Any, name: str, uri: str) -> str:
     in the same call because the status UPDATE needs its ``sid`` on the same
     per-thread connection. Blocking; call off-loop.
     """
-    new_sid = store.add_source(name=name, source_type="local_file", uri=uri, properties={})
+    new_sid, created = _add_source_unique(
+        store, name=name, source_type="local_file", uri=uri, properties={}
+    )
+    if not created:
+        return new_sid, False
     store.db.execute("UPDATE sources SET sync_status = 'syncing' WHERE id = ?", (new_sid,))
     store.db.commit()
-    return new_sid
+    return new_sid, True
 
 
 async def _ingest_findings(pipeline: Any, store: Any, uri: str, sid: str, cid: str) -> None:
