@@ -270,6 +270,46 @@ def test_a_crashed_run_resumes_at_the_next_unit(tmp_path) -> None:
     assert sorted(ingests) == [f"u{n}:ingest" for n in range(4)]
 
 
+def test_a_save_contended_by_a_reader_still_lands(tmp_path, monkeypatch) -> None:
+    """A rename onto the run file that loses Windows' sharing window is retried.
+
+    A status poll reads ``r_*.json`` while the runner saves it. On Windows that
+    rename fails with ``PermissionError``; when the final save lost it, the file
+    kept ``running`` and every later read reported the run ``paused`` for good.
+    """
+    from kiro_crew import atomic_write, platform_compat
+
+    real_replace = atomic_write.os.replace
+    contended: list[str] = []
+
+    def replace(src, dst):
+        if str(dst).endswith(".json") and len(contended) % 2 == 0:
+            contended.append(str(dst))
+            raise PermissionError(13, "The process cannot access the file", str(dst))
+        if str(dst).endswith(".json"):
+            contended.append("ok")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0.0)
+    monkeypatch.setattr(atomic_write.os, "replace", replace)
+    run = _run(["baseline:recency"])
+
+    try:
+        done = asyncio.run(
+            provider_run.run_bench(run, _corpus(2), SUITE, {"baseline:recency": RecencyBaseline()})
+        )
+    except PermissionError as exc:
+        pytest.fail(f"a save lost the contended rename: {exc}")
+
+    assert done.state == "done"
+    assert len(contended) >= 4, "every save met a contended first rename"
+    monkeypatch.undo()
+    # What a poll reads once the runner is gone: the file, not the live object.
+    assert run.id not in provider_run._live
+    assert provider_run.get(run.id).state == "done"
+
+
 def test_the_llm_budget_stops_the_run_with_a_partial_report(tmp_path) -> None:
     calls: list[str] = []
 
