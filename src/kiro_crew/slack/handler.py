@@ -63,18 +63,22 @@ from kiro_crew.channel_spec_hooks import (  # noqa: F401 - read by the owners
     pre_tool_refusal as spec_pre_tool_refusal,
 )
 from kiro_crew.channel_spec_hooks import turn_spec as spec_turn  # noqa: F401 - read by the owners
+from kiro_crew.config.live import ConfigChange, ConfigDeferred  # noqa: F401 - read by the owners
 from kiro_crew.config.loader import (  # noqa: F401 - read by the owners
     ACTIVATION_REVIEW,
     KIRO_CLI_BUILTIN_AGENTS,
     ConfigReadError,
+    ConfigWriteRefused,
     KiroCrewConfig,
     config_local_path,
     config_path,
+    overlay_pins,
     read_config_text,
     read_merged_config_files,
     update_config_locked,
 )
 from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
+from kiro_crew.config.resolution import _deep_merge  # noqa: F401 - read by the owners
 from kiro_crew.constants import (  # noqa: F401 - read by the owners
     DENY_CAUSE_APPROVAL_TIMEOUT,
     DENY_CAUSE_POLICY,
@@ -421,9 +425,11 @@ from kiro_crew.slack.handler_runtime.turn_context import (  # noqa: F401
     _thread_meta_fallback,
 )
 from kiro_crew.slack.handler_runtime.voice import (  # noqa: F401
+    _adopt_voice_reply,
     _reply_by_voice,
     _safe_voice_reply,
     _str_or_default,
+    apply_voice_reply_change,
     load_voice_reply_config,
 )
 from kiro_crew.slack.linked_thread_images import (  # noqa: F401 - read by the owners

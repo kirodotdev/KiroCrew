@@ -1875,7 +1875,8 @@ keys`. Three exclusions from that warning are named in code:
 - `validation._CORE_OWNED_TOP_KEYS` (`voice_reply`, `connections`, `sel`) — a section this core
   reads but does not model as a field, written by the settings UI or by hand as the docs say. The settings UI persists it
   (`slack/interactions_modals.py`, `dashboard/chat_voice.py`) and the gateway reads it
-  back on startup via `load_voice_reply_config` (`slack/handler_runtime/voice.py`,
+  back on startup, and again on every live change under `voice_reply`, via
+  `load_voice_reply_config` (`slack/handler_runtime/voice.py`,
   and read by `telegram/transport_dispatch.py`). Captured and round-tripped like any unknown
   section, and NOT reported as unrecognized because the product wrote it, or told the
   operator to.
@@ -3445,6 +3446,13 @@ live in `dashboard/server_runtime/config_watch.py::_register_config_watch` — `
 `dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`),
 `dashboard.command_bar_enabled` and `dashboard.channels_enabled` (→ a `config` refresh frame,
 since the shell reads each from the shared config query, which never goes stale on its own),
+`voice_reply` (→ `slack/handler_runtime/voice.py::apply_voice_reply_change`, which reads
+config.json once, strictly, off the loop and applies it with config.local.json merged over it
+through `_adopt_voice_reply`, the step `load_voice_reply_config` also ends in;
+a config.json that does not parse leaves the Slack voice state as it was and the applier
+raises `ConfigDeferred` for its paths, while an unparseable overlay contributes nothing, as
+the loader treats it; the watcher diffs the base view, so an edit to config.local.json alone
+reaches it only at restart),
 `dashboard.terminal.enabled` (→ `handlers/terminal_lifecycle.py::apply_terminal_enabled`, run
 off the cycle like the provider switch below, since ending a shell can outlast the bound), and
 `agent.model_context_tokens` (→ `model_registry.apply_operator_windows`, process state of
