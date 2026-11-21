@@ -1431,16 +1431,16 @@ that genuinely needs live app state is supplied by the host as an entry.
 
 ## Gateway API Surface
 
-The sections below name the Gateway API surface. A name here is an **endpoint
-label**, not a guarantee that a client method exists for it: the source-only
-`kirocrew-client` Python package covers part of this surface, and
-[Python Client](#python-client) marks which part. For anything it does not
-implement, call the endpoint directly — the paths are in
+The sections below name the Gateway API surface by the method of the
+source-only `kirocrew-client` Python package that wraps each route.
+[Method Reference](#method-reference) gives the route each method calls. From
+any other language, call the route directly — the paths are in
 [Gateway REST API Endpoints](#gateway-rest-api-endpoints).
 
-The `Returns` column describes the response shape. It is not a TypeScript type:
-no TypeScript client ships, so `SlotInfo`, `GatewayStatus`, `SystemInfo` and
-their siblings are response-shape names rather than importable types.
+The `Returns` column describes what the Python method returns: the decoded JSON
+answer (a `dict`, or a `list` of dicts) unless the row says otherwise. No
+TypeScript client ships, so `GatewayStatus`, `CronJob` and their siblings are
+response-shape names rather than importable types.
 
 When `app_name` is set and no explicit auth is provided, the Python client uses
 the app secret the Gateway gave its backend at spawn (`KIROCREW_PROXY_SECRET`, when
@@ -1464,40 +1464,42 @@ applies to both HTTP requests and WebSocket handshakes created by `create_ws()`.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `authenticate()` | `boolean` | Exchange the app secret for a token; call explicitly before the first remote request |
-| `setToken(token)` | `void` | Conceptual token assignment; the Python client accepts `token=` in its constructor |
+| `authenticate()` | `bool` | Exchange the app secret for a token; call explicitly before the first remote request |
+| `token` | `str` | The token the client sends; pass `token=` to the `KiroCrewClient` constructor |
 
 ### Connection
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `ping()` | `boolean` | Check if Gateway is reachable |
-| `getStatus()` | `GatewayStatus` | Gateway health (version, uptime, slots, provider) |
-| `getSystemInfo()` | `SystemInfo` | CPU, memory, disk metrics |
+| `ping()` | `bool` | Check if Gateway is reachable |
+| `get_status()` | `GatewayStatus` | Gateway health (version, uptime, slots, provider) |
+| `get_system_info()` | a `dict` of metrics | CPU (`cpu_pct`), memory (`mem_used_gb`, `mem_total_gb`, `proc_mem_mb`), disk (`disk_free_gb`, `disk_total_gb`) and network metrics |
 
 ### Chat Slots
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `createSlot(name, agent?)` | `SlotInfo` | Create a new chat session |
-| `listSlots()` | `SlotInfo[]` | List all active sessions |
-| `deleteSlot(slotId)` | `—` (no body) | Remove a session |
-| `getSlotHistory(slotId, limit?)` | `{messages, total}` | Get slot message history |
-| `sendMessage(slotId, message)` | `—` (no body) | Send a message (validates length, auto-flushes pending context) |
+| `create_slot(name, agent="")` | the slot's row (`dict`) | Create a new chat session |
+| `list_slots()` | a `list` of slot rows | List all active sessions |
+| `delete_slot(slot_id)` | `—` (no body) | Remove a session |
+| `get_slot_history(slot_id, limit=50)` | `{messages, total}` | Get slot message history |
+| `send_message(slot_id, message)` | `—` (no body) | Send a message (validates length, auto-flushes pending context) |
 
 ### WebSocket Events
 
+These are methods of the `WsClient` that `create_ws()` returns.
+
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `connect()` | `void` | Open WebSocket connection |
-| `disconnect()` | `void` | Close WebSocket connection |
-| `connected` | `boolean` | Current connection state |
-| `onChatChunk(slotId, cb)` | `() => void` | Stream response chunks for a slot |
-| `onChatDone(slotId, cb)` | `() => void` | Response complete for a slot |
-| `onNotification(cb)` | `() => void` | Receive notifications |
-| `onToolCall(cb)` | `() => void` | Receive tool call events |
-| `onConnectionChange(cb)` | `() => void` | Connection state changes |
-| `onRaw(cb)` | `() => void` | All parsed WebSocket events |
+| `connect()` | `None` | Open WebSocket connection |
+| `disconnect()` | `None` | Close WebSocket connection |
+| `connected` | `bool` | Current connection state |
+| `on_slot(slot_id, "chat_chunk", cb)` | an unsubscribe function | Stream response chunks for a slot |
+| `on_slot(slot_id, "chat_done", cb)` | an unsubscribe function | Response complete for a slot |
+| `on("notification", cb)` | an unsubscribe function | Receive notifications |
+| `on("tool_call", cb)` | an unsubscribe function | Receive tool call events |
+| `on_connection_change(cb)` | an unsubscribe function | Connection state changes |
+| `on_raw(cb)` | an unsubscribe function | All parsed WebSocket events |
 
 All `on*` methods return an unsubscribe function.
 
@@ -1543,21 +1545,21 @@ client when it fires.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `spawn(task, agent?)` | `string` | Spawn a background subagent |
-| `spawnMany(tasks, agents?)` | `string[]` | Spawn multiple subagents in parallel |
-| `listSubagents()` | `SubagentInfo[]` | List all subagents |
-| `getSubagentStatus(id)` | `SubagentResult` | Get subagent output |
+| `spawn(task, agent="")` | `str` | Spawn a background subagent |
+| `spawn_many(tasks, agents=None)` | `list[str]` | Spawn multiple subagents in parallel |
+| `list_subagents()` | `SubagentInfo[]` | List all subagents |
+| `get_subagent_status(agent_id)` | the run's status (`dict`: `id`, `task`, `done`, `result`, …) | Get subagent output |
 
 ### Cron Jobs
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `addCron(name, options)` | `CronJob` | Create a scheduled job |
-| `listCrons()` | `CronJob[]` | List all cron jobs, each `last_result` and `last_error` cut to a preview (`GET /api/crons/{job_id}` reads one whole) |
-| `updateCron(id, options)` | `CronJob` | Update a cron job |
-| `removeCron(id)` | `—` (no body) | Delete a cron job |
-| `pauseCron(id)` | `—` (no body) | Pause without deleting |
-| `resumeCron(id)` | `—` (no body) | Resume a paused job |
+| `add_cron(name, **options)` | `CronJob` | Create a scheduled job |
+| `list_crons()` | `CronJob[]` | List all cron jobs, each `last_result` and `last_error` cut to a preview (`GET /api/crons/{job_id}` reads one whole) |
+| `update_cron(job_id, **options)` | `CronJob` | Update a cron job |
+| `remove_cron(job_id)` | `—` (no body) | Delete a cron job |
+| `pause_cron(job_id)` | `—` (no body) | Pause without deleting |
+| `resume_cron(job_id)` | `—` (no body) | Resume a paused job |
 
 **Ownership for app tokens.** `POST /api/crons` from an app token stamps the
 job's `created_by` as `app:<name>` from the token. An app token may update,
@@ -1660,7 +1662,7 @@ Register it as a **script** cron. Two paths create one:
   creation time, which is why this call must come from that session.
 
 Pass the probe's settings as the cron `message`, for example
-`json.dumps({"env": "prod"})`. Do not use `addCron` / `POST /api/crons` for
+`json.dumps({"env": "prod"})`. Do not use `add_cron` / `POST /api/crons` for
 this: that route reads neither `script` nor `timeout`, so it creates an
 **agent** cron that pays a model turn on every tick.
 
@@ -2469,17 +2471,18 @@ because none of them adds reach. Your manifest declares nothing for them.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `addLesson(rule, category, scope?)` | `—` (no body) | Save a learned rule |
-| `listLessons()` | `Lesson[]` | List all lessons |
-| `removeLesson(query)` | `—` (no body) | Remove matching lessons |
+| `add_lesson(rule, category, scope="")` | `—` (no body) | Save a learned rule |
+| `list_lessons()` | `Lesson[]` | List all lessons |
+| `remove_lesson(query)` | `—` (no body) | Remove matching lessons |
 
 ### Notifications
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `sendNotification(text, options?)` | `—` (no body) | Send via Slack or dashboard |
-| `listNotifications()` | `{notifications}` | List notifications |
-| `ackNotifications()` | `—` (no body) | Acknowledge all notifications |
+| `send_notification(text, **options)` | `—` (no body) | Send via Slack or dashboard |
+| `list_notifications()` | `{notifications, unread}` | List notifications |
+| `ack_notification(ts)` | `—` (no body) | Acknowledge one notification |
+| `ack_all_notifications()` | `—` (no body) | Acknowledge all notifications |
 
 ### Member records
 
@@ -2534,14 +2537,14 @@ POST /api/member-records/{slug}
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `approveAction(slotId, taskId, pattern?)` | `—` (no body) | Approve a pending tool action; command/base trust requires the pending card pattern |
-| `rejectAction(slotId, taskId)` | `—` (no body) | Reject a pending tool action |
-| `resolveApproval(approvalId, action, slotId?, pattern?)` | `—` (no body) | Resolve an approval by ID; `trust_command` and `trust_base` require `pattern` |
-| `getApprovalMode()` | `'auto'` \| `'interactive'` | Read the config setting `agent.approval_mode` from `GET /api/config/kirocrew` |
-| `setApprovalMode(mode)` | `—` (no body) | Set the chat trust mode (`normal`, `trust_reads`, `trust`, `yolo`) through `POST /api/chat/mode`; a different setting from `agent.approval_mode` |
+| `resolve_approval(request_id, "approved", slot_id, pattern="")` | `—` (no body) | Approve a pending tool action; command/base trust requires the pending card pattern |
+| `resolve_approval(request_id, "rejected", slot_id)` | `—` (no body) | Reject a pending tool action |
+| `resolve_approval(request_id, action="approve", slot_id="", *, pattern="")` | `—` (no body) | Resolve an approval by ID; `trust_command` and `trust_base` require `pattern` |
+| `get_gateway_config("kirocrew")` | a JSON object | Read the config setting `agent.approval_mode` (`'auto'` or `'interactive'`) from `GET /api/config/kirocrew` |
+| `set_approval_mode(mode, slot_id="")` | `—` (no body) | Set the chat trust mode (`normal`, `trust_reads`, `trust`, `yolo`) through `POST /api/chat/mode`; a different setting from `agent.approval_mode` |
 
 **Ownership for app callers** (a dashboard caller is unrestricted). The rule follows the request's app claim: an app token, and also an agent running in one of your app's sessions, whose internal calls carry your app's identity.
-- `POST /api/approvals/{id}/{action}` needs `permissions.sessionApproval`, exactly like `POST /api/chat/slots/{slot}/approve`: without it both answer 403 `session_approval_not_granted` to an app-token caller, even for your own slots. An agent running in your app's sessions that calls over the internal secret is NOT exempt on these routes: a bare internal-secret caller is refused 403 like a non-owner on both `POST /api/approvals/{id}/{action}` and `POST /api/chat/slots/{slot}/approve`. The one internal path still admitted is a cron script's attested `cron:` key on `setApprovalMode`'s `POST /api/chat/mode`; see `docs/system-specs/modules/app-kit-platform.md`. With the grant, the id resolves a request on a slot you own or on a local user session, and with `permissions.memberThreads` declared beside it also on a Bot's pinned DM thread (`member-<slug>`), the one member-mode session the grant can reach ([manifest-reference](manifest-reference.md#permissionsmemberthreads--a-bots-own-thread)). Request ids can recur across sessions, so an id pending on more than one session you may control is refused; name the session with the slot route instead (`resolveApproval(id, action, slotId)`). A background approval (cron, autonudge, subagent, task runner) is never resolvable by an app.
+- `POST /api/approvals/{id}/{action}` needs `permissions.sessionApproval`, exactly like `POST /api/chat/slots/{slot}/approve`: without it both answer 403 `session_approval_not_granted` to an app-token caller, even for your own slots. An agent running in your app's sessions that calls over the internal secret is NOT exempt on these routes: a bare internal-secret caller is refused 403 like a non-owner on both `POST /api/approvals/{id}/{action}` and `POST /api/chat/slots/{slot}/approve`. The one internal path still admitted is a cron script's attested `cron:` key on `set_approval_mode`'s `POST /api/chat/mode`; see `docs/system-specs/modules/app-kit-platform.md`. With the grant, the id resolves a request on a slot you own or on a local user session, and with `permissions.memberThreads` declared beside it also on a Bot's pinned DM thread (`member-<slug>`), the one member-mode session the grant can reach ([manifest-reference](manifest-reference.md#permissionsmemberthreads--a-bots-own-thread)). Request ids can recur across sessions, so an id pending on more than one session you may control is refused; name the session with the slot route instead (`resolve_approval(id, action, slot_id)`). A background approval (cron, autonudge, subagent, task runner) is never resolvable by an app.
 - `GET /api/approvals` lists only what the app could resolve. The list carries background approvals only, so for an app it is always empty. Read a slot's pending requests from its history instead.
 - `GET /api/sessions`, `GET /api/sessions/search`, `GET /api/sessions/{key}`, `GET /api/sessions/{key}/meta`, `DELETE /api/sessions/{key}` and `POST /api/sessions/summarize` reach only transcripts that record the calling app as their owner. `total` counts only those, search ranks only those, and summarize skips any other key as if it were missing (so `list_sessions` with `summarize` from your app's agent returns summaries for your transcripts only). A delete is also refused when a live slot holding the transcript belongs to someone else.
 - `DELETE /api/sessions` (bulk clear) and `GET /api/sessions/clearable/count` act on every closed transcript at once, so an app is always refused them.
@@ -2555,49 +2558,49 @@ POST /api/member-records/{slug}
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `listModels()` | `ModelInfo[]` | List available LLM models |
-| `setSlotModel(slotId, model)` | `—` (no body) | Set model for a slot |
+| `list_models()` | `ModelInfo[]` | List available LLM models |
+| `set_slot_model(slot_id, model)` | a JSON object | Set model for a slot |
 
 ### MCP Servers
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `listMcpServers()` | `McpServerInfo[]` | List registered MCP servers |
-| `registerMcpServer(def)` | `—` (no body) | Register an MCP server (requires name + command) |
-| `removeMcpServer(name)` | `—` (no body) | Remove an MCP server |
+| `list_mcp_servers()` | `McpServerInfo[]` | List registered MCP servers |
+| `register_mcp_server(name, command, args=None, env=None)` | `—` (no body) | Register an MCP server (requires name + command) |
+| `remove_mcp_server(name)` | `—` (no body) | Remove an MCP server |
 
 Apps declare their agents, skills and `mcpServers` in `app.json`, and
 `kirocrew app install` installs them. For an ad-hoc MCP server, use
-`registerMcpServer`.
+`register_mcp_server`.
 
 ### Agent Runtime
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `dispatchAgent(agent, prompt)` | `TaskResult` | Run agent synchronously |
-| `dispatchAgentAsync(agent, prompt)` | `string` | Run agent in background |
-| `getTaskResult(taskId)` | `TaskResult` | Poll task status |
+| `dispatch_agent(agent, prompt)` | the `POST /api/chat` answer (`dict`) | Run agent synchronously |
+| `dispatch_agent_async(agent, prompt)` | `str` (the run id) | Run agent in background |
+| `get_task_result(task_id)` | the run's status (`dict`: `id`, `task`, `done`, `result`, …) | Poll task status |
 
 ### Gateway Config
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `getGatewayConfig(key)` | a JSON object | Read gateway config section |
-| `setGatewayConfig(key, value)` | `—` (no body) | Write gateway config section |
+| `get_gateway_config(key)` | a JSON object | Read gateway config section |
+| `set_gateway_config(key, value)` | a JSON object | Write gateway config section |
 
 ### App Storage
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `getAppDataDir()` | `string` | App-scoped data directory path |
-| `getAppConfig()` | a JSON object | Read app config via REST |
-| `setAppConfig(config)` | `—` (no body) | Write app config via REST |
+| `get_app_data_dir()` | `Path` | App-scoped data directory path |
+| `get_app_config()` | a JSON object | Read app config via REST |
+| `set_app_config(config)` | `—` (no body) | Write app config via REST |
 
 ### Memory
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `memorySearch(query, topK?)` | `MemoryResult[]` | Semantic memory search |
+| `memory_search(query, top_k=8)` | a `list` of episodic memory entries (the route's `results`) | Semantic memory search |
 
 ### Memory provider routes
 
@@ -2732,12 +2735,14 @@ Silent background context for LLM — content appears in the next user-initiated
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `injectContext(slotId, content, options?)` | `—` (no body) | Inject context (null slotId = buffer locally) |
-| `flushPendingContext(slotId)` | `number` | Flush buffered entries to a slot; returns the count the Gateway refused for good and dropped. A `context_not_queued` or `context_secret_shaped` entry is dropped (not re-buffered) so it never blocks later sends; a transient failure is re-buffered and raised |
-| `setDefaultSlot(slotId)` | `void` | Auto-flush pending context on sendMessage |
-| `pendingContextCount` | `number` | Number of buffered context entries |
+| `inject_context(slot_id, content, *, source=None, ephemeral=True, max_age=None)` | `—` (no body) | Inject context (`slot_id=None` = buffer locally) |
+| `flush_pending_context(slot_id)` | `int` | Flush buffered entries to a slot; returns the count the Gateway refused for good and dropped. A `context_not_queued` or `context_secret_shaped` entry is dropped (not re-buffered) so it never blocks later sends; a transient failure is re-buffered and raised |
+| `set_default_slot(slot_id)` | `None` | Auto-flush pending context on `send_message` |
+| `pending_context_count` | `int` | Number of buffered context entries |
 
-Options: `{ source?: string, ephemeral?: boolean, maxAge?: number }`
+The request body of `POST /api/chat/slots/{slot}/context` is
+`{ content, source?, ephemeral?, maxAge? }`; the Python client sends its
+`max_age` argument as `maxAge`.
 
 **Constraints** (400 on violation):
 - `source`: ≤64 chars, no control characters or newlines; whitespace-trimmed (a padded label and its bare form share one per-source cap bucket)
@@ -2851,12 +2856,9 @@ and replay once because the Gateway rejected the request before applying it.
 
 ### Method Reference
 
-The left column is the endpoint label used in the sections above; the right
-column is the shipped Python method, in `snake_case` per Python convention.
-
-Rows marked *not implemented* are Gateway endpoints the shipped Python client
-does not wrap yet. Call those endpoints directly with `aiohttp` (or any HTTP
-client) using the paths in
+The left column is the Gateway route a method calls; the right column is the
+shipped Python method named in the sections above. A route with no method here
+is called directly with `aiohttp` (or any HTTP client), using the paths in
 [Gateway REST API Endpoints](#gateway-rest-api-endpoints).
 
 `create_ws()` returns a `WsClient` bound to `/api/ws` with this client's auth
@@ -2866,60 +2868,60 @@ cookie. Its listeners (`on(type, cb)`, `on_slot(slot, type, cb)`, `on_raw`, and
 `disconnect()` stops it for good. When the client can refresh its token, it
 does so before each reconnect.
 
-| API surface | Python |
-|-----------|--------|
-| `ping()` | `ping()` |
-| `getStatus()` | `get_status()` |
-| `getSystemInfo()` | `get_system_info()` |
-| `createSlot(name, agent?)` | `create_slot(name, agent="")` |
-| `listSlots()` | `list_slots()` |
-| `deleteSlot(id)` | `delete_slot(id)` |
-| `getSlotHistory(id, limit?)` | `get_slot_history(id, limit=50)` |
-| `sendMessage(id, msg)` | `send_message(id, msg)` |
-| `streamChat(id, msg)` | `stream_chat(id, msg)` → async iterator of chunk dicts; an SSE response ends only at `[DONE]` (transport failure or earlier clean close raises `NETWORK_ERROR` without retry), while a successful JSON queue, steer, or orchestrator-control receipt is yielded once and ends the iterator |
-| `stopSlot(id, force?)` | `stop_slot(id, force=False)` |
-| `editResend(id, content, opts)` | `edit_resend(id, content, *, index=None, ts=None)` |
-| `spawn(task, agent?)` | `spawn(task, agent="")` |
-| `spawnMany(tasks, agents?)` | `spawn_many(tasks, agents=None)` |
-| `listSubagents()` | `list_subagents()` (reads `agents`) |
-| `getSubagentStatus(id)` | `get_subagent_status(id)` |
-| `addCron(name, opts)` | `add_cron(name, **opts)` |
-| `listCrons()` | `list_crons()` (reads `jobs`) |
-| `updateCron(id, opts)` | `update_cron(id, **opts)` (`PATCH`) |
-| `removeCron(id)` | `remove_cron(id)` |
-| `pauseCron(id)` | `pause_cron(id)` |
-| `resumeCron(id)` | `resume_cron(id)` |
-| `addLesson(rule, cat, scope?)` | `add_lesson(rule, cat, scope="")` |
-| `listLessons()` | `list_lessons()` (reads `lessons`) |
-| `removeLesson(query)` | `remove_lesson(query)` |
-| `sendNotification(text, opts?)` | `send_notification(text, **opts)` |
-| `listNotifications()` | `list_notifications()` → `{notifications, unread}` |
-| `ackNotifications()` | `ack_notification(ts)` / `ack_all_notifications()` |
-| `approveAction(slot, task, pattern?)` | `resolve_approval(request_id, "approved", slot_id=slot, pattern=pattern)`; command/base trust passes the pending card pattern |
-| `rejectAction(slot, task)` | `resolve_approval(request_id, "rejected", slot_id=slot)` |
-| `resolveApproval(id, action, slot?, pattern?)` | `resolve_approval(id, action="approve", slot_id="", *, pattern="", request_mid="", instance="")`; `request_mid` (a slot row's `meta.mid`, needs `slot_id`) sends the slot route's `origin: "native"` target, `instance` (with the record's `slot` as `slot_id`, from `list_approvals()`) sends `?origin=coordinator&slot=&instance=` on `/api/approvals/{id}/{action}`; one of them, never both; without either the bare id is sent, the form a later Gateway refuses; `approve`/`approved` and `reject`/`rejected` are aliases; without a slot, accepted actions are `approve`, `reject`, `reject_once`; with a slot, accepted actions are `approved`, `rejected`, `trust`, `trust_reads`, `trust_command`, `trust_base`, `yolo`; command/base trust requires `pattern` |
-| `listApprovals()` | `list_approvals()`; pending background approvals only (cron, autonudge, subagent, task runner), never a slot's own tool prompts; empty for an app token |
-| `getApprovalMode()` | `get_gateway_config("kirocrew")`, then read `agent.approval_mode` |
-| `setApprovalMode(mode)` | `set_approval_mode(mode, slot_id="")`; accepted modes are `normal`, `trust_reads`, `trust`, `yolo`; `normal`, `trust_reads`, and `trust` may target one slot, while `yolo` is process-global and rejects `slot_id` |
-| `listModels()` | `list_models()` |
-| `setSlotModel(slot, model)` | `set_slot_model(slot, model)` |
-| `getGatewayConfig(key)` | `get_gateway_config(key)`; `key` is one of `GATEWAY_CONFIG_KEYS` (`kirocrew`, `stt`, `theme`, `default-agent`) |
-| `setGatewayConfig(key, val)` | `set_gateway_config(key, val)` (`PUT`, same keys) |
-| `listMcpServers()` | `list_mcp_servers()` (`GET /api/mcp`) |
-| `registerMcpServer(def)` | `register_mcp_server(name, cmd, args?, env?)` |
-| `removeMcpServer(name)` | `remove_mcp_server(name)` |
-| `dispatchAgent(agent, prompt)` | `dispatch_agent(agent, prompt)` |
-| `dispatchAgentAsync(agent, prompt)` | `dispatch_agent_async(agent, prompt)` |
-| `getTaskResult(id)` | `get_task_result(id)` |
-| `getAppDataDir()` | `get_app_data_dir()` → `Path` |
-| `getAppConfig()` | `get_app_config()` |
-| `setAppConfig(cfg)` | `set_app_config(cfg)` |
-| `memorySearch(q, topK?)` | `memory_search(q, top_k=8)` (sent as `limit`, capped at 50) |
-| `transcribe(audio)` | `transcribe(audio_bytes, *, filename=, content_type=)` → text; transport failures raise `NETWORK_ERROR` without retry |
-| `connect()` / `on*` | `create_ws()` → `WsClient` (see above) |
-| `injectContext(slot, content, opts?)` | `inject_context(slot, content, *, source?, ephemeral?, max_age?)` |
-| `flushPendingContext(slot)` | `flush_pending_context(slot)` |
-| `setDefaultSlot(slot)` | `set_default_slot(slot)` |
+| Route | Python |
+|-------|--------|
+| `GET /api/status` | `ping()` |
+| `GET /api/status` | `get_status()` |
+| `GET /api/system` | `get_system_info()` |
+| `POST /api/chat/slots` | `create_slot(name, agent="")` |
+| `GET /api/chat/slots` | `list_slots()` |
+| `DELETE /api/chat/slots/{slot}` | `delete_slot(id)` |
+| `GET /api/chat/slots/{slot}?limit=` | `get_slot_history(id, limit=50)` |
+| `POST /api/chat` | `send_message(id, msg)` |
+| `POST /api/chat` (streamed) | `stream_chat(id, msg)` → async iterator of chunk dicts; an SSE response ends only at `[DONE]` (transport failure or earlier clean close raises `NETWORK_ERROR` without retry), while a successful JSON queue, steer, or orchestrator-control receipt is yielded once and ends the iterator |
+| `POST /api/chat/slots/{slot}/stop` | `stop_slot(id, force=False)` |
+| `POST /api/chat/slots/{slot}/edit-resend` | `edit_resend(id, content, *, index=None, ts=None)` |
+| `POST /api/spawn` | `spawn(task, agent="")` |
+| `POST /api/spawn`, once per task | `spawn_many(tasks, agents=None)` |
+| `GET /api/spawn` | `list_subagents()` (reads `agents`) |
+| `GET /api/spawn/{agent_id}` | `get_subagent_status(id)` |
+| `POST /api/crons` | `add_cron(name, **opts)` |
+| `GET /api/crons` | `list_crons()` (reads `jobs`) |
+| `PATCH /api/crons/{job_id}` | `update_cron(id, **opts)` (`PATCH`) |
+| `DELETE /api/crons/{job_id}` | `remove_cron(id)` |
+| `POST /api/crons/{job_id}/enable` (`enabled: false`) | `pause_cron(id)` |
+| `POST /api/crons/{job_id}/enable` (`enabled: true`) | `resume_cron(id)` |
+| `POST /api/lessons` | `add_lesson(rule, cat, scope="")` |
+| `GET /api/lessons` | `list_lessons()` (reads `lessons`) |
+| `DELETE /api/lessons` | `remove_lesson(query)` |
+| `POST /api/send-message` | `send_notification(text, **opts)` |
+| `GET /api/notifications` | `list_notifications()` → `{notifications, unread}` |
+| `POST /api/notifications/ack` / `POST /api/notifications/ack-all` | `ack_notification(ts)` / `ack_all_notifications()` |
+| `POST /api/chat/slots/{slot}/approve` | `resolve_approval(request_id, "approved", slot_id=slot, pattern=pattern)`; command/base trust passes the pending card pattern |
+| `POST /api/chat/slots/{slot}/approve` | `resolve_approval(request_id, "rejected", slot_id=slot)` |
+| `POST /api/chat/slots/{slot}/approve` or `POST /api/approvals/{id}/{action}` | `resolve_approval(id, action="approve", slot_id="", *, pattern="", request_mid="", instance="")`; `request_mid` (a slot row's `meta.mid`, needs `slot_id`) sends the slot route's `origin: "native"` target, `instance` (with the record's `slot` as `slot_id`, from `list_approvals()`) sends `?origin=coordinator&slot=&instance=` on `/api/approvals/{id}/{action}`; one of them, never both; without either the bare id is sent, the form a later Gateway refuses; `approve`/`approved` and `reject`/`rejected` are aliases; without a slot, accepted actions are `approve`, `reject`, `reject_once`; with a slot, accepted actions are `approved`, `rejected`, `trust`, `trust_reads`, `trust_command`, `trust_base`, `yolo`; command/base trust requires `pattern` |
+| `GET /api/approvals` | `list_approvals()`; pending background approvals only (cron, autonudge, subagent, task runner), never a slot's own tool prompts; empty for an app token |
+| `GET /api/config/kirocrew` | `get_gateway_config("kirocrew")`, then read `agent.approval_mode` |
+| `POST /api/chat/mode` | `set_approval_mode(mode, slot_id="")`; accepted modes are `normal`, `trust_reads`, `trust`, `yolo`; `normal`, `trust_reads`, and `trust` may target one slot, while `yolo` is process-global and rejects `slot_id` |
+| `GET /api/models` | `list_models()` |
+| `POST /api/chat/slots/{slot}/model` | `set_slot_model(slot, model)` |
+| `GET /api/config/{key}` | `get_gateway_config(key)`; `key` is one of `GATEWAY_CONFIG_KEYS` (`kirocrew`, `stt`, `theme`, `default-agent`) |
+| `PUT /api/config/{key}` | `set_gateway_config(key, val)` (`PUT`, same keys) |
+| `GET /api/mcp` | `list_mcp_servers()` (`GET /api/mcp`) |
+| `PUT /api/mcp/servers/{name}` | `register_mcp_server(name, cmd, args?, env?)` |
+| `DELETE /api/mcp/servers/{name}` | `remove_mcp_server(name)` |
+| `POST /api/chat` (with `agent`) | `dispatch_agent(agent, prompt)` |
+| `POST /api/spawn` | `dispatch_agent_async(agent, prompt)` |
+| `GET /api/spawn/{agent_id}` | `get_task_result(id)` |
+| none (a local path) | `get_app_data_dir()` → `Path` |
+| `GET /api/apps/{name}/config` | `get_app_config()` |
+| `PUT /api/apps/{name}/config` | `set_app_config(cfg)` |
+| `GET /api/memory/episodic/search` | `memory_search(q, top_k=8)` (sent as `limit`, capped at 50) |
+| `POST /api/stt/transcribe` | `transcribe(audio_bytes, *, filename=, content_type=)` → text; transport failures raise `NETWORK_ERROR` without retry |
+| `GET /api/ws` (WebSocket) | `create_ws()` → `WsClient` (see above) |
+| `POST /api/chat/slots/{slot}/context` | `inject_context(slot, content, *, source?, ephemeral?, max_age?)` |
+| `POST /api/chat/slots/{slot}/context`, once per entry | `flush_pending_context(slot)` |
+| none (client-side) | `set_default_slot(slot)` |
 
 When `send_message` targets the default slot it flushes buffered context first.
 An entry the Gateway refuses for good (`context_not_queued` or
