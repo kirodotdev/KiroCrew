@@ -248,14 +248,26 @@ export function newChatCrewModeAgent(slot: {
   return configuredAgent
 }
 
+/** The fields `withoutConductors` and `agentCycleTarget` read off a row. */
+type ConductorFilterRow = { name: string; selection_kind?: string; kiro_agent?: string; source?: string; memory_store?: string }
+
+/** Whether a member row is the roster's copy of the template it is named after
+ *  rather than a crewmate the person created: it runs that template, and it is
+ *  not what the person's create path writes (`source` `kirocrew` with memory of
+ *  its own). The agents sync and the default-agent pick write such copies. */
+function rosterCopyOfTemplate(row: ConductorFilterRow): boolean {
+  if (row.selection_kind !== 'member' || row.kiro_agent !== row.name) return false
+  return row.source !== 'kirocrew' || (row.memory_store ?? 'default') === 'default'
+}
+
 /** Rows of a normal chat's agent picker: every conductor left out, since the
- *  composer's Crew Mode switch (this part) is the way onto one; crewmates kept
- *  whatever their name. The picker and the Split View pane picker read through
- *  this one function; the keyboard cycle (`agentCycleTarget`) skips conductors on
- *  its own. On a gateway without Crew Mode no template is a conductor, so every
- *  row passes. */
-export function withoutConductors<T extends { name: string; selection_kind?: string }>(choices: T[]): T[] {
-  return choices.filter(c => c.selection_kind === 'member' || !isConductorAgent(c.name))
+ *  composer's Crew Mode switch (this part) is the way onto one, and so is the
+ *  roster's copy of a conductor template; crewmates kept whatever their name.
+ *  The picker and the Split View pane picker read through this one function;
+ *  the keyboard cycle (`agentCycleTarget`) skips conductors on its own. On a
+ *  gateway without Crew Mode no template is a conductor, so every row passes. */
+export function withoutConductors<T extends ConductorFilterRow>(choices: T[]): T[] {
+  return choices.filter(c => (c.selection_kind === 'member' && !rosterCopyOfTemplate(c)) || !isConductorAgent(c.name))
 }
 
 /** Every surface that can show a session's pending tool approval. Listed so one
@@ -358,14 +370,15 @@ export function autoOpenRows<T extends { crew_root?: string; mate_root?: string;
  *  cycle: an empty list, a chat in Crew Mode (`runsCrewMode`), which has no agent
  *  picker to mirror, or a `locked` chat: the caller passes the row's RAW
  *  `crew_mode_root` stamp, set only on a chat the gateway refuses to move.
- *  Crewmates are kept whatever their name. */
-export function agentCycleTarget<T extends { name: string; selection_kind?: string }>(
+ *  Crewmates are kept whatever their name; the roster's copy of a conductor
+ *  template is skipped with it. */
+export function agentCycleTarget<T extends ConductorFilterRow>(
   agents: T[], current: string, currentKind: string | undefined, step: 1 | -1, crewStamp?: string, locked = false,
 ): string | null {
   // The raw `crew_mode_root` stamp is the gateway's own lock (`crew_mode_locked`),
   // in every build; where conductor mode is offered, every such chat has no picker.
   if (locked || runsCrewMode(current, currentKind, crewStamp)) return null
-  const rows = agents.filter(a => a.selection_kind === 'member' || !conductors.has(a.name))
+  const rows = agents.filter(a => (a.selection_kind === 'member' && !rosterCopyOfTemplate(a)) || !conductors.has(a.name))
   if (rows.length === 0) return null
   const idx = rows.findIndex(a => a.name === current)
   const next = idx === -1 ? (step === 1 ? 0 : rows.length - 1) : (idx + step + rows.length) % rows.length
