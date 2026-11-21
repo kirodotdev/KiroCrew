@@ -831,6 +831,43 @@ class TestRegisterPrunesUpgradedAwayResources:
         # The still-declared agent survives the prune.
         assert (app_env["kiro_agents"] / "test-app--my-agent.json").is_file()
 
+    def test_an_unreadable_record_keeps_registered_resources(self, tmp_path, app_env) -> None:
+        """A record that is valid JSON but not an object is not evidence of a disable.
+
+        Boot skips the app: it neither re-registers nor unregisters it, so its agent
+        config and even a resource a later manifest dropped stay byte-identical. Once
+        the record is repaired, the next boot reconciles the app normally.
+        """
+        from kiro_crew.apps import bridges as bridges_mod
+        from kiro_crew.apps.manager import enable_app
+
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        enable_app("test-app")
+        register_app("test-app")
+        agent = app_env["kiro_agents"] / "test-app--my-agent.json"
+        ghost = app_env["kiro_agents"] / "test-app--ghost.json"
+        ghost.write_text("{}", encoding="utf-8")
+        agent_bytes = agent.read_bytes()
+
+        record = app_env["home"] / "apps" / "test-app" / "installed.json"
+        good_record = record.read_bytes()
+        record.write_text("[]", encoding="utf-8")
+
+        counts = bridges_mod.reconcile_enabled_app_resources()
+
+        assert counts["apps"] == 0
+        assert agent.read_bytes() == agent_bytes
+        assert ghost.exists(), "an unreadable record must not prune or unregister"
+        assert record.read_text(encoding="utf-8") == "[]", "the record is left untouched"
+
+        record.write_bytes(good_record)
+        counts = bridges_mod.reconcile_enabled_app_resources()
+
+        assert counts["apps"] == 1
+        assert agent.is_file()
+        assert not ghost.exists(), "the repaired app is reconciled on the next boot"
+
 
 class TestRegisterNeverDeletesBeforeReplacement:
     """No destination — regular file OR legacy symlink — is unlinked before the

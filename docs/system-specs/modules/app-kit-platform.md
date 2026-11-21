@@ -1873,6 +1873,14 @@ earlier unvetted registration pass. Pinned by
 Writer: `apps/bridges_register.py::reconcile_enabled_app_resources`, called from
 `apps/backend_runtime/startup.py::start_enabled_app_backends`.
 
+**An install record that cannot be read is not a disable.** An app whose
+`installed.json` is valid JSON but not an object is skipped by `list_apps` with a
+warning, so boot neither re-registers nor unregisters it: its agents, skills and MCP
+entries stay as they were, the record and the app directory stay untouched, and its
+backend does not start. Nothing is deleted on evidence that cannot be read. Once the
+record is repaired, the next start reconciles the app normally. Test:
+`test_app_bridges_agent_configs.py::TestRegisterPrunesUpgradedAwayResources::test_an_unreadable_record_keeps_registered_resources`.
+
 Enablement also decides which of an app's **`kirocrew-core` tools are advertised**.
 The four built-in apps reached through that server — Issue Radar, Dev Fleet, Ops
 Mission Control, Design Tweak — gate every agent route on `is_app_enabled` (a 403
