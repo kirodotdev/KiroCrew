@@ -88,7 +88,11 @@ def _restore(bundle: Path, home: Path, monkeypatch, *extra: str) -> int:
     home.mkdir(exist_ok=True)
     monkeypatch.setenv("KIROCREW_HOME", str(home))
     mode = [] if "--mode" in extra else ["--mode", "replace"]
-    return restore_main([str(bundle), "--force", *mode, *extra] + unpinnable_argv())
+    # These tests are about the command/script rule, so the crons are picked: a bundle
+    # whose crons are not picked is covered by test_snapshot_foreign_crons_skills.py.
+    return restore_main(
+        [str(bundle), "--force", *mode, "--include-crons", *extra] + unpinnable_argv()
+    )
 
 
 def _jobs(home: Path) -> dict[str, dict]:

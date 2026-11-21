@@ -319,6 +319,8 @@ export default function PortabilityTab() {
   const [bundledTemplatesMore, setBundledTemplatesMore] = useState(0)
   const [memoryOnly, setMemoryOnly] = useState(false)
   const [importMemoryOnly, setImportMemoryOnly] = useState(false)
+  const [includeCrons, setIncludeCrons] = useState(false)
+  const [includeSkills, setIncludeSkills] = useState(false)
   const [chatLines, setChatLines] = useState<string[]>(carried?.chats ?? [])
   const fileRef = useRef<HTMLInputElement>(null)
   const { confirm, confirmDialog } = useConfirm()
@@ -390,6 +392,8 @@ export default function PortabilityTab() {
     setBundledTemplates([])
     setBundledTemplatesMore(0)
     setPickedTemplates([])
+    setIncludeCrons(false)
+    setIncludeSkills(false)
     setImportStatus({ type: 'idle', msg: '' })
     setImportWarnings([])
     setImportErrors([])
@@ -444,6 +448,8 @@ export default function PortabilityTab() {
       const params = new URLSearchParams({ mode: effectiveMode })
       if (memoryImport && effectiveMode === 'merge') params.set('components', 'memory')
       if (!memoryImport && pickedTemplates.length) params.set('agent_templates', pickedTemplates.join(','))
+      if (!memoryImport && includeCrons) params.set('include_crons', '1')
+      if (!memoryImport && effectiveMode === 'replace' && includeSkills) params.set('include_skills', '1')
       const resp = await fetch(`/api/portability/import?${params}`, { method: 'POST', body: fd })
       const data = await resp.json()
       if (data.ok) {
@@ -486,6 +492,16 @@ export default function PortabilityTab() {
         const keptFiles = keptSettingsFiles(summary.settings_kept)
         if (keptFiles.length) {
           warnings.push(i18nT('pages.overview.portabilityTab.import_settings_kept', { files: fmtList(keptFiles.map(settingsFileLabel)) }))
+        }
+        const pausedCrons = distinctNames(summary.paused_crons)
+        if (pausedCrons.length) {
+          const names = fmtList(pausedCrons)
+          warnings.push(summary.paused_crons_reset === true
+            ? i18nT('pages.overview.portabilityTab.import_crons_paused', { names })
+            : i18nT('pages.overview.portabilityTab.import_crons_paused_exec', { names }))
+        }
+        if (summary.skills_kept === true) {
+          warnings.push(i18nT('pages.overview.portabilityTab.import_skills_kept'))
         }
         const msg = i18nT('pages.overview.portabilityTab.import_complete_restart_gateway', { count: importedItemCount(summary.items) })
         const chats = [...templateLines, ...chatImportLines(summary)]
@@ -656,6 +672,46 @@ export default function PortabilityTab() {
             ? i18nT('pages.overview.portabilityTab.archive_memory_only')
             : i18nT('pages.overview.portabilityTab.import_memory_only_hint')}
         </p>
+        {/* Both off by default: an archive's schedules arrive paused and its skills
+            stay out unless picked. Neither applies to a memory-only import. */}
+        {!memoryImport && (
+          <>
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 text-[13px]">
+              <input
+                type="checkbox"
+                aria-label={i18nT('pages.overview.portabilityTab.include_crons')}
+                className="h-4 w-4 shrink-0 accent-accent"
+                checked={includeCrons}
+                disabled={importStatus.type === 'loading'}
+                aria-describedby="portability-include-crons-hint"
+                onChange={event => setIncludeCrons(event.target.checked)}
+              />
+              {i18nT('pages.overview.portabilityTab.include_crons')}
+            </label>
+            <p id="portability-include-crons-hint" className="text-text text-[12px] mb-3">
+              {i18nT('pages.overview.portabilityTab.include_crons_hint')}
+            </p>
+            {effectiveMode === 'replace' && (
+              <>
+                <label className="flex min-h-11 cursor-pointer items-center gap-2 text-[13px]">
+                  <input
+                    type="checkbox"
+                    aria-label={i18nT('pages.overview.portabilityTab.include_skills')}
+                    className="h-4 w-4 shrink-0 accent-accent"
+                    checked={includeSkills}
+                    disabled={importStatus.type === 'loading'}
+                    aria-describedby="portability-include-skills-hint"
+                    onChange={event => setIncludeSkills(event.target.checked)}
+                  />
+                  {i18nT('pages.overview.portabilityTab.include_skills')}
+                </label>
+                <p id="portability-include-skills-hint" className="text-text text-[12px] mb-3">
+                  {i18nT('pages.overview.portabilityTab.include_skills_hint')}
+                </p>
+              </>
+            )}
+          </>
+        )}
         <div className="flex items-center gap-3 flex-wrap">
           <label {...uiLocation('backup.import-file')} htmlFor="portability-import-file" className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold font-body bg-bg-elevated border border-border transition-colors ${checking ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:border-accent'}`}>
             <Upload size={14} />

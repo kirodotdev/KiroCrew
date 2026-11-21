@@ -642,7 +642,16 @@ leaves skill-only hooks alone; the dashboard import
 calls it too and lists the names in `disabled_hooks`. The restore prints the paused,
 disabled and dropped names, and where to switch each back on (Schedules, Hooks). A merge
 into a home that already has a `hooks.json` keeps that file, so no bundle hook is named.
-Message-only crons are restored as they are.
+Message-only crons are paused too unless the crons are picked, in both entry points
+(`--include-crons`; `include_crons` on the dashboard import): `_sanitize_imported_crons(...,
+hold_all=True)` pauses EVERY job and removes `approval_mode`, `project_path`, `env`,
+`secret_env`, `execution_context`, `agent_sequence`, `channel` and `model` from its
+record, and an `agent_id` that is not an installed agent, because a message job starts an
+agent turn that honours them (only the exact string `auto` in `approval_mode` turns
+auto-approve on). A picked job is installed as written; one that runs a command or script is still restored paused. A Replace also keeps
+a live `skills/` folder holding skills of your own (not the managed deploy skills or the
+unchanged built-in skills the gateway installs, and not links apps publish) unless `--include-skills`
+(`include_skills`) picks the bundle's; the summary names it (`skills_kept`, "Kept your live skills").
 
 The dashboard import's Merge follows the same never-overwrite rule as
 `kirocrew restore --mode merge` for the settings documents (`config.json`,

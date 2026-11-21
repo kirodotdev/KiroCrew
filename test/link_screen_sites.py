@@ -194,6 +194,7 @@ DECLARED_SITES = frozenset(
         ("pod/runtime_home.py", "write_pod_config"),
         ("portability.py", "_stage_workspace_dir_verdict"),
         ("portability.py", "apply_import_zip"),
+        ("portability_vetting.py", "_has_user_skills"),
         ("sandbox_aliases.py", "_establish_app_readonly_dirs"),
         ("sandbox_argv.py", "cleanup_stale_sandbox_profiles"),
         ("seed.py", "copy_fixture_into_witnessed_dir"),

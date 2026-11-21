@@ -206,7 +206,7 @@ def _import_names(zip_path, tmp_path, mode="merge"):
     target.mkdir()
     with patch.object(port, "config_dir", return_value=target):
         with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
-            summary = port.apply_import_zip(zip_path, mode=mode)
+            summary = port.apply_import_zip(zip_path, mode=mode, include_crons=True)
     crons_file = target / "crons.json"
     names = []
     if crons_file.is_file():
@@ -387,7 +387,7 @@ def test_an_imported_job_that_executes_is_restored_paused(tmp_path):
     with patch.object(mcp_cron, "sel", lambda: _FakeSel()):
         with patch.object(port, "config_dir", return_value=target):
             with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
-                summary = port.apply_import_zip(z, mode="merge")
+                summary = port.apply_import_zip(z, mode="merge", include_crons=True)
 
     jobs = {j["name"]: j for j in json.loads((target / "crons.json").read_text())["jobs"]}
     assert set(jobs) == {"safe-cmd", "script-job", "message-only"}

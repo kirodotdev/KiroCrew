@@ -606,6 +606,8 @@ async def api_portability_import(request: web.Request) -> web.Response:
             folder_merge=live_folder_merge(request.app.get("state"), asyncio.get_running_loop()),
             memory_only=memory_only or manifest_is_memory_only(manifest),
             **({"agent_templates": picked_templates} if picked_templates else {}),
+            include_crons=request.query.get("include_crons", "").lower() in ("1", "true"),
+            include_skills=request.query.get("include_skills", "").lower() in ("1", "true"),
         )
 
         # `staging` is recorded here, not only returned. Nothing renders it, and
