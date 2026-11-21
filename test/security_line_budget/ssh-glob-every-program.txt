@@ -1,0 +1,8 @@
++51
+The ssh-to-self floor read a glob that can name several ssh-family programs (`*s*`,
+`[rs]s*`) as one of them, picked in set order, in a run position: bash program position
+and a same-line cp/mv/ln/install copy (#37009). `_ssh_family_verbs` returns every program
+a word can name and `_ssh_verb_readings` reads a run glob and a copy-bound word once per
+program; both live in the new owner `argv_floor_ssh_verbs` (the floor sat over the 1,600
+working target, so the split moved them), which the facade lists. The dead single-pick
+`_ssh_family_verb` is removed.

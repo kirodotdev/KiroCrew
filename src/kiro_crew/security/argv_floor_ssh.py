@@ -19,7 +19,6 @@ in ``argv_floor_self`` and the host verdicts in ``argv_floor_hosts``, both below
 from __future__ import annotations
 
 import contextvars
-import fnmatch
 import functools
 import re
 from typing import Callable
@@ -30,7 +29,7 @@ from typing import Callable
 # keep resolving the unpatched object and the instrument would count nothing.
 from . import argv_rules as _argv_rules
 from . import shell_normalizer as _shell_normalizer
-from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
+from .argv_floor_hosts import _host_is_self
 from .argv_floor_self import (
     _self_token_frames,
     _static_substitution_output,
@@ -42,6 +41,11 @@ from .argv_floor_ssh_gate import (  # noqa: F401  (served under these names from
     _cannot_name_ssh_verb,
     _gate_words,
     _glob_can_name_ssh_verb,
+)
+from .argv_floor_ssh_verbs import (
+    _ssh_family_verbs,
+    _ssh_verb_basename,
+    _ssh_verb_readings,
 )
 from .shell_commands import (
     _double_quoted_substitution_bodies,
@@ -635,29 +639,6 @@ def _operand_targets_self(
     )
 
 
-def _ssh_verb_basename(token: str) -> str:
-    """*token*'s program basename as ``_ssh_family_verb`` reads it (``ssh.exe`` is ``ssh``)."""
-    base = _program_basename(_strip_redirect(token.strip("\"'")))
-    return base[: -len(".exe")] if base.endswith(".exe") else base
-
-
-def _ssh_family_verb(token: str) -> "str | None":
-    """The ssh-family verb *token* invokes, or None.
-
-    Path-qualified (``/usr/bin/ssh``) and Windows (``ssh.exe``) spellings
-    resolve to the bare verb.  A glob basename that CAN expand to one
-    (``s?h``, see ``_GLOB_CHARS``) resolves to the verb it can name.
-    """
-    base = _ssh_verb_basename(token)
-    if base in _SSH_FAMILY_VERBS:
-        return base
-    if _GLOB_CHARS.intersection(base):
-        for verb in _SSH_FAMILY_VERBS:
-            if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base):
-                return verb
-    return None
-
-
 # ssh_config keywords that SET the destination.  ``-o hostname=…`` rewrites
 # the host the positional operand merely aliases, and ``-o proxyjump=…``
 # opens a connection of its own — so a self value in either is a self
@@ -1144,10 +1125,10 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
     # rule because the latch is consulted only in LATER frames.
     rsync_rsh_carried_self = False
     # Destination paths a same-line cp/mv/ln/install gave to
-    # an ssh-family binary, bound to the verb they now carry.  Shared across
+    # an ssh-family binary, bound to every verb they may now carry.  Shared across
     # frames (a copy staged in a wrapper payload reaches its siblings); a
     # copy staged in an EARLIER command line is the documented residual.
-    bound_program_verbs: "dict[str, str]" = {}
+    bound_program_verbs: "dict[str, tuple[str, ...]]" = {}
     frames = _self_token_frames(text_lower, literal)
     # A wrapper's option words are read in the case they were written in
     # (``sudo -H`` takes no value, ``sudo -h`` does), so the caller's own line
@@ -1212,13 +1193,13 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
         xargs_prefix_index: "int | None" = None  # a bare ``xargs`` in this simple command
         # Once per FRAME, not once per verb token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
-        for i, token in enumerate(tokens):
-            verb = _ssh_family_verb(token)
+        for i, token, verb, from_copy in _ssh_verb_readings(tokens, executed, bound_program_verbs):
             # A glob that bash does not run and that ends its command (``git add
             # *; curl localhost:3000``) is that command's last operand, not an
             # ssh verb whose operand scan would run on past the ``;``.
             if (
-                verb is not None
+                not from_copy
+                and verb is not None
                 and _ssh_verb_basename(token) != verb
                 and i not in executed
                 and token.endswith((";", "|"))
@@ -1239,7 +1220,8 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
             # wherever it sits: it is the field of a cron schedule
             # (``* * * * * root …``) far more often than a program.
             glob_verb = (
-                verb is not None
+                not from_copy
+                and verb is not None
                 and _ssh_verb_basename(token) != verb
                 and not any(sep in token for sep in "/\\")
                 and (i not in executed or not token.strip("*"))
@@ -1249,13 +1231,11 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
             # and literal loopback checks. Any slot not proven a file operand keeps
             # the DNS check (``sshpass s?h <alias>``, ``find -exec s?h …``).
             filename_glob = (
-                verb is not None and _ssh_verb_basename(token) != verb and i in file_operands
+                not from_copy
+                and verb is not None
+                and _ssh_verb_basename(token) != verb
+                and i in file_operands
             )
-            if verb is None and bound_program_verbs:
-                stripped_prog = token.strip("\"'")
-                verb = bound_program_verbs.get(stripped_prog) or bound_program_verbs.get(
-                    _program_basename(stripped_prog)
-                )
             if verb is None:
                 stripped_tok = token.strip("\"'")
                 assign = _RSYNC_RSH_ASSIGN_RE.match(stripped_tok)
@@ -1322,11 +1302,12 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
                         operands.append(peeked)
                     if len(operands) >= 2:
                         for source in operands[:-1]:
-                            bound_verb = _ssh_family_verb(source)
-                            if bound_verb is not None:
+                            # A glob source (``*s*``) binds every verb it can name.
+                            bound_verbs = _ssh_family_verbs(source)
+                            if bound_verbs:
                                 dest = operands[-1]
-                                bound_program_verbs[dest] = bound_verb
-                                bound_program_verbs[_program_basename(dest)] = bound_verb
+                                bound_program_verbs[dest] = bound_verbs
+                                bound_program_verbs[_program_basename(dest)] = bound_verbs
                                 break
                 cmd_start = _ends_argv(token) or (
                     cmd_start and _ENV_ASSIGN_PREFIX_RE.match(stripped_tok) is not None

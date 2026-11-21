@@ -491,7 +491,6 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "_split_push_command_segments",
     "_split_segments",
     "_split_shell_words",
-    "_ssh_family_verb",
     "_stall_prefix",
     "_static_substitution_output",
     "_stdin_program_text",

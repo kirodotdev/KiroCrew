@@ -196,7 +196,6 @@ _EXPORTS: dict[str, str] = {
     "_self_program_index": "argv_floor",
     "_self_token_frames": "argv_floor",
     "_shell_payload_sources": "argv_floor",
-    "_ssh_family_verb": "argv_floor",
     "_static_substitution_output": "argv_floor",
     "_unmask_separators": "argv_floor",
     # denied_rules
@@ -852,7 +851,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _self_token_frames,
         _SelfModuleScan,
         _shell_payload_sources,
-        _ssh_family_verb,
         _static_substitution_output,
         _unmask_separators,
     )
