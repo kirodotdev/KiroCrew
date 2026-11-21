@@ -902,6 +902,49 @@ describe('BrowserView second view (tabId)', () => {
     expect(open).not.toHaveBeenCalled()
   })
 
+  it('does not reopen an idle-reaped view while off-screen; reopens once it scrolls back', async () => {
+    // The root cause this test guards: when the view enters the done/placeholder
+    // face, the outer wrapper must stay mounted so the IntersectionObserver ref
+    // stays attached. If the ref is dropped, the effect resets onScreen=true and
+    // the reopen fires for a view nobody can see.
+    //
+    // We mock IntersectionObserver so we control when the element is "on screen".
+    type IOCb = (entries: IntersectionObserverEntry[]) => void
+    let ioCallback: IOCb | null = null
+    const OriginalIO = window.IntersectionObserver
+    class MockIO {
+      constructor(cb: IOCb) { ioCallback = cb }
+      observe = vi.fn()
+      disconnect = vi.fn()
+      unobserve = vi.fn()
+    }
+    // @ts-expect-error mock
+    window.IntersectionObserver = MockIO
+    try {
+      const open = vi.spyOn(api, 'browserLiveViewOpen').mockResolvedValue({ view_key: VIEW, turn_id: 'v1' })
+      vi.spyOn(api, 'browserLiveViewClose').mockResolvedValue({ ok: true } as never)
+      act(() => { browserLiveStore.applyEvent(ev(VIEW, { turn_id: 'v1' })); browserLiveStore.applyFrame(frame(VIEW)) })
+      mount(OWN, <BrowserView slot={OWN} tabId="TB" aria-label="Tab B" />)
+      await act(async () => {})
+      expect(open).toHaveBeenCalledTimes(1)
+      // Simulate: view is scrolled off-screen. The wrapper stays mounted but reports not intersecting.
+      act(() => { ioCallback?.([{ isIntersecting: false } as IntersectionObserverEntry]) })
+      await act(async () => {})
+      // Gateway idle-reaps the view while it is off-screen.
+      act(() => { browserLiveStore.applyEvent(ev(VIEW, { turn_id: 'v1', state: 'done' })) })
+      await act(async () => {})
+      // Off-screen → shown=false → reopen must NOT fire.
+      expect(open).toHaveBeenCalledTimes(1)
+      // Now the user scrolls back: the wrapper is still mounted, IO fires intersecting=true.
+      act(() => { ioCallback?.([{ isIntersecting: true } as IntersectionObserverEntry]) })
+      await act(async () => {})
+      // Now shown=true → reopen fires exactly once.
+      expect(open).toHaveBeenCalledTimes(2)
+    } finally {
+      window.IntersectionObserver = OriginalIO
+    }
+  })
+
   it('opens nothing for a slot the page may not show', () => {
     const open = vi.spyOn(api, 'browserLiveViewOpen').mockResolvedValue({ view_key: 'x' })
     mount(FOREIGN, <BrowserView slot={FOREIGN} tabId="TB" aria-label="Tab B" />)

@@ -164,7 +164,8 @@ export default function BrowserView({
   const [rootEl, setRootEl] = useState<HTMLDivElement | null>(null)
   const [onScreen, setOnScreen] = useState(true)
   useEffect(() => {
-    if (!rootEl || typeof IntersectionObserver !== 'function') { setOnScreen(true); return }
+    if (!rootEl) { setOnScreen(false); return }
+    if (typeof IntersectionObserver !== 'function') { setOnScreen(true); return }
     const io = new IntersectionObserver((entries) => setOnScreen(entries.some(e => e.isIntersecting)), { threshold: 0.05 })
     io.observe(rootEl)
     return () => io.disconnect()
@@ -327,22 +328,65 @@ export default function BrowserView({
   if (access === 'app_off') return <Placeholder state="app_off" text={i18nT('appSdk.browserView.app_off')} className={className} />
   if (access === 'not_granted') return <Placeholder state="not_granted" text={i18nT('appSdk.browserView.not_granted')} className={className} />
   if (access === 'denied') return <Placeholder state="denied" text={i18nT('appSdk.browserView.denied')} className={className} />
-  // Second view errors: a refused tab, an app off, the slot's own view cap.
-  if (tabId && second.error) {
+  // Second view (tabId): all faces share one wrapper so the IntersectionObserver
+  // ref stays mounted and visibility is never reset to true when the content face
+  // changes (e.g. live → done/placeholder → live again).
+  if (tabId) {
+    let inner: React.ReactNode
+    if (second.error) {
+      inner = <ErrorNotice variant="inline" message={second.error} askAgent testId="app-browser-view-view-error" />
+    } else if (keepaliveErrorMsg) {
+      inner = <ErrorNotice variant="inline" message={keepaliveErrorMsg} askAgent testId="app-browser-view-keepalive-error" />
+    } else if (!key || !turn || !(live || holdLive)) {
+      inner = <Placeholder state="idle" text={i18nT('appSdk.browserView.waiting_for_frame')} />
+    } else {
+      const viewHost = hostOf(url)
+      const viewRatio = frame && frame.w > 0 && frame.h > 0 ? frame.w / frame.h : 16 / 10
+      inner = (
+        <>
+          <div className="flex items-center gap-2 px-2 py-1.5 text-[13px]">
+            <span className="min-w-0 flex-1 truncate">
+              <span className="font-medium text-text-strong">{viewHost}</span>
+              {title && <span className="text-muted"> · {sanitizeLlmOutput(title).slice(0, 120)}</span>}
+            </span>
+          </div>
+          <div className="flex-1 min-h-0 flex">
+            <PictureBox ratio={viewRatio} testId="app-browser-view-picture">
+              <div ref={boxRef} className="absolute inset-0">
+                {turn.hasFrame ? (
+                  <BrowserLiveCardCanvas
+                    ref={canvasRef}
+                    sessionKey={key ?? slot}
+                    turnId={turn.turnId}
+                    visible={shown}
+                    interactive={false}
+                    onHandBack={undefined}
+                    onClaim={undefined}
+                    onFrameSize={setFrame}
+                    aria-label={ariaLabel}
+                  />
+                ) : (
+                  <Placeholder state="idle" text={i18nT('appSdk.browserView.waiting_for_frame')} />
+                )}
+              </div>
+            </PictureBox>
+          </div>
+        </>
+      )
+    }
+    const state = second.error || keepaliveErrorMsg ? 'view_error' : (!key || !turn || !(live || holdLive)) ? 'idle' : turn.state
     return (
-      <div className={`rounded-md border border-border bg-card p-4 ${className ?? ''}`} data-testid="app-browser-view" data-state="view_error">
-        <ErrorNotice variant="inline" message={second.error} askAgent testId="app-browser-view-view-error" />
+      <div
+        ref={setRootEl}
+        className={`flex flex-col min-h-0 rounded-md border border-border bg-card ${className ?? ''}`}
+        data-testid="app-browser-view"
+        data-state={state}
+      >
+        {inner}
       </div>
     )
   }
-  if (tabId && keepaliveErrorMsg) {
-    return (
-      <div className={`rounded-md border border-border bg-card p-4 ${className ?? ''}`} data-testid="app-browser-view" data-state="view_error">
-        <ErrorNotice variant="inline" message={keepaliveErrorMsg} askAgent testId="app-browser-view-keepalive-error" />
-      </div>
-    )
-  }
-  if (tabId && !key) return <Placeholder state="idle" text={i18nT('appSdk.browserView.waiting_for_frame')} className={className} />
+
   // Off the live view, a failed control write (take over, hand back, a hand-back
   // note) is shown on every face; nothing on those faces is unsaved.
   const controlNotice = turn?.controlError
