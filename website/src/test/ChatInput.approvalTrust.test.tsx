@@ -322,15 +322,72 @@ describe('ChatInput approval Trust menu and receipts', () => {
     expect(api.approveChatSlot).toHaveBeenCalledTimes(1)
   })
 
-  it('on a site grant card, Trust all tools sends the session grant, as on main', async () => {
+  it('on a site grant card, Trust all tools takes a second click, then sends the session grant as on main', async () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(siteCard('act')) })
     openTrust()
+    // The first click only arms the row, as on every other card: nothing is sent.
     clickTrustRow('Trust all tools for this session')
+    expect(api.approveChatSlot).not.toHaveBeenCalled()
+    expect(screen.getAllByRole('menuitem').map(b => b.textContent)).not.toContain('Trust all tools for this session')
+    clickTrustRow('Click again to confirm — every tool runs without asking')
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
         'slot-1', 'trust', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123' }
       )
     })
+  })
+
+  it('a heading cut at two lines can be opened whole from the keyboard, and closed again', () => {
+    // jsdom lays nothing out: the title reports more text than its box shows.
+    const sh = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
+    const ch = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
+    const title = (el: Element) => (el as HTMLElement).dataset?.testid === 'approval-title'
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get() { return title(this) ? 60 : 0 } })
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get() { return title(this) ? 40 : 0 } })
+    onTestFinished(() => {
+      if (sh) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', sh)
+      else delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight
+      if (ch) Object.defineProperty(HTMLElement.prototype, 'clientHeight', ch)
+      else delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight
+    })
+    reduceMotion()
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(mcpStateWithPurpose()) })
+    const toggle = screen.getByRole('button', { name: 'Show more' })
+    expect(toggle.tagName).toBe('BUTTON')
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByTestId('approval-title').className).toContain('line-clamp-2')
+    act(() => { toggle.focus() })
+    expect(document.activeElement).toBe(toggle)
+    // A native button: Enter and Space click it.
+    fireEvent.click(toggle)
+    expect(screen.getByTestId('approval-title').className).not.toContain('line-clamp-2')
+    expect(screen.getByRole('button', { name: 'Show less' })).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Show less' }))
+    expect(screen.getByTestId('approval-title').className).toContain('line-clamp-2')
+  })
+
+  it('offers no Show more when the heading fits', () => {
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(mcpStateWithPurpose()) })
+    expect(screen.queryByTestId('approval-title-toggle')).not.toBeInTheDocument()
+  })
+
+  it('the card\'s input box is a named region keyboard users can focus and scroll', () => {
+    reduceMotion()
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(mcpStateWithPurpose()) })
+    const box = screen.getByRole('region', { name: 'Input' })
+    expect(box).toBe(screen.getByTestId('approval-input'))
+    expect(box).toHaveAttribute('tabindex', '0')
+    act(() => { box.focus() })
+    expect(document.activeElement).toBe(box)
+  })
+
+  it('draws Show in chat as a live control, not in the muted look of a disabled one', async () => {
+    // Its transcript row is out of view (no pill registered), so the chip shows.
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
+    const chip = await screen.findByRole('button', { name: 'Show pending tool call in chat' })
+    expect(chip.className.split(/\s+/)).toContain('text-text')
+    expect(chip.className.split(/\s+/)).not.toContain('text-muted')
+    expect(chip.className.split(/\s+/)).toContain('font-medium')
   })
 
   it('wraps the card\'s command and tool name at spaces, never mid-word', () => {
