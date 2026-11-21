@@ -990,15 +990,24 @@ Wired sites:
 - `apps/registry_pipeline/sources.py` / `apps/routes_art.py` — clone-sandbox-mode decision routes
   through `current_context().registry` (`_context_clone_sandbox_mode`).
 - Telemetry `record_event` sites — `dashboard/server_runtime/diagnostics.py` records `gateway_start`
-  at boot; `_turn_context_usage` (`dashboard/chat_turn/turn_stats.py`) and
-  `slack/handler_runtime/turn.py` record one `interaction` event per successful chat turn
-  (immediately after the `record_success` call, non-cancelled / non-retrying branch only;
-  cancelled turns emit nothing). **The interaction payload is strictly metadata —
-  `session_key`, `surface` (`"dashboard"` / `"slack"`), and `model` — never
-  prompt/response text or file contents.** All sites are best-effort
-  (try/except-Exception, debug log); the Default provider is a no-op so
-  standalone is byte-identical. Phase-1 scope is dashboard + slack only
-  (cli_chat/cron/subagent/task_executor sites are deliberately not wired).
+  at boot. Every engine that lands a model turn records one `interaction` event
+  for it, beside its landed-turn bookkeeping (`record_success` or
+  `note_turn_landed`); a cancelled, stalled or failed turn emits nothing. The
+  sites and their `surface`: `_turn_context_usage` (`dashboard/chat_turn/turn_stats.py`,
+  `"dashboard"`), `slack/handler_runtime/turn.py` and `slack/transport_dispatch.py`
+  (`"slack"`), `subagent_manager/run_turn.py` (`"subagent"`),
+  `slack/gateway_runtime/cron_turn.py` (`"cron"`, once per landed step),
+  `task_executor.py` (`"task"`), `dashboard/handlers/hooks.py` (`"webhook"`),
+  `slack/gateway_runtime/heartbeat_turns.py` (`"heartbeat"`),
+  `slack/gateway_runtime/runtime_charge.py` (`"subagent_report"`, the parent turn
+  that reads a sub-agent's report), `telegram/dispatch/turn_engine.py`
+  (`"telegram"`) and `messaging/dispatch.py` (the channel name).
+  `test/test_interaction_telemetry_surfaces.py` pins the list and fails on a new
+  module that books a landed turn without reporting or a recorded reason.
+  **The interaction payload is strictly metadata — `session_key`, `surface`, and
+  `model` — never prompt/response text or file contents.** All sites are
+  best-effort (try/except-Exception, debug log); the Default provider is a no-op
+  so standalone is byte-identical.
 - Preflight checks (`IdentityProvider.preflight_checks()`) —
   `kiro_crew.preflight.run_preflight_checks()` runs seam-supplied pre-launch
   checks at exactly two sites: the `gateway` dispatch in `cli.py` (before

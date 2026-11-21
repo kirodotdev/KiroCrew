@@ -729,6 +729,18 @@ async def _run_inner_impl(
         """
         nonlocal _final_segment
         attempts = 0
+
+        def _report_if_landed(ended: object) -> None:
+            # Every prompt that lands and is followed by another one in this
+            # run (a refusal resume, a Stop-hook continuation, a recovery
+            # nudge) is reported where it ends; the run's last prompt is
+            # reported by _count_success. Imported here like ActiveModelLine.
+            stop = str(getattr(ended, "stop_reason", "") or "")
+            if ended is not None and classify_stop_reason(stop).is_success:
+                from kiro_crew.llm_helpers import record_interaction_event
+
+                record_interaction_event(client, session_key, "subagent")
+
         # One-shot post-activity allowance, mirroring the main path's
         # ``_posttoken_retry_used`` rule (_on_acp_posttoken_transient, chat_turn/acp_recovery.py):
         # each continuation turn issued AFTER observed activity is an
@@ -874,6 +886,7 @@ async def _run_inner_impl(
                         yield _refused_turn
                         return
                     usage.settle(_refused_turn)
+                    _report_if_landed(_refused_turn)
                     _refusal_resumes[0] += 1
                     logger.info(
                         "Subagent %s: turn cancelled after a host refusal; resuming (%d/%d)",
@@ -897,6 +910,7 @@ async def _run_inner_impl(
                     # ``settle(None)`` reads the provider's own last-turn stats.
                     usage.settle(_ended)
                     _persist_usage_row(_ended)
+                    _report_if_landed(_ended)
                     logger.info(
                         "Subagent %s: a Stop hook asked to continue (%d)",
                         info.id,
@@ -920,6 +934,7 @@ async def _run_inner_impl(
                     # partial).
                     yield _withheld
                     return
+                _report_if_landed(_withheld)
                 _final_segment = ""
                 msg = _nudge
                 continue
@@ -1583,6 +1598,14 @@ async def _run_inner_impl(
     def _count_success() -> None:
         # The one success bookkeeping, for a claimed ending and the tail's alike.
         self._manager._sessions.record_success(session_key)
+        # Per-interaction telemetry for the run's LAST prompt, and only when a
+        # completion was observed: output kept after a generation failure ends
+        # the stream with none. Earlier prompts a Stop hook continued are
+        # reported where they end, in the stream above.
+        if _complete_event is not None:
+            from kiro_crew.llm_helpers import record_interaction_event
+
+            record_interaction_event(client, session_key, "subagent")
         Stats().inc_subagent_completed()
         logger.info("Subagent %s completed", info.id)
 
