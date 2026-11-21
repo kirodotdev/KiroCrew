@@ -1675,6 +1675,11 @@ def main() -> None:
 
     ensure_data_home()
     _prepare_telemetry()
+    # The gateway's PATH part, for the launch approval fold. Taken out of the
+    # env so no backend inherits it.
+    from kiro_crew.mcp_gateway.hashing import GATEWAY_PATH_ENV, pin_gateway_path
+
+    pin_gateway_path(os.environ.pop(GATEWAY_PATH_ENV, None))
     try:
         # Windows: every spawn on this loop builds its child off-loop.
         rc = asyncio.run(_amain(), loop_factory=gateway_loop_factory())
