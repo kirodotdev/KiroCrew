@@ -32,6 +32,7 @@ import { useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
 import { useRelayTabs } from '../lib/relayCrewPanes'
+import { embeddedTeamCrewsGroups } from './embeddedTeamCrewsGroups'
 import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
 import { hasDashboardPane } from '../utils/remoteCrew'
 import { useSelectInstance } from '../hooks/useSelectInstance'
@@ -1164,7 +1165,7 @@ function Switcher({
   entries: SwitcherEntry[]
   activeId: string | null
   onSelect: (id: string | null) => void
-  /** Top-level bar only: an embedded pane never gets one (no Team Crew list leaves this computer). */
+  /** The Remote Crews group: the top bar's own, or in an SSH Crew's pane the rows its window relays. */
   extraGroups?: SwitcherExtraGroups
   /** Top-level bar only: an extra group holds something not seen yet. */
   extraNew?: boolean
@@ -1378,6 +1379,7 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
         stableOrder={hostStableOrder}
         onToggleStableOrder={onToggleStableOrder}
         embedded
+        extraGroups={embeddedTeamCrewsGroups(host.relayCrews)}
       />
     </div>
   )
@@ -1400,8 +1402,7 @@ export default function InstanceTabBar({
   /** A notice about those groups, shown where the bar shows its own list failure,
    *  so the top bar sizes it the same way. */
   extraNotice?: ReactNode
-  /** Relay Crews those groups show a row for, with its own × while open: an open one
-   *  gets no second row here. Any other open one keeps its row, so it stays reachable. */
+  /** Relay Crews those groups show a row for: an open one gets no second row here; any other keeps its row. */
   listedRelayCrews?: ReadonlySet<string>
 } = {}) {
   const activeId = useAppSelector(s => s.instances.activeId)

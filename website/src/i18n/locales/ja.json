@@ -7649,9 +7649,10 @@
       "new_crew": "新規",
       "seen_not_saved": "確認済みとして保存できませんでした。また新規として表示されます。",
       "open_crew_failed": "{{name}} を開けませんでした。",
-      "connect": "接続",
       "connect_crew": "{{name}} に接続",
-      "connected": "接続済み"
+      "connected": "接続済み",
+      "not_connected": "未接続",
+      "connecting": "接続中…"
     },
     "instancesViewport": {
       "connecting": "接続中…",

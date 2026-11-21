@@ -104,7 +104,9 @@ function createWindowChrome({
         return;
       }
       nativeTheme.themeSource = resolveThemeSource(pref, mode);
-      if (mode === "dark" || mode === "light") updateWindowsTitleBarOverlay(win, mode);
+      // data-mode can be a Remote Crew's lent mode; the caption buttons keep the
+      // person's own, which themeSource now holds (#40254).
+      if (mode === "dark" || mode === "light") updateWindowsTitleBarOverlay(win);
     }).catch(() => {});
   }
 

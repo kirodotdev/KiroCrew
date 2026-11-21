@@ -326,8 +326,13 @@ shows **offline**, and either may also show when it was last seen. A row that
 isn't open and isn't online is dimmed, and choosing it does nothing. The Crew in
 front carries a check mark. Another Crew open in this window reads **Connected**
 while it is online, and nothing but its status once it goes offline; either way
-choosing it brings its tab forward and its **×** disconnects it. The rest read
-**Connect**. Rows are sorted by name, so a Crew stays in place from one read
+choosing it brings its tab forward. The rest read **Not connected**, and choosing
+one connects it, which can take a few seconds: the window shows the Crew's name and
+**Connecting…** until its page has loaded. No row has a close of its own: past the
+few Crews kept loaded, the one used least recently closes by itself. While a Crew
+is in front, the window around it (the top bar and anything docked) takes its dark
+or light mode. With an SSH Crew in front,
+that Crew's own switcher lists the same group. Rows are sorted by name, so a Crew stays in place from one read
 to the next whatever order the control plane answers in. The list
 is read again each time you open the switcher (unless it was read in the last
 few seconds), every 15 seconds while a listed Crew isn't online, and about once

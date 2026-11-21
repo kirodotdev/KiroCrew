@@ -7649,9 +7649,10 @@
       "new_crew": "新",
       "seen_not_saved": "无法保存你已查看的状态，它会再次显示为新的。",
       "open_crew_failed": "无法打开 {{name}}。",
-      "connect": "连接",
       "connect_crew": "连接 {{name}}",
-      "connected": "已连接"
+      "connected": "已连接",
+      "not_connected": "未连接",
+      "connecting": "正在连接…"
     },
     "instancesViewport": {
       "connecting": "正在连接…",

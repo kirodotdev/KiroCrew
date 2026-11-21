@@ -76,6 +76,33 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     )
   })
 
+  it('lists the Remote Crews the window relays and sends a pick up as a relay: id (row 72)', async () => {
+    const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const relay = { crewType: 'TEAM', presence: 'CONNECTED', relayConnectionStatus: 'CONNECTED', lastSeenAt: null, current: false }
+    const store = createTestStore({
+      instances: {
+        warm: {}, activeId: null, mru: [], unread: {},
+        host: model({ relayCrews: [{ ...relay, endpointId: 'ep-1', name: 'Team Lab', open: false }, { ...relay, endpointId: 'ep-2', name: 'Build', open: true }] }),
+      },
+    })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    // The group is a React.lazy chunk (embeddedTeamCrewsGroups.tsx -> TeamCrewsGroup.tsx):
+    // its first import in a cold worker can take longer than findBy's 1 s default.
+    expect(await screen.findByText('Remote Crews', undefined, { timeout: 5000 })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Build', description: 'Connected' })).toBeTruthy()
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Connect Team Lab' }))
+    expect(post).toHaveBeenCalledWith(expect.objectContaining({ type: 'mc-switch-instance', id: 'relay:ep-1' }), HUB)
+  })
+
+  it('shows no Remote Crews group when the window relays none (an older host)', async () => {
+    const store = createTestStore({ instances: { warm: {}, activeId: null, mru: [], unread: {}, host: model() } })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    expect(screen.getByRole('menuitemradio', { name: /Cloud One/ })).toBeTruthy()
+    expect(screen.queryByText('Remote Crews')).toBeNull()
+  })
+
   it('renders nothing when the parent has not relayed a model yet', () => {
     const store = createTestStore({
       instances: { warm: {}, activeId: null, mru: [], unread: {}, host: null },

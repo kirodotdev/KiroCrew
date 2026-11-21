@@ -895,7 +895,15 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   switch instance, readiness and boot, chained-crew, crew pin, stable order,
   focus mode and chrome, cursor-away watch and cancel, scroll-touch watch and
   cancel, clipboard image, drag gaps, native notify, pane active slot);
-  a switch target is re-validated against the known instance list. `mc-native-notify`
+  a switch target is re-validated against the known instance list; a
+  `relay:<endpointId>` target (a pane's Remote Crews row) brings an open relay tab
+  forward, or for a Crew this window lists brings Local forward and opens it from
+  the top bar (`?relay_crew=`), whose cover and refusal notice say how it went;
+  any other id does nothing (`lib/paneRelayCrews.ts`). In the desktop app the host
+  model sent to the pane in front carries those rows (`relayCrews`: endpoint ID, name, type, the relay's
+  state words, last seen, open and current; never the Crew's URL, a token or
+  the account), so the
+  switcher an SSH Crew draws lists the Remote Crews too. `mc-native-notify`
   carries user-visible text, so it is accepted only from a resolved tunnel origin
   and only when every field has exactly the expected type
   (`parseNativeNotifyEnvelope`), with title, body and tag bounded.
