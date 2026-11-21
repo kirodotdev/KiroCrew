@@ -310,6 +310,7 @@ from kiro_crew.mcp_gateway.launch_approval import (
     LaunchApprovals,
     filter_target_env,
     load_approvals,
+    pin_gateway_part,
     save_pass,
 )
 from kiro_crew.mcp_gateway.launch_resolve import rewrite_kwargs

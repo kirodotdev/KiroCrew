@@ -42,6 +42,36 @@ encoding opens with a byte no UTF-8 token can contain, so no spelled-out argv or
 env value collides with it. An approval of such a launch recorded before the
 encoding existed is refused once as `changed_needs_reapproval` and re-approved
 by the operator; the store never admits the pre-encoding digest.
+
+The gateway's own part of a declared `PATH` is folded the same way
+(`hashing.launch_env_value_bytes`). `env.spec_env_path` appends
+`env.gateway_spec_path()` (the gateway's own `PATH` plus the well-known MCP
+directories) after a spec's own entries, so a re-rendered service unit or a
+package installer that adds or moves a version directory there would otherwise
+change every such server's fingerprint. A `PATH` value that is exactly that
+composition (raw-string equality, recomputed with the writer's own
+`env.spec_path_own_entries`) hashes as its own entries followed by a
+`gateway-path` alias. The spec's own entries still count exactly, a `PATH` that
+is not the composition hashes as written, and only the `PATH` key folds. The
+pool key (`hash_effective_env`) keeps the real `PATH`. The part is pinned for
+the broker's life (`launch_approval.pin_gateway_part`), so the rewriter, the
+dashboard and every later agent-spec rebuild fold one composition even when the
+gateway's own `PATH` changes live (a `.env` `PATH` edit, an added `ffmpeg`
+directory). gatewayd cannot compute the part from its own environment, which
+the manager rewrites at spawn, so the manager hands it over as
+`KIROCREW_MCP_GATEWAY_PATH`, which `gatewayd.main` removes from its environment
+before any backend can inherit it. Only the current part folds. An earlier
+gateway part is not folded even where it follows the own entries: an agent could
+insert one there, and its directories would then search for executables outside
+the sandbox with no approval. So a value saved already expanded and expanded
+again (App Kit register writes `emit_env` output into `mcp.json`) asks once after
+the gateway's part moves. An approval stored before this fold is not carried
+over: its literal digest matches no folded identity, so the launch is refused
+once as `changed_needs_reapproval` and the operator approves it again. Nothing
+admits a launch on an old digest, so no migration rule can widen what was
+approved. A package-installer move in the resolved command path is not
+folded: see
+[the decision](../../decisions/2026-11-20-the-gateways-own-path-is-not-a-launch-change.md).
 The residual: `${VAR}` values come from the gateway environment, so an
 unsealed source of it (such as a writable shell rc file) changes an approved
 launch's values silently instead of surfacing as a refusal.
