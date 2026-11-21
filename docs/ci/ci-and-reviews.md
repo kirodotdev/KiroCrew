@@ -1188,7 +1188,8 @@ The Linux, Windows and macOS matrices assign whole files before pytest imports
 their items. `scripts/ci_file_shards.py` is an opt-in pytest plugin, loaded only by
 those matrix commands. It uses SHA-256 of the root-relative POSIX path to choose
 one of `SHARD_COUNT` owners. Each xdist worker reaches the same assignment.
-Adding a file does not move existing files between shards.
+Adding a file does not move existing files between shards, except within a
+`--file-shard-targets` list (below).
 
 Pytest still walks its configured roots, applies its filename patterns and
 platform-specific conftest ignores, and creates its normal file collectors.
@@ -1202,6 +1203,8 @@ list and the leaf-test corpus gates reach pytest as a file named by
 roots as usual and skips every path that is not a listed file or a directory
 above one. Passed as arguments, pytest walks each file's directory once per
 argument, and the ~1,200 reduced-scope files took up to an hour to collect.
+The listed files are spread across the shards by measured time, not by hash or
+pins ([testing-conventions § Shard balance](../system-specs/common/testing-conventions.md#shard-balance)).
 Leaf-test corpus-gate passes load the file-sharding plugin (the same one as the
 full and reduced paths) so the ~814 gates are split across the matrix shards.
 Changed-file repetitions remain unsharded: each matrix job repeats every changed
