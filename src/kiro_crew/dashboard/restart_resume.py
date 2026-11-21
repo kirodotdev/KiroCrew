@@ -1,9 +1,11 @@
-"""Resume the chats a planned in-app restart cut off.
+"""Resume the chats a planned restart cut off.
 
 Every planned restart (the dashboard's ``_restart_gateway`` for Restart and
 update apply, the gateway's update restart, the Slack ``/kirocrew restart``)
 records the chats with a running turn (:func:`record_running_slots`) just
-before its ``close_all()`` cuts them. The next dashboard boot takes that record once, deleting it before
+before its ``close_all()`` cuts them. So does the gateway's graceful shutdown,
+which a stop from outside runs (``systemctl restart``, an update script). The
+next dashboard boot takes that record once, deleting it before
 it acts (:func:`take_intent`), and resumes those chats through the Resume-all
 run (``chat_resume_all.start_resume_all``), so its bound on concurrent turns
 and every refusal it makes still apply. A crash writes no record: its chats
@@ -48,17 +50,21 @@ def write_intent(names: list[str]) -> None:
         intent_path().unlink(missing_ok=True)
 
 
-async def record_running_slots(state: DashboardState | None) -> None:
+async def record_running_slots(state: DashboardState | None, *, keep_earlier: bool = False) -> None:
     """Record the chats a planned restart is about to cut. Call right before ``close_all()``.
 
     A slot counts when it carries the turn-in-flight marker, which is what the
     next boot's reconcile turns into the interruption row this record resumes.
     Names are read on the loop, the file is written off it with a 5 s bound,
-    and a failure is logged: the restart goes on without the record.
+    and a failure is logged: the restart goes on without the record. With no
+    chat running, *keep_earlier* leaves an earlier record in place instead of
+    removing it.
     """
     try:
         slots = list(getattr(state, "_slots", {}).items())
         names = sorted(n for n, s in slots if getattr(s, "_turn_in_flight_generation", 0) > 0)
+        if not names and keep_earlier:
+            return
         await asyncio.wait_for(asyncio.to_thread(write_intent, names), 5.0)
     except Exception:
         logger.warning("Resume-after-restart record failed", exc_info=True)

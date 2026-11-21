@@ -90,6 +90,13 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
         from kiro_crew.dashboard.chat_runner import stop_eager_spawns
 
         eager_spawns = stop_eager_spawns(self.dashboard_state)
+    # A stop from outside (a service stop or restart, an update script) is a
+    # planned restart too. Recorded before the memory stop below can fail a
+    # turn in flight; an earlier record is kept when no chat runs, so a stop
+    # during boot cannot delete the last restart's record before it is taken.
+    from kiro_crew.dashboard import restart_resume
+
+    await restart_resume.record_running_slots(self.dashboard_state, keep_earlier=True)
     self._memory_repair_stop.set()
     if self._memory_repair_task is not None:
         self._memory_repair_task.cancel()
