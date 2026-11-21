@@ -10378,8 +10378,13 @@ access, so turning the preview on or off needs no restart. Its `verbs()` re-read
 preview, whether the app is on, the live manifest and the approved set at each call, so
 a verb approved or withdrawn applies to an already built context. Turning the app off
 keeps the approved set and holds every verb back until the app is on again; the trust
-prompt says so. This step carries no
-page operation: those go through one gateway function in step 1b.
+prompt says so. `BrowserSDK.page(slot, *, state)` hands out a
+`browser_page_port.PagePort` for one of the app's own live slots (key prefix AND
+`_app` stamp, else `BrowserRefused` `not_your_slot`; no state at hand is `no_state`),
+built with a `verb_gate` that runs `browser_sdk.verb_refusal` off the loop at every
+call: `preview_off`, then `permission_denied` for a verb not held now (which covers an
+app turned off). Its read and act methods then go through `run_browser_op`
+(`browser.md`). The example app `docs/app-kit/examples/browser-reader` calls it.
 
 Writers: `apps/browser_sdk.py`, `apps/manifest_sections.py` (`Permissions.browser`),
 `apps/point_grants.py`, `apps/manager_records.py`, `apps/manager_lookup.py`,

@@ -93,6 +93,19 @@ OPS: tuple[str, ...] = (
     "ask",
 )
 
+#: Read-only ops only an app's ``PagePort`` runs (the ``read`` verb of
+#: ``permissions.browser``): not in :data:`OPS`, so the Bot's tool never lists them
+#: and the ``/api/browser/op`` route refuses them. ``pick`` names the element at a
+#: point of the view, ``locate`` the boxes a text is drawn in.
+APP_OPS: tuple[str, ...] = ("pick", "locate")
+#: ``locate`` bounds: texts per call, characters per text, boxes per text.
+LOCATE_TEXTS_CAP = 20
+LOCATE_TEXT_CHARS = 200
+LOCATE_BOXES_CAP = 20
+#: Longest ``pick`` name passed on, cut after redaction (the walker withholds a name
+#: longer than its own, larger cap).
+PICK_TEXT_CAP = 200
+
 # Ops that legitimately take longer than one CDP round trip (a page load, an
 # explicit wait); the route gives them the long budget and everything else the
 # short one.
@@ -1684,6 +1697,67 @@ async def _ask_elsewhere(_ctx: OpContext, _args: dict[str, Any]) -> dict[str, An
     return refusal("not_available", "ask is served by the gateway's op route")
 
 
+def _box(raw: Any) -> dict[str, float] | None:
+    """A walker box ``{x, y, w, h}`` from page script, as finite numbers, or ``None``."""
+    if not isinstance(raw, dict):
+        return None
+    out = {k: _number(raw.get(k)) for k in ("x", "y", "w", "h")}
+    if any(v is None for v in out.values()):
+        return None
+    return {k: v for k, v in out.items() if v is not None}
+
+
+async def _pick(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+    """The element drawn at viewport point (``x``, ``y``): its ref, tag, name and box."""
+    x, y = _number(args.get("x")), _number(args.get("y"))
+    if x is None or y is None or x < 0 or y < 0:
+        return refusal("bad_target", "give non-negative `x`,`y` viewport pixels")
+    await _step(ctx, "Look at a point on the page")
+    data = await _page(ctx, "pick", x, y)
+    if not isinstance(data, dict) or not data.get("ok"):
+        code = data.get("code") if isinstance(data, dict) else None
+        if code == "password_field":
+            return refusal(
+                "password_field",
+                "that point is a protected field (password, secret or one-time code)",
+            )
+        return refusal("nothing_there", "no element is drawn at that point")
+    ref, box = data.get("ref"), _box(data.get("box"))
+    if not _is_ref(ref) or box is None:
+        return refusal("pick_error", "the page answered no element")
+    # Redacted whole, then cut for display: a cut first could leave a credential's
+    # head the redactor does not match. The walker withholds a name over its cap.
+    text, _ = redact_exfiltration_urls(str(data.get("text") or ""))
+    text, _ = redact_credentials(text)
+    text = text[:PICK_TEXT_CAP]
+    return {"ok": True, "ref": ref, "tag": str(data.get("tag") or ""), "text": text, "box": box}
+
+
+async def _locate(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+    """Where each of ``texts`` is drawn: ``found`` lists ``{text, boxes}`` in order."""
+    texts = args.get("texts")
+    if (
+        not isinstance(texts, list)
+        or not 0 < len(texts) <= LOCATE_TEXTS_CAP
+        or not all(isinstance(t, str) and 0 < len(t) <= LOCATE_TEXT_CHARS for t in texts)
+    ):
+        return refusal(
+            "bad_texts",
+            f"texts must be 1-{LOCATE_TEXTS_CAP} strings of 1-{LOCATE_TEXT_CHARS} characters",
+        )
+    await _step(ctx, "Find text on the page")
+    data = await _page(ctx, "locate", texts, LOCATE_BOXES_CAP)
+    raw = data.get("found") if isinstance(data, dict) else None
+    if not isinstance(raw, list) or len(raw) != len(texts):
+        return refusal("locate_error", "the page answered no positions")
+    found = []
+    for text, entry in zip(texts, raw):
+        boxes = entry.get("boxes") if isinstance(entry, dict) else None
+        kept = [b for b in map(_box, boxes if isinstance(boxes, list) else []) if b is not None]
+        found.append({"text": text, "boxes": kept[:LOCATE_BOXES_CAP]})
+    return {"ok": True, "found": found}
+
+
 _HANDLERS: dict[str, Callable[[OpContext, dict[str, Any]], Awaitable[dict[str, Any]]]] = {
     "navigate": _navigate,
     "back": _back,
@@ -1713,6 +1787,8 @@ _HANDLERS: dict[str, Callable[[OpContext, dict[str, Any]], Awaitable[dict[str, A
     "http_get": _raw_op("http_get"),
     "iframe_target": _raw_op("iframe_target"),
     "ask": _ask_elsewhere,
+    "pick": _pick,
+    "locate": _locate,
 }
 
 
