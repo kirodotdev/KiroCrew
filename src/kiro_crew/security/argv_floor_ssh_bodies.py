@@ -182,6 +182,10 @@ def _with_backslash_path_separators(text: str) -> str:
                 i = match.end()
                 continue
         ch = text[i]
+        if quote == '"' and ch == "\\":
+            out.append(text[i : i + 2])
+            i += 2
+            continue
         if quote:
             quote = "" if ch == quote else quote
         elif ch == "\\":

@@ -89,6 +89,8 @@ def test_a_backslash_path_that_does_not_connect_here_is_allowed(cmd):
     [
         r"git commit -m 'fix; C:\Windows\System32\OpenSSH\ssh.exe' -- localhost",
         r'git commit -m "fix; C:\Windows\System32\OpenSSH\ssh.exe" -- localhost',
+        # An escaped quote inside double quotes does not close them.
+        r'git commit -m "fix \"q\"; C:\Windows\System32\OpenSSH\ssh.exe" -- localhost',
     ],
 )
 def test_a_separator_inside_a_quoted_argument_starts_no_command(cmd):
