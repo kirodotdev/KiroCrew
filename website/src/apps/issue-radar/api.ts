@@ -460,7 +460,7 @@ export const issueRadarApi = {
     return r.json()
   },
 
-  /** Recent GitHub Actions runs across every connected GitHub repo, for the CI
+  /** Recent CI runs across every connected GitHub and GitLab repo, for the CI
    * runs dashboard. Read on demand only. */
   ciRuns: async (): Promise<CiRunsResponse> => {
     const r = await fetch(`${API}/ci-runs`, { credentials: 'same-origin' })
