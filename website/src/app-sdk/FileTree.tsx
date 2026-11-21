@@ -128,27 +128,31 @@ function TreeBody({ client, projectDir, onOpenFile, selectedPath, searchQuery, a
     reconciling.current = true
   }
   useLayoutEffect(() => { reconciling.current = false })
-  if (q.isError) {
-    const cause = searchErrorCause(q.error)
-    return (
-      // No hand-off: the hosting app's page may hold an unsaved draft of its own.
-      <ErrorNotice
-        testId="app-file-tree-error"
-        message={i18nT(TREE_FAILURE_KEYS[cause])}
-        report={reportForError(q.error)}
-        actions={RETRYABLE_SEARCH_CAUSES.has(cause) ? (
-          <Btn type="button" onClick={() => { void q.refetch() }}>
-            {i18nT('components.workspaceTree.folder_listing_retry')}
-          </Btn>
-        ) : undefined}
-      />
-    )
-  }
-  if (!q.data) return <TreeSkeleton />
+  // A failed read takes the tree's place only while nothing is listed. A failed
+  // refresh of a listed tree keeps it mounted, with its loaded folders and
+  // selection, under an inline notice, as the Files rail does.
+  const cause = q.isError ? searchErrorCause(q.error) : null
+  const failure = cause && (
+    // No hand-off: the hosting app's page may hold an unsaved draft of its own.
+    <ErrorNotice
+      testId="app-file-tree-error"
+      variant={q.data ? 'inline' : undefined}
+      className={q.data ? 'mx-2 mt-1.5 whitespace-normal' : undefined}
+      message={i18nT(TREE_FAILURE_KEYS[cause])}
+      report={reportForError(q.error)}
+      actions={RETRYABLE_SEARCH_CAUSES.has(cause) ? (
+        <Btn type="button" onClick={() => { void q.refetch() }}>
+          {i18nT('components.workspaceTree.folder_listing_retry')}
+        </Btn>
+      ) : undefined}
+    />
+  )
+  if (!q.data) return failure || <TreeSkeleton />
   return (
     // Fills its host whether the host is a flex column or a sized block; the
     // tree itself sizes as a flex item (`flex: 1; height: 100%`).
     <div className="flex h-full min-h-0 flex-1 flex-col">
+      {failure}
       <StatusNotice client={client} projectDir={projectDir} />
       <div className="flex min-h-0 flex-1 flex-col">
         <PierreWorkspaceTree

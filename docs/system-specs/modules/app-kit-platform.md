@@ -6328,7 +6328,9 @@ tree's own notices (unreadable folders, a refused or failed folder read, an unre
 root, a failed status read, a contributed row's failure) offer it only when
 `hostFileActions` is true, so an external app's tree offers it nowhere. A failed
 read names its cause with the Files rail's copy (`TREE_FAILURE_KEYS`) and a Retry when
-another read can answer differently. A host that hides the page (`info.active` false)
+another read can answer differently. It takes the tree's place only while nothing is listed:
+a failed refresh of a listed tree (a poll, a focus refetch) keeps the tree mounted, with its
+loaded folders and selection, under the same notice drawn inline, as the Files rail does. A host that hides the page (`info.active` false)
 pauses every tree read, the export's own and the shared tree's (`active`). The export
 calls `onOpenFile` exactly once per change of the opened file (none to A, or A to B). The
 opened file is a ref in the export, read and written synchronously: the last file it
