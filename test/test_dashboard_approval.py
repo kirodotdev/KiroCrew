@@ -999,18 +999,24 @@ class TestDenyRowTitleRedaction:
         self._assert_audit_redacted(audit, "hook_error")
 
     @pytest.mark.asyncio
-    async def test_trust_reads_invalid_name_redacts(self, tmp_path):
-        """Trust-reads denies on a redacted row with an audited SEL record."""
+    async def test_trust_reads_leaves_a_non_shell_invalid_name_to_the_card(self, tmp_path):
+        """A non-shell call with a decoy ``command`` never meets the trust-reads rung.
+
+        Trust-reads reads a command only from a shell call, and a shell title is exempt
+        from the length cap, so an over-long title is never denied BY that rung. The
+        secret in the title still reaches no transcript row and no audit record.
+        """
         state, client = _make_state(tmp_path)
         slot = _make_slot()
         slot._trust_reads = True
-        # Stub the name-grant check: `ls` does not exist on Windows, where the check would
-        # decline the tier and the `trust_reads` deny below would never happen. The check
-        # itself is covered in `test/test_name_grant.py`.
         _no_refusal = patch.object(
             chat_runner, "_name_grant_refusal_off_loop", new=AsyncMock(return_value=None)
         )
-        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel, _no_refusal:
+        with (
+            patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel,
+            _no_refusal,
+            patch.object(chat_runner, "tool_approval_timeout_secs", return_value=0.0),
+        ):
             audit = MagicMock()
             mock_sel.return_value = audit
             await _drive_deny_turn(
@@ -1020,14 +1026,12 @@ class TestDenyRowTitleRedaction:
                 title=self._invalid_title(),
                 tool_input='{"command": "ls"}',
             )
-        _assert_deny_surfaces_redacted(slot, audit, self._SECRET, row_suffix="(invalid:")
-        self._assert_audit_redacted(audit, "denied")
-        denied = [
-            call.kwargs
-            for call in audit.log_tool_invocation.call_args_list
-            if call.kwargs.get("outcome") == "denied"
-        ]
-        assert any((c.get("metadata") or {}).get("reason") == "trust_reads" for c in denied), denied
+        client.approve_tool.assert_not_awaited()
+        rows = [m.get("content", "") for m in slot.messages]
+        assert not any(self._SECRET in row for row in rows), rows
+        for call in audit.log_tool_invocation.call_args_list:
+            assert self._SECRET not in call.kwargs.get("tool_name", ""), call.kwargs
+            assert (call.kwargs.get("metadata") or {}).get("reason") != "trust_reads", call.kwargs
 
     @pytest.mark.asyncio
     async def test_trust_mode_invalid_name_redacts(self, tmp_path):
