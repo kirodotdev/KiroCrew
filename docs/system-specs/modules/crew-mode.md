@@ -4433,7 +4433,12 @@ the writer records which data home wrote each file (`~/.kiro/mates/owners.json`)
 and never replaces one another instance wrote. The owner check and both writes
 run under one cross-process lock (`mates/owners.lock`), so two instances
 writing one name at once cannot both pass the check
-(`test/test_mate_owned_config.py`). So a Bot's first chat, the goal-setup turn included, is
+(`test/test_mate_owned_config.py`). A file with no entry at all was written
+before the record existed. The first owner check records it for this data home,
+once and under the same lock, when this instance's `config.json` binds it
+(`agents[<id>]` has a `member_id` and `kiro_agent` is `<id>`); a file no binding
+names, or one checked while the config cannot be read, stays unowned
+(`mate_config.crewmate_file_on_record`, `test/test_mate_owner_record_backfill.py`). So a Bot's first chat, the goal-setup turn included, is
 already on the conductor. A name the set does not know at all (a file another
 process wrote) is rescanned before the answer off the loop. On the loop a rescan
 is scheduled and the answer is two file stats, never a directory scan
