@@ -1545,11 +1545,13 @@ class LLMPool:
     def provider_type(self) -> str:
         return self._provider_type
 
-    async def start(self) -> None:
+    async def start(self, *, should_stop: Callable[[], BaseException | None] | None = None) -> None:
         """Spawn all workers based on configured provider."""
         async with self._start_lock:
             if self._started:
                 return
+            if should_stop is not None and (refusal := should_stop()) is not None:
+                raise refusal
             # Read config once, off the event loop, and reuse for every worker.
             config = await asyncio.to_thread(_read_config)
             self._provider_type = _get_provider_type(config)
@@ -1654,7 +1656,9 @@ class LLMPool:
             raise
         return worker
 
-    async def acquire(self) -> tuple[int, Worker]:
+    async def acquire(
+        self, *, should_stop: Callable[[], BaseException | None] | None = None
+    ) -> tuple[int, Worker]:
         """Acquire a worker from the pool. Blocks if all busy.
 
         Returns (worker_index, worker). Caller must release after use.
@@ -1665,7 +1669,9 @@ class LLMPool:
             if self._closed:
                 raise LLMPoolClosed()
             if not self._started:
-                await self.start()
+                if should_stop is not None and (refusal := should_stop()) is not None:
+                    raise refusal
+                await self.start(should_stop=should_stop)
             await self._semaphore.acquire()
             async with self._start_lock:
                 if not self._started:
@@ -1683,6 +1689,9 @@ class LLMPool:
                 worker = self._workers[idx]
 
             if not worker.is_alive():
+                if should_stop is not None and (refusal := should_stop()) is not None:
+                    self.release(idx)
+                    raise refusal
                 logger.warning("LLMPool: worker %d dead, replacing", idx)
                 try:
                     await worker.shutdown()
@@ -1803,9 +1812,14 @@ class LLMPool:
         self,
         prompt: str,
         timeout: float = DEFAULT_TIMEOUT,
+        *,
+        should_stop: Callable[[], BaseException | None] | None = None,
     ) -> str:
         """Convenience: acquire a worker, send prompt, release, return response."""
-        idx, worker = await self.acquire()
+        idx, worker = await self.acquire(should_stop=should_stop)
+        if should_stop is not None and (refusal := should_stop()) is not None:
+            self.release(idx)
+            raise refusal
         try:
             return await worker.send_message(prompt, timeout=timeout)
         except KnowledgeSpecUnconfirmed as exc:
@@ -1865,19 +1879,34 @@ class LLMPool:
             return []
 
         results: list[str] = [""] * len(prompts)
+        refused: list[BaseException] = []
 
         async def _do_one(idx: int, prompt: str) -> None:
+            if refused:
+                raise refused[0]
             try:
-                results[idx] = await self.send(prompt, timeout=timeout)
-            except (KnowledgeHarnessUnavailable, KnowledgeSpecUnconfirmed, LLMPoolClosed):
+                results[idx] = await self.send(
+                    prompt, timeout=timeout, should_stop=lambda: refused[0] if refused else None
+                )
+            except (KnowledgeHarnessUnavailable, KnowledgeSpecUnconfirmed, LLMPoolClosed) as exc:
                 # Not a failed item: no prompt in the batch can run, and an empty
                 # reply would let the ingest commit a document with no extraction.
+                # gather raises the first one at once; queued items stop on it at
+                # their next checkpoint, and turns already sent finish and release
+                # their worker in send()'s finally. Nothing is cancelled.
+                if not refused:
+                    refused.append(exc)
                 raise
             except Exception as e:
                 logger.warning("LLMPool: batch item %d failed: %s", idx, e)
                 results[idx] = ""
 
-        await asyncio.gather(*[_do_one(i, p) for i, p in enumerate(prompts)])
+        tasks = [asyncio.ensure_future(_do_one(i, p)) for i, p in enumerate(prompts)]
+        for task in tasks:
+            # The items outlive a raised gather; retrieve each one's exception so
+            # asyncio never logs it as unretrieved.
+            task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        await asyncio.gather(*tasks)
         return results
 
     async def shutdown(self) -> None:
