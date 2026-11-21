@@ -459,6 +459,14 @@ def test_the_runs_digests_name_the_set_of_files_and_only_the_lists_the_run_has(
     for seed in range(4):
         rng = random.Random(seed)
         linux = rng.sample(corpus, rng.randrange(1, 80))
+        # Names whose order depends on how they are compared: the shell sorts
+        # bytes, the plugin sorts code points, and the two must agree.
+        linux += [
+            "test/Test_Upper.py",
+            "Test/test_z.py",
+            "test/a b/test_x.py",
+            "test/t\u00e9st_\u00e9.py",
+        ]
         windows = linux[: len(linux) // 2] or linux
         noisy = [*linux, *linux[:3], "", "   "]
         rng.shuffle(noisy)

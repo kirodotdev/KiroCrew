@@ -7,14 +7,18 @@ so a miss costs CI time instead of silently dropping a cross-surface parity guar
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
+import random
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 import pytest
+
+from scripts.ci_file_shards import FileShards, read_targets
 
 # One xdist worker for the whole module: every test here derives from ONE module-cached
 # scan of src/ (rglob + ast.parse, ~30s). Under `--dist loadgroup` an unmarked module is
@@ -472,6 +476,72 @@ def test_any_host_can_name_the_list_a_windows_run_gets(selector, monkeypatch, ca
     assert capsys.readouterr().out.splitlines() == on_windows
     assert selector.main(["--surface", "backend"]) == 0
     assert capsys.readouterr().out.splitlines() == selector.collect("backend")
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_a_windows_shard_and_the_linux_job_name_one_digest_for_one_commit(
+    tmp_path, monkeypatch, capsys, seed
+) -> None:
+    """The Linux job's ``--for-windows`` digest is the one a Windows shard computes.
+
+    One tree is read twice. First as the Linux job reads it: LF files, a POSIX
+    host, ``--for-windows``, and the digest ``LC_ALL=C sort -u | sha256sum``
+    gives (test_ci_shard_list_digest.py runs that pipeline itself). Then as a
+    Windows shard does: every file rewritten with CRLF as ``core.autocrlf``
+    checks it out, the selector on Windows, its output as a CRLF list file, and
+    the pytest plugin's digest of that file, from a Windows-form root too.
+    """
+    rng = random.Random(seed)
+    selector = _load_selector()
+    monkeypatch.setattr(selector, "_repo_root", lambda: tmp_path)
+    guard = "import os\n\n\ndef test_x():\n    assert os.path.isfile('website/src/a.ts')\n"
+    pure = "from kiro_crew import config\n\n\ndef test_x():\n    assert config\n"
+    # Spellings a Windows glob matches and a POSIX one does not, a name whose
+    # sort order depends on the comparison, and a directory with a space.
+    spellings = ("test_{}.py", "Test_{}.py", "TEST_{}.PY", "test_{}.Py", "test_\u00e9{}.py")
+    folders = ("", "sub dir/", "Deep/Er/")
+    written: dict[str, str] = {}
+    for index in range(40):
+        name = rng.choice(spellings).format(index)
+        rel = f"{rng.choice(selector._BACKEND_ROOTS)}/{rng.choice(folders)}{name}"
+        written[rel] = rng.choice((guard, guard, pure))
+    # Files the list must never carry: not a test name, and a listed POSIX-only suite.
+    written["test/helper_0.py"] = guard
+    ignored = [rel for rel in written if rel.startswith("test/") and rel.count("/") == 1][:3]
+    ignore_list = "".join(f"{rel.split('/', 1)[1]}   # POSIX-only\n" for rel in ignored)
+    for rel, text in written.items():
+        _seed(tmp_path / rel, text)
+    _seed(tmp_path / "test" / "windows-collect-ignore.txt", ignore_list)
+
+    monkeypatch.setattr(selector, "_is_windows", lambda: False)
+    named_on_linux = selector.collect("backend", for_windows=True)
+    lines = sorted({name.encode("utf-8") + b"\n" for name in named_on_linux})
+    digest = hashlib.sha256(b"".join(lines)).hexdigest()
+    cased = [name for name in named_on_linux if not Path(name).name.startswith("test_")]
+    assert cased and any(name.endswith((".PY", ".Py")) for name in named_on_linux)
+    assert any("\u00e9" in name for name in named_on_linux)
+    assert not set(ignored) & set(named_on_linux) and "test/helper_0.py" not in named_on_linux
+    # The host's own list is the POSIX one: the case rule is asked for, not inherited.
+    assert not set(cased) & set(selector.collect("backend"))
+
+    # The Windows shard: CRLF working tree, the selector's Windows branch.
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    monkeypatch.setattr(selector, "_is_windows", lambda: True)
+    assert selector.main(["--surface", "backend"]) == 0
+    printed = capsys.readouterr().out.splitlines()
+    assert printed == named_on_linux
+    # Its redirected output is CRLF text; a blank line and a repeat change nothing.
+    rng.shuffle(printed)
+    listed = tmp_path / "backend-targets.txt"
+    listed.write_bytes("".join(f"{name}\r\n" for name in [*printed, "", printed[0]]).encode())
+    on_shard = FileShards(tmp_path, 8, 1, None, read_targets(listed, tmp_path), {})
+    assert on_shard.digest == digest
+    # The same list under a Windows root, joined the Windows way.
+    root = PureWindowsPath("D:/a/KiroCrew/KiroCrew")
+    targets = [root / PureWindowsPath(name.replace("/", "\\")) for name in printed]
+    assert FileShards(root, 8, 3, None, targets, {}).digest == digest
 
 
 def test_windows_seam_follows_os_name(selector, monkeypatch) -> None:

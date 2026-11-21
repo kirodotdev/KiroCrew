@@ -5314,7 +5314,9 @@ not repeated when one failed shard is re-run, so its step "Digest the selected
 backend test lists" names the digest each list must have: the leaf corpus gates
 (one list on Linux and Windows), the reduced scope on Linux, the reduced scope
 on Windows (`scripts/ci-surface-tests.py --for-windows`, the Linux list without
-`test/windows-collect-ignore.txt`) and the docs contract readers. The reduced
+`test/windows-collect-ignore.txt`) and the docs contract readers. The selector's
+Windows list does not depend on the host that computes it: it matches test file
+names whatever their case by name, not through the host's glob, and prints UTF-8. The reduced
 scope and the docs readers are still worked out on each shard; the digest is
 what holds those copies to one list. Three outcomes fail a shard instead of
 falling back to the full suite, because the other shards have already left it
