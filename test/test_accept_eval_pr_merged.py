@@ -95,17 +95,72 @@ def test_pr_merged_rejects_a_non_positive_or_non_integer_pr(monkeypatch, bad):
         " owner/name",
         "own\u0435r/name",  # a Cyrillic letter that looks like a Latin "e"
         "https://github.com/owner/name",
-        "github.com/owner/name",
+        "https://ghe.example.com/owner/name",
+        "ghe.example.com:443/owner/name",
+        "-ghe.example.com/owner/name",
+        "ghe.example.com/-owner/name",
+        "ghe-.example.com/owner/name",
+        "ghe.example.com./owner/name",
+        "ghe..example.com/owner/name",
+        "ghe.example.com/owner/name/extra",
+        "ghe.example.com/owner/name/pull/7",
+        "ghe.example.com//owner/name",
+        "/owner/name",
+        "user@ghe.example.com/owner/name",
+        "localhost/owner/name",
+        "ghe.example.com/owner/name --hostname evil.example",
+        "ghe.example.com/owner/name\n",
         17,
     ],
 )
 def test_pr_merged_rejects_a_repo_that_is_not_owner_slash_name(monkeypatch, bad):
+    """A host prefix is a bare DNS name of two or more labels: no scheme, port,
+    user info, empty or dotless host, extra path segment, or leading ``-``."""
     mod = _load()
     seen = _wire(mod, monkeypatch, [])
     verdict, evidence = mod._evaluate({"accept": {"kind": "pr_merged", "pr": 42, "repo": bad}})
     assert verdict == "error", bad
-    assert "owner/name" in evidence
+    assert "owner/name or host/owner/name" in evidence
     assert seen == []
+
+
+@pytest.mark.parametrize(
+    "good", ["owner/name", "my-org/repo.js", "ghe.example.com/owner/name", "github.com/owner/name"]
+)
+def test_pr_merged_passes_owner_name_or_host_owner_name_verbatim(monkeypatch, good):
+    """``gh --repo`` takes ``HOST/OWNER/REPO``; without the host it asks github.com,
+    so a GitHub Enterprise pull request is only reachable with it."""
+    mod = _load()
+    seen = _wire(mod, monkeypatch, [_Proc(0, "MERGED\n")])
+    verdict, evidence = mod._evaluate({"accept": {"kind": "pr_merged", "pr": 42, "repo": good}})
+    assert verdict == "pass", evidence
+    assert seen == [["gh", "pr", "view", "42", "--repo", good, "--json", "state", "-q", ".state"]]
+
+
+@pytest.mark.parametrize(
+    "bad", ["-R", "--hostname=evil.example", "https://ghe.example.com/owner/name", "a/b/c/d", 17]
+)
+def test_pr_checks_rejects_a_given_repo_outside_the_pattern(monkeypatch, bad):
+    """``repo`` is optional for ``pr_checks``, but a given one is held to the same
+    pattern, so neither ``gh pr checks`` nor the draft probe sees it unvalidated."""
+    mod = _load()
+    seen = _wire(mod, monkeypatch, [])
+    verdict, evidence = mod._evaluate({"accept": {"kind": "pr_checks", "pr": 42, "repo": bad}})
+    assert verdict == "error", bad
+    assert "owner/name or host/owner/name" in evidence
+    assert seen == []
+
+
+def test_pr_checks_and_its_draft_probe_pass_a_host_repo_verbatim(monkeypatch):
+    mod = _load()
+    repo = "ghe.example.com/owner/name"
+    seen = _wire(mod, monkeypatch, [_Proc(mod._GH_PENDING_EXIT, "pending"), _Proc(0, "false\n")])
+    verdict, _ = mod._evaluate({"accept": {"kind": "pr_checks", "pr": 42, "repo": repo}})
+    assert verdict == "pending"
+    assert seen == [
+        ["gh", "pr", "checks", "42", "--repo", repo],
+        ["gh", "pr", "view", "42", "--repo", repo, "--json", "isDraft", "-q", ".isDraft"],
+    ]
 
 
 def test_pr_merged_requires_a_repo(monkeypatch):

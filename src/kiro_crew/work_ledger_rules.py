@@ -542,7 +542,7 @@ def is_acceptance_concrete(acceptance: Any) -> bool:
     Non-concrete means: an empty acceptance; a ``kind`` outside :data:`ACCEPTANCE_KINDS`;
     a placeholder STRING (blank, or ``"TBD"`` in any case) in a read field; or a read
     field mistyped: a ``pr_checks`` / ``pr_merged`` ``pr`` that is not a positive
-    integer, a ``pr_merged`` ``repo`` or ``edition_check`` ``check`` / ``ref`` that does
+    integer, a ``pr_merged`` ``repo`` (or a given ``pr_checks`` one) or ``edition_check`` ``check`` / ``ref`` that does
     not match the evaluator's pattern, a ``file`` ``path`` that is not a string, a
     ``file`` ``exists`` that is not a bool. An explicit ``null`` in an OPTIONAL read
     field is absence, so concrete; in a required one the type rule refuses it.
@@ -566,6 +566,12 @@ def is_acceptance_concrete(acceptance: Any) -> bool:
         pr = acceptance.get("pr")
         # ``bool`` is an ``int`` subclass, and ``pr: true`` is not a pull request.
         if isinstance(pr, bool) or not isinstance(pr, int) or pr < MIN_PR:
+            return False
+        # Optional, but the evaluator holds a given one to the same pattern.
+        repo = acceptance.get("repo")
+        if repo is not None and (
+            not isinstance(repo, str) or not ACCEPTANCE_GH_REPO.fullmatch(repo)
+        ):
             return False
     if kind == "pr_merged":
         pr = acceptance.get("pr")
