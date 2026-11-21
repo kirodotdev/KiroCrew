@@ -4099,7 +4099,11 @@ Four properties keep the tier from becoming a hole, and none is optional:
 
 - **It cannot widen the reachable host set.** Every clone still passes
   `is_clone_host_trusted` first. The tier only decides whether credentials are
-  offered to a host that gate already allows.
+  offered to a host that gate already allows. Git LFS stays on that host too:
+  every registry git spawn carries `-c lfs.url=<endpoint derived from the clone
+  URL>` (`git_targets._lfs_endpoint_pin_argv`), which outranks a repository's
+  committed `.lfsconfig`, so its `lfs.url` or `remote.<name>.lfsurl` cannot send
+  the checkout's smudge step to another address.
 - **It is never index-supplied.** `_registry_trust_tier` reads the
   build-pinned registry row. A `trust` key on an index ENTRY
   is ignored — otherwise a hostile index would grant itself credentials. The
