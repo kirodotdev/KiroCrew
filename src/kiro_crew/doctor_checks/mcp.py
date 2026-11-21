@@ -601,6 +601,37 @@ def _doctor_mcp_share_refused(cfg: KiroCrewConfig, issues: list[str]) -> None:
     issues.append(f"{len(hits)} MCP server(s) set to share are not shared: launch not approved")
 
 
+def _doctor_dropped_mcp_servers(issues: list[str]) -> None:
+    """Name every server the latest default-agent rebuild dropped for a command not found.
+
+    The spec writer leaves such a server out of the default agent's spec, so no
+    session ever starts it; the record it keeps (``mcp_dropped_servers``) is the
+    only place outside the log that says so. Each is an issue: config lists a
+    server the host cannot run.
+    """
+    from kiro_crew.mcp_dropped_servers import load_dropped
+
+    try:
+        dropped = load_dropped()
+    except Exception:
+        return
+    if not dropped:
+        print("  mcp servers: ✅ the latest default-agent rebuild dropped no server")
+        return
+    for name, rec in sorted(dropped.items()):
+        print(
+            f"  mcp servers: ⚠ {render._safe_display(name)} left out of the default agent: "
+            f"command not found: {render._safe_display(rec['command'])}"
+        )
+    render._print_wrapped(
+        "The default agent's spec leaves these servers out because their command "
+        "was not found on the MCP search path. Install the program or fix the "
+        "command on the MCP Servers page; the next spec rebuild picks it up, and a "
+        "new chat gets its tools."
+    )
+    issues.append(f"{len(dropped)} MCP server(s) left out: command not found")
+
+
 def _doctor_strict_identity(cfg: KiroCrewConfig) -> None:
     """Report configured routing, not proof of a live session's identity channel.
 
