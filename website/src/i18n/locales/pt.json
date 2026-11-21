@@ -11666,7 +11666,7 @@
       "copy_request_id_failed": "Não foi possível copiar. Selecione o ID da solicitação e copie você mesmo: {{id}}",
       "keep_title": "Entre no Kiro para continuar conversando",
       "sign_in": "Entrar",
-      "title": "Entre no Kiro para começar a conversar"
+      "title_engine": "Entre no {{productName}} uma vez"
     },
     "concurrencyCutChip": {
       "exec_reduced": "<0>Sob carga:</0> <1>{{cap}} de {{configured}} agentes ao mesmo tempo</1>",
@@ -16793,22 +16793,25 @@
         "remote_dispatch_connect": "Conecte máquinas em <0>Settings › Remote Crew</0>."
       },
       "kasBundleCard": {
-        "toggle_label": "Executar o KAS no mecanismo próprio do {{productName}}",
-        "toggle_description": "Usa a versão do mecanismo KAS testada com esta versão do {{productName}}, em vez da Kiro CLI. Vale para toda nova sessão deste {{productName}}, não só para este dispositivo. Entra com sua conta Kiro em Configurações → Conta Kiro. Passa a valer quando o {{productName}} reinicia.",
-        "installed": "Mecanismo KAS {{version}} (instalado por você)",
-        "installed_bundled": "Mecanismo KAS {{version}} (incluído no aplicativo)",
-        "off_note": "Desligado: o KAS usa sua instalação da Kiro CLI. Ligado: usa o mecanismo que vem com esta versão.",
+        "installed": "Motor integrado {{version}}",
+        "installed_bundled": "Motor integrado {{version}} (incluído no aplicativo)",
         "saved_restart_pending": "Salvo. O {{productName}} ainda está usando a rota do mecanismo anterior; a troca acontece ao reiniciar: Configurações → Sobre → Reiniciar o gateway.",
-        "not_installed": "O mecanismo KAS {{version}} ainda não está instalado.",
-        "install": "Instalar o mecanismo KAS",
-        "installing": "Instalando o KAS {{version}}…",
-        "installing_progress": "Instalando o KAS {{version}}: {{percent}} ({{done}} de {{total}})",
-        "install_failed": "Não foi possível iniciar a instalação do mecanismo KAS.",
-        "save_failed": "Não foi possível salvar a configuração do mecanismo KAS.",
-        "status_unavailable": "Não foi possível ler o status do mecanismo KAS.",
-        "route_auto_no_kiro_cli": "O Kiro CLI não está instalado, então o KAS usa o mecanismo próprio do {{productName}}.",
-        "route_auto_kiro_cli_signed_out": "O Kiro CLI não está conectado, então o KAS usa o mecanismo próprio do {{productName}}.",
-        "route_auto_sharing_preview": "A prévia Compartilhamento do runtime ACP está ativada, então o KAS usa o mecanismo próprio do {{productName}}."
+        "not_installed": "O motor integrado {{version}} ainda não está instalado.",
+        "install": "Instalar motor integrado",
+        "installing": "Instalando o motor integrado {{version}}…",
+        "installing_progress": "Instalando o motor integrado {{version}}: {{percent}} ({{done}} de {{total}})",
+        "install_failed": "Não foi possível iniciar a instalação do motor integrado.",
+        "save_failed": "Não foi possível salvar a escolha do motor.",
+        "status_unavailable": "Não foi possível ler o status do motor integrado.",
+        "route_auto_no_kiro_cli": "O Kiro CLI não está instalado, então o Kiro Agent usa o motor integrado.",
+        "route_auto_kiro_cli_signed_out": "O Kiro CLI não está conectado, então o Kiro Agent usa o motor integrado.",
+        "route_auto_sharing_preview": "A prévia de compartilhamento do ambiente ACP está ativada, então o Kiro Agent usa o motor integrado.",
+        "engine_label": "Motor",
+        "engine_description": "O Kiro Agent roda em um destes.",
+        "engine_builtin": "Harness integrado",
+        "engine_kiro_cli": "Kiro CLI",
+        "engine_restart": "Os chats mudam depois de reiniciar.",
+        "engine_sign_in_reason": "Entre no {{productName}} para mudar para o motor integrado."
       },
       "kiroSignInCard": {
         "title": "Login do Kiro",

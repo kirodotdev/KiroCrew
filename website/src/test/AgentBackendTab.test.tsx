@@ -67,7 +67,8 @@ vi.mock('../pages/developer/KiroAccountStatusLine', () => ({
 
 // Same sentinel treatment for the engine card under it: its behaviour is pinned in
 // KasBundleCard.test.tsx, and the real card would need the kas-bundle API.
-vi.mock('../pages/developer/KasBundleCard', () => ({
+vi.mock('../pages/developer/KasBundleCard', async importOriginal => ({
+  ...(await importOriginal<typeof import('../pages/developer/KasBundleCard')>()),
   KasBundleCard: () => <div data-testid="kas-bundle-card" />,
 }))
 

@@ -11666,7 +11666,7 @@
       "copy_request_id_failed": "Impossibile copiare. Seleziona l’ID della richiesta e copialo tu: {{id}}",
       "keep_title": "Accedi a Kiro per continuare a chattare",
       "sign_in": "Accedi",
-      "title": "Accedi a Kiro per iniziare a chattare"
+      "title_engine": "Accedi una volta a {{productName}}"
     },
     "concurrencyCutChip": {
       "exec_reduced": "<0>Sotto carico:</0> <1>{{cap}} agenti su {{configured}} alla volta</1>",
@@ -16793,22 +16793,25 @@
         "remote_dispatch_connect": "Collega le macchine in <0>Settings › Remote Crew</0>."
       },
       "kasBundleCard": {
-        "toggle_label": "Esegui KAS con il motore di {{productName}}",
-        "toggle_description": "Usa la versione del motore KAS testata con questa versione di {{productName}}, al posto della Kiro CLI. Vale per ogni nuova sessione di questo {{productName}}, non solo per questo dispositivo. Accede con il tuo account Kiro da Impostazioni → Account Kiro. Ha effetto quando {{productName}} si riavvia.",
-        "installed": "Motore KAS {{version}} (installato da te)",
-        "installed_bundled": "Motore KAS {{version}} (incluso nell'applicazione)",
-        "off_note": "Disattivato: KAS usa la tua installazione della Kiro CLI. Attivato: usa il motore incluso in questa versione.",
+        "installed": "Motore integrato {{version}}",
+        "installed_bundled": "Motore integrato {{version}} (incluso nell'applicazione)",
         "saved_restart_pending": "Salvato. {{productName}} usa ancora il percorso del motore precedente; il cambio avviene al riavvio: Impostazioni → Informazioni → Riavvia il gateway.",
-        "not_installed": "Il motore KAS {{version}} non è ancora installato.",
-        "install": "Installa il motore KAS",
-        "installing": "Installazione di KAS {{version}}…",
-        "installing_progress": "Installazione di KAS {{version}}: {{percent}} ({{done}} di {{total}})",
-        "install_failed": "Impossibile avviare l'installazione del motore KAS.",
-        "save_failed": "Impossibile salvare l'impostazione del motore KAS.",
-        "status_unavailable": "Impossibile leggere lo stato del motore KAS.",
-        "route_auto_no_kiro_cli": "Kiro CLI non è installato, quindi KAS usa il motore di {{productName}}.",
-        "route_auto_kiro_cli_signed_out": "Kiro CLI non ha eseguito l'accesso, quindi KAS usa il motore di {{productName}}.",
-        "route_auto_sharing_preview": "L'anteprima Condivisione del runtime ACP è attiva, quindi KAS usa il motore di {{productName}}."
+        "not_installed": "Il motore integrato {{version}} non è ancora installato.",
+        "install": "Installa il motore integrato",
+        "installing": "Installazione del motore integrato {{version}}…",
+        "installing_progress": "Installazione del motore integrato {{version}}: {{percent}} ({{done}} di {{total}})",
+        "install_failed": "Impossibile avviare l'installazione del motore integrato.",
+        "save_failed": "Impossibile salvare la scelta del motore.",
+        "status_unavailable": "Impossibile leggere lo stato del motore integrato.",
+        "route_auto_no_kiro_cli": "Kiro CLI non è installato, quindi Kiro Agent usa il motore integrato.",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI non ha un accesso attivo, quindi Kiro Agent usa il motore integrato.",
+        "route_auto_sharing_preview": "L'anteprima di condivisione del runtime ACP è attiva, quindi Kiro Agent usa il motore integrato.",
+        "engine_label": "Motore",
+        "engine_description": "Kiro Agent funziona su uno dei due.",
+        "engine_builtin": "Harness integrato",
+        "engine_kiro_cli": "Kiro CLI",
+        "engine_restart": "Le chat cambiano dopo un riavvio.",
+        "engine_sign_in_reason": "Accedi a {{productName}} per passare al motore integrato."
       },
       "kiroSignInCard": {
         "title": "Accesso a Kiro",

@@ -53,6 +53,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Version, update channel, check for updates, and license"
   },
   {
+    "id": "agent.engine",
+    "label": "Engine",
+    "labelKey": "pages.developer.kasBundleCard.engine_label",
+    "description": "Kiro Agent runs on one of these.",
+    "tab": "agent",
+    "type": "buttonGroup",
+    "occurrence": 1,
+    "configKey": "agent.kas_bundle",
+    "settingId": "agent.engine"
+  },
+  {
     "id": "agent.kiro-memory",
     "label": "Kiro Memory",
     "labelKey": "pages.developer.agentBackendTab.orchestrator_memory_label",
@@ -2617,18 +2628,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "labelKey": "pages.settings.developerPanel.run_a_local_gateway",
     "description": "Leave it on unless “Set Remote Host…” and a tunnel already reach a crew. Otherwise the app cannot connect.",
     "hint": "Start a gateway on this machine. Leave it on unless this app's port already reaches a crew on another machine, or the app cannot connect the next time it opens, which is when this takes effect. That needs the crew saved for this port with “Set Remote Host…” in the Connection menu, plus a tunnel: tick “Keep an SSH tunnel to this crew open” there (macOS and Linux) or keep your own SSH tunnel running. Settings → Remote Crew connections stop when this is off, so they do not count.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
-    "id": "developer.run-kas-on-kiro-crew-s-own-engine",
-    "label": "Run KAS on Kiro Crew's own engine",
-    "labelKey": "pages.developer.kasBundleCard.toggle_label",
-    "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Kiro account. Takes effect when Kiro Crew restarts.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,

@@ -910,6 +910,9 @@ class AcpSessionHandle:
         # The notice when the kiro-cli a relay KAS runs under is outside its tested
         # range (``KasHarness.untested_version_notice``); "" otherwise.
         self.kas_untested_version_notice: str = ""
+        # The notice that this chat runs on kiro-cli because the build default's
+        # first move to Crew's engine failed (``KasHarness.engine_fallback_notice``).
+        self.kas_engine_fallback_notice: str = ""
         # The notice naming the MCP servers this session's projection sent without
         # part of their env or headers, by key name only
         # (``kas_agents.withheld_credentials_notice``); "" otherwise.

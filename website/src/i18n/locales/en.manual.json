@@ -5021,7 +5021,7 @@
       "copy_request_id_failed": "Couldn’t copy. Select the request ID and copy it yourself: {{id}}",
       "keep_title": "Sign in to Kiro to keep chatting",
       "sign_in": "Sign in",
-      "title": "Sign in to Kiro to start chatting"
+      "title_engine": "Sign in to {{productName}} once"
     },
     "crew": {
       "crewEditorNextDialog": {
@@ -11213,22 +11213,25 @@
         "remote_dispatch_connect": "Connect machines in <0>Settings › Remote Crew</0>."
       },
       "kasBundleCard": {
-        "toggle_label": "Run KAS on {{productName}}'s own engine",
-        "toggle_description": "Uses the KAS engine version this {{productName}} release was tested with, instead of the Kiro CLI. Applies to every new session on this {{productName}}, not just this device. Signs in with your Kiro account from Settings → Kiro account. Takes effect when {{productName}} restarts.",
-        "installed": "KAS engine {{version}} (installed by you)",
-        "installed_bundled": "KAS engine {{version}} (included with the app)",
-        "off_note": "Off: KAS uses your Kiro CLI install. On: it uses the engine this release ships with.",
+        "installed": "Built-in engine {{version}}",
+        "installed_bundled": "Built-in engine {{version}} (included with the app)",
         "saved_restart_pending": "Saved. {{productName}} is still running the previous engine route; it switches when you restart it: Settings → About → Restart gateway.",
-        "not_installed": "KAS engine {{version}} is not installed yet.",
-        "install": "Install KAS engine",
-        "installing": "Installing KAS {{version}}…",
-        "installing_progress": "Installing KAS {{version}}: {{percent}} ({{done}} of {{total}})",
-        "install_failed": "Could not start the KAS engine install.",
-        "save_failed": "Could not save the KAS engine setting.",
-        "status_unavailable": "Could not read the KAS engine status.",
-        "route_auto_no_kiro_cli": "Kiro CLI is not installed, so KAS runs on {{productName}}'s own engine.",
-        "route_auto_kiro_cli_signed_out": "Kiro CLI is not signed in, so KAS runs on {{productName}}'s own engine.",
-        "route_auto_sharing_preview": "The ACP runtime sharing preview is on, so KAS runs on {{productName}}'s own engine."
+        "not_installed": "Built-in engine {{version}} is not installed yet.",
+        "install": "Install built-in engine",
+        "installing": "Installing the built-in engine {{version}}…",
+        "installing_progress": "Installing the built-in engine {{version}}: {{percent}} ({{done}} of {{total}})",
+        "install_failed": "Could not start installing the built-in engine.",
+        "save_failed": "Could not save the engine choice.",
+        "status_unavailable": "Could not read the built-in engine's status.",
+        "route_auto_no_kiro_cli": "Kiro CLI is not installed, so Kiro Agent uses the built-in engine.",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI is not signed in, so Kiro Agent uses the built-in engine.",
+        "route_auto_sharing_preview": "The ACP runtime sharing preview is on, so Kiro Agent uses the built-in engine.",
+        "engine_label": "Engine",
+        "engine_description": "Kiro Agent runs on one of these.",
+        "engine_builtin": "Built-in harness",
+        "engine_kiro_cli": "Kiro CLI",
+        "engine_restart": "Chats switch after a restart.",
+        "engine_sign_in_reason": "Sign in to {{productName}} to switch to the built-in engine."
       },
       "kiroSignInCard": {
         "title": "Kiro sign-in",

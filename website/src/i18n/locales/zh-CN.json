@@ -11148,7 +11148,7 @@
       "copy_request_id_failed": "无法复制。请选中请求 ID 自行复制：{{id}}",
       "keep_title": "登录 Kiro 以继续聊天",
       "sign_in": "登录",
-      "title": "登录 Kiro 后即可开始聊天"
+      "title_engine": "登录 {{productName}} 一次"
     },
     "concurrencyCutChip": {
       "exec_reduced": "<0>负载较高：</0><1>同时运行 {{cap}}/{{configured}} 个代理</1>",
@@ -15951,22 +15951,25 @@
         "remote_dispatch_connect": "在 <0>Settings › Remote Crew</0> 中连接机器。"
       },
       "kasBundleCard": {
-        "toggle_label": "用 {{productName}} 自带的引擎运行 KAS",
-        "toggle_description": "使用本 {{productName}} 版本测试过的 KAS 引擎版本，代替 Kiro CLI。对这个 {{productName}} 的所有新会话生效，不只是这台设备。在设置 → Kiro 账户中登录。{{productName}} 重启后生效。",
-        "installed": "KAS 引擎 {{version}}（由你安装）",
-        "installed_bundled": "KAS 引擎 {{version}}（随应用提供）",
-        "off_note": "已关闭：KAS 使用你安装的 Kiro CLI。开启后：使用本版本自带的引擎。",
+        "installed": "内置引擎 {{version}}",
+        "installed_bundled": "内置引擎 {{version}}（随应用提供）",
         "saved_restart_pending": "已保存。{{productName}} 仍在运行之前的引擎路线，重启后才会切换：设置 → 关于 → 重启网关。",
-        "not_installed": "KAS 引擎 {{version}} 尚未安装。",
-        "install": "安装 KAS 引擎",
-        "installing": "正在安装 KAS {{version}}…",
-        "installing_progress": "正在安装 KAS {{version}}：{{percent}}（{{done}} / {{total}}）",
-        "install_failed": "无法开始安装 KAS 引擎。",
-        "save_failed": "无法保存 KAS 引擎设置。",
-        "status_unavailable": "无法读取 KAS 引擎状态。",
-        "route_auto_no_kiro_cli": "未安装 Kiro CLI，因此 KAS 使用 {{productName}} 自带的引擎运行。",
-        "route_auto_kiro_cli_signed_out": "Kiro CLI 未登录，因此 KAS 使用 {{productName}} 自带的引擎运行。",
-        "route_auto_sharing_preview": "ACP 运行时共享预览已开启，因此 KAS 使用 {{productName}} 自带的引擎运行。"
+        "not_installed": "内置引擎 {{version}} 尚未安装。",
+        "install": "安装内置引擎",
+        "installing": "正在安装内置引擎 {{version}}…",
+        "installing_progress": "正在安装内置引擎 {{version}}：{{percent}}（{{done}} / {{total}}）",
+        "install_failed": "无法开始安装内置引擎。",
+        "save_failed": "无法保存引擎选择。",
+        "status_unavailable": "无法读取内置引擎的状态。",
+        "route_auto_no_kiro_cli": "未安装 Kiro CLI，因此 Kiro Agent 使用内置引擎。",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI 未登录，因此 Kiro Agent 使用内置引擎。",
+        "route_auto_sharing_preview": "ACP 运行时共享预览已开启，因此 Kiro Agent 使用内置引擎。",
+        "engine_label": "引擎",
+        "engine_description": "Kiro Agent 在其中一个上运行。",
+        "engine_builtin": "内置运行框架",
+        "engine_kiro_cli": "Kiro CLI",
+        "engine_restart": "重启后聊天才会切换。",
+        "engine_sign_in_reason": "登录 {{productName}} 即可切换到内置引擎。"
       },
       "kiroSignInCard": {
         "title": "Kiro 登录",

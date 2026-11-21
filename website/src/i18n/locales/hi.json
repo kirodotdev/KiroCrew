@@ -11407,7 +11407,7 @@
       "copy_request_id_failed": "कॉपी नहीं हो सका। अनुरोध ID चुनकर खुद कॉपी करो: {{id}}",
       "keep_title": "चैट जारी रखने के लिए Kiro में साइन इन करो",
       "sign_in": "साइन इन करो",
-      "title": "चैट शुरू करने के लिए Kiro में साइन इन करो"
+      "title_engine": "{{productName}} में एक बार साइन इन करो"
     },
     "concurrencyCutChip": {
       "exec_reduced": "<0>भार में:</0> <1>एक साथ {{configured}} में से {{cap}} एजेंट</1>",
@@ -16372,22 +16372,25 @@
         "remote_dispatch_connect": "<0>सेटिंग्स › रिमोट क्रू</0> में मशीनें जोड़ो।"
       },
       "kasBundleCard": {
-        "toggle_label": "KAS को {{productName}} के अपने इंजन पर चलाओ",
-        "toggle_description": "इस {{productName}} रिलीज़ के साथ टेस्ट किया गया KAS इंजन वर्शन इस्तेमाल करता है, Kiro CLI की जगह। सिर्फ़ इस डिवाइस पर नहीं, इस {{productName}} के हर नए सेशन पर लागू होता है। सेटिंग्स → Kiro खाता से तुम्हारे Kiro खाते से साइन इन करता है। {{productName}} के रीस्टार्ट होने पर लागू होता है।",
-        "installed": "KAS इंजन {{version}} (तुमने इंस्टॉल किया)",
-        "installed_bundled": "KAS इंजन {{version}} (ऐप में शामिल)",
-        "off_note": "बंद: KAS तुम्हारा Kiro CLI इंस्टॉल इस्तेमाल करता है। चालू: यह इस रिलीज़ के साथ आने वाला इंजन इस्तेमाल करता है।",
+        "installed": "बिल्ट-इन इंजन {{version}}",
+        "installed_bundled": "बिल्ट-इन इंजन {{version}} (ऐप में शामिल)",
         "saved_restart_pending": "सेव हो गया। {{productName}} अभी भी पुराने इंजन रूट पर चल रहा है; रीस्टार्ट करने पर बदलेगा: सेटिंग्स → परिचय में गेटवे पुनरारंभ वाला बटन।",
-        "not_installed": "KAS इंजन {{version}} अभी इंस्टॉल नहीं है।",
-        "install": "KAS इंजन इंस्टॉल करो",
-        "installing": "KAS {{version}} इंस्टॉल हो रहा है…",
-        "installing_progress": "KAS {{version}} इंस्टॉल हो रहा है: {{percent}} ({{total}} में से {{done}})",
-        "install_failed": "KAS इंजन का इंस्टॉलेशन शुरू नहीं हो सका।",
-        "save_failed": "KAS इंजन की सेटिंग सेव नहीं हो सकी।",
-        "status_unavailable": "KAS इंजन की स्थिति पढ़ी नहीं जा सकी।",
-        "route_auto_no_kiro_cli": "Kiro CLI इंस्टॉल नहीं है, इसलिए KAS {{productName}} के अपने इंजन पर चलता है।",
-        "route_auto_kiro_cli_signed_out": "Kiro CLI में साइन इन नहीं है, इसलिए KAS {{productName}} के अपने इंजन पर चलता है।",
-        "route_auto_sharing_preview": "ACP रनटाइम साझा करना प्रीव्यू चालू है, इसलिए KAS {{productName}} के अपने इंजन पर चलता है।"
+        "not_installed": "बिल्ट-इन इंजन {{version}} अभी इंस्टॉल नहीं है।",
+        "install": "बिल्ट-इन इंजन इंस्टॉल करो",
+        "installing": "बिल्ट-इन इंजन {{version}} इंस्टॉल हो रहा है…",
+        "installing_progress": "बिल्ट-इन इंजन {{version}} इंस्टॉल हो रहा है: {{percent}} ({{total}} में से {{done}})",
+        "install_failed": "बिल्ट-इन इंजन का इंस्टॉल शुरू नहीं हो सका।",
+        "save_failed": "इंजन का चुनाव सेव नहीं हो सका।",
+        "status_unavailable": "बिल्ट-इन इंजन की स्थिति नहीं पढ़ी जा सकी।",
+        "route_auto_no_kiro_cli": "Kiro CLI इंस्टॉल नहीं है, इसलिए Kiro Agent बिल्ट-इन इंजन इस्तेमाल करता है।",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI में साइन इन नहीं है, इसलिए Kiro Agent बिल्ट-इन इंजन इस्तेमाल करता है।",
+        "route_auto_sharing_preview": "ACP रनटाइम शेयरिंग प्रीव्यू चालू है, इसलिए Kiro Agent बिल्ट-इन इंजन इस्तेमाल करता है।",
+        "engine_label": "इंजन",
+        "engine_description": "Kiro Agent इनमें से एक पर चलता है।",
+        "engine_builtin": "बिल्ट-इन हार्नेस",
+        "engine_kiro_cli": "Kiro CLI",
+        "engine_restart": "रीस्टार्ट के बाद चैट बदल जाएँगी।",
+        "engine_sign_in_reason": "बिल्ट-इन इंजन पर जाने के लिए {{productName}} में साइन इन करो।"
       },
       "kiroSignInCard": {
         "title": "Kiro साइन-इन",

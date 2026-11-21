@@ -22,6 +22,7 @@ import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { clearCachedModels } from '../../providers/adapters/acp'
 import { KiroAccountStatusLine } from './KiroAccountStatusLine'
+import { KasBundleCard, KasEngineDeepLink } from './KasBundleCard'
 import { OrchestratorMemoryDeepLink, OrchestratorMemoryToggle } from './OrchestratorMemoryToggle'
 import { StrandsSetupCard } from './StrandsSetupCard'
 import { MCP_SERVERS_HREF } from '../connections/connectionsLinks'
@@ -1557,6 +1558,7 @@ export function AgentBackendTab() {
       {/* Rendered only under a router: the panel is also rendered bare, in tests
           and captures, where there is no URL to read. */}
       {inRouter && <OrchestratorMemoryDeepLink onOpen={() => highlightRow(KAS)} />}
+      {inRouter && <KasEngineDeepLink onOpen={() => highlightRow(KAS)} />}
       {/* A stored Kiro CLI pick that sessions run on KAS: kiro-cli now serves its
           v3 (KAS) engine, and the server resolves the pick there
           (`agent_sdk.backends.KIRO_SELECTION_BACKEND`). The list below already
@@ -1767,6 +1769,11 @@ export function AgentBackendTab() {
                         askAgent
                         onDismiss={() => setStripError(null)}
                       />
+                    )}
+                    {value === KAS && offered.includes(KAS) && (
+                      <ErrorBoundary scope="developer-kas-engine" fallback={null}>
+                        <KasBundleCard kiroPickRunsOnKas={kiroPickRunsOnKas} />
+                      </ErrorBoundary>
                     )}
                     {value === KAS && offered.includes(KAS) && <OrchestratorMemoryToggle />}
                     {/* Whether the Kiro sign-in this harness runs as is stored, and

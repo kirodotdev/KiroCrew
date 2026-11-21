@@ -11407,7 +11407,7 @@
       "copy_request_id_failed": "Kopieren fehlgeschlagen. Markiere die Anfrage-ID und kopiere sie selbst: {{id}}",
       "keep_title": "Melde dich bei Kiro an, um weiterzuchatten",
       "sign_in": "Anmelden",
-      "title": "Melde dich bei Kiro an, um zu chatten"
+      "title_engine": "Melde dich einmal bei {{productName}} an"
     },
     "concurrencyCutChip": {
       "exec_reduced": "<0>Unter Last:</0> <1>{{cap}} von {{configured}} Agenten gleichzeitig</1>",
@@ -16372,22 +16372,25 @@
         "remote_dispatch_connect": "Verbinde Rechner unter <0>Settings › Remote Crew</0>."
       },
       "kasBundleCard": {
-        "toggle_label": "KAS mit der eigenen Engine von {{productName}} ausführen",
-        "toggle_description": "Nutzt die KAS-Engine-Version, mit der diese {{productName}}-Version getestet wurde, statt der Kiro CLI. Gilt für jede neue Sitzung in diesem {{productName}}, nicht nur auf diesem Gerät. Meldet sich mit deinem Kiro-Konto aus Einstellungen → Kiro-Konto an. Gilt, sobald {{productName}} neu startet.",
-        "installed": "KAS-Engine {{version}} (selbst installiert)",
-        "installed_bundled": "KAS-Engine {{version}} (in der App enthalten)",
-        "off_note": "Aus: KAS nutzt deine Kiro-CLI-Installation. Ein: KAS nutzt die Engine, die mit dieser Version kommt.",
+        "installed": "Integrierte Engine {{version}}",
+        "installed_bundled": "Integrierte Engine {{version}} (in der App enthalten)",
         "saved_restart_pending": "Gespeichert. {{productName}} läuft noch mit der bisherigen Engine-Route; der Wechsel passiert beim Neustart: Einstellungen → Über → Gateway neu starten.",
-        "not_installed": "KAS-Engine {{version}} ist noch nicht installiert.",
-        "install": "KAS-Engine installieren",
-        "installing": "KAS {{version}} wird installiert…",
-        "installing_progress": "KAS {{version}} wird installiert: {{percent}} ({{done}} von {{total}})",
-        "install_failed": "Die Installation der KAS-Engine konnte nicht gestartet werden.",
-        "save_failed": "Die Einstellung für die KAS-Engine konnte nicht gespeichert werden.",
-        "status_unavailable": "Der Status der KAS-Engine konnte nicht gelesen werden.",
-        "route_auto_no_kiro_cli": "Kiro CLI ist nicht installiert, daher läuft KAS auf der eigenen Engine von {{productName}}.",
-        "route_auto_kiro_cli_signed_out": "Kiro CLI ist nicht angemeldet, daher läuft KAS auf der eigenen Engine von {{productName}}.",
-        "route_auto_sharing_preview": "Die Vorschau „ACP-Laufzeit teilen“ ist aktiv, daher läuft KAS auf der eigenen Engine von {{productName}}."
+        "not_installed": "Die integrierte Engine {{version}} ist noch nicht installiert.",
+        "install": "Integrierte Engine installieren",
+        "installing": "Integrierte Engine {{version}} wird installiert…",
+        "installing_progress": "Integrierte Engine {{version}} wird installiert: {{percent}} ({{done}} von {{total}})",
+        "install_failed": "Die Installation der integrierten Engine konnte nicht gestartet werden.",
+        "save_failed": "Die Engine-Auswahl konnte nicht gespeichert werden.",
+        "status_unavailable": "Der Status der integrierten Engine konnte nicht gelesen werden.",
+        "route_auto_no_kiro_cli": "Kiro CLI ist nicht installiert, daher nutzt Kiro Agent die integrierte Engine.",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI ist nicht angemeldet, daher nutzt Kiro Agent die integrierte Engine.",
+        "route_auto_sharing_preview": "Die Vorschau für gemeinsam genutzte ACP-Laufzeit ist an, daher nutzt Kiro Agent die integrierte Engine.",
+        "engine_label": "Engine",
+        "engine_description": "Kiro Agent läuft auf einem davon.",
+        "engine_builtin": "Integriertes Harness",
+        "engine_kiro_cli": "Kiro CLI",
+        "engine_restart": "Chats wechseln nach einem Neustart.",
+        "engine_sign_in_reason": "Melde dich bei {{productName}} an, um zur integrierten Engine zu wechseln."
       },
       "kiroSignInCard": {
         "title": "Kiro-Anmeldung",

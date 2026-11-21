@@ -105,6 +105,7 @@ __all__ = [
     "KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION",
     "KAS_VERSION_OVERRIDE_ENV",
     "bundle_spawn_argv",
+    "crew_sign_in_moves_to_bundle",
     "engine_install_snapshot",
     "ensure_engine_at_startup",
     "engine_spec_permissions_supported",
@@ -312,6 +313,17 @@ def bundle_route_lacks_sign_in() -> bool:
     from kiro_crew.acp.kas_route import bundle_route_lacks_sign_in as lacks
 
     return lacks()
+
+
+def crew_sign_in_moves_to_bundle() -> bool:
+    """Whether signing in to Kiro Crew once would move new KAS chats onto its engine.
+
+    ``acp.kas_route.crew_sign_in_moves_to_bundle``, for the dashboard. Blocking;
+    never raises, and False when it cannot be worked out.
+    """
+    from kiro_crew.acp.kas_route import crew_sign_in_moves_to_bundle as moves
+
+    return moves()
 
 
 def crew_sign_in_starts_spawn() -> bool:
