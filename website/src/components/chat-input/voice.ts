@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { useDictationPanelUsable } from '../VoiceDictationPanel'
 import { useTouchPushToTalk } from '../../hooks/useTouchPushToTalk'
+import { usePointerHoldToTalk } from '../../hooks/usePointerHoldToTalk'
 import { bindingAriaKeyshortcuts, bindingLabel, type PttBinding } from '../../lib/pushToTalk'
 import { useAppSelector } from '../../store'
 import { safeSetItem } from '../../utils/safeStorage'
@@ -205,7 +206,7 @@ export function useDictationControls({ composerControl, value, autoFocusKey, any
 /** Hold-to-talk: on a touch device the mic switches the composer between the
  *  keyboard and a press-and-hold target, and every label on those controls
  *  says what the next press actually does. */
-export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease = false, voiceSlideToSend = false, voiceSendSteers = false, voicePttBinding = null, voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, optimizing, placeholder, showDictation }: {
+export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease = false, voiceSlideToSend = false, voiceSendSteers = false, voicePttBinding = null, voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, typingLocked = false, optimizing, placeholder, showDictation }: {
   onVoiceStart: VoiceInput['onVoiceStart']
   onVoiceStop: VoiceInput['onVoiceStop']
   onVoiceCancel: VoiceInput['onVoiceCancel']
@@ -232,6 +233,9 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
   /** The composer holds text or files a send would carry (session refs excluded). */
   composerHasDraft: boolean
   disabled: boolean
+  /** The composer reads but takes no input (a running turn, a memory-mode
+   *  move). A transcript could not land, so the pointer hold does not arm. */
+  typingLocked?: boolean
   optimizing: boolean
   placeholder: string
   showDictation: VoiceInput['voiceSampleRef'] | null
@@ -326,6 +330,32 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
     disabled: disabled || micBlocked || optimizing,
     draftZone: voiceSubmitOnRelease,
     sendZone,
+  })
+  /**
+   * Press-and-hold on the message box itself, for mouse and trackpad
+   * (`usePointerHoldToTalk`; opt-in through `PttConfig.pointerHold`). Bound to
+   * the text COLUMN rather than the textarea, so the one binding covers the plain
+   * textarea and the rich editor alike; the hook itself only arms on a press that
+   * lands in the editor. State, not a ref, for the same reason as `holdTarget`.
+   * Same stop/cancel controls as `touchVoice`, so a release runs the same finish
+   * path the key and the hold bar do (submit-on-release included). The start is
+   * SILENT, as the keyboard binding's is: a slow click that only meant to place
+   * the cursor must not open the voice setup dialog when STT is off or not yet
+   * loaded, and the setting that turns this gesture off is hidden while STT is off.
+   * Locked out while the composer only reads: the transcript would have nowhere
+   * to land.
+   */
+  const pointerVoice = useMemo(
+    () => ({
+      ...touchVoice,
+      start: onVoiceStart ? () => onVoiceStart({ silent: true }) : noopVoiceControl,
+    }),
+    [touchVoice, onVoiceStart],
+  )
+  const [pointerHoldTarget, setPointerHoldTarget] = useState<HTMLElement | null>(null)
+  const pointerPtt = usePointerHoldToTalk(pointerVoice, {
+    target: pointerHoldTarget,
+    disabled: disabled || typingLocked || micBlocked || optimizing,
   })
   /*
    * A draft suspends hold mode, EXCEPT while the touch gesture's own capture is
@@ -518,6 +548,6 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
   return {
     transcribeInFlight, transcribingIsHonest, micHeldElsewhere, micBlocked, micOwnerTitle, micHeldElsewhereLabel,
     setHoldTarget, touchPtt, voiceHoldMode, micIsModeSwitch, voiceSettling, textareaParked, toggleVoiceMode, micLabel, micKeyShortcuts, holdBarLabel,
-    voiceModePlaceholder, sendZone,
+    voiceModePlaceholder, sendZone, setPointerHoldTarget, pointerPtt,
   }
 }
