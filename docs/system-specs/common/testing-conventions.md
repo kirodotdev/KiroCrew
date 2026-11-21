@@ -1444,7 +1444,17 @@ by hand. A source pin whose assertion covers every site in a conftest (absent,
 counted, listed) reads it joined with its parts. Anything else a test reads on a
 conftest is bound from its part. New isolation goes in the part whose docstring names
 its job, and a new fixture or hook is also added to its conftest's import block, or
-pytest never sees it. The local related-test selection matches the name `conftest.py`
+pytest never sees it. A per-test reset or pin for the `test/` suites is not a fixture of
+its own: it is a function marked `@per_test_guard` (`test/conftest_guards.py`), written
+like a fixture (setup, one `yield`, teardown) and taking only `request` and
+`_floor_monkeypatch`. Five autouse fixtures there (`_b_guards` to `_o_guards`) run every
+guard around every test, in name order, so the suite pays pytest's per-fixture work for
+five names and not for one per guard. `seal_guards` at the end of `test/conftest.py`
+raises at collection for a guard the import block does not bind.
+`test/test_conftest_guards.py` pins that every guard runs, that one guard's failure
+does not skip another's teardown, and that a fixture named like a guard fails the test
+that defines it. A guard a test must override or request by name stays a fixture, and
+its name is added to `SEGMENT_BOUNDS`. The local related-test selection matches the name `conftest.py`
 only, so after editing a part also run the floor's own tests
 (`test/test_host_isolation_floor*.py`, `test/test_host_service_guard.py`,
 `test/test_testing_determinism_helpers.py`, `test/test_conftest_parts_reach.py`).
@@ -3116,7 +3126,10 @@ shares identical `names_closure` lists (each item's `fixturenames`) between test
 are not asyncio tests: pytest-asyncio inserts `event_loop` into an `asyncio` test's
 list at setup, so those keep their own. Every autouse name still adds a setup and a
 teardown to every test. Merge a new guard into an existing autouse fixture of the same
-scope before adding a name.
+scope before adding a name. Measured on 2,000 no-op tests (`-n0 --no-cov`, three runs
+each side on one host): running 87 of `test/conftest.py`'s guards behind five names
+took setup plus teardown from 9.8-10.6 ms to 7.1-7.6 ms per test, with the guards'
+call order unchanged.
 
 **The per-item cost is budgeted.** The rootdir conftest records the process RSS after
 configure and the VmHWM at collection finish, and
@@ -3286,7 +3299,12 @@ def _reset_my_cache():
     yield
     my_module._cache.clear()
 
-# Right: add the reset to an existing autouse fixture of the same scope
+# Right: add the reset to an existing autouse fixture of the same scope. In the
+# test/ suites that is a guard, which the `_*_guards` fixtures already run:
+@per_test_guard
+def _reset_my_cache():
+    yield
+    my_module._cache.clear()
 ```
 
 Measured: before the rootdir conftest shared the per-item fixture bookkeeping, the
@@ -3985,7 +4003,8 @@ instance, so a bare `monkeypatch.undo()` in a test body also reverts every autou
 fixture that patched through it, and the rest of that test runs on the host's real value.
 The rootdir conftest's `_floor_monkeypatch` is undone independently, so an autouse
 fixture requests it instead; no autouse fixture in either conftest patches through the
-shared instance. `test/conftest.py`'s `_a_shared_monkeypatch_first` requests it only so
+shared instance. A `@per_test_guard` is handed `_floor_monkeypatch` the same way, and
+the decorator refuses a guard that names any other fixture. `test/conftest.py`'s `_a_shared_monkeypatch_first` requests it only so
 that it is created before the others there and undone after their teardowns, which read
 the test's patches while they unwind.
 
@@ -4175,7 +4194,7 @@ for every shape (an `lru_cache`, a `global` flag, a name the ratchet's pattern m
 _NOT_DUE_MEMO: dict[str, tuple[tuple[int, int, int], int | float, bool]] = {}
 
 # RIGHT: the same PR adds the floor entry (test/conftest_resets.py).
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_subagent_not_due_memo():
     def clear():
         module = sys.modules.get("kiro_crew.subagent_persistence")
