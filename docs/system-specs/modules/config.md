@@ -1541,8 +1541,8 @@ Contract:
   (`mc-keyboard-shortcuts`), the macOS digit modifier (`mc-mac-ctrl-digits`),
   the Search everywhere chord (`mc-quicksearch-shortcut`), and the panel
   toggle chords
-  (`mc-panel-toggle-shortcuts`), and the push-to-talk key (`mc-ptt-config`)
-  on Settings > Voice. The push-to-talk binding is positional and the
+  (`mc-panel-toggle-shortcuts`), and the push-to-talk key with the
+  message-box hold setting (`mc-ptt-config`) on Settings > Voice. The push-to-talk binding is positional and the
   platform defaults differ, so a client that inherits another machine's
   binding (a Mac client's bare right Option does not arm on most Windows and
   Linux layouts) changes it once; that one change costs less than

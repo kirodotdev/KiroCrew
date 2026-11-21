@@ -370,6 +370,7 @@ Either one releases the microphone and ends the start.
 | Composer wiring | `website/src/chat-core/composer/useComposerVoice.ts` | The `Composer` root's Voice atom: splices the live region into the input box, holds the one-mic mutex (`setMicOwner`, `readMicOwner`, `subscribeMic`, exported so the comment boxes' mic takes the same lock) and the frozen-prefix snapshot; `ComposerDockView.tsx`, `ChatPane.tsx` and `CrewChatWindow.tsx` mount the root and supply only host options. A crew window's transcript that settles after the window closed goes to that session's crew draft (`deliverCrewWindowTranscript`, `composerHost.crewWindowTranscript.test.tsx`), and its send ends live dictation first (`CrewChatWindow.test.tsx`) |
 | Recording UI | `website/src/components/VoiceDictationPanel.tsx`, `VoiceStatusBar.tsx` | The animated panel, and the thin bar it falls back to |
 | Composer dictation | `website/src/components/chat-input/voice.ts` | The composer's side of the Voice atom: the caret a transcript splices in at, the dictation-panel gate, Escape to discard, and on touch the hold-to-talk mode and the labels its controls carry |
+| Message-box hold | `website/src/hooks/usePointerHoldToTalk.ts` | Opt-in (`PttConfig.pointerHold`, off by default; its own `pointerHoldMs`): a primary-button press with no modifier held on the composer's text box past `pointerHoldMs` starts dictation through the push-to-talk session core, and letting go finishes. A quick click still places the caret, a drag before the cutoff stays a drag-select, and the capture opens only at the cutoff. Set on Settings > Voice (`SttPointerHoldSettings.tsx`) |
 | Composer voice controls | `website/src/components/chat-input/VoiceControls.tsx` | Renders that state: the hold gesture's cancel cue, the dictation panel or status bar, the hold target, and the mic |
 | Comment dictation | `website/src/components/CommentVoiceButton.tsx` | The mic in the document comment boxes: press to record, press again to stop, and the words are added to the box's draft. Props `onText(text)`, `onError(message \| null)`, `disabled`, `className`. See [Comment-box dictation](#comment-box-dictation) |
 | Settings UI | `website/src/pages/settings/SttSettings.tsx` | Enable, provider, model, language, and the streaming knobs |
@@ -1199,7 +1200,8 @@ works on every provider, streaming or batch.
 A stop may carry the `StopIntent` `'finish'` (`website/src/lib/pttSession.ts`),
 and only a `'finish'` stop can send. The push-to-talk key's release, a press
 that ends a running capture (the key, the mic, or the hold bar pressed to end a
-capture started elsewhere), the hold bar's release, and a mic click are
+capture started elsewhere), the hold bar's release, the release of a
+message-box hold at the spot it was held on, and a mic click are
 `'finish'`. Keeping a draft is a stop with no intent: Shift still down at the
 key's release, pressed during a hold, or added to the press that stops a
 running capture (setting on only), and Shift-click on the mic. Shift is ignored
@@ -1207,8 +1209,9 @@ for a binding that already uses it. On the touch hold bar, sliding sideways
 past `DRAFT_THRESHOLD_PX` arms keep-as-draft and sliding up still arms cancel,
 which wins when both are crossed. Both are armed until the release and read
 from the release position. The hard cap, blur, a hidden page, `pointercancel`,
-an orphaned startup and unmount also stop with no intent, and Esc and slide-up
-cancel discard, so none of them send.
+an orphaned startup and unmount also stop with no intent, and Esc, slide-up
+cancel and a message-box hold that moves `CANCEL_MOVE_PX` or gets a
+`pointercancel` discard, so none of them send.
 
 With the setting off, a plain hold-bar release only transcribes. With
 `stt.slide_to_send` also on (off by default, so the single slide-up-to-cancel
