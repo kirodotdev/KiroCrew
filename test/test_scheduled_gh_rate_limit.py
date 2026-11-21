@@ -214,6 +214,9 @@ EVENT_WRAPPED: dict[tuple[str, str], str] = {
     # action's `gh-rate-limit-wait` (test_gh_rate_limit_wait.py).
     ("codeql.yml", "analyze"): ACTION_REF,
     ("dependency-review.yml", "license-gate"): ACTION_REF,
+    # A red run of main it cannot record leaves pull requests failing on tests
+    # they did not break until the next run of main ends, about 50 minutes on.
+    ("main-red-watch.yml", "watch"): ACTION_REF,
 }
 
 
