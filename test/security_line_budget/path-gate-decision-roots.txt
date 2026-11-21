@@ -1,0 +1,2 @@
++116
+The sensitive-path gates resolve the anchor roots once per decision (paths_targets._DecisionRoots, handed by the gate to every list it matches) and look a candidate up in the target set instead of comparing it against every member (paths._under_a_target, paths._holds_a_target, _BuiltTargets.folders_above). No answer changes; test/test_sensitive_path_gate_differential.py holds the gates to per-list resolution and member-by-member comparison.

@@ -185,6 +185,31 @@ class _BuiltTargets(set[str]):
     #: caller that cannot prove otherwise gets the short expiry.
     resolution_differed: bool = True
 
+    #: :meth:`folders_above`'s answer, kept beside the set it was read from.
+    _folders_above: frozenset[str] | None = None
+
+    def folders_above(self) -> frozenset[str]:
+        """Every spelling a member sits UNDER: ``member[:i]`` for each separator at ``i``.
+
+        ``path_contains_sensitive`` asks whether any member starts with a folder plus
+        a separator, which is membership of that folder here, so the reverse gate
+        costs one lookup rather than a pass over every member. A pure function of the
+        members, read once and kept on this instance, so it lives exactly as long as
+        the set does: the cache replaces a set, it never edits one (see the note on
+        :func:`_home_dir_targets`), and a new set starts without it.
+        """
+        folders = self._folders_above
+        if folders is None:
+            sep = os.sep
+            found: set[str] = set()
+            for member in self:
+                at = member.find(sep)
+                while at != -1:
+                    found.add(member[:at])
+                    at = member.find(sep, at + 1)
+            folders = self._folders_above = frozenset(found)
+        return folders
+
 
 def _home_dir_targets_uncached(
     home_dirs: list[str],
@@ -1056,7 +1081,33 @@ def _resolved_root_key() -> _ResolvedRoots:
     return roots
 
 
-def _home_dir_targets(home_dirs: list[str], *, inline: bool = False) -> set[str]:
+class _DecisionRoots:
+    """The roots ONE gate decision anchors on, so its lists share one resolution.
+
+    A decision matches a path against two or three lists (the gate's own, the apps'
+    credential masks, the keystone artifact parents), and each asks
+    :func:`_home_dir_targets` for its set. The roots those sets are keyed on are the
+    same question each time, so the gate makes one of these per decision and hands it
+    to every lookup: the first resolves the roots and the rest read them here.
+
+    It is a local of the gate function that made it and is never stored anywhere
+    else, so nothing outlives the decision: the next decision resolves afresh, and a
+    repointed ``$HOME`` or override root re-keys the target cache. Only an answer
+    is kept. A resolution that raises (a stall, a pool fault) leaves this empty, the
+    gate refuses, and a later lookup in the same decision asks again. *inline* is the
+    lookup's own flag: a lookup made the other way does not read or fill this.
+    """
+
+    __slots__ = ("inline", "roots")
+
+    def __init__(self, *, inline: bool) -> None:
+        self.inline = inline
+        self.roots: _ResolvedRoots | None = None
+
+
+def _home_dir_targets(
+    home_dirs: list[str], *, inline: bool = False, decision: _DecisionRoots | None = None
+) -> set[str]:
     """TTL-cached :func:`_home_dir_targets_uncached`.
 
     Keyed on the *home_dirs* list plus the RESOLVED home and crew-home roots
@@ -1074,6 +1125,12 @@ def _home_dir_targets(home_dirs: list[str], *, inline: bool = False) -> set[str]
     wedged mount blocks the calling thread here rather than raising a stall --
     which is what the same thread's own ``os.walk`` on that mount does anyway.
 
+    *decision* is the calling gate's :class:`_DecisionRoots`: the roots are resolved
+    for the first list of a decision and read from it for the others. Without one
+    every call resolves them. The inline rebuild still resolves again under its lock,
+    for the reason given there, and leaves that newer answer for the decision's
+    remaining lists.
+
     ponytail: the returned set is the cached instance, not a copy — both
     callers only iterate it. A future caller that MUTATES the result would
     poison the cache for every other caller; copy here if that ever happens.
@@ -1083,8 +1140,13 @@ def _home_dir_targets(home_dirs: list[str], *, inline: bool = False) -> set[str]
     # reads file one root's targets under the other root's key — a fail-OPEN
     # TOCTOU, pinned by the regression test
     # test_roots_are_resolved_once_for_key_and_build.
+    held = decision if decision is not None and decision.inline is inline else None
+    roots = held.roots if held is not None else None
     if inline:
-        roots = _resolve_root_anchors(str(Path.home()))
+        if roots is None:
+            roots = _resolve_root_anchors(str(Path.home()))
+            if held is not None:
+                held.roots = roots
         cached = _home_targets_cache.get((tuple(home_dirs),) + roots)
         if cached is not None and time.monotonic() < cached[0]:
             return cached[1]
@@ -1092,8 +1154,14 @@ def _home_dir_targets(home_dirs: list[str], *, inline: bool = False) -> set[str]
             # Resolve after acquiring: a queued worker must not reuse anchors
             # captured before another worker's potentially slow rebuild.
             roots = _resolve_root_anchors(str(Path.home()))
+            if held is not None:
+                held.roots = roots
             return _cached_home_dir_targets(home_dirs, roots, inline=True)
-    return _cached_home_dir_targets(home_dirs, _resolved_root_key(), inline=False)
+    if roots is None:
+        roots = _resolved_root_key()
+        if held is not None:
+            held.roots = roots
+    return _cached_home_dir_targets(home_dirs, roots, inline=False)
 
 
 def _cached_home_dir_targets(
