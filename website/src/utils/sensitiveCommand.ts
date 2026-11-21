@@ -76,63 +76,189 @@ const FULL_BLOCK_PATTERNS: Partial<Record<ReasonId, RegExp[]>> = {
 
 /**
  * PowerShell and cmd forms of the same risks, checked on words rather than
- * patterns. A block is split into lines (a line ending in PowerShell's backtick
- * continues on the next), each line into words and the separators `;`, `|`,
- * `&`, `(` and `{`, and each command is its first word, lower-cased: both
- * shells match command names case-insensitively, and a word only counts in
- * command position, so `Add-Type` and `-Type` are not readers.
+ * patterns. The block is read once, left to right, the way the shells read it
+ * (`winStatements`): quoted text is part of one word, with its quotes removed,
+ * and a separator, a redirection or a line end counts only outside quotes. Each
+ * command is its first word, lower-cased: both shells match command names
+ * case-insensitively, and a word only counts in command position, so `Add-Type`
+ * and `-Type` are not readers.
  */
 const WIN_READERS = new Set(['get-content', 'gc', 'type'])
 const WIN_ENV_LISTERS = new Set(['get-childitem', 'gci', 'dir', 'ls'])
 /** `curl` and `wget` are Invoke-WebRequest aliases in Windows PowerShell 5.1. */
 const WIN_WEB_SENDERS = new Set(['invoke-webrequest', 'iwr', 'invoke-restmethod', 'irm', 'curl', 'wget'])
-const WIN_SEPARATORS = new Set([';', '|', '&', '(', '{'])
+/** Unquoted characters that end one command inside a statement. */
+const WIN_COMMAND_ENDS = new Set(['|', '&', '(', ')', '{', '}'])
+/** Streams a redirection can name before its `>`, as in `2>` or `*>`. */
+const WIN_REDIRECT_STREAMS = new Set(['1', '2', '3', '4', '5', '6', '*'])
+const DIGITS = '0123456789'
 const CREDENTIAL_DIRS = new Set(['.aws', '.ssh', '.gnupg', 'gcloud'])
 const CREDENTIAL_FILES = ['credentials', 'id_rsa', 'id_ed25519', 'private.key']
 const SECRET_WORDS = ['secret', 'key', 'token', 'pass', 'cred', 'aws']
-const SECRET_ENV_READS = ['$env:aws_secret', '$env:aws_session', '$env:github_token', '$env:npm_token']
-const ARG_WRAPPERS = new Set(['"', "'", ')', '}'])
+/** A regex, not string literals: the i18n literal gate reads `'$env:…'` as copy. */
+const SECRET_ENV_READ = /\$env:(aws_secret|aws_session|github_token|npm_token)/
 
-/** Lines of `code`, with a backtick-continued line joined to the next. */
-function logicalLines(code: string): string[] {
-  const out: string[] = []
-  let carry = ''
-  for (const raw of code.split('\n')) {
-    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
-    const trimmed = line.trimEnd()
-    if (trimmed.endsWith('`')) { carry += trimmed.slice(0, -1) + ' '; continue }
-    out.push(carry + line)
-    carry = ''
-  }
-  if (carry) out.push(carry)
-  return out
+interface WinToken {
+  kind: 'word' | 'separator' | 'redirect'
+  /** A word lower-cased and unquoted, a separator's character, or a redirection operator. */
+  text: string
+  /** A redirection that writes to the word after it (`> file`), unlike `2>&1`. */
+  takesTarget?: boolean
 }
 
-/** Lower-cased words of one line, each separator a word of its own. */
-function lineWords(line: string): string[] {
-  const words: string[] = []
+/** Index of the `)` closing the `$(` whose `(` is at `open`, or the end of `s`.
+ *  Quoted text inside is skipped, so a `)` in a string does not close it. */
+function subexpressionEnd(s: string, open: number): number {
+  let depth = 0
+  for (let i = open; i < s.length; i++) {
+    const ch = s[i]
+    if (ch === "'" || ch === '"') {
+      const close = s.indexOf(ch, i + 1)
+      if (close === -1) return s.length
+      i = close
+      continue
+    }
+    if (ch === '(') depth++
+    if (ch === ')' && --depth === 0) return i
+  }
+  return s.length
+}
+
+/**
+ * Statements of a PowerShell or cmd block, each as its tokens.
+ *
+ * A statement ends at an unquoted `;` or line end, except a line end escaped
+ * by a backtick or following a `|`, where PowerShell reads on. Single quotes
+ * are literal, with `''` for a quote; inside double quotes a backtick escapes
+ * the next character and `""` is a quote. A here-string (`@"` or `@'` ending a
+ * line) runs to the line that starts with `"@` or `'@`. A `$(` inside double
+ * quotes or a `@"` here-string runs a command, so its text is read as
+ * statements of its own.
+ */
+function winStatements(code: string): WinToken[][] {
+  const s = code.toLowerCase()
+  const statements: WinToken[][] = []
+  let tokens: WinToken[] = []
   let word = ''
-  for (const ch of line.toLowerCase()) {
-    if (ch === ' ' || ch === '\t') { if (word) words.push(word); word = ''; continue }
-    if (WIN_SEPARATORS.has(ch)) { if (word) words.push(word); words.push(ch); word = ''; continue }
+  let inWord = false
+  const endWord = () => {
+    if (inWord) tokens.push({ kind: 'word', text: word })
+    word = ''
+    inWord = false
+  }
+  const endStatement = () => {
+    endWord()
+    if (tokens.length) statements.push(tokens)
+    tokens = []
+  }
+  /** Adds the text of a double-quoted string or here-string to the word, and
+   *  reads each `$( … )` in it as statements. */
+  const expandable = (text: string) => {
+    for (let k = 0; k < text.length; k++) {
+      if (text[k] === '$' && text[k + 1] === '(') {
+        const close = subexpressionEnd(text, k + 1)
+        statements.push(...winStatements(text.slice(k + 2, close)))
+        k = close
+        continue
+      }
+      word += text[k]
+    }
+  }
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (ch === '@' && (s[i + 1] === '"' || s[i + 1] === "'") && (s[i + 2] === '\n' || (s[i + 2] === '\r' && s[i + 3] === '\n'))) {
+      const quote = s[i + 1]
+      const bodyStart = s.indexOf('\n', i) + 1
+      let close = s.indexOf('\n' + quote + '@', bodyStart - 1)
+      if (close === -1) close = s.length
+      const body = s.slice(bodyStart, close)
+      inWord = true
+      if (quote === '"') expandable(body)
+      else word += body
+      i = close + 2
+      continue
+    }
+    if (ch === "'") {
+      inWord = true
+      for (i++; i < s.length; i++) {
+        if (s[i] === "'") {
+          if (s[i + 1] !== "'") break
+          i++
+        }
+        word += s[i]
+      }
+      continue
+    }
+    if (ch === '"') {
+      inWord = true
+      let text = ''
+      for (i++; i < s.length; i++) {
+        if (s[i] === '`' && i + 1 < s.length) { text += s[++i]; continue }
+        if (s[i] === '"') {
+          if (s[i + 1] !== '"') break
+          i++
+        }
+        if (s[i] === '$' && s[i + 1] === '(') {
+          const close = subexpressionEnd(s, i + 1)
+          text += s.slice(i, close + 1)
+          i = close
+          continue
+        }
+        text += s[i]
+      }
+      expandable(text)
+      continue
+    }
+    if (ch === '`') {
+      const next = s[i + 1]
+      if (next === '\n') { endWord(); i++; continue }
+      if (next === '\r' && s[i + 2] === '\n') { endWord(); i += 2; continue }
+      if (next !== undefined) { inWord = true; word += next; i++ }
+      continue
+    }
+    if (ch === '\n') {
+      endWord()
+      const last = tokens[tokens.length - 1]
+      if (last?.kind === 'separator' && last.text === '|') continue
+      endStatement()
+      continue
+    }
+    if (ch === ' ' || ch === '\t' || ch === '\r') { endWord(); continue }
+    if (ch === ';') { endStatement(); continue }
+    if (WIN_COMMAND_ENDS.has(ch)) {
+      endWord()
+      tokens.push({ kind: 'separator', text: ch })
+      continue
+    }
+    if (ch === '>') {
+      let op = '>'
+      if (inWord && WIN_REDIRECT_STREAMS.has(word)) {
+        op = word + op
+        word = ''
+        inWord = false
+      } else {
+        endWord()
+      }
+      if (s[i + 1] === '>') { op += '>'; i++ }
+      if (s[i + 1] === '&' && i + 2 < s.length && DIGITS.includes(s[i + 2])) {
+        tokens.push({ kind: 'redirect', text: op + s.slice(i + 1, i + 3), takesTarget: false })
+        i += 2
+        continue
+      }
+      tokens.push({ kind: 'redirect', text: op, takesTarget: true })
+      continue
+    }
+    inWord = true
     word += ch
   }
-  if (word) words.push(word)
-  return words
-}
-
-/** A word without the quotes and closing brackets around it. */
-function bare(word: string): string {
-  let start = 0
-  let end = word.length
-  while (start < end && ARG_WRAPPERS.has(word[start])) start++
-  while (end > start && ARG_WRAPPERS.has(word[end - 1])) end--
-  return word.slice(start, end)
+  endStatement()
+  return statements
 }
 
 /** Whether a path argument names a credential store, a key file or a `.env`. */
 function namesCredential(arg: string): boolean {
-  const parts = bare(arg).split('\\').join('/').split('/').filter(Boolean)
+  const parts = arg.split('\\').join('/').split('/').filter(Boolean)
   if (parts.length === 0) return false
   if (parts.some(p => CREDENTIAL_DIRS.has(p))) return true
   const last = parts[parts.length - 1]
@@ -153,11 +279,20 @@ function commandAfterAssignment(words: string[]): string[] {
   return words
 }
 
-/** Arguments up to the first redirection (`>`, `>>`, `2>`): a redirect target
- *  is written, not read, so `type nul > .env` reads nothing. */
-function untilRedirect(args: string[]): string[] {
-  const at = args.findIndex(a => a.startsWith('>') || a.startsWith('2>') || a.startsWith('1>'))
-  return at === -1 ? args : args.slice(0, at)
+/** The words of one command, without each redirection and the word it writes
+ *  to: a redirect target is written, not read, so `type nul > .env` reads
+ *  nothing, while `type >dump.txt .env` and `type .env>dump.txt` read `.env`. */
+function commandWords(tokens: WinToken[]): string[] {
+  const words: string[] = []
+  for (let k = 0; k < tokens.length; k++) {
+    const token = tokens[k]
+    if (token.kind === 'redirect') {
+      if (token.takesTarget && tokens[k + 1]?.kind === 'word') k++
+      continue
+    }
+    words.push(token.text)
+  }
+  return words
 }
 
 /** The value an argument names: itself, the part after `:` of a colon-joined
@@ -174,26 +309,24 @@ function windowsShellReason(code: string): ReasonId | null {
   let envDump = false
   let envSingle = false
   let upload = false
-  for (const line of logicalLines(code)) {
-    const words = lineWords(line)
-    if (words.some(w => SECRET_ENV_READS.some(v => w.includes(v)))) envSingle = true
+  for (const statement of winStatements(code)) {
+    if (statement.some(t => t.kind === 'word' && SECRET_ENV_READ.test(t.text))) envSingle = true
     let start = 0
-    for (let i = 0; i <= words.length; i++) {
-      if (i < words.length && !WIN_SEPARATORS.has(words[i])) continue
-      const command = words.slice(start, i)
+    for (let i = 0; i <= statement.length; i++) {
+      if (i < statement.length && statement[i].kind !== 'separator') continue
+      const called = commandAfterAssignment(commandWords(statement.slice(start, i)))
       start = i + 1
-      const called = commandAfterAssignment(command)
       if (called.length === 0) continue
-      const [name, ...rest] = called
-      const args = untilRedirect(rest)
+      const [name, ...args] = called
       if (WIN_READERS.has(name) && args.some(a => namesCredential(argumentValue(a)))) return 'credential_files'
-      if (WIN_ENV_LISTERS.has(name) && args.some(a => bare(a).startsWith('env:'))) {
-        const pipe = words.indexOf('|', i)
-        if (pipe !== -1 && words.slice(pipe + 1).some(w => SECRET_WORDS.some(s => w.includes(s)))) envDump = true
+      if (WIN_ENV_LISTERS.has(name) && args.some(a => argumentValue(a).startsWith('env:'))) {
+        const pipe = statement.findIndex((t, k) => k >= i && t.kind === 'separator' && t.text === '|')
+        if (pipe !== -1 && statement.slice(pipe + 1).some(t => t.kind === 'word' && SECRET_WORDS.some(w => t.text.includes(w)))) envDump = true
       }
       if (WIN_WEB_SENDERS.has(name)) {
         const at = args.indexOf('-infile')
-        if (at !== -1 && at + 1 < args.length && !WIN_SEPARATORS.has(args[at + 1])) upload = true
+        if (at !== -1 && at + 1 < args.length) upload = true
+        if (args.some(a => a.startsWith('-infile:') && a.length > '-infile:'.length)) upload = true
       }
     }
   }
