@@ -519,14 +519,14 @@ class TestTheNoticeShowsOnlyItsOwnFailures:
         assert "**2/6** tasks passed · 1 failed" in summary
         task_list = summary.split("**Tasks:**\n", 1)[1]
         assert task_list.splitlines() == [
-            "  ✅ S1",
-            "  ❌ S2",
-            "  ⏭️ S3",
-            "  \U0001f6ab S4",
-            "  ⬜ S5",
-            "  ✅ S6",
+            "  Passed S1",
+            "  Failed S2",
+            "  Skipped S3",
+            "  Cancelled S4",
+            "  Pending S5",
+            "  Passed S6",
         ]
-        assert summary.count("❌") == 1
+        assert summary.count("Failed") == 1
 
     def test_the_progress_file_and_the_notice_mark_a_step_the_same_way(
         self, tmp_path: Path
@@ -554,7 +554,7 @@ class TestTheNoticeShowsOnlyItsOwnFailures:
         ]
         notice_icons = [line.split()[0] for line in notice.splitlines()]
         assert progress_icons == notice_icons
-        assert progress_icons == ["✅", "❌", "⏭️", "🚫", "⬜"]
+        assert progress_icons == ["Passed", "Failed", "Skipped", "Cancelled", "Pending"]
 
 
 class TestARequeuedStepKeepsNoEarlierVerdict:
