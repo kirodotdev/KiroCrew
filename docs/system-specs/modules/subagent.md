@@ -1716,6 +1716,18 @@ declaration forbids and say so
 server resolves its own session's template best-effort and filters nothing
 when it cannot — and the gate above is the decision.
 
+Both rosters also list an agent whose spec mounts nothing
+(`client_mcp_array.spec_is_toolless`, judged on the spec a spawn of that name
+runs: `declared_spec_claim` with `agent.spec_pins`, unmarked when that answer is
+ambiguous or refused) after the agents that have tools, marked
+`(no tools)` (`mcp_tools.spawn._roster_with_tools_first`), so the parameter
+roster's cap cuts such names first. Such an agent, `kirocrew-lite` among them,
+can only answer in text; a bare name in front of a model read like any other
+child, and a file job sent to one was lost. The mark is advisory: the agent stays
+spawnable by name, and the gate is unchanged. Both rosters list the user-level folder only (`list_agents()` with no project dir); a
+row of another scope (an edition's catalog row) is left unmarked, because the
+resolver judges only specs in that folder.
+
 ### Kiro Crew's own generated specs are not sub-agents
 
 Two kinds of spec Kiro Crew writes into the user-level agents directory — the

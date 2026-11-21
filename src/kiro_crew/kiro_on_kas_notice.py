@@ -60,6 +60,23 @@ def kiro_selection_runs_on_kas() -> bool:
     return KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS
 
 
+def kas_backend_offered() -> bool:
+    """Whether a spawn naming backend ``kas`` would be admitted on this host now.
+
+    The two reads ``POST /api/spawn`` admits a named backend by
+    (``dashboard.messaging_api.spawn._requested_backend``): selectable here, which a
+    policy that denies ``kas`` narrows, and installed with no restart pending. A mode
+    refusal names ``kas`` as the remedy only then. Blocking (the install probe, cached).
+    """
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS, selectable_backend_values
+    from kiro_crew.agent_sdk.backend_install import MISSING, probe_backend
+
+    if ACP_BACKEND_KAS not in selectable_backend_values():
+        return False
+    state = probe_backend(ACP_BACKEND_KAS)
+    return state.installed != MISSING and not state.restart_required
+
+
 def _claim() -> bool:
     """Create the marker exclusively. ``True`` only for the caller that made it."""
     from kiro_crew.config.loader import config_dir
