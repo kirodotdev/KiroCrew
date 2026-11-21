@@ -23,6 +23,7 @@ import weakref
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_AUTOMATION
 from kiro_crew.config import live
 from kiro_crew.dashboard.chat_utils import (
     COMPOSER_SEND_META,
@@ -408,6 +409,18 @@ def _engine_has_no_prompt(client: Any) -> bool:
     except Exception:  # noqa: BLE001 - an unreadable probe keeps the prior behavior
         logger.debug("has_active_turn probe failed", exc_info=True)
         return False
+
+
+def steer_origin_kwargs(slot: Any, message: str) -> dict[str, str]:
+    """The keywords that tell a client's ``steer`` who wrote *message*.
+
+    ``origin`` is automation while the slot holds *message* as an automation steer
+    (a work-ledger wake), so the agent is not told the user wrote it. A user's or a
+    peer's steer passes nothing, so its call is the one every client always took.
+    """
+    if message in getattr(slot, "_steer_automation", {}):
+        return {"origin": STEER_ORIGIN_AUTOMATION}
+    return {}
 
 
 def _steer_target(slot: Any) -> tuple[object, bool, int]:
@@ -797,7 +810,7 @@ async def steer_into_running_turn(
     slot._steer_rpc_in_flight.add(message)
     try:
         wire_message = responsive_chat.steer_message(slot, message) if responsive else message
-        steered = await client.steer(wire_message)
+        steered = await client.steer(wire_message, **steer_origin_kwargs(slot, message))
     except Exception as exc:  # best-effort — the caller falls back to the queue
         logger.warning("steer failed for slot %s: %s", slot.key, exc)
         steered = False

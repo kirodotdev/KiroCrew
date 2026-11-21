@@ -377,7 +377,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "settings_withheld_cause": ("function", False, "bb418bb7ece8", "client_class"),
     "shutdown": ("function", True, "b60c5fea256e", "client_lifecycle"),
     "spec_zero_tools": ("property", False, "a6632a57e602", "client_class"),
-    "steer": ("function", True, "b0a837a37097", "client_turn_control"),
+    "steer": ("function", True, "19314a5fce4a", "client_turn_control"),
     "steer_needs_loss_recovery": ("property", False, "a6632a57e602", "client_class"),
     "stream_command": ("function", "agen", "07d1ae72fdc6", "client_turn_control"),
     "stream_events": ("function", "agen", "8f253734e7ae", "client_turn"),
