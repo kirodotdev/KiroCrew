@@ -2065,7 +2065,12 @@ updater off, no metadata and nothing to run. Packagers that want the managed
 commands honored must install the resources directory root-owned.
 
 On the managed path the app treats a `checkCommand` that exits 0 and prints a
-version as an available update. **`updateCommand` runs only on the user's quit,
+version newer than the running app as an available update. A printed version
+equal to or older than the running one reads as up to date, so a command that
+prints the latest version rather than only a newer one never offers the build
+already installed. A version `isNewerVersion` cannot rank is still offered.
+That comparison reads an edition shell's `0.13.0-11` stamp as the four-part
+build `0.13.0.11`. **`updateCommand` runs only on the user's quit,
 never while the app runs** (the rulings are in
 the 2026-11-10 decision "updates never restart a running gateway"):
 
