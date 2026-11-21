@@ -248,6 +248,17 @@ describe('TeamCrewsGroup', () => {
     expect(screen.queryByRole('button', { name: /Switch crew/i })).toBeNull()
   })
 
+  it('says the relay domain setting hid the listed Crews rather than that there are none (row 65)', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [], offDomain: 2 })
+    const client = mount()
+    await waitFor(() => expect(client.getQueryState(RELAY_VIEWER_CREWS_KEY)?.status).toBe('success'))
+    const u = userEvent.setup()
+    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    expect(await screen.findByTestId('relay-crews-off-domain')).toHaveTextContent('tunnel.relay_viewer_relay_domain')
+    expect(screen.queryByText('No Shared Crews to open.')).toBeNull()
+  })
+
   it('with no Team Crews listed, a menu of Local and SSH Crews has no group names and no Team Crews', async () => {
     withBridge()
     vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [] })

@@ -8278,7 +8278,8 @@
       "connect_crew": "Подключиться к {{name}}",
       "connected": "Подключено",
       "not_connected": "Нет подключения",
-      "connecting": "Подключение…"
+      "connecting": "Подключение…",
+      "off_domain": "{{setting}} скрывает общие Crew, адреса которых не входят в этот домен relay. Исправь или очисти настройку."
     },
     "instancesViewport": {
       "connecting": "Подключение…",
@@ -23466,7 +23467,9 @@
         "sign_in": "Войти",
         "sign_in_crew": "Войти на {{name}}",
         "setting_up_progress": "Настройка · {{current}} из {{total}}",
-        "launching_crew": "Запуск {{name}}"
+        "launching_crew": "Запуск {{name}}",
+        "ssm_start_session_denied": "Этой роли AWS нельзя запускать сеанс SSM на этом инстансе. Выдай ей ssm:StartSession или выбери профиль AWS, у которого это право есть.",
+        "show_aws_error": "Показать ошибку AWS"
       },
       "webhooksPanel": {
         "inbound_webhooks": "Входящие webhooks",

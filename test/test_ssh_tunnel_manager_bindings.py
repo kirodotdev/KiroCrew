@@ -150,6 +150,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "get_token": ("function", False, "4304a34e8586", "ssh_tunnel_manager_tokens"),
     "hop_ownership_violations": ("function", False, "4dd1e5721cbf", "ssh_tunnel_manager_ports"),
     "last_error": ("function", False, "427800bb96d3", "ssh_tunnel_manager_lifecycle"),
+    "last_error_code": ("function", False, "4304a34e8586", "ssh_tunnel_manager_lifecycle"),
     "mint_embed_token": ("function", True, "15ed6cf0af6a", "ssh_tunnel_manager_tokens"),
     "peer_capability": ("function", True, "4fd9c60dcb9f", "ssh_tunnel_manager_peer"),
     "peer_version": ("function", True, "ca2073978776", "ssh_tunnel_manager_peer"),

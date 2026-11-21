@@ -727,6 +727,7 @@ describe('InstancesViewport', () => {
     }))
     // Only what a row shows crosses: never the Crew's URL.
     expect(JSON.stringify(post.mock.calls.at(-1)?.[0])).not.toContain('secret.example')
+    expect(post.mock.calls.at(-1)?.[0]?.relayCrewsFailed).toBe(false)
     // A failed re-read keeps the rows the pane had, so the Remote Crews do not vanish.
     vi.mocked(api.relayViewerCrews).mockRejectedValueOnce(new Error('down'))
     await act(async () => { await queryClient.refetchQueries({ queryKey: ['relay-viewer', 'crews'] }).catch(() => {}) })
@@ -735,8 +736,11 @@ describe('InstancesViewport', () => {
     await act(async () => {})
     expect(post.mock.calls.at(-1)?.[0]?.relayCrews).toHaveLength(1)
     expect(post.mock.calls.some(c => c[0]?.type === 'mc-host-model' && c[0]?.relayCrews?.length === 0)).toBe(false)
+    // And says the read failed, as the top bar's group does (#40306).
+    expect(post.mock.calls.at(-1)?.[0]?.relayCrewsFailed).toBe(true)
     await act(async () => { await queryClient.refetchQueries({ queryKey: ['relay-viewer', 'crews'] }) })
     await waitFor(() => expect(post.mock.calls.at(-1)?.[0]?.relayCrews).toHaveLength(1))
+    await waitFor(() => expect(post.mock.calls.at(-1)?.[0]?.relayCrewsFailed).toBe(false))
     const pick = (id: string) => act(() => {
       window.dispatchEvent(new MessageEvent('message', { data: { type: 'mc-switch-instance', id }, origin: 'http://127.0.0.1:7778' }))
     })

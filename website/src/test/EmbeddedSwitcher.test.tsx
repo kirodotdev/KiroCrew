@@ -99,6 +99,27 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     expect(post).toHaveBeenCalledWith(expect.objectContaining({ type: 'mc-switch-instance', id: 'relay:ep-1' }), HUB)
   })
 
+  it("says when the window's Remote Crews read failed, with or without rows (#40306)", async () => {
+    const relay = { crewType: 'TEAM', presence: 'CONNECTED', relayConnectionStatus: 'CONNECTED', lastSeenAt: null, current: false, open: false }
+    const store = createTestStore({
+      instances: { warm: {}, activeId: null, mru: [], unread: {}, host: model({ relayCrews: [], relayCrewsFailed: true }) },
+    })
+    const { unmount } = renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    expect(await screen.findByText("Couldn't load your Shared Crews.", {}, { timeout: 5000 })).toBeTruthy()
+    unmount()
+    const kept = createTestStore({
+      instances: {
+        warm: {}, activeId: null, mru: [], unread: {},
+        host: model({ relayCrews: [{ ...relay, endpointId: 'ep-1', name: 'Team Lab' }], relayCrewsFailed: true }),
+      },
+    })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store: kept })
+    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    expect(await screen.findByText(/Couldn't refresh your Shared Crews/, {}, { timeout: 5000 })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Connect Team Lab' })).toBeTruthy()
+  })
+
   it('shows no Remote Crews group when the window relays none (an older host)', async () => {
     const store = createTestStore({ instances: { warm: {}, activeId: null, mru: [], unread: {}, host: model() } })
     renderWithProviders(<InstanceTabBar variant="inline" />, { store })

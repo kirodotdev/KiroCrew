@@ -7651,7 +7651,8 @@
       "connect_crew": "{{name}} 연결",
       "connected": "연결됨",
       "not_connected": "연결되지 않음",
-      "connecting": "연결 중…"
+      "connecting": "연결 중…",
+      "off_domain": "{{setting}} 설정 때문에 주소가 그 relay 도메인 아래에 없는 공유 Crew가 숨겨져 있어요. 설정을 고치거나 비우세요."
     },
     "instancesViewport": {
       "connecting": "연결 중…",
@@ -21816,7 +21817,9 @@
         "sign_in": "로그인",
         "sign_in_crew": "{{name}}에서 로그인",
         "setting_up_progress": "설정 중 · {{total}}단계 중 {{current}}단계",
-        "launching_crew": "{{name}} 시작 중"
+        "launching_crew": "{{name}} 시작 중",
+        "ssm_start_session_denied": "이 AWS 역할은 이 인스턴스에서 SSM 세션을 시작할 수 없어요. ssm:StartSession 권한을 주거나, 이 권한이 있는 AWS 프로필을 고르세요.",
+        "show_aws_error": "AWS 오류 보기"
       },
       "webhooksPanel": {
         "inbound_webhooks": "인바운드 webhook",

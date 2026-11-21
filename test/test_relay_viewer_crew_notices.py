@@ -62,7 +62,7 @@ def viewer(monkeypatch, tmp_path):
     async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
         if ctl.refuse is not None:
             raise ctl.refuse
-        return tuple(ctl.crews)
+        return cps.CrewList(ctl.crews)
 
     async def _owner(request, operation):
         return None

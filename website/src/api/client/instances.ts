@@ -14,6 +14,9 @@ export interface InstanceTunnelStatus {
   local_port?: number
   remote_port?: number
   error?: string
+  /** The gateway's name for the cause of `error`, when it has one; `error` is
+   *  then the raw detail (see `remoteCrewTunnelError.tsx`). */
+  error_code?: string
   connected_at?: number
   token_ttl_remaining?: number
   /** Seconds the CURRENT token was issued for -- what `token_ttl_remaining`
@@ -189,7 +192,8 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
     listInstances: () => get('/api/instances').then(jInstancesDisabled) as Promise<{ active: boolean; instances: InstanceView[]; warm_set_cap: number; default_destination?: string; sso: SsoStatus }>,
     // Remote Crews reachable through the Kiro relay. Its routine refusals (signed out,
     // remote access off, a build that keeps it off) throw but are not journaled.
-    relayViewerCrews: () => get('/api/relay-viewer/crews').then(jRelayViewer) as Promise<{ crews: RelayCrewEntry[]; account?: RelayViewerAccount }>,
+    // `offDomain`: how many listed Crews the dev relay domain setting alone left out.
+    relayViewerCrews: () => get('/api/relay-viewer/crews').then(jRelayViewer) as Promise<{ crews: RelayCrewEntry[]; account?: RelayViewerAccount; offDomain?: number }>,
     // A browser tab's open: the gateway keeps the grant and answers only the tab's URL.
     relayViewerBrowserOpen: (endpointId: string) =>
       post('/api/relay-viewer/browser-open', { endpointId }).then(j) as Promise<{ url: string }>,

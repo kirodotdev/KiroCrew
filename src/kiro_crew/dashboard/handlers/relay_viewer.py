@@ -388,6 +388,10 @@ async def api_relay_viewer_crews(request: web.Request) -> web.Response:
     after = await vault_identity_snapshot() if before else None
     unseen = await _announce(request, crews)
     body: dict[str, Any] = {"crews": [_entry(c, c.endpoint_id in unseen) for c in crews]}
+    if crews.off_domain:
+        # Listed Crews the dev relay domain setting alone left out: the setting is
+        # wrong for this relay, and the dashboard says so rather than showing none.
+        body["offDomain"] = crews.off_domain
     account = _account(before, *after) if after else None
     if account is not None:
         body["account"] = account

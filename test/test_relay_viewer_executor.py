@@ -90,7 +90,7 @@ def viewer(monkeypatch) -> SimpleNamespace:
 
     async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
         state.bearers.append(bearer)
-        return (CREW,)
+        return cps.CrewList((CREW,))
 
     async def _mint(url, bearer, endpoint_id, *, token_type="", profile_arn=""):
         return cps.CrewAccessToken("access-token-value", 2000.0, 240.0, 1700.0)
