@@ -354,7 +354,10 @@ the same and the difference is the whole security story:
   action appears, Tailscale must be installed and signed in, MagicDNS must be on,
   and the current MagicDNS name must appear in Tailscale's `CertDomains`. On a
   new tailnet the card links to the Tailscale HTTPS settings for the one-time
-  administrator approval, then waits for **Re-check**.
+  administrator approval, then waits for **Re-check**. On a tailnet that requires
+  device approval, a signed-in machine waits (`BackendState` `NeedsMachineAuth`)
+  until an admin approves it: the card says so and links to the Tailscale
+  machines page instead of offering a new sign-in, which could not help.
 
   Once those prerequisites hold, click **Set up & show QR** once. The dashboard
   enables its daemon-derived origin, restarts through the gateway's formal
