@@ -73,22 +73,27 @@ const declared = scene === 'refused' ? ['/api/project/git/status']
 function Page() {
   const [opened, setOpened] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
+  // A refused tree has nothing to filter or pick, so this demo app drops its own
+  // filter box and prompt there (app chrome, not the SDK's).
+  const refused = scene === 'refused'
   return (
     <div data-testid="frame" style={{ height: 520, maxWidth: 760 }} className="mx-auto flex overflow-hidden rounded-lg border border-border bg-bg-elevated">
       <div style={{ width: 280, display: 'flex', flexDirection: 'column' }} className="shrink-0 border-r border-border">
-        <input
-          aria-label="Filter files"
-          placeholder="Filter files"
-          value={filter}
-          onChange={e => setFilter(e.target.value)}
-          className="m-2 h-[28px] rounded-md border border-border bg-bg px-2 text-[12px] text-text"
-        />
-        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        {!refused && (
+          <input
+            aria-label="Filter files"
+            placeholder="Filter files"
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            className="m-2 h-[28px] rounded-md border border-border bg-bg px-2 text-[12px] text-text"
+          />
+        )}
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }} className={refused ? 'p-2' : undefined}>
           <FileTree projectDir={ROOT} onOpenFile={setOpened} selectedPath={opened} searchQuery={filter} />
         </div>
       </div>
       <div className="flex-1 p-4 text-[13px] text-muted" data-testid="opened">
-        {opened ? <>The app opened <code className="text-text">{opened}</code></> : 'Pick a file in the tree.'}
+        {opened ? <>The app opened <code className="text-text">{opened}</code></> : refused ? null : 'Pick a file in the tree.'}
       </div>
     </div>
   )

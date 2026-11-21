@@ -378,7 +378,9 @@
       "not_declared": "Este app não pode mostrar pull requests. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso."
     },
     "fileTree": {
-      "not_declared": "Este app não pode mostrar os arquivos do projeto. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso."
+      "not_declared": "Este app não pode mostrar os arquivos do projeto. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso.",
+      "refresh_failed": "Não foi possível atualizar a árvore de arquivos; mostrando a última lista.",
+      "status_failed": "Não foi possível verificar quais arquivos mudaram, então os arquivos alterados não estão marcados."
     },
     "projectPicker": {
       "not_declared": "Este app não pode mostrar o seletor de projetos. O desenvolvedor deste app não permitiu isso: as permissões do app não declaram {{path}}. Só o desenvolvedor do app pode mudar isso."

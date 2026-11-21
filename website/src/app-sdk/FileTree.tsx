@@ -156,7 +156,9 @@ function TreeBody({ client, projectDir, onOpenFile, selectedPath, searchQuery, a
         testId="app-file-tree-error"
         variant="inline"
         className="whitespace-normal"
-        message={i18nT(TREE_FAILURE_KEYS[cause])}
+        // The listed rows stay, so a read that can answer differently is a
+        // failed refresh over them, not a tree that failed to load.
+        message={i18nT(canRetry ? 'appSdk.fileTree.refresh_failed' : TREE_FAILURE_KEYS[cause])}
         report={reportForError(q.error)}
       />
       {canRetry && <Btn type="button" onClick={retry}>{retryLabel}</Btn>}
@@ -207,7 +209,8 @@ function StatusNotice({ client, projectDir }: { client: WorkspaceTreeClient; pro
       testId="app-file-tree-status-error"
       message={isGitFilterRefusal(err)
         ? i18nT(gitFilterRefusalCopyKey(gitFilterRefusalCause(err)))
-        : i18nT('components.workspaceTree.status_failed')}
+        // Says what the failure costs: the rows lose their changed-file marks.
+        : i18nT('appSdk.fileTree.status_failed')}
       report={reportForError(err)}
     />
   )

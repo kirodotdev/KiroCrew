@@ -1121,7 +1121,8 @@ status request is sent. Declare the two exact entries; the `/api/project` prefix
 both, but it also grants the diff, log and session file reads. When a declared status read
 fails, a notice above the rows says why the colours are missing. A failed tree read takes the
 tree's place only before anything is listed; a failed refresh keeps the listed tree, its open
-folders and selection under the same notice with its Retry. No notice in your app's tree
+folders and selection under an inline "Couldn't refresh the file tree; showing the last list."
+with a Retry beside it. No notice in your app's tree
 offers **Ask the agent**, including the tree's own notices for unreadable or failed folders: it
 would leave your page and lose what the page had not saved. The
 `permissions.api` check runs in the page, like every scoped request: it is a frontend

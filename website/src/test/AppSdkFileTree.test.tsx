@@ -438,7 +438,9 @@ describe('the App SDK FileTree', () => {
     render(externalApp([FILE_TREE_PATHS.tree, FILE_TREE_PATHS.gitStatus], <FileTree projectDir={ROOT} />))
     expect(await screen.findByTestId('file-tree', {}, LAZY_TREE)).toBeInTheDocument()
     // The tree stays usable; the notice sits above it.
-    expect(await screen.findByTestId('app-file-tree-status-error', {}, { timeout: 15000 })).toBeInTheDocument()
+    // It says what the failure costs: the rows lose their changed-file marks.
+    expect(await screen.findByTestId('app-file-tree-status-error', {}, { timeout: 15000 }))
+      .toHaveTextContent("Couldn't check which files changed, so changed files aren't marked.")
     expect(screen.getByTestId('file-tree')).toBeInTheDocument()
   }, 20000)
 
@@ -570,7 +572,8 @@ describe('the App SDK FileTree', () => {
     // The next read of the listed tree fails (a poll, a focus refetch, a gateway restart).
     treeStatus = 500
     await act(async () => { await appQueryClient(`file-tree-app-${appSeq}`).refetchQueries({ queryKey: ['project-tree', ROOT], exact: true }) })
-    expect(await screen.findByTestId('app-file-tree-error')).toBeInTheDocument()
+    // It says the shown list is the last one, not that the tree failed to load.
+    expect(await screen.findByTestId('app-file-tree-error')).toHaveTextContent("Couldn't refresh the file tree; showing the last list.")
     // Same mount, same model: its loaded folders and selection are kept.
     expect(screen.getByTestId('file-tree')).toBeInTheDocument()
     expect(treeMock.last()).toBe(listed)

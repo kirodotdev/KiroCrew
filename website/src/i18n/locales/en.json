@@ -68,7 +68,9 @@
       "not_declared": "This app can't show pull requests. This app's developer hasn't allowed it: the app's permissions don't declare {{path}}. Only the app's developer can change this."
     },
     "fileTree": {
-      "not_declared": "This app can't show the project's files. This app's developer hasn't allowed it: the app's permissions don't declare {{path}}. Only the app's developer can change this."
+      "not_declared": "This app can't show the project's files. This app's developer hasn't allowed it: the app's permissions don't declare {{path}}. Only the app's developer can change this.",
+      "refresh_failed": "Couldn't refresh the file tree; showing the last list.",
+      "status_failed": "Couldn't check which files changed, so changed files aren't marked."
     },
     "projectPicker": {
       "not_declared": "This app can't show the project picker. This app's developer hasn't allowed it: the app's permissions don't declare {{path}}. Only the app's developer can change this."

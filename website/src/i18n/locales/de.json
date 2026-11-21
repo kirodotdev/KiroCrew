@@ -361,7 +361,9 @@
       "not_declared": "Diese App kann keine Pull Requests anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Nur der Entwickler der App kann das ändern."
     },
     "fileTree": {
-      "not_declared": "Diese App kann die Projektdateien nicht anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Nur der Entwickler der App kann das ändern."
+      "not_declared": "Diese App kann die Projektdateien nicht anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Nur der Entwickler der App kann das ändern.",
+      "refresh_failed": "Der Dateibaum konnte nicht aktualisiert werden; die letzte Liste wird angezeigt.",
+      "status_failed": "Es ließ sich nicht prüfen, welche Dateien geändert wurden, daher sind geänderte Dateien nicht markiert."
     },
     "projectPicker": {
       "not_declared": "Diese App kann die Projektauswahl nicht anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Nur der Entwickler der App kann das ändern."
