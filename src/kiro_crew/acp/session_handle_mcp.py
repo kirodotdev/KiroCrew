@@ -423,10 +423,11 @@ async def wait_mcp_ready(
     :data:`GOVERNANCE_API_FAILURE_REASON` says the host turned MCP off after
     its governance read failed. Undeclared, it arms a checkpoint
     :data:`GOVERNED_SETTLE_SECS` later: if by then the host has named none of
-    the required servers for this session, the start fails naming the transient
-    read. Any status entry or tag for a required server before then (the host re-read
+    the required servers for this session, the start fails with
+    :func:`_governance_off_message`. Any status entry or tag for a required server before then (the host re-read
     and mounted them) keeps the ordinary wait, so a start that would have
     succeeded still does. Governed, the registry checkpoint decides as before.
+    A wait that ends without raising clears the governance-off count.
     """
     readiness = KasMcpReadiness(
         self._session_id, required, tool_policy, injected, policy_hidden=policy_hidden
@@ -454,7 +455,7 @@ async def wait_mcp_ready(
         if checkpoint is not None and now >= checkpoint:
             checkpoint = None
             if _record_dropped(self._mcp_report, readiness, governed):
-                return
+                break
             governance_due = governance_off
         if governance_due and self._queue.empty():
             # Frames already queued are read first: one may name a server, or
@@ -465,7 +466,7 @@ async def wait_mcp_ready(
         remaining = (checkpoint if checkpoint is not None else wait.deadline) - now
         if checkpoint is None and remaining <= 0:
             if _record_dropped(self._mcp_report, readiness, governed):
-                return
+                break
             if wait.extend(readiness, now, self._session_id):
                 continue
             raise _readiness_timeout(readiness, wait.waited, extended=wait.extended)
@@ -477,7 +478,7 @@ async def wait_mcp_ready(
             stage_was_checkpoint = checkpoint is not None
             checkpoint = None
             if _record_dropped(self._mcp_report, readiness, governed):
-                return
+                break
             if stage_was_checkpoint:
                 governance_due = governance_off
                 continue
@@ -519,9 +520,10 @@ async def wait_mcp_ready(
             if governed:
                 if readiness.all_pending_filtered:
                     _record_drops(self._mcp_report, readiness.pending_names)
-                    return
+                    break
             else:
                 raise AcpRuntimeError(_registry_filtered_message(readiness))
+    _reset_governance_off_streak()
 
 
 #: The ``_kiro/mcp/governance_disabled`` reason that can end an undeclared
@@ -553,13 +555,52 @@ class KasGovernanceOffError(AcpRuntimeError):
     transient = True
 
 
+#: Back-to-back governance-off failures after which the message stops advising
+#: a resend: the read failed again, so it is not the brief miss it usually is.
+GOVERNANCE_OFF_REPEAT = 2
+
+#: Governance-off failures in this process since the last start whose readiness
+#: wait succeeded. The read is per account, so every session shares one count,
+#: and a success from any session resets it. Automatic retries count too: each
+#: is a fresh start that re-read the settings and failed.
+_governance_off_streak = 0
+
+
 def _governance_off_message() -> str:
-    return (
-        "KAS managed MCP initialization failed: the host turned MCP off for this "
-        f"session after its governance read failed ({GOVERNANCE_API_FAILURE_REASON}) "
-        f"and reported none of the managed servers within {GOVERNED_SETTLE_SECS:g}s. "
-        "The read is transient: send the message again to start a new session."
+    """The user-facing start failure, in plain words; counts one more failure.
+
+    The wire reason and timings go to the log, not to the person in the chat:
+    "the host" reads as a teammate's machine in Shared Crew, and the internal
+    names say nothing to them. A repeat names what to check instead of a resend.
+    """
+    global _governance_off_streak
+    _governance_off_streak += 1
+    logger.info(
+        "KAS turned MCP off after a failed governance read (%s); no managed server "
+        "named within %gs (failure %d in a row)",
+        GOVERNANCE_API_FAILURE_REASON,
+        GOVERNED_SETTLE_SECS,
+        _governance_off_streak,
     )
+    lead = (
+        "This chat could not start on this machine: your Kiro sign-in could not "
+        "read your organization's MCP settings, so Kiro Crew's tools were turned off."
+    )
+    if _governance_off_streak < GOVERNANCE_OFF_REPEAT:
+        return f"{lead} This is usually brief: send the message again."
+    # No count in the text: an automatic retry is a fresh start too, so the
+    # number would not be the person's own sends.
+    return (
+        f"{lead} A fresh start failed the same way, so sending again will not "
+        "help yet. Check that you are still signed in "
+        "(`kirocrew doctor` checks it), or ask your organization's admin to check "
+        "its MCP settings."
+    )
+
+
+def _reset_governance_off_streak() -> None:
+    global _governance_off_streak
+    _governance_off_streak = 0
 
 
 def _reattempt_timed_out_start(

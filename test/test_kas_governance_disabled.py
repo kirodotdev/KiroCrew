@@ -28,12 +28,8 @@ from session_handle_helpers import bare_session_handle
 from kiro_crew.acp import session_handle_mcp
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.session_handle import AcpSessionHandle
-from kiro_crew.acp.session_handle_mcp import GOVERNED_DROP_REASON
-from kiro_crew.acp.session_handle_runtime_contract import (
-    AcpRequestTimeout,
-    AcpRuntimeDead,
-    AcpRuntimeError,
-)
+from kiro_crew.acp.session_handle_mcp import GOVERNED_DROP_REASON, KasGovernanceOffError
+from kiro_crew.acp.session_handle_runtime_contract import AcpRequestTimeout, AcpRuntimeDead
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -185,9 +181,8 @@ class TestMcpOffFailsFast:
         # A 30 s budget: the deadline would raise AcpRequestTimeout, so the
         # AcpRuntimeError proves the checkpoint ended the wait.
         handle = _handle(*frames)
-        with pytest.raises(AcpRuntimeError, match="governance read failed") as raised:
+        with pytest.raises(KasGovernanceOffError) as raised:
             await handle.wait_mcp_ready(_REQUIRED, 30.0)
-        assert "api_failure" in str(raised.value)
         assert "send the message again" in str(raised.value)
 
     @pytest.mark.asyncio
@@ -195,7 +190,7 @@ class TestMcpOffFailsFast:
         # Retry-eligible like a readiness timeout: a new start re-reads
         # governance.
         handle = _handle(_disabled(_SID, "api_failure"))
-        with pytest.raises(AcpRuntimeError, match="governance read failed") as raised:
+        with pytest.raises(KasGovernanceOffError) as raised:
             await handle.wait_mcp_ready(_REQUIRED, 30.0)
         assert acp_error_is_transient(raised.value) is True
 
@@ -204,8 +199,42 @@ class TestMcpOffFailsFast:
         # The stale count describes the PRE-switch roster; the governance frame
         # is session-scoped, so the skip must not swallow it.
         handle = _handle(_disabled(_SID, "api_failure"))
-        with pytest.raises(AcpRuntimeError, match="governance read failed"):
+        with pytest.raises(KasGovernanceOffError):
             await handle.wait_mcp_ready(_REQUIRED, 30.0, stale_report_frames=1)
+
+
+class TestTheMessageSpeaksToThePerson:
+    """The chat shows this text: plain words, and a resend only while it can help."""
+
+    @pytest.mark.asyncio
+    async def test_the_message_names_no_internal_term(self):
+        handle = _handle(_disabled(_SID, "api_failure"))
+        with pytest.raises(KasGovernanceOffError) as raised:
+            await handle.wait_mcp_ready(_REQUIRED, 30.0)
+        text = str(raised.value)
+        assert "on this machine" in text
+        for internal in ("KAS", "managed MCP", "governance read", "api_failure", "host"):
+            assert internal not in text
+
+    @pytest.mark.asyncio
+    async def test_a_repeat_names_what_to_check_instead_of_a_resend(self):
+        for _ in range(2):
+            with pytest.raises(KasGovernanceOffError) as raised:
+                await _handle(_disabled(_SID, "api_failure")).wait_mcp_ready(_REQUIRED, 30.0)
+        text = str(raised.value)
+        assert "send the message again" not in text
+        assert "A fresh start failed the same way" in text
+        assert "signed in" in text
+        assert "MCP settings" in text
+
+    @pytest.mark.asyncio
+    async def test_a_start_that_gets_through_clears_the_count(self):
+        with pytest.raises(KasGovernanceOffError):
+            await _handle(_disabled(_SID, "api_failure")).wait_mcp_ready(_REQUIRED, 30.0)
+        await _handle(_connected_status()).wait_mcp_ready(_REQUIRED, 30.0)
+        with pytest.raises(KasGovernanceOffError) as raised:
+            await _handle(_disabled(_SID, "api_failure")).wait_mcp_ready(_REQUIRED, 30.0)
+        assert "send the message again" in str(raised.value)
 
 
 class TestAServerNamedKeepsTheOrdinaryWait:
