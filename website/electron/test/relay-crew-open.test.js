@@ -211,6 +211,7 @@ test("the preload bridge carries only the endpoint ID, a rect and its viewport, 
     'open: (endpointId) => ipcRenderer.invoke("relay-crew:open", String(endpointId || "")),\n'
       + '  closeAll: () => ipcRenderer.invoke("relay-crew:close-all"),\n'
       + '  openPane: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:open-pane", String(endpointId || ""), rect, viewport),\n'
+      + '  prewarmPane: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:prewarm-pane", String(endpointId || ""), rect, viewport),\n'
       + '  setPaneBounds: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:pane-bounds", String(endpointId || ""), rect, viewport),\n'
       + '  setPaneOverlay: (endpointId, active) => ipcRenderer.invoke("relay-crew:pane-overlay", String(endpointId || ""), !!active),\n'
       + '  setPaneInactive: (endpointId, inactive) => ipcRenderer.invoke("relay-crew:pane-inactive", String(endpointId || ""), !!inactive),\n'
@@ -905,6 +906,42 @@ test("a real pane never answers window: true, new or focused", async () => {
   const s = setup();
   assert.deepEqual(await s.opener.open(ID, PANE), { ok: true });
   assert.deepEqual(await s.opener.open(ID, PANE), { ok: true });
+  assert.equal(s.panes.opened.length, 1);
+});
+
+test("prewarm opens a pane for a Crew that is not open, and touches a Crew that is open in no way", async () => {
+  const made = [];
+  const createRenewal = ({ mint, holder }) => {
+    const r = {
+      stopped: false,
+      async start() { const g = await mint(); holder.set(g.accessToken); return { ok: true }; },
+      attach() {},
+      setHidden() {},
+      stop() { r.stopped = true; holder.clear(); },
+      isStopped: () => r.stopped,
+    };
+    made.push(r);
+    return r;
+  };
+  const s = setup({ createRenewal });
+  assert.deepEqual(await s.opener.prewarm(`${ID}.evil`, PANE), { ok: false, error: "INVALID_ENDPOINT" });
+  assert.deepEqual(await s.opener.prewarm(ID, PANE), { ok: true });
+  assert.equal(s.panes.opened.length, 1);
+  assert.deepEqual(await s.opener.prewarm(ID, PANE), { ok: false, error: "ALREADY_OPEN" }, "an open pane");
+  // A window of its own, with its renewal stopped: a click would raise it and mint again.
+  await s.opener.open(OTHER);
+  made[1].stop();
+  assert.deepEqual(await s.opener.prewarm(OTHER, PANE), { ok: false, error: "ALREADY_OPEN" });
+  assert.equal(s.win.opened[0].focused ?? 0, 0, "not raised");
+  assert.equal(made.length, 2, "no new mint");
+  assert.equal(s.panes.opened.length, 1);
+});
+
+test("prewarm leaves an open already in flight alone", async () => {
+  const s = setup();
+  const clicked = s.opener.open(ID, PANE);
+  assert.deepEqual(await s.opener.prewarm(ID, PANE), { ok: false, error: "ALREADY_OPEN" });
+  assert.deepEqual(await clicked, { ok: true });
   assert.equal(s.panes.opened.length, 1);
 });
 

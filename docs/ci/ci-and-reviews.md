@@ -1205,6 +1205,10 @@ above one. Passed as arguments, pytest walks each file's directory once per
 argument, and the ~1,200 reduced-scope files took up to an hour to collect.
 The listed files are spread across the shards by measured time, not by hash or
 pins ([testing-conventions § Shard balance](../system-specs/common/testing-conventions.md#shard-balance)).
+That placement needs every shard of a run to hold the same list, so the `changes`
+job names each list's SHA-256 once per run and every shard passes it as
+`--file-shard-targets-sha256`: a shard whose list differs fails before
+collecting, and does not fall back to the full suite.
 Leaf-test corpus-gate passes load the file-sharding plugin (the same one as the
 full and reduced paths) so the ~814 gates are split across the matrix shards.
 Changed-file repetitions remain unsharded: each matrix job repeats every changed

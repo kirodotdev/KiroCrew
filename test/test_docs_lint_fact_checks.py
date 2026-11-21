@@ -919,8 +919,9 @@ class TestShippedBaseline:
     """The committed baseline is the repository's recorded backlog."""
 
     def test_it_exists_and_parses(self) -> None:
+        # The backlog may be empty -- that is the goal -- but the file must stay:
+        # _read_baseline raises on a missing one rather than reading it as empty.
         recorded = gate._read_baseline(_REPO_ROOT / gate.DEFAULT_BASELINE)
-        assert recorded, "the shipped baseline must not be empty"
         known = {
             gate.CHECK_PATH_EXISTS,
             gate.CHECK_LINE_REF,

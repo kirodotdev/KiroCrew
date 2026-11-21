@@ -104,7 +104,9 @@ filled in and a line saying so. Only `host` is required; `user` becomes
 not the port ssh dials. Nothing is saved and nothing connects until you press
 **Add remote crew**, so first check that the SSH host is a machine you use:
 after that click the crew is like one you typed in, and with **Auto-connect crews** on (the default) it
-connects as soon as it is added. A link with any other key, a host the SSH host
+connects when it is added if it falls inside the `instances.warm_set_cap` Crews kept warm (the ones
+you opened most recently, then the rest in the order you added them, 5 by default); otherwise it
+connects when you open it. A link with any other key, a host the SSH host
 field would refuse, or a malformed port or label opens nothing.
 
 **Editing and removing** live in each row's overflow menu. Changing anything the
@@ -398,9 +400,13 @@ opens it there.
   address is refused.
 - One tab per Crew. Opening a Crew from its row when it is already open brings
   its tab forward.
-- Up to three relay Crews stay loaded. Opening a fourth closes the one you used
-  least recently: its page closes and its stored data, unsent text included, is
-  cleared. It stays in the Remote Crews list, and choosing it there opens it again.
+- The five Crews you opened most recently, SSH and relay together, stay loaded
+  (`instances.warm_set_cap`), and the next app start loads them again in the
+  background, with **Auto-connect crews** on. A relay Crew you never opened is
+  never loaded for you. Opening one more unloads the one you used least recently.
+  A relay Crew's page closes and its stored data, unsent text included, is
+  cleared; it stays in the Remote Crews list, and choosing it there opens it
+  again. An SSH crew keeps its tunnel and reloads when you open it.
 - If you choose something else while a Crew is still opening, what you chose stays
   in front; the Crew that finished opening waits as a tab.
 - Reload and Force Reload in the app menu reload the relay Crew tab in front.
@@ -592,7 +598,7 @@ over a normal link.
 |---|---|---|
 | `instances.enabled` | `true` | The main switch; `false` turns Remote Crew off. Read at startup, so changing it needs a restart. |
 | `instances.crew_reads_enabled` | `false` | Lets the agent read a connected crew's sessions through the `crew` argument of `search_chat_history`, `list_sessions` and `get_chat_session`. Off by default, because a peer's transcripts enter the agent's context as untrusted text. Read per call, so no restart. |
-| `instances.warm_set_cap` | `0` | How many panes stay warm at once. `0` tracks how many machines you have registered, so up to an internal ceiling nothing is evicted. A number you set is honoured exactly. |
+| `instances.warm_set_cap` | `0` | How many remote Crews stay warm at once, SSH and relay together: the ones you opened most recently. `0` means 5. A number you set is honoured exactly. |
 | `instances.default_destination` | `""` | The crew **Send a copy to** lists first, marked as the default. Empty means no default. A folder's own **Default destination crew** (Folder settings) overrides it for sessions in that folder. Nothing is sent until you click. |
 | `instances.tunnel_base_port` | `7778` | The first local loopback port handed out for a tunnel. |
 | `instances.ssh_compression` | `true` | Compresses the tunnel. The whole remote dashboard travels over it, so this usually wins; turn it off on a fast local link. |

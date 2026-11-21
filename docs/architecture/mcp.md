@@ -655,7 +655,8 @@ membership in that scope's file.
 Probes run from `POST /api/mcp/probe`. A server is probed as HTTP when
 `mcp_cleanup.mcp_transport_is_remote` reads it as remote (a `url` with a `type`
 of `http` or `sse`, or a `url` with a blank or absent `command`), the same rule
-the sharing rows and the gateway rewriter use; otherwise it is stdio.
+the sharing rows, the gateway rewriter and the KAS projection use; otherwise it
+is stdio.
 
 - **stdio** servers are spawned and driven through an MCP `initialize` handshake
   followed by `tools/list`. One of Kiro Crew's own servers that lists its tools
@@ -1601,10 +1602,31 @@ changed launch. A row refused as
 same with **Approve**. A marked row that cannot share (a refusal with no
 approvable identity, or an env a shared copy would withhold) has no switch,
 only a **Remove** button that takes the mark off. A row's **Details** shows
-the launch in the gateway's display-safe form (argv, env key names, never a
-value), with the approved launch beside the new one for a changed command, the
-changed arguments and env names said once above them and marked in the new
-one.
+the launch in the gateway's display-safe form (argv, env key names), each
+distinct command line once, with the approved launch beside the new one for a
+changed command. The changed arguments are marked in each column and repeated
+in no line above them; each column lists only the env keys that were added,
+removed or changed, and those keys are said once above the columns. A launch
+whose command is new on its side also lists and marks its own keys
+(`unmatchedKeys`), unless a launch the other side alone runs had the same
+value, so a key it gained is shown even when another launch already set it.
+When a launch of a command both sides run changed as well
+(`wholeLaunchChanges`), per-key sets cannot prove which keys moved between
+those launches (two of them swapping a loader preload), so the columns hide no
+key and the changed launches are drawn whole behind **Show full command**. A key the
+same on both sides, such as a PATH that did not change, is not listed. An env
+key set on both sides with a new value is said there too: for a value the gateway shows in clear (PATH, `LD_*`, a `${VAR}`
+reference) the list entries added and removed, and otherwise only its key
+(`envValueChanges`). When both sides run the same commands, the summary is per
+launch (`mcpLaunchDiff.launchChanges`): each new launch is paired with the
+approved launch it most likely replaced (same command, then fewest changed
+keys) and diffed against that launch only, so two launches swapping values
+show as a change on each; a launch with no partner is named as added or
+removed in one line that carries its command. Launches of one command that
+changed the same way (the gateway's PATH moving on every launch) are drawn
+once (`distinctChanges`). The changed launches, each distinct one once, sit
+behind **Show full command**, and a value outside the gateway's clear set is
+drawn as its key only.
 A `changed_needs_reapproval` refusal that only added a launch, such as a second
 agent declaring the same server with its own arguments, reads **Paused · new
 launch to approve** instead, and its Details line says the approved launch did
@@ -2236,7 +2258,9 @@ wait for a restart). It differs in four places. The stub's `--agent` identity is
 file gets no settings injection: the worker's servers are its Bot file's. A
 file is taken only when it is a plain file (no symlink) in a plain folder, is not
 the Bot conductor or worker spec, and is named by this instance's Bot owner
-record. A symlinked or non-folder `~/.kiro/mates/agents`, a symlinked Bot
+record. A file that predates the record and has no entry is recorded as this
+instance's at that check when this instance's roster binds it, and is off the
+record otherwise. A symlinked or non-folder `~/.kiro/mates/agents`, a symlinked Bot
 file and a file off the record are skipped with a log line and treated as
 absent, as the agents loop treats a source its hardened reader refuses: the pass
 stays cacheable and `live_incomplete` is not set for them. The `crewmate:` prefix

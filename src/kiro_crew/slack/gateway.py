@@ -302,6 +302,7 @@ from kiro_crew.llm_helpers import (
     provider_last_turn_usage,
     provider_model_pin_partial,
     provider_model_pin_refused,
+    record_interaction_event,
     save_conversation_turn_off_loop,
     stream_and_collect,
     transient_retry_delay,

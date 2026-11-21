@@ -188,7 +188,7 @@ underneath.
 
 | Harness (`acp_backend`) | Mirror | Delivered | Translated | Not delivered, with the class |
 |---|---|---|---|---|
-| `claude` | `claude_code.py` | `mcpServers` [1]; `model`, `availableModels`, `permissions.defaultMode`, in `settings.local.json` [2] | `tools` → the array's allowlist [3]; `disabledTools` → `permissions.deny` rules (`mcp__<server>__<tool>`, each name written as Claude Code writes it, any character outside `[A-Za-z0-9_-]` as `_`), so a narrowed server stays MOUNTED | `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel; `toolsSettings` — no channel [11] |
+| `claude` | `claude_code.py` | `mcpServers` [1]; `availableModels`, `permissions.defaultMode`, in `settings.local.json` [2]; `model` over `session/set_config_option` | `tools` → the array's allowlist [3]; `disabledTools` → `permissions.deny` rules (`mcp__<server>__<tool>`, each name written as Claude Code writes it, any character outside `[A-Za-z0-9_-]` as `_`), so a narrowed server stays MOUNTED | `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel; `toolsSettings` — no channel [11] |
 | `codex` | `codex.py` | `mcpServers`, narrowed three ways [4]; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, except Crew's control plane [7] | `availableModels` — harness-owns-the-vocabulary; `permissions.defaultMode` — fixed-by-governance (`mode=read-only`); `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel; `toolsSettings` — no channel [11] |
 | `opencode` | `opencode.py` | `mcpServers`, no transport filter; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → a `deny` rule in the seeded `permission` config, server kept mounted; withheld whole only when a lower config source outranks the rule [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` fixed at `ask` and read back off the harness's own resolved config |
 | `mimocode` | `mimocode.py` (its own projection, the same rules as `opencode`) | as `opencode` | as `opencode`, except `hooks` | as `opencode`, with the config seeded through `MIMOCODE_CONFIG_CONTENT` and read back from `mimo debug config`; `hooks` — withheld, because some of the harness's own tools never ask, so a hook fired from the permission request would miss them; `resources` and `toolsSettings` — withheld |
@@ -766,7 +766,11 @@ pointer (`KRB5CCNAME`) and, when the agent's sandbox forwards your ssh-agent,
 entry's `headers` reach the server the same way: the snapshot holds its `url` and `headers`, and KAS starts
 the launcher as a local stdio server that relays each message to that url with
 the headers added and follows no redirect. An `sse` entry's `headers` stay
-withheld. KAS connects only to an `https://` url or `http://` on this machine
+withheld. KAS starts any entry that carries a `command` as a local process, so a
+remote entry (a `url` with a `type` of `http` or `sse`, or with a blank
+`command`) is sent without its `command`; the placeholder the agent schema
+requires, such as `"http"`, would otherwise start a program by that name, and
+its `headers` would not reach the bridge. KAS connects only to an `https://` url or `http://` on this machine
 (`localhost`, `127.0.0.1`, `::1`), so a plain `http://` url to another host with no
 `headers` does not run, and the session notice names it. One with `headers` still
 connects through Crew's bridge, which sends the headers in cleartext, unless
