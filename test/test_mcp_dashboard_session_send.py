@@ -67,6 +67,17 @@ class TestOutcomeReports:
         )
         assert "started a turn" in out
 
+    def test_a_steer_that_fell_back_to_the_queue_says_so(self) -> None:
+        """The caller asked for an interruption and did not get one, and nothing
+        holds it for a tool boundary. Reporting a plain queue would leave it
+        believing the target was interrupted."""
+        out, _ = _send(
+            {"target": "chat-2", "message": "stop that", "steer": True},
+            {"ok": True, "target": "chat-2", "started": False, "steered": False},
+        )
+        assert "Queued" in out
+        assert "Your steer could not go into the running turn, so it was queued instead." in out
+
     def test_a_held_steer_says_pending_steer(self) -> None:
         """The caller asked for an interruption that has not landed yet: say it is
         held for the next tool boundary, never that it was queued or delivered."""

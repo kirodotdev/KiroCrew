@@ -10,7 +10,7 @@ end-of-turn path, which starts the next turn at once.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
@@ -1512,3 +1512,148 @@ async def test_a_steer_a_hard_stop_discarded_during_its_attempt_gets_only_the_st
     assert target._deferred_steer_receipts[out["steer_id"]]["state"].startswith("discarded@")
     notices = _sender_notices(caller)
     assert len(notices) == 1 and "hard stop" in notices[0], notices
+
+
+@pytest.mark.asyncio
+async def test_a_tool_result_in_a_running_stream_injects_a_held_steer(tmp_path):
+    """A real ``_run_chat`` stream: the tool result is the boundary that flushes a held steer.
+
+    The steer is held while the turn has no client. The turn then publishes a
+    steer-capable client, a tool call finishes, and the stream loop must inject the
+    held text into that same turn instead of leaving it for the end-of-turn queue.
+    """
+    from chat_runner_coverage_helpers import (
+        _coding_tool_call,
+        _coding_tool_result,
+        _complete,
+        _drive,
+        _set_stream,
+    )
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _running(_peer_target(state, "chat-2", caller))
+    target._titled = True
+
+    out = await _send(state, caller)
+    assert out.get("pending_steer") is True, "held while the turn has no client"
+    assert not target._queue
+
+    client = AsyncMock()
+    client.context_usage_pct = MagicMock(return_value=0.0)
+    client.context_usage_unknown = MagicMock(return_value=False)
+    client.context_window_tokens = MagicMock(return_value=0)
+    client.context_used_tokens = MagicMock(return_value=0)
+    client.mcp_session_report = MagicMock(return_value=None)
+    client.set_mcp_report_changed_hook = MagicMock()
+    client.last_prompt_stats = None
+    client.exit_code = None
+    # The inner client the turn publishes on the slot, which the boundary steers.
+    inner = _steerable(accepted=True)
+    client.client = inner
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+    state.sessions.consume_replay_suppression = MagicMock(return_value=False)
+    state.sessions.consume_needs_reinjection = MagicMock(return_value=False)
+    state._hook_store = MagicMock(fire=AsyncMock(return_value=[]))
+    _set_stream(client, [_coding_tool_call(), _coding_tool_result(), _complete()])
+
+    await _drive(state, target, "do the work")
+
+    inner.steer.assert_awaited_once()
+    injected = inner.steer.await_args.args[0]
+    assert TEXT in injected and injected.startswith("[sent by session ")
+    assert not target._deferred_steers, "the held steer settled at the boundary"
+
+
+async def _hold_and_spy_the_fence(tmp_path, monkeypatch, *, fenced_at_send, fenced_now):
+    """Hold a steer with one fence, then make the live read return the other.
+
+    Returns ``(state, target, seen)``: ``seen`` collects the ownership fence each
+    later authorization of that steer is given.
+    """
+    sm = sc  # the facade: a name several owners bind is patched through it, never on one owner
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _running(_peer_target(state, "chat-2", caller))
+    target._created_by = caller.key
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message=TEXT,
+        steer=True,
+        caller_fenced=fenced_at_send,
+    )
+    assert out.get("pending_steer") is True
+
+    seen: list = []
+    real = sm.authorize_target
+
+    def _spy(*args, **kwargs):
+        seen.append(kwargs.get("precomputed_ownership_fenced"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sm, "authorize_target", _spy)
+    monkeypatch.setattr(sm, "_caller_is_ownership_fenced", lambda *_a: fenced_now)
+    return state, target, seen
+
+
+_FENCE_DIRECTIONS = pytest.mark.parametrize(
+    "fenced_at_send,fenced_now",
+    [
+        pytest.param(True, False, id="fenced-at-send-only"),
+        pytest.param(False, True, id="fenced-now-only"),
+    ],
+)
+
+
+@pytest.mark.asyncio
+@_FENCE_DIRECTIONS
+async def test_the_turn_end_queue_fallback_gates_on_the_tighter_fence(
+    tmp_path, monkeypatch, fenced_at_send, fenced_now
+):
+    """The turn ends with the steer held: ``requeue_all`` queues it through a gate
+    that is fenced when either the send or the queue write says so."""
+    from kiro_crew.dashboard import deferred_steer
+
+    state, target, seen = await _hold_and_spy_the_fence(
+        tmp_path, monkeypatch, fenced_at_send=fenced_at_send, fenced_now=fenced_now
+    )
+    try:
+        await deferred_steer.requeue_all(state, target)
+    finally:
+        target.task.cancel()
+
+    assert seen == [True], "the queue fallback must authorize with the tighter fence"
+    assert any(TEXT in str(entry) for entry in target._queue), "and it queued the steer"
+    assert not target._deferred_steers
+
+
+@pytest.mark.asyncio
+@_FENCE_DIRECTIONS
+async def test_the_stale_turn_queue_fallback_gates_on_the_tighter_fence(
+    tmp_path, monkeypatch, fenced_at_send, fenced_now
+):
+    """A boundary of a later turn finds the steer held for an ended one: it queues it
+    through a gate that is fenced when either the send or the queue write says so."""
+    from kiro_crew.dashboard import deferred_steer
+
+    state, target, seen = await _hold_and_spy_the_fence(
+        tmp_path, monkeypatch, fenced_at_send=fenced_at_send, fenced_now=fenced_now
+    )
+    held_in_turn = target._turn_generation
+    target.task.cancel()
+    _running(target)  # the next turn, which the held steer was not sent into
+    assert target._turn_generation != held_in_turn
+    target._acp_client = _steerable(accepted=True)
+    try:
+        await deferred_steer.flush_at_boundary(state, target)
+    finally:
+        target.task.cancel()
+
+    assert seen == [True], "the stale-turn arm must authorize with the tighter fence"
+    target._acp_client.steer.assert_not_awaited()
+    assert any(TEXT in str(entry) for entry in target._queue), "and it queued the steer"
+    assert not target._deferred_steers

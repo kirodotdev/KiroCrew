@@ -136,6 +136,7 @@ def test_default_patrol_steers_next_steps_and_question_or_blocked_answers():
         pytest.param(True, False, False, "Steered", "Queued", id="running-turn-steered"),
         pytest.param(False, True, False, "started a turn", "Queued", id="idle-turn-started"),
         pytest.param(False, False, True, "pending-steer", "Queued", id="steer-held-for-boundary"),
+        pytest.param(False, False, False, "Queued", "Steered", id="steer-fell-back-to-queue"),
         pytest.param(True, True, False, "Steered", "started a turn", id="steered-takes-precedence"),
     ],
 )
@@ -162,3 +163,5 @@ def test_debate_receipt_guidance_matches_session_send_tool(
     assert absent not in result
     (request,) = client.requests
     assert request.body["steer"] is True
+    if not steered and not started and not pending:
+        assert "Your steer could not go into the running turn" in result
