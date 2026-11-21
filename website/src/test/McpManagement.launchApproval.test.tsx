@@ -290,7 +290,7 @@ describe('a refused launch', () => {
     const setStub = vi.spyOn(api, 'mcpGatewaySetStub')
 
     mount()
-    const sharing = await screen.findByRole('switch', { name: M('hero_title') }, { timeout: 5000 })
+    const sharing = await screen.findByRole('switch', { name: M('share_switch_label') }, { timeout: 5000 })
     await waitFor(() => expect((sharing as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
     fireEvent.click(sharing)
     const dialog = await screen.findByRole('dialog', undefined, { timeout: 5000 })

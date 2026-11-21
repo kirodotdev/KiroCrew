@@ -492,8 +492,12 @@ lets all your chats use one copy of a server instead, which saves memory when ma
 chats are open. A shared copy runs outside each chat's sandbox, with your access, so
 share a server only if you added it yourself and its command is what you expect.
 
-**Share MCP servers across chats** is the switch at the top of the page
-(`mcp_gateway.enabled`). Turning it on asks first and lists every server it will
+**Turn on MCP server sharing** is the switch on the
+**Share MCP servers across chats** card at the top of the page
+(`mcp_gateway.enabled`). The card's diagram
+shows the difference: off, each chat runs its own copy of a server; on, all chats
+use one copy. A link can open the card directly at
+`/capabilities?tab=mcp-servers&view=sharing#mcp-sharing`. Turning it on asks first and lists every server it will
 share: the ones you turned on by hand, plus the shareable ones nobody chose for. It
 never turns on a server you turned off by hand, a server that hands out
 credentials, or one that waits for your OK. **Memory now** and **Memory with

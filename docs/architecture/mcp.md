@@ -1557,7 +1557,9 @@ and a `secret://` reference in its env resolves only once the
 gateway runs it. A reserved `kirocrew-*` server, whose managed launch needs no
 approval, and a never-pooled one are not named.
 
-On the page, the hero card holds the page-wide sharing switch and the
+On the page, the hero card (`id="mcp-sharing"`; `?view=sharing#mcp-sharing`
+opens the Sharing view and scrolls to it) holds the page-wide sharing switch,
+named "Turn on MCP server sharing", the first-share diagram, and the
 measured memory figures (`GET /api/mcp-gateway/footprint`, owner only, PSS read
 from `/proc`; both hidden when any process cannot be read). "Using now" shows
 whenever it was read, on its own; "with sharing" shows only when it was read
