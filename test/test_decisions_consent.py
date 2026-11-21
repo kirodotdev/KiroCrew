@@ -551,6 +551,7 @@ class TestHandler:
             # No policy refuses the configured model: ``permits`` is false for want
             # of consent, not because the administrator withdrew it.
             "withdrawn": False,
+            "covers_configured": False,
             "history_budget_chars": 0,
             # Reported so the card draws the scope actually recorded rather than
             # inferring it from ``enabled``; absent on this keystone reads false.

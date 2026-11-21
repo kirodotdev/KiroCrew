@@ -194,6 +194,7 @@ def is_decisions_denied(
     *,
     local: bool = False,
     provider: str | None = None,
+    audit: bool = True,
 ) -> bool:
     """Return whether the ceiling withdraws the decision seam for *surface_key*.
 
@@ -245,22 +246,39 @@ def is_decisions_denied(
     widen it. Both rows are evaluated, never short-circuited: each writes its own
     ``governance_decision`` row, and which rows appear must not depend on the
     other row's answer.
+
+    ``audit=False`` computes the same answer with no SEL row, for the settings read
+    that names which OTHER surfaces still send to a model the dashboard refuses
+    (``decisions_surfaces``): offers, not requests, answered in one bracket.
     """
-    if provider is None or provider == PROVIDER_NONE:
+    if audit and (provider is None or provider == PROVIDER_NONE):
         if local:
             return any(denied_sides(surface_key))
         return _row_denied(surface_key, DECISIONS_SCOPE)
     _prime_profiles()
     before = _answer_generation()
-    denied = [_row_denied(surface_key, DECISIONS_SCOPE)]
+    denied = [_row_denied(surface_key, DECISIONS_SCOPE, audit=audit)]
     if local:
-        denied.append(_row_denied(surface_key, DECISIONS_LOCAL_SCOPE))
-    denied.append(_row_denied(surface_key, DECISIONS_SCOPE, f"{PROVIDERS_LIST}:{provider}"))
+        denied.append(_row_denied(surface_key, DECISIONS_LOCAL_SCOPE, audit=audit))
+    if provider is not None and provider != PROVIDER_NONE:
+        item = f"{PROVIDERS_LIST}:{provider}"
+        denied.append(_row_denied(surface_key, DECISIONS_SCOPE, item, audit=audit))
     if not any(denied) and (before is None or _answer_generation() != before):
         logger.debug("decisions governance answer moved mid-evaluation; denying the model")
-        _audit_unevaluable(surface_key, DECISIONS_SCOPE)
+        if audit:
+            _audit_unevaluable(surface_key, DECISIONS_SCOPE)
         return True
     return any(denied)
+
+
+def offer_generation() -> int | None:
+    """The governance answer token after priming the profiles, ``None`` when unreadable.
+
+    For a reading that brackets SEVERAL offers (``decisions_surfaces``) in one
+    generation: read it before and after, and discard the reading if it moved.
+    """
+    _prime_profiles()
+    return _answer_generation()
 
 
 def permitted_providers(surface_key: str = DASHBOARD_SURFACE_KEY) -> dict[str, bool]:

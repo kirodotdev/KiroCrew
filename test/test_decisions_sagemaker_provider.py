@@ -501,10 +501,14 @@ class TestRefusedOptionIsNotOffered:
     async def test_a_hosted_row_deny_withdraws_both_without_asking_the_list(
         self, audit, monkeypatch
     ):
+        from kiro_crew.dashboard.handlers import decisions_surfaces
         from kiro_crew.decisions import capability
 
         asked = _ceiling(monkeypatch, "*")
         monkeypatch.setattr(capability, "denied_sides", lambda *a, **k: (True, True))
+        # The dashboard's own offer is what is pinned here. The other surfaces' reading
+        # asks their own ceilings (test_decisions_surfaces.py), which this fake leaves open.
+        monkeypatch.setattr(decisions_surfaces, "permitted_surfaces", lambda *a: [])
         payload = await _get()
         assert (payload["hosted_permitted"], payload["sagemaker_permitted"]) == (False, False)
         assert asked == []
