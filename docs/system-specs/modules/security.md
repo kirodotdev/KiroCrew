@@ -1166,6 +1166,8 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   at its matching closing `'`, with no prefix, suffix or concatenation (including
   after `=` or glued flag letters). The whole command text must contain no `$`
   anywhere, so `$'...'`, `$[...]`, `$((...))`, `$(...)` and `${...}` do not qualify.
+  A bare double-quoted value qualifies too when its only openers are escaped
+  backticks (``--body "run \`x\`"``) and the text has no other backslash.
   That text opens no nested frame, as in bash
   (``gh pr edit 1 --body 'run `ssh x`'`` runs no ssh). Every other command, such as
   `trap '...'`, `bash -c 'eval "$1"' _ '...'`, `git -c alias.x='!...'` or

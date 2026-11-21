@@ -247,12 +247,19 @@ def _ends_argv(token: str) -> bool:
 _SUBSTITUTION_OPENERS = ("<(", ">(", "$(", "`")
 
 
-def _only_single_quoted_openers(text: str) -> bool:
+def _only_single_quoted_openers(text: str, *, escaped_backticks: bool = False) -> bool:
     """True when every quote in *text* closes and every substitution opener in it sits
-    inside single quotes (``'...'`` or ``$'...'``), so bash opens no substitution."""
+    inside single quotes (``'...'`` or ``$'...'``), so bash opens no substitution.
+
+    With *escaped_backticks*, a ``\\``` inside double quotes is inert as well, and
+    any other backslash makes the answer False."""
     state = 0
     for step in _iter_shell_chars(text):
         state = step.state
+        if escaped_backticks and "\\" in step.text:
+            if step.text != "\\`" or step.state != 2:
+                return False
+            continue
         if step.state == 1:  # inside '...' or $'...', the opening quote included
             continue
         for at in range(step.offset, step.offset + len(step.text)):
@@ -280,7 +287,7 @@ def _is_message_flag_command(text: str) -> bool:
     global option before the subcommand, and every word holding a substitution
     opener is the value of a message flag (``-m V``, ``-mV``, ``--message V``,
     ``--message=V``; ``--body``/``-b``/``--title``/``-t`` for gh), with that value
-    exactly one bare single-quoted word."""
+    exactly one bare single- or double-quoted word."""
     if any(step.active and step.char in ";&|(){}\n" for step in _iter_shell_chars(text)):
         return False
     words = _split_shell_words(text)
@@ -302,8 +309,8 @@ def _is_message_flag_command(text: str) -> bool:
             else:
                 if any(opener in word for opener in _SUBSTITUTION_OPENERS):
                     return False
-        if any(opener in word for opener in _SUBSTITUTION_OPENERS) and not (
-            word.startswith("'") and word.endswith("'") and word.count("'") == 2
+        if any(opener in word for opener in _SUBSTITUTION_OPENERS) and not any(
+            word.startswith(q) and word.endswith(q) and word.count(q) == 2 for q in "'\""
         ):
             return False
         i += 1
@@ -320,9 +327,16 @@ def _substitution_bodies(text: str, *, raw_source: bool = False) -> "list[str]":
     no ``#``, ``<<``, backslash or control byte (a newline, or a sentinel a caller
     masked in) and whose every quote closes. Any other text, including text with a
     live opener anywhere, gets the quote-blind openers for the whole text.
+
+    A double-quoted message value whose only backslashes escape a backtick
+    (``--body "run \\`x\\`"``) is literal to bash too. Read quote-blind, each such
+    backtick opened a span to the end of the text, so the walk read every suffix of
+    the body as a frame: quadratic in the number of marks.
     """
-    if raw_source and not any(m in text for m in ("#", "<<", "$", "\\")):
-        if not any(ch < " " for ch in text) and _only_single_quoted_openers(text):
+    if raw_source and not any(m in text for m in ("#", "<<", "$")):
+        if not any(ch < " " for ch in text) and _only_single_quoted_openers(
+            text, escaped_backticks=True
+        ):
             if _is_message_flag_command(text):
                 return []
     bodies: list[str] = []
