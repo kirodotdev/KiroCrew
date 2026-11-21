@@ -35,8 +35,16 @@ describe('useLocalGateway', () => {
   it('reads the stored value on mount', async () => {
     installBridge({ get: () => Promise.resolve(false), set: vi.fn() })
     const { result } = renderHook(() => useLocalGateway())
-    expect(result.current.localGatewaySupported).toBe(true)
-    await waitFor(() => expect(result.current.localGatewayEnabled).toBe(false))
+    await waitFor(() => expect(result.current.localGatewaySupported).toBe(true))
+    expect(result.current.localGatewayEnabled).toBe(false)
+  })
+
+  it('keeps the switch hidden until a read succeeds', () => {
+    // A connection window's read is refused; until main.js answers, nothing
+    // says this window may show the switch, so it is never painted and pulled.
+    installBridge({ get: () => new Promise<boolean>(() => {}), set: vi.fn() })
+    const { result } = renderHook(() => useLocalGateway())
+    expect(result.current.localGatewaySupported).toBe(false)
   })
 
   it('writes through the bridge and keeps the value the bridge returns', async () => {
@@ -62,12 +70,12 @@ describe('useLocalGateway', () => {
   })
 
   it('hides the switch when main.js refuses the read, as it does for a connection window', async () => {
-    installBridge({
-      get: () => Promise.reject(new Error("local-gateway:get is restricted to the main window's dashboard")),
-      set: vi.fn(),
-    })
+    const read = Promise.reject(new Error("local-gateway:get is restricted to the main window's dashboard"))
+    installBridge({ get: () => read, set: vi.fn() })
     const { result } = renderHook(() => useLocalGateway())
-    await waitFor(() => expect(result.current.localGatewaySupported).toBe(false))
+    // Wait for the refused read itself before asserting it left the switch hidden.
+    await act(async () => { await read.catch(() => {}) })
+    expect(result.current.localGatewaySupported).toBe(false)
   })
 
   it('puts the switch back when main.js refuses the write', async () => {

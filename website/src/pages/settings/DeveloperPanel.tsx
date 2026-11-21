@@ -50,7 +50,7 @@ const LOCAL_GATEWAY_TUNNEL_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/
  *  The Gateway section is desktop-app-only and appears only when the Electron
  *  bridge is present: a browser tab has no local gateway to start or stop. */
 export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
-  const { localGatewayEnabled, localGatewaySupported, setLocalGatewayEnabled } = useLocalGateway()
+  const { localGatewayEnabled, localGatewaySupported, localGatewayPending, setLocalGatewayEnabled } = useLocalGateway()
   const navigate = useNavigate()
   const { pathname } = useLocation()
   // An LTS build hides Debug tools (RFC D12); a link to it self-heals to the first page.
@@ -120,6 +120,7 @@ export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
                         label={i18nT('pages.settings.developerPanel.run_a_local_gateway')}
                         description={i18nT('pages.settings.developerPanel.turn_it_off_only_when_a_gateway_already_answers_summary')} hint={i18nT('pages.settings.developerPanel.turn_it_off_only_when_a_gateway_already_answers')}
                         checked={localGatewayEnabled}
+                        disabled={localGatewayPending}
                         onChange={setLocalGatewayEnabled}
                       />
                       {/* "Off" has a prerequisite: this app's port must reach a
