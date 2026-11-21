@@ -374,13 +374,13 @@ class TestJitterWaitEndsOnWallClock:
 
         clock = types.SimpleNamespace(time=lambda: now["wall"], monotonic=lambda: now["mono"])
         monkeypatch.setattr(cron_mod, "time", clock)
-        monkeypatch.setattr(cron_mod, "asyncio", types.SimpleNamespace(sleep=fake_sleep))
-        monkeypatch.setattr(cron_mod, "_JITTER_WALL_SLICE_SECS", 0.25)
 
-        await cron_mod._sleep_out_jitter(1.0)
+        # Two whole slices and a half one: the last sleep is the remainder.
+        piece = cron_mod._JITTER_WALL_SLICE_SECS
+        await cron_mod._sleep_out_jitter(2.5 * piece, sleep=fake_sleep)
 
-        assert slept == [0.25, 0.25, 0.25, 0.25]
-        assert now == {"wall": 1_790_000_001.0, "mono": 501.0}
+        assert slept == [piece, piece, piece / 2]
+        assert now == {"wall": 1_790_000_000.0 + 2.5 * piece, "mono": 500.0 + 2.5 * piece}
 
     @pytest.mark.asyncio
     async def test_scheduled_run_waits_through_the_wall_clock_helper(self, monkeypatch, tmp_path):
