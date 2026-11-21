@@ -1175,8 +1175,12 @@ async def api_app_token(request: web.Request) -> web.Response:
     at install time) via the ``X-App-Secret`` header.  On success, returns
     an HMAC token with ``app=<name>`` in the payload so downstream
     middleware can extract the verified app identity, and ``expires_in``,
-    the seconds a caller can present it before it must exchange again.
+    the seconds a caller can present it before it must exchange again. A
+    refusal repeated within a window is counted and answered 429
+    (``app_token_denials``).
     """
+    from kiro_crew.apps.host_exec_grants import host_exec_granted
+    from kiro_crew.dashboard import app_token_denials
     from kiro_crew.dashboard.token_auth import generate_token, validate_app_secret  # noqa: F811
     from kiro_crew.dashboard.token_auth_tokens import LINK_WINDOW_SECS
     from kiro_crew.sel import sel
@@ -1184,37 +1188,32 @@ async def api_app_token(request: web.Request) -> web.Response:
     app_name = request.match_info["name"]
     provided_secret = request.headers.get("X-App-Secret", "")
     if not provided_secret:
-        sel().log_api_access(
-            caller=app_name,
-            operation="app_token_exchange",
-            outcome="denied",
-            source="app_auth",
-            error="missing X-App-Secret header",
+        return app_token_denials.refuse(
+            request,
+            app_name,
+            "missing X-App-Secret header",
+            "missing_secret",
+            # Off the loop like the secret check: the grant is a file on disk.
+            enabled=await asyncio.to_thread(host_exec_granted, app_name),
         )
-        return web.json_response({"error": "missing X-App-Secret header"}, status=403)
 
     # Off the loop: the check reads sealed records from disk.
     if not await asyncio.to_thread(validate_app_secret, app_name, provided_secret):
-        sel().log_api_access(
-            caller=app_name,
-            operation="app_token_exchange",
-            outcome="denied",
-            source="app_auth",
-            error="invalid secret",
-        )
-        return web.json_response(
-            {
-                "error": "invalid secret",
-                # One message for every refusal reason, so it tells a caller nothing
-                # about which check failed. The second sentence is the upgrade path.
-                "hint": (
-                    "The app must be enabled by the owner. An app installed before "
-                    "this version must be turned off and on once in the App Store."
-                ),
-            },
-            status=403,
+        return app_token_denials.refuse(
+            request,
+            app_name,
+            "invalid secret",
+            "invalid_secret",
+            # One message for every refusal reason, so it tells a caller nothing
+            # about which check failed. The second sentence is the upgrade path.
+            hint=(
+                "The app must be enabled by the owner. An app installed before "
+                "this version must be turned off and on once in the App Store."
+            ),
+            enabled=await asyncio.to_thread(host_exec_granted, app_name),
         )
 
+    app_token_denials.release(app_name)
     token = generate_token(app_name, app=app_name)
     sel().log_api_access(
         caller=app_name,

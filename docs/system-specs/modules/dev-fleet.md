@@ -1867,7 +1867,11 @@ choose the gateway's next image. Instead:
   removal guards). It sends the token as `?token=` and exchanges again 30 s before
   the exchange's `expires_in` runs out, so a read never presents an expired token;
   a 401 or 403 still re-exchanges once, which covers a gateway that sends no
-  `expires_in` or restarted with a new signing key. The broker aims at `KIROCREW_GATEWAY_ORIGIN`, which
+  `expires_in` or restarted with a new signing key. A refused exchange (401, 403
+  or 429) holds the next one for its `Retry-After`, and at least 1 s doubling to
+  30 s, never past 300 s; inside the hold a read raises `PointerUnavailable`
+  without a request. A 5xx holds nothing.
+  The broker aims at `KIROCREW_GATEWAY_ORIGIN`, which
   `apps/backend.py` builds for every backend at spawn from the gateway's own
   `KIROCREW_BOUND_PORT` — the port is exported the moment it is reserved
   (`dashboard.server._reserve_dashboard_port`, before any backend spawns;

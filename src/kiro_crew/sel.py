@@ -990,6 +990,7 @@ class SecurityEventLog:
         error: str = "",
         critical: bool = False,
         forwarded: bool | None = None,
+        metadata: dict | None = None,
     ) -> None:
         """Convenience: log a dashboard/API access event.
 
@@ -1001,6 +1002,7 @@ class SecurityEventLog:
         ``None`` takes the verdict the deny-audit boundary bound for the live request
         (``sel_request_provenance``); outside one no key is written, which means
         "not recorded", never "made directly". ``caller_identity`` stays as passed.
+        ``metadata`` adds keys beside it and cannot set ``forwarded``.
 
         ``outcome`` is redacted and clipped like ``resources`` and ``error``,
         even though it reads as a constrained vocabulary. It is not one at this
@@ -1016,6 +1018,7 @@ class SecurityEventLog:
         """
         if forwarded is None:
             forwarded = current_request_forwarded()
+        extra = {k: v for k, v in (metadata or {}).items() if k != "forwarded"}
         self.log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
@@ -1028,7 +1031,7 @@ class SecurityEventLog:
                 outcome=_redact_and_clip(outcome) if outcome else "",
                 resources=_redact_and_clip(resources) if resources else "",
                 error=_redact_and_clip(error) if error else "",
-                metadata={} if forwarded is None else {"forwarded": bool(forwarded)},
+                metadata=extra if forwarded is None else {**extra, "forwarded": bool(forwarded)},
             ),
             critical=critical,
         )

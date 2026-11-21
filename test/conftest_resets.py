@@ -540,6 +540,21 @@ def _forget_app_declared_row_listings():
 
 
 @per_test_guard
+def _forget_app_token_refusal_streaks():
+    """Give every test an empty table of repeated app token refusals.
+
+    ``app_token_denials`` keys a streak on the app name for the process's life, so a
+    test that refuses app ``foo`` would make the next test's first refusal of ``foo``
+    on the same worker a counted 429 instead of its 403 row. A test that never
+    imported the module pays one dict lookup.
+    """
+    denials = sys.modules.get("kiro_crew.dashboard.app_token_denials")
+    if denials is not None:
+        denials._reset()
+    yield
+
+
+@per_test_guard
 def _forget_mount_source_sweep_pacing(_floor_monkeypatch):
     """Forget when the periodic mount-source pass last ran and where it stopped.
 

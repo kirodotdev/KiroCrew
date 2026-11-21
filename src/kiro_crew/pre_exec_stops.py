@@ -17,7 +17,10 @@ A stop still registered when the hook did run is called again, so each stop must
 be safe to repeat.
 
 Cleanup hooks whose resources do not outlive the exec (in-memory state, files,
-sockets the exec closes) do not register: the exec already ends them.
+sockets the exec closes) do not register: the exec already ends them. The one
+exception is in-memory state that must reach disk first, such as the skill-usage
+ledger's debounced hits and the app token refusal counts: its owner registers the
+write, and the restart drains the SEL queue after the stops.
 
 Registration and the run happen on the gateway's event loop; nothing here is
 thread-safe, and nothing needs to be.

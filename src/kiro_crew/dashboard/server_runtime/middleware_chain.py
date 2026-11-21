@@ -210,6 +210,7 @@ def _install_dashboard_middlewares(
             # promise no one keeps (a cross-origin WebSocket GET refused in its
             # handler would be silently unaudited).
             mark_audit_claimed(request)
+            from kiro_crew.dashboard.origin import AUDIT_COUNTED_KEY
             from kiro_crew.sel import sel
 
             # Every mutating /api/ call was filed under the flat
@@ -218,13 +219,16 @@ def _install_dashboard_middlewares(
             actor = audit_actor(request, "dashboard_user")
             try:
                 resp = await handler(request)  # type: ignore[operator]
-                sel().log_api_access(
-                    caller=actor,
-                    forwarded=is_proxied_request(request),
-                    operation=f"{request.method} {request.path}",
-                    outcome="ok" if resp.status < 400 else "error",
-                    resources=request.path,
-                )
+                # A refusal its handler counted is recorded by that count's
+                # summary row, not once per request (origin.AUDIT_COUNTED_KEY).
+                if not request.get(AUDIT_COUNTED_KEY):
+                    sel().log_api_access(
+                        caller=actor,
+                        forwarded=is_proxied_request(request),
+                        operation=f"{request.method} {request.path}",
+                        outcome="ok" if resp.status < 400 else "error",
+                        resources=request.path,
+                    )
                 return resp  # type: ignore[return-value]
             except Exception as exc:
                 sel().log_api_access(
@@ -386,15 +390,22 @@ def _install_api_middlewares(
             # Same forwarder distinction as the dashboard chain's: this server is
             # reached the same way, so its records must be readable the same way.
             actor = audit_actor(request, "mcp_tool")
+            # Imported in the function: it runs on the server module's globals,
+            # which do not bind this key.
+            from kiro_crew.dashboard.origin import AUDIT_COUNTED_KEY
+
             try:
                 resp = await handler(request)  # type: ignore[operator]
-                sel().log_api_access(
-                    caller=actor,
-                    forwarded=is_proxied_request(request),
-                    operation=f"{request.method} {request.path}",
-                    outcome="ok" if resp.status < 400 else "error",
-                    resources=request.path,
-                )
+                # Same rule as the dashboard chain: a counted refusal's record is
+                # its summary row (origin.AUDIT_COUNTED_KEY).
+                if not request.get(AUDIT_COUNTED_KEY):
+                    sel().log_api_access(
+                        caller=actor,
+                        forwarded=is_proxied_request(request),
+                        operation=f"{request.method} {request.path}",
+                        outcome="ok" if resp.status < 400 else "error",
+                        resources=request.path,
+                    )
                 return resp  # type: ignore[return-value]
             except Exception as exc:
                 sel().log_api_access(

@@ -679,6 +679,15 @@ async def _handle_restart(
         )
     except Exception:
         logger.debug("Skill-usage flush before restart failed", exc_info=True)
+    # Refused app token exchanges still being counted live only in memory, and
+    # os._exit() below skips the cleanup hook that writes their summaries. Written
+    # here, into the SEL queue the flush below drains, and nothing is counted after.
+    try:
+        from kiro_crew.dashboard import app_token_denials
+
+        app_token_denials.close()
+    except Exception:
+        logger.debug("App token refusal summaries before restart failed", exc_info=True)
     # Flush the SEL audit queue: logging is async (background writer thread +
     # atexit flush) and os._exit() runs neither atexit handlers nor finalizers,
     # so the approved-restart audit event above would be lost. The shared

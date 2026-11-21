@@ -2778,6 +2778,17 @@ refused there until it is traded for a session with one
 `GET /api/status?token=<link>` (redirects off; keep the `mc_token_<port>`
 `Set-Cookie` value).
 
+When the Gateway refuses the app secret exchange with 401, 403 or 429, the client
+waits before it asks again. The wait is the refusal's `Retry-After`, and at least 1 s
+doubling to 30 s over refusals in a row, never more than 300 s. Any other failed answer,
+a 5xx included, holds nothing. Inside the wait, `authenticate()` returns
+`False` and a 401 or 403 is raised without a new exchange, so an app whose secret went
+stale stops asking on every request. The wait is per Gateway, app and secret, so a
+corrected secret is tried at once, and a new client in the same process shares it. A
+grant ends it. The Gateway's first refusal is a 403 with `code` `missing_secret` or
+`invalid_secret`. It answers a refusal it has already seen with 429 `auth_throttled`
+and `Retry-After: 60`, and keeps the 403's `error` and `hint` in the body.
+
 Token authentication uses the Gateway's port-scoped `mc_token_<port>` cookie. If
 `base_url` omits the port, the client uses the scheme default (443 for HTTPS/WSS,
 80 for HTTP/WS). A Gateway receiving a Host header without a port instead keys
