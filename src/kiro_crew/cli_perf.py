@@ -122,6 +122,10 @@ def _write_artifact(output: Path, text: str) -> bool:
     try:
         output = output.expanduser()
         output.parent.mkdir(parents=True, exist_ok=True)
+        # restrict_to_owner also refuses a parent that is a link. The operator
+        # names this path, so a linked parent (macOS ``/tmp``) is their layout:
+        # resolve it so the write lands where they asked instead of failing.
+        output = output.parent.resolve() / output.name
         atomic_write(output, text, restrict_to_owner=True)
     except (OSError, RuntimeError) as exc:
         print(f"Could not write the profile to {output}: {exc}", file=sys.stderr)

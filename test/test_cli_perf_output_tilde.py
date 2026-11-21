@@ -20,6 +20,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from kiro_crew import cli_perf
 
 
@@ -106,3 +108,19 @@ def test_write_artifact_reports_lockdown_failure(tmp_path, monkeypatch, capsys):
     assert cli_perf._write_artifact(out, "x") is False
     assert "Could not write the profile" in capsys.readouterr().err
     assert not out.exists()
+
+
+def test_write_artifact_accepts_linked_parent(tmp_path):
+    # restrict_to_owner refuses a parent that is a link, but the operator names
+    # --output, and macOS ``/tmp`` is a symlink to ``/private/tmp``. The write
+    # must land in the link's target instead of throwing the profile away.
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    linked = tmp_path / "linked"
+    try:
+        linked.symlink_to(real_dir, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are not available on this host")
+
+    assert cli_perf._write_artifact(linked / "p.folded", "body") is True
+    assert (real_dir / "p.folded").read_text(encoding="utf-8") == "body"
