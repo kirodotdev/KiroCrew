@@ -322,8 +322,9 @@ class TestTeardownTouchesNothingItDoesNotHold:
         path = _settings(tmp_path)
         key = os.fspath(path)
 
-        # A sibling that was refused the seed holds nothing on this path.
-        refused = _client(tmp_path)
+        # A sibling that was refused the seed (another permission mode) holds
+        # nothing on this path.
+        refused = _client(tmp_path, permission_mode="acceptEdits")
         refused._write_claude_local_settings()
         assert refused._claude_settings_authored is False
         assert refused._claude_settings_shared is False

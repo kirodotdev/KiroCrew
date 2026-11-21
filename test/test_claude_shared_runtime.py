@@ -565,12 +565,13 @@ def test_a_remote_bound_claude_chat_never_asks_for_a_placement(tmp_path, monkeyp
 class _SubstitutingPlane(_Plane):
     """A ``session/new`` the organization policy refuses once, naming a substitute."""
 
-    def __init__(self, new_response: dict[str, Any]) -> None:
+    def __init__(self, new_response: dict[str, Any], max_refusals: int = 1) -> None:
         super().__init__(new_response)
         self.refusals = 0
+        self.max_refusals = max_refusals
 
     async def send_and_await(self, method: str, params: dict, timeout: Any = None) -> dict:
-        if method == "session/new" and not self.refusals:
+        if method == "session/new" and self.refusals < self.max_refusals:
             self.sent.append((method, params))
             self.refusals += 1
             from kiro_crew.acp.runtime_reader_loop import _runtime_rpc_exception
@@ -781,6 +782,69 @@ def test_a_spec_tightened_after_prepare_is_the_one_the_session_enforces(
     asks = sent["_meta"]["claudeCode"]["options"]["settings"]["permissions"]["ask"]
     assert set(CLAUDE_SHELL_ASK_RULES) <= set(asks)
     asyncio.run(rt.terminate_session("s-19"))
+
+
+def test_a_served_pin_is_named_on_the_retry_and_not_adopted_twice(harness, tmp_path, monkeypatch):
+    """The refused model is the inherited default, not the session's pin: a pin the
+    backend advertises is what the retry's seed names, and a second refusal of it
+    is not retried."""
+    import json
+
+    from kiro_crew import model_registry
+
+    pin = "global.anthropic.claude-opus-4-8[1m]"
+    other = "global.anthropic.claude-sonnet-4-6[1m]"
+
+    async def scenario() -> tuple[bool, bool]:
+        state = await _prepared_for_envelope(harness, tmp_path)
+        monkeypatch.setattr(
+            model_registry,
+            "_ADVERTISED_MODELS",
+            {state._model_registry_namespace: (pin, other)},
+        )
+        state._model = pin
+        first = await harness.adopt_substituted_model(state, other)
+        assert state._model == pin
+        assert json.loads(_seed(tmp_path).read_text()).get("model") == pin
+        second = await harness.adopt_substituted_model(state, other)
+        # The served pin was refused too: the second adoption falls back to the
+        # offered model, and a third has nothing new to name.
+        assert state._model == other
+        assert json.loads(_seed(tmp_path).read_text()).get("model") == other
+        return first, second
+
+    assert asyncio.run(scenario()) == (True, True)
+
+
+@pytest.mark.parametrize(
+    ("refusals", "starts", "started"),
+    [(2, 3, True), (99, 3, False)],
+    ids=["the_offered_model_starts", "never_more_than_two_resends"],
+)
+def test_a_refused_pin_falls_back_once_to_the_offered_model(
+    harness, tmp_path, monkeypatch, refusals, starts, started
+):
+    """A session on the offered model beats one that never starts: after the served
+    pin is refused as well, the start is re-sent once on the offered model, and
+    never a third time."""
+    from kiro_crew.acp.client_claude import ClaudeAcpClient
+    from kiro_crew.acp.session_handle import AcpRuntimeError
+
+    monkeypatch.setattr(
+        ClaudeAcpClient, "_substitution_retry_model", lambda self, substitute: "opus-pin"
+    )
+    plane = _SubstitutingPlane(
+        {"sessionId": "s-20", "modes": {"currentModeId": "default"}}, max_refusals=refusals
+    )
+    rt = _claude_runtime(plane)
+    if started:
+        asyncio.run(rt.create_session(cwd=str(tmp_path), agent="kirocrew"))
+        assert rt._session_harness_states["s-20"]._model == "sonnet-y"
+        asyncio.run(rt.terminate_session("s-20"))
+    else:
+        with pytest.raises(AcpRuntimeError):
+            asyncio.run(rt.create_session(cwd=str(tmp_path), agent="kirocrew"))
+    assert [m for m, _ in plane.sent].count("session/new") == starts
 
 
 def test_a_substitution_retry_is_refused_once_the_settings_file_was_replaced(
@@ -1683,10 +1747,7 @@ def test_the_shared_envelope_asks_what_the_per_session_client_asks(
     carries no pooled stubs: with them the shared list may name more servers."""
     from types import SimpleNamespace
 
-    from kiro_crew.acp.client_claude_session import (
-        _claude_session_meta,
-        _prepare_claude_held_asks,
-    )
+    from kiro_crew.acp.client_claude_session import _claude_session_meta, _prepare_claude_held_asks
 
     held_ledger("*")
     client = SimpleNamespace(

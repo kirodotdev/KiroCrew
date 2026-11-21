@@ -458,6 +458,7 @@ _CLAUDE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "38be69b9d88a",
         "client_claude_session",
     ),
+    "_reissue_naming_model": ("function", True, "c23cdc6eafcf", "client_claude_session"),
     "_rename_aside_noreplace": ("staticmethod", False, "58d10dda6fc2", "client_seed_ownership"),
     "_render_claude_settings_payload": ("function", False, "bb418bb7ece8", "client_claude_seed"),
     "_reseed_after_capture": ("function", True, "b60c5fea256e", "client_claude_seed"),
@@ -489,6 +490,7 @@ _CLAUDE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_share_settings_seed_if_identical": ("function", False, "0b50a902117a", "client_claude_seed"),
     "_share_sibling_settings_seed": ("function", False, "0b50a902117a", "client_claude_seed"),
     "_steering_adapter_floor_met": ("function", False, "a6632a57e602", "client_claude_turn"),
+    "_substitution_retry_model": ("function", False, "674cac39be17", "client_claude_seed"),
     "_verify_claude_project_denies_unchanged": (
         "function",
         True,
