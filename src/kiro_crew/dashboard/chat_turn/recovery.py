@@ -130,6 +130,14 @@ def _model_unentitled_meta(exc: BaseException) -> dict[str, object] | None:
     return {"kind": MODEL_UNENTITLED_KIND}
 
 
+def _is_start_failure(exc: BaseException) -> bool:
+    """A start that failed (timeout, oversize reply) or that a runtime death cut short."""
+    return (
+        getattr(exc, "session_start_failed", False) is True
+        or getattr(exc, "session_start_died", False) is True
+    )
+
+
 def _note_cycle_start_failure(slot_key: str, exc: BaseException, *, self_wake: bool) -> None:
     """Report a cycle that never obtained a model session to its nudge loop.
 
@@ -138,27 +146,28 @@ def _note_cycle_start_failure(slot_key: str, exc: BaseException, *, self_wake: b
     only that may spend its stand-down budget, or a human turn that happened to be
     starved on a slot that also carries a loop would stop one the human never drove.
 
-    Only a start that TIMED OUT or whose reply was dropped as oversize carries the
-    tag: the ``session/new`` and ``session/load`` arms in ``acp/runtime`` and the
-    dedicated client's awaited-request timeout set it, and nothing else does. A
-    shared runtime dying during a session start takes neither arm -- ``_mark_dead``
-    fails the pending request with an untagged ``AcpRuntimeDead``, and the
-    ``AcpProcessDied`` the provider translates it to is untagged too -- so a death
-    is charged to no loop's streak: not the loop whose start it interrupted, and
-    not a sibling loop on the same process. There is nothing to attribute, because
-    the tag that would be attributed is absent.
+    A start that TIMED OUT or whose reply was dropped as oversize carries
+    ``session_start_failed``. A shared-runtime death wakes every pending request
+    with one untagged ``AcpRuntimeDead``; ``session/new`` alone raises a
+    request-local copy tagged ``session_start_died``, which every caller of
+    ``create_session`` re-raises untranslated into the generic terminal arm. So
+    the loop whose own start was interrupted is charged, and a loop behind a
+    non-start sibling request on that process is not. ``session_start_died`` is
+    read only here and in ``_note_cycle_failure``: the row meta and the Continue
+    endpoint do not see it, so a human chat's card and Resume stay as on main. A
+    death during ``session/load`` stays untagged on purpose.
 
-    The tag is read with ``getattr`` because the two ACP exception families carry
-    it independently and share no base -- which is also why this is a helper
-    rather than one inline block: a session start on the shared runtime raises an
-    ``AcpRuntimeError`` subclass and lands in a different terminal branch from an
-    ``AcpError``, and a report present in only one of them misses whichever
-    population the other serves.
+    The tags are read with ``getattr`` because the two ACP exception families
+    carry them independently and share no base -- which is also why this is a
+    helper rather than one inline block: a session start on the shared runtime
+    raises an ``AcpRuntimeError`` subclass and lands in a different terminal
+    branch from an ``AcpError``, and a report present in only one of them misses
+    whichever population the other serves.
 
     Best-effort: a monitoring convenience never changes how this turn's failure is
     reported.
     """
-    if not self_wake or getattr(exc, "session_start_failed", False) is not True:
+    if not self_wake or not _is_start_failure(exc):
         return
     try:
         from kiro_crew.autonudge import (
@@ -202,8 +211,9 @@ async def _note_cycle_failure(
       not spend the loop's stand-down budget. Same marker
       ``_note_cycle_start_failure`` relies on.
     * NOT a session-start failure -- that has its own streak
-      (``notify_cycle_start_failed``); the ``session_start_failed`` tag is read
-      with ``getattr`` because the two ACP families carry it independently.
+      (``notify_cycle_start_failed``); the ``session_start_failed`` and
+      ``session_start_died`` tags are read with ``getattr`` because the two ACP
+      families carry them independently.
     * NOT a structural rejection -- that is one deterministic turn with its own
       terminal stop (``structural_terminal`` tag); counting it here would
       double-charge the same fault.
@@ -233,7 +243,7 @@ async def _note_cycle_failure(
     """
     if not self_wake:
         return
-    if getattr(exc, "session_start_failed", False) is True:
+    if _is_start_failure(exc):
         return
     if getattr(exc, "structural_terminal", False):
         return

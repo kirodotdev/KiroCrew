@@ -7329,13 +7329,15 @@ consecutive cycles all ending in
 `session/new timed out after 90s (0/10 MCP server(s) reported)`, stopped only by
 `max_cycles` running out. Evidence-driven like the approval stall, through the
 same shape: `notify_cycle_start_failed(slot_key)` — called from `chat_runner`'s
-terminal-error branch when the failure carries the `session_start_failed` tag
+terminal-error branches when the failure carries the `session_start_failed` tag
 (set at the ACP session-start timeout raise sites on both exception families, and
-on the oversize-reply arm; a runtime that DIES during the start raises an untagged
-`AcpRuntimeDead`, so a death advances no loop's streak, the starting loop's or a
-sibling's) AND
-the turn was this loop's own `_directive_self_wake` cycle or a recovery that cycle
-queued for itself (see below) — raises the persisted
+on the oversize-reply arm) or the `session_start_died` tag (a shared runtime that
+DIES during `session/new` raises a request-local copy of its `AcpRuntimeDead`
+with this tag, so only the loop whose own start was interrupted advances, never a
+loop behind a sibling request; it is not read by the row meta or the Continue
+endpoint, so a human chat keeps its plain error card and Resume) AND the turn was this loop's own
+`_directive_self_wake` cycle or a recovery that cycle queued for itself (see
+below) — raises the persisted
 `consecutive_start_failures`, and `notify_cycle_landed(slot_key)` zeroes it on
 ANY landed turn, a human's included, since a turn that completed proves the
 session can start. `_timer` reads the streak with the other terminal bounds: at
