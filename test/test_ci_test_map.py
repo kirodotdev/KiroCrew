@@ -6,7 +6,8 @@ Four properties are pinned:
 
 * RECORD -- the plugin, in a real pytest session, links each test file to the
   repository files its tests executed, and to nothing another test ran.
-* BUILD -- plugin parts merge into the file -> test-file map.
+* BUILD -- plugin parts merge into the file -> test-file map, and `bundle`
+  wraps it with the static-import, co-change, reach and guard tables.
 * SELECT -- every fall-back rule in the module docstring yields the full suite,
   and a mapped edit yields its tests plus the guard tier.
 * SHADOW -- the workflow is scheduled/dispatch only, never cancelled by a push,
@@ -15,6 +16,7 @@ Four properties are pinned:
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import subprocess
@@ -80,6 +82,154 @@ def test_load_map_refuses_another_schema(tmp_path: Path) -> None:
     path.write_text(json.dumps({"schema": 99, "tests": {}, "files": {}}), encoding="utf-8")
     with pytest.raises(ValueError):
         ctm.load_map(path)
+
+
+def _git(repo: Path, *argv: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        + ["-c", "commit.gpgsign=false", *argv],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+    )
+
+
+def _write(repo: Path, files: dict[str, str]) -> None:
+    for rel, text in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text, encoding="utf-8")
+
+
+def _fixture_repo(tmp_path: Path) -> Path:
+    """`test_a` imports `a`, which imports `b` (one hop), which imports `c` (two hops)."""
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        {
+            "src/kiro_crew/__init__.py": "",
+            "src/kiro_crew/a.py": "from . import b\n",
+            "src/kiro_crew/b.py": "def f():\n    from kiro_crew.sub import c\n",
+            "src/kiro_crew/sub/__init__.py": "",
+            "src/kiro_crew/sub/c.py": "import json\n",
+            "test/test_a.py": "from kiro_crew import a\n",
+            "test/test_b.py": "import kiro_crew.sub\nimport not_ours\n",
+            "test/test_broken.py": "def (:\n",
+        },
+    )
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "one")
+    for n in ("two", "three"):
+        _write(
+            repo,
+            {
+                "src/kiro_crew/a.py": f"from . import b  # {n}\n",
+                "test/test_a.py": f"from kiro_crew import a  # {n}\n",
+            },
+        )
+        _git(repo, "commit", "-q", "-am", n)
+    # Non-ASCII paths, which git quotes in its default (non `-z`) output.
+    _write(repo, {"src/kiro_crew/café.py": "", "test/test_café.py": ""})
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "four")
+    return repo
+
+
+def test_static_imports_are_direct_plus_one_hop(tmp_path: Path) -> None:
+    repo = _fixture_repo(tmp_path)
+    table = ctm.static_imports(["test/test_a.py", "test/test_b.py"], repo)
+    assert table == {
+        # kiro_crew/__init__ is imported by name; b is one hop through a; c is two hops.
+        "test/test_a.py": [
+            "src/kiro_crew/__init__.py",
+            "src/kiro_crew/a.py",
+            "src/kiro_crew/b.py",
+        ],
+        "test/test_b.py": ["src/kiro_crew/sub/__init__.py"],
+    }
+    # A test the map names but the tree lacks is left out, not listed empty.
+    assert ctm.static_imports(["test/test_gone.py"], repo) == {}
+    # Unknown links raise rather than read as "imports nothing".
+    with pytest.raises(SyntaxError):
+        ctm.static_imports(["test/test_broken.py"], repo)
+    (repo / "src/kiro_crew/a.py").write_bytes(b"\xff\xfe")
+    with pytest.raises(UnicodeDecodeError):
+        ctm.static_imports(["test/test_a.py"], repo)
+    with pytest.raises(FileNotFoundError):
+        ctm.static_imports(["test/test_a.py"], repo / "test")
+
+
+def test_co_change_counts_first_parent_commits_and_reach_counts_map_links(
+    tmp_path: Path,
+) -> None:
+    repo = _fixture_repo(tmp_path)
+    commits = ctm.git_first_parent_files(repo, "HEAD", 3, FALLBACK_TIMEOUT_SECS)
+    assert commits == [
+        ["src/kiro_crew/café.py", "test/test_café.py"],
+        *[["src/kiro_crew/a.py", "test/test_a.py"]] * 2,
+    ]
+    table = ctm.co_change(ctm.git_first_parent_files(repo, "HEAD", 10, FALLBACK_TIMEOUT_SECS))
+    assert table["src/kiro_crew/café.py"] == {"test/test_café.py": 1}
+    first = {"test/test_a.py": 1, "test/test_b.py": 1, "test/test_broken.py": 1}
+    assert table["src/kiro_crew/a.py"] == {**first, "test/test_a.py": 3}
+    assert table["src/kiro_crew/sub/c.py"] == first
+    assert ctm.co_change([["src/kiro_crew/a.py", "docs/x.md"]]) == {}
+    assert ctm.reach(MAP) == {"src/kiro_crew/a.py": 2, "src/kiro_crew/b.py": 1}
+
+
+def test_bundle_cli_writes_one_gzip_file_select_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _fixture_repo(tmp_path)
+    monkeypatch.setattr(ctm, "guard_tier", lambda root: TIER)
+    # The CLI's git log deadline stays inside the test's own timeout.
+    monkeypatch.setattr(ctm, "GIT_LOG_TIMEOUT_SECS", FALLBACK_TIMEOUT_SECS)
+    map_path = tmp_path / "map.json"
+    map_path.write_text(json.dumps(MAP), encoding="utf-8")
+    out = tmp_path / "bundle.json.gz"
+    argv = ["--root", str(repo), "bundle", "--map", str(map_path), "--out", str(out)]
+    assert ctm.main(argv) == 0
+    doc = json.loads(gzip.decompress(out.read_bytes()))
+    assert doc["schema"] == 2 and doc["commit"] == "abc" and doc["built_at"]
+    assert doc["map"] == MAP and doc["guard"] == TIER
+    assert doc["reach"] == ctm.reach(MAP)
+    assert doc["static_imports"]["test/test_a.py"][0] == "src/kiro_crew/__init__.py"
+    assert doc["co_change"]["src/kiro_crew/a.py"]["test/test_a.py"] == 3
+    assert ctm.load_bundle(out) == doc and ctm.load_map(out) == MAP
+    with pytest.raises(ValueError):
+        ctm.load_bundle(map_path)
+    # select reads the bundle as it reads a schema-1 map.
+    diff = tmp_path / "diff.txt"
+    diff.write_text("M\tsrc/kiro_crew/b.py\n", encoding="utf-8")
+    capsys.readouterr()
+    for path in (out, map_path):
+        assert ctm.main(["select", "--map", str(path), "--name-status", str(diff)]) == 0
+        assert capsys.readouterr().out.split() == ["test/test_b.py", "test/test_gate.py"]
+
+
+def test_a_table_that_cannot_be_built_is_absent_not_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _fixture_repo(tmp_path)
+    monkeypatch.setattr(ctm, "guard_tier", lambda root: [])
+    doc, absent = ctm.bundle(MAP, repo, ref="no-such-ref", timeout=FALLBACK_TIMEOUT_SECS)
+    assert "co_change" not in doc and "guard" not in doc
+    assert sorted(absent) == ["co_change", "guard"]
+    assert "static_imports" in doc and "reach" in doc
+    broken = ctm.merge_parts([{"test/test_broken.py": {"nodes": 1, "files": []}}], commit="")
+    doc, absent = ctm.bundle(broken, repo, timeout=FALLBACK_TIMEOUT_SECS)
+    assert "static_imports" not in doc and "import scan failed" in absent["static_imports"]
+
+    def scan_fails(root: Path) -> list[str]:
+        raise OSError("unreadable test tree")
+
+    monkeypatch.setattr(ctm, "guard_tier", scan_fails)
+    doc, absent = ctm.bundle(MAP, repo, timeout=FALLBACK_TIMEOUT_SECS)
+    assert "guard" not in doc and "co_change" in doc
+    assert absent == {"guard": "corpus_gates failed: unreadable test tree"}
 
 
 def _run_pytest_with_recorder(project: Path, out: Path) -> subprocess.CompletedProcess[str]:
