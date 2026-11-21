@@ -336,7 +336,7 @@ def crew_loads_spec_steering(provider_type: str | None) -> bool:
 
     *provider_type* is the session's provider label, as context assembly receives
     it. True for a harness in ``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`` (claude,
-    codex, opencode and pi), which is handed no spec and so reads none of its ``resources``.
+    codex, opencode, pi and mimocode), which is handed no spec and so reads none of its ``resources``.
     """
     from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_LOADS_SPEC_STEERING
 
@@ -347,7 +347,7 @@ def reads_project_agents_md(provider_type: str | None) -> bool:
     """Whether the harness behind *provider_type* reads the project's ``AGENTS.md`` itself.
 
     True for a harness in ``ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD`` (codex, opencode,
-    pi), which
+    pi, mimocode), which
     reads the file from the session's working directory. Crew's steering load
     leaves that file out there.
     """

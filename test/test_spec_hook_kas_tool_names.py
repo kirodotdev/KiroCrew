@@ -216,13 +216,14 @@ def test_a_matcher_naming_only_a_claude_or_codex_id_is_not_warned(matcher):
 
 
 @pytest.mark.parametrize("matcher", ["actor", "notebook_edit", "view_image"])
-def test_a_matcher_naming_only_a_mimocode_id_is_still_warned(matcher, caplog):
-    # mimocode has a table but no fired spec hooks, so its ids must not quiet the
-    # warning a KAS, goose or opencode spec would otherwise get.
+def test_a_matcher_naming_only_a_mimocode_id_is_not_warned(matcher, caplog):
+    # Crew fires mimocode's non-gating spec hooks, so a MiMo Code id names a tool a
+    # spec hook can see, as a claude or codex id does.
+    assert spec_hooks._matcher_names_a_kas_tool(matcher)
     with caplog.at_level("WARNING", logger="kiro_crew.agent_sdk.spec_hooks"):
         hooks = _pre_tool_hooks(matcher)
     assert [h.matcher for h in hooks] == [matcher]
-    assert any(matcher in r.getMessage() for r in caplog.records)
+    assert not any(matcher in r.getMessage() for r in caplog.records)
 
 
 def test_a_kept_matcher_meets_the_kas_id_it_names(tmp_path, monkeypatch):

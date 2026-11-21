@@ -24,6 +24,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
 )
@@ -97,12 +98,13 @@ def test_prune_keeps_order_and_names_each_pruned_server():
 # ── The session/new path ─────────────────────────────────────────────────────
 
 
-def test_antigravity_goose_deepseek_and_copilot_are_the_pruned_backends():
+def test_antigravity_goose_deepseek_copilot_and_mimocode_are_the_pruned_backends():
     assert ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP == {
         ACP_BACKEND_ANTIGRAVITY,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MIMOCODE,
     }
 
 
@@ -141,6 +143,7 @@ def _drive(tmp_path, monkeypatch, backend: str, *, rolls_back: bool):
         ACP_BACKEND_DEEPSEEK: "_deepseek_session_mcp_servers",
         ACP_BACKEND_COPILOT: "_copilot_session_mcp_servers",
         ACP_BACKEND_ANTIGRAVITY: "_antigravity_session_mcp_servers",
+        ACP_BACKEND_MIMOCODE: "_mimocode_session_mcp_servers",
     }[backend]
     monkeypatch.setattr(client, own_array, lambda: [good, bad])
     monkeypatch.setattr(client, "_pooled_mcp_servers", lambda: [])
@@ -155,6 +158,7 @@ def _drive(tmp_path, monkeypatch, backend: str, *, rolls_back: bool):
         (ACP_BACKEND_DEEPSEEK, True),
         (ACP_BACKEND_COPILOT, False),
         (ACP_BACKEND_ANTIGRAVITY, False),
+        (ACP_BACKEND_MIMOCODE, False),
     ],
 )
 async def test_the_session_starts_without_the_bad_element_and_names_it(
@@ -183,6 +187,7 @@ async def test_the_session_starts_without_the_bad_element_and_names_it(
         (ACP_BACKEND_DEEPSEEK, True),
         (ACP_BACKEND_COPILOT, False),
         (ACP_BACKEND_ANTIGRAVITY, False),
+        (ACP_BACKEND_MIMOCODE, False),
     ],
 )
 async def test_a_pruned_server_the_spec_refs_is_failed_not_unresolved(

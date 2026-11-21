@@ -191,7 +191,7 @@ underneath.
 | `claude` | `claude_code.py` | `mcpServers` [1]; `model`, `availableModels`, `permissions.defaultMode`, in `settings.local.json` [2] | `tools` → the array's allowlist [3]; `disabledTools` → `permissions.deny` rules (`mcp__<server>__<tool>`, each name written as Claude Code writes it, any character outside `[A-Za-z0-9_-]` as `_`), so a narrowed server stays MOUNTED | `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel; `toolsSettings` — no channel [11] |
 | `codex` | `codex.py` | `mcpServers`, narrowed three ways [4]; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, except Crew's control plane [7] | `availableModels` — harness-owns-the-vocabulary; `permissions.defaultMode` — fixed-by-governance (`mode=read-only`); `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel; `toolsSettings` — no channel [11] |
 | `opencode` | `opencode.py` | `mcpServers`, no transport filter; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → a `deny` rule in the seeded `permission` config, server kept mounted; withheld whole only when a lower config source outranks the rule [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` fixed at `ask` and read back off the harness's own resolved config |
-| `mimocode` | `mimocode.py` (its own projection, the same rules as `opencode`) | as `opencode` | as `opencode`, except `hooks` | as `opencode`, with the config seeded through `MIMOCODE_CONFIG_CONTENT` and read back from `mimo debug config`; `hooks` — withheld, because some of the harness's own tools never ask, so a hook fired from the permission request would miss them; `resources` and `toolsSettings` — withheld |
+| `mimocode` | `mimocode.py` (its own projection, the same rules as `opencode`) | as `opencode` | as `opencode`, except `hooks` | as `opencode`, with the config seeded through `MIMOCODE_CONFIG_CONTENT` and read back from `mimo debug config`; `hooks` — no channel: Crew fires every event but `preToolUse`, which is withheld because some of the harness's own tools never ask, so a hook fired from the permission request would miss them; `resources` and `toolsSettings` — withheld |
 | `goose` | `goose.py` | `mcpServers`, the one channel measured as a round trip rather than as an accepted element; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` carried as `GOOSE_MODE` in the child's environment |
 | `copilot` | `copilot.py` | `mcpServers` (with stdio also carried in its launch file); the harness-advertised model choice | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7] | `permissions.defaultMode` → fixed by `allow_all=off`; `prompt`, `resources`, `autoApprove` and `hooks` withheld |
 | `antigravity` | `antigravity.py` | `mcpServers` through the session array; `model` and `thinking_level` config options | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7] | `permissions.defaultMode` → fixed by `mode=default`; `prompt`, `resources`, `autoApprove` withheld; `hooks` — no channel: Crew's turn loop fires every event but `preToolUse`, because file reads run without a permission request; `toolsSettings` — no channel [11] |
@@ -384,13 +384,13 @@ context rather than as config — `context.py`'s `_skills_injection_plan` return
 `bool(globs) or not is_custom`, with no backend condition, so Crew injects the
 mapped set on every backend, as a bounded directory plus each `always: true`
 body. The `file://` steering
-load runs on four of them only: it is gated on `ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`,
+load runs on five of them only: it is gated on `ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`,
 asked by provider label through `crew_loads_spec_steering(provider_type)`. The
 members are the `claude` `acp_backend` (its provider label is `claude_code`),
-`codex`, `opencode` and `pi`. No other harness gets the load. On `codex`, `opencode`
-and `pi` the load leaves out the project's `AGENTS.md`, because each reads that file
+`codex`, `opencode`, `pi` and `mimocode`. No other harness gets the load. On `codex`, `opencode`,
+`pi` and `mimocode` the load leaves out the project's `AGENTS.md`, because each reads that file
 from its working directory
-(`ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD`). `claude_code.py`, `codex.py` and `opencode.py` give `withheld`
+(`ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD`). `claude_code.py`, `codex.py`, `opencode.py` and `mimocode.py` give `withheld`
 the shared reason `RESOURCES_NO_READER` (`providers/mirrors/base.py`), which opens
 with this page's class name, `no-reader`; `goose.py`'s reason says no channel is
 advertised for them. A new session of a custom agent on a backend whose mirror

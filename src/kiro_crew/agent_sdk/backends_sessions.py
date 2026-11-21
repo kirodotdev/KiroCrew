@@ -491,6 +491,12 @@ def can_restore_session(backend: str, agent_capabilities: Mapping[str, Any]) -> 
 # fresh session in the new folder and gets its conversation replayed as text
 # (``session_allocation_parts.get_or_create``). kiro-cli takes the cwd from each
 # load, so it is not a member and a moved chat keeps its native history.
+# mimocode is not a member, though its parent is: measured on 0.1.15, a SECOND
+# ``mimo acp`` process started in another folder loaded the session with that
+# folder's ``cwd``, honoured the approval reply, ran ``pwd`` there and mounted and
+# called the MCP server sent with the load. Only a load naming another ``cwd`` in the
+# SAME process failed (``-32603``), and ``AcpClient`` runs one MiMo Code process per
+# session, so a moved chat always loads in a new process.
 ACP_BACKENDS_CWD_BOUND_SESSIONS = frozenset({ACP_BACKEND_OPENCODE})
 
 # Harnesses whose ``session/fork`` copies a stored session only up to a given

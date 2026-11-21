@@ -183,9 +183,10 @@ CODEX_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = {
 #: 0.1.15 tool registry defines (``tool/*.ts``). A model the harness
 #: addresses in PascalCase (``Bash``) still reports the internal id on the wire,
 #: because the harness maps the name back before the frame is built. Like claude's
-#: table, this backend is outside ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``: the row
-#: names a call for the gate's own hooks on the calls that ask, while the spec's
-#: hooks are withheld because some of the harness's tools never ask. The fork's subagent tool
+#: table, this backend is outside ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``: some of the
+#: harness's tools never ask, so the spec's ``preToolUse`` hooks are withheld, while
+#: its other hooks are fired by Crew (``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS``)
+#: and meet a call through this row. The fork's subagent tool
 #: is ``actor`` (``tool/actor.ts``, asking under its own ``actor`` permission); its
 #: ``task`` is a work-item tracker that never asks, not opencode's subagent ``task``.
 MIMOCODE_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = {
@@ -297,6 +298,52 @@ GOOSE_READ_ONLY_BUILTINS: dict[tuple[str, str], str] = {
     ("developer", "read_image"): "fs_read",
 }
 
+#: MiMo Code's read-only built-ins a Side Chat session may run, keyed by the tool id
+#: its first ``tool_call`` frame states as the title, mapped to the kiro-cli built-in
+#: that does the same job and the argument naming its target. An MCP tool's fused id
+#: always holds the ``_`` joining its halves (``mimocode_tool_id``), so none of these
+#: bare names can be an MCP tool, and a side session mounts none anyway. The target
+#: must be an ABSOLUTE path: MiMo Code resolves a missing ``path`` (grep, glob) or a
+#: relative one against the session's directory, while the gate's path checks resolve
+#: a relative path against the gateway's own. Measured on 0.1.15: ``read`` names
+#: ``file_path``, ``grep`` and ``glob`` name ``path``, and each asked before running.
+MIMOCODE_READ_ONLY_BUILTINS: dict[str, tuple[str, str]] = {
+    "read": ("fs_read", "file_path"),
+    "grep": ("grep", "path"),
+    "glob": ("glob", "path"),
+}
+
+#: The MiMo Code tools a Side Chat session's seed denies, which removes each from the
+#: tool list the model is offered (0.1.15 ``mimo debug agent build``: the registry
+#: keeps ``read``, ``grep``, ``glob``, ``webfetch``, ``websearch``, ``invalid`` and
+#: ``mcp_tool_search``). The writers and the shell, and every tool that runs without
+#: a permission request (``HARNESS_UNASKED_TOOL_IDS``) apart from ``invalid`` and
+#: ``mcp_tool_search``, which only answer a call to an absent tool or search an MCP
+#: catalog a side session does not have.
+MIMOCODE_SIDE_DENIED_TOOLS: tuple[str, ...] = (
+    "bash",
+    "edit",
+    "write",
+    "apply_patch",
+    "multiedit",
+    "notebook_edit",
+    "memory",
+    "history",
+    "task",
+    "actor",
+    "skill",
+    "skill_search",
+    "question",
+    "plan_exit",
+    "cron",
+    "view_image",
+)
+
+#: What a MiMo Code Side Chat session may run without asking: the unasked tools its
+#: seed leaves on the list. The tripwire stops the harness on any other call that
+#: completes unasked.
+MIMOCODE_SIDE_UNASKED_TOOL_IDS: frozenset[str] = frozenset({"invalid", "mcp_tool_search"})
+
 #: The backends whose permission event carries a qualified harness tool id.
 HARNESS_TOOL_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
     ACP_BACKEND_ANTIGRAVITY: ANTIGRAVITY_TOOL_IDS_BY_KIRO_TOOL,
@@ -390,9 +437,11 @@ def mimocode_actor_asks_nothing(params: object) -> bool:
     return isinstance(action, str) and action in _MIMOCODE_ACTOR_UNASKED_ACTIONS
 
 
-#: Every harness id in these tables but MiMo Code's, for the spec reader's "names no
-#: tool" warning. MiMo Code's spec hooks are withheld, so a matcher that meets only a
-#: MiMo Code id names a tool no spec hook ever sees, and still warns.
+#: Every harness id in these tables whose backend Crew fires spec hooks for, for the
+#: spec reader's "names no tool" warning: the backends of
+#: ``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS``, which hold every member of the
+#: gating set. A matcher that meets an id of one of them names a tool some spec
+#: hook can see.
 HARNESS_TOOL_MATCH_VOCABULARY: frozenset[str] = frozenset(
     tool_id
     for backend, table in HARNESS_TOOL_TABLES.items()

@@ -1448,6 +1448,7 @@ class AcpClient:
     # Run an ``AcpClient`` prompt turn and dispatch the frames it reads: ``kiro_crew.acp.client_turn``.
     _process_message = _client_turn._process_message
     _defer_mimocode_shell_permission = _client_turn._defer_mimocode_shell_permission
+    _defer_mimocode_side_read_permission = _client_turn._defer_mimocode_side_read_permission
     _prompt_loop = _client_turn._prompt_loop
     _consult_liveness_model_wait = _client_turn._consult_liveness_model_wait
     send_message = _client_turn.send_message

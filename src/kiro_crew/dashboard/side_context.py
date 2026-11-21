@@ -113,13 +113,14 @@ def build_side_message(
     shell_available: bool = True,
     file_reads_available: bool = True,
     searches_available: bool = True,
+    web_available: bool = True,
     cfg: KiroCrewConfig | None = None,
 ) -> str:
     """First turn: full envelope (instructions + format + parent + side history + question).
     Subsequent turns: bare question (kiro-cli session retains framing).
 
-    ``tools_available``, ``shell_available``, ``file_reads_available`` and
-    ``searches_available`` pick the boundary prompt for the
+    ``tools_available``, ``shell_available``, ``file_reads_available``,
+    ``searches_available`` and ``web_available`` pick the boundary prompt for the
     harness the turn runs on (:func:`side_prompts.side_boundary_prompt`).
 
     ``cfg`` feeds the reply-style block of the format contract
@@ -138,6 +139,7 @@ def build_side_message(
         shell_available=shell_available,
         file_reads_available=file_reads_available,
         searches_available=searches_available,
+        web_available=web_available,
     )
     parts: list[str] = [
         build_side_system_prompt(
@@ -145,6 +147,7 @@ def build_side_message(
             shell_available=shell_available,
             file_reads_available=file_reads_available,
             searches_available=searches_available,
+            web_available=web_available,
         ),
         # The rendering contract sits with the instructions, ahead of the
         # parent snapshot: it describes how THIS surface draws a reply, which

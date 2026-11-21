@@ -4790,7 +4790,7 @@ parts:
   (`slot_guards._record_explicit_agent_selection`), so a session switched off the
   worker template leaves the Bot's backend too. The pin is that record, so the worker
   follows its Bot's backend for its whole life. It runs on a backend in
-  `ACP_BACKENDS_MATE_WORKER_KIT` (KAS, claude, codex, pi; harness-parity.md),
+  `ACP_BACKENDS_MATE_WORKER_KIT` (KAS, claude, codex, pi, mimocode; harness-parity.md),
   its spec carried the way a member chat's
   saved spec is -- KAS through its per-session projection, the mirrored hosts
   and pi through the session MCP projection, which reads the worker's own spec by the
@@ -5755,7 +5755,7 @@ kiro-cli that lacks its engine.
   harness in `crewmate_harness.crewmate_harnesses(config)`: selectable now
   (`selectable_backends()`, which the `agent_backend` governance scope narrows)
   AND in `ACP_BACKENDS_MEMBER_CAPABILITIES` ∩ `ACP_BACKENDS_MEMBER_DISPATCH` ∩
-  `ACP_BACKENDS_MATE_WORKER_KIT` (RFC O6 and 5.4: KAS, Claude Code, Codex, Pi; never
+  `ACP_BACKENDS_MATE_WORKER_KIT` (RFC O6 and 5.4: KAS, Claude Code, Codex, Pi, MiMo Code; never
   deepseek), judged on the runtime the pin resolves to (so `kiro` counts as KAS only where
   `kiro_cli_pick_backend()` moves it there), and that this host's session start
   does not refuse (`tool_gate.sandbox_floor_refusal`: an enforced harness whose

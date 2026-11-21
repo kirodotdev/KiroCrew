@@ -408,7 +408,7 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     # server and tool stamps that tell an MCP call from a built-in.
     "ACP_BACKENDS_TOOL_SILENCE_TIMER": None,
     # copilot's drop is off the wire (its log, no frame), so no capture can show it.
-    "ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP": frozenset({"deepseek", "goose"}),
+    "ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP": frozenset({"deepseek", "goose", "mimocode"}),
     "ACP_BACKENDS_UNMARKED_COMPACTION_PAIR": None,
     "ACP_BACKENDS_MCP_WIRE_REINJECT": None,
     "ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS": None,

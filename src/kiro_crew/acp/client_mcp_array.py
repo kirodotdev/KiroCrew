@@ -22,7 +22,7 @@ Instance fields read: ``_acp_backend``, ``_agent``, ``_channel_id``, ``_child_en
 ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``, ``_mcp_json_names``,
 ``_mcp_notifications``, ``_mcp_ref_spec``, ``_mcp_report``, ``_native_skill_projection``,
 ``_pi_gate_nonce``, ``_pi_mcp_server_names``, ``_session_id``, ``_session_key``,
-``_spawn_work_dir``, ``_stub_session_token``, ``_work_dir``,
+``_side_read_only``, ``_spawn_work_dir``, ``_stub_session_token``, ``_work_dir``,
 ``member_context``.
 """
 
@@ -1179,8 +1179,11 @@ def _mimocode_session_mcp_servers(self: AcpClient) -> list:
     ``acp.session_mcp.acp_server_element`` emits, listed its tools and completed a
     call to one (``test/fixtures/acp_frames/mimocode/mcp-stdio-mount-live.jsonl``).
     Kept as its own seam for the reason the opencode one is: an edition may
-    override it.
+    override it. A Side Chat session mounts no MCP server, as on claude and goose:
+    READ_ONLY refuses every MCP call, and its launch refuses a native mount besides.
     """
+    if getattr(self, "_side_read_only", False):
+        return []
     return self._session_mcp_servers()
 
 

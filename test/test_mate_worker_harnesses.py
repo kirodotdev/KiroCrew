@@ -22,6 +22,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
     ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
@@ -239,6 +240,7 @@ def test_with_kas_unservable_an_unpinned_refusal_offers_no_kas_and_names_its_fix
 
     able = (
         f"({harness_label(ACP_BACKEND_CLAUDE)}, {harness_label(ACP_BACKEND_CODEX)}, "
+        f"{harness_label(ACP_BACKEND_MIMOCODE)}, "
         f"{harness_label(ACP_BACKEND_PI)})"
     )
     assert refusal is not None
@@ -258,6 +260,7 @@ def test_clearing_a_pin_is_offered_only_where_the_member_route_carries_the_worke
     assert refusal is not None and "clear the pin" not in refusal
     able = (
         f"({harness_label(ACP_BACKEND_CLAUDE)}, {harness_label(ACP_BACKEND_CODEX)}, "
+        f"{harness_label(ACP_BACKEND_MIMOCODE)}, "
         f"{harness_label(ACP_BACKEND_PI)})"
     )
     assert f"pick a harness that can {able}" in refusal
@@ -819,3 +822,59 @@ def test_the_projection_refuses_limits_added_after_the_allocation_check(pixel_wo
         MATE_WORKER_AGENT, session_key=key, worker_tool_limits_honoured=True
     )
     assert "jira" in {e.get("name") for e in projection.servers}
+
+
+def test_mimocode_carries_the_worker_kit(pixel_worker):
+    """mimocode is in the kit set (mimocode/worker-kit-live.jsonl), and its mirror hands
+    the session key down, so the worker's array mounts the crewmate's own server."""
+    from kiro_crew.acp_backends import ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT
+    from kiro_crew.providers.acp import AcpProvider
+    from kiro_crew.providers.mirrors.mimocode import mimocode_projection
+
+    assert mate_worker.worker_kit_backend_refusal(ACP_BACKEND_MIMOCODE) is None
+    client = SimpleNamespace(backend=ACP_BACKEND_MIMOCODE)
+    assert AcpProvider.mate_worker_kit_supported.fget(SimpleNamespace(_client=client)) is True
+    assert ACP_BACKEND_MIMOCODE in ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT
+    assert ACP_BACKEND_MIMOCODE not in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS
+
+    def names(**kw):
+        return {
+            e.get("name") for e in mimocode_projection(MATE_WORKER_AGENT, **kw).params["mcpServers"]
+        }
+
+    assert "jira" in names(session_key="dashboard:chat-9")
+    # Without the session the projection is the bare base every worker shares.
+    assert "jira" not in names()
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        {"mcpServers": {"jira": {"command": "jira-mcp", "disabledTools": ["x"]}}},
+        {"excludedTools": ["@jira/delete_issue"]},
+        {"excludedTools": ["fs_write"]},
+    ],
+    ids=["disabledTools", "excluded-server-tool", "excluded-native-tool"],
+)
+def test_mimocode_refuses_a_tool_limited_worker(pixel_worker, limits):
+    """Single-tool limits stay KAS-only on the mimocode projection too."""
+    from kiro_crew.providers.mirrors.mimocode import mimocode_projection
+    from kiro_crew.session_capabilities import CapabilityStartupError
+
+    (pixel_worker / "pixel.json").write_text(json.dumps({**PIXEL, **limits}), encoding="utf-8")
+    with pytest.raises(CapabilityStartupError) as refused:
+        mimocode_projection(MATE_WORKER_AGENT, session_key="dashboard:chat-9")
+    assert str(refused.value) == "capability_tool_limits_unsupported"
+
+
+def test_mimocode_gets_the_crewmates_prompt_in_the_context_block(pixel_worker):
+    """The mimocode mirror projects no spec prompt, so the block carries the worker's
+    principles and the crewmate's prompt, as on claude and codex."""
+    from kiro_crew.context_assembly.agent_spec import _crewmate_worker_prompt
+    from kiro_crew.mate_worker import mate_worker_prompt
+
+    with_prompt = {**PIXEL, "prompt": "Follow the release SOP."}
+    (pixel_worker / "pixel.json").write_text(json.dumps(with_prompt), encoding="utf-8")
+    _served_by(ACP_BACKEND_MIMOCODE, "dashboard:chat-9")
+    block = _crewmate_worker_prompt(MATE_WORKER_AGENT, BASE["prompt"], "dashboard:chat-9")
+    assert block == f"You are the worker.\n\n{mate_worker_prompt()}\n\nFollow the release SOP."

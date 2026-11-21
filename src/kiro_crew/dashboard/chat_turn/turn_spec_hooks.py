@@ -209,7 +209,7 @@ async def _prepare_spec_hooks(
     Only for a backend whose capabilities say Crew fires the spec's hooks: kiro-cli
     runs the field itself, and firing it here too would run every hook twice, so
     every other session gets ``([], False, None)``. A backend where Crew fires
-    only the hooks that cannot refuse a call (claude, codex) gets those, from
+    only the hooks that cannot refuse a call (claude, codex, mimocode) gets those, from
     :func:`_prepare_observer_spec_hooks`.
 
     On a new session, a spec that sets a key nothing carries to this backend gets
@@ -525,7 +525,7 @@ async def _prepare_observer_spec_hooks(
     is_new: bool,
 ) -> tuple[list, bool, str | None]:
     """:func:`_prepare_spec_hooks` on a backend where Crew fires the spec's hooks on
-    the events that cannot refuse a tool call (claude, codex).
+    the events that cannot refuse a tool call (claude, codex, mimocode).
 
     The spec's ``preToolUse`` hooks are left out: the harness approves some calls
     without a permission request, so such a hook could not gate them, and a new
@@ -833,7 +833,7 @@ async def _notice_unread_steering(
     """One notice row naming the custom agent's ``file://`` steering *client* never loads.
 
     Only a custom agent: Crew's steering load serves the default agent alone. On
-    Claude Code, Codex, OpenCode and Pi it sends the default agent's entries and steering trees
+    Claude Code, Codex, OpenCode, Pi and MiMo Code it sends the default agent's entries and steering trees
     itself, and elsewhere folder steering or member essentials can carry them, so
     a row there could claim a loss that did not happen. Best-effort: a spec that
     cannot be read renders no row rather than failing the turn.

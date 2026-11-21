@@ -43,6 +43,23 @@ SIDE_BOUNDARY_PROMPT_NO_SHELL = (
     "explicitly asks for them."
 )
 
+#: The read-only boundary for a side session that reads and searches files by an
+#: absolute path but has no shell, and whose web tools are refused (MiMo Code, whose
+#: side session proves only its own ``read``, ``grep`` and ``glob``).
+SIDE_BOUNDARY_PROMPT_NO_WEB = (
+    "You are answering an ephemeral side question. Use the conversation "
+    "only as background context. Do not continue or complete any "
+    "unfinished tasks from the main conversation. This side conversation "
+    "is read-only: lookups work here, but changes don't. Reading files and "
+    "searching the codebase by an absolute path run here without asking, so use "
+    "them when a question needs them. There is no shell here. Writing "
+    "or editing files, running commands, fetching pages, and MCP tools are refused "
+    "here, even when the user explicitly requests them. Never claim that a tool is "
+    "unconfigured or suggest enabling it. If the user wants a change made, tell "
+    "them to use the main chat to take action. Do not include shell commands, "
+    "patches, or code unless the side question explicitly asks for them."
+)
+
 #: The read-only boundary for a side session that can list folders and view
 #: images but has no shell and no tool that reads a file's text (goose, whose
 #: only text reader is its shell).
@@ -112,14 +129,16 @@ def side_boundary_prompt(
     shell_available: bool = True,
     file_reads_available: bool = True,
     searches_available: bool = True,
+    web_available: bool = True,
 ) -> str:
     """The boundary the policy enforces on this harness.
 
     ``tools_available`` picks the read-only allowance (``READ_ONLY``) or no
     tools at all (``REJECT_ALL``); ``shell_available`` says whether the
     read-only session has a shell tool for the read-only commands,
-    ``file_reads_available`` whether a shell-less one can read a file's text, and
-    ``searches_available`` whether it can also search and fetch.
+    ``file_reads_available`` whether a shell-less one can read a file's text,
+    ``searches_available`` whether it can also search and fetch, and
+    ``web_available`` whether one that searches files can also fetch pages.
     """
     if not tools_available:
         return SIDE_BOUNDARY_PROMPT_NO_TOOLS
@@ -127,7 +146,9 @@ def side_boundary_prompt(
         return SIDE_BOUNDARY_PROMPT
     if not file_reads_available:
         return SIDE_BOUNDARY_PROMPT_LISTING
-    return SIDE_BOUNDARY_PROMPT_NO_SHELL if searches_available else SIDE_BOUNDARY_PROMPT_FILE_READS
+    if not searches_available:
+        return SIDE_BOUNDARY_PROMPT_FILE_READS
+    return SIDE_BOUNDARY_PROMPT_NO_SHELL if web_available else SIDE_BOUNDARY_PROMPT_NO_WEB
 
 
 def build_side_system_prompt(
@@ -136,6 +157,7 @@ def build_side_system_prompt(
     shell_available: bool = True,
     file_reads_available: bool = True,
     searches_available: bool = True,
+    web_available: bool = True,
 ) -> str:
     """Return the developer-instructions + boundary-prompt envelope."""
     boundary = side_boundary_prompt(
@@ -143,6 +165,7 @@ def build_side_system_prompt(
         shell_available=shell_available,
         file_reads_available=file_reads_available,
         searches_available=searches_available,
+        web_available=web_available,
     )
     return f"{SIDE_DEVELOPER_INSTRUCTIONS}\n\n{boundary}"
 

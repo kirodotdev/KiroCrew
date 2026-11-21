@@ -29,7 +29,7 @@ retype every conversation.
 Two different mechanisms put them there. kiro-cli loads both roots itself: the
 global one for every session it starts, and the workspace one because the
 session subprocess runs with the chat slot's project directory as its working
-directory. On the Claude Code, Codex, OpenCode and Pi backends, which do not read an agent
+directory. On the Claude Code, Codex, OpenCode, Pi and MiMo Code backends, which do not read an agent
 spec's `resources` array, the gateway loads them explicitly —
 `steering_target_admissible` and `_load_steering_resources` in
 `src/kiro_crew/context_assembly/agent_spec.py` anchor each `file://` entry the
@@ -39,8 +39,8 @@ bound), `~/` at `$HOME`, and an absolute path at its own glob-free prefix. They
 add what kiro-cli inherits by default: the global root `~/.kiro/steering`
 always (the host tree, which is the one folder steering skips as delivered),
 and the project's steering root and `AGENTS.md` when a project is bound. Codex
-reads the project's `AGENTS.md` itself from its working directory, so on Codex
-the gateway leaves that file out. A hit is
+and MiMo Code read the project's `AGENTS.md` themselves from their working
+directory, so on those two the gateway leaves that file out. A hit is
 admitted only when its resolved target stays under its entry's anchor, so a
 project steering link to a file outside the project is not read. An entry that
 cannot be globbed skips only itself.
@@ -93,7 +93,7 @@ Endpoints are plural nouns. Errors carry a stable `code` field.
 
 **On kiro-cli, Kiro Crew reports and edits the declaration; it does not decide
 delivery from it.** The two loads Kiro Crew runs itself, folder steering and the
-Claude Code, Codex, OpenCode and Pi global-root load, apply one rule
+Claude Code, Codex, OpenCode, Pi and MiMo Code global-root load, apply one rule
 (`every_session_body` in `src/kiro_crew/folder_steering.py`): a document
 declaring `manual`, `auto` or `fileMatch` is withheld, and the front matter is
 stripped from every document they deliver. What a mode causes on kiro-cli is the
@@ -172,7 +172,7 @@ A spawned sub-agent fires `AgentSpawn` (on a new session) and `UserPromptSubmit`
 stdout is added to that prompt the same way.
 
 kiro-cli runs the spec's hooks itself and sends the `AgentSpawn` stdout with
-every request. Where Crew fires the hooks instead (KAS, claude, codex, goose,
+every request. Where Crew fires the hooks instead (KAS, claude, codex, mimocode, goose,
 opencode and strands), a compaction summarizes the session's history, and that
 stdout with it, so on a dashboard chat the first turn after a compaction sends
 the stdout the session's first turn kept, once more. The hook does not run again.

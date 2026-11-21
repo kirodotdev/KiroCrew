@@ -1371,7 +1371,7 @@ is reached through `SessionManager.mark_mcp_config_changed`, a generation
 fence the gate bumps in the same call and the fill loop compares across its
 start, marking that provider at its enqueue re-check.
 
-Strands satisfies the gate by a THIRD mechanism, its own membership
+Strands and MiMo Code satisfy the gate by a THIRD mechanism, their own membership
 (`ACP_BACKENDS_MCP_RELAUNCH_RELOAD`, declared as
 `LLMProvider.mcp_config_relaunch_reload` by `AcpProvider` for its direct
 `AcpClient`). The Strands CLI reads its servers once, from the `--mcp-config`

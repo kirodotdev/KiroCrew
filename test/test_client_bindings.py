@@ -97,6 +97,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_copilot_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
     "_decline_elicitation": ("function", True, "87459833bc5c", "client_elicitation"),
     "_defer_mimocode_shell_permission": ("function", True, "7c70a056d5ef", "client_turn"),
+    "_defer_mimocode_side_read_permission": ("function", True, "7c70a056d5ef", "client_turn"),
     "_defer_shell_permission": ("function", True, "7c70a056d5ef", "client_class"),
     "_defers_shell_permission": ("data", False, "", ""),
     "_delegate_launch_failure": ("function", True, "35f56320d7d1", "client_lifecycle"),

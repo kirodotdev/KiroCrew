@@ -1410,12 +1410,12 @@ identical `SpawnPlan` for a folder chat and a non-folder chat; delivery cannot b
 lost by adding a provider. A file whose realpath lies under the chat project's
 `.kiro/steering` or under `~/.kiro/steering` is skipped ONLY where the active provider
 already delivers those trees -- kiro-cli loads them natively while the workspace
-inherits kiro-cli's default resources, the Claude Code seam, Codex, OpenCode and Pi
+inherits kiro-cli's default resources, the Claude Code seam, Codex, OpenCode, Pi and MiMo Code
 receive the explicit steering load, KAS reports `native_steering` -- so they are not sent twice; on a
 harness with no such path (Goose, DeepSeek and the rest) the folder
 delivers them like any other document rather than skipping rules nothing else
 would carry. The explicit load serves only the Kiro Crew default agent, so on
-Claude Code, Codex, OpenCode and Pi the folder still delivers the trees in a custom
+Claude Code, Codex, OpenCode, Pi and MiMo Code the folder still delivers the trees in a custom
 agent's chat.
 The context builder's entry points (`build_message`,
 `build_session_context`) pass a harness to the member essentials builder only
@@ -2103,3 +2103,20 @@ keeps the stub mounted on opencode only while its deny rule is in force; goose,
 copilot, deepseek, strands and antigravity withhold a narrowed server whole, the stub
 included. A spec-described work-ledger entry, an unbound or foreign stub, and
 every other identity-bound server stay withheld.
+
+### MiMo Code Crew stub mount
+
+The mimocode mirror places its own array (`place_mimocode_array` in
+`providers/mirrors/mimocode.py`) and withholds every identity-bound Crew server
+from the spec-described half. Their gateway broker stubs are admitted by the rule
+codex applies (`is_session_bound_crew_stub`, a copy kept in the mimocode mirror): the
+name is an identity-bound Crew server that consumes the caller gatewayd injects,
+the element is stdio, runs the broker stub module and registers under exactly one
+`--server` with that name, and its `env` is exactly one stub-token pair equal to
+this session's nonempty token. The stub is mounted as given, minus the `type: "stdio"`
+tag the harness would read as remote, with no Crew identity env added. It still
+passes the `tools` allowlist and `disabled`, and a switched-off tool keeps it
+mounted only while that tool's deny rule is in force. The dashboard has no rule of
+its own here: a member session's control server is appended by the client after
+the mirror. A spec-described Crew entry, an unbound or foreign stub, and a server
+that reads identity from its own process stay withheld.
