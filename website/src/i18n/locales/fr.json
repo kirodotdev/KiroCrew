@@ -367,13 +367,13 @@
       "create_returned_no_session": "La session a été créée, mais le serveur ne l’a pas renvoyée. Réessaie."
     },
     "pullRequestPanel": {
-      "not_declared": "Cette app ne peut pas afficher de pull requests : ses autorisations ne déclarent pas {{path}}."
+      "not_declared": "Cette app ne peut pas afficher de pull requests. Son développeur ne l'a pas autorisé : les autorisations de l'app ne déclarent pas {{path}}."
     },
     "fileTree": {
-      "not_declared": "Cette app ne peut pas afficher les fichiers du projet : ses autorisations ne déclarent pas {{path}}."
+      "not_declared": "Cette app ne peut pas afficher les fichiers du projet. Son développeur ne l'a pas autorisé : les autorisations de l'app ne déclarent pas {{path}}."
     },
     "projectPicker": {
-      "not_declared": "Cette app ne peut pas afficher le sélecteur de projet : ses autorisations ne déclarent pas {{path}}."
+      "not_declared": "Cette app ne peut pas afficher le sélecteur de projet. Son développeur ne l'a pas autorisé : les autorisations de l'app ne déclarent pas {{path}}."
     },
     "sessionChanges": {
       "not_declared": "Cette app ne peut pas afficher les modifications de ce chat. Le développeur de cette app ne l'a pas autorisé : les autorisations de l'app ne déclarent pas {{path}}. Demande au développeur de l'app de l'ajouter.",

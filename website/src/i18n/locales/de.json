@@ -352,13 +352,13 @@
       "create_returned_no_session": "Die Sitzung wurde erstellt, aber der Server hat sie nicht zurückgegeben. Versuche es erneut."
     },
     "pullRequestPanel": {
-      "not_declared": "Diese App kann keine Pull Requests anzeigen – ihre Berechtigungen deklarieren {{path}} nicht."
+      "not_declared": "Diese App kann keine Pull Requests anzeigen. Ihr Entwickler hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht."
     },
     "fileTree": {
-      "not_declared": "Diese App kann die Projektdateien nicht anzeigen – ihre Berechtigungen deklarieren {{path}} nicht."
+      "not_declared": "Diese App kann die Projektdateien nicht anzeigen. Ihr Entwickler hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht."
     },
     "projectPicker": {
-      "not_declared": "Diese App kann die Projektauswahl nicht anzeigen, denn ihre Berechtigungen deklarieren {{path}} nicht."
+      "not_declared": "Diese App kann die Projektauswahl nicht anzeigen. Ihr Entwickler hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht."
     },
     "sessionChanges": {
       "not_declared": "Diese App kann die Änderungen dieses Chats nicht anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Bitte den Entwickler der App, es hinzuzufügen.",
