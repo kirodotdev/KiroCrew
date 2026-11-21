@@ -93,6 +93,7 @@ from kiro_crew.skill_runtime import listing as _listing
 from kiro_crew.skill_runtime import read_credit as _read_credit
 from kiro_crew.skill_runtime import search as _search
 from kiro_crew.skill_runtime import versions as _versions
+from kiro_crew.skill_runtime.authoring import SkillHasNestedSkills
 from kiro_crew.skill_runtime.catalog import (  # noqa: F401
     _GLOB_CHARS,
     _builtin_dir_app_name,
@@ -828,7 +829,12 @@ class SkillsLoader:
         return _authoring._write_skill_md(skill_file, content, dir_fd=dir_fd)
 
     def delete_skill(self, name: str) -> bool:
-        """Delete a skill directory.  Returns True if found and removed."""
+        """Delete a skill directory.  Returns True if found and removed.
+
+        Raises :class:`SkillHasNestedSkills` when other skills are installed
+        under it: a delete removes exactly the skill it names. A folder under it
+        that cannot be read raises its ``OSError`` before anything is removed.
+        """
         if not self._safe_name(name):
             return False
         skill_dir = self._dir / name
@@ -868,6 +874,7 @@ class SkillsLoader:
             (skill_dir / "SKILL.md").is_dir() and not is_link_or_junction(skill_dir / "SKILL.md")
         ):
             return False
+        SkillHasNestedSkills.refuse_if_any(name, skill_dir)
         shutil.rmtree(skill_dir)
         self._invalidate_iter_cache()  # so the removal is reflected in list_skills() now
         logger.info("Deleted skill: %s", name)

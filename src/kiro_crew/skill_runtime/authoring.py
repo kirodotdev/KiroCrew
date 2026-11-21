@@ -3,7 +3,8 @@
 Create and update address the skill directory through a descriptor pinning its
 parent chain where the platform supports it, and keep the by-name floor
 elsewhere. Create rolls back everything it made on failure, verifying identity
-first. ``delete_skill`` stays in the facade, where the link-screen baseline pins it.
+first. ``delete_skill`` stays in the facade, where the link-screen baseline pins it;
+the refusal it raises for a skill with other skills under it lives here.
 """
 
 from __future__ import annotations
@@ -439,3 +440,66 @@ def set_inject_on_trigger(loader: SkillsLoader, name: str, inject: bool) -> bool
     loader._invalidate_iter_cache()
     logger.info("Skill %s on trigger: %s", "injects fully" if inject else "sends a pointer", name)
     return True
+
+
+class SkillHasNestedSkills(Exception):
+    """``delete_skill`` refused a skill because other skills are installed under it.
+
+    A delete removes exactly the skill it names. The skill directory holds every
+    nested skill's directory too, so removing it would destroy skills nobody
+    named; the caller deletes the nested ones first.
+    """
+
+    def __init__(self, name: str, nested: list[str]) -> None:
+        self.name = name
+        self.nested = nested
+        super().__init__(
+            f"skill '{name}' has other skills installed under it "
+            f"({', '.join(nested)}); delete those first"
+        )
+
+    @classmethod
+    def refuse_if_any(cls, name: str, skill_dir: Path) -> None:
+        """Raise when skills are installed under *skill_dir*; see ``_nested_skill_names``."""
+        nested = _nested_skill_names(name, skill_dir)
+        if nested:
+            raise cls(name, nested)
+
+
+def _nested_skill_names(name: str, skill_dir: Path) -> list[str]:
+    """The keys of the skills installed under *skill_dir*, sorted.
+
+    A nested skill is what the parent's rmtree would destroy and what
+    ``delete_skill`` accepts by its own name: a real descendant directory whose
+    ``SKILL.md`` is not itself a directory, found with the listing's own skip
+    rule (dot-named and vendored directories are a skill's private data). A link
+    or junction is neither counted nor descended: rmtree only unlinks it, so
+    nothing behind it is lost, and ``delete_skill`` refuses a link by name, so
+    naming one would ask for a delete that can never succeed. Every answer comes
+    from the ``os.scandir`` entry, never from a second lookup of the name.
+
+    A folder the walk cannot read raises its ``OSError`` rather than being
+    skipped: "no nested skills" is what lets the caller rmtree the tree, so an
+    unread folder must stop the delete, not pass as empty.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    skippable = sk._discovery._skippable_skill_dir
+    nested: list[str] = []
+    pending = [skill_dir]
+    while pending:
+        folder = pending.pop()
+        is_skill = False
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                if entry.is_symlink() or entry.is_junction():
+                    if entry.name == "SKILL.md":
+                        is_skill = True
+                    continue
+                if not entry.is_dir(follow_symlinks=False):
+                    is_skill = is_skill or entry.name == "SKILL.md"
+                elif not skippable(entry.name):
+                    pending.append(Path(entry.path))
+        if is_skill and folder != skill_dir:
+            nested.append(f"{name}/{folder.relative_to(skill_dir).as_posix()}")
+    return sorted(nested)

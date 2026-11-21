@@ -486,6 +486,116 @@ def test_delete_refuses_a_folder_that_is_not_a_skill(loader, monkeypatch, pinned
 @pytest.mark.parametrize(
     "pinned", [pytest.param(True, marks=needs_pinned_walk), pytest.param(False)]
 )
+def test_delete_refuses_a_skill_with_nested_skills_and_names_them(loader, monkeypatch, pinned):
+    """A delete removes exactly the skill it names, never the skills nested under it."""
+    from kiro_crew import skills as skills_mod
+
+    monkeypatch.setattr(skills_mod, "_DIR_FD_SUPPORTED", pinned)
+    assert loader.create_skill("utils", "parent") is True
+    assert loader.create_skill("utils/tree", "tree") is True
+    assert loader.create_skill("utils/tree/leaf", "leaf") is True
+    # A dot-named folder is the skill's own data, not a nested skill.
+    (loader._dir / "utils" / ".archive" / "old").mkdir(parents=True)
+    (loader._dir / "utils" / ".archive" / "old" / "SKILL.md").write_text("old", encoding="utf-8")
+
+    with pytest.raises(skills_mod.SkillHasNestedSkills) as refused:
+        loader.delete_skill("utils")
+    assert refused.value.nested == ["utils/tree", "utils/tree/leaf"]
+    for rel, body in (("", "parent"), ("tree", "tree"), ("tree/leaf", "leaf")):
+        assert (loader._dir / "utils" / rel / "SKILL.md").read_text(encoding="utf-8") == body
+
+    for name in ("utils/tree/leaf", "utils/tree", "utils"):
+        assert loader.delete_skill(name) is True, name
+    assert not (loader._dir / "utils").exists()
+
+
+@pytest.mark.parametrize(
+    "pinned", [pytest.param(True, marks=needs_pinned_walk), pytest.param(False)]
+)
+def test_delete_removes_nothing_when_a_nested_folder_cannot_be_read(loader, monkeypatch, pinned):
+    """An unread folder may hold a nested skill, so the scan stops the delete."""
+    from kiro_crew import skills as skills_mod
+
+    monkeypatch.setattr(skills_mod, "_DIR_FD_SUPPORTED", pinned)
+    assert loader.create_skill("utils", "parent") is True
+    assert loader.create_skill("utils/sealed/tree", "tree") is True
+    sealed = loader._dir / "utils" / "sealed"
+    real_scandir = os.scandir
+
+    def refuse_sealed(path="."):
+        if os.fspath(path) == os.fspath(sealed):
+            raise PermissionError(errno.EACCES, "Permission denied", os.fspath(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", refuse_sealed)
+    with pytest.raises(PermissionError):
+        loader.delete_skill("utils")
+    monkeypatch.setattr(os, "scandir", real_scandir)
+
+    assert (loader._dir / "utils" / "SKILL.md").read_text(encoding="utf-8") == "parent"
+    assert (sealed / "tree" / "SKILL.md").read_text(encoding="utf-8") == "tree"
+
+
+@pytest.mark.parametrize(
+    "pinned", [pytest.param(True, marks=needs_pinned_walk), pytest.param(False)]
+)
+def test_a_linked_child_skill_does_not_block_the_parent_delete(
+    loader, tmp_path, monkeypatch, pinned
+):
+    """rmtree only unlinks a link, and delete_skill refuses one by name, so it is not counted."""
+    from kiro_crew import skills as skills_mod
+    from kiro_crew.platform_compat import symlink_or_junction
+
+    monkeypatch.setattr(skills_mod, "_DIR_FD_SUPPORTED", pinned)
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (target / "SKILL.md").write_text("linked", encoding="utf-8")
+    assert loader.create_skill("utils", "parent") is True
+    symlink_or_junction(str(target), str(loader._dir / "utils" / "linked"))
+    assert loader.delete_skill("utils/linked") is False
+
+    assert loader.delete_skill("utils") is True
+    assert not (loader._dir / "utils").exists()
+    assert (target / "SKILL.md").read_text(encoding="utf-8") == "linked"
+
+
+def test_a_skill_under_a_linked_folder_survives_the_parent_delete(loader):
+    """The scan does not descend a link, and the rmtree leaves its target in place."""
+    from kiro_crew.platform_compat import symlink_or_junction
+
+    assert loader.create_skill("utils", "parent") is True
+    assert loader.create_skill("zpool/tree", "tree") is True
+    symlink_or_junction(str(loader._dir / "zpool"), str(loader._dir / "utils" / "link"))
+
+    assert loader.delete_skill("utils") is True
+    assert not (loader._dir / "utils").exists()
+    assert (loader._dir / "zpool" / "tree" / "SKILL.md").read_text(encoding="utf-8") == "tree"
+
+
+@pytest.mark.parametrize(
+    "pinned", [pytest.param(True, marks=needs_pinned_walk), pytest.param(False)]
+)
+def test_a_self_link_or_a_folder_named_skill_md_does_not_block_the_delete(
+    loader, monkeypatch, pinned
+):
+    """Neither is a skill delete_skill accepts by name, so neither is a nested skill."""
+    from kiro_crew import skills as skills_mod
+    from kiro_crew.platform_compat import symlink_or_junction
+
+    monkeypatch.setattr(skills_mod, "_DIR_FD_SUPPORTED", pinned)
+    assert loader.create_skill("utils", "parent") is True
+    symlink_or_junction(str(loader._dir / "utils"), str(loader._dir / "utils" / "loop"))
+    (loader._dir / "utils" / "data" / "SKILL.md").mkdir(parents=True)
+    assert loader.delete_skill("utils/loop") is False
+    assert loader.delete_skill("utils/data") is False
+
+    assert loader.delete_skill("utils") is True
+    assert not (loader._dir / "utils").exists()
+
+
+@pytest.mark.parametrize(
+    "pinned", [pytest.param(True, marks=needs_pinned_walk), pytest.param(False)]
+)
 def test_delete_still_removes_a_skill_whose_skill_md_is_a_link(
     loader, monkeypatch, tmp_path, pinned
 ):
