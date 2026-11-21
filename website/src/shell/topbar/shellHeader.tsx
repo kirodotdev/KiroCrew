@@ -402,16 +402,17 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             // cursor and promise the corpus search the launcher deliberately omits --
             // the diff's own fix applied to two of three attributes. The owned branch
             // drops "(K)" because the chord is already printed in the visible label.
+            // The chord is the platform's: ⌘K on a Mac, Ctrl+K everywhere else.
             title={
               quickSearchLauncher
                 ? i18nT('app.open_command_bar')
-                : i18nT('app.search_everywhere_k')
+                : i18nT(IS_MAC ? 'app.search_everywhere_k' : 'app.search_everywhere_k_ctrl')
             }
           >
             <span className="text-[13px] truncate min-w-0">
               {quickSearchLauncher
                 ? i18nT('app.k_run_a_command')
-                : i18nT('app.k_search_for_anything')}
+                : i18nT(IS_MAC ? 'app.k_search_for_anything' : 'app.k_search_for_anything_ctrl')}
             </span>
           </Glass>
           )}

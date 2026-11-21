@@ -196,6 +196,17 @@ describe('Show search in the top bar setting', () => {
     expect(header.querySelectorAll('[data-testid="focus-mode-toggle"]')).toHaveLength(1)
   })
 
+  it('names the Ctrl+K chord off macOS, where ⌘K does not open search', () => {
+    // jsdom is not macOS (IS_MAC froze false at module load), so the trigger
+    // must print the chord that works here, in its label and its hover text.
+    localStorage.removeItem('mc-topbar-search')
+    renderWithProviders(<App />, { route: '/chat' })
+    const trigger = screen.getByRole('button', { name: SEARCH })
+    expect(trigger).toHaveTextContent('Ctrl+K — Search for anything…')
+    expect(trigger).toHaveAttribute('title', 'Search everywhere (Ctrl+K)')
+    expect(trigger.textContent).not.toContain('⌘')
+  })
+
   it('leaves the focus-mode toggle alone in the centre cell when off', () => {
     localStorage.setItem('mc-topbar-search', '0')
     try {
