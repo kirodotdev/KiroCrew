@@ -1760,8 +1760,10 @@ jobs:
           # one worker per 2 GiB after 2 GiB for the host, capped at the core
           # count: 6 on the 15 GiB fleet runner, 4 on a 4-core hosted runner.
           # The step prints its peak memory after the run.
+          # Measurement for #40157: one worker per 3 GiB here, so 4 on the fleet
+          # runner, to see what the step costs with fewer workers on the same cores.
           mem_mib=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)
-          by_mem=$(( (mem_mib - 2048) / 2048 ))
+          by_mem=$(( (mem_mib - 2048) / 3072 ))
           WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
           [ "$WORKERS" -ge 1 ] || WORKERS=1
           echo "pytest workers: $WORKERS"
