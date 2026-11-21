@@ -12,6 +12,7 @@ import { queryPendingApprovalAction } from '../pages/chat/composerFocus'
 import { sseSubagentPending, sseSubagentSpawn, sseSubagentTool } from '../store/chatSlice'
 import type { RootState } from '../store'
 import { reconcileGoneSubagent, sseChatMessage } from '../store/chatSlice'
+import { NATIVE, spawnTarget, defaultProps, rejectVia, barControls, expectTrustHeldDisabled, openTrust, rowLabel, chooseDuration, clickTrustRow, trustAllTools, stateWithApproval } from './approvalCardFixtures'
 
 vi.mock('../api/client', () => {
   // Declared INSIDE the factory: vi.mock is hoisted above module-level
@@ -45,80 +46,6 @@ vi.mock('../api/client', () => {
     ApiError: MockApiError,
   }
 })
-
-/** The request the fixture row names: the runner's own, in slot-1. */
-const NATIVE = { origin: 'native', id: 'ap-123', slot: 'slot-1', mid: 'mid-123' }
-/** A pending spawn's coordinator request. */
-const spawnTarget = (agent: string) => ({ origin: 'coordinator' as const, id: `spawn:${agent}`, slot: 'slot-1', instance: `inst-${agent}` })
-
-const defaultProps = {
-  value: '',
-  onChange: vi.fn(),
-  onSend: vi.fn(),
-}
-
-/** Open the reject dropdown and click one of its two tiers. */
-function rejectVia(label: 'Reject once' | 'Reject all') {
-  fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
-  const item = screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith(label))!
-  expect(item).toBeTruthy()
-  fireEvent.click(item)
-}
-
-/** The approval row's controls in order, by visible label. */
-function barControls(): string[] {
-  const row = document.querySelector('[data-approval-actions]')!
-  return Array.from(row.querySelectorAll('button')).map(b => b.textContent || '')
-}
-
-/** The bar's Trust control holds its slot, disabled, and grants nothing. */
-function expectTrustHeldDisabled() {
-  expect(screen.getByRole('button', { name: 'Trust' })).toBeDisabled()
-  expect(barControls()).toEqual(['Allow once', 'Trust', 'Reject'])
-}
-
-function stateWithApproval(meta: Record<string, unknown> = {}): Partial<RootState> {
-  return {
-    chat: {
-      activeSlot: 'slot-1',
-      messages: [
-        { role: 'user', content: 'list files' },
-        {
-          role: 'permission',
-          content: 'Running: ls /tmp',
-          meta: {
-            approval_id: 'ap-123',
-            // The runner's row identity: with the slot, it names the request.
-            mid: 'mid-123',
-            request_id: 'req-123',
-            tool_input: '{"command":"ls /tmp"}',
-            is_read_only: '1',
-            tool_title: 'Running: ls /tmp',
-            is_shell: '1',
-            full_command: 'ls /tmp',
-            base_command: 'ls',
-            trust_command_grantable: '1',
-            trust_base_grantable: '1',
-            trust_grantable: '1',
-            tool_call_id: 'tc-1',
-          },
-          ...meta,
-        },
-      ],
-      toolLog: [],
-      slotStatusDetail: {},
-    } as unknown as RootState['chat'],
-    dashboard: {
-      slots: [{ key: 'slot-1', messages: 2, running: true, pending_approval: true, waiting_for_input: false, last_activity_ts: undefined }],
-      approvalMode: 'normal',
-      connected: true,
-      channelTrusted: false,
-      refreshTrigger: 0,
-      unreadSlots: [],
-      updateProgress: null,
-    } as unknown as RootState['dashboard'],
-  }
-}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -179,10 +106,10 @@ describe('ChatInput approval flow', () => {
     expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
 
-  it('keeps Allow once, Trust and Reject in one order on a sub-agent request (#34971)', () => {
+  it('keeps Reject, Trust and Allow once in one order on a sub-agent request (#34971)', () => {
     // A sub-agent's request is a coordinator card, which takes no standing
-    // grant. The row is right-aligned, so without the held slot Allow once
-    // would sit where Trust sits on every other bar.
+    // grant. Without the held slot Reject would sit where Trust sits on every
+    // other bar, one reflex click from Allow once.
     const { unmount } = renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
     const mainBar = barControls()
     unmount()
@@ -325,93 +252,56 @@ describe('ChatInput approval flow', () => {
     expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
 
-  it('Trust dropdown trust_command calls approveChatSlot with pattern', async () => {
-    const store = createTestStore(stateWithApproval())
-    renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Trust'))
-    const buttons = screen.getAllByRole('menuitem')
-    const cmdBtn = buttons.find(b => b.textContent?.includes('ls /tmp'))!
-    fireEvent.click(cmdBtn)
-    await waitFor(() => {
-      expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust_command', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123', pattern: 'ls /tmp' }
-      )
-    })
-    expect(api.decideApproval).not.toHaveBeenCalled()
+  it('heads the card with the request\'s own description, and falls back to the label without one', () => {
+    // The permission row carries the agent's one-line purpose only sometimes.
+    const state = stateWithApproval()
+    state.chat!.messages[1].meta!.tool_purpose = 'List the temp directory'
+    const first = renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(state) })
+    expect(screen.getByTestId('approval-title')).toHaveTextContent('List the temp directory')
+    // Prose in the body face; the command is the only thing set in mono.
+    expect(screen.getByTestId('approval-title').className).toContain('font-body')
+    expect(screen.getByTestId('approval-title').className).not.toContain('font-mono')
+    first.unmount()
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
+    const title = screen.getByTestId('approval-title').textContent ?? ''
+    expect(title).not.toBe('')
+    expect(title).not.toContain('List the temp directory')
   })
 
-  it('Trust dropdown trust_base calls approveChatSlot with glob pattern', async () => {
-    const store = createTestStore(stateWithApproval())
-    renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Trust'))
-    const buttons = screen.getAllByRole('menuitem')
-    const baseBtn = buttons.find(b => /Trust any .+ command/.test(b.textContent ?? ''))!
-    fireEvent.click(baseBtn)
-    await waitFor(() => {
-      expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust_base', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123', pattern: 'ls *' }
-      )
-    })
-    expect(api.decideApproval).not.toHaveBeenCalled()
-  })
-
-  it('Trust dropdown timed command row sends ttl_seconds and says when it ends', async () => {
-    const store = createTestStore(stateWithApproval())
-    renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Trust'))
-    const timed = screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith('Trust ls /tmp for an hour'))!
-    fireEvent.click(timed)
-    await waitFor(() => {
-      expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust_command', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123', pattern: 'ls /tmp', ttl_seconds: 3600 }
-      )
-    })
-    expect(api.resolveApproval).not.toHaveBeenCalled()
-    const chip = await screen.findByText('ls /tmp', { selector: '[role="status"] span' })
-    // A landed grant wears the clock, never the warning lock of a refusal.
-    const notice = chip.closest('[role="status"]')!
-    expect(notice.textContent).toMatch(/^Trusted ls \/tmp until .+, then it asks again$/)
-    expect(notice.querySelector('svg.lucide-clock')).not.toBeNull()
-    expect(notice.querySelector('svg.lucide-lock')).toBeNull()
-  })
-
-  it('Trust dropdown timed command row shows a command ending in a closing quote once (#23893)', async () => {
-    const cmd = 'echo “hi”'
+  it('names the kind of request, and marks a read-only one', () => {
+    const first = renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
+    expect(screen.getByTestId('approval-kind')).toHaveTextContent('Shell command')
+    expect(screen.getByTestId('approval-read-only')).toHaveTextContent('Read-only')
+    first.unmount()
     const state = stateWithApproval()
     const msg = state.chat!.messages[1]
-    msg.content = `Running: ${cmd}`
-    msg.meta = { ...msg.meta, tool_input: JSON.stringify({ command: cmd }), tool_title: `Running: ${cmd}`, full_command: cmd, base_command: 'echo' }
+    msg.content = 'post_message'
+    msg.meta = { ...msg.meta, is_shell: '', is_read_only: '', tool_name: 'post_message', mcp_server: 'slack-mcp', tool_input: '{"channel":"#team"}', full_command: undefined, base_command: undefined, trust_command_grantable: undefined, trust_base_grantable: undefined }
     renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(state) })
-    fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith(`Trust ${cmd} for an hour`))!)
-    const chip = await screen.findByText(cmd, { selector: '[role="status"] span' })
-    expect(chip.closest('[role="status"]')!.textContent).toMatch(/^Trusted echo “hi” until .+, then it asks again$/)
+    expect(screen.getByTestId('approval-kind')).toHaveTextContent('MCP tool · slack-mcp')
+    expect(screen.queryByTestId('approval-read-only')).not.toBeInTheDocument()
+    // No grantable command, so no command box: the tool's arguments show instead.
+    expect(screen.queryByTestId('approval-command')).not.toBeInTheDocument()
+    expect(screen.getByTestId('approval-input')).toHaveTextContent('#team')
   })
 
-  it('Trust dropdown timed family row names the family it trusted', async () => {
-    const store = createTestStore(stateWithApproval())
-    renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith('Trust any ls command for an hour'))!)
-    await waitFor(() => {
-      expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust_base', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123', pattern: 'ls *', ttl_seconds: 3600 }
-      )
-    })
-    expect(await screen.findByText(/^Trusted any “ls” command until .+, then it asks again$/)).toBeInTheDocument()
+  it('opens with a status pill where the lock was', () => {
+    const { container } = renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
+    expect(screen.getByText('Waiting for approval')).toBeInTheDocument()
+    expect(container.querySelector('svg.lucide-lock')).toBeNull()
   })
 
-  it('Trust dropdown entire tool calls approveChatSlot with trust action', async () => {
-    const store = createTestStore(stateWithApproval())
-    renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getByText('Trust all tools for this session'))
-    await waitFor(() => {
-      expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123' }
-      )
-    })
-    expect(api.decideApproval).not.toHaveBeenCalled()
+  it('Allow once is the primary control and the chord\'s landing spot, and grants nothing standing', async () => {
+    // A trust grant stays two deliberate clicks away inside its own menu: the
+    // control Enter lands on after the focus-approval chord only allows once.
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
+    const allow = screen.getByRole('button', { name: 'Allow once' })
+    expect(queryPendingApprovalAction()).toBe(allow)
+    expect(allow).toHaveAttribute('data-approval-primary')
+    expect(barControls().at(-1)).toBe('Allow once')
+    fireEvent.click(allow)
+    await waitFor(() => expect(api.decideApproval).toHaveBeenCalledWith(NATIVE, 'approve', expect.stringMatching(/^r_/)))
+    expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
 
   it('Trust reads calls approveChatSlot for read-only commands', async () => {
@@ -420,8 +310,8 @@ describe('ChatInput approval flow', () => {
     // Trust-reads is a tier inside the one Trust dropdown, not a fourth button
     // on the row: `max-two-buttons-per-row` grandfathers three controls there
     // and forbids a fourth.
-    fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getByText('Trust read-only commands'))
+    openTrust()
+    clickTrustRow('Read-only commands')
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
         'slot-1', 'trust_reads', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123' }
@@ -430,8 +320,8 @@ describe('ChatInput approval flow', () => {
   })
 
   it('keeps the approval row at three controls for a read-only command', () => {
-    // The row that would have grown to four: Allow once, Trust reads, Trust,
-    // Reject. Every standing grant lives in the dropdown instead.
+    // The row that would have grown to four: Reject, Trust reads, Trust,
+    // Allow once. Every standing grant lives in the dropdown instead.
     const store = createTestStore(stateWithApproval())
     const { container } = renderWithProviders(<ChatInput {...defaultProps} />, { store })
     const row = screen.getByRole('button', { name: 'Allow once' }).parentElement!
@@ -451,8 +341,7 @@ describe('ChatInput approval flow', () => {
   it('shows Trust reads only for read-only commands', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Trust'))
-    expect(screen.getByText('Trust read-only commands')).toBeInTheDocument()
+    expect(openTrust().map(b => b.textContent)).toContain('Read-only commands')
   })
 
   it('hides Trust reads for non-read-only commands', () => {
@@ -460,8 +349,7 @@ describe('ChatInput approval flow', () => {
     state.chat!.messages[1].meta!.is_read_only = ''
     const store = createTestStore(state)
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Trust'))
-    expect(screen.queryByText('Trust read-only commands')).not.toBeInTheDocument()
+    expect(openTrust().map(b => b.textContent)).not.toContain('Read-only commands')
   })
 
   // #5486: with no slot to grant on, the Trust affordances are WITHHELD rather
@@ -513,57 +401,101 @@ describe('ChatInput approval flow', () => {
     vi.mocked(api.approveChatSlot).mockRejectedValueOnce(new Error('network'))
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getByText('Trust all tools for this session'))
+    trustAllTools()
     // Should not throw
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalled()
     })
   })
 
-  it('shows tool input preview in expanded approval bar', async () => {
+  it('shows the whole command on the card, once, from the first frame', () => {
+    // No ghost and no settle guard between the request and its command: the
+    // card states the command itself, whether or not the transcript's row for
+    // the call is in view.
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    // The preview lives in the approval GHOST, which mounts only after the
-    // 150ms settle guard (`ghostSettled`, a real setTimeout that lets the in-chat
-    // pill register first) and then through an AnimatePresence mount -- a chain
-    // that ran past the 1000ms default under load in one of four full runs. A
-    // named ceiling for that chain, not a longer guess (website/docs/testing.md).
-    await waitFor(() => expect(screen.getByText(/command/)).toBeInTheDocument(), { timeout: 5000 })
+    expect(screen.getByTestId('approval-command')).toHaveTextContent('ls /tmp')
+    // A shell call's input is its command, so it is not printed a second time.
+    expect(screen.queryByTestId('approval-input')).not.toBeInTheDocument()
   })
 
-  it('uses approvalFullCommand for TrustDropdown', () => {
-    const store = createTestStore(stateWithApproval())
-    renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Trust'))
-    const buttons = screen.getAllByRole('menuitem')
-    // Should show the full command from meta
-    expect(buttons.some(b => b.textContent?.includes('ls /tmp'))).toBe(true)
+  it('still shows what else a shell call carries beside its command', () => {
+    // A working directory changes what the command does, so it stays on the
+    // card; the command itself is not repeated there.
+    const state = stateWithApproval()
+    state.chat!.messages[1].meta!.tool_input = JSON.stringify({ command: 'ls /tmp', working_dir: '/srv/app' })
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(state) })
+    const extra = screen.getByTestId('approval-input')
+    expect(extra).toHaveTextContent('working_dir')
+    expect(extra).toHaveTextContent('/srv/app')
+    expect(extra).not.toHaveTextContent('ls /tmp')
+  })
+
+  it('keeps a field whose value happens to equal the command', () => {
+    // `make` in a `make` directory: the directory is not the command, and it
+    // picks which Makefile runs, so it must stay on the card.
+    const state = stateWithApproval()
+    Object.assign(state.chat!.messages[1].meta!, { tool_input: JSON.stringify({ command: 'make', cwd: 'make' }), full_command: 'make', base_command: 'make' })
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(state) })
+    expect(screen.getByTestId('approval-command')).toHaveTextContent('make')
+    const extra = screen.getByTestId('approval-input')
+    expect(extra).toHaveTextContent('cwd')
+    expect(extra).not.toHaveTextContent('command')
+  })
+
+  it('shows shell input it cannot split, unless it is only the command', () => {
+    const state = stateWithApproval()
+    state.chat!.messages[1].meta!.tool_input = 'ls /tmp; then something else'
+    const first = renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(state) })
+    expect(screen.getByTestId('approval-input')).toHaveTextContent('then something else')
+    first.unmount()
+    const only = stateWithApproval()
+    only.chat!.messages[1].meta!.tool_input = 'ls /tmp'
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(only) })
+    expect(screen.queryByTestId('approval-input')).not.toBeInTheDocument()
+  })
+
+  it('shows the exact command whole on the card and in the exact-command row', () => {
+    // The exact-command grant is a string match: the string Allow once runs and
+    // the one the row grants are each readable where they are chosen, whole,
+    // with runs of spaces intact.
+    const cmd = 'grep "a  b" /tmp/' + 'x'.repeat(300) + '/end'
+    const state = stateWithApproval()
+    const msg = state.chat!.messages[1]
+    msg.meta = { ...msg.meta, tool_input: JSON.stringify({ command: cmd }), full_command: cmd, base_command: 'grep' }
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(state) })
+    const shown = screen.getByTestId('approval-command')
+    expect(shown.textContent).toBe(cmd)
+    expect(shown.className).toContain('whitespace-pre-wrap')
+    expect(shown.className).not.toContain('truncate')
+    const rows = openTrust()
+    const exact = rows.find(b => rowLabel(b) === 'This exact command — for this session')!
+    const inRow = exact.querySelector('[data-testid="trust-command-full"]')!
+    expect(inRow.textContent).toBe(cmd)
+    expect(inRow.className).toContain('whitespace-pre-wrap')
   })
 
   it('uses approvalBaseCommand for TrustDropdown base option', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Trust'))
-    const buttons = screen.getAllByRole('menuitem')
-    expect(buttons.some(b => b.textContent?.includes('ls') && /Trust any .+ command/.test(b.textContent ?? ''))).toBe(true)
+    expect(openTrust().some(b => b.textContent === 'Any ls command — for this session')).toBe(true)
   })
 
   it('chat surface offers every trust tier for a read-only shell command (regression guard)', () => {
     // The channels surface deliberately drops the command-scoped tiers
     // (hasCommand={false}); the chat surface must keep every tier — a future
     // change must not silently strip trust_command / trust_base here (#4421).
-    // Four tiers for this fixture, because it is also read-only, and each
-    // command-scoped tier carries a timed hour row and rest-of-today row.
+    // One row per scope, because this fixture is also read-only, under the
+    // three lifetimes the two command-scoped rows take.
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Trust'))
-    const items = screen.getAllByRole('menuitem')
-    expect(items).toHaveLength(8)
-    expect(items.some(b => b.textContent?.includes('ls /tmp'))).toBe(true)          // trust_command
-    expect(items.some(b => /Trust any .+ command/.test(b.textContent ?? ''))).toBe(true)         // trust_base
-    expect(items.some(b => b.textContent === 'Trust read-only commands')).toBe(true)             // trust_reads
-    expect(items.some(b => b.textContent?.includes('Trust all tools for this session'))).toBe(true)  // trust
+    expect(openTrust().map(rowLabel)).toEqual([
+      'This exact command — for this session',   // trust_command
+      'Any ls command — for this session',       // trust_base
+      'Read-only commands',   // trust_reads
+      'All tools',            // trust
+    ])
+    expect(screen.getAllByRole('menuitemradio').map(b => b.getAttribute('aria-checked'))).toEqual(['false', 'false', 'true'])
   })
 
   it('uses the server shell flag instead of the display title', () => {
@@ -571,10 +503,8 @@ describe('ChatInput approval flow', () => {
     state.chat!.messages[1].meta!.tool_title = 'harmless display title'
     const store = createTestStore(state)
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Trust'))
     // Should show base command option (only for shell)
-    const buttons = screen.getAllByRole('menuitem')
-    expect(buttons.some(b => /Trust any .+ command/.test(b.textContent ?? ''))).toBe(true)
+    expect(openTrust().some(b => /^Any .+ command/.test(b.textContent ?? ''))).toBe(true)
   })
 
   it('non-shell tool hides base command option', () => {
@@ -587,12 +517,33 @@ describe('ChatInput approval flow', () => {
     msg.content = 'TaskeiGetTask'
     const store = createTestStore(state)
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Trust'))
-    const buttons = screen.getAllByRole('menuitem')
+    const rows = openTrust()
     // Match the base tier's whole shape, not the bare word "commands": the
     // read-only tier also says "commands", so a substring test would pass
     // whatever the base tier does.
-    expect(buttons.some(b => /Trust any .+ command/.test(b.textContent || ''))).toBe(false)
+    expect(rows.some(b => /^Any .+ command/.test(b.textContent || ''))).toBe(false)
+    // Any tool but a shell command is trusted by the scope the server names.
+    expect(rows.some(b => b.textContent === 'TaskeiGetTask — for this session')).toBe(true)
+  })
+
+  it('names a file write\'s grant by its tool and file, never as this exact call', async () => {
+    // The server keys this grant on the tool and the one file, whatever the
+    // content written, so the row must not promise only this call's content.
+    const state = stateWithApproval()
+    const msg = state.chat!.messages[1]
+    msg.content = 'fs_write'
+    msg.meta = { ...msg.meta, is_shell: '', is_read_only: '', tool_name: 'fs_write', tool_input: '{"path":"/work/config.json","text":"a=1"}', full_command: 'fs_write /work/config.json', base_command: undefined, trust_base_grantable: undefined }
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(state) })
+    const texts = openTrust().map(b => b.textContent)
+    expect(texts).toContain('fs_write /work/config.json — for this session')
+    expect(texts.some(t => t?.includes('exact'))).toBe(false)
+    chooseDuration('1 hour')
+    clickTrustRow('fs_write /work/config.json — for 1 hour')
+    await waitFor(() => {
+      expect(api.approveChatSlot).toHaveBeenCalledWith(
+        'slot-1', 'trust_command', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123', pattern: 'fs_write /work/config.json', ttl_seconds: 3600 }
+      )
+    })
   })
 
   /** A browser call's card whose command grant is a site grant of *cls*. */
@@ -621,7 +572,7 @@ describe('ChatInput approval flow', () => {
     expect(rows.filter(r => r.endsWith(' on www.example.com for this session'))).toHaveLength(1)
     expect(rows).toContain('Trust all tools for this session')
     // Still one Trust control on the bar: no fourth button.
-    expect(barControls()).toEqual(['Allow once', 'Trust', 'Reject'])
+    expect(barControls()).toEqual(['Reject', 'Trust', 'Allow once'])
   })
 
   it('sends a read site grant as the command tier, for the session', async () => {
@@ -701,8 +652,7 @@ describe('ChatInput orphaned approval (404)', () => {
     vi.mocked(api.approveChatSlot).mockRejectedValueOnce(notFound())
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getByText('Trust all tools for this session'))
+    trustAllTools()
     await waitFor(() => {
       expect(screen.queryByText('Allow once')).not.toBeInTheDocument()
     })

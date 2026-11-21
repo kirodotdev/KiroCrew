@@ -4,7 +4,9 @@ vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@
 
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import TrustDropdown, { TrustUnavailable } from '../components/TrustDropdown'
+import { rowLabel } from './approvalCardFixtures'
 import { fmtTime } from '../i18n/format'
+import { COMMAND_WRAP } from '../components/chat-input/CuedScrollBox'
 // `/all` for the ja/ko/de/zh-CN catalogs: `../i18n` registers English only.
 import { i18next } from '../i18n/all'
 
@@ -276,10 +278,12 @@ describe('TrustDropdown', () => {
     // the words carry the meaning and a single clipped line costs nothing.
     it('leaves the family and session rows single-line', () => {
       const [exact, base, all] = openWith(overBudget)
-      // `break-all` on the command span only: the words around the command
-      // wrap at spaces, so the consent sentence never breaks mid-word.
-      expect(exact.querySelector('span')?.className).not.toContain('break-all')
-      expect(exact.querySelector('span.font-mono')?.className).toContain('break-all')
+      // The command span wraps at its spaces and splits only a token too long
+      // for the line; the words around it wrap at spaces, and nothing breaks
+      // mid-word.
+      expect(exact.querySelector('span')?.className).not.toContain('wrap-anywhere')
+      expect(exact.querySelector('span.font-mono')?.className).toContain(COMMAND_WRAP)
+      expect(exact.querySelector('span.font-mono')?.className).not.toContain('break-all')
       expect(exact.querySelector('span')?.className).not.toContain('truncate')
       expect(base.querySelector('span')?.className).toContain('truncate')
       expect(all.querySelector('span')?.className).not.toContain('break-all')
@@ -459,86 +463,275 @@ describe('TrustDropdown positioning', () => {
 describe('TrustDropdown timed grants', () => {
   afterEach(() => { vi.useRealTimers() })
 
-  const rowTexts = () => screen.getAllByRole('menuitem').map(b => b.textContent ?? '')
+  const rowTexts = () => screen.getAllByRole('menuitem').map(rowLabel)
+  const durations = () => screen.getAllByRole('menuitemradio')
+  const choose = (label: string) => fireEvent.click(durations().find(b => b.textContent?.startsWith(label))!)
+  const clickRow = (text: string) => fireEvent.click(screen.getAllByRole('menuitem').find(b => rowLabel(b) === text)!)
+  const timed = (extra: Partial<React.ComponentProps<typeof TrustDropdown>> = {}) => (
+    <TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell timedGrants className={btnClass} onAction={() => {}} {...extra} />
+  )
 
-  it('renders no timed rows unless the surface opts in', () => {
+  it('offers no duration choice unless the surface opts in', () => {
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
-    const texts = rowTexts()
-    expect(texts.some(t => t.includes('for an hour'))).toBe(false)
-    expect(texts.some(t => t.includes('until midnight'))).toBe(false)
-  })
-
-  it('names the lifetime on every command and family row', () => {
-    render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell timedGrants className={btnClass} onAction={() => {}} />)
-    fireEvent.click(screen.getByText('Trust'))
-    // Each timed row names the clock time its grant ends.
-    expect(rowTexts()).toEqual([
-      'Trust ls /tmp for this session',
-      expect.stringMatching(/^Trust ls \/tmp for an hour \(until \d.*\)$/),
-      expect.stringMatching(/^Trust ls \/tmp until midnight \(\d.*\)$/),
-      'Trust any ls command for this session',
-      expect.stringMatching(/^Trust any ls command for an hour \(until \d.*\)$/),
-      expect.stringMatching(/^Trust any ls command until midnight \(\d.*\)$/),
-      'Trust all tools for this session',
-    ])
-  })
-
-  it('wraps the family rows rather than clipping the lifetime off their end', () => {
-    render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell timedGrants className={btnClass} onAction={() => {}} />)
-    fireEvent.click(screen.getByText('Trust'))
-    const family = screen.getAllByRole('menuitem').filter(b => /^Trust any ls command/.test(b.textContent ?? ''))
-    expect(family).toHaveLength(3)
-    for (const row of family) expect(row.querySelector('span')?.className).not.toContain('truncate')
-  })
-
-  it('keeps the unqualified labels where the surface offers no timed rows', () => {
-    render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)
-    fireEvent.click(screen.getByText('Trust'))
+    expect(screen.queryByRole('menuitemradio')).not.toBeInTheDocument()
+    // The plain menu prints the command, since no card is promised to.
     expect(rowTexts().slice(0, 2)).toEqual(['Trust ls /tmp', 'Trust all ls commands'])
   })
 
-  it('sends an hour as ttlSeconds on the timed command row', () => {
-    const onAction = vi.fn()
-    render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell timedGrants className={btnClass} onAction={onAction} />)
+  it('opens with one duration choice above one row per scope', () => {
+    render(timed({ trustReadsLabelKey: 'components.chatInput.trust_reads' }))
     fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith('Trust ls /tmp for an hour'))!)
+    expect(durations().map(b => b.textContent)).toEqual(['1 hour', 'Until midnight', 'This session'])
+    // The session is the lifetime in effect until another is chosen.
+    expect(durations().map(b => b.getAttribute('aria-checked'))).toEqual(['false', 'false', 'true'])
+    expect(rowTexts()).toEqual([
+      'This exact command — for this session',
+      'Any ls command — for this session',
+      'Read-only commands',
+      'All tools',
+    ])
+  })
+
+  it('applies the chosen lifetime to the command and family rows only', () => {
+    render(timed({ trustReadsLabelKey: 'components.chatInput.trust_reads' }))
+    fireEvent.click(screen.getByText('Trust'))
+    choose('1 hour')
+    expect(rowTexts()).toEqual([
+      'This exact command — for 1 hour',
+      'Any ls command — for 1 hour',
+      // No timed form of these two grants exists, so they say so.
+      'Read-only commands',
+      'All tools',
+    ])
+    // Choosing a lifetime grants nothing, so the menu is still open.
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+  })
+
+  it('names the clock time the hour would end in a caption under the track, not in the segment', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 0, 15, 22, 30, 0))
+    render(timed())
+    fireEvent.click(screen.getByText('Trust'))
+    // No caption while the hour is not the lifetime in effect.
+    expect(screen.queryByTestId('trust-duration-ends')).not.toBeInTheDocument()
+    choose('1 hour')
+    const ends = screen.getByTestId('trust-duration-ends')
+    expect(ends.textContent).toBe(`Until ${fmtTime(new Date(2026, 0, 15, 23, 30, 0))}`)
+    // In no segment (the track itself is checked against the real Radix
+    // group in ToolApprovalCard.touchModal.test.tsx).
+    for (const segment of durations()) expect(segment.contains(ends)).toBe(false)
+    expect(durations()[0].textContent).toBe('1 hour')
+  })
+
+  it('puts each row icon on its label\'s first line, not the middle of the command box', () => {
+    render(timed())
+    fireEvent.click(screen.getByText('Trust'))
+    for (const row of screen.getAllByRole('menuitem').filter(r => r.querySelector('svg'))) {
+      expect(row.className).toContain('items-start')
+      expect(row.className).not.toMatch(/(^|\s)items-center(\s|$)/)
+      expect(row.className).toContain('[&>svg]:mt-[3px]')
+    }
+  })
+
+  it('wraps every command and tool ref at spaces, never mid-word', () => {
+    render(timed({ fullCommand: 'find /Users/dev -maxdepth 4 | head', alwaysAllowTool: '@slack/post_message', pendingCall: { command: 'find /Users/dev -maxdepth 4 | head', input: '{"cwd":"/tmp"}' } }))
+    fireEvent.click(screen.getByText('Trust'))
+    const boxes = [
+      screen.getByTestId('trust-command-full'),
+      screen.getByTestId('trust-always-ref'),
+      screen.getByTestId('trust-pending-call-text'),
+    ]
+    for (const box of boxes) {
+      expect(box.className).toContain(COMMAND_WRAP)
+      expect(box.className).not.toContain('break-all')
+    }
+    // Each token is one box, so a flag never wraps away from its dash, and
+    // the text is still the command exactly, spaces included.
+    const command = screen.getByTestId('trust-command-full')
+    expect([...command.querySelectorAll('[data-token]')].map(t => t.textContent)).toEqual(['find', '/Users/dev', '-maxdepth', '4', '|', 'head'])
+    expect(command.textContent).toBe('find /Users/dev -maxdepth 4 | head')
+  })
+
+  it('keeps a command\'s own spacing when it splits it into tokens', () => {
+    render(timed({ fullCommand: 'grep "a  b"\tf\n  -n' }))
+    fireEvent.click(screen.getByText('Trust'))
+    expect(screen.getByTestId('trust-command-full').textContent).toBe('grep "a  b"\tf\n  -n')
+  })
+
+  it('prints the whole command in the exact-command row, in its own box', () => {
+    // An exact-string grant: the string is read where it is chosen.
+    render(timed({ fullCommand: 'ls /tmp/a-rather-long-path' }))
+    fireEvent.click(screen.getByText('Trust'))
+    const row = screen.getAllByRole('menuitem')[0]
+    expect(rowLabel(row)).toBe('This exact command — for this session')
+    expect(row.querySelector('[data-testid="trust-command-full"]')).toHaveTextContent('ls /tmp/a-rather-long-path')
+    // Only that row: the family row names the program, not the whole string.
+    expect(screen.getAllByTestId('trust-command-full')).toHaveLength(1)
+  })
+
+  it('names any tool but a shell command by the scope it grants', () => {
+    render(timed({ isShell: false, commandNoun: 'call' }))
+    fireEvent.click(screen.getByText('Trust'))
+    expect(rowTexts()[0]).toBe('ls /tmp — for this session')
+    expect(rowTexts()[0]).not.toContain('exact')
+    expect(screen.getByTestId('trust-call-scope')).toBeInTheDocument()
+  })
+
+  it('keeps the lone all-tools control as wide armed as idle', () => {
+    render(timed({ hasCommand: false, isShell: false }))
+    const button = screen.getByRole('button', { name: 'Trust all tools for this session' })
+    // The other label is reserved in an attribute, never in the text.
+    const reserve = () => button.querySelector('[data-reserve]')!.getAttribute('data-reserve')
+    expect(reserve()).toBe('Click again to confirm — every tool runs without asking')
+    fireEvent.click(button)
+    expect(button).toHaveTextContent(/^Click again to confirm — every tool runs without asking$/)
+    expect(reserve()).toBe('Trust all tools for this session')
+  })
+
+  it('sends an hour as ttlSeconds on the command row', () => {
+    const onAction = vi.fn()
+    render(timed({ onAction }))
+    fireEvent.click(screen.getByText('Trust'))
+    choose('1 hour')
+    clickRow('This exact command — for 1 hour')
     expect(onAction).toHaveBeenCalledWith('trust_command', 'ls /tmp', 3600)
   })
 
-  it('names the end time the click would grant on each timed row', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date(2026, 0, 15, 22, 30, 0))
-    render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell timedGrants className={btnClass} onAction={() => {}} />)
-    fireEvent.click(screen.getByText('Trust'))
-    const hour = fmtTime(new Date(2026, 0, 15, 23, 30, 0))
-    const midnight = fmtTime(new Date(2026, 0, 16, 0, 0, 0))
-    expect(rowTexts()).toContain(`Trust ls /tmp for an hour (until ${hour})`)
-    expect(rowTexts()).toContain(`Trust any ls command until midnight (${midnight})`)
-  })
-
-  it('sends the seconds left until local midnight on the rest-of-today family row', () => {
+  it('sends the seconds left until local midnight on the family row', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date(2026, 0, 15, 22, 30, 0))
     const onAction = vi.fn()
-    render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell timedGrants className={btnClass} onAction={onAction} />)
+    render(timed({ onAction }))
     fireEvent.click(screen.getByText('Trust'))
-    const row = screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith('Trust any ls command until midnight'))!
-    fireEvent.click(row)
+    choose('Until midnight')
+    clickRow('Any ls command — until midnight')
     expect(onAction).toHaveBeenCalledWith('trust_base', 'ls *', 90 * 60)
   })
 
-  it('keeps the chat-long rows sending no lifetime', () => {
+  it('keeps the session rows sending no lifetime', () => {
     const onAction = vi.fn()
-    render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell timedGrants className={btnClass} onAction={onAction} />)
+    render(timed({ onAction }))
     fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getAllByRole('menuitem').find(b => b.textContent === 'Trust ls /tmp for this session')!)
+    clickRow('This exact command — for this session')
     expect(onAction).toHaveBeenCalledWith('trust_command', 'ls /tmp')
+    fireEvent.click(screen.getByText('Trust'))
+    clickRow('Any ls command — for this session')
+    expect(onAction).toHaveBeenLastCalledWith('trust_base', 'ls *')
   })
 
-  it('offers no timed row for the session-wide tier', () => {
+  it('sends no lifetime with the read-only grant, whatever is chosen', () => {
+    const onAction = vi.fn()
+    render(timed({ onAction, trustReadsLabelKey: 'components.chatInput.trust_reads' }))
+    fireEvent.click(screen.getByText('Trust'))
+    choose('1 hour')
+    clickRow('Read-only commands')
+    expect(onAction).toHaveBeenCalledWith('trust_reads')
+  })
+
+  it('takes a second click for all tools, and sends no lifetime', () => {
+    const onAction = vi.fn()
+    render(timed({ onAction }))
+    fireEvent.click(screen.getByText('Trust'))
+    choose('1 hour')
+    clickRow('All tools')
+    // Armed, not sent: the row now says what the next click does.
+    expect(onAction).not.toHaveBeenCalled()
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    clickRow('Click again to confirm — every tool runs without asking')
+    expect(onAction).toHaveBeenCalledTimes(1)
+    expect(onAction).toHaveBeenCalledWith('trust')
+  })
+
+  it('disarms all tools when the menu closes', () => {
+    const onAction = vi.fn()
+    render(timed({ onAction }))
+    fireEvent.click(screen.getByText('Trust'))
+    clickRow('All tools')
+    fireEvent.click(screen.getByText('Trust'))
+    fireEvent.click(screen.getByText('Trust'))
+    expect(rowTexts()).toContain('All tools')
+    expect(onAction).not.toHaveBeenCalled()
+  })
+
+  it('forgets a chosen lifetime when the menu closes', () => {
+    render(timed())
+    fireEvent.click(screen.getByText('Trust'))
+    choose('1 hour')
+    fireEvent.click(screen.getByText('Trust'))
+    fireEvent.click(screen.getByText('Trust'))
+    expect(rowTexts()[0]).toBe('This exact command — for this session')
+  })
+
+  it('offers no duration choice when no command-scoped row is there to take one', () => {
     render(<TrustDropdown fullCommand="" baseCommand="" isShell={false} hasCommand={false} timedGrants trustReadsLabelKey="components.chatInput.trust_reads" className={btnClass} onAction={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
-    expect(rowTexts().some(t => t.includes('hour') || t.includes('midnight'))).toBe(false)
+    expect(screen.queryByRole('menuitemradio')).not.toBeInTheDocument()
+    expect(rowTexts()).toEqual(['Read-only commands', 'All tools'])
+  })
+
+  it('keeps the base tier withheld on the server word, and the all-tools tier too', () => {
+    render(timed({ showTrustBase: false, showTrustAll: false }))
+    fireEvent.click(screen.getByText('Trust'))
+    expect(rowTexts()).toEqual(['This exact command — for this session'])
+    // A lone command row still has a lifetime to choose, so it stays a menu.
+    expect(durations()).toHaveLength(3)
+  })
+
+  it('a lone read-only tier is the control itself, as in the plain menu', () => {
+    const onAction = vi.fn()
+    render(<TrustDropdown fullCommand="" baseCommand="" isShell={false} hasCommand={false} showTrustAll={false} timedGrants trustReadsLabelKey="components.chatInput.trust_reads" className={btnClass} onAction={onAction} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Trust read-only commands' }))
+    expect(onAction).toHaveBeenCalledWith('trust_reads')
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('a lone all-tools control arms on the first click and disarms on blur', () => {
+    const onAction = vi.fn()
+    render(<TrustDropdown fullCommand="" baseCommand="" isShell={false} hasCommand={false} timedGrants className={btnClass} onAction={onAction} />)
+    const lone = screen.getByRole('button', { name: 'Trust all tools for this session' })
+    fireEvent.click(lone)
+    expect(onAction).not.toHaveBeenCalled()
+    expect(lone).toHaveTextContent('Click again to confirm — every tool runs without asking')
+    fireEvent.blur(lone)
+    expect(lone).toHaveTextContent('Trust all tools for this session')
+    fireEvent.click(lone)
+    fireEvent.click(lone)
+    expect(onAction).toHaveBeenCalledTimes(1)
+    expect(onAction).toHaveBeenCalledWith('trust')
+  })
+
+  it('a lone all-tools control disarms on a press outside it, where a click never focused it', () => {
+    // Safari and Firefox on macOS do not focus a clicked button, so it never
+    // blurs; a press anywhere else must still disarm it.
+    const onAction = vi.fn()
+    render(<><p>elsewhere</p><TrustDropdown fullCommand="" baseCommand="" isShell={false} hasCommand={false} timedGrants className={btnClass} onAction={onAction} /></>)
+    const lone = screen.getByRole('button', { name: 'Trust all tools for this session' })
+    fireEvent.click(lone)
+    fireEvent.pointerDown(lone)
+    expect(lone).toHaveTextContent('Click again to confirm — every tool runs without asking')
+    fireEvent.pointerDown(screen.getByText('elsewhere'))
+    expect(lone).toHaveTextContent('Trust all tools for this session')
+    fireEvent.click(lone)
+    expect(onAction).not.toHaveBeenCalled()
+  })
+
+  it('a lone all-tools control disarms on Escape', () => {
+    const onAction = vi.fn()
+    render(<TrustDropdown fullCommand="" baseCommand="" isShell={false} hasCommand={false} timedGrants className={btnClass} onAction={onAction} />)
+    const lone = screen.getByRole('button', { name: 'Trust all tools for this session' })
+    fireEvent.click(lone)
+    fireEvent.keyDown(lone, { key: 'Escape' })
+    expect(lone).toHaveTextContent('Trust all tools for this session')
+    fireEvent.click(lone)
+    expect(onAction).not.toHaveBeenCalled()
+  })
+
+  it('opens above the trigger, aligned to its end edge', () => {
+    render(timed())
+    fireEvent.click(screen.getByText('Trust'))
+    const menu = screen.getByRole('menu')
+    expect(menu).toHaveAttribute('side', 'top')
+    expect(menu).toHaveAttribute('align', 'end')
   })
 })
