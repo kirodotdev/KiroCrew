@@ -367,14 +367,18 @@
       "create_returned_no_session": "La session a été créée, mais le serveur ne l’a pas renvoyée. Réessaie."
     },
     "pullRequestPanel": {
-      "not_declared": "Cette app ne peut pas afficher de pull requests : ses autorisations ne déclarent pas {{path}}."
+      "not_declared": "Cette app ne peut pas afficher de pull requests. Le développeur de cette app ne l'a pas autorisé : les autorisations de l'app ne déclarent pas {{path}}. Seul le développeur de l'app peut changer cela."
+    },
+    "fileTree": {
+      "not_declared": "Cette app ne peut pas afficher les fichiers du projet. Le développeur de cette app ne l'a pas autorisé : les autorisations de l'app ne déclarent pas {{path}}. Seul le développeur de l'app peut changer cela."
     },
     "projectPicker": {
-      "not_declared": "Cette app ne peut pas afficher le sélecteur de projet : ses autorisations ne déclarent pas {{path}}."
+      "not_declared": "Cette app ne peut pas afficher le sélecteur de projet. Le développeur de cette app ne l'a pas autorisé : les autorisations de l'app ne déclarent pas {{path}}. Seul le développeur de l'app peut changer cela."
     },
     "sessionChanges": {
-      "not_declared": "Cette app ne peut pas afficher les modifications de ce chat. Le développeur de cette app ne l'a pas autorisé : les autorisations de l'app ne déclarent pas {{path}}. Demande au développeur de l'app de l'ajouter.",
-      "diff_not_declared": "Cette app ne peut pas afficher les modifications de ce fichier. Le développeur de cette app ne l'a pas autorisé : les autorisations de l'app ne déclarent pas {{path}}. Demande au développeur de l'app de l'ajouter.",
+      "not_declared": "Cette app ne peut pas afficher les modifications de ce chat. Le développeur de cette app ne l'a pas autorisé : les autorisations de l'app ne déclarent pas {{path}}. Seul le développeur de l'app peut changer cela.",
+      "diff_not_declared": "Cette app ne peut pas afficher les modifications de ce fichier. Le développeur de cette app ne l'a pas autorisé : les autorisations de l'app ne déclarent pas {{path}}. Seul le développeur de l'app peut changer cela.",
+      "ask_agent": "Demander à l'agent de l'expliquer",
       "pick_a_file": "Choisis un fichier pour voir ses modifications.",
       "diff_unavailable": "Ce chat n'a pas enregistré le fichier entier avant et après cette modification, il n'y a donc pas de diff à afficher."
     },

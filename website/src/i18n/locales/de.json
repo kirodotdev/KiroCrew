@@ -352,14 +352,18 @@
       "create_returned_no_session": "Die Sitzung wurde erstellt, aber der Server hat sie nicht zurückgegeben. Versuche es erneut."
     },
     "pullRequestPanel": {
-      "not_declared": "Diese App kann keine Pull Requests anzeigen – ihre Berechtigungen deklarieren {{path}} nicht."
+      "not_declared": "Diese App kann keine Pull Requests anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Nur der Entwickler der App kann das ändern."
+    },
+    "fileTree": {
+      "not_declared": "Diese App kann die Projektdateien nicht anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Nur der Entwickler der App kann das ändern."
     },
     "projectPicker": {
-      "not_declared": "Diese App kann die Projektauswahl nicht anzeigen, denn ihre Berechtigungen deklarieren {{path}} nicht."
+      "not_declared": "Diese App kann die Projektauswahl nicht anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Nur der Entwickler der App kann das ändern."
     },
     "sessionChanges": {
-      "not_declared": "Diese App kann die Änderungen dieses Chats nicht anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Bitte den Entwickler der App, es hinzuzufügen.",
-      "diff_not_declared": "Diese App kann die Änderungen dieser Datei nicht anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Bitte den Entwickler der App, es hinzuzufügen.",
+      "not_declared": "Diese App kann die Änderungen dieses Chats nicht anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Nur der Entwickler der App kann das ändern.",
+      "diff_not_declared": "Diese App kann die Änderungen dieser Datei nicht anzeigen. Der Entwickler dieser App hat das nicht erlaubt: Die Berechtigungen der App deklarieren {{path}} nicht. Nur der Entwickler der App kann das ändern.",
+      "ask_agent": "Den Agenten bitten, das zu erklären",
       "pick_a_file": "Wähle eine Datei, um ihre Änderungen zu sehen.",
       "diff_unavailable": "Dieser Chat hat die ganze Datei vor und nach dieser Änderung nicht aufgezeichnet, daher gibt es keinen Diff."
     },

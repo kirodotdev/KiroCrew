@@ -11,6 +11,7 @@
  * the app's own chat slot, with take over and hand back, behind `app_browser_sdk`; and
  * `appWebOriginStatus`. Level 12 adds `permissions.kiroOperations`: the gateway calls
  * the Kiro operations the owner approved for the app, with the person's Kiro sign-in;
- * and `SessionChanges` and `DiffView`.
+ * and `SessionChanges` and `DiffView`. Level 13 adds `FileTree`: the dashboard's
+ * project file tree, behind the app's declared `/api/project/tree`.
  */
-export const APP_SDK_LEVEL = 12
+export const APP_SDK_LEVEL = 13

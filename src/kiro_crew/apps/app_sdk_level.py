@@ -14,6 +14,8 @@ Level 12 adds ``permissions.kiroOperations``: ``POST /api/apps/<name>/kiro/<oper
 and ``ctx.kiro_call`` call the Kiro operations the owner approved for the app, with
 the person's Kiro sign-in, which never reaches the app; and the SDK's
 ``SessionChanges`` and ``DiffView``.
+Level 13 adds the page's ``FileTree``: the dashboard's project file tree, behind the
+app's declared ``/api/project/tree``.
 """
 
-APP_SDK_LEVEL = 12
+APP_SDK_LEVEL = 13

@@ -1045,6 +1045,66 @@ it.
 | `anchorRect` | `DOMRect \| null` | no | An anchor rectangle, when there is no element |
 | `startPath` | `string` | no | Where **Browse** opens; empty opens at the gateway user's home |
 
+## File Tree
+
+`FileTree` is the dashboard's own project file tree, the one the chat window's **Files**
+rail draws: expandable folders read one level at a time, changed files coloured, and a
+filter over the names it has listed. An app that shows a project's files renders it
+instead of restating it. It needs `APP_SDK_LEVEL >= 13`.
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+sdk.APP_SDK_LEVEL >= 13 && sdk.FileTree
+  ? <sdk.FileTree projectDir={dir} onOpenFile={openInMyViewer} searchQuery={filter} />
+  : null
+```
+
+The tree reads through your app's scoped client and needs `/api/project/tree` in your
+manifest's `permissions.api`. Without it, or outside an app, the tree renders a refusal
+naming the path and sends nothing. `/api/project/git/status` is a separate entry:
+declare it to colour changed files, or leave it out and the rows are drawn plain and no
+status request is sent (`/api/project` declares both). When a declared status read
+fails, a notice above the rows says why the colours are missing. A failed tree read takes the
+tree's place only before anything is listed; a failed refresh keeps the listed tree, its open
+folders and selection under the same notice with its Retry. No notice in your app's tree
+offers **Ask the agent**, including the tree's own notices for unreadable or failed folders: it
+would leave your page and lose what the page had not saved. The
+`permissions.api` check runs in the page, like every scoped request: it is a frontend
+guardrail, not a server boundary, and the gateway's own checks below are what confine the
+read.
+
+The gateway lists only a directory it knows as a project (a chat's project folder), and
+keeps its sensitive-path refusals: any other `projectDir` shows "Folder not found",
+and a refused one "No access to this folder". Pick one with [`ProjectPicker`](#project-picker) or take it from a chat you
+show. The tree reads no file contents: clicking a file hands its absolute path to
+`onOpenFile`, and showing it is your page's job; reading the file through your scoped
+client needs `/api/file-read` declared too. The person's **Show hidden files** setting
+in the Files rail carries over, so with it on the tree also lists the names (never the
+contents) of git-ignored dot-files, still behind the sensitive-path refusals. The row menu's **Add to chat**,
+**Upload files…**, **New file…** and **Download**, the drag onto the composer, and the
+rows other installed apps contribute are not offered, so the rows carry no menu: those
+act on the dashboard's composer and dialogs, or send requests outside the tree's two
+reads. A built-in page
+keeps the tree as the dashboard has it.
+
+| Prop | Type | Required | Purpose |
+|---|---|---|---|
+| `projectDir` | `string` | yes | The project directory listed; empty renders nothing |
+| `onOpenFile` | `(path: string) => void` | no | Called with a file's absolute path once each time the opened file changes (see below) |
+| `selectedPath` | `string \| null` | no | Absolute path of the file your page shows, echoed as the selection; a project file you set here becomes the opened file |
+| `searchQuery` | `string \| null` | no | Shows only the rows whose names match; empty shows all. Opening a match closes the filter and shows the file in place, as the Files rail does; a new query filters again |
+
+`onOpenFile` fires once per change of the opened file: the first file the user opens, then
+each different one. The opened file is the last one the tree reported, or a project file
+you set as `selectedPath`. A listing refresh, a filter change, the second notification of a
+click on a filtered row, a multi-selection, re-clicking the opened file and the tree
+adjusting its rows to a `selectedPath` you set never fire it.
+Limits: setting `selectedPath` to `null` or to a file outside the project leaves the tree's
+row selected, as in the Files rail, so picking the file you just closed fires only after
+another file has been opened. A refresh that leaves exactly one file of a multi-selection
+(the others were deleted) reports that file as opened, as the Files rail does.
+
 ## Host Sessions
 
 `useHostSessions()` gives your page the person's own sessions as the dashboard's session
@@ -2441,9 +2501,10 @@ installed app's `credentialMasks` to the agent's file tools too and adds the man
 shared embedder's batch members (`ctx.embed.embed_batch`, see
 [Shared embedder](#shared-embedder-ctxembed)), and level 11
 adds the page's [`BrowserView`, `useBrowserView` and `useBrowserCoords`](#browser-view) and the
-dashboard's `appWebOriginStatus(name)`, and level 12 adds
+dashboard's `appWebOriginStatus(name)`, level 12 adds
 `permissions.kiroOperations` with its route and `ctx.kiro_call` ([Kiro calls](#kiro-calls)) and the dashboard's
-[`SessionChanges` and `DiffView`](#session-changes-and-diff-view); each level
+[`SessionChanges` and `DiffView`](#session-changes-and-diff-view), and level 13 adds the
+dashboard's [`FileTree`](#file-tree); each level
 includes every level below it. Several seams share level 7, three share level 8, and
 level 10 is shared by the seams of the batch it opens, so an app that needs one
 feature-detects it, never the level alone. Read it

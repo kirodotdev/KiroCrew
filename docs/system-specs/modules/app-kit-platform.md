@@ -6262,8 +6262,8 @@ the way §18g chooses the pull-request client:
   `/api/project/session-file-diff`; without it the diff's place shows its own refusal,
   worded as that file's changes, the row's Show changes, and the diff is never mounted.
   Each refusal gives its reason first (this app's developer has not allowed it), names
-  the undeclared path after it, and ends by telling the person to ask the app's developer
-  to add it. The two paths are siblings at a slash boundary, so neither declaration
+  the undeclared path after it, and ends by saying only the app's developer can change
+  it; its hand-off reads "Ask the agent to explain this". The two paths are siblings at a slash boundary, so neither declaration
   admits the other, and the scoped transport still checks each request.
 - **builtin**: the dashboard's client, as §18g keeps it for a builtin page.
 - **none**: the external answer with nothing declared, the refusal.
@@ -6287,6 +6287,96 @@ Writers: `website/src/app-sdk/SessionChanges.tsx`, `website/src/app-sdk/SessionC
 `website/public/vendor/kirocrew-app-sdk.mjs`, `website/src/pages/chat/sessionFilesClient.tsx`,
 `website/src/pages/chat/SessionFilesList.tsx`, `website/src/app-sdk/sdkLevel.ts`,
 `apps/app_sdk_level.py`.
+
+## 18m. The project file tree reaches an app through the SDK, behind the declared tree read
+
+`FileTree` on `@kirocrew/app-sdk` (`website/src/app-sdk/FileTree.tsx`) is the chat
+window's own workspace tree (`pierre/PierreWorkspaceTreeImpl`, the Files rail's and the
+folder tab's tree), offered to an app page. It is App Kit seam level 13. The tree reads
+through one injected client (`pierre/workspaceTreeClient.tsx`): `tree` (`/api/project/tree`,
+one level, or one folder with `dir`), `gitStatus` (`/api/project/git/status`, or null),
+and `hostFileActions`. With no provider in context the tree uses the dashboard's `api`,
+and no dashboard surface provides one.
+
+Which client the export hands the tree is decided by the identity the host published,
+as §18g decides it:
+
+- **external**: a client over the app's scoped transport (`scopedWorkspaceTreeClient`),
+  built once `apiPathAllowed` covers `/api/project/tree`. With it undeclared the export
+  renders an `ErrorNotice` naming the path and mounts nothing, so no request is sent.
+  `gitStatus` is built only when `/api/project/git/status` is covered too; null, the
+  tree sends no status read and draws its rows uncoloured. Each request is the
+  dashboard client's own URL (`projectTreeUrl`, shared with `api.projectTree`), under the
+  same deadline. `hostFileActions` is false: the row menu drops Download and the rows
+  installed apps contribute (`contributes.fileMenuItems`), whose requests
+  (`/api/file-download`, the contributing app's endpoint) are neither of the declared
+  reads. With no row handler either, no row can hold an action, so the tree wires no
+  row menu at all: no "..." on a row, and no empty menu state for a keyboard user.
+- **builtin**: the dashboard's client, Download and contributed rows included.
+- **none**: the external answer with nothing declared, the refusal, even under a scoped
+  provider that declares both reads (only a host publishes an identity).
+
+The shared tree draws a failed status read only in its changed-files mode, which the
+export never uses, so the export draws it itself: a partial `ErrorNotice` above the
+rows (the Git panel's filter-refusal copy, else `status_failed`), read by a disabled
+observer of the tree's own `['git-status', dir]` query, which sends nothing. The rows
+stay usable, uncoloured. The export keys the tree on `projectDir`, so a page that switches project, even to one
+whose listing is cached, gets a fresh model: one project's loaded folders and refusals
+never carry into another's reads. Neither the refusal nor the failed-read notice carries the agent hand-off: it navigates
+to the chat and unmounts the app page with whatever it had not saved (§18i). The shared
+tree's own notices (unreadable folders, a refused or failed folder read, an unreadable
+root, a failed status read, a contributed row's failure) offer it only when
+`hostFileActions` is true, so an external app's tree offers it nowhere. A failed
+read names its cause with the Files rail's copy (`TREE_FAILURE_KEYS`) and a Retry when
+another read can answer differently. It takes the tree's place only while nothing is listed:
+a failed refresh of a listed tree (a poll, a focus refetch) keeps the tree mounted, with its
+loaded folders and selection, under the same notice drawn inline, as the Files rail does. A host that hides the page (`info.active` false)
+pauses every tree read, the export's own and the shared tree's (`active`). The export
+calls `onOpenFile` exactly once per change of the opened file (none to A, or A to B). The
+opened file is a ref in the export, read and written synchronously: the last file it
+handed over, or a project file the page moved `selectedPath` to (moved in a layout effect,
+after the tree's own, so a notification for the previous file in that commit stays
+silent). The shared tree reports a kept selection again on a listing refresh, a filter
+change and twice in one click on a filtered row; it reports nothing for a multi-selection
+or its own echo. None of those is a change, so none fires. While a `selectedPath` change commits,
+the export ignores every report (set in render, cleared by a layout effect after each
+commit): the tree's echo deselects the rows it replaces one at a time, and a row it leaves
+selected for a moment is no user open. Limits: a cleared `selectedPath`
+or one outside the project moves nothing, because the tree keeps the row selected (its
+behaviour in the Files rail, unchanged here), so re-picking the file the page just closed
+fires only after another file is opened; re-clicking the opened file never fires. A
+refresh that leaves exactly one file of a multi-selection (the others deleted) is reported
+by the shared tree as that file's selection, which the export cannot tell from a click, so
+it fires for that file, as the Files rail opens it. The shared tree's selection handling is
+main's. Opening a filtered row closes the filter (Pierre's
+row click), as in the Files rail; a changed `searchQuery` filters again.
+
+This grants nothing the app does not have already. The gateway answers the tree read
+only for a directory it knows as a project (`_match_known_project_for`, 403
+`unknown_project_dir` otherwise), refuses a sensitive project root, holds `dir` to a
+link-free folder strictly inside it, and redacts the listing, for every caller alike;
+none of that changes here. The scoping is the frontend guardrail of the trust model, not
+a boundary: the tree's requests carry the dashboard user's own authority, as every scoped
+request does. The tree reads no file contents: a click hands the absolute path to the
+app's `onOpenFile`, and reading that file through the scoped client needs
+`/api/file-read` declared. `projectTreeUrl` carries the owner's Show hidden files
+setting (`hidden=1`), so with it on an app's tree lists git-ignored dot-file names, never
+their contents, behind the same sensitive-path fence. The export takes no `onAddToContext`, `onUploadRequest`,
+`onNewFileRequest` or `onOpenFolder`: those write into the dashboard's composer, dialogs
+and folder tabs. The tree's runtime loads behind `pierre/tree.tsx`'s `React.lazy`
+boundary, so the SDK barrel in the dashboard shell does not carry it. An external app's
+queries live in its own query client, so its tree never reads the dashboard's
+`['project-tree', dir]` entries.
+
+`AppSdkFileTree.test.tsx` pins the three answers (no identity under a scoped provider
+included), the separate status declaration, the
+request URLs, that an external tree's reads go through the app's transport and its row
+menu offers nothing, that its notices offer no agent hand-off, and the failed-read Retry.
+
+Writers: `website/src/app-sdk/FileTree.tsx`, `website/src/pierre/workspaceTreeClient.tsx`,
+`website/src/pierre/PierreWorkspaceTreeImpl.tsx`, `website/src/api/client/files.ts`,
+`website/src/app-sdk/index.ts`, `website/public/vendor/kirocrew-app-sdk.mjs`,
+`website/src/app-sdk/sdkLevel.ts`, `apps/app_sdk_level.py`.
 
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
@@ -7758,7 +7848,8 @@ on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 `useBrowserMedia` (§45), and `ctx.embed`'s batch members; level 11 adds the SDK's `BrowserView`,
 `useBrowserView` and `useBrowserCoords` (RFC app-sdk-browser, step 1c) and the SDK's
 `appWebOriginStatus` (§18k); level 12 adds `permissions.kiroOperations`, its route and
-`ctx.kiro_call` (§47), and the SDK's `SessionChanges` and `DiffView` (§18l). Several seams share level 7,
+`ctx.kiro_call` (§47), and the SDK's `SessionChanges` and `DiffView` (§18l); level 13 adds the
+SDK's `FileTree` (§18m). Several seams share level 7,
 three share level 8, and the open batch that level 10 starts shares level 10, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
