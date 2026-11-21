@@ -9,6 +9,7 @@ no owner-only command, button or keyword.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -330,6 +331,240 @@ async def test_a_shared_user_cannot_answer_a_transport_prompt_they_did_not_ask(
     )
     await interactions.dispatch(payload)
     assert resolved == ["s1:7"]
+
+
+# ── a press that changes nothing says why ────────────────────────────────────
+
+
+class _NoticeSlack:
+    """The Slack calls an approval press can make, recorded."""
+
+    def __init__(self) -> None:
+        self.ephemerals: list[tuple[str, str, str, str | None]] = []
+        self.updates: list[tuple[str, str, str]] = []
+
+    async def post_ephemeral(self, channel, user_id, text, blocks=None, thread_ts=None):
+        self.ephemerals.append((channel, user_id, text, thread_ts))
+
+    async def update_message(self, channel, ts, text="", blocks=None):
+        self.updates.append((channel, ts, text))
+
+    async def is_dm(self, channel: str) -> bool:
+        return channel.startswith("D")
+
+
+def _press(user: str, action: str = "approve_tool", channel: str = "C1") -> dict:
+    return {
+        "type": "block_actions",
+        "user": {"id": user},
+        "channel": {"id": channel},
+        "message": {"ts": "card1", "thread_ts": "t1"},
+        "actions": [{"action_id": action, "value": "7"}],
+    }
+
+
+@pytest.fixture
+def _notice_slack(_floor_monkeypatch) -> _NoticeSlack:
+    slack = _NoticeSlack()
+    _floor_monkeypatch.setattr(
+        interactions, "_orch", SimpleNamespace(slack=slack, sessions=None, dashboard_state=None)
+    )
+    return slack
+
+
+def _linked_card(_floor_monkeypatch, channel: str = "C1", requester: str = "") -> asyncio.Future:
+    """A dashboard slot's prompt mirrored to a Slack thread, asked by *requester*."""
+    from kiro_crew.slack.handler import _linked_approvals, _LinkedApproval
+
+    fut: asyncio.Future = asyncio.get_running_loop().create_future()
+    entry = _LinkedApproval(7, "dashboard:chat-1", False, "chat-1", fut, requester)
+    _floor_monkeypatch.setitem(_linked_approvals, f"{channel}:card1", entry)
+    return fut
+
+
+@pytest.fixture
+def _linked_slot_state(_floor_monkeypatch) -> list[tuple[str, str, bool]]:
+    """A dashboard whose slot ``chat-1`` settles a linked prompt's future on a click."""
+    resolved: list[tuple[str, str, bool]] = []
+
+    def _resolve(slot, rid, approved, expected_future=None):
+        resolved.append((slot.key, rid, approved))
+        expected_future.set_result("approved" if approved else "rejected")
+        return True
+
+    state = SimpleNamespace(_slots={"chat-1": SimpleNamespace(key="chat-1")})
+    state.resolve_slot_approval = _resolve
+    _floor_monkeypatch.setattr(handler, "_dashboard_state", state)
+    return resolved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action, outcome", [("approve_tool", True), ("reject_tool", False)])
+async def test_a_shared_user_answers_their_own_linked_prompt(
+    _floor_monkeypatch, _linked_slot_state, action: str, outcome: bool
+) -> None:
+    await _confirmed_friend()
+    fut = _linked_card(_floor_monkeypatch, requester=FRIEND)
+    assert await handle_interaction("C1", "card1", action, user_id=FRIEND) == action
+    assert _linked_slot_state == [("chat-1", "7", outcome)]
+    assert fut.result() == ("approved" if outcome else "rejected")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requester", [OWNER, OTHER, ""])
+async def test_a_shared_user_cannot_answer_someone_elses_linked_prompt(
+    _floor_monkeypatch, _linked_slot_state, requester: str
+) -> None:
+    from kiro_crew.slack.handler import _linked_approvals
+
+    await _confirmed_friend()
+    fut = _linked_card(_floor_monkeypatch, requester=requester)
+    for action in ("approve_tool", "reject_tool"):
+        assert await handle_interaction("C1", "card1", action, user_id=FRIEND) is None
+    assert _linked_slot_state == [] and not fut.done()
+    assert "C1:card1" in _linked_approvals  # still pending for its owner
+    assert await handle_interaction("C1", "card1", "approve_tool", user_id=OWNER) == "approve_tool"
+    assert fut.result() == "approved"
+
+
+@pytest.mark.asyncio
+async def test_a_mirrored_card_answers_to_the_requester_it_was_posted_for(
+    _floor_monkeypatch, _linked_slot_state
+) -> None:
+    """``post_linked_approval`` registers the card under the requester it is given."""
+    from kiro_crew.slack.handler import post_linked_approval
+
+    await _confirmed_friend()
+    slack = SimpleNamespace(post_blocks=AsyncMock(return_value="card1"))
+    fut: asyncio.Future = asyncio.get_running_loop().create_future()
+    ts = await post_linked_approval(
+        slack,
+        "C1",
+        "t1",
+        7,
+        "dashboard:chat-1",
+        "Run ls",
+        slot_key="chat-1",
+        future=fut,
+        requester=FRIEND,
+    )
+    assert ts == "card1"
+    assert await handle_interaction("C1", "card1", "approve_tool", user_id=FRIEND) == "approve_tool"
+    assert fut.result() == "approved"
+
+
+@pytest.mark.asyncio
+async def test_a_shared_user_never_trusts_their_own_linked_prompt(
+    _floor_monkeypatch, _linked_slot_state
+) -> None:
+    from kiro_crew.slack.handler import _linked_approvals
+
+    await _confirmed_friend()
+    fut = _linked_card(_floor_monkeypatch, channel="D1", requester=FRIEND)
+    assert await handle_interaction("D1", "card1", "trust_tool", user_id=FRIEND) is None
+    assert _linked_slot_state == [] and not fut.done()
+    assert "D1:card1" in _linked_approvals
+
+
+@pytest.mark.asyncio
+async def test_a_refused_press_names_the_shared_user_whose_turn_asked(
+    _floor_monkeypatch, _notice_slack: _NoticeSlack
+) -> None:
+    await _confirmed_friend()
+    _linked_card(_floor_monkeypatch, requester=OTHER)
+    await interactions.dispatch(_press(FRIEND))
+    owner_or_asker = interactions.APPROVAL_OWNER_OR_ASKER_TEXT.format(
+        owner=f"the Kiro Crew owner (<@{OWNER}>)", asker=OTHER
+    )
+    assert _notice_slack.ephemerals == [("C1", FRIEND, owner_or_asker, "t1")]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_press_on_a_linked_card_tells_the_clicker_who_can_answer(
+    _floor_monkeypatch, _notice_slack: _NoticeSlack
+) -> None:
+    await _confirmed_friend()
+    fut = _linked_card(_floor_monkeypatch)
+    await interactions.dispatch(_press(FRIEND))
+    assert len(_notice_slack.ephemerals) == 1, "the refused clicker was told nothing"
+    owner_only = interactions.APPROVAL_OWNER_ONLY_TEXT.format(
+        owner=f"the Kiro Crew owner (<@{OWNER}>)"
+    )
+    assert _notice_slack.ephemerals == [("C1", FRIEND, owner_only, "t1")]
+    # Nothing was answered and the buttons stay for the owner.
+    assert not fut.done() and _notice_slack.updates == []
+    from kiro_crew.slack.handler import _linked_approvals
+
+    assert "C1:card1" in _linked_approvals
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("who", [OWNER, FRIEND])
+async def test_a_press_on_a_card_nothing_waits_on_says_so(
+    who: str, _notice_slack: _NoticeSlack
+) -> None:
+    await _confirmed_friend()
+    await interactions.dispatch(_press(who))
+    assert len(_notice_slack.ephemerals) == 1, "the clicker was told nothing"
+    assert _notice_slack.ephemerals == [("C1", who, interactions.APPROVAL_NOT_WAITING_TEXT, "t1")]
+    assert _notice_slack.updates == []
+
+
+@pytest.mark.asyncio
+async def test_a_shared_users_trust_press_is_told_trust_is_the_owners(
+    _notice_slack: _NoticeSlack,
+) -> None:
+    await _confirmed_friend()
+    _pending_approvals["D1:card1"] = _PendingApproval(_Provider(), "req-1", "s1", requester=FRIEND)
+    await interactions.dispatch(_press(FRIEND, "trust_tool", channel="D1"))
+    assert len(_notice_slack.ephemerals) == 1, "the refused clicker was told nothing"
+    trust = interactions.APPROVAL_TRUST_OWNER_ONLY_TEXT.format(
+        owner=f"the Kiro Crew owner (<@{OWNER}>)"
+    )
+    assert _notice_slack.ephemerals == [("D1", FRIEND, trust, "t1")]
+    assert "D1:card1" in _pending_approvals
+
+
+@pytest.mark.asyncio
+async def test_a_refused_transport_press_tells_the_clicker_who_can_answer(
+    _floor_monkeypatch, _notice_slack: _NoticeSlack
+) -> None:
+    from kiro_crew.slack.approval_tokens import build_approval_token
+    from kiro_crew.slack.renderer import TOOL_APPROVE_ACTION_PREFIX, SlackApprovalDecider
+
+    await _confirmed_friend()
+    decider = SlackApprovalDecider("s1", requester=OTHER)
+    nonce = decider.reserve(7)  # the card's window is open
+    try:
+        press = _press(FRIEND, TOOL_APPROVE_ACTION_PREFIX + "s1:7")
+        press["actions"][0]["value"] = build_approval_token("s1", 7, nonce)
+        await interactions.dispatch(press)
+        stale = _press(FRIEND, TOOL_APPROVE_ACTION_PREFIX + "s1:7")
+        stale["actions"][0]["value"] = build_approval_token("s1", 7, "an-earlier-card")
+        await interactions.dispatch(stale)
+    finally:
+        decider.discard(7)
+    owner_or_asker = interactions.APPROVAL_OWNER_OR_ASKER_TEXT.format(
+        owner=f"the Kiro Crew owner (<@{OWNER}>)", asker=OTHER
+    )
+    # A live card names who can answer it; a stale card's buttons answer nothing.
+    assert _notice_slack.ephemerals == [
+        ("C1", FRIEND, owner_or_asker, "t1"),
+        ("C1", FRIEND, interactions.APPROVAL_NOT_WAITING_TEXT, "t1"),
+    ]
+    assert _notice_slack.updates == []
+
+
+@pytest.mark.asyncio
+async def test_an_answered_press_gets_no_refusal_notice(
+    _floor_monkeypatch, _notice_slack: _NoticeSlack
+) -> None:
+    prov = _Provider()
+    _pending_approvals["C1:card1"] = _PendingApproval(prov, "req-1", "s1", requester=OWNER)
+    await interactions.dispatch(_press(OWNER))
+    assert prov.approved == ["req-1"]
+    assert _notice_slack.ephemerals == []
+    assert _notice_slack.updates == [("C1", "card1", "✅ Approved")]
 
 
 # ── owner-only controls ──────────────────────────────────────────────────────

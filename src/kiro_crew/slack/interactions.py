@@ -725,6 +725,12 @@ async def dispatch(payload: dict) -> None:
                 resources=f"approval_key={approval_key}",
                 error="trust is owner-only" if pressed_trust else "not the requester",
             )
+            # Who can answer, while this card's window is still open; a closed or
+            # stale one is answered by nobody, so say that instead.
+            _live = bool(SlackApprovalDecider.session_for(approval_key, nonce=press_nonce))
+            _why = _owner_only_text(pressed_trust, _asker) if _live else APPROVAL_NOT_WAITING_TEXT
+            _thread = payload.get("message", {}).get("thread_ts") or ""
+            await _tell_user(channel, user_id, _thread, _why)
             return
         # Inbound channels-governance gate: a button press resolves a tool approval
         # (executes the governed tool) or a Trust escalation, so a channels policy
@@ -1141,6 +1147,8 @@ from kiro_crew.slack.interactions_approvals import _handle_review_revise  # noqa
 from kiro_crew.slack.interactions_approvals import BRIDGE_ACTION_STALE_NOTICE  # noqa: E402
 from kiro_crew.slack.interactions_approvals import _handle_bridge_action  # noqa: E402
 from kiro_crew.slack.interactions_approvals import _handle_tool_approval  # noqa: E402
+from kiro_crew.slack.interactions_approvals import _owner_only_text  # noqa: E402
+from kiro_crew.slack.interactions_approvals import APPROVAL_NOT_WAITING_TEXT  # noqa: E402
 from kiro_crew.notifications.bridge_actions import (  # noqa: E402
     SLACK_ACTION_PREFIX as BRIDGE_SLACK_ACTION_PREFIX,
 )
@@ -1198,7 +1206,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.interactions_sessions import _outside_code_channel  # noqa: F401
     from kiro_crew.slack.interactions_sessions import _record_session_dismissed  # noqa: F401
     from kiro_crew.slack.interactions_sessions import _shared_stop_refused  # noqa: F401
+    from kiro_crew.slack.interactions_approvals import (  # noqa: F401
+        APPROVAL_OWNER_OR_ASKER_TEXT,
+    )
+    from kiro_crew.slack.interactions_approvals import APPROVAL_OWNER_ONLY_TEXT  # noqa: F401
+    from kiro_crew.slack.interactions_approvals import (  # noqa: F401
+        APPROVAL_TRUST_OWNER_ONLY_TEXT,
+    )
     from kiro_crew.slack.interactions_approvals import _REVIEW_AUTH_DENIED_MSG  # noqa: F401
+    from kiro_crew.slack.interactions_approvals import _refused_press_text  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _REVIEW_ROOT_SUFFIX  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _can_act_on_review_draft  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _delete_review_placeholder  # noqa: F401

@@ -1267,6 +1267,18 @@ A click on a linked dashboard slot's prompt (`_resolve_linked_click`, which sett
 the slot and future the prompt was posted for) and a Trust click whose approval already resolved (`_grant_late_trust`) are `slack/handler_runtime/approvals.py`;
 the claimed region that answers the wire is `slack/handler_runtime/permission_ladder.py`.
 
+A linked prompt names its requester as a native one does: the shared user whose Slack
+message alone opened the slot's running turn (`slack/turn_requester.py`, stamped by
+`route_linked_thread` on the turn's task; a queued message, a dashboard, cron or wake turn,
+any text steered into the turn, and a code channel's own session leave it empty, so only
+the owner may answer). That person may Approve or Reject it; Trust stays the owner's.
+
+A press that returns `None` (a refused clicker, or no approval waiting under that card)
+keeps the card's buttons for the owner and tells the clicker why in one ephemeral in the
+card's thread (`_handle_tool_approval` in `slack/interactions_approvals.py`): who can
+answer it (the owner, or the owner and the person whose message asked), only the owner
+can turn on Trust, or it is not waiting for an answer.
+
 ### `SlackClientOps` (ABC)
 Testable interface for the Slack Web API. `slack/client.py` owns the method list
 (posting, updating and deleting messages, reactions, pins, `upload_file`,

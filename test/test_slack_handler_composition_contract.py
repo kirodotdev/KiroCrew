@@ -244,8 +244,10 @@ _SPLIT_HELPERS: dict[str, str] = {
 #: names the trusted MCP server, as the native card does), its keyword-only
 #: ``slot_key`` / ``future`` (a click settles the slot and future that asked),
 #: its ``channel_trust`` (a code channel's card adds "Trust this channel"), and
-#: ``requester`` on ``_request_approval`` (the one shared Slack user who may answer).
-_BASE_SHAPE_DIGEST = "eb870bf59d698394491d22b12e39a4789da783a01b25829d9710144019900109"
+#: ``requester`` on ``_request_approval`` (the one shared Slack user who may answer),
+#: and the keyword-only ``requester`` on ``post_linked_approval`` (the shared user
+#: whose message opened the linked slot's turn may answer its card).
+_BASE_SHAPE_DIGEST = "ae52db1ec16a1b9a6bb2aad1dcb88136d3ca3e95a389835c07372eb1000efdbf"
 
 #: Definitions that stay in the facade file, each because a repository guard, a
 #: contract or the import-time body reads it there. The reason per entry is in

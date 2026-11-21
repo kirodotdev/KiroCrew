@@ -46,6 +46,7 @@ from kiro_crew.dashboard.steer_supersedes_approval import reject_approvals_super
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.shared_crew.contracts import MESSAGE_AUTHOR_META_KEY
+from kiro_crew.slack.turn_requester import forget_turn_requester
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -715,6 +716,9 @@ async def steer_into_running_turn(
     # Same lockstep again: the requeue reads this for the entry's
     # ``directive_owner_origin`` and a definite False is what fails it closed.
     slot._steer_owner_origin[message] = bool(owner_origin)
+    # Any text steered in, from anyone, ends "one shared user asked for this
+    # turn": its tool prompts go back to the owner alone. Before the RPC, as below.
+    forget_turn_requester(slot)
     if channel_origin:
         # NARROW the running turn's directive provenance, at admission. The turn's
         # ``_directive_channel_origin`` is its opener's -- False for a

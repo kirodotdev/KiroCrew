@@ -689,17 +689,15 @@ async def handle_interaction(
 
     # A shared user (slack.shared_access) answers only the prompt their own turn
     # posted, and never grants Trust. Checked before the claim, so a refused click
-    # leaves the prompt pending for the person it belongs to.
+    # leaves the prompt pending for the person it belongs to. A linked dashboard
+    # slot's prompt names its requester as a native one does (empty: owner only).
     if is_shared_listed(user_id):
-        _own = _pending_approvals.get(key)
+        _own: Any = _linked_approvals.get(key) or _pending_approvals.get(key)
+        _asker = str(getattr(_own, "requester", "") or "")
         _refusal = (
             "trust is owner-only"
             if action_id == _ACTION_TRUST
-            else (
-                "not the requester"
-                if _own is None or _own.requester != user_id or key in _linked_approvals
-                else ""
-            )
+            else ("not the requester" if not _asker or _asker != user_id else "")
         )
         if _refusal:
             sel().log_api_access(
