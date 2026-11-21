@@ -7,6 +7,7 @@ for, and which messaging channels ``setup`` configures.
 """
 
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -58,6 +59,142 @@ class TestSetupWorkspaceDir:
             _setup_workspace_dir()
         output = capsys.readouterr().out
         assert "Default:" in output
+
+    @staticmethod
+    def _run_with_chat_config(
+        tmp_path,
+        monkeypatch,
+        default_project="",
+        workspace_folder="",
+        workspace_path=None,
+        session_folder_root="",
+        load=None,
+    ):
+        """Run the step against a ``dashboard.default_project`` and a workspace folder.
+
+        *workspace_folder* is what ``default_project_dir`` answers: ``""`` when the
+        default workspace's folder is missing or unusable. *workspace_path* is what
+        ``workspace_dir_for`` answers, an existing folder unless given.
+        """
+        cfg = SimpleNamespace(
+            dashboard=SimpleNamespace(
+                default_project=default_project, session_folder_root=session_folder_root
+            )
+        )
+        monkeypatch.setattr(
+            "kiro_crew.cli_setup_chat_folder.KiroCrewConfig",
+            SimpleNamespace(load=load or (lambda: cfg)),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.cli_setup_chat_folder.default_project_dir",
+            lambda _workspace=None: workspace_folder,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.cli_setup_chat_folder.workspace_dir_for",
+            lambda _workspace=None: workspace_path or tmp_path,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.cli_setup._workspace_dir_file", lambda: tmp_path / "no_such_file"
+        )
+        with patch("builtins.input", return_value=str(tmp_path / "ws")):
+            from kiro_crew.cli_setup import _setup_workspace_dir
+
+            _setup_workspace_dir()
+
+    def test_names_the_folder_dashboard_chats_start_in(self, tmp_path, monkeypatch, capsys):
+        """The saved folder is not where dashboard chats run, so the step names both."""
+        chat_dir = str(tmp_path / "chat-workspace")
+        self._run_with_chat_config(tmp_path, monkeypatch, workspace_folder=chat_dir)
+        output = capsys.readouterr().out
+        assert f"Dashboard chats start in the default workspace's folder: {chat_dir}" in output
+        assert "workspaces.<name>.dir" in output
+        assert "KIROCREW_WORKSPACE" in output
+
+    def test_names_the_dashboard_default_project_when_it_applies(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A usable ``dashboard.default_project`` is where a new chat starts, as slot create picks."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        unused = str(tmp_path / "unused")
+        self._run_with_chat_config(
+            tmp_path, monkeypatch, default_project=str(project), workspace_folder=unused
+        )
+        output = capsys.readouterr().out
+        assert f"Dashboard chats start in: {os.path.realpath(project)}" in output
+        assert "set by `dashboard.default_project`" in output
+        assert unused not in output
+
+    def test_a_missing_dashboard_default_project_falls_back_to_the_workspace(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        chat_dir = str(tmp_path / "chat-workspace")
+        self._run_with_chat_config(
+            tmp_path,
+            monkeypatch,
+            default_project=str(tmp_path / "missing"),
+            workspace_folder=chat_dir,
+        )
+        output = capsys.readouterr().out
+        assert f"Dashboard chats start in the default workspace's folder: {chat_dir}" in output
+
+    def test_an_unusable_workspace_folder_is_named_as_no_project(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Slot create leaves Project empty when the existing folder is refused, so setup names none."""
+        self._run_with_chat_config(tmp_path, monkeypatch)
+        output = capsys.readouterr().out
+        assert "Dashboard chats start with no project" in output
+        assert "Dashboard chats start in" not in output
+        assert "workspaces.<name>.dir" in output
+
+    def test_a_workspace_folder_not_created_yet_is_named(self, tmp_path, monkeypatch, capsys):
+        pending = tmp_path / "not-yet"
+        self._run_with_chat_config(tmp_path, monkeypatch, workspace_path=pending)
+        output = capsys.readouterr().out
+        assert f"Dashboard chats start in the default workspace's folder: {pending}" in output
+        assert "created when the gateway first starts" in output
+        assert "no project" not in output
+
+    def test_a_fresh_data_home_names_its_workspace_folder(self, tmp_path, monkeypatch, capsys):
+        """An empty data home has no ``workspace`` folder yet; setup still names it."""
+        home = tmp_path / "crew-home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        monkeypatch.setattr(
+            "kiro_crew.cli_setup._workspace_dir_file", lambda: tmp_path / "no_such_file"
+        )
+        with patch("builtins.input", return_value=str(tmp_path / "ws")):
+            from kiro_crew.cli_setup import _setup_workspace_dir
+
+            _setup_workspace_dir()
+        output = capsys.readouterr().out
+        folder = home / "workspace"
+        assert f"Dashboard chats start in the default workspace's folder: {folder}" in output
+        assert "no project" not in output
+
+    def test_names_the_session_folder_root_when_set(self, tmp_path, monkeypatch, capsys):
+        """Slot create gives each new chat a folder under this root before any default."""
+        root = str(tmp_path / "sessions")
+        chat_dir = str(tmp_path / "chat-workspace")
+        self._run_with_chat_config(
+            tmp_path, monkeypatch, workspace_folder=chat_dir, session_folder_root=root
+        )
+        output = capsys.readouterr().out
+        assert f"a folder of its own under: {root}" in output
+        assert "dashboard.session_folder_root" in output
+        assert f"Dashboard chats start in the default workspace's folder: {chat_dir}" in output
+
+    def test_an_unloadable_config_does_not_stop_setup(self, tmp_path, monkeypatch, capsys):
+        """The note is informational: a config that cannot load leaves setup going on."""
+
+        def unloadable():
+            raise RuntimeError("config cannot load")
+
+        self._run_with_chat_config(tmp_path, monkeypatch, load=unloadable)
+        output = capsys.readouterr().out
+        assert "The folder dashboard chats start in could not be resolved" in output
+        assert f"Workspace: {tmp_path / 'ws'}" in output
 
     @pytest.mark.parametrize("interactive", [True, False])
     def test_refused_answer_keeps_the_configured_folder(
