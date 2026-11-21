@@ -354,25 +354,33 @@ class TestJitterWaitEndsOnWallClock:
         await finished(cron_mod._sleep_out_jitter(0.05), "the jitter wait ending on its deadline")
 
     @pytest.mark.asyncio
-    async def test_no_suspend_waits_the_full_jitter(self):
+    async def test_no_suspend_waits_the_full_jitter(self, monkeypatch):
         """With no suspend and no clock step the wait is the jitter, as before.
 
-        Measured on ``perf_counter``, not ``monotonic``: on Windows
-        ``monotonic`` ticks in ~15.6 ms steps, so a wait that really lasted
-        50 ms can read as 47 ms. The helper may end on either deadline, so the
-        tolerance is one tick of the coarser of the two clocks it reads.
+        Both clocks the helper reads advance only by the seconds it sleeps, so
+        the wait is measured on the helper's own clocks, slice by slice.
         """
-        import time as time_mod
+        import types
 
-        from kiro_crew.cron import _sleep_out_jitter
+        import kiro_crew.cron as cron_mod
 
-        tick = max(
-            time_mod.get_clock_info("monotonic").resolution,
-            time_mod.get_clock_info("time").resolution,
-        )
-        start = time_mod.perf_counter()
-        await _sleep_out_jitter(0.05)
-        assert time_mod.perf_counter() - start >= 0.05 - tick
+        now = {"wall": 1_790_000_000.0, "mono": 500.0}
+        slept = []
+
+        async def fake_sleep(secs):
+            slept.append(secs)
+            now["wall"] += secs
+            now["mono"] += secs
+
+        clock = types.SimpleNamespace(time=lambda: now["wall"], monotonic=lambda: now["mono"])
+        monkeypatch.setattr(cron_mod, "time", clock)
+        monkeypatch.setattr(cron_mod, "asyncio", types.SimpleNamespace(sleep=fake_sleep))
+        monkeypatch.setattr(cron_mod, "_JITTER_WALL_SLICE_SECS", 0.25)
+
+        await cron_mod._sleep_out_jitter(1.0)
+
+        assert slept == [0.25, 0.25, 0.25, 0.25]
+        assert now == {"wall": 1_790_000_001.0, "mono": 501.0}
 
     @pytest.mark.asyncio
     async def test_scheduled_run_waits_through_the_wall_clock_helper(self, monkeypatch, tmp_path):
