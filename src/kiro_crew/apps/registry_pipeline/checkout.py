@@ -12,8 +12,9 @@ import asyncio
 import os
 import re
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.registry_pipeline.clone_metadata import (
@@ -175,6 +176,60 @@ async def _rmtree_force_settled(path: str | Path) -> None:
             except asyncio.CancelledError:
                 continue
         raise
+
+
+def _is_checkout_sync(dest: Path) -> bool:
+    """Whether *dest* is a git checkout: both stats in one thread call."""
+    return dest.is_dir() and (dest / ".git").is_dir()
+
+
+def _fetch_dest_state_sync(dest: Path) -> Literal["checkout", "other", "absent"]:
+    """Classify a fetch destination; the stats run in this order in one thread call."""
+    if (dest / ".git").is_dir():
+        return "checkout"
+    if dest.exists():
+        return "other"
+    return "absent"
+
+
+def _exists_sync(path: Path) -> bool:
+    """``path.exists()`` as a module function, so a probe's caller is this module.
+
+    Hand this to :func:`_probe_settled` rather than the bound ``path.exists``.
+    """
+    return path.exists()
+
+
+async def _probe_settled(probe: Callable[[Path], bool], path: Path) -> tuple[bool, bool]:
+    """Run ``probe(path)`` off the loop; return ``(answer, cancelled)``.
+
+    For a cleanup that must finish: a cancel landing during the probe is absorbed
+    until the worker settles and reported as ``cancelled`` instead of raised, so the
+    caller can complete its restore and re-raise afterwards. A probe error is
+    re-raised as it is, or, when a cancel was absorbed, as ``CancelledError``
+    chained from it, so the cancel is never lost.
+
+    The worker is a bare executor future, not a Task: a sweep that cancels every
+    task (``asyncio.run`` teardown) would otherwise cancel the worker too, and the
+    caller's restore would never run.
+    """
+    worker = asyncio.get_running_loop().run_in_executor(None, probe, path)
+    cancelled = False
+    try:
+        await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        cancelled = True
+        while not worker.done():
+            try:
+                await asyncio.wait({worker})
+            except asyncio.CancelledError:
+                continue
+    error = worker.exception()
+    if error is not None:
+        if cancelled:
+            raise asyncio.CancelledError() from error
+        raise error
+    return worker.result(), cancelled
 
 
 async def _mkdtemp_settled(prefix: str) -> str:
@@ -577,9 +632,10 @@ async def _git_fetch_ref(
     created_here = False
     succeeded = False
     try:
-        if (dest / ".git").is_dir():
+        dest_state = await asyncio.to_thread(_fetch_dest_state_sync, dest)
+        if dest_state == "checkout":
             pass  # a checkout we can fetch into; never ours to delete
-        elif dest.exists():
+        elif dest_state == "other":
             # Refuse rather than adopt. `not (dest / ".git").is_dir()` answers "is
             # there a checkout here", which is NOT "am I creating this": a plain
             # directory of the user's files, or a `.git` FILE from a worktree link,
@@ -600,7 +656,7 @@ async def _git_fetch_ref(
                 ),
             }
         else:
-            _ensure_directory(dest.parent)
+            await asyncio.to_thread(_ensure_directory, dest.parent)
             # Set BEFORE the spawn: `git init` may create the directory and then
             # fail, or the spawn itself may raise, and either way the directory is
             # ours to discard.
@@ -925,7 +981,7 @@ async def _git_clone_or_pull(
     # than a different one moved out of the way (retain it, never restore).
     moved_aside_is_restorable = False
 
-    if dest.is_dir() and (dest / ".git").is_dir():
+    if await asyncio.to_thread(_is_checkout_sync, dest):
         # The credential posture was decided from *git_url* — but a persisted
         # clone pulls from ITS OWN `origin`, which can be a different URL
         # (e.g. a registry replaced with the same app name leaves the old
@@ -1015,7 +1071,10 @@ async def _git_clone_or_pull(
                 }
             moved_aside_is_restorable = True
 
-    if not commit and dest.is_dir() and (dest / ".git").is_dir():
+    # From here to the restoring `try` below, an await after a move-aside would let a
+    # cancel strand the moved checkout outside the `finally` that restores it. A
+    # successful move-aside has just renamed `dest` away, so skip the stat then.
+    if not commit and moved_aside is None and await asyncio.to_thread(_is_checkout_sync, dest):
         # Branch re-convergence only applies to branch-tracking entries. A
         # commit-pinned install never reuses the existing tree (the `if commit:`
         # block below moves it aside and re-fetches detached regardless), so
@@ -1079,7 +1138,7 @@ async def _git_clone_or_pull(
             # strand it as an undiscoverable `.stale-*` sibling.
             moved_aside_is_restorable = True
 
-    if dest.is_dir() and (dest / ".git").is_dir():
+    if moved_aside is None and await asyncio.to_thread(_is_checkout_sync, dest):
         if commit:
             # A PINNED INSTALL NEVER REUSES AN EXISTING TREE.
             #
@@ -1240,7 +1299,7 @@ async def _git_clone_or_pull(
             return None
 
         log_lines.append(f"Cloning {_strip_git_target_userinfo(git_url)} (branch: {branch})...")
-        _ensure_directory(dest.parent)
+        await asyncio.to_thread(_ensure_directory, dest.parent)
         clone_cmd = [
             "git",
             *_HOOKS_NEUTRALIZER_ARGV,
@@ -1397,12 +1456,14 @@ async def _git_clone_or_pull(
                 # Clone did NOT succeed — remove any partial dest and restore
                 # the old checkout so the user's code is not stranded.
                 await _rmtree_force_settled(dest)
+                # A cancel landing on this probe is held until the restore below has run.
+                still_there, cancel_owed = await _probe_settled(_exists_sync, dest)
                 # If dest still exists the removal genuinely could not finish:
                 # `rmtree_force` clears the read-only bit, but a file another
                 # process holds OPEN still refuses to unlink on Windows. Move IT
                 # aside so the restore rename cannot collide. Keep the path inside
                 # app-sources.
-                if dest.exists():
+                if still_there:
                     partial_name = f"{dest.name}.partial-{uuid.uuid4().hex[:8]}"
                     partial_aside = dest.with_name(partial_name)
                     try:
@@ -1434,6 +1495,8 @@ async def _git_clone_or_pull(
                             f"{moved_aside}: {exc}; recover your files from "
                             f"{moved_aside}"
                         )
+                if cancel_owed:
+                    raise asyncio.CancelledError()
 
 
 async def _git_clone_or_pull_with_gh(

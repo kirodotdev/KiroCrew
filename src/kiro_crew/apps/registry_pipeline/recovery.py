@@ -127,8 +127,11 @@ async def _move_checkout_aside(dest: Path, log_lines: list[str]) -> Path | None:
                 continue
         # Settled. The undo-or-log is synchronous, so it runs to completion
         # even under a pending cancellation, then a single CancelledError is
-        # re-raised to the caller.
-        if aside.exists():
+        # re-raised to the caller. That is why the stat below stays on the loop even
+        # though it can block on a hung mount: it runs once, only on a cancel, right
+        # after the worker that renamed this directory returned, and an await here
+        # would let a repeated cancel skip the undo-or-log.
+        if aside.exists():  # on-loop-io-ok: cancel handler, no await may follow settling
             try:
                 aside.rename(dest)
             except OSError as undo_exc:
