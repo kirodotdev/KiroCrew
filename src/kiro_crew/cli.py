@@ -772,6 +772,8 @@ def main() -> None:
         from kiro_crew.mcp_gateway.agent_socket import record_boot_agent_socket
 
         record_boot_agent_socket()
+        # Before the platform boot below can resolve the Kiro home.
+        _isolate_test_mode_kiro_home(args)
 
     # ── Platform context boot (CPP seam) ──
     # Resolve + install the PlatformContext ONCE, before any subcommand spins up
@@ -1304,6 +1306,7 @@ from kiro_crew.cli_gateway_boot import (  # noqa: E402
     _diagnostic_bind_address,
     _diagnostic_port,
     _install_child_watcher,
+    _isolate_test_mode_kiro_home,
     _refuse_unpersistable_data_home,
     _resolve_gateway_args,
 )
