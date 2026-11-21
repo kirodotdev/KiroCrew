@@ -20,7 +20,7 @@ import shutil
 import pytest
 
 from .sensitive_source_and_report_identity_helpers import _build, _posix_only
-from .test_producer import load_build, make_crew, patch_builder_global, sign_plan
+from .test_producer import load_build, make_crew, patch_builder_global, requires_symlinks, sign_plan
 
 
 # ---------------------------------------------------------------------------
@@ -908,6 +908,7 @@ def test_the_chain_walk_runs_before_the_resolving_fence(
     )
 
 
+@requires_symlinks
 def test_the_marker_fallback_refuses_a_redirect_at_the_marker_path(
     tmp_path: pathlib.Path, monkeypatch
 ) -> None:
