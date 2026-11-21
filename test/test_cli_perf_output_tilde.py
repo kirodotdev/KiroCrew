@@ -20,9 +20,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import pytest
-
 from kiro_crew import cli_perf
+from kiro_crew.testing.links import make_dir_link
 
 
 def test_write_artifact_expands_leading_tilde(tmp_path, monkeypatch):
@@ -117,10 +116,8 @@ def test_write_artifact_accepts_linked_parent(tmp_path):
     real_dir = tmp_path / "real"
     real_dir.mkdir()
     linked = tmp_path / "linked"
-    try:
-        linked.symlink_to(real_dir, target_is_directory=True)
-    except OSError:
-        pytest.skip("symlinks are not available on this host")
+    # A junction on Windows (no privilege needed), a symlink elsewhere.
+    make_dir_link(linked, real_dir)
 
     assert cli_perf._write_artifact(linked / "p.folded", "body") is True
     assert (real_dir / "p.folded").read_text(encoding="utf-8") == "body"
