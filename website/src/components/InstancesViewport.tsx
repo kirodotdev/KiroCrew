@@ -94,6 +94,7 @@ import { isElectron, isLinuxFramelessElectron, isWinElectron } from '../lib/elec
 import type { DragGap } from '../lib/dragGaps'
 import { useFocusMode, useFocusChromeVisible, setFocusModeEnabled, setFocusChromeVisible } from '../hooks/useFocusMode'
 import { useChatCompleteNotify } from '../hooks/chatCompleteNotify'
+import { useCrewWarmSet } from '../hooks/useCrewWarmSet'
 
 import { i18nT } from '../i18n/t'
 // Refresh the embedded token once elapsed reaches this fraction of its TTL
@@ -276,6 +277,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   openFromTopBarRef.current = openFromTopBar
   const relayRef = useRef({ crews: relayCrews, tabs: relayTabs })
   relayRef.current = { crews: relayCrews, tabs: relayTabs }
+  const warmSet = useCrewWarmSet()
 
   // Current warm map in a ref so the refresh callback (used by the long-lived
   // postMessage listener) always sees the latest ports without re-subscribing.
@@ -1318,12 +1320,14 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const didAutoWarmRef = useRef(false)
   useEffect(() => {
     const data = instancesQuery.data
-    if (!data || didAutoWarmRef.current) return
+    if (!data || !warmSet || didAutoWarmRef.current) return
     didAutoWarmRef.current = true
     const room = Math.max(0, warmCap - Object.keys(warmRef.current).length)
     if (room <= 0) return
+    // Only crews in the warm set: one outside it would be dropped again at once (useCrewWarmKeeper).
     const candidates = data.instances
       .filter(i => i.status?.state === 'connected' && !warmRef.current[i.id] && i.id !== restoredIdRef.current)
+      .filter(i => warmSet.ssh.includes(i.id))
       .slice(0, room)
     // Timers live in a ref and are cleared only on unmount: this effect re-runs
     // on every instances poll (its deps include the query data), and a cleanup
@@ -1354,7 +1358,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         void autoWarm(inst.id)
       }, i * AUTO_WARM_STAGGER_MS),
     )
-  }, [instancesQuery.data, warmCap, autoWarm])
+  }, [instancesQuery.data, warmSet, warmCap, autoWarm])
 
   const warmIds = useMemo(() => Object.keys(warm), [warm])
   // The src a pane was LOADED with, per id. The last-chat hint is read once per

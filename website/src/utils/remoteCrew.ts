@@ -10,7 +10,7 @@ import { i18nT } from '../i18n/t'
  *  constant it pins, WARM_SET_CAP_AUTO_CEILING in
  *  src/kiro_crew/instances/constants.py. (Python's DEFAULT_WARM_SET_CAP is a
  *  different constant: 0, meaning auto.) */
-export const WARM_SET_CAP_AUTO_CEILING = 10
+export const WARM_SET_CAP_AUTO_CEILING = 5
 
 /** Provisioner id of the built-in EC2 launcher. Mirrors
  *  BUILTIN_PROVISIONER_ID in src/kiro_crew/platform/interfaces.py. */

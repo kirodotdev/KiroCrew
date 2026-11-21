@@ -283,6 +283,15 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
       // dashboard must not show a tab for it.
       return pane && res.ok && !windows.get(endpointId)?.dashboard ? { ...res, window: true } : res;
     },
+    // Load a Crew's pane in the background, for the warm set: only a Crew with no
+    // window, no pane and no open in flight, so it never raises, reloads or
+    // re-mints for a Crew that is already open. Otherwise the same open as a click.
+    async prewarm(endpointId, pane) {
+      if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
+      const existing = windows.get(endpointId);
+      if ((existing && !existing.win.isClosed()) || opening.has(endpointId)) return { ok: false, error: "ALREADY_OPEN" };
+      return once(endpointId, () => openNew(endpointId, pane));
+    },
     reload: reloadCrew,
     // An open pane's handle and the dashboard view it was opened from, or null
     // for a window, a closed pane or no Crew.

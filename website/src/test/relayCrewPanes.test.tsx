@@ -228,7 +228,7 @@ describe('relay Crew panes in the main window', () => {
   it('past the warm cap the least recent hidden pane closes and its tab goes with it, so no tab lacks a pane', async () => {
     mountMain()
     const { api, emit } = installBridge()
-    const ids = ['r1', 'r2', 'r3', 'r4'].slice(0, RELAY_PANE_WARM_CAP + 1)
+    const ids = Array.from({ length: RELAY_PANE_WARM_CAP + 1 }, (_, i) => `r${i + 1}`)
     const store = storeWith(ids, 'r1')
     renderWithProviders(<RelayCrewPaneHost />, { store })
     // Opened in order, then r1 again: r2 is the least recent hidden pane.
@@ -335,14 +335,14 @@ describe('relay pane windows, SSH Crews and the local Crew', () => {
 
   it('a late answer past the warm cap is the one that closes, not a tab the person used', async () => {
     mountMain()
-    const store = storeWith(['r1', 'r2', 'r3'], 'r1')
+    const store = storeWith(Array.from({ length: RELAY_PANE_WARM_CAP }, (_, i) => `r${i + 1}`), 'r1')
     const { api, answer } = deferredBridge()
     renderWithProviders(<RelayCrewPaneHost />, { store })
-    const opening = openRelayCrewTab('r4', 'Four', store.dispatch)
+    const opening = openRelayCrewTab('late', 'Late', store.dispatch)
     act(() => { store.dispatch(relayPaneOpened({ id: 'r2', name: 'R2' })) })
     await answer(0)
     await opening
-    await waitFor(() => expect(api.closePane).toHaveBeenCalledWith('r4'))
+    await waitFor(() => expect(api.closePane).toHaveBeenCalledWith('late'))
     expect(api.closePane).toHaveBeenCalledTimes(1)
     expect(store.getState().instances.relayActive).toBe('r2')
   })

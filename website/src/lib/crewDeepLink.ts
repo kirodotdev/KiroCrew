@@ -17,6 +17,7 @@ import { setAgentSwitchNotice, switchSlot } from '../store/chatSlice'
 import { i18nT } from '../i18n/t'
 import { useSelectInstance } from '../hooks/useSelectInstance'
 import { autoConnectEnabled } from '../hooks/useAutoConnectInstances'
+import { noteCrewOpened, sshCrewKey } from './crewWarmSet'
 import { connectInstanceInto } from './connectInstance'
 import { isEmbeddedPane } from './embedded'
 import { paneOriginFor } from './paneCache'
@@ -132,7 +133,10 @@ export function useCrewDeepLink(): (path: string) => boolean {
       if (superseded()) return
       const autoConnect = autoConnectEnabled()
       if (!autoConnect) {
-        const st = await connectInstanceInto(dispatch, inst.id, 'link', { onlyIfConnected: true }).catch(() => null)
+        // Recorded as opened only once admitted and still the current link, before its warm entry
+        // exists, so the warm set keeps that entry and a refused or superseded link moves nothing.
+        const beforeWarm = () => { if (!superseded()) noteCrewOpened(sshCrewKey(inst.id)) }
+        const st = await connectInstanceInto(dispatch, inst.id, 'link', { onlyIfConnected: true, beforeWarm }).catch(() => null)
         if (st?.state !== 'connected' || !st.local_port || !st.token) {
           refuse(i18nT('store.chatSlice.crew_link_not_connected'))
           return
