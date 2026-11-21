@@ -1273,6 +1273,11 @@ async def run_browser_op(
     # A note left for a parked poll that never came back to take it reaches this op.
     # The note is the person's word to the Bot: an app's op leaves it for the Bot.
     said = None if isinstance(request, GatewayCaller) else hub.take_handback(key)
+    if result.get("ok") and sites and sites != browser_sites.NO_PAGES:
+        # An app's own agent browsed: its backend may ask to hear when the media ends.
+        from kiro_crew.dashboard.handlers import browser_media_watch  # noqa: PLC0415
+
+        browser_media_watch.ensure_watch(state, key)
     if result.get("ok"):
         answer: dict[str, Any] = {"ok": True, "result": result}
         if said is not None:

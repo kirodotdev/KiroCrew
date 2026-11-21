@@ -1672,6 +1672,7 @@ root (validated against `HooksConfig._HOOK_PATH_RE`).
 | `backend.hooks.routes` | string | `module.path:callable` that registers handlers into the Gateway's in-process `RouteRegistry` catch-all dispatcher |
 | `backend.hooks.on_startup` | string | `module.path:callable` invoked when the app's hooks are wired up |
 | `backend.hooks.on_shutdown` | string | `module.path:callable` invoked when the app is disabled/torn down |
+| `backend.hooks.on_browser_media_ended` | string | `module.path:callable` called with `(ctx, event)` when media ends in the browser tab of one of the app's own slots; needs approved `permissions.browserSites`. Event shape: [API reference, Browser Media](api-reference.md#browser-media) |
 
 **The `routes` callable** receives the app context and returns a list of routes.
 Each route is any object with three attributes, so the app declares its own

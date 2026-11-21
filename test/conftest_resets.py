@@ -225,6 +225,29 @@ def _forget_tracing_switch():
 
 
 @per_test_guard
+def _reset_browser_media_watches():
+    """Start each test with no media watch and no ending already handed over.
+
+    ``dashboard.handlers.browser_media_watch`` keeps one task per slot key and the
+    ending each slot last reported, process-wide. Tests reuse slot keys, so a task
+    from a closed loop would stop ``ensure_watch`` starting one, and a kept ending
+    would hide the next test's first one.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.dashboard.handlers.browser_media_watch")
+        if module is not None:
+            module._WATCHES.clear()
+            module._ENDED.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _forget_pending_trace_links():
     """Start each test with no pending worker-creation or patrol report links.
 

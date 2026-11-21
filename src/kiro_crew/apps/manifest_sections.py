@@ -489,6 +489,9 @@ class HooksConfig:
     routes: str = ""  # e.g. "backend.routes:register_routes"
     on_startup: str = ""  # e.g. "backend.hooks:on_startup"
     on_shutdown: str = ""  # e.g. "backend.hooks:on_shutdown"
+    #: Called with ``(ctx, event)`` when a browser tab the app's own agent opened
+    #: finishes playing (``dashboard/handlers/browser_media_watch.py``).
+    on_browser_media_ended: str = ""  # e.g. "backend.hooks:on_media_ended"
 
     # Validation pattern: dotted identifiers separated by colon
     _HOOK_PATH_RE = re.compile(
@@ -498,7 +501,7 @@ class HooksConfig:
     def validate(self) -> list[str]:
         """Validate hook path formats. Returns list of errors."""
         errors: list[str] = []
-        for field_name in ("routes", "on_startup", "on_shutdown"):
+        for field_name in ("routes", "on_startup", "on_shutdown", "on_browser_media_ended"):
             value = getattr(self, field_name)
             if value and not self._HOOK_PATH_RE.match(value):
                 errors.append(
@@ -515,6 +518,8 @@ class HooksConfig:
             d["on_startup"] = self.on_startup
         if self.on_shutdown:
             d["on_shutdown"] = self.on_shutdown
+        if self.on_browser_media_ended:
+            d["on_browser_media_ended"] = self.on_browser_media_ended
         return d
 
     @classmethod
@@ -523,6 +528,7 @@ class HooksConfig:
             routes=str(data.get("routes", "")),
             on_startup=str(data.get("on_startup", "")),
             on_shutdown=str(data.get("on_shutdown", "")),
+            on_browser_media_ended=str(data.get("on_browser_media_ended", "")),
         )
 
 
