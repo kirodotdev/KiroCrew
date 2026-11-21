@@ -2945,7 +2945,10 @@ document validates. Otherwise it does three things, in order:
   `agent.sandbox_allow_no_isolation`, `agent.sandbox_allow_unsandboxed_exec`,
   `agent.member_acp_backend`, `agent.default_agent`, `session.pool_size` /
   `pool_agent` / `pool_ttl_secs`, `workspaces` and `default_workspace` (the last
-  three because the warm pool captures its agent and cwd). `refresh_defaults` is the **live-session-preserving** path —
+  three because the warm pool captures its agent and cwd). A per-crew
+  `agents.<name>.acp_backend` or `agents.<name>.reasoning_effort` leaf takes
+  the same route, since the factory reads both pins from the config it was
+  built with. `refresh_defaults` is the **live-session-preserving** path —
   it rebuilds the factory, re-derives the pool and drains the warm pool, but
   never touches a registered session, so in-flight turns keep running and only
   NEW sessions see the new defaults. The one value that does reach a running
