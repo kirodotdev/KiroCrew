@@ -52,6 +52,7 @@ vi.mock('../api/client', () => ({
   api: {
     tailnetMobile: vi.fn(),
     tailnetMobileConfigure: vi.fn(),
+    tailnetMobileHostSetup: vi.fn(),
     restartGateway: vi.fn(),
     tailnetMobilePublish: vi.fn(),
     tailnetMobileUnpublish: vi.fn(),
@@ -244,6 +245,91 @@ describe('TailnetMobileCard — install invitation', () => {
     expect(screen.getByRole('button', { name: /Download Tailscale/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Hide' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Re-check/ })).toBeNull()
+  })
+})
+
+describe('TailnetMobileCard — setup on a headless host', () => {
+  // On a remote host with no desktop (an EC2 Remote Crew), the download link
+  // installs Tailscale on the browser's own computer, not on the box. The
+  // server says `host_setup` when the box can do it itself.
+  const AUTH_URL = 'https://login.tailscale.com/a/zzz-login'
+
+  it('offers to install on the machine instead of a download link', async () => {
+    window.localStorage.setItem(LS_KEY, '1')
+    mockApi.tailnetMobileHostSetup.mockResolvedValue({ ok: true, detail: '' })
+    await mount(data({ step: 'install', host_setup: true }))
+
+    expect(screen.queryByRole('link', { name: /Download Tailscale/ })).toBeNull()
+    expect(screen.queryByText('Download Tailscale')).toBeNull()
+    // One line only, and only the fact a reader cannot infer: it is the server.
+    expect(screen.getByText('Install Tailscale on the server')).toBeInTheDocument()
+    expect(
+      screen.getByText(/This installs it on the server, not on this computer/),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Tailscale puts this computer and your phone/)).toBeNull()
+    // Still two buttons, so max-two-buttons-per-row holds.
+    expect(screen.getAllByRole('button')).toHaveLength(2)
+
+    fireEvent.click(screen.getByRole('button', { name: /Install on the server/ }))
+    await waitFor(() => expect(mockApi.tailnetMobileHostSetup).toHaveBeenCalledTimes(1))
+    // The result is read back through the status query.
+    await waitFor(() => expect(mockApi.tailnetMobile).toHaveBeenCalledTimes(2))
+  })
+
+  it('keeps the download link when the host cannot set itself up', async () => {
+    window.localStorage.setItem(LS_KEY, '1')
+    await mount(data({ step: 'install', host_setup: false }))
+    expect(screen.getByRole('button', { name: /Download Tailscale/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Install on the server/ })).toBeNull()
+  })
+
+  it('starts the service on the machine', async () => {
+    mockApi.tailnetMobileHostSetup.mockResolvedValue({ ok: true, detail: '' })
+    await mount(
+      data({ step: 'start_daemon', host_setup: true, detail: 'zzz its daemon did not answer' }),
+    )
+    // The body already says the service is not running; no daemon jargon under it.
+    expect(screen.queryByText('zzz its daemon did not answer')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Start Tailscale/ }))
+    await waitFor(() => expect(mockApi.tailnetMobileHostSetup).toHaveBeenCalledTimes(1))
+  })
+
+  it('shows the error the machine reported', async () => {
+    mockApi.tailnetMobileHostSetup.mockResolvedValue({ ok: false, detail: 'zzz dnf failed' })
+    await mount(data({ step: 'start_daemon', host_setup: true }))
+    fireEvent.click(screen.getByRole('button', { name: /Start Tailscale/ }))
+    expect(await screen.findByText('zzz dnf failed')).toBeInTheDocument()
+    // Through ErrorNotice, so the failure carries the ask-the-agent hand-off.
+    expect(screen.getByTestId('tailnet-mobile-error')).toBeInTheDocument()
+    // A plain lead line comes before the command's own error text.
+    expect(screen.getByText('Couldn’t finish setting up Tailscale on the server.')).toBeInTheDocument()
+  })
+
+  it('asks for a sign-in link, then shows it as a link to open', async () => {
+    mockApi.tailnetMobileHostSetup.mockResolvedValue({ ok: true, detail: '' })
+    await mount(
+      data({ step: 'sign_in', host_setup: true, detail: 'zzz this machine is not signed in' }),
+    )
+    expect(screen.queryByRole('link')).toBeNull()
+    expect(screen.queryByText('zzz this machine is not signed in')).toBeNull()
+
+    mockApi.tailnetMobile.mockResolvedValue(
+      data({ step: 'sign_in', host_setup: true, auth_url: AUTH_URL }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Get sign-in link/ }))
+
+    const link = await screen.findByRole('link', { name: /Open sign-in link/ })
+    expect(link).toHaveAttribute('href', AUTH_URL)
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', expect.stringContaining('noopener'))
+  })
+
+  it('never renders a sign-in link that is not https', async () => {
+    await mount(
+      data({ step: 'sign_in', host_setup: true, auth_url: 'javascript:alert(1)' }),
+    )
+    expect(screen.queryByRole('link')).toBeNull()
+    expect(screen.getByRole('button', { name: /Get sign-in link/ })).toBeInTheDocument()
   })
 })
 

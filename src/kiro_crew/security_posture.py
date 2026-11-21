@@ -1393,6 +1393,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # bounded tail is written to the gateway debug log; an auth-key or
         # registry URL in that stderr must not reach the log ring / /api/logs.
         "dashboard/tailnet.py",
+        # Same shape for the headless Tailscale install: a failed package or
+        # tailscale step's stderr is redacted before its tail is returned to
+        # the owner's own phone-access card as the error line.
+        "dashboard/tailnet_host_setup.py",
         "env.py",
         # Operator's own terminal during `kirocrew setup`: redacts npm's and
         # electron-builder's stderr (a registry URL can carry a token) before

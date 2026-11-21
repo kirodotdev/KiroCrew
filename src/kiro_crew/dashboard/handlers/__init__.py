@@ -549,6 +549,9 @@ from kiro_crew.dashboard.handlers.steering import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.tailnet import (  # noqa: E402, F401
     api_tailnet_status,
 )
+from kiro_crew.dashboard.handlers.tailnet_host_setup import (  # noqa: E402, F401
+    api_tailnet_mobile_host_setup,
+)
 from kiro_crew.dashboard.handlers.tailnet_mobile import (  # noqa: E402, F401
     api_tailnet_mobile_configure,
     api_tailnet_mobile_publish,

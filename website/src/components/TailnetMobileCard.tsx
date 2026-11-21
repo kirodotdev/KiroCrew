@@ -28,6 +28,7 @@ import {
 } from '../api/client'
 import { Badge, Btn, Card, CardTitle } from './ui'
 import Clickable from './Clickable'
+import ErrorNotice from './ErrorNotice'
 import { SettingRef } from './settingRef/SettingRef'
 import { i18nT } from '../i18n/t'
 import { WorkConfirmDeclined } from '../utils/workInFlight'
@@ -122,6 +123,15 @@ const STEP_BODY_KEY: Record<TailnetMobileStep, string> = {
   ready: 'components.tailnetMobile.ready_body',
 }
 
+/** The steps a headless host finishes by itself (`host_setup`). Each shows its
+ *  title and button, plus a line only where it says something the reader
+ *  cannot infer: where Tailscale goes, and which account approves it. */
+const HOST_SETUP_STEPS = new Set<TailnetMobileStep>(['install', 'start_daemon', 'sign_in'])
+const HOST_SETUP_BODY_KEY: Partial<Record<TailnetMobileStep, string>> = {
+  install: 'components.tailnetMobile.install_host_body',
+  sign_in: 'components.tailnetMobile.sign_in_host_body',
+}
+
 /** Which steps are a normal part of setting mobile access up (neutral framing)
  *  versus a state that needs attention. Drives the badge only. */
 const ATTENTION_STEPS = new Set<TailnetMobileStep>([
@@ -161,7 +171,9 @@ const INVITE_EXPANDED_LS_KEY = 'mc-tailnet-mobile-invite-expanded'
  *
  * Tailscale installation, daemon startup, sign-in, MagicDNS, and tailnet-wide
  * HTTPS consent remain explicit prerequisites because the gateway cannot safely
- * complete them on a user's behalf. Once those are satisfied, these three steps
+ * complete them on a user's behalf. The one exception is a headless host
+ * (`host_setup`), where the first three are a button each: see `hostSetup`.
+ * Once those are satisfied, these three steps
  * are one operation from the operator's point of view: trust the daemon-derived
  * name, restart through the formal single-flight path, publish through Tailscale
  * Serve, and mint the QR after the replacement gateway proves readiness.
@@ -280,6 +292,14 @@ export function TailnetMobileCard() {
   const qc = useQueryClient()
   const [qr, setQr] = useState<TailnetMobileQr | null>(null)
   const [actionError, setActionError] = useState('')
+  // A plain lead line for a failed on-server step; the command's own error
+  // text follows it as the message.
+  const [errorTitle, setErrorTitle] = useState('')
+  /** The one writer for the error line, so a title never outlives its error. */
+  const showError = (message: string, title = '') => {
+    setActionError(message)
+    setErrorTitle(message ? title : '')
+  }
   const [inviteExpanded, setInviteExpanded] = useState(readInviteExpanded)
   const [setupRestarting, setSetupRestarting] = useState(false)
   // The active slot's key rides the mint so the server's restricted-session
@@ -311,11 +331,26 @@ export function TailnetMobileCard() {
   const unpublish = useMutation({
     mutationFn: () => api.tailnetMobileUnpublish(),
     onSuccess: (res) => {
-      setActionError(res.ok ? '' : res.detail)
+      showError(res.ok ? '' : res.detail)
       setQr(null)
       invalidate()
     },
-    onError: (err: Error) => setActionError(err.message),
+    onError: (err: Error) => showError(err.message),
+  })
+
+  /** Install, start or sign in to Tailscale on a headless host (`host_setup`).
+   *  On a remote host the download link would install Tailscale on the browser's
+   *  own computer, so the gateway does it on its machine instead. The sign-in
+   *  link it returns is read back through the status query. */
+  const hostSetup = useMutation({
+    mutationFn: () => api.tailnetMobileHostSetup(),
+    onMutate: () => showError(''),
+    onSuccess: (res) => {
+      showError(res.ok ? '' : res.detail, i18nT('components.tailnetMobile.host_setup_failed'))
+      invalidate()
+    },
+    onError: (err: Error) =>
+      showError(err.message, i18nT('components.tailnetMobile.host_setup_failed')),
   })
 
   /** Finish every gateway-owned step behind one click.
@@ -379,7 +414,7 @@ export function TailnetMobileCard() {
 
       return api.tailnetMobileQr(mintSessionKey)
     },
-    onMutate: () => setActionError(''),
+    onMutate: () => showError(''),
     onSuccess: (res) => {
       setQr(res)
       invalidate()
@@ -387,7 +422,7 @@ export function TailnetMobileCard() {
     onError: (err: Error) => {
       // Declining the "work is running" confirmation stops the setup quietly.
       if (err instanceof WorkConfirmDeclined) return
-      setActionError(setupErrorMessage(err))
+      showError(setupErrorMessage(err))
     },
     onSettled: () => setSetupRestarting(false),
   })
@@ -466,7 +501,17 @@ export function TailnetMobileCard() {
   const Icon = STEP_ICON[step]
   const busy =
     unpublish.isPending ||
-    setup.isPending
+    setup.isPending ||
+    hostSetup.isPending
+  const onHost = Boolean(data.host_setup) && HOST_SETUP_STEPS.has(step)
+  // The download flow says "install to use this on your phone"; the headless
+  // flow names where Tailscale goes, because it is not the reader's computer.
+  const titleKey =
+    data.host_setup && step === 'install'
+      ? 'components.tailnetMobile.install_host_title'
+      : STEP_TITLE_KEY[step]
+  // Server-validated already; checked again so only an https link is ever rendered.
+  const authUrl = data.auth_url?.startsWith('https://') ? data.auth_url : ''
 
   return (
     <Card>
@@ -485,18 +530,24 @@ export function TailnetMobileCard() {
       <div className="flex items-start gap-3">
         <Icon className="lucide-inline mt-0.5 shrink-0" />
         <div className="min-w-0 flex-1">
-          <div className="font-medium">{i18nT(STEP_TITLE_KEY[step])}</div>
-          <p className="mt-1 text-muted">
-            {/* The one body whose remedy is a setting, so it links to it. */}
-            {step === 'untrusted_cli' ? (
-              <Trans
-                i18nKey="components.tailnetMobile.untrusted_cli_body"
-                components={{ settingRef: <SettingRef configKey="dashboard.url" /> }}
-              />
-            ) : (
-              i18nT(STEP_BODY_KEY[step])
-            )}
-          </p>
+          <div className="font-medium">{i18nT(titleKey)}</div>
+          {onHost ? (
+            HOST_SETUP_BODY_KEY[step] ? (
+              <p className="mt-1 text-muted">{i18nT(HOST_SETUP_BODY_KEY[step])}</p>
+            ) : null
+          ) : (
+            <p className="mt-1 text-muted">
+              {/* The one body whose remedy is a setting, so it links to it. */}
+              {step === 'untrusted_cli' ? (
+                <Trans
+                  i18nKey="components.tailnetMobile.untrusted_cli_body"
+                  components={{ settingRef: <SettingRef configKey="dashboard.url" /> }}
+                />
+              ) : (
+                i18nT(STEP_BODY_KEY[step])
+              )}
+            </p>
+          )}
 
           {/* The publish the gateway will not run here, for the operator to run
               by hand; the body's "the command below" points at it. */}
@@ -516,7 +567,8 @@ export function TailnetMobileCard() {
           {/* The daemon's own words, never rephrased — the only part that stays
               correct if Tailscale rewords its errors. Shown only where it is
               about the step being asked for (see DETAIL_STEPS). */}
-          {data.detail && DETAIL_STEPS.has(step) ? (
+          {/* Not on a headless host's own steps: their button is the remedy. */}
+          {data.detail && DETAIL_STEPS.has(step) && !onHost ? (
             <p className="mt-2 text-muted">
               <code className="select-all break-all min-w-0">{data.detail}</code>
             </p>
@@ -611,12 +663,21 @@ export function TailnetMobileCard() {
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {step === 'install' ? (
               <>
-                <a href={data.download_url} target="_blank" rel="noopener noreferrer">
-                  <Btn primary>
+                {data.host_setup ? (
+                  <Btn primary disabled={busy} onClick={() => hostSetup.mutate()}>
                     <Download className="lucide-inline" />
-                    {i18nT('components.tailnetMobile.download')}
+                    {hostSetup.isPending
+                      ? i18nT('components.tailnetMobile.working')
+                      : i18nT('components.tailnetMobile.install_here')}
                   </Btn>
-                </a>
+                ) : (
+                  <a href={data.download_url} target="_blank" rel="noopener noreferrer">
+                    <Btn primary>
+                      <Download className="lucide-inline" />
+                      {i18nT('components.tailnetMobile.download')}
+                    </Btn>
+                  </a>
+                )}
                 {/* Expanding must not be a one-way door — an operator who opened
                     this out of curiosity gets the row back, not a panel they are
                     stuck with for the rest of the session. */}
@@ -624,6 +685,33 @@ export function TailnetMobileCard() {
                   {i18nT('components.tailnetMobile.hide_qr')}
                 </Btn>
               </>
+            ) : null}
+
+            {step === 'start_daemon' && data.host_setup ? (
+              <Btn primary disabled={busy} onClick={() => hostSetup.mutate()}>
+                <Play className="lucide-inline" />
+                {hostSetup.isPending
+                  ? i18nT('components.tailnetMobile.working')
+                  : i18nT('components.tailnetMobile.start_here')}
+              </Btn>
+            ) : null}
+
+            {step === 'sign_in' && data.host_setup ? (
+              authUrl ? (
+                <a href={authUrl} target="_blank" rel="noopener noreferrer">
+                  <Btn primary>
+                    <LogIn className="lucide-inline" />
+                    {i18nT('components.tailnetMobile.open_sign_in')}
+                  </Btn>
+                </a>
+              ) : (
+                <Btn primary disabled={busy} onClick={() => hostSetup.mutate()}>
+                  <LogIn className="lucide-inline" />
+                  {hostSetup.isPending
+                    ? i18nT('components.tailnetMobile.working')
+                    : i18nT('components.tailnetMobile.get_sign_in_link')}
+                </Btn>
+              )
             ) : null}
 
             {step === 'untrusted_cli' ? (
@@ -678,7 +766,15 @@ export function TailnetMobileCard() {
           </div>
 
           {actionError ? (
-            <p className="mt-2 text-danger">{actionError}</p>
+            <ErrorNotice
+              variant="inline"
+              className="mt-2"
+              title={errorTitle || undefined}
+              messagePlacement="below"
+              message={actionError}
+              askAgent
+              testId="tailnet-mobile-error"
+            />
           ) : null}
 
           {ONE_CLICK_SETUP_STEPS.has(step) ? (

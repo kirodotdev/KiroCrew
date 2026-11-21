@@ -10462,7 +10462,16 @@
       "automatic_https": "Nachdem HTTPS für dieses Tailnet aktiviert wurde, erstellt und erneuert Tailscale das private Zertifikat automatisch.",
       "setting_up": "Telefonzugriff wird eingerichtet…",
       "setup_action": "Einrichten & QR-Code anzeigen",
-      "setup_timeout": "Der Telefonzugriff wurde nicht bereit. Prüfe die Einrichtung und versuche es erneut."
+      "setup_timeout": "Der Telefonzugriff wurde nicht bereit. Prüfe die Einrichtung und versuche es erneut.",
+      "install_host_title": "Tailscale auf dem Server installieren",
+      "install_host_body": "Tailscale verbindet den Server und dein Telefon über ein privates Netzwerk. Es wird auf dem Server installiert, nicht auf diesem Computer.",
+      "sign_in_host_body": "Bestätige den Server mit dem Konto deines Telefons.",
+      "install_here": "Auf dem Server installieren",
+      "start_here": "Tailscale starten",
+      "get_sign_in_link": "Anmeldelink holen",
+      "open_sign_in": "Anmeldelink öffnen",
+      "working": "Wird auf dem Server ausgeführt…",
+      "host_setup_failed": "Tailscale konnte auf dem Server nicht fertig eingerichtet werden."
     },
     "sessionTabStrip": {
       "close_tab_hint": "Schließt diesen Tab. Die Sitzung bleibt in der Seitenleiste.",

@@ -55,7 +55,7 @@ from kiro_crew.config.loader import (
     config_path,
     update_config_locked,
 )
-from kiro_crew.dashboard import tailnet, tailnet_serve
+from kiro_crew.dashboard import tailnet, tailnet_host_setup, tailnet_serve
 from kiro_crew.dashboard.boot_id import current_boot_id
 from kiro_crew.dashboard.handlers._shared import _caller_bounds, _is_restricted_session
 from kiro_crew.dashboard.handlers.agents import _get_config_lock
@@ -292,6 +292,15 @@ async def api_tailnet_mobile_status(request: web.Request) -> web.Response:
     port = _dashboard_port(request)
     live = await _live_state(request, port)
     probe = live.probe
+    # On a headless Linux host the card sets Tailscale up on the box itself
+    # (handlers/tailnet_host_setup.py), because the download link would install
+    # it on the browser's computer instead. Asked only on the steps it serves.
+    host_setup = False
+    auth_url = ""
+    if live.step in ("install", "start_daemon", "sign_in"):
+        host_setup = await asyncio.to_thread(tailnet_host_setup.host_plan) is not None
+        if host_setup and live.step == "sign_in":
+            auth_url = await asyncio.to_thread(tailnet_host_setup.current_auth_url)
     # ONLY the fields the card renders. The status body once mirrored the whole
     # probe (installed/reachable/logged_in/trusted/startup_trusted/published/
     # governance_pinned) plus serve_port/dashboard_port/qr_ttl_secs/host, but
@@ -339,6 +348,11 @@ async def api_tailnet_mobile_status(request: web.Request) -> web.Response:
                 else ""
             ),
             "download_url": TAILSCALE_DOWNLOAD_URL,
+            # True when this host can install, start and sign in to Tailscale
+            # by itself; the card then offers that instead of the download.
+            "host_setup": host_setup,
+            # The login URL the daemon is waiting on, on ``sign_in`` only.
+            "auth_url": auth_url,
         }
     )
 
