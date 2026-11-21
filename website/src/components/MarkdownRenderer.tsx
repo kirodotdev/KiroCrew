@@ -106,6 +106,7 @@ import { APPROVAL_COMMAND_TAG } from '../lib/approvalNotificationBody'
 import { FormattedPayloadCard } from '../pages/chat/ToolDetails'
 import { isGenericLang, looksLikeMarkdown } from './markdown/markdownSniff'
 import { ALLOWED_TAGS, VERBATIM_CONTENT_TAGS, rehypeSanitize, remarkVerbatimUnknownTags } from './markdown/sanitize'
+import { rehypeContentDirection } from './markdown/contentDirection'
 import { holdsSessionRef, rehypeMarkFencedCode, rehypeSessionRefPunctuation, rehypeSourcepos, rehypeStableRootKeys, rehypeUnwrapBlocks, remarkSoftBreaks, SESSION_REF_TRAILING } from './markdown/treeTransforms'
 import { GLOW_TAIL_CHARS, REVEAL_IDLE_SETTLE_MS, rehypeStreamingCaret, rehypeStreamingGlow, rehypeStreamingReveal } from './markdown/streamingEffects'
 import { deferIncompleteStreamingTable, holdPartialTableRow } from './markdown/streamingTable'
@@ -1006,7 +1007,7 @@ const ParsedMarkdown = memo(function ParsedMarkdown({ text, sourcePos, glow, smo
   // Last, so it wraps the root shape every other plugin has finished producing:
   // an earlier position would let a later plugin read `div` where it expects the
   // block itself.
-  rehypePlugins = [...rehypePlugins, rehypeStableRootKeys]
+  rehypePlugins = [...rehypePlugins, rehypeContentDirection, rehypeStableRootKeys]
   return (
     <ReactMarkdown remarkPlugins={textPreviews ? (softBreaks ? REMARK_PLUGINS_WITH_BREAKS_TEXT_PREVIEWS : REMARK_PLUGINS_TEXT_PREVIEWS) : (softBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS)} rehypePlugins={rehypePlugins} urlTransform={urlTransform} components={MD_COMPONENTS}>
       {text}
@@ -1532,7 +1533,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
 
   if (rawMode) {
     // The raw view is the message's content too: its source is what a message action reads.
-    return <pre data-message-body="" className="text-[13px] font-mono whitespace-pre-wrap break-words leading-relaxed text-muted">{content}</pre>
+    return <pre dir="auto" data-message-body="" className="text-[13px] font-mono whitespace-pre-wrap break-words leading-relaxed text-muted text-start [unicode-bidi:plaintext]">{content}</pre>
   }
 
   // Root class drives the per-char entrance keyframe (.ft-word descendants

@@ -618,13 +618,14 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
     const renderEditField = (bind: EditFieldBinding) => (
       <textarea
         ref={taRef}
+        dir="auto"
         rows={1}
         aria-label={i18nT('pages.chat.userMessage.edit_message')}
         // focus-cue-ok: the cue is the wrapping .edit-grow frame above, which
         // paints a 2px accent outline for the whole edit session; a second
         // ring on the textarea would double-paint the one control.
         className="bg-transparent text-card-fg resize-none overflow-hidden focus:outline-hidden leading-relaxed"
-        style={{ fontSize: 'var(--mc-message-font-size, 14px)' }}
+        style={{ fontSize: 'var(--mc-message-font-size, 14px)', unicodeBidi: 'plaintext', textAlign: 'start' }}
         value={draft}
         onChange={bind.onChange}
         {...ime.bindComposition<HTMLTextAreaElement>({ onFocus: bind.onFocus, onBlur: bind.onBlur })}
@@ -652,9 +653,9 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
             Content Width, via the row's --mc-content-width). No JS measurement. */}
         <div
           ref={editBubbleRef}
-          className="edit-grow user-bubble px-4 py-2 leading-relaxed rounded-xl bg-card text-card-fg overflow-hidden min-w-0 w-fit max-w-full outline-solid outline-2 -outline-offset-2 outline-accent/60 focus-within:outline-accent"
+          className="edit-grow after:[unicode-bidi:plaintext] user-bubble px-4 py-2 leading-relaxed rounded-xl bg-card text-card-fg overflow-hidden min-w-0 w-fit max-w-full outline-solid outline-2 -outline-offset-2 outline-accent/60 focus-within:outline-accent"
           data-replicated-value={draft}
-          style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}
+          style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)', textAlign: 'start' }}
         >
           {editSkillPicker
             ? <EditSkillPicker target={editSkillPicker} value={draft} onValueChange={setDraft} textareaRef={taRef} anchorRef={editBubbleRef} renderField={renderEditField} />

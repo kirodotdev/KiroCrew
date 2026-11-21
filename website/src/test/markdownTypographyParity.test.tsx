@@ -138,7 +138,7 @@ describe('markdown and Office preview typography parity', () => {
     expect(cls(office, 'td')).toBe(`${MD_TABLE_CELL_CLS} whitespace-pre-line align-top`)
   })
 
-  it('keeps the class strings the two surfaces rendered before they shared an owner', () => {
+  it('pins the typography and logical list indentation shared by both surfaces', () => {
     // Literal values, so a change to the shared owner is a visible restyle of
     // both surfaces in review rather than a silent one.
     expect(MD_HEADING_CLS).toEqual([
@@ -149,11 +149,11 @@ describe('markdown and Office preview typography parity', () => {
       'text-sm font-medium leading-[1.35] mt-[1.75em] mb-[0.75em] text-text-strong',
       'text-[13px] font-medium leading-[1.35] mt-[1.8846em] mb-[0.8077em] text-muted',
     ])
-    expect(MD_UL_CLS).toBe('list-disc pl-8 mt-[0.375em] mb-0 [&>li+li]:mt-[0.375em] marker:text-muted')
-    expect(MD_OL_CLS).toBe('list-decimal pl-8 mt-[0.375em] mb-0 [&>li+li]:mt-[0.375em] marker:text-muted')
-    expect(MD_LIST_ITEM_CLS).toBe('text-sm leading-normal')
-    expect(MD_TABLE_HEAD_CELL_CLS).toBe('text-left text-text-strong text-[13px] font-semibold pl-0 pr-[1.0769em] py-[0.5385em] border-b border-border-strong')
-    expect(MD_TABLE_CELL_CLS).toBe('pl-0 pr-[1em] py-[0.625em] border-b border-border text-sm leading-normal')
+    expect(MD_UL_CLS).toBe('list-disc ps-0 mt-[0.375em] mb-0 [&>li+li]:mt-[0.375em] marker:text-muted')
+    expect(MD_OL_CLS).toBe('list-decimal ps-0 mt-[0.375em] mb-0 [&>li+li]:mt-[0.375em] marker:text-muted')
+    expect(MD_LIST_ITEM_CLS).toBe('text-sm leading-normal text-start ms-8')
+    expect(MD_TABLE_HEAD_CELL_CLS).toBe('text-start text-text-strong text-[13px] font-semibold pl-0 pr-[1.0769em] py-[0.5385em] border-b border-border-strong')
+    expect(MD_TABLE_CELL_CLS).toBe('pl-0 pr-[1em] py-[0.625em] border-b border-border text-sm leading-normal text-start')
     expect(MD_STRONG_CLS).toBe('font-semibold text-text-strong')
     expect(MD_EM_CLS).toBe('italic')
   })

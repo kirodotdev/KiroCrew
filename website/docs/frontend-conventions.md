@@ -261,6 +261,7 @@ and every other concern has one owner under `components/markdown/`.
 | `markdown/linkTargets.ts`, `markdown/pathReferences.ts` | what a link or code span points at: artifact routes, unfurl eligibility, open sessions, sidebar folder paths (folder-chip resolution); path candidates, `file:line` suffixes, probe resolution and activation |
 | `markdown/linkAddressTip.tsx` | a link's address bubble: which links show their address (`linkAddress`), the hover pause, and stepping aside for an app's link-preview card |
 | `markdown/sanitize.ts` | the tag and attribute allowlist (`rehypeSanitize`) and `remarkVerbatimUnknownTags` |
+| `markdown/contentDirection.ts` | semantic direction for sanitized prose and technical text, and direction/language attributes forwarded by styled overrides |
 | `markdown/treeTransforms.ts` | fenced-code marking, block unwrapping, soft breaks, source positions, position-stable root keys |
 | `markdown/streamingEffects.ts` | the streaming tail's glow, reveal and caret |
 | `markdown/linkBoundaryRepair.ts` | the source-level link repairs gated on remark's own parse: CJK autolink boundaries and refused link destinations |
@@ -273,6 +274,32 @@ and every other concern has one owner under `components/markdown/`.
 | `markdown/ImgWithFallback.tsx`, `markdown/remoteMedia.tsx` | images and local video and audio players (local-path routing, the layout reserve for an image or a video, the broken-image chip) and the click-to-load gate for remote images, video and audio |
 | `markdown/MermaidBlock.tsx` | lazily loaded mermaid, its `initialize` config (`securityLevel: 'strict'`), and the diagram's box and font gates, source view and downloads |
 | `markdown/Lightbox.tsx` | the image viewer and `dispatchLightbox` |
+
+Prose blocks resolve their own direction with the browser's native first-strong
+algorithm; an explicitly authored direction on a block or container takes
+precedence. A detached `bdi` and `:dir()` resolve sanitized eligible text before
+generated descendant direction attributes can hide it from the parent. This needs
+no document insertion or layout read. Environments without `:dir()` retain native
+`dir="auto"` as a fallback. Links isolate their labels, while code, math, commands
+and diffs keep LTR geometry. List indentation belongs to each
+item's inline start, so mixed Hebrew/English items retain their own marker gutter.
+Nested paragraphs and quotes resolve independently. Authored direction boundaries,
+`bdi` and technical islands do not supply surrounding prose direction.
+Table cells resolve text direction without changing column order; column gaps
+remain physical so adjacent RTL/LTR cells retain their spacing. Authored table
+alignment is preserved. These rules also apply to native Markdown previews.
+
+Textarea composers and their paste mirrors share `dir="auto"`,
+`unicode-bidi: plaintext` and start alignment. Message-edit sizing mirrors use the
+same paragraph layout. Lexical paragraphs retain native `dir="auto"` and use
+`unicode-bidi: plaintext` with start alignment, so each newline resolves its own
+first-strong direction even when the editor stores multiple lines in one paragraph.
+Run `RTL_LEXICAL=1 node scripts/verify-hebrew-content.mjs <vite-url> <output-dir>`
+for restored and typed blank-line drafts, visual line ordering, selection and exact
+submission; set `RTL_BROWSER=webkit` to qualify WebKit too. Without `RTL_LEXICAL`,
+the harness retains its five textarea cases.
+Direction is presentation only: sending, copying and restoring a draft preserve
+the logical text. Session titles and tool labels isolate text from surrounding controls.
 
 Imports run one way. The facade imports the owners, and nothing under
 `components/markdown/` imports the facade: a module that did would receive the

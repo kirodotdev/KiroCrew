@@ -53,6 +53,20 @@ beforeEach(() => {
 })
 
 describe('the Edit & Resend field offers the $ skill menu (#29472)', () => {
+  it('edits mixed-script paragraphs without changing their text or selection', () => {
+    const content = 'שלום @agent (123)\nEnglish שלום\n123 — עברית'
+    const { field, onEditResend } = renderEditing({ content })
+    expect(field).toHaveAttribute('dir', 'auto')
+    expect(field).toHaveStyle({ unicodeBidi: 'plaintext', textAlign: 'start' })
+    expect(field.parentElement).toHaveStyle({ textAlign: 'start' })
+    expect(field.parentElement).toHaveClass('after:[unicode-bidi:plaintext]')
+    expect(field.value).toBe(content)
+    field.setSelectionRange(5, 11)
+    expect(field.value.slice(field.selectionStart, field.selectionEnd)).toBe('@agent')
+    fireEvent.keyDown(field, { key: 'Enter' })
+    expect(onEditResend).toHaveBeenCalledWith(0, 't1', content)
+  })
+
   it('opens the skill menu on a typed $ and lists the matching skill', async () => {
     const { field } = renderEditing({ slotKey: 'chat-7', editSkillPicker: { slotId: 'chat-7', agentName: 'default', project: '' } })
     typeInto(field, 'hello $onc')

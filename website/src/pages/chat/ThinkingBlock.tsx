@@ -206,7 +206,7 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
             data-clipped={clipped ? 'true' : 'false'}
             className="flex-1 min-w-0 overflow-hidden whitespace-nowrap opacity-70 leading-5 text-[12px]"
             style={clipped ? { maskImage: fade, WebkitMaskImage: fade } : undefined}
-          >{tail}</span>
+          ><bdi dir="auto">{tail}</bdi></span>
         )}
       </button>
       </div>
@@ -236,7 +236,7 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
                     alignment is worth. */}
                 <div
                   className="py-1 max-w-[65ch] text-[12px] text-muted leading-5 whitespace-pre-wrap"
-                  style={{ wordBreak: 'break-word' }}
+                  dir="auto" style={{ wordBreak: 'break-word', unicodeBidi: 'plaintext' }}
                 >
                   {shown}
                 </div>
