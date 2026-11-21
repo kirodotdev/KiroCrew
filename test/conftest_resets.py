@@ -104,6 +104,18 @@ def _fresh_reexec_environment(_floor_monkeypatch):
 
 
 @per_test_guard
+def _no_crew_client_hooks(_floor_monkeypatch):
+    """Start every test with no record of the last KAS spawn's engine credential.
+
+    Every KAS spawn writes ``kas_engine_auth._last_spawn``, so a test that spawns
+    would otherwise leave it for later tests on the same worker.
+    """
+    from kiro_crew.agent_sdk import kas_engine_auth
+
+    _floor_monkeypatch.setattr(kas_engine_auth, "_last_spawn", None)
+
+
+@per_test_guard
 def _fresh_released_sessions_warning(_floor_monkeypatch):
     """Start every test with the stranded-records warning not yet given.
 

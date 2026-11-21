@@ -149,16 +149,34 @@ def catalog_rows_from_session(resp: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def vault_identity() -> str:
+#: :func:`vault_identity`'s default: the engine credential a NEW spawn would get.
+_CONFIGURED: Any = object()
+
+
+def vault_identity(engine_auth: object = _CONFIGURED) -> str:
     """The vault identity fingerprint now; ``""`` when empty or unreadable.
 
     Blocking (reads the vault); call off the loop. Never raises. The one read
     both the KAS harness's stamp (``acp/harness/kas.py``, ``SessionExtras.vault_identity``)
     and the picker's match go through. On a workload-identity host it is the
     workload's own key, and the vault is not read.
+
+    *engine_auth* is the credential a running engine was started with, which the
+    harness's stamp passes (``None`` for Crew's own sign-in), so a retained engine
+    keeps recording under the credential it still reads after the configured one
+    changes. The picker leaves it out and matches the configured credential.
     """
     from kiro_crew import workload_identity
 
+    # An edition engine credential keys the rows by its own identity: the vault is empty
+    # there, and the engine lists what that credential is served. First, as the spawn
+    # gives it precedence: on a workload host too the engine runs on that credential.
+    from kiro_crew.agent_sdk.kas_engine_auth import active_engine_auth
+
+    auth = active_engine_auth() if engine_auth is _CONFIGURED else engine_auth
+    engine_key = getattr(auth, "catalog_identity", "")
+    if isinstance(engine_key, str) and engine_key:
+        return engine_key
     if workload_identity.active():
         return workload_identity.catalog_identity()
     # Deferred: kiro_crew.auth pulls the ``cryptography`` wheel, which must not

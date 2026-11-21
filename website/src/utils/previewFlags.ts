@@ -259,6 +259,22 @@ export const PREVIEW_WIDGETS = `${PREVIEW_FLAG_PREFIX}widgets`
 export const PREVIEW_VISUAL_REFRESH = `${PREVIEW_FLAG_PREFIX}visual-refresh`
 
 /**
+ * Edition company sign-in: an edition may give one IAM Identity Center start URL
+ * its own company sign-in and say how Crew's own KAS engine gets its credential.
+ * Has SERVER behavior: off, the gateway ignores every edition sign-in profile and
+ * engine credential (`kiro_crew/crew_client_preview.py`).
+ * Nothing in the dashboard reads this key. Default OFF, and OFF is `main`.
+ */
+export const PREVIEW_CREW_CLIENT = `${PREVIEW_FLAG_PREFIX}crew-client`
+
+/**
+ * Close finished Remote Crew setup cards: a finished launch's card gets a close
+ * button, closes by itself 2 minutes after it finished, and stays closed after a
+ * reload (`RemoteCrewPanel.tsx`). Dashboard-only. Default OFF, and OFF is `main`.
+ */
+export const PREVIEW_LAUNCH_CARD_CLOSE = `${PREVIEW_FLAG_PREFIX}launch-card-close`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -284,6 +300,8 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_APP_BROWSER_SDK,
   PREVIEW_VISUAL_REFRESH,
   PREVIEW_WIDGETS,
+  PREVIEW_CREW_CLIENT,
+  PREVIEW_LAUNCH_CARD_CLOSE,
 ]
 
 /**

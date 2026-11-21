@@ -36,6 +36,7 @@ import { useSecondClock } from '../../hooks/useSecondClock'
 import {
   isTerminal, isRemoving, isRegistered, needsSignin, connectWaiting, isSsoLaunch, cancelCopy, signinSkipped, type SizeTier,
   tierLabel, tierWhy, gatewayIsDown, failureSentence, type SigninNotice, HOURS_PER_MONTH, SIZE_FLAG,
+  launchCardDismissable, launchCardTitle,
 } from './remoteCrewPanelModel'
 
 /** One selectable size card. Shared by the arm64 ladder and the x86 lane so the
@@ -779,9 +780,11 @@ export function PrereqRow({
 /** The launch-in-progress card (setup tab): 4 steps + device-code sign-in. */
 export function LaunchProgressCard({
   job, onCancel, onRestartSignin, restartingSignin, onFetchSignin, fetchingSignin, signinNotice, cancelling,
-  onSkipSignin, skippingSignin,
+  onSkipSignin, skippingSignin, onDismiss,
 }: {
   job: LaunchJob
+  /** Close a finished card (a launch that needs nothing more); absent, no close button. */
+  onDismiss?: (id: string) => void
   onCancel: (id: string) => void
   onRestartSignin: (id: string) => void
   restartingSignin: boolean
@@ -844,7 +847,9 @@ export function LaunchProgressCard({
               // job wearing "Setting up" in the list and "Launching…" on its
               // card read as two states the reader had to reconcile.
               : <Badge variant="aim">{i18nT('pages.settings.remoteCrewPanel.setting_up')}</Badge>}
-        <span className="text-text-strong text-sm font-medium">{i18nT('pages.settings.remoteCrewPanel.cloud_crew_name', { tag: job.tag })}</span>
+        {/* The crew name an edition lane sent, only where the card may close (the
+            `launch_card_close` preview); otherwise the built-in title, as on main. */}
+        <span className="text-text-strong text-sm font-medium">{onDismiss ? launchCardTitle(job) : i18nT('pages.settings.remoteCrewPanel.cloud_crew_name', { tag: job.tag })}</span>
         {/* A custom-type launch names the type it runs, not a tier it did not use. */}
         {job.instance_type && (
           <span className="text-[12px] text-muted">{i18nT('pages.settings.remoteCrewPanel.custom_type_job', { instanceType: job.instance_type })}</span>
@@ -855,6 +860,17 @@ export function LaunchProgressCard({
             card uses. */}
         {!terminal && (
           <CancelLaunchBtn className="ml-auto" job={job} onCancel={onCancel} cancelling={cancelling} />
+        )}
+        {onDismiss && launchCardDismissable(job) && (
+          <Btn
+            className="ml-auto"
+            onClick={() => onDismiss(job.id)}
+            aria-label={i18nT('app.dismiss')}
+            title={i18nT('app.dismiss')}
+            data-testid="launch-card-dismiss"
+          >
+            <X size={14} aria-hidden="true" />
+          </Btn>
         )}
       </div>
       <ol className="m-0 p-0 list-none space-y-2">

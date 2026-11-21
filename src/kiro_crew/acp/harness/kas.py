@@ -107,6 +107,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent import ForkGovernanceUnresolved
 from kiro_crew.agent_files import LITE_AGENT_FILENAME
+from kiro_crew.agent_sdk import kas_engine_auth
 from kiro_crew.config import paths as paths_mod
 from kiro_crew.kiro_cli import (
     chat_sibling,
@@ -195,6 +196,9 @@ PROTOCOL_VERSION_KAS = 1
 #: What a bundle spawn is logged under. The argv's program is a Node binary, which
 #: names no engine at all; this does.
 KAS_BUNDLE_SPAWN_LABEL = "kas-bundle"
+#: A KAS spawn refused while Crew's stored sign-in is on an edition's registered
+#: start URL (``crew_client`` preview, ``auth/login/endpoints.py``).
+LOCAL_AGENT_UNAVAILABLE = "The local agent isn't available on this sign-in yet."
 
 #: ``(node path, engine version)`` of bundles whose Node already ran once in this
 #: process for the preview's route, so the probe costs one spawn per install.
@@ -777,6 +781,11 @@ class KasHarness(MembershipHarness):
     #: the launch's SSH forward verdict is re-judged on the engine's own tier, never
     #: on a later config. None until a spawn: then no socket is relayed.
     spawn_sandbox_mode: str | None = None
+    #: The edition's engine credential the process this harness last spawned runs
+    #: under (``agent_sdk/kas_engine_auth.py``), or None for Crew's own sign-in. Set at each
+    #: spawn, so the same launch's environment (:meth:`apply_spawn_env`) follows its
+    #: argv. Always None while the ``crew_client`` preview is off.
+    spawn_engine_auth: kas_engine_auth.EngineAuth | None = None
     #: The engine version of the process this harness last spawned, when Crew
     #: knows it: its own bundle's. ``""`` on the relay, whose ``initialize``
     #: names no engine version.
@@ -828,8 +837,24 @@ class KasHarness(MembershipHarness):
         from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn, kiro_cli_not_found_message
         from kiro_crew.acp.kiro_cli_missing import AcpKiroCliMissing
         from kiro_crew.acp.session_handle import AcpRuntimeError
+        from kiro_crew.auth.login.endpoints import stored_sign_in_registered
 
         self.spawn_sandbox_mode = ctx.sandbox_mode
+        engine_auth = await asyncio.to_thread(kas_engine_auth.active_engine_auth)
+        self.spawn_engine_auth = engine_auth
+        kas_engine_auth.note_spawn(engine_auth)
+        # Before any route is chosen, so no route's fallback can hide the reason.
+        if engine_auth is not None:
+            # Off the loop: the edition's check may touch the filesystem. Before any
+            # install, so a refused spawn starts no engine.
+            try:
+                await asyncio.to_thread(engine_auth.preflight)
+            except kas_engine_auth.EngineAuthRefused as exc:
+                raise AcpRuntimeError(str(exc)) from exc
+        elif await asyncio.to_thread(stored_sign_in_registered):
+            # A sign-in on an edition's registered start URL (``crew_client`` preview)
+            # is not one a local agent may run on.
+            raise AcpRuntimeError(LOCAL_AGENT_UNAVAILABLE)
         self.bundle_engine_version = ""
         self.untested_version_notice = ""
         self.engine_fallback_notice = ""
@@ -849,6 +874,12 @@ class KasHarness(MembershipHarness):
             return await self._bundle_spawn_plan(
                 ctx, kas_route_mod.KasRoute(bundle=True, reason=kas_route_mod.REASON_CONFIGURED)
             )
+        if engine_auth is not None:
+            # Only ``agent.kas_bundle`` takes an edition engine credential: neither the
+            # sharing preview's bundle, the relay (kiro-cli) nor the packaged-build
+            # default below is asked, so the route never depends on this host and the
+            # turn gate (``kas_engine_auth.cold_spawn_refused``) mirrors it.
+            raise AcpRuntimeError(engine_auth.relay_refusal)
         if await asyncio.to_thread(
             partial(
                 kas_route_mod.sharing_preview_selects_bundle,
@@ -1049,6 +1080,8 @@ class KasHarness(MembershipHarness):
         from kiro_crew.acp.session_handle import AcpRuntimeError
         from kiro_crew.config.loader import KiroCrewConfig
 
+        # Set, and its preflight run, by :meth:`resolve_spawn` before any route.
+        engine_auth = getattr(self, "spawn_engine_auth", None)
         kas_route_mod.note_spawn_route(route)
         self.spawn_route = route
         bundle = await asyncio.to_thread(kas_bundle_mod.installed_bundle)
@@ -1091,12 +1124,16 @@ class KasHarness(MembershipHarness):
         argv = build_kas_bundle_argv(
             str(bundle.node_bin), str(bundle.acp_server), environ=ctx.environ
         )
+        if engine_auth is not None:
+            argv = kas_engine_auth.with_engine_args(argv, engine_auth)
         await asyncio.to_thread(ensure_engine_bundle_cache, argv)
         return SpawnPlan(
             argv=argv,
             spawn_label=KAS_BUNDLE_SPAWN_LABEL,
             stderr_label=KAS_BUNDLE_SPAWN_LABEL,
-            host_auth=True,
+            # An edition engine credential: the engine does not ask Crew for one.
+            host_auth=engine_auth is None,
+            engine_auth=engine_auth,
             engine_bundle=True,
         )
 
@@ -1146,7 +1183,13 @@ class KasHarness(MembershipHarness):
         """
         from kiro_crew.config.loader import inject_kiro_cli_api_key, strip_kiro_cli_api_key
 
-        if cli_owned_auth:
+        engine_auth = getattr(self, "spawn_engine_auth", None)
+        if engine_auth is not None:
+            # The edition's credential alone: no API key of Crew's, and none of the
+            # names the edition drops.
+            strip_kiro_cli_api_key(env)
+            engine_auth.scrub_env(env)
+        elif cli_owned_auth:
             inject_kiro_cli_api_key(env)
         else:
             strip_kiro_cli_api_key(env)
@@ -1290,7 +1333,11 @@ class KasHarness(MembershipHarness):
         # its credential from the vault per call, so the ``model`` select it
         # answers with is this account's catalog. Read before anything else, off
         # the loop, and carried on the payload for the catalog recorder.
-        vault_identity = await asyncio.to_thread(kas_model_catalog.vault_identity)
+        # Under the credential this process was started with, not the configured
+        # one, which may have changed since without a restart.
+        vault_identity = await asyncio.to_thread(
+            kas_model_catalog.vault_identity, self.spawn_engine_auth
+        )
         if not agent:
             return SessionExtras(vault_identity=vault_identity)
 

@@ -638,6 +638,19 @@ def set_context(ctx: PlatformContext) -> None:
 # must contain the phrase ``no-context answer`` so the justification is greppable
 # and cannot dodge the question it exists to answer.
 PEEK_CALLERS: "dict[str, str]" = {
+    "auth/login/endpoints.py::edition_idc_profiles": (
+        "no-context answer is no edition sign-in profile: every IAM Identity Center "
+        "start URL signs in with the public form, as before the seam existed. The "
+        "sign-in-only app runs without a composed platform, so resolving one here "
+        "would prevent sign-in; an installed contributor's PlatformCompositionError "
+        "still propagates."
+    ),
+    "agent_sdk/kas_engine_auth.py::edition_engine_auth": (
+        "no-context answer is no edition engine credential: the KAS bundle keeps "
+        "Crew's own sign-in callback, the route every install runs today. A spawn "
+        "can run in a process with no composed platform (a CLI or a bare test); an "
+        "installed contributor's PlatformCompositionError still propagates."
+    ),
     "auth/company_sign_in.py::company_sign_in_default": (
         "no-context answer is an empty start URL and region pair, the form as it "
         "was before edition defaults. The sign-in-only app runs without a composed "

@@ -397,6 +397,10 @@ class AcpRuntime:
         # Whether THIS process is Crew's own KAS engine bundle (no kiro-cli),
         # copied from the spawn plan. The turn gates read it for a live session.
         self._kas_engine_bundle = False
+        # The edition engine credential THIS process was started under
+        # (``agent_sdk/kas_engine_auth.py``), copied from the spawn plan; None for Crew's
+        # own sign-in. A live session's turn gate reads it.
+        self._kas_engine_auth: Any = None
         # Answers this process's ``_kiro/secret/*`` requests when its handshake
         # declared ``secretStorage`` (``agent.kas_persist_mcp_sign_in``); None
         # otherwise, and those requests then get -32601. Set at each handshake.
