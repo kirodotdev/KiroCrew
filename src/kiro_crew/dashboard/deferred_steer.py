@@ -12,8 +12,8 @@ queueing it behind the whole turn.
   so the held steers take the ordinary end-of-turn queue path and the next turn starts in
   the same hand-off.
 * A steer is identified by ``sender + target + message``. Sending the same text again
-  while it is held, or shortly after it was settled, returns the same steer and delivers
-  nothing a second time.
+  while it is held returns the same steer and delivers nothing a second time. Once it
+  is settled, the same text is a new message.
 
 What a held steer DOES at a boundary (re-authorize, steer, check the audience) is a
 closure the sender builds in ``session_messaging``, where those gates live; this module
@@ -57,10 +57,8 @@ FLUSH_SETTLE_SECS = 10.0
 #: Held steers per slot; past it a send is refused rather than quietly queued.
 MAX_DEFERRED_STEERS = 8
 
-#: Settled receipts kept per slot, and how long a settled one still counts as "the
-#: same steer" for a re-send. After the window an identical message is a new one.
+#: Settled receipts kept per slot, for the status read-out.
 MAX_RECEIPTS = 32
-DEDUP_WINDOW_SECS = 120.0
 
 
 @dataclass
@@ -92,21 +90,14 @@ def _stamp(state: str) -> str:
 
 
 def known_steer(slot: "_ChatSlot", steer_id: str) -> "dict[str, Any] | None":
-    """The reply facts of a held steer, or of one settled within the dedup window."""
+    """The reply facts of a held steer; None when *steer_id* is not held."""
     if any(held.steer_id == steer_id for held in slot._deferred_steers):
         return {"pending": True, "state": PENDING}
-    receipt = slot._deferred_steer_receipts.get(steer_id)
-    if (
-        receipt
-        and receipt["state"].startswith((DELIVERED, QUEUED, "unconfirmed"))
-        and time.monotonic() - receipt["mono"] <= DEDUP_WINDOW_SECS
-    ):
-        return {"pending": False, "state": receipt["state"]}
     return None
 
 
 def same_steer_reply(slot: "_ChatSlot", steer_id: str) -> dict[str, Any]:
-    """The send reply for a steer that is already held or was settled a moment ago."""
+    """The send reply for a steer that is still held, or still on its way into this turn."""
     seen = known_steer(slot, steer_id) or {"pending": False, "state": "steering"}
     return {
         "ok": True,
@@ -160,7 +151,7 @@ def _settle(slot: "_ChatSlot", held: DeferredSteer, state: str) -> None:
     if held in slot._deferred_steers:
         slot._deferred_steers.remove(held)
     receipts = slot._deferred_steer_receipts
-    receipts[held.steer_id] = {"state": _stamp(state), "mono": time.monotonic()}
+    receipts[held.steer_id] = {"state": _stamp(state)}
     while len(receipts) > MAX_RECEIPTS:
         receipts.pop(next(iter(receipts)))
 
@@ -180,10 +171,7 @@ def mark_unconfirmed(slot: "_ChatSlot", text: str) -> None:
     """
     for steer_id, marked_text in slot._deferred_steer_delivered.items():
         if marked_text == text:
-            slot._deferred_steer_receipts[steer_id] = {
-                "state": _stamp("unconfirmed"),
-                "mono": time.monotonic(),
-            }
+            slot._deferred_steer_receipts[steer_id] = {"state": _stamp("unconfirmed")}
 
 
 def receipts(slot: "_ChatSlot") -> list[dict[str, str]]:
@@ -286,7 +274,7 @@ def discard_all(slot: "_ChatSlot", notify: Callable[["DeferredSteer"], object]) 
             notify(held)
         except Exception:  # noqa: BLE001 - the stop already decided; the notice is best-effort
             logger.warning("discard notice for steer %s failed", held.steer_id, exc_info=True)
-        # A steer already marked delivered may have run: it stays inside the dedup window.
+        # A steer already marked delivered may have run: its receipt says so.
         _settle(
             slot,
             held,

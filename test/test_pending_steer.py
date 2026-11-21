@@ -120,7 +120,7 @@ async def test_a_steer_whose_turn_ends_first_is_queued_and_the_next_turn_starts_
 
 @pytest.mark.asyncio
 async def test_a_resent_steer_is_delivered_exactly_once(tmp_path):
-    """(c) A re-send (or retry) of the same steer adds nothing and delivers once."""
+    """(c) A re-send of the same steer, held or still going into this turn, delivers once."""
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     target = _running(_peer_target(state, "chat-2", caller))
@@ -138,10 +138,13 @@ async def test_a_resent_steer_is_delivered_exactly_once(tmp_path):
     target._acp_client = _steerable(accepted=True)
     await deferred_steer.flush_at_boundary(state, target)
     await deferred_steer.flush_at_boundary(state, target)
-    third = await _send(state, caller)
-
     assert target._acp_client.steer.await_count == 1, "delivered exactly once"
+
+    # Settled (not held) but still pending inside this turn: the in-flight twin check
+    # answers it as the same steer on its way.
+    third = await _send(state, caller)
     assert third["steer_id"] == first["steer_id"], "a late retry is recognised as the same steer"
+    assert third["pending_steer"] is False and third["steer_state"] == "steering", third
     assert target._acp_client.steer.await_count == 1
 
 
@@ -726,9 +729,8 @@ async def test_a_hard_stop_during_the_end_of_turn_queueing_wins(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-async def test_a_broadcast_row_for_a_settled_duplicate_keeps_its_real_state(tmp_path):
-    """(y) A duplicate answered from a settled receipt prints that receipt's state."""
-    from kiro_crew.dashboard import deferred_steer
+async def test_a_broadcast_row_for_a_held_duplicate_is_that_pending_steer(tmp_path):
+    """(y) A broadcast re-send of a held steer is that steer; the tool row says so."""
     from kiro_crew.mcp_dashboard import TABLE
     from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
     from kiro_crew.mcp_tools.table import Caller, ToolContext
@@ -739,8 +741,6 @@ async def test_a_broadcast_row_for_a_settled_duplicate_keeps_its_real_state(tmp_
     target._created_by = caller.key
     first = await _send(state, caller)
     assert first.get("pending_steer") is True
-    target._acp_client = _steerable(accepted=True)
-    await deferred_steer.flush_at_boundary(state, target)
 
     result = await sc.broadcast_to_targets(
         state,
@@ -750,7 +750,8 @@ async def test_a_broadcast_row_for_a_settled_duplicate_keeps_its_real_state(tmp_
         targets=["chat-2"],
     )
     row = result["results"][0]
-    assert row["steer_state"].startswith("delivered@") and row["pending_steer"] is False
+    assert row["steer_id"] == first["steer_id"] and row["pending_steer"] is True
+    assert len(target._deferred_steers) == 1, "the re-send is not held a second time"
 
     dash = InMemoryDashboardClient(
         {"POST /api/session-control/broadcast": {**result, "mode": "steer"}}
@@ -760,7 +761,25 @@ async def test_a_broadcast_row_for_a_settled_duplicate_keeps_its_real_state(tmp_
         {"message": TEXT, "mode": "steer", "targets": ["chat-2"]},
         ToolContext(dash, Caller.strict("dashboard:chat-1-100")),
     )
-    assert "same steer" in text and "delivered@" in text
+    assert "pending-steer " + first["steer_id"] in text, text
+
+    # The one not-pending duplicate: the same steer still on its way into the turn.
+    on_its_way = {**row, "pending_steer": False, "steer_state": "steering"}
+    dash = InMemoryDashboardClient(
+        {
+            "POST /api/session-control/broadcast": {
+                **result,
+                "results": [on_its_way],
+                "mode": "steer",
+            }
+        }
+    )
+    text = TABLE.call(
+        "session_broadcast",
+        {"message": TEXT, "mode": "steer", "targets": ["chat-2"]},
+        ToolContext(dash, Caller.strict("dashboard:chat-1-100")),
+    )
+    assert "already on its way into its running turn; nothing was sent again" in text, text
 
 
 def test_a_held_steer_is_a_pending_steer_receipt_not_a_queued_one():
@@ -821,8 +840,9 @@ async def test_a_hard_stop_after_an_injection_tells_the_sender_with_the_key_off(
 
 
 @pytest.mark.asyncio
-async def test_a_resend_to_a_target_that_went_idle_is_still_the_same_steer(tmp_path):
-    """(ad) The dedup window does not depend on the target still running."""
+@pytest.mark.parametrize("settled_by", ["delivered", "queued"])
+async def test_a_resend_to_a_target_that_went_idle_starts_a_turn(tmp_path, monkeypatch, settled_by):
+    """(ad) Only a HELD steer is "the same steer": once it settled, an idle target runs a re-send."""
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     target = _running(_peer_target(state, "chat-2", caller))
@@ -830,15 +850,33 @@ async def test_a_resend_to_a_target_that_went_idle_is_still_the_same_steer(tmp_p
     assert first.get("pending_steer") is True
     from kiro_crew.dashboard import deferred_steer
 
-    target._acp_client = _steerable(accepted=True)
-    await deferred_steer.flush_at_boundary(state, target)
+    if settled_by == "delivered":
+        target._acp_client = _steerable(accepted=True)
+        await deferred_steer.flush_at_boundary(state, target)
+    else:
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", new=MagicMock(return_value=MagicMock())),
+        ):
+            await chat_runner._hand_off_queue(
+                state, target, drain=True, allow_automatic_successor=False
+            )
+    assert target._deferred_steer_receipts[first["steer_id"]]["state"].startswith(settled_by)
+    target.task.cancel()
     target.task = None
+    target._queue.clear()
+
+    async def _fake_run_chat(_state, _slot, _prompt):
+        return None
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
 
     again = await _send(state, caller)
+    # flake-ok: one yield lets the started turn task run, as the idle-target test in test_session_control_send does
+    await asyncio.sleep(0)
 
-    assert again["steer_id"] == first["steer_id"] and again["started"] is False
-    assert again["steer_state"].startswith("delivered@")
-    assert not target._queue, "the delivered steer must not run a second time"
+    assert again["started"] is True, again
+    assert "steer_state" not in again, "a settled steer is never answered as already sent"
 
 
 def test_status_receipts_list_the_newest_settled_steer_first():
@@ -847,9 +885,7 @@ def test_status_receipts_list_the_newest_settled_steer_first():
 
     slot = MagicMock()
     slot._deferred_steers = []
-    slot._deferred_steer_receipts = {
-        f"s{n}": {"state": f"delivered@{n}", "mono": 0.0} for n in range(10)
-    }
+    slot._deferred_steer_receipts = {f"s{n}": {"state": f"delivered@{n}"} for n in range(10)}
 
     assert [r["steer_id"] for r in deferred_steer.receipts(slot)][:2] == ["s9", "s8"]
 
@@ -1003,8 +1039,8 @@ async def test_a_shared_runtime_steer_injected_as_its_turn_ended_is_not_run_agai
 
 
 @pytest.mark.asyncio
-async def test_a_resend_of_an_unconfirmed_steer_is_still_the_same_steer(tmp_path):
-    """(aj) An unconfirmed steer may have run: a re-send in the window must not run it again."""
+async def test_a_resend_of_an_unconfirmed_steer_starts_a_turn(tmp_path, monkeypatch):
+    """(aj) The unconfirmed notice invites a re-send: on an idle target it starts a turn."""
     state = _make_state(tmp_path)
     caller, target, _client = _loss_recovery_target(state)
     first = await _send(state, caller)
@@ -1014,13 +1050,19 @@ async def test_a_resend_of_an_unconfirmed_steer_is_still_the_same_steer(tmp_path
     await deferred_steer.flush_at_boundary(state, target)
     spawn = await _hand_off(state, target)
     assert target._deferred_steer_receipts[first["steer_id"]]["state"].startswith("unconfirmed@")
+    assert spawn.call_count == 0
     target.task = None
 
-    again = await _send(state, caller)
+    async def _fake_run_chat(_state, _slot, _prompt):
+        return None
 
-    assert again.get("steer_state", "").startswith("unconfirmed@"), again
-    assert again["started"] is False and not target._queue
-    assert spawn.call_count == 0
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
+
+    again = await _send(state, caller)
+    # flake-ok: one yield lets the started turn task run, as the idle-target test in test_session_control_send does
+    await asyncio.sleep(0)
+
+    assert again["started"] is True and "steer_state" not in again, again
 
 
 @pytest.mark.asyncio
@@ -1048,7 +1090,8 @@ async def test_with_the_recovery_key_on_an_injected_held_steer_is_still_requeued
 
 @pytest.mark.asyncio
 async def test_a_hard_stop_during_an_injection_keeps_the_resend_out(tmp_path):
-    """(al) A marked held steer a hard stop discards may have run: a re-send is the same steer."""
+    """(al) A marked held steer a hard stop discards may have run: its receipt says
+    unconfirmed, and a re-send while its text is still in this turn is not held again."""
     state = _make_state(tmp_path)
     caller, target, client = _loss_recovery_target(state)
     out = await _send(state, caller)
@@ -1076,4 +1119,5 @@ async def test_a_hard_stop_during_an_injection_keeps_the_resend_out(tmp_path):
     assert receipt.startswith("unconfirmed@"), receipt
     again = await _send(state, caller)
     assert again["steer_id"] == out["steer_id"] and again["started"] is False
+    assert again["pending_steer"] is False and again["steer_state"] == "steering", again
     assert not target._deferred_steers

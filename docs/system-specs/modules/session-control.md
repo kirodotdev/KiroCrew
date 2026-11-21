@@ -424,8 +424,11 @@ unavailable and the gateway holds the message as a pending steer
 (`dashboard/deferred_steer.py`). The stream loop retries it at each tool boundary
 of the same turn; the held attempt skips the key's refusal, marks the steer
 delivered before the injection (`slot._deferred_steer_delivered`), and the turn's
-teardown requeue skips a marked steer, so it is injected at most once and never
-queued back. A turn that ends first hands the unmarked held steers to the queue,
+teardown requeue skips a marked steer. On the Claude Code and Codex paths it is
+therefore injected at most once and never queued back; on the Goose, request and
+concurrent-prompt (Pi, OpenCode) paths a steer the adapter took just as its turn
+ended is reported False and can run once more from the queue. A turn that ends
+first hands the unmarked held steers to the queue,
 and the next turn starts in the same hand-off. With the key on, the peer's steer is held
 as the composer's is: it counts as delivered only when its turn ends cleanly,
 and the turn's teardown otherwise requeues it as a queue card that runs as the

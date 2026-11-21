@@ -129,8 +129,8 @@ def test_the_outcome_follows_the_send_result():
     assert session_send_receipts.outcome_of({"steered": True, "started": False}) == "steered"
     assert session_send_receipts.outcome_of({"steered": False, "started": True}) == "delivered"
     assert session_send_receipts.outcome_of({"steered": False, "started": False}) == "queued"
-    # The same steer re-sent within the dedup window sent nothing: parked as no receipt.
-    same = {"started": False, "pending_steer": False, "steer_id": "s1", "steer_state": "delivered@"}
+    # The same steer re-sent while still on its way into the turn sent nothing: no receipt.
+    same = {"started": False, "pending_steer": False, "steer_id": "s1", "steer_state": "steering"}
     assert session_send_receipts.outcome_of(same) == "already-sent"
     assert not session_send_receipts.park("chat-1", "Planner", "go", "already-sent", "chat-9")
 

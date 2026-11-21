@@ -85,7 +85,7 @@ class TestOutcomeReports:
         assert "pending-steer" in out
         assert "Queued" not in out and "Steered" not in out
 
-    def test_a_re_sent_steer_is_reported_as_already_sent(self) -> None:
+    def test_a_re_sent_steer_still_on_its_way_is_reported_as_such(self) -> None:
         out, _ = _send(
             {"target": "chat-2", "message": "stop that", "steer": True},
             {
@@ -95,10 +95,11 @@ class TestOutcomeReports:
                 "steered": False,
                 "pending_steer": False,
                 "steer_id": "abc",
-                "steer_state": "delivered@2026-11-17T00:00:00Z",
+                "steer_state": "steering",
             },
         )
-        assert "Already sent" in out and "delivered@2026-11-17T00:00:00Z" in out
+        assert "Already on its way" in out and "Nothing was sent again" in out
+        assert "Queued" not in out and "Delivered" not in out
 
     def test_a_plain_queued_delivery_does_not_mention_steering(self) -> None:
         out, _ = _send(

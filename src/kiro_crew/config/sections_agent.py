@@ -1520,8 +1520,10 @@ class AgentConfig:
             "tells that session the steer may not have run. Off by default: such "
             "a steer is not injected when it is sent. A peer steer that cannot be "
             "injected yet is held and injected once at the turn's next tool "
-            "boundary, and is never queued back after that, so it cannot run "
-            "twice; if the turn ends first it queues for the next turn.",
+            "boundary; if the turn ends first it queues for the next turn. On "
+            "Claude Code and Codex it is never queued back after that injection, "
+            "so it cannot run twice; on the other harnesses a steer taken just as "
+            "the turn ended can run once more from the queue.",
         ),
     )
     member_dispatch: bool = field(

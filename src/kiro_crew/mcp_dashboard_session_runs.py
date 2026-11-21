@@ -896,9 +896,10 @@ def _run_session_send(args: dict[str, Any], ctx: ToolContext) -> str:
             "the next turn starts at once. Do not re-send it." + caps
         )
     if resp.get("steer_state"):
+        # Not pending: the same steer is still on its way into the running turn.
         return (
-            f"\U0001f4e8 Already sent to `{target}` — the same steer is {resp['steer_state']}. "  # emoji-ok: tool text, the glyph of its sibling replies
-            "Nothing was sent again." + caps
+            f"\U0001f4e8 Already on its way to `{target}` — the same steer is still going "  # emoji-ok: tool text, the glyph of its sibling replies
+            "into its running turn. Nothing was sent again." + caps
         )
     if resp.get("started"):
         return (
@@ -991,10 +992,10 @@ def _run_session_broadcast(args: dict[str, Any], ctx: ToolContext) -> str:
                 "boundary, or queued with the next turn started at once if the turn ends first"
             )
         elif row.get("steer_id") and row.get("steer_state"):
-            # The same steer was already sent a moment ago: report its real state.
+            # Not pending: the same steer is still on its way into the running turn.
             lines.append(
-                f"  \u2705 `{target}` — same steer {str(row['steer_id'])[:16]} already "  # emoji-ok: tool text, the glyph of its sibling rows
-                f"{str(row['steer_state'])[:40]}; nothing was sent again"
+                f"  \u2705 `{target}` — same steer {str(row['steer_id'])[:16]} already on its "  # emoji-ok: tool text, the glyph of its sibling rows
+                "way into its running turn; nothing was sent again"
             )
         else:
             lines.append(

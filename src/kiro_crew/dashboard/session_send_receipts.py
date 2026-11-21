@@ -159,10 +159,11 @@ def _carries_identity(event: Any) -> bool:
 def outcome_of(result: dict[str, Any]) -> str:
     """The receipt outcome of a ``send_to_target`` result.
 
-    A steer already sent a moment ago (``deferred_steer.same_steer_reply``: a
-    ``steer_id`` and ``steer_state``, not pending) sent nothing this time, so it
-    is ``"already-sent"``: outside :data:`OUTCOMES`, :func:`park` refuses it and
-    the row draws the ordinary tool line rather than a card saying queued.
+    A re-send of a steer still on its way into the running turn
+    (``deferred_steer.same_steer_reply``: a ``steer_id`` and ``steer_state``, not
+    pending) sent nothing this time, so it is ``"already-sent"``: outside
+    :data:`OUTCOMES`, :func:`park` refuses it and the row draws the ordinary tool
+    line rather than a card saying queued.
     """
     if result.get("steered"):
         return "steered"

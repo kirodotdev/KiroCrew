@@ -110,7 +110,14 @@ def test_worker_debate_distinguishes_steered_started_and_queued_receipts():
         "Check each delivery result in order: `steered: true` means it entered the "
         "running turn; otherwise `started: true` means a new turn started." in section
     )
-    assert "Only `steered: false` AND `started: false` means queued." in section
+    assert (
+        "`pending_steer: true` means it is held for the target's next tool boundary, so "
+        "do not resend it." in section
+    )
+    assert (
+        "Only `steered: false` AND `started: false` without `pending_steer` means queued."
+        in section
+    )
     assert "Never resend a successful steer merely because `started` is false." in section
     assert "`started: false` means the message is queued" not in section
     assert "resend with `session_send` and `steer: true`" in section
