@@ -1721,8 +1721,9 @@ namespaces: `providers/acp.py` keeps binding every name it imported, serves each
 module-level helper its own code does not read (`_write_cli_overlay`,
 `_RESUME_MAX_ATTEMPTS`, and the rest of `_SERVED`) from the owner that defines it, and
 a write through it reaches every owner binding the same object
-(`kiro_crew._facade_mirror`). `test/test_acp_bindings.py` pins the member inventory,
-the binding and the reach.
+(`kiro_crew._facade_mirror`). `test/test_acp_bindings.py` pins the members the class had at the split (a snapshot
+that may only lose entries), the binding of every member read off the class, and the
+reach.
 
 | Provider owner | Owns |
 |---|---|

@@ -981,6 +981,22 @@ for (const step of steps) {
 - **Prove both directions in the PR.** Make the bug in the product file and show the
   test red; add a legal new member without touching the test and show it green.
 
+Bad, a split-time list compared both ways with a class's live members, so a new
+member fails until it adds a line:
+
+```python
+assert sorted(present ^ set(_MEMBERS)) == []
+```
+
+Good, the snapshot may only lose entries, and the rules every member must keep are
+read off the class (`test/test_acp_bindings.py`):
+
+```python
+assert sorted(set(_MEMBERS) - present) == []       # no split member was lost
+assert _placement_gaps(AcpProvider, OWNERS) == []  # each lives in its owner, same name
+assert _rebound_names(_facade_class()) == []       # the class body binds each name once
+```
+
 What stays, and why:
 
 | Kind | Example | Why it stays |
@@ -988,7 +1004,7 @@ What stays, and why:
 | Ratchet | `test/wait_discipline_baseline.txt`, `_ALLOWED_DROPS`, per-site bypass baselines | It may only shrink; a new bad site is what it refuses ([Merge-safe ratchets and counts](#merge-safe-ratchets-and-counts)) |
 | Review list | the [whole-tree registration pins](#a-whole-tree-registration-pin-not-selected-by-diff-relevance) for link screens and port verdicts | A new dangerous site is meant to make a person look |
 | Contract | wire protocol values, a telemetry schema, persisted settings values, a platform fact | Adding or dropping one silently is a defect. Say which contract in a one-line comment |
-| Frozen snapshot | the names a facade served when its file was split | Nobody edits it again |
+| Frozen snapshot | the names a facade served when its file was split | Nobody edits it again. It checks the snapshot is still a subset of the live set, never equal to it, or every new member edits it |
 
 Enforced by the flake-pattern ratchet: K22 counts, in a Python test, an `assert` or
 `assertEqual` that pins a public ALL-CAPS name imported from `kiro_crew` (or read
