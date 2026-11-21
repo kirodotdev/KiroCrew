@@ -869,7 +869,9 @@ edit.
   added servers' tools stay off `toolSearch.neverDefer`
   (`default_crew_servers.crew_added_servers`, `agent_sdk/tool_search.custom_agent_never_defer_ids`),
   so they are deferred behind the loader; the author's own grants, a per-tool grant
-  of an added server, and `mcp_server_wait` stay direct.
+  of an added server, and the custom-agent job tools (`CUSTOM_AGENT_JOB_TOOLS`:
+  `spawn_run`, `spawn_sub_agents`, `spawn_status`, `mcp_server_wait`) stay direct,
+  the job tools also on a spec that grants the loader (`job_tool_ids(..., custom=True)`).
 
 Switching backends is a config write plus a restart, and affects only new
 sessions; `restart` reaps the prior runtime process, and `kirocrew doctor` reports
