@@ -570,11 +570,11 @@ def _a_chain_of_links(tmp_path: Path) -> str:
     still refuses to follow them."""
     named = _members()
     named.parent.mkdir(parents=True, exist_ok=True)
-    (named.parent / "real").mkdir()
+    (tmp_path / "real").mkdir()
     count = 45
     for index in range(1, count):
         os.symlink(f"hop{index + 1}", named.parent / f"hop{index}")
-    os.symlink("real", named.parent / f"hop{count}")
+    os.symlink(tmp_path / "real", named.parent / f"hop{count}")
     return "hop1"
 
 
@@ -1169,8 +1169,14 @@ def test_a_link_to_a_folder_that_exists_is_followed_once(
     data_home.mkdir(parents=True, exist_ok=True)
     mode = 0o755
     if how == "inside_the_data_home":
+        # A folder of the data home that is not the members folder is refused, not followed.
         target = data_home / "other-folder"
-        spelling = "other-folder"
+        target.mkdir(exist_ok=True)
+        _link_at_members("other-folder")
+        for site in SITES:
+            assert isinstance(_run(site), members.MemberSlugError)
+        assert list(target.iterdir()) == []
+        return
     else:
         target = tmp_path / "elsewhere"
         spelling = os.path.relpath(target, data_home) + ("/" if how == "trailing_slash" else "")
@@ -1198,7 +1204,7 @@ def test_a_chain_of_more_than_forty_links_is_refused_where_the_folder_is_held_by
     40 links, so the pinned arm refuses; the by-name arm (``Path.resolve``) still follows."""
     if not pinned:
         monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
-    target = _members().parent / "real"
+    target = tmp_path / "real"
     _link_at_members(_a_chain_of_links(tmp_path))
     for site in SITES:
         outcome = _run(site)
