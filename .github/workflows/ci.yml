@@ -2237,6 +2237,10 @@ jobs:
         # uninterpretable one at the 40-minute cap.
         shell: bash
         env:
+          # MEASUREMENT DRAFT, not for merge: scripts.ci_pytest_progress loads
+          # scripts.ci_floor_timing when this names its own progress directory,
+          # so the per-worker floor timing is uploaded with the progress files.
+          KIROCREW_FLOOR_TIMING: ${{ runner.temp }}/pytest-progress
           PYTHONPATH: ${{ github.workspace }}
           REDUCED: ${{ steps.scope.outputs.reduced }}
           LEAF: ${{ steps.scope.outputs.leaf }}

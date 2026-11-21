@@ -27,6 +27,10 @@ def pytest_configure(config):
         recorder = Progress(config, Path(directory))
         config.stash[_KEY] = recorder
         config.pluginmanager.register(recorder, "ci-progress-recorder")
+        # MEASUREMENT DRAFT, not for merge: see scripts/ci_floor_timing.py.
+        from scripts import ci_floor_timing
+
+        ci_floor_timing.enable_for(config, Path(directory))
 
 
 def pytest_unconfigure(config):
