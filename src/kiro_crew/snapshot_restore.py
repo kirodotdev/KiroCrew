@@ -206,6 +206,23 @@ def _refuse_unless_valid_tree_document(src: Path, label: str, validator: str) ->
             ) from e
         _refuse_dropped_entries(label, dropped)
         return
+    if validator == "config_document":
+        import json
+
+        from kiro_crew.archive_config_vetting import config_document_refusal
+
+        try:
+            parsed = json.loads(src.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError, RecursionError):
+            return  # the JSON-object check has already refused an unreadable document
+        why = config_document_refusal(parsed)
+        if why:
+            raise SourceComponentUnsound(
+                f"{label} in this snapshot is not safe to install: {why}.\n"
+                "   Refusing to restore it: the roster and workspace entries become file "
+                "paths, so one that names a path rather than a file or folder is not applied."
+            )
+        return
     raise AssertionError(f"no validator named {validator!r}")
 
 

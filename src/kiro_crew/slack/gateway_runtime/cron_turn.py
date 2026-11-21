@@ -113,7 +113,9 @@ async def _cron_run_sequence(
     from kiro_crew.cron_service.fields import cron_session_cwd
 
     for agent in agents:
-        _seq_kagent, _seq_cwd, _seq_crew = self._resolve_cron_agent(
+        # Off the loop: the workspace folder is resolved and judged on the filesystem.
+        _seq_kagent, _seq_cwd, _seq_crew = await asyncio.to_thread(
+            self._resolve_cron_agent,
             cron_execution,
             agent,
             sequence_step=True,
@@ -717,7 +719,9 @@ async def _cron_run_single(
         # Collapse an alias (channel-bound agent) to its real kiro mode
         # + workspace before dispatch; falls back to the raw value when
         # it is already a real mode or unset.
-        _single_kagent, _single_cwd, _single_crew = self._resolve_cron_agent(
+        # Off the loop: the workspace folder is resolved and judged on the filesystem.
+        _single_kagent, _single_cwd, _single_crew = await asyncio.to_thread(
+            self._resolve_cron_agent,
             cron_execution,
             cron_agent or None,
             template_namespace=_default_substituted
