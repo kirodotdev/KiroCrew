@@ -633,6 +633,14 @@ class ScriptHookStore:
                         f"{str(h.get('event'))[:64]!r}"
                     )
                 hook = ScriptHook.from_dict(h)
+                # Loaded as written, so a save keeps the row; ``fire`` never runs it.
+                if hook.matcher and not isinstance(hook.matcher, str):
+                    logger.warning(
+                        "Script hook %r has a matcher that is not text (%s); it does not "
+                        "run, and as a PreToolUse hook it blocks every tool call",
+                        str(h.get("id", ""))[:64],
+                        type(hook.matcher).__name__,
+                    )
                 # Keep insertion inside the per-entry guard: a hand-edited ID
                 # can be an unhashable list/dict even when from_dict succeeds.
                 self._hooks[hook.id] = hook
@@ -1045,6 +1053,17 @@ class ScriptHookStore:
                 continue
             # Matcher filtering: for tool hooks, match tool name; for others, match context
             if hook.matcher:
+                if not isinstance(hook.matcher, str):
+                    # A hand-edited list or number cannot be matched, and running the
+                    # hook anyway would widen it to every call. A PreToolUse hook is
+                    # a gate, and a gate with no verdict blocks.
+                    if event == HOOK_EVENT_PRE_TOOL_USE:
+                        error = (
+                            f"hook {str(hook.id)[:64]!r} has a matcher that is not text "
+                            f"({type(hook.matcher).__name__}); fix it in hooks.json"
+                        )
+                        results.append(ScriptHookResult(hook.id, hook.name, event, error=error))
+                    continue
                 if event in (HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE):
                     if extra_hooks_tool_names is not None and id(hook) in extra_ids:
                         if hook.matcher != "*" and not any(
