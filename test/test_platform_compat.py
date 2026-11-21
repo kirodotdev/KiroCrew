@@ -1270,6 +1270,11 @@ class TestUtf8Console:
     def test_windows_which_skips_current_directory_after_call(self, monkeypatch, tmp_path):
         probe = tmp_path / "kc_probe_39483.exe"
         probe.write_bytes(b"MZ")
+        on_path = tmp_path / "bin"
+        on_path.mkdir()
+        (on_path / "kc_onpath_39483.exe").write_bytes(b"MZ")
+        monkeypatch.setenv("PATH", str(on_path))
+        monkeypatch.setenv("PATHEXT", ".EXE")
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
         monkeypatch.setattr(pc.sys, "stdout", None)
@@ -1279,7 +1284,7 @@ class TestUtf8Console:
 
         assert shutil.which("kc_probe_39483") is None
         # A program on PATH still resolves by bare name.
-        assert shutil.which("cmd") is not None
+        assert shutil.which("kc_onpath_39483") is not None
 
     def test_ensure_utf8_console_is_safe_to_call(self, monkeypatch):
         # Publishes the child environment on every OS and reconfigures the
