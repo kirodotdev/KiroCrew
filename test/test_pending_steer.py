@@ -1121,3 +1121,70 @@ async def test_a_hard_stop_during_an_injection_keeps_the_resend_out(tmp_path):
     assert again["steer_id"] == out["steer_id"] and again["started"] is False
     assert again["pending_steer"] is False and again["steer_state"] == "steering", again
     assert not target._deferred_steers
+
+
+async def _consumed_then_resent(state, caller, target, client):
+    """Inject a held steer, let the turn consume it, then send the same text again.
+
+    Returns the first and second replies. The second send arrives before another tool
+    boundary, so the first steer's delivered mark is still on the slot.
+    """
+    from kiro_crew.dashboard import deferred_steer
+
+    first = await _send(state, caller)
+    assert first.get("pending_steer") is True
+    await deferred_steer.flush_at_boundary(state, target)
+    client.steer.assert_awaited_once()
+    assert first["steer_id"] in target._deferred_steer_delivered
+    # The running turn consumed it and the steer path confirmed it: what a confirmed
+    # consume leaves is no pending text and no delivery registration.
+    injected = client.steer.await_args.args[0]
+    target._pending_steers.remove(injected)
+    target._steer_delivery_ids.pop(injected, None)
+
+    client.supports_steer = False
+    second = await _send(state, caller)
+    assert second["steer_id"] == first["steer_id"]
+    assert second.get("pending_steer") is True, "a settled steer's resend is a fresh held one"
+    return first, second
+
+
+@pytest.mark.asyncio
+async def test_a_resend_of_a_consumed_steer_is_queued_when_the_turn_ends(tmp_path):
+    """(am) A consumed steer's delivered mark does not settle its resend as delivered."""
+    state = _make_state(tmp_path)
+    caller, target, client = _loss_recovery_target(state)
+    _first, second = await _consumed_then_resent(state, caller, target, client)
+
+    spawn = await _hand_off(state, target)
+
+    receipt = target._deferred_steer_receipts[second["steer_id"]]["state"]
+    assert receipt.startswith("queued@"), receipt
+    assert spawn.call_count == 1, "the resend runs as the next turn"
+
+
+@pytest.mark.asyncio
+async def test_a_hard_stop_discards_a_resend_of_a_consumed_steer_as_never_run(
+    tmp_path, monkeypatch
+):
+    """(an) The fresh resend was never injected: a hard stop reads it as discarded."""
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.dashboard import chat_handlers as ch
+
+    state = _make_state(tmp_path)
+    fake = MagicMock()
+    for module in (sc, ch):
+        monkeypatch.setattr(module, "sel", lambda fake=fake: fake)
+    monkeypatch.setattr(sc, "_sel_off_loop", lambda write, what: write())
+    caller, target, client = _loss_recovery_target(state)
+    _first, second = await _consumed_then_resent(state, caller, target, client)
+
+    state.sessions.stop_turn = AsyncMock(return_value="cancelled")
+    await ch.stop_slot_turn(state, target)
+    await ch.stop_slot_turn(state, target)
+
+    receipt = target._deferred_steer_receipts[second["steer_id"]]["state"]
+    assert receipt.startswith("discarded@"), receipt
+    notices = [m["content"] for m in caller.messages if m.get("role") == "notice"]
+    assert len(notices) == 1 and "discarded before it ran" in notices[0], notices

@@ -1509,21 +1509,19 @@ class AgentConfig:
         default=False,
         metadata=_meta(
             "Peer Steer Loss Recovery",
-            "Let a steer that is not typed into the session's own composer (another "
-            "session's session_send or session_broadcast steer, or an automation's) "
-            "cut into a running Claude Code, Codex, Goose, Pi or OpenCode turn. "
-            "Those harnesses can drop a steer they accepted, so it counts as "
-            "delivered only when the turn ends cleanly; a turn that is cancelled, "
-            "fails or loses it to a denied approval puts it back as a queue card "
-            "that runs as the next turn, so it can run twice. While it is on, a "
-            "hard stop that drops another session's pending steer, on any harness, "
-            "tells that session the steer may not have run. Off by default: such "
-            "a steer is not injected when it is sent. A peer steer that cannot be "
-            "injected yet is held and injected once at the turn's next tool "
-            "boundary; if the turn ends first it queues for the next turn. On "
-            "Claude Code and Codex it is never queued back after that injection, "
-            "so it cannot run twice; on the other harnesses a steer taken just as "
-            "the turn ended can run once more from the queue.",
+            "Off (the default): a steer from another session or an automation into "
+            "a running Claude Code, Codex, Goose, Pi or OpenCode turn is held and "
+            "goes in at that turn's next tool step, or runs as its next turn if "
+            "the turn ends first. On: it cuts into the running turn at once. Those "
+            "harnesses can drop a steer they accepted, so with it on the steer "
+            "counts as delivered only when the turn ends cleanly; a turn that is "
+            "cancelled, fails or loses it to a denied approval puts it back as a "
+            "queue card that runs as the next turn, so it can run twice. With it "
+            "on, a hard stop that drops another session's pending steer, on any "
+            "harness, tells that session the steer may not have run. With it off, "
+            "a held steer cannot run twice on Claude Code and Codex; on the other "
+            "harnesses a steer taken just as the turn ended can run once more from "
+            "the queue.",
         ),
     )
     member_dispatch: bool = field(

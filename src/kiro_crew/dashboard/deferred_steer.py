@@ -144,6 +144,10 @@ def hold(
         )
     )
     slot._deferred_steer_receipts.pop(steer_id, None)
+    # A mark left for this id belongs to a settled steer: the sender answers a steer
+    # whose text is still in flight, registered or pending as the same steer before it
+    # calls this. Kept, it would make this fresh entry read as delivered.
+    slot._deferred_steer_delivered.pop(steer_id, None)
     return HELD
 
 
