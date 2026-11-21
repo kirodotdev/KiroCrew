@@ -45,6 +45,7 @@ from kiro_crew.acp._dispatch import (
     stated_harness_tool_name,
     tool_call_content_text,
 )
+from kiro_crew.acp.client_copilot import _copilot_placed_names
 from kiro_crew.acp.client_timeouts import _SEL_AUDIT_TIMEOUT_SECONDS
 from kiro_crew.acp.harness.copilot import (
     COPILOT_IDENTITY_OVERFLOW,
@@ -753,15 +754,7 @@ def _recover_copilot_mcp_identity(self: AcpClient, tool_call_id: str, update: di
     ambiguous = getattr(self, "_copilot_ambiguous_mcp_calls", None)
     if ambiguous is None:
         return
-    try:
-        elements = self._session_mcp_servers()
-    except Exception:  # noqa: BLE001 - a missing array means nothing to match
-        elements = []
-    placed: set[str] = set()
-    for element in elements:
-        name = element.get("name") if isinstance(element, dict) else None
-        if isinstance(name, str) and name:
-            placed.add(name)
+    placed = _copilot_placed_names(self)
     matches = sorted(
         name for name in placed if title.startswith(f"{name}-") and len(title) > len(name) + 1
     )
