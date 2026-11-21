@@ -1219,8 +1219,10 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   rest of the line for heredocs only when a newline follows a `<<` in the text its close
   walk read (`shell_normalizer_walk._matching_close_paren_reach`), since a heredoc body
   starts after that newline; a `<<<` here-string or a `$(( 1 << n ))` shift needs no
-  re-read. The skip changes no span, so no verdict. A line of many bodies that each hold a
-  multi-line heredoc still re-reads per body and stays quadratic (tracked in #39106). The floor does not model `#` comments: a quoted `$( )` before a comment
+  re-read. The skip changes no span, so no verdict. A body that does need it reads a prefix
+  of the rest that doubles from 1 KiB until every heredoc in it closes before its end and the
+  close is proven inside it (`_close_past_heredocs`), the answer the whole rest gives, so a line of
+  many such bodies is linear. The floor does not model `#` comments: a quoted `$( )` before a comment
   whose text names ssh to this host is refused, as main refuses the same line without the
   quote.
   Within one `is_denied` call (`call_views.sharing_views`, which this module also serves

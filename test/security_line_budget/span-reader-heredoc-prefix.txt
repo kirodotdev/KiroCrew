@@ -1,0 +1,4 @@
++23
+`_close_past_heredocs` reads a doubling prefix of the rest of the line for heredocs, so a line of
+many quoted `$( )` bodies that each hold a heredoc is linear instead of quadratic. It returns the
+answer the whole rest gives and changes no span and no verdict.

@@ -466,6 +466,31 @@ def heredoc_text_spans(text: str) -> "list[tuple[int, int]]":
     ]
 
 
+def _close_past_heredocs(rest: str) -> "tuple[int, bool]":
+    """:func:`_matching_close_paren` of *rest* with each heredoc body blanked, read on a
+    prefix that doubles until it is proven to give the same answer as the whole of *rest*.
+
+    :func:`read_commands` reads left to right, and a body starts after the newline that ends
+    its ``<<`` line. So in a prefix, every body that closes before the prefix ends is the
+    body the whole text gives, and a ``<<`` on the prefix's last line has no body in it.
+    A body that runs to the prefix's end may close later, so that prefix is not enough.
+    A close proven before the prefix's end, past blanks that are all complete, is the one
+    the whole text gives. Otherwise the prefix grows; at the whole of *rest* it is the answer.
+    """
+    size = 1024
+    while True:
+        part = rest[:size]
+        whole = len(part) == len(rest)
+        spans = heredoc_text_spans(part)
+        if whole or all(stop < len(part) for _start, stop in spans):
+            for start, stop in spans:
+                part = part[:start] + re.sub("[^\n]", " ", part[start:stop]) + part[stop:]
+            end, proven = _shell._matching_close_paren(part, 0)
+            if whole or proven and end < len(part):
+                return end, proven
+        size *= 2
+
+
 def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]":
     """``(start, end, proven)`` of each ``$(...)`` directly inside double quotes in *text*.
 
@@ -476,7 +501,7 @@ def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]
     the close walk read has no newline after its first ``<<`` (none at all, a ``<<<``
     here-string, a ``$(( 1 << n ))`` shift), no body can change that walk and the
     heredoc re-read is skipped. Each body that does hold a heredoc before its close
-    still re-reads the rest of *text*, so a line of many such bodies stays quadratic.
+    re-reads only a prefix of the rest of *text* (:func:`_close_past_heredocs`).
     """
     spans: "list[tuple[int, int, bool]]" = []
     i, state = 0, 0
@@ -491,9 +516,7 @@ def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]
                 window = rest if reach is None else rest[:reach]
                 k = window.find("<<")
                 if k >= 0 and "\n" in window[k:]:
-                    for start, stop in heredoc_text_spans(rest):
-                        rest = rest[:start] + re.sub("[^\n]", " ", rest[start:stop]) + rest[stop:]
-                    end, proven = _shell._matching_close_paren(rest, 0)
+                    end, proven = _close_past_heredocs(rest)
                 spans.append((at, at + 2 + end if proven else len(text), proven))
                 i, state = spans[-1][1], 2
                 break
