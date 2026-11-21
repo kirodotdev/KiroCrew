@@ -33,6 +33,7 @@ from .paths_lists import (
     _CREW_HOME_PREFIXES,
     _KEYSTONE_ARTIFACT_PARENTS,
     _KIRO_CLI_WRITE_TIER_LEAVES,
+    _MCP_REGISTRY_ROWS,
     _SENSITIVE_HOME_DIRS,
     _WRITE_PROTECTED_HOME_PATHS,
     _leaf_segments,
@@ -717,6 +718,8 @@ def _home_targets_tier(home_dirs: list[str]) -> str:
         return "write"
     if home_dirs == _KEYSTONE_ARTIFACT_PARENTS:
         return "keystone-artifact"
+    if home_dirs == _MCP_REGISTRY_ROWS:
+        return "mcp-registry"
     # The app-declared rows are named from their last listing, never by taking one: a
     # label must not cost a listing, nor a pool submission from an inline caller.
     readonly = _APP_READONLY_ROWS.last_listed()

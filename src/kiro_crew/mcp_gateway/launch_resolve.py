@@ -190,3 +190,37 @@ def launch_preview(
     if not launches.get(name):
         return "launch_unresolved", None
     return None, display_launches(name, launches[name])
+
+
+def matches_entry(entry: Mapping[str, Any], launches: list[ResolvedLaunch]) -> bool:
+    """Whether the complete resolved set is exactly the card's one launch.
+
+    A token read during Apply can bind freshness, but cannot authorize launches
+    absent from the card. Resolve the card's command with the rewriter's own
+    search path and bind arguments, declared env and its expansion as well.
+    """
+    from kiro_crew.agent import emit_mcp_entry
+    from kiro_crew.mcp_gateway.launch_approval import env_fingerprint, launch_fingerprint
+    from kiro_crew.mcp_gateway.rewriter_env import _expand_env_map
+    from kiro_crew.mcp_gateway.rewriter_launch import _resolve_target_command
+
+    command, args, env = entry.get("command"), entry.get("args", []), entry.get("env", {})
+    if (
+        not isinstance(command, str)
+        or not command
+        or not isinstance(args, list)
+        or not all(isinstance(arg, str) for arg in args)
+        or not isinstance(env, dict)
+        or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
+        or len(launches) != 1
+    ):
+        return False
+    emitted, _ = emit_mcp_entry(
+        entry, lambda cmd, spec_env: (_resolve_target_command(cmd, spec_env or {}, None), "")
+    )
+    if emitted is None:
+        return False
+    command, args, env = emitted["command"], emitted.get("args", []), emitted.get("env", {})
+    return launches[0].fingerprint == launch_fingerprint(command, args, env) and launches[
+        0
+    ].derived_env == frozenset({env_fingerprint(_expand_env_map(env))})

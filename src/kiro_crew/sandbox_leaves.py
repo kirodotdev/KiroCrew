@@ -527,6 +527,15 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
+    # The MCP page's server store. Every rendered agent spec merges it and a shared
+    # server's backend is launched from it outside the sandbox, so only the person
+    # writes it (the MCP page, or a ``request_server`` card); a sandboxed shell that
+    # could write it would choose what the gateway launches. Every writer is the
+    # gateway (``mcp_config_files._atomic_write``, and the onboarding import's
+    # ``onboarding_apply._write_mcp``); reads stay open for ``kirocrew
+    # doctor`` and the MCP report. Its saves are vouched like ``config.json``'s
+    # (``config.write_provenance``), so a page save never fails a spawn.
+    "mcp.json",
     # The runtime config and its overlay. They are ordinary settings files, but they
     # also carry the switches that LOOSEN confinement -- ``agent.sandbox`` (``"off"``
     # skips this very sandbox for every later spawn), ``agent.apps_allow_third_party`` /
@@ -1164,6 +1173,10 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # The owner's MCP message-body fields: server, tool and field names, no
     # credential. The risk is a write, answered by the read-only seal.
     "mcp_body_fields.json",
+    # The MCP page's server store. Classified readable to keep what a foreign child
+    # could read before it was sealed: it is off the read-gate floor, so the mask
+    # never covered it. The risk this seal answers is a write.
+    "mcp.json",
     # The operator's cloud configuration and the launch record beside it. Neither holds
     # a credential (``CloudConfig`` documents the file as the operator's own, with none),
     # and in-sandbox code READS both: the provisioner selector resolves the Fargate block

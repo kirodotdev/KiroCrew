@@ -951,61 +951,64 @@ class TestStopAndApplyMcpBroker:
         assert orch._mcp_gateway_manager is None
 
     @pytest.mark.asyncio
-    async def test_apply_stub_reports_not_applied_and_asks_for_a_restart(self):
-        """``applied: False`` is the designed outcome, not a failure.
-
-        Nothing is applied in place any more, so there is no "reached state" to
-        compare against the wanted one. The pair the dashboard needs is
-        ``applied: False`` plus ``restart_required: True``: the first stops the
-        switch being drawn as live, the second stops that being read as an error.
-        """
+    async def test_apply_stub_starts_the_broker_with_the_configured_set(self):
+        """A stub change applies by starting the broker, never the gateway."""
         orch = _make_orchestrator()
         orch._mcp_gateway_manager = None
+        orch._mcp_stub_servers_started = frozenset()
+        started: list[frozenset[str]] = []
+        new = MagicMock()
 
-        async def _init_that_must_not_run() -> None:  # pragma: no cover
-            raise AssertionError("apply must not start a broker")
+        async def _init(stub_servers: frozenset[str] | None = None) -> None:
+            started.append(frozenset(stub_servers or ()))
+            orch._mcp_gateway_manager = new
 
-        orch._init_mcp_gateway = _init_that_must_not_run
+        orch._init_mcp_gateway = _init
 
         cfg = KiroCrewConfig()
         cfg.mcp_gateway.stub_servers = ["beta", "alpha"]
         with patch.object(KiroCrewConfig, "load", return_value=cfg):
             out = await orch._apply_mcp_stub()
+        assert started == [frozenset({"alpha", "beta"})]
         assert out == {
-            "applied": False,
-            "restart_required": True,
+            "applied": True,
+            "restart_required": False,
             "stub_servers": ["alpha", "beta"],
+            "sessions_reset": 0,
         }
 
     @pytest.mark.asyncio
-    async def test_apply_stub_leaves_a_live_broker_alone(self):
-        """The drain is the destructive part: sessions attached to this manager
-        lose their in-flight tool calls to it and never re-handshake."""
+    async def test_apply_stub_replaces_a_live_broker(self):
+        """The old daemon holds the old targets in its environment, so it is stopped
+        and a new one started; attached stubs reconnect to it (``stub.py``)."""
         orch = _make_orchestrator()
         old = MagicMock()
         old.shutdown = AsyncMock()
         orch._mcp_gateway_manager = old
+        orch._mcp_stub_servers_started = frozenset({"alpha"})
         ds = _mock_dashboard_state()
         ds._mcp_gateway_manager = old
         orch.dashboard_state = ds
+        new = MagicMock()
 
-        async def _init_that_must_not_run() -> None:  # pragma: no cover
-            raise AssertionError("apply must not respawn the broker")
+        async def _init(stub_servers: frozenset[str] | None = None) -> None:
+            orch._mcp_gateway_manager = new
 
-        orch._init_mcp_gateway = _init_that_must_not_run
+        orch._init_mcp_gateway = _init
 
         cfg = KiroCrewConfig()
-        cfg.mcp_gateway.stub_servers = ["alpha"]
+        cfg.mcp_gateway.stub_servers = ["alpha", "gamma"]
         with patch.object(KiroCrewConfig, "load", return_value=cfg):
             out = await orch._apply_mcp_stub()
 
-        old.shutdown.assert_not_awaited()
-        assert orch._mcp_gateway_manager is old
-        assert ds._mcp_gateway_manager is old
+        old.shutdown.assert_awaited_once()
+        assert orch._mcp_gateway_manager is new
+        assert ds._mcp_gateway_manager is new
         assert out == {
-            "applied": False,
-            "restart_required": True,
-            "stub_servers": ["alpha"],
+            "applied": True,
+            "restart_required": False,
+            "stub_servers": ["alpha", "gamma"],
+            "sessions_reset": 0,
         }
 
     def test_wire_dashboard_is_a_noop_without_dashboard_state(self):
