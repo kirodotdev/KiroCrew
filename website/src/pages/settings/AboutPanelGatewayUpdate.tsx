@@ -411,6 +411,9 @@ export function AboutPanelGatewayUpdates({
   // boot-time apply left, from the status frame.
   const armedVersion = useAppSelector(s => s.dashboard.status?.update_armed_version) || ''
   const pendingApplyError = useAppSelector(s => s.dashboard.status?.pending_apply_error) || ''
+  // Only the installer card with a command draws its own Restart; the in-app
+  // flow, the policy note and a command-less card draw none.
+  const cardHasRestart = showManualUpdate && !effectiveGwCanArm && !gwManagedByCommand && !!effectiveCommand
   return (
     <div className="flex flex-col gap-2.5">
       {armedVersion && (
@@ -644,11 +647,11 @@ export function AboutPanelGatewayUpdates({
           when needed and one that only appears when an update happens to
           be offered.
 
-          Hidden while the manual-update card is on screen: that card
-          already renders a Restart button wired to the same mutation, and
-          two identical buttons a few rows apart read as two different
-          actions. */}
-      {restartControls && !showManualUpdate && (
+          Hidden only while the update card renders its own Restart button
+          wired to the same mutation: two identical buttons a few rows apart
+          read as two different actions. Every other update card draws no
+          Restart, and restarting is the next step there. */}
+      {restartControls && !cardHasRestart && (
         <div className="flex items-center justify-between gap-3 pt-2.5 border-t border-border"
           data-testid="gateway-restart-row">
           {/* One label, not a title + note pair: the button already names the
@@ -675,7 +678,7 @@ export function AboutPanelGatewayUpdates({
           user no feedback whatsoever. */}
       {/* askAgent on: a refused restart of a standing action; nothing on
           this card is a draft. */}
-      {restartControls && !showManualUpdate && (
+      {restartControls && !cardHasRestart && (
         <ErrorNotice message={applyError} report={gwUpdate.applyErrorReport} askAgent testId="gateway-restart-error" />
       )}
     </div>
