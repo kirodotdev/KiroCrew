@@ -116,6 +116,10 @@ REVISION_REFUSAL_NOTICE_PREFIX = (
 # Same contract for a refused stop. Neither of the two above fits: nothing was
 # armed and nothing was revised, and the loop the refusal names is untouched.
 STOP_REFUSAL_NOTICE_PREFIX = "⚠️ Automation loop NOT stopped: "
+# Leads the applied outcome of a stop that was NOT refused, queued for the agent of a
+# session that cannot read notices: the stop tool only says "requested", so without it
+# that agent cannot tell a stopped loop from one that is still running.
+STOP_OUTCOME_NOTICE_PREFIX = "Automation loop stop applied: "
 
 # Live-only queue-entry meta keys that carry the ORIGINATING wake's provenance
 # across the re-routed refusal into the crewmate's successor turn. The refusal
@@ -212,7 +216,11 @@ def _deliver_refusal_to_crewmate(
 
     A crewmate's DM draws messages only and never replays a ``notice`` row to
     the model, so the ``notice`` written above reaches neither its reader nor
-    the crewmate. Only there is a second surface needed: the refusal is queued
+    the crewmate. A crewmate's worker session has the same blindness and no
+    reader at all: the crewmate learns of its worker only through the worker's
+    own reports, so a refusal the worker never sees is a watch lost until a
+    person happens to open the session. Only there is a second surface needed:
+    the refusal is queued
     with ``AUTOMATION_NOTICE_KIND`` so it drains as an ``inject`` row (never a
     ``user`` row shown as the person's own bubble) that the crewmate's next turn
     carries, and the crewmate can call ``monitor_stop`` + ``monitor_start``
@@ -234,10 +242,10 @@ def _deliver_refusal_to_crewmate(
     stepping in.
     """
     from kiro_crew.dashboard.chat_utils import AUTOMATION_NOTICE_KIND
-    from kiro_crew.members import is_member_session_key
+    from kiro_crew.members import is_crewmate_worker_session, is_member_session_key
 
     key = session_key or getattr(slot, "key", "") or ""
-    if not is_member_session_key(key):
+    if not (is_member_session_key(key) or is_crewmate_worker_session(key)):
         return
     append = getattr(slot, "queue_append", None)
     if not callable(append):

@@ -165,11 +165,21 @@ The legacy `!voice` inline commands still work but are deprecated:
 | Command | Effect |
 |---------|--------|
 | `!voice on` | Enable voice replies in this thread |
-| `!voice off` | Disable voice replies |
+| `!voice off` | Clear this thread's `!voice on` and its voice settings. It does not silence a thread while `voice_reply.enabled` is `true` |
+| `!voice global` | Turn global voice replies on or off. Saved to `voice_reply.enabled` in `config.json`, like the Voice settings, so it survives a restart. Like `enabled`, it also moves the `auto_reply_to_voice` default when that key is unset. When `config.local.json` sets `voice_reply.enabled`, that value still wins and the reply says so |
 | `!voice Ruth` | Switch to a specific Polly voice |
 | `!voice engine generative` | Change engine type |
 | `!voice speed 120%` | Adjust speech rate |
 | `!voice pitch +10%` | Adjust pitch (neural/standard engines only) |
+
+A Slack reply is spoken when any of these holds: `voice_reply.enabled` is `true`,
+the thread ran `!voice on` (or set a voice, engine, speed or pitch), or the message
+was a voice memo and `auto_reply_to_voice` is on. Setting `voice_reply.enabled` to
+`false` turns off the default for every thread; a thread that ran `!voice on`, and a
+voice memo under an explicit `auto_reply_to_voice: true`, still get audio. A running
+gateway picks up a `voice_reply` change in `config.json` without a restart, read with
+`config.local.json` merged over it. An edit that touches only `config.local.json` is
+not picked up live; a restart applies it.
 
 Voice replies are uploaded to the Slack thread alongside the text response.
 File format depends on the provider (MP3 for Polly, WAV for the built-in engine).

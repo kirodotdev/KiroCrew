@@ -468,7 +468,7 @@ function ChatInput({
   const pickerSource = usePickerSource()
   const pickers = useComposerPickers({ source: pickerSource, project, onFileSelect, typedCommandMenus, hiddenCommands, terminalCommands, value, onChange, composerControl, queryClient, slotId, agentName })
   const { anyPickerOpenRef, closePickers, openPickersForText, prefetchSkills } = pickers
-  const { publishLexicalSelection, recordCaret, showDictation, cancelVoiceDrain } = useDictationControls({
+  const { publishLexicalSelection, recordCaret, holdCaret, showDictation, cancelVoiceDrain } = useDictationControls({
     composerControl, value, autoFocusKey, anyPickerOpenRef, voiceCaretRef, voicePendingCaretRef, voiceDictationPanel,
     voiceRecording, voiceDrainCancellable, voiceError, voiceSampleRef, voiceTranscribing, onVoiceCancel, onVoiceToggle,
   })
@@ -813,10 +813,10 @@ function ChatInput({
   const {
     transcribeInFlight, transcribingIsHonest, micHeldElsewhere, micBlocked, micOwnerTitle, micHeldElsewhereLabel,
     setHoldTarget, touchPtt, voiceHoldMode, micIsModeSwitch, voiceSettling, textareaParked, toggleVoiceMode, micLabel, micKeyShortcuts, holdBarLabel,
-    voiceModePlaceholder, sendZone,
+    voiceModePlaceholder, sendZone, setPointerHoldTarget,
   } = useHoldToTalk({
     onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease, voiceSlideToSend, voicePttBinding,
-    voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, optimizing, placeholder, showDictation, voiceSendSteers: steerActive && !steerAuto && !terminal.active,
+    voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, typingLocked, optimizing, placeholder, showDictation, holdCaret, voiceSendSteers: steerActive && !steerAuto && !terminal.active,
   })
   // The name in the status row is the way there: one click switches to the
   // chat that holds the mic, where the user can end the capture.
@@ -1439,6 +1439,9 @@ function ChatInput({
             the shape flip slides (`shapeAnimating`); a wrapped line inside the
             two-row shape moves the column at once, like the box around it. */}
         <motion.div
+          // The pointer hold-to-talk gesture binds here, the text column, so one
+          // binding covers both editors (see `useHoldToTalk`).
+          ref={setPointerHoldTarget}
           onKeyDown={promptStashEnabled ? promptStash.onKeyDown : undefined}
           layout={inlineToolbarWhileFits && !reduceMotion && manualHeight === null ? 'position' : false}
           transition={shapeAnimating ? COMPOSER_ROW_SPRING : { duration: 0 }}

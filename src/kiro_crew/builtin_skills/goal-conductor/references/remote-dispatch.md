@@ -63,6 +63,7 @@ unreachable, on another version or have the switch off, and answers
 `crew_none_available` when none admits the item. With `requires`, a refusal
 `crew_requirements_unmet` names what each crew lacked (`login gh (expired)`,
 `tag gpu`): tell the user which crew to sign in or tag rather than retrying.
+A crew that already holds a session for this item (an earlier create whose reply was lost) is skipped and named under `skipped`; that leftover session stays on the crew, so tell the user to close it there.
 A login named `still checking` is not a missing sign-in: retry once in a later
 owner turn. Either way the item stays open
 and unbound, and nothing falls back to this machine. Retry in a later owner
@@ -90,14 +91,14 @@ as an ordinary report, so
 work-ledger patrol pulls once per tick, before it reads the ledger, with no
 model turn, so a remote `done`, `blocked`, `question` or `reply` wakes you at
 the next tick like a local one; a `work_ledger_read` pulls too. Nothing pulls
-between ticks, so keep the patrol running while a remote item is open. A lost
+between ticks and the worker never writes back to this hub, so keep the patrol running while a remote item is open. A lost
 crew's retire is also checked only on a pull, so it can land up to two patrol
-intervals late. Each pull is best effort (a read takes at
+intervals late. Each pull reads each crew once and is best effort (a read takes at
 most 32 items in about 6 seconds), and a row whose pull failed keeps its last
-state until the next pull files what it missed. `remote_reports_skipped` counts
+state until the next pull files what it missed. A worker on a crew that went away reads not running once its last pull is old, so its row goes stale like a quiet local worker. Quiet and stale time count from when this hub filed the report, not the crew's clock. `remote_reports_skipped` counts
 places in the worker's reports the hub could not file (a report it can never
 file, or a worker log that rolled past the last pull); above 0, read the
-worker's session for what you missed.
+worker's session for what you missed. When you leave Trust, a remote worker's grant ends only at the next pull; with no patrol running it lasts until it expires (default 6 h) or the session closes.
 
 **Follow-ups use `reply`.** To ask a finished worker something, keep its item
 open, `session_send` the question with `steer: true` in an owner turn, and tell it to answer with

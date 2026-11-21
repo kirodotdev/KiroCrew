@@ -22,7 +22,9 @@ a long page names the `offset` to read next), then
 `click` (`clicks: 2` or `3` for a double or triple click) / `type` / `fill`
 (replace a field's value with real key presses when `type` is ignored) /
 `paste` / `press_key` / `dispatch_key` / `hover` / `drag` / `scroll` /
-`select_option` / `upload` (local files into a `[file]` field) / `wait_for` /
+`select_option` / `upload` (local files, folders or globs into a `[file]`
+field, a button's file picker with `via: chooser`, or a drop zone with
+`via: drop`) / `wait_for` /
 `wait_for_element` / `wait_for_network_idle` / `back` / `console` /
 `screenshot` / `tabs` (list, switch or close the tabs you opened) / `dialog` /
 `reflex`, and `ask` for a step only the user may do. When no op fits, `js`
