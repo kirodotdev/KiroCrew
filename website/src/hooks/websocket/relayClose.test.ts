@@ -8,6 +8,10 @@ describe('classifyClose', () => {
     expect(classifyClose(4400)).toBe('refused')
     expect(classifyClose(4429)).toBe('refused')
     expect(classifyClose(4499)).toBe('refused')
+    // A normal closure the page did not ask for: a proxy in front of the
+    // dashboard ended a socket it had held long enough, and forwards no close
+    // code of its own. The gateway never ends `/api/ws` with 1000.
+    expect(classifyClose(1000)).toBe('relay_drain')
     expect(classifyClose(1006)).toBe('offline')
     expect(classifyClose(1011)).toBe('offline')
     expect(classifyClose(4500)).toBe('offline')
