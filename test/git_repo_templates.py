@@ -207,7 +207,20 @@ def _rewrite_lines(
             line = prefix + new + line[len(body) :]
         lines.append(line)
     if (text := "".join(lines)) != old:
-        path.write_bytes(text.encode("utf-8", "surrogateescape"))
+        _overwrite(path, text.encode("utf-8", "surrogateescape"))
+
+
+def _overwrite(path: Path, data: bytes | bytearray) -> None:
+    """Replace the content of the existing file *path*, keeping the file itself.
+
+    Opened for update, never created or truncated by the open: Git for Windows
+    marks a worktree's ``.git`` file hidden, a copy keeps the attribute, and
+    Windows refuses to open a hidden file for writing in a mode that would
+    create it (``"w"``).
+    """
+    with open(path, "r+b") as handle:
+        handle.write(data)
+        handle.truncate()
 
 
 _CONFIG_PAIR = re.compile(r"^(\s*[A-Za-z][A-Za-z0-9-]*\s*=\s*)(.*)$")
@@ -263,7 +276,7 @@ def _rewrite_config(path: Path, template: Path, dest: Path) -> None:
             raise RepoTemplateError(f"{path} names the template in a line not understood: {body!r}")
         lines.append(line)
     if (text := "".join(lines)) != old:
-        path.write_bytes(text.encode("utf-8", "surrogateescape"))
+        _overwrite(path, text.encode("utf-8", "surrogateescape"))
 
 
 def _worktree_of(git_dir: Path) -> Path:
@@ -343,7 +356,7 @@ def _restat_index(index: Path, worktree: Path) -> None:
         _restat_entries(data, count, worktree)
     except (struct.error, ValueError) as exc:
         raise RepoTemplateError(f"{index}: not a version {version} SHA-1 index") from exc
-    index.write_bytes(data)
+    _overwrite(index, data)
 
 
 def _restat_entries(data: bytearray, count: int, worktree: Path) -> None:

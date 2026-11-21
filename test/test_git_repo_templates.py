@@ -9,7 +9,9 @@ The tests assert on that record, so git runs once for the module, not per test.
 
 from __future__ import annotations
 
+import builtins
 import hashlib
+import io
 import os
 import struct
 import sys
@@ -22,6 +24,7 @@ from git_repo_templates import RepoTemplateError, RepoTemplates, copy_repo
 from push_guard_helpers import _git
 
 from conftest import requires_symlinks
+from kiro_crew.testing.links import make_dir_link
 
 repo_templates = templates.repo_templates  # the fixture, bound for this module
 
@@ -284,17 +287,64 @@ def test_only_git_s_own_files_are_re_pointed(tmp_path: Path) -> None:
         assert (copied / "repo" / "notes" / name).read_bytes() == (tracked / name).read_bytes()
 
 
-@requires_symlinks
 def test_a_template_path_under_another_spelling_is_refused(tmp_path: Path) -> None:
     template = tmp_path / "template"
     git_dir = _bare_git_dir(template)
-    (tmp_path / "alias").symlink_to(template, target_is_directory=True)
+    make_dir_link(tmp_path / "alias", template)
     (template / "repo" / ".git" / "worktrees" / "w").mkdir(parents=True)
     (git_dir / "worktrees" / "w" / "gitdir").write_text(
         f"{(tmp_path / 'alias' / 'w' / '.git').as_posix()}\n", encoding="utf-8"
     )
     with pytest.raises(RepoTemplateError, match="still names the template"):
         copy_repo(template, tmp_path / "copy")
+
+
+def test_a_directory_link_in_the_template_never_leaves_a_copy_reading_the_template(
+    tmp_path: Path,
+) -> None:
+    # A symlink is refused; a Windows junction is copied as the directory it
+    # names. Either way no copy holds a link that resolves into the template.
+    template = tmp_path / "template"
+    (template / "real").mkdir(parents=True)
+    (template / "real" / "file.txt").write_text("x\n", encoding="utf-8")
+    make_dir_link(template / "linked", template / "real")
+    copied = tmp_path / "copy"
+    try:
+        copy_repo(template, copied)
+    except RepoTemplateError as refused:
+        assert "is a link into the template" in str(refused)
+        return
+    inside = (copied / "linked" / "file.txt").resolve()
+    assert inside.read_text(encoding="utf-8") == "x\n"
+    assert template.resolve() not in inside.parents
+
+
+def test_a_hidden_git_file_is_rewritten_in_place(
+    world: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Git for Windows hides a worktree's ``.git`` file and Windows refuses to
+    # open a hidden file in a creating mode. Here every existing file of the
+    # copy refuses that, so each rewrite has to open the file for update.
+    dest = tmp_path / "copy"
+    real_open = builtins.open
+
+    def no_creating_open(file, mode="r", *args, **kwargs):  # type: ignore[no-untyped-def]
+        if set(mode) & set("wxa") and dest in Path(os.fspath(file)).parents:
+            if os.path.lexists(file) and Path(file).name in (".git", "gitdir", "config", "index"):
+                raise PermissionError(13, "Permission denied", os.fspath(file))
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", no_creating_open)
+    monkeypatch.setattr(io, "open", no_creating_open)
+    copy_repo(world.template, dest)
+    monkeypatch.undo()
+    assert f"gitdir: {(dest / 'work').as_posix()}/.git/worktrees/feat" in (
+        dest / "feat" / ".git"
+    ).read_text(encoding="utf-8")
+    for name, text in _pointers(dest).items():
+        assert world.template.name not in text, name
+    for worktree in WORKTREES:
+        assert _index(dest, worktree).read_bytes() != _index(world.template, worktree).read_bytes()
 
 
 @requires_symlinks

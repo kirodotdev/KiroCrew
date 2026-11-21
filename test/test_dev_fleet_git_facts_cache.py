@@ -26,6 +26,7 @@ import git_repo_templates
 import pytest
 
 from kiro_crew.apps.builtins.dev_fleet import fleet_state, git_facts, repository, runtime
+from kiro_crew.testing.links import make_dir_link
 
 repo_templates = git_repo_templates.repo_templates  # the fixture, bound for this module
 
@@ -545,7 +546,7 @@ def test_symlinked_gitdir_outside_the_repo_is_refused(repo, tmp_path):
     shutil.copytree(gitdir, copy)
     (copy / "commondir").write_text(str(repo.main / ".git") + "\n")
     shutil.rmtree(gitdir)
-    _symlink_or_skip(str(copy), str(gitdir))
+    make_dir_link(gitdir, copy)
 
     assert _key_within(str(repo.feat)) is None
 
