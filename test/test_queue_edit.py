@@ -83,6 +83,29 @@ class TestQueueEditHelper:
         assert slot._queue[0]["content"] == "decision answer"
         assert callback in slot._queue[0].values()
 
+    def test_an_edit_that_changes_a_re_sends_words_drops_its_prompt_hooks_stamp(self):
+        """No prompt hook saw the editor's words, so the edited re-send is a new prompt;
+        an edit that keeps the words keeps the stamp."""
+        from kiro_crew.dashboard.chat_utils import SYNTHETIC_RECOVERY_KIND, RecoveryPayload
+        from kiro_crew.dashboard.slot_queue_repository import PROMPT_HOOKS_RAN_META
+
+        slot = _ChatSlot("s1")
+        stamp = {PROMPT_HOOKS_RAN_META: True}
+        kept, edited = (
+            slot.queue_insert(
+                i,
+                "re-sent words",
+                kind=SYNTHETIC_RECOVERY_KIND,
+                payload=RecoveryPayload.ORIGINAL,
+                meta=dict(stamp),
+            )
+            for i in (0, 1)
+        )
+        assert slot.queue_edit_by_id(kept, "re-sent words") is True
+        assert slot.queue_edit_by_id(edited, "better words") is True
+        assert [q["meta"].get(PROMPT_HOOKS_RAN_META) for q in slot._queue] == [True, None]
+        assert [q["payload"] for q in slot._queue] == [RecoveryPayload.ORIGINAL] * 2
+
 
 class TestEditQueuedMessagesHelper:
     def test_edit_placeholder_content(self):

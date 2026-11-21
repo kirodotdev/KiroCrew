@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.dashboard.chat_delivery import attachment_meta
 from kiro_crew.dashboard.chat_utils import RecoveryPayload
 from kiro_crew.dashboard.recovery_replays import replays_of
-from kiro_crew.dashboard.slot_queue_repository import stamp_source_channels
+from kiro_crew.dashboard.slot_queue_repository import PROMPT_HOOKS_RAN_META, stamp_source_channels
 from kiro_crew.wakatime.heartbeats import CADENCE_MIN_INTERVAL_SECS
 
 if TYPE_CHECKING:
@@ -64,6 +64,21 @@ async def _report_consumed(turn, consumed: bool = True, *, irreversible: bool = 
                 _on_consumed(consumed)
             except Exception:
                 logger.debug("consumption report failed for slot %s", slot.key, exc_info=True)
+
+
+def _prompt_hooks_ran(turn) -> bool:
+    """Whether the prompt hooks already ran for an attempt of this turn's prompt.
+
+    True once this attempt's UserPromptSubmit fire ran, or when the row the drain
+    handed this turn carries the stamp an earlier attempt's requeue wrote. A
+    person's message whose first attempt died before its fire (a cold start or a
+    session claim that failed) has neither, so its re-send is their first fire.
+    """
+    if turn._prompt_hooks_fired:
+        return True
+    row = turn._current_message
+    meta = row.get("meta") if isinstance(row, dict) else None
+    return isinstance(meta, dict) and meta.get(PROMPT_HOOKS_RAN_META) is True
 
 
 def _queue_recovery(
@@ -184,6 +199,10 @@ def _queue_recovery(
         # without these lists the replayed transcript row falls back to a
         # whitespace-bounded path and truncates spaced attachment names.
         _recovery_meta.update(attachment_meta(_current_replay_message.get("meta")))
+    if _prompt_hooks_ran(turn):
+        # The next attempt is a replay for its prompt hooks only when one of this
+        # prompt's attempts ran them; the stamp rides the requeue chain until then.
+        _recovery_meta[PROMPT_HOOKS_RAN_META] = True
     if payload == RecoveryPayload.ORIGINAL and _mirror_echo_owed(turn):
         # The person's own words, replayed because the turn died before its
         # mirror echo point: the replay owes that echo (``_prompt_typed_in_dashboard``).

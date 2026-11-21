@@ -7421,6 +7421,7 @@ supplies them, so a hook reads them with a default:
 | `agent_role` | the agent template the firing session runs |
 | `session_id` | on an `extra_hooks` (agent spec) hook only: the firing session's ACP session id, under the stdin key kiro-cli's own hook payload uses, on every event Crew fires them on for a dashboard chat turn, a subagent run, the task runner's PreToolUse gate (`tool_permission.SpecHooks`), or the PreToolUse gate an agent-channel member, a native Slack turn or `kirocrew chat` asks before any approval (`channel_spec_hooks.pre_tool_refusal`). A subagent's hooks get the child's own id, read from its client when they fire; a call a harness-native nested child makes carries the id of the session it ran under. Also set as `KIRO_SESSION_ID` in that hook's env, the env name kiro-cli uses. Absent (and the env var unset) before `session/new` and on stored hooks |
 | `acp_session_id` | the same value as `session_id`, present exactly when it is; the key the first KAS release of this field used, kept for hooks written against it |
+| `replay` | on a dashboard chat's `UserPromptSubmit` only: `true` when Kiro Crew sends the prompt again, unchanged, after the prompt hooks already ran for an earlier attempt of it; absent otherwise. When it is set and when not: [injected-messages](../common/injected-messages.md) |
 
 A human's dashboard turn therefore carries `session_key` and no `subagent_id`.
 A hook deciding "did a person type this?" keys on `subagent_id`; it must not

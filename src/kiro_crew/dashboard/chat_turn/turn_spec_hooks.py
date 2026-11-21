@@ -1006,6 +1006,7 @@ async def _fire(
     tool_id: str | None = None,
     tool_identity: str = "",
     mcp_server: str = "",
+    replay: bool = False,
 ) -> list[str]:
     """Fire script hooks. Returns stdout texts from exit-0 hooks (for context injection).
 
@@ -1068,6 +1069,7 @@ async def _fire(
             tool_match_names=_match_names,
             acp_session_id=_acp_sid if isinstance(_acp_sid, str) and _acp_sid else None,
             session_model=_model,
+            replay=replay,
         )
         for r in results:
             # Anchoring rule for the bounded hook excerpts below: text the

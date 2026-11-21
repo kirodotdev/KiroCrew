@@ -914,6 +914,7 @@ class ScriptHookStore:
         tool_match_names: Sequence[str] | None = None,
         acp_session_id: str | None = None,
         session_model: str | None = None,
+        replay: bool = False,
     ) -> list[ScriptHookResult]:
         """Fire all enabled hooks matching the given event. Returns results.
 
@@ -964,6 +965,12 @@ class ScriptHookStore:
         ``session_model`` is the model the firing session runs on. Every hook
         this fire runs, stored or extra, gets it as ``KIROCREW_SESSION_MODEL``.
 
+        ``replay`` marks a ``UserPromptSubmit`` for a prompt the caller sends
+        again, unchanged, after the prompt hooks already ran for an earlier
+        attempt of it: every hook this fire runs, stored or extra, then gets
+        ``"replay": true`` on its stdin, so a hook can tell the re-send from a new
+        prompt. Off, and on any other event, the key is absent.
+
         For the Stop event, the full ``context`` (the final assistant segment) is
         used for matcher evaluation and echoed to stdin as ``assistant_text``;
         only the ``KIROCREW_HOOK_CONTEXT`` env var is length-capped downstream in
@@ -973,8 +980,11 @@ class ScriptHookStore:
         results = []
         # Build base hook event (Kiro CLI format)
         hook_event: dict = {"hook_event_name": event, "cwd": os.getcwd()}
-        if event == HOOK_EVENT_USER_PROMPT_SUBMIT and context:
-            hook_event["prompt"] = context
+        if event == HOOK_EVENT_USER_PROMPT_SUBMIT:
+            if context:
+                hook_event["prompt"] = context
+            if replay:
+                hook_event["replay"] = True
         elif event == HOOK_EVENT_STOP:
             # Echo the final assistant segment to stdin so a hook keying on the
             # tail — e.g. the harness [OPTIONS:] line, past the env var's cap —

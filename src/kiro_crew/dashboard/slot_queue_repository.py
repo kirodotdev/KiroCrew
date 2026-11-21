@@ -730,6 +730,15 @@ def _delivery_key(content: str) -> str:
 ATTACHMENT_META_KEYS: tuple[str, ...] = ("files", "dirs")
 _ATTACHMENT_MARKERS: dict[str, str] = {"files": "attached_file", "dirs": "attached_dir"}
 
+#: Queue-entry meta key: an earlier attempt of this queued prompt already ran its
+#: ``UserPromptSubmit`` fire, so the next attempt's prompt hooks are told it is a
+#: replay (``"replay": true``). ``_queue_recovery`` writes it, and Resume's
+#: re-send (``turn_failures._unsent_resend``) carries it; the drain unions it
+#: into the row's meta, where the next attempt reads it, and an edit
+#: that changes the words drops it. Defined here for the same reason as the
+#: lists above.
+PROMPT_HOOKS_RAN_META = "promptHooksRan"
+
 
 def _marker_spans(content: str, marker: str, index: int, path: str) -> list[tuple[int, int]]:
     """Every span of the exact ``[<marker> <index>] <path>`` token in *content*.
@@ -1087,6 +1096,8 @@ class SlotQueueRepository:
                 item["meta"].pop("slack_sender", None)
                 # Nor are the editor's words in the linked thread, so they echo.
                 item["meta"].pop(PROMPT_ON_CHANNEL_META_KEY, None)
+                # Nor did any prompt hook see them: the edited entry is a new prompt.
+                item["meta"].pop(PROMPT_HOOKS_RAN_META, None)
             item["edit_rev"] = int(item.get("edit_rev") or 0) + 1
             if directive_user_origin:
                 item["_directive_user_origin"] = True
