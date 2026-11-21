@@ -183,6 +183,20 @@ def test_vet_script_contents_allows_source_that_only_names_a_fenced_store(body):
     assert _vet_script_contents(body) is None, f"should allow: {body[:80]!r}"
 
 
+SINGLE_BACKSLASH_PROTECTED_PATH_BODIES = [
+    ('open(r"D:\\Profiles\\u\\.aws\\credentials")', ".aws"),
+    ("%USERPROFILE%\\.aws\\credentials", ".aws"),
+    ("%USERPROFILE%\\.ssh\\id_rsa", ".ssh"),
+]
+
+
+@pytest.mark.parametrize("body,name", SINGLE_BACKSLASH_PROTECTED_PATH_BODIES)
+def test_vet_script_contents_refuses_a_single_backslash_protected_path(body, name):
+    err = _vet_script_contents(body)
+    assert err is not None, f"should refuse: {body!r}"
+    assert name in err
+
+
 def test_script_body_is_never_a_shell_gate_subject(monkeypatch):
     """RATCHET: the cron script gate must not route a source body through any shell matcher.
 
