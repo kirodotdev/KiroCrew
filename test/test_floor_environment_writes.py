@@ -3,12 +3,14 @@
 ``_FloorMonkeyPatch`` skips an environment write that changes nothing and still
 leaves the undo record the write would have left. These tests run generated
 programs twice, once through it and once through a plain ``MonkeyPatch`` (which
-takes the floor's old two-write path), on a private environment that counts its
-writes, and require the same environment at every point a test, a fixture's
-teardown or the next test could read it.
+takes the two-write path), on a private environment that counts its writes, and
+require the same environment at every point a test, a fixture's teardown or the
+next test could read it.
 
-No real environment variable is touched: each run swaps ``os.environ`` for a
-private mapping for its own duration.
+Those runs touch no real environment variable: each swaps ``os.environ`` for a
+private mapping for its own duration. The two tests of the live floor are the
+exception. They read the real environment, and the one that sets variables in it
+does so inside a ``MonkeyPatch`` context that puts every one back.
 """
 
 from __future__ import annotations

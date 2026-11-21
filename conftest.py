@@ -299,7 +299,6 @@ from conftest_floor_home import (  # noqa: E402,F401 -- bound for pytest and for
     _agent_spec_seam_modules,
     _breadcrumb_guard,
     _floor_monkeypatch,
-    _FloorMonkeyPatch,
     _hide_the_operators_kiro_cli,
     _isolate_agent_spec_home,
     _isolate_kiro_sessions_dir,
