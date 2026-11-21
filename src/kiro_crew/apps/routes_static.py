@@ -421,7 +421,11 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
     """
     name = request.match_info["name"]
     file_path = request.match_info.get("path", "")
-    if ".." in file_path or file_path.startswith("/"):
+    # A UI asset name is a forward-slash relative path. A backslash or a colon is
+    # refused here, before any filesystem call: on Windows ``ui_root / "\\\\host\\s\\x.js"``
+    # drops the root for a UNC path (and ``"C:/x.js"`` for a drive), and resolving that
+    # opens an SMB session to the named host before containment can run.
+    if ".." in file_path or file_path.startswith("/") or "\\" in file_path or ":" in file_path:
         return web.json_response({"error": "invalid path"}, status=400)
     ext = Path(file_path).suffix.lower()
     if ext not in _ALLOWED_EXTENSIONS:
