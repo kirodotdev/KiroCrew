@@ -166,6 +166,10 @@ export interface SlackManifestStatus {
   }
   /** The app's App Manifest page on api.slack.com, when Slack named the app. */
   app_manifest_url: string | null
+  /** The app's Basic Information page (App-Level Tokens); absent on an older gateway. */
+  app_basic_info_url?: string | null
+  /** A link that opens the bot's DM in Slack; absent on an older gateway. */
+  app_dm_url?: string | null
 }
 
 /** One person on `slack.shared_access.user_ids`, as Slack answered for them. */
@@ -597,7 +601,9 @@ export function createMessagingEndpoints({ get, post, put, del, j }: ClientTrans
   const channelConfigs = {
     // Slack integration config
     getSlackConfig: () => get('/api/slack/config').then(j) as Promise<SlackConfigData>,
-    getSlackManifest: () => get('/api/slack/manifest').then(j) as Promise<{ alias: string; manifest: string; create_url: string; features?: string[] }>,
+    /** With *alias*, the manifest and create link for a NEW app named after it;
+     *  without, the ones for this install (alias read back from `slack.command`). */
+    getSlackManifest: (alias?: string) => get(`/api/slack/manifest${alias ? `?alias=${encodeURIComponent(alias)}` : ''}`).then(j) as Promise<{ alias: string; manifest: string; create_url: string; command?: string; features?: string[]; org_guide_url?: string | null }>,
     getSlackManifestStatus: (refresh = false) => get(`/api/slack/manifest/status${refresh ? '?refresh=1' : ''}`).then(j) as Promise<SlackManifestStatus>,
     /** The agents a defaults save accepts with default folder *folder* ('' = the auto folder). */
     getSlackCodeChannelAgents: (folder: string) => get(`/api/slack/code-channel-agents?folder=${encodeURIComponent(folder)}`).then(j) as Promise<{ agents: string[] | null }>,

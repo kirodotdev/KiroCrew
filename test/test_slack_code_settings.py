@@ -1363,6 +1363,7 @@ class TestDrift:
         body = asyncio.run(scs.manifest_status(loader.KiroCrewConfig(), ""))
         assert body["install"]["status"] == scope_probe.STATUS_NOT_CONFIGURED
         assert body["features"] == [] and body["app_manifest_url"] is None
+        assert body["app_basic_info_url"] is None and body["app_dm_url"] is None
         assert set(body["feature_changes"]) == set(slack_manifest.FEATURES)
 
     def test_check_again_lifts_a_stale_workspace_refusal(
@@ -1416,6 +1417,8 @@ class TestDrift:
         assert len(clients) == 2
         assert first["install"]["status"] == scope_probe.STATUS_UP_TO_DATE
         assert first["app_manifest_url"] == "https://api.slack.com/apps/A0123ABCD/app-manifest"
+        assert first["app_basic_info_url"] == "https://api.slack.com/apps/A0123ABCD/general"
+        assert first["app_dm_url"].startswith("https://slack.com/app_redirect?app=A0123ABCD")
         assert "xoxb-test" not in json.dumps(first)
 
 

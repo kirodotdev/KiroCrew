@@ -7777,6 +7777,7 @@
         "tracking_channels": [],
         "open_channels": [],
         "command": "kirocrew",
+        "setup_guide_url": "",
         "forward_to_agent_callback": "",
         "trusted_bot_ids": [],
         "trusted_bot_turn_limit": 5,
@@ -7907,6 +7908,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "kirocrew"
+    },
+    {
+      "path": "slack.setup_guide_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Setup Guide URL",
+      "help": "Your organization's own Slack setup guide (for example, how to get a workspace you may install apps in). The Slack setup wizard links it on its first step. https:// only; any other value is ignored. Empty = no link.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "slack.forward_to_agent_callback",
