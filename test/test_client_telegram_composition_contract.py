@@ -110,7 +110,7 @@ BASE_MEMBERS = {
     ),
     "send_rich_message": (
         "coroutine",
-        "(self, chat_id: 'int', markdown: 'str', *, reply_markup: 'dict | None' = None, message_thread_id: 'int | None' = None, disable_notification: 'bool' = False, reply_to_message_id: 'int | None' = None) -> 'int | None'",
+        "(self, chat_id: 'int', markdown: 'str', *, reply_markup: 'dict | None' = None, message_thread_id: 'int | None' = None, disable_notification: 'bool' = False, reply_to_message_id: 'int | None' = None, err_out: 'dict[str, Any] | None' = None) -> 'int | None'",
     ),
     "send_message_draft": (
         "coroutine",
