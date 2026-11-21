@@ -844,6 +844,29 @@ class TestGatewaySetStub:
         assert expected in _payload(resp)["error"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_name", [None, 123, False])
+    async def test_a_non_string_name_is_400_and_writes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, bad_name: object
+    ) -> None:
+        from kiro_crew.config.loader import config_path
+        from kiro_crew.dashboard.handlers import mcp_gateway_stubs
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        revoke = MagicMock()
+        monkeypatch.setattr(mcp_gateway_stubs, "revoke", revoke)
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        before = json.dumps({"mcp_gateway": {"stub_servers": ["kept-mcp"]}})
+        path.write_text(before, encoding="utf-8")
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": bad_name, "stub": False}, state=SimpleNamespace())
+        )
+        assert resp.status == 400
+        assert _payload(resp) == {"error": "name must be a string", "code": "invalid_field_type"}
+        assert path.read_text(encoding="utf-8") == before
+        revoke.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_corrupt_config_json_is_500(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from kiro_crew.config.loader import config_path
 

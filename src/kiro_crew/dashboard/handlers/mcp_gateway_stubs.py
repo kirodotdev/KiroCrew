@@ -23,7 +23,7 @@ from kiro_crew.config.loader import (
     _resolve_stub_roster,
 )
 from kiro_crew.config.sections import MANAGED_STUB_FOLLOWERS
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import read_bounded_json, string_field_error
 from kiro_crew.dashboard.handlers.mcp_config_files import _is_valid_mcp_name, _offload_config_write
 from kiro_crew.dashboard.handlers.mcp_gateway_routes import (
     _MCP_GATEWAY_APPLY_LOCK,
@@ -401,6 +401,12 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                 status=400,
             )
     else:
+        # A non-string name would otherwise be saved under its Python text
+        # (``null`` as the server ``"None"``), the same mistake the batch form
+        # refuses above with ``names_not_string_list``.
+        not_string = string_field_error("name", body.get("name", ""))
+        if not_string is not None:
+            return not_string
         if not name:
             return web.json_response({"error": "name is required"}, status=400)
         if not _is_valid_mcp_name(name):
