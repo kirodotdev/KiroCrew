@@ -209,7 +209,9 @@ class FakeGh:
         for number, rows in sorted(self.threads.items()):
             for row in rows:
                 if f"#{issue}," in row["body"] or f"#{issue} " in row["body"]:
-                    source = {"type": "issue", "issue": {"number": number, "pull_request": {}}}
+                    url = f"https://github.com/{REPO}/pull/{number}"
+                    found = {"number": number, "pull_request": {}, "html_url": url}
+                    source = {"type": "issue", "issue": found}
                     events.append(
                         {"event": "cross-referenced", "actor": row["user"], "source": source}
                     )

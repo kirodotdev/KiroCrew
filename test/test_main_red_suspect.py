@@ -41,7 +41,6 @@ from main_red_suspect_fake import (
     CLOSED_AT,
     COOL_SINCE,
     FAILS,
-    FIXTURES,
     FULL_GREEN,
     MAIN_HEAD,
     MESSAGE,
@@ -49,12 +48,8 @@ from main_red_suspect_fake import (
     OLDER_BASE,
     REDUCED_GREEN,
     REPO,
-    ROOT,
-    SCRIPT,
     THREE,
-    WORKFLOW,
     WORKFLOW_ID,
-    WORKFLOWS,
     FakeGh,
     _confirmed_issue,
     _detect,
@@ -68,6 +63,12 @@ from main_red_suspect_fake import (
     skip,
     watch,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
+WORKFLOWS = ROOT / ".github" / "workflows"
+WORKFLOW = WORKFLOWS / "main-red-suspect.yml"
+SCRIPT = ROOT / ".github" / "scripts" / "main_red_suspect.py"
+FIXTURES = ROOT / "test" / "fixtures" / "main_red"
 
 # ── Counting ─────────────────────────────────────────────────────────────────
 

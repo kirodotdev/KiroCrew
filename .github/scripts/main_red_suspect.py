@@ -552,14 +552,18 @@ def cooling_in(pages: list[Any], since: str) -> set[str]:
     return cooling
 
 
-def told_in(pages: list[Any]) -> set[int]:
-    """Pull requests where the Actions token already referred to an issue.
+def told_in(pages: list[Any], repo: str) -> set[int]:
+    """Pull requests of ``repo`` where the Actions token already referred to an issue.
 
     ``pages`` is the issue's timeline. A comment that names the issue leaves a
     cross-reference there, so one read says which pull requests need no look at
     their comments. It only saves reads: a pull request missing from it is still
-    checked for the marker before anything is written.
+    checked for the marker before anything is written. A reference from another
+    repository's pull request carries a number that means another pull request
+    here, so only a source whose own address is in ``repo`` counts; one that
+    does not say where it is does not count either.
     """
+    prefix = f"https://github.com/{repo}/pull/"
     told: set[int] = set()
     for event in (row for page in pages if isinstance(page, list) for row in page):
         if not isinstance(event, dict) or event.get("event") != "cross-referenced":
@@ -569,7 +573,7 @@ def told_in(pages: list[Any]) -> set[int]:
         source = event.get("source")
         issue = source.get("issue") if isinstance(source, dict) else None
         number = _id(issue.get("number")) if isinstance(issue, dict) else None
-        if number and "pull_request" in issue:
+        if number and "pull_request" in issue and issue.get("html_url") == f"{prefix}{number}":
             told.add(number)
     return told
 
@@ -795,7 +799,7 @@ class Api:
     def told(self, issue: int) -> set[int]:
         """Pull requests the timeline of ``issue`` shows as told; none when it cannot be read."""
         pages = self.get(f"the timeline of #{issue}", f"issues/{issue}/timeline?per_page=100", True)
-        return told_in(pages or [])
+        return told_in(pages or [], self.repo)
 
 
 # -- the two commands ----------------------------------------------------------

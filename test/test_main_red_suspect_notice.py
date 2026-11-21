@@ -299,11 +299,18 @@ def test_however_runs_are_replaced_each_pull_request_ends_with_one_comment(
         assert [len(_notes_on(gh, number)) for number in range(1, 9)] == [1] * 8, order
 
 
-def test_only_the_actions_tokens_reference_from_a_pull_request_counts_as_told() -> None:
-    def event(number: int, **over: Any) -> dict[str, Any]:
-        source = {"type": "issue", "issue": {"number": number, "pull_request": {}}}
-        return {"event": "cross-referenced", "actor": BOT, "source": source, **over}
+def test_only_the_actions_tokens_reference_from_a_pull_request_here_counts_as_told() -> None:
+    def event(number: int, repo: str = REPO, **over: Any) -> dict[str, Any]:
+        url = f"https://github.com/{repo}/pull/{number}"
+        found = {"number": number, "pull_request": {}, "html_url": url}
+        return {
+            "event": "cross-referenced",
+            "actor": BOT,
+            "source": {"type": "issue", "issue": found},
+            **over,
+        }
 
+    elsewhere = {"number": 9, "pull_request": {}}
     pages = [
         [
             event(4),
@@ -311,10 +318,31 @@ def test_only_the_actions_tokens_reference_from_a_pull_request_counts_as_told() 
             event(6, event="mentioned"),
             event(7, source={"type": "issue", "issue": {"number": 7}}),
             event(8, source=None),
+            event(9, source={"type": "issue", "issue": elsewhere}),
+            event(10, repo="other/repo"),
+            event(11, repo=REPO + "-fork"),
+            event(12, repo="example"),
             "odd",
         ]
     ]
-    assert mod.told_in(pages) == {4}
+    assert mod.told_in(pages, REPO) == {4}
+
+
+def test_a_reference_from_another_repositorys_pull_request_does_not_hide_ours() -> None:
+    """Pull request 4 of another repository names the issue; pull request 4 here is still told."""
+
+    class Elsewhere(FakeGh):
+        def _timeline(self, issue: int) -> list[dict[str, Any]]:
+            url = "https://github.com/other/repo/pull/4"
+            found = {"number": 4, "pull_request": {}, "html_url": url}
+            source = {"type": "issue", "issue": found}
+            foreign = {"event": "cross-referenced", "actor": BOT, "source": source}
+            return [foreign, *super()._timeline(issue)]
+
+    gh = Elsewhere((_pr(4, "barbara"), _pr(5, "hopper")), issues=(_suspect_issue(),))
+    for trigger in (5, 4, 5):
+        _detect(gh, trigger=trigger)
+    assert [len(_notes_on(gh, number)) for number in (4, 5)] == [1, 1]
 
 
 # ── What is stored in the record equals what is read fresh ───────────────────
