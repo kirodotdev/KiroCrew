@@ -556,8 +556,9 @@ becomes a way to decline a feature while appearing to accept it. Three gaps are
 open against that standard today:
 
 - Apps add, and cannot intervene. `backend.hooks` (`routes`, `on_startup`,
-  `on_shutdown`) and `setup.onEnable` / `onDisable` are the in-gateway entry
-  points, and none of them lets an app take a position in a flow the core owns.
+  `on_shutdown`, and the `on_browser_media_ended` notice) and
+  `setup.onEnable` / `onDisable` are the in-gateway entry points, and none of
+  them lets an app take a position in a flow the core owns.
   `HookManager` is built only from `config.json`'s `hooks` section
   (`hooks.HookManager.__init__`) and exposes no registration path.
 - The platform states no version for its own app-facing surface.
