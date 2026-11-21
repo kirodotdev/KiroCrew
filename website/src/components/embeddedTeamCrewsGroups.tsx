@@ -11,7 +11,7 @@ const EmbeddedTeamCrewsGroup = lazy(() => import('./TeamCrewsGroup').then(m => (
 /** The switcher's extra group for these rows, or none when there are none (an older host, the relay viewer off). */
 export function embeddedTeamCrewsGroups(crews: PaneRelayCrew[] | undefined) {
   if (!crews?.length) return undefined
-  return (close: () => void) => (
-    <Suspense fallback={null}><EmbeddedTeamCrewsGroup crews={crews} close={close} /></Suspense>
+  return (close: () => void, headed?: boolean) => (
+    <Suspense fallback={null}><EmbeddedTeamCrewsGroup crews={crews} close={close} headed={headed} /></Suspense>
   )
 }

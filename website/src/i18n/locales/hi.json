@@ -7803,7 +7803,6 @@
     },
     "instanceTabBar": {
       "chain_via": "{{via}} › {{name}}",
-      "group_my_crews": "मेरे क्रू",
       "group_this_computer": "यह कंप्यूटर",
       "connected": "कनेक्टेड",
       "connected_refresh": "कनेक्ट है · रिफ़्रेश {{time}}",
@@ -20487,7 +20486,7 @@
         "loading": "लोड हो रहा है…",
         "local_bin_kirocrew": "~/.local/bin/kirocrew",
         "multi_instance_management_is": "रिमोट क्रू प्रबंधन",
-        "multi_instance_management_is_off": "रिमोट क्रू प्रबंधन बंद है",
+        "multi_instance_management_is_off": "रिमोट क्रू बंद है",
         "must_match_the_port_the_remote_gateway_serves_on": "वही पोर्ट उपयोग करें जिस पर रिमोट गेटवे सुनता है। कई क्रू एक ही पोर्ट साझा कर सकते हैं — स्थानीय फ़ॉरवर्ड पोर्ट अलग से आवंटित होता है।",
         "name": "नाम",
         "no_instances_configured_yet_add_one_below_to_man": "अभी कोई रिमोट क्रू कॉन्फ़िगर नहीं है। रिमोट क्रू प्रबंधित करने के लिए नीचे एक जोड़ें।",

@@ -8221,7 +8221,6 @@
     },
     "instanceTabBar": {
       "chain_via": "{{via}} › {{name}}",
-      "group_my_crews": "Мои команды",
       "group_this_computer": "Этот компьютер",
       "connected": "подключено",
       "connected_refresh": "подключено · обновление {{time}}",
@@ -21541,7 +21540,7 @@
         "loading": "Загрузка…",
         "local_bin_kirocrew": "~/.local/bin/kirocrew",
         "multi_instance_management_is": "Управление удалёнными командами",
-        "multi_instance_management_is_off": "Управление удалёнными командами отключено",
+        "multi_instance_management_is_off": "Удалённая команда отключена",
         "must_match_the_port_the_remote_gateway_serves_on": "Укажите порт, который слушает удалённый шлюз. Разные команды могут использовать один и тот же порт — локальный порт переадресации назначается отдельно.",
         "name": "Название",
         "no_instances_configured_yet_add_one_below_to_man": "Удалённые команды пока не настроены. Добавьте одну ниже, чтобы управлять удалённой командой.",

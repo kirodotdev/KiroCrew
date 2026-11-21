@@ -1,6 +1,7 @@
 /**
- * TeamCrewsGroup: the remote Crews reachable through the Kiro relay, as the
- * "Remote Crews" group at the end of the Crew switcher's menu. Each
+ * TeamCrewsGroup: the remote Crews reachable through the Kiro relay, at the end
+ * of the Crew switcher's one "Remote Crews" list: under the crews this dashboard
+ * reaches itself (SSH, SSM), or under a heading of its own when there are none. Each
  * row reads "<type> · <status>", the type Shared (group icon) or Private (lock
  * icon), and its end says which of three states it is in: Not connected, Connected
  * (open in this window, not in front) or a check (in front). Which account the list was read for is said on Settings >
@@ -188,8 +189,11 @@ function TeamCrewItem({ crew, refusal, onOpen, onShow, current = false, ownWindo
   )
 }
 
-export function TeamCrewsGroup({ crews, failed = false, refreshOnOpen, close }: {
+export function TeamCrewsGroup({ crews, failed = false, refreshOnOpen, close, headed = false }: {
   crews: RelayCrewEntry[]
+  /** The menu already drew the "Remote Crews" heading over its own crews, so these
+   *  rows continue that one list instead of opening a second group. */
+  headed?: boolean
   /** The latest read failed; the rows are the last list loaded. */
   failed?: boolean
   /** Reads the list again; the group mounts each time the menu opens. */
@@ -251,10 +255,14 @@ export function TeamCrewsGroup({ crews, failed = false, refreshOnOpen, close }: 
   }, [close, crews, dispatch])
   return (
     <div role="group" aria-label={t('components.relayCrews.list_label')} data-testid="team-crews-group">
-      <DropdownMenuSeparator />
-      <DropdownMenuLabel>
-        {t('components.relayCrews.group_team_crews')}
-      </DropdownMenuLabel>
+      {!headed && (
+        <>
+          <DropdownMenuSeparator />
+          <DropdownMenuLabel>
+            {t('components.relayCrews.group_team_crews')}
+          </DropdownMenuLabel>
+        </>
+      )}
       {failed && (
         <>
           <div className="px-3 pb-1">
@@ -286,7 +294,12 @@ export function TeamCrewsGroup({ crews, failed = false, refreshOnOpen, close }: 
 /** The Remote Crews group in an SSH Crew's own switcher, from the rows the window
  *  relays (lib/paneRelayCrews.ts). A pick goes up to that window, which shows or
  *  opens the Crew from its own top bar, which also says why when it is refused. */
-export function EmbeddedTeamCrewsGroup({ crews, close }: { crews: PaneRelayCrew[]; close: () => void }) {
+export function EmbeddedTeamCrewsGroup({ crews, close, headed = false }: {
+  crews: PaneRelayCrew[]
+  close: () => void
+  /** As `TeamCrewsGroup`'s: the pane's own crews already opened the one list. */
+  headed?: boolean
+}) {
   const { t } = useTranslation()
   const pick = (endpointId: string) => {
     postToHost({ type: 'mc-switch-instance', v: 1, id: `${PANE_RELAY_PREFIX}${endpointId}` })
@@ -294,8 +307,12 @@ export function EmbeddedTeamCrewsGroup({ crews, close }: { crews: PaneRelayCrew[
   }
   return (
     <div role="group" aria-label={t('components.relayCrews.list_label')} data-testid="team-crews-group">
-      <DropdownMenuSeparator />
-      <DropdownMenuLabel>{t('components.relayCrews.group_team_crews')}</DropdownMenuLabel>
+      {!headed && (
+        <>
+          <DropdownMenuSeparator />
+          <DropdownMenuLabel>{t('components.relayCrews.group_team_crews')}</DropdownMenuLabel>
+        </>
+      )}
       {crews.map(c => (
         <TeamCrewItem
           key={c.endpointId} crew={{ ...c, crewUrl: '' }} refusal={undefined} onOpen={pick}
@@ -325,8 +342,8 @@ export default function TeamCrewsSwitcher({ variant }: { variant: 'strip' | 'inl
       // Nothing while hidden or loading, or for an empty list with no account
       // label, so the bar stays as it is without the relay. A loaded empty list with an
       // account label still mounts the group, so it says there is nothing to open.
-      extraGroups={!showGroup ? undefined : close => (
-        <TeamCrewsGroup crews={crews} failed={failed} refreshOnOpen={refreshOnOpen} close={close} />
+      extraGroups={!showGroup ? undefined : (close, headed) => (
+        <TeamCrewsGroup crews={crews} failed={failed} refreshOnOpen={refreshOnOpen} close={close} headed={headed} />
       )}
       extraNotice={openRefusal ? (
         <ErrorNotice

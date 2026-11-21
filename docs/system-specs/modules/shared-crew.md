@@ -2036,7 +2036,14 @@ tokens, rows wrap at narrow widths):
 
 The Crew switcher's relay group is headed "Remote Crews"
 (`components.relayCrews.group_team_crews`); the Notifications page names the
-relay channel (`system.relay`) with the same string. Each row's second line reads
+relay channel (`system.relay`) with the same string. It is one list with the
+SSH, SSM and Fargate Crews this dashboard reaches itself: while the relay group
+shows, those rows sit under the same "Remote Crews" heading, above the relay rows,
+and the group draws no second heading (there is no "My Crews" group). Each such
+row's second line reads "Private · <source>" with a lock icon, the source being
+the row's SSH / SSM / Fargate tag, then its host. An SSH Crew's own pane reads
+the source from the `transport` its window relays with each tab (`HostTab`); a
+window that relays none shows the host alone. Each relay row's second line reads
 "<type> · <status>": a `TEAM` Crew is "Shared" with a group icon (lucide `Users`),
 a `PERSONAL` Crew is "Private" with a lock icon (lucide `Lock`), and any other type
 shows its raw value with no icon. The "Shared with me" section on Remote Crew reads the
@@ -2115,7 +2122,7 @@ The People page (`PeoplePanel.tsx`) reads, top to bottom, in every mode but `inv
    Tailscale" (`https://login.tailscale.com/admin/users`, a fixed URL, new tab,
    `noopener noreferrer`). Then the share link with "Copy Tailscale invite" for the
    owner and "Copy link" for a teammate. The AWS SSM card has "Make invite link".
-2. "People · N" (`PeopleCrew.tsx`), N being the distinct people listed. Under the
+2. "People · N" (`PeopleCrew.tsx`), N being the people rows listed. Under the
    heading, the line that one person can appear once per source, then one plain line
    each when Tailscale was not running at start (`daemon_not_found`) and when this Crew cannot
    report work per person (`usage_available` false and `usage_off` false); no tip icon. Each row:
