@@ -348,6 +348,7 @@ FACADE_RESIDENTS: frozenset[str] = frozenset(
         "_clear_failed_spawn_state",
         "_start_app_backend_body",
         "_resolve_nvm_path",
+        "_find_node_tool",
         "_find_node_binary",
         "_find_npm_binary",
         "_is_asgi_entry",

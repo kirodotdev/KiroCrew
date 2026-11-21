@@ -140,6 +140,13 @@ async def _run_app_build(
         # is ``npm.CMD``, which shutil.which finds but CreateProcess cannot spawn
         # by the bare name "npm".
         npm = shutil.which("npm")
+        if not npm:
+            # The backend's lookup adds nvm and the Node.js install directories
+            # a launchd PATH omits (#39108). Imported here: backend imports this
+            # module. Off the loop: the nvm step can run a shell.
+            from kiro_crew.apps.backend import _find_npm_binary
+
+            npm = await asyncio.to_thread(_find_npm_binary)
         if npm:
             build_cmds.append([npm, "install"])
             try:
@@ -149,7 +156,10 @@ async def _run_app_build(
             except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
         else:
-            log_lines.append("npm not found on PATH — skipping JavaScript build step")
+            log_lines.append(
+                "npm not found on PATH or in the Node.js install directories"
+                " — skipping JavaScript build step"
+            )
     elif platform_compat.is_bundled_interpreter():
         # The desktop gate decides for the bundled interpreter, ahead of the
         # `is_file` detection the pip branch below uses, because it decides on
