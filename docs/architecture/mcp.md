@@ -1483,7 +1483,7 @@ Review dialog inside that server's block, above the launch it then shows,
 never on the page as well. An answer that brings no launch to show reads as a
 changed launch. A row refused as
 `added_outside_dashboard` reads **Paused · not approved yet** and behaves the
-same with **Approve**. A marked row that cannot share (a refusal with no
+same with **Share across chats**. A marked row that cannot share (a refusal with no
 approvable identity, or an env a shared copy would withhold) has no switch,
 only a **Remove** button that takes the mark off. A row's **Details** shows
 the launch in the gateway's display-safe form (argv, env key names), each
@@ -1540,7 +1540,13 @@ re-reads on each socket connect (`hooks/useWebSocket.ts`) and otherwise only
 every five minutes. That poll stops only for a viewer the gateway refuses; it
 keeps running while sharing is off, so a tab notices sharing turned on elsewhere.
 **Review and approve** opens a dialog over the waiting servers only, one
-Approve per server, the same pinned write; there is no approve-all.
+**Share across chats** per server (and **Don't share**, which writes
+nothing), the same pinned write; there is no approve-all. The dialog carries no
+explainer of its own: what sharing risks is said once, in the confirm shown when
+sharing is turned on (`share_risk`), and the buttons are named by their result.
+A block for a changed launch draws no "what changed" hint either, since its diff
+says it; a block refused for another reason (never approved here, not
+approvable) keeps that reason line, as the row's **Details** does.
 A gateway start that pauses a shared server whose launch was approved before
 (`changed_needs_reapproval`) publishes one `system.approval` bell note naming
 the paused servers (`notifications/mcp_share_paused_note.py`, called once the

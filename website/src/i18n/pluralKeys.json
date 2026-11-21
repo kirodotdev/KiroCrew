@@ -424,6 +424,7 @@
   "pages.mcpManagement.reload_failed",
   "pages.mcpManagement.reload_confirm_title",
   "pages.mcpManagement.approval_title",
+  "pages.mcpManagement.review_title",
   "pages.mcpManagement.confirm_will_share",
   "apps.issueRadar.components.threads.show_earlier",
   "components.crewMode.conductor_mode_row_sessions",
