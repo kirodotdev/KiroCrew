@@ -9,6 +9,7 @@ import { safeSetItem } from '../../utils/safeStorage'
 import Clickable from '../../components/Clickable'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import ErrorNotice from '../../components/ErrorNotice'
+import { RELEASE_DIALOG_FRAME, ReleaseNotesBox } from '../../components/ReleaseNotesDialog'
 import { reportForError, type ErrorReport } from '../../utils/errorReport'
 import { InAppUpdateFlow } from '../../pages/settings/AboutPanelUpdateFlow'
 import WhatsNewAutoUpdateToggle from '../../components/WhatsNewAutoUpdateToggle'
@@ -213,7 +214,7 @@ function ChangelogDialog({ flow, updateAvailable }: { flow: ReturnType<typeof us
           the dialog jump; opening it pins the notes to a shorter box and
           gives the full changelog the rest of the dialog's height. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the handler only stops keystrokes reaching page shortcuts; it performs no action, so there is nothing for a keyboard user to reach */}
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={i18nT('app.changelog')} data-testid="changelog-modal" onKeyDown={isolateKeys} className="bg-card border border-border rounded-xl p-6 w-full mx-4 max-w-3xl max-h-[85vh] overflow-y-auto flex flex-col shadow-xl">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={i18nT('app.changelog')} data-testid="changelog-modal" onKeyDown={isolateKeys} className={`${RELEASE_DIALOG_FRAME} p-6 overflow-y-auto`}>
         <div className="flex justify-between items-center mb-4 shrink-0">
           <div className="text-sm font-bold text-text-strong"><Package className="lucide-inline" /> {i18nT('app.v')}{version}</div>
           <button aria-label={i18nT('app.close')} className="text-muted text-[13px] cursor-pointer hover:text-text" onClick={close}><X className="lucide-inline" /></button>
@@ -240,11 +241,9 @@ function ChangelogDialog({ flow, updateAvailable }: { flow: ReturnType<typeof us
             instead of leaving a line sliced mid-height; the padding lets the
             last line scroll clear of the fade. The fade sits on an inner
             scroller so the box's own border stays intact. */}
-        <div className={`bg-bg rounded-lg border border-border min-h-0 mb-4 flex flex-col transition-[max-height] duration-300 motion-reduce:transition-none ${showFull ? 'max-h-[30vh] shrink-0' : 'max-h-[60vh]'}`} data-testid="changelog-notes">
-          <div className="p-3 pb-6 min-h-0 overflow-y-auto [mask-image:linear-gradient(to_bottom,black_calc(100%-1.5rem),transparent)]" data-testid="changelog-notes-scroll">
-            <div className="text-[13px] text-text leading-relaxed"><MarkdownRenderer content={changes} /></div>
-          </div>
-        </div>
+        <ReleaseNotesBox testId="changelog-notes" className={`mb-4 transition-[max-height] duration-300 motion-reduce:transition-none ${showFull ? 'max-h-[30vh] shrink-0' : 'max-h-[60vh]'}`}>
+          <div className="text-[13px] text-text leading-relaxed"><MarkdownRenderer content={changes} /></div>
+        </ReleaseNotesBox>
         <div className="shrink-0">
         {updateAvailable ? (
           affordance === 'apply' ? (
@@ -282,11 +281,9 @@ function ChangelogDialog({ flow, updateAvailable }: { flow: ReturnType<typeof us
             <ErrorNotice variant="inline" className="mt-2" message={fullError.message} report={fullError.report} askAgent onHandoff={close} testId="changelog-full-error" />
           )}
           {showFull && fullChangelog && (
-            <div className="mt-2 bg-bg rounded-lg border border-border flex-1 min-h-0 flex flex-col" data-testid="changelog-full">
-              <div className="p-3 pb-6 min-h-0 overflow-y-auto [mask-image:linear-gradient(to_bottom,black_calc(100%-1.5rem),transparent)]" data-testid="changelog-full-scroll">
-                <div className="text-[13px] text-text leading-relaxed"><MarkdownRenderer content={fullChangelog} /></div>
-              </div>
-            </div>
+            <ReleaseNotesBox testId="changelog-full" className="mt-2 flex-1">
+              <div className="text-[13px] text-text leading-relaxed"><MarkdownRenderer content={fullChangelog} /></div>
+            </ReleaseNotesBox>
           )}
         </div>
       </div>

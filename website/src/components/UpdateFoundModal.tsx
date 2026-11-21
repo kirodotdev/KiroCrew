@@ -22,6 +22,7 @@ import { foldStableStamp } from '../utils/displayVersion'
 import { editionOwnsUpdatePrompts, type UpdateState } from '../hooks/useUpdateSubscription'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { reportForError } from '../utils/errorReport'
+import { RELEASE_DIALOG_FRAME, ReleaseNotesBox } from './ReleaseNotesDialog'
 
 /**
  * Proactive "update found" modal — the one interruption between an update
@@ -523,7 +524,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
           )}
         </div>
 
-        <div className="px-4 py-3 text-sm text-text">
+        <div className="px-4 py-3 text-sm text-text min-h-0 overflow-y-auto" data-testid="update-found-body">
           <p>
             {/* One interpolated key, not fixed JSX fragments: the version slot
                 sits in locale-specific positions (sentence-medial in ja/ko,
@@ -555,9 +556,9 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
             // gateway notes come straight from CHANGELOG.md — headers, bold,
             // nested lists — and a real release runs dozens of lines, so a
             // plain pre-wrap paragraph would print raw markdown syntax.
-            <div className="mt-2 p-3 bg-bg rounded-lg border border-border max-h-56 overflow-y-auto text-[13px] text-muted">
+            <ReleaseNotesBox testId="update-found-notes" className="mt-2 max-h-[60vh] text-[13px] text-muted">
               <MarkdownRenderer content={notes} />
-            </div>
+            </ReleaseNotesBox>
           )}
           {candidate.source === 'desktop' && (preferenceUnread ? (
             <ErrorNotice variant="inline" className="mt-2" message={i18nT('pages.settings.aboutPanel.auto_download_unreadable')}
@@ -756,7 +757,7 @@ function UpdateFoundDialog({ label, children }: { label: string; children: React
     <div
       ref={dialogRef}
       tabIndex={-1}
-      className="bg-card border border-border rounded-xl shadow-xl w-[460px] max-w-[90vw] flex flex-col overflow-hidden outline-hidden"
+      className={`${RELEASE_DIALOG_FRAME} overflow-hidden outline-hidden`}
       role="dialog"
       aria-modal="true"
       aria-label={label}
