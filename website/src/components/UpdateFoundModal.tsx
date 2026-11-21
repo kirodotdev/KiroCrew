@@ -12,7 +12,7 @@ import { Download, X, Copy, Check } from 'lucide-react'
 
 import { api, ApiError } from '../api/client'
 import { WorkConfirmDeclined } from '../utils/workInFlight'
-import { useAppSelector } from '../store'
+import { useAppSelector, useAppStore } from '../store'
 import { i18nT } from '../i18n/t'
 import { copyToClipboard } from '../utils/clipboard'
 import { updateAffordance } from '../utils/updateAffordance'
@@ -315,6 +315,8 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
     setRestarting(false)
   }
 
+  // Read at the moment a Restart request fails, not from this render's closure.
+  const appStore = useAppStore()
   const gwApply = useMutation({
     // Update ARMS the update for the next start and restarts nothing; Restart goes
     // through the client's one work-in-flight confirmation (`api/client/updates.ts`).
@@ -336,11 +338,19 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
         return
       }
       // A bare network failure is the gateway restarting out from under the
-      // POST (the success path) only for a Restart request. Arming restarts
+      // POST (the success path) only for a Restart request, and only once the
+      // dashboard socket has dropped too: the gateway answers the Restart
+      // before it restarts, so a failed request with the socket still connected
+      // means the gateway is up and no restart is coming. Arming restarts
       // nothing, so there a transport failure is a plain failure to surface;
       // a server rejection (ApiError) means no worker ran. Either way the
       // attempt is over, so Dismiss and retry come back.
-      if (e instanceof ApiError || kind === 'arm') {
+      // shortcut: a restart started elsewhere (another tab, Settings, the CLI)
+      // can exec while this request is in flight, and its rejection can land
+      // before the socket's close; the popup then shows "Update failed" during
+      // a real restart until the reconnect reloads this tab. Upgrade to a
+      // bounded re-check on the next disconnect if that window shows up.
+      if (e instanceof ApiError || kind === 'arm' || appStore.getState().dashboard.connected) {
         endAttempt()
         setApplyError(
           (e instanceof ApiError && e.message) || i18nT('components.updateFoundModal.update_failed'),
