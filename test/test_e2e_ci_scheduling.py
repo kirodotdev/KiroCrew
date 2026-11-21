@@ -476,9 +476,8 @@ raise SystemExit(m['main']())
     def test_the_suite_is_sharded_and_what_runs_once_stays_on_one_leg(self):
         import re
 
-        import yaml
-
         import test_playwright_e2e as harness
+        import yaml
 
         job = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]["e2e"]
         legs = job["strategy"]["matrix"]["shard"]
