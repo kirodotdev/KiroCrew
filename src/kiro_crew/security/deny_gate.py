@@ -42,6 +42,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
+#: Denial note when the ssh-self floor's reading raised and it refused closed, so a crash
+#: in the hand-folded reader reads as a deliberate refusal, not a silent miss (mirrors
+#: ``rm_floor._RM_FLOOR_UNREAD_NOTE``).
+_SSH_SELF_UNREAD_NOTE = (
+    "Refused because the ssh-self check could not read this command. Simplify it."
+)
+
+
 def _audit_clip(text: str) -> str:
     """*text* for an SEL row: scanned in full, then clipped to 200 characters.
 
@@ -981,6 +989,7 @@ def is_denied(
         # always yields a span, so ``hit`` is exactly ``_is_self_kill``; other
         # floors report no offsets and span the whole subject.
         span: "tuple[int, int] | None" = None
+        note = _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, "")
         if predicate is _argv._is_credential_mint:
             hit = _argv._is_credential_mint(lower, raw_text=tool_name)
         elif predicate is _argv._is_self_kill:
@@ -994,8 +1003,18 @@ def is_denied(
                 span = None
         elif predicate is _argv._reaches_self_over_ssh:
             # Also the command as submitted: a wrapper's option words keep their
-            # case there (``sudo -H`` is not ``sudo -h``).
-            hit = _argv._reaches_self_over_ssh(lower, raw_text=tool_name)
+            # case there (``sudo -H`` is not ``sudo -h``). Fail closed on an
+            # exception EXACTLY as the rm floor does for ``_rm_wipe_targets_nested``
+            # below: the ssh-self reading hand-folds and descends a script, so a
+            # crash in that must DENY a command that could name an ssh verb, not
+            # propagate out of ``is_denied`` and skip the floor. The fail-closed
+            # belt is no belt if the fold raises.
+            try:
+                hit = _argv._reaches_self_over_ssh(lower, raw_text=tool_name)
+            except Exception as exc:  # noqa: BLE001 - incl. RecursionError
+                logger.warning("ssh-self floor could not read the command: %r", exc)
+                hit = not _argv._cannot_name_ssh_verb(lower)
+                note = _SSH_SELF_UNREAD_NOTE
         else:
             hit = predicate(lower)
         if hit:  # never waived: a self-guard rule (``_DenyWaiver``)
@@ -1007,7 +1026,7 @@ def is_denied(
             _emit_deny_event(tool_name, pattern, lower)
             return _reason(
                 pattern,
-                _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
+                note,
                 rule=rule_id,
                 component="argv-floor",
                 span=span,

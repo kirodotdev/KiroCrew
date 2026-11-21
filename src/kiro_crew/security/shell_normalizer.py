@@ -976,7 +976,9 @@ def _is_self_program(token: str) -> bool:
     return _glob_could_expand_to(base, _SELF_PROGRAM_SPELLINGS)
 
 
-def _self_tokens(text_lower: str, *, resolve: bool = True) -> "list[str]":
+def _self_tokens(
+    text_lower: str, *, resolve: bool = True, preserve_structure: bool = False
+) -> "list[str]":
     """Tokenize the WHOLE command, resolving quoting before any splitting.
 
     *resolve* False stops before assignment and alias resolution, so a quoted
@@ -1015,7 +1017,7 @@ def _self_tokens(text_lower: str, *, resolve: bool = True) -> "list[str]":
                 " ; " if step.active and step.char == "\n" else step.text
                 for step in _iter_shell_chars(command)
             )
-        tokens = normalize_shell_command(command)
+        tokens = normalize_shell_command(command, preserve_structure=preserve_structure)
         if not resolve:
             return tokens
         return _resolve_function_aliases(_resolve_local_assignments(tokens))
@@ -1723,40 +1725,173 @@ def _decode_shell_quoted_literals(cmd: str) -> str:
     return _ANSI_C_QUOTE_RE.sub(_replace, cmd)
 
 
-@once_per_call(fresh=list)
-def _shell_tokens(cmd: str) -> list[str]:
+#: Bare empty-quote pairs (``""`` / ``''``) a POSIX shell itself drops when they touch a
+#: word: ``g""it`` -> ``git``, ``rm""`` -> ``rm``, ``""ssh`` -> ``ssh``. Matched with a word
+#: char on EITHER side so a standalone empty argument (``rm -rf "" /x``, space-flanked on
+#: both sides) is preserved as its own token.
+#:
+#: Each pattern matches a MAXIMAL run of pairs and carries NO trailing look-around, so the
+#: scan is linear: the greedy ``+`` never backtracks (there is nothing after it to satisfy),
+#: and the drop/keep decision is made from the run's neighbours in a callback. An earlier
+#: ``(?:…)+(?=\w)`` form was O(n^2) on a long run of pairs -- the ``+`` ate the run at every
+#: start position and then failed the look-ahead -- which stalled the synchronous deny gate.
+_BARE_PAIR_RUN_RE = re.compile(r"(?<!\\)(?:\"\"|'')+")
+
+#: Escaped empty-quote pairs (``\"\"`` / ``\'\'``) the shell keeps LITERAL. The floor
+#: over-approximates them as droppable so an obfuscated verb (``s\"\"sh``, ``rm\"\"``,
+#: ``rm -\"\"rf``) still reads as the verb -- the coverage ``main`` relied on. A run is
+#: dropped UNLESS immediately adjacent to another quote or a backslash on either side: a
+#: nested ``bash -c "…"`` script closes with a run of structural escaped quotes (``…id\"\"``
+#: beside the ``"`` that closes the frame, or beside a deeper ``\``), and that adjacency marks
+#: the pair as structure rather than a respelling, so it is left intact.
+_ESC_PAIR_RUN_RE = re.compile(r"(?:\\\"\\\"|\\'\\')+")
+
+
+def _is_word_char(ch: str) -> bool:
+    return bool(ch) and (ch.isalnum() or ch == "_")
+
+
+def _is_quote_or_backslash(ch: str) -> bool:
+    return ch in ('"', "'", "\\")
+
+
+def _collapse_pair_runs(text: str, run_re: "re.Pattern[str]", keep) -> str:
+    """Drop each maximal run *run_re* matches unless ``keep(before, after)`` is true, where
+    *before* / *after* are the single chars flanking the run (``""`` past the string ends).
+    Linear in ``len(text)`` -- the pattern has no backtracking tail and each run is visited
+    once."""
+
+    def _replace(match: "re.Match[str]") -> str:
+        start, end = match.start(), match.end()
+        before = text[start - 1] if start else ""
+        after = text[end] if end < len(text) else ""
+        return match.group(0) if keep(before, after) else ""
+
+    return run_re.sub(_replace, text)
+
+
+def _drop_empty_quote_pairs(cmd: str) -> str:
+    """Remove empty quote pairs from *cmd* BEFORE tokenizing, so a verb respelled with them
+    (``s""sh``, ``s''sh``, ``rm""``, ``s\\"\\"sh``, ``rm\\"\\"``) reads as the verb. A bare
+    pair the shell drops is collapsed wherever it touches a word; an escaped pair the shell
+    keeps literal is collapsed unless it is adjacent to another quote or a backslash (the mark
+    of a nested script's structural closing quotes). Repeated until stable so a run of pairs
+    and a mix of spellings all collapse. Doing this before tokenizing (not on the dequoted
+    token) keeps it from truncating a nested ``bash -c "..."`` script, whose structural
+    closing quotes are escaped pairs beside another quote rather than verb respellings."""
+    prev = None
+    while prev != cmd:
+        prev = cmd
+        cmd = _collapse_pair_runs(
+            cmd, _BARE_PAIR_RUN_RE, lambda b, a: not (_is_word_char(b) or _is_word_char(a))
+        )
+        cmd = _collapse_pair_runs(
+            cmd,
+            _ESC_PAIR_RUN_RE,
+            lambda b, a: _is_quote_or_backslash(b) or _is_quote_or_backslash(a),
+        )
+    return cmd
+
+
+def _drop_token_empty_pairs(token: str) -> str:
+    """Drop empty-quote pairs a DEQUOTED *token* still carries -- a pair that surfaces only
+    after ``shlex`` strips one quoting layer (``rm'""'`` -> ``rm""``, ``rm -rf '""'/`` ->
+    ``""/``). Both the bare and the escaped run are dropped unless adjacent to a quote or a
+    backslash (a token that is itself a nested ``bash -c "..."`` script keeps its structural
+    quotes); the space-flanked standalone ``rm -rf "" /x`` is already an EMPTY token here, so
+    it carries no literal pair for this to match. Repeated until stable."""
+    prev = None
+    keep = lambda b, a: _is_quote_or_backslash(b) or _is_quote_or_backslash(a)  # noqa: E731
+    while prev != token:
+        prev = token
+        token = _collapse_pair_runs(token, _BARE_PAIR_RUN_RE, keep)
+        token = _collapse_pair_runs(token, _ESC_PAIR_RUN_RE, keep)
+    return token
+
+
+def _modes_may_diverge(cmd: str) -> bool:
+    """The structure-preserving and default tokenizers can produce different tokens only on
+    an empty-quote pair -- bare (``""`` / ``''``) or escaped (``\\"\\"`` / ``\\'\\'``). Such a
+    pair needs a quote character, so a *cmd* with no quote at all is split identically by both
+    modes, and the scanner mode may reuse the default-mode tokens from the shared memo."""
+    return '"' in cmd or "'" in cmd
+
+
+def _shell_tokens(cmd: str, *, preserve_structure: bool = False) -> list[str]:
     """Tokenize *cmd* the way a POSIX shell hands argv to a program.
 
     Quote removal, backslash de-escaping (``shlex`` POSIX mode), ANSI-C / locale
     quoting (``$'…'``, ``$"…"`` -- see :func:`_decode_shell_quoted_literals`),
     empty-string concatenation (``g""it`` -> ``git``) and whitespace-run collapsing
-    -- and NOTHING else: no tilde, no ``$HOME``, no path resolution.  This is the
-    shared core of two callers that need the same token identity but must stop at
-    different points:
+    -- and NOTHING else: no tilde, no ``$HOME``, no path resolution.
 
-    * :func:`normalize_shell_command` continues on to expand ``~``/``$HOME``,
-      because it feeds path matchers that decide FILE identity.
-    * :func:`_deny_segment_views` stops here, because expansion is
-      platform-dependent and would land the operator's real home path in the
-      audit trail -- see that function.
+    Two consumers need two different post-steps of this ONE tokenizer, chosen by
+    *preserve_structure* -- not two tokenizers, and not a raw-operand reader:
+
+    * DEFAULT (``preserve_structure=False``) drops EVERY empty-quote pair from each
+      dequoted token unconditionally (``_EMPTY_QUOTE_RE``), exactly as the base ref
+      does. This is what every deny-matching caller needs
+      (:func:`_deny_segment_views`, the ``rm`` and git floors): a shell drops an
+      inert ``""`` / ``''`` before argv, so the floor must see the canonical command
+      SHAPE. ``eval 'sh -c '…'true; rm ''-rf /'…'`` runs ``rm -rf /`` and the view
+      must render ``rm -rf /`` for the ``rm -rf /.*`` rule to fire; retaining the
+      pair hides a destructive command from the floor.
+    * ``preserve_structure=True`` runs the escape-aware collapse instead
+      (:func:`_drop_empty_quote_pairs` before tokenizing, :func:`_drop_token_empty_pairs`
+      on each dequoted token): it still folds a respelled verb (``s\"\"sh`` -> ``ssh``,
+      ``rm\"\"`` -> ``rm``) but leaves a nested ``bash -c "…"`` script's structural
+      closing quotes intact. Exactly ONE caller passes it -- the ssh-to-self descent
+      (:func:`argv_floor_ssh_bodies._folded_scanner_reaches_self` via :func:`_self_tokens`
+      and :func:`normalize_shell_command`) -- because that descent must read a self-ssh
+      buried three or more ``bash -c`` levels deep without the default elision
+      truncating the payload it reads. No other caller needs, or gets, this mode.
 
     On parse failure (unbalanced quotes) falls back to whitespace splitting with
     quote/backslash stripping, so a hostile unterminated quote yields a degraded
     view rather than no view.
     """
+    if preserve_structure and not _modes_may_diverge(cmd):
+        # No empty-quote pair is possible, so the structure-preserving collapse and the
+        # default elision are both no-ops and split cmd identically. Route to the default
+        # memo key so the two legs share ONE tokenization of cmd instead of splitting twice.
+        preserve_structure = False
+    return _shell_tokens_keyed((cmd, preserve_structure))  # type: ignore[arg-type]
+
+
+@once_per_call(fresh=list)  # type: ignore[arg-type]  # keyed on the (cmd, preserve_structure) tuple
+def _shell_tokens_keyed(key: "tuple[str, bool]") -> list[str]:
+    """:func:`_shell_tokens` keyed on its own ``(cmd, preserve_structure)`` pair, so the
+    two modes share a per-call memo entry only with the same mode and never cross, while
+    :func:`once_per_call` stays the single-argument base reader every other floor marks."""
+    cmd, preserve_structure = key
     if not cmd or not cmd.strip():
         return []
+    if preserve_structure:
+        # Collapse empty quote pairs (incl. the escaped over-approximation) BEFORE
+        # tokenizing, keeping a nested script's structural closing quotes, so a verb
+        # respelled ``s\"\"sh`` reads as the verb while the descent still reaches a
+        # self-ssh buried in a deep ``bash -c "..."``.
+        cmd = _drop_empty_quote_pairs(cmd)
     cmd = _decode_shell_quoted_literals(cmd)
     try:
         tokens = shlex.split(cmd, posix=True)
     except ValueError:
-        # Unbalanced quotes or other parse errors — fall back to basic split.
+        # Unbalanced quotes or other parse errors — fall back to basic split with
+        # quote/backslash stripping.
         tokens = [t.strip("\"'\\") for t in cmd.split()]
-    # Strip empty-string concatenation artifacts: ca""t -> cat, g''it -> git
+    if preserve_structure:
+        # A pair can surface only AFTER shlex strips one quoting layer -- ``rm'""'`` and
+        # ``"rm\"\""`` both tokenize to ``rm""``, ``rm -rf '""'/`` to ``""/``. Collapse on
+        # each dequoted token too, dropping a literal pair unless it is adjacent to a quote
+        # or backslash, so a respelling collapses while a nested ``bash -c "..."`` token
+        # keeps its structural quotes and the descent re-reading it is not truncated.
+        return [_drop_token_empty_pairs(token) for token in tokens]
+    # DEFAULT: drop every empty-quote pair unconditionally (base behaviour), so the
+    # deny-matching view sees the canonical shape: ``ca""t`` -> ``cat``, ``g''it`` -> ``git``.
     return [_EMPTY_QUOTE_RE.sub("", token) for token in tokens]
 
 
-def normalize_shell_command(cmd: str) -> list[str]:
+def normalize_shell_command(cmd: str, *, preserve_structure: bool = False) -> list[str]:
     """Normalize a shell command string into a resolved token list.
 
     Handles:
@@ -1784,7 +1919,7 @@ def normalize_shell_command(cmd: str) -> list[str]:
 
     home = os.path.expanduser("~")
     resolved: list[str] = []
-    for token in _shell_tokens(cmd):
+    for token in _shell_tokens(cmd, preserve_structure=preserve_structure):
         # Expand $HOME/${HOME} per-token (after shlex, so Windows backslashes
         # in the expanded path are never reinterpreted as escape characters).
         # Uses a callable replacement to avoid re.error on Windows where the
