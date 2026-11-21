@@ -758,6 +758,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         RESOURCE_WAKE_KIND,
         SEED_DECLINED_NOTICE_KIND,
         SESSION_START_FAILED_KIND,
+        SIGNOUT_RETAINED_KEY,
         SPEC_HOOKS_NOTICE_KIND,
         SPEC_HOOKS_RUN_NOWHERE_NOTICE,
         STEER_POSSIBLY_DELIVERED_META,
@@ -775,6 +776,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _queued_row_id,
         _remove_queued_by_id,
         _reorder_queued_rows,
+        _resumes_signout,
         _stamped_turn_actor,
         app_inject_row,
         carries_attachments,
@@ -782,9 +784,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_synthetic_recovery_item,
         is_system_injection,
         is_system_injection_item,
+        mark_signout_retained,
         payload_for_replay,
+        persons_send,
         releases_past_subagent_hold,
         resource_inject_row,
+        signout_gate,
+        signout_held,
+        signout_hold_active,
         teardown_hold_active,
     )
     from kiro_crew.dashboard.chat_utils_slack_options import (  # noqa: F401
@@ -914,6 +921,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
         ATTACHMENT_META_KEYS,
+        PUT_BACK_KEY,
         source_channels_of,
     )
     from kiro_crew.dashboard.state import (  # noqa: F401

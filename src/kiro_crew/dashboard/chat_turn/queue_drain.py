@@ -42,6 +42,8 @@ from kiro_crew.dashboard.chat_utils_injected_rows import (
     GATEWAY_PROMPT_INJECT_KINDS,
     REQUEUED_STEER_ROW_MID_META,
     RESOURCE_WAKE_KIND,
+    _resumes_signout,
+    persons_send,
     resource_inject_row,
 )
 from kiro_crew.dashboard.chat_utils_slots import dashboard_slot_key
@@ -52,6 +54,7 @@ from kiro_crew.dashboard.session_directive_apply import (
     REFUSAL_WAKE_LOOP_ID_META_KEY,
 )
 from kiro_crew.dashboard.slot_queue_repository import (
+    MODEL_AS_TYPED_KEY,
     RESTORED_QUEUE_KEY,
     RESTORED_SEND_CHOSEN_KEY,
     run_now_chosen_id,
@@ -81,6 +84,7 @@ if TYPE_CHECKING:
         redact_credentials,
         redact_exfiltration_urls,
         shutdown_event,
+        signout_hold_active,
         spawn_guarded_turn,
         teardown_hold_active,
     )
@@ -375,7 +379,9 @@ _RESTORED_DRAIN_IDS: ContextVar[dict[str, frozenset[str]]] = ContextVar(
 _STARTED_QUEUE_IDS: ContextVar[list[str] | None] = ContextVar("started_queue_ids", default=None)
 
 
-async def _drain_parked_queues(state: DashboardState, slot_keys: list[str]) -> None:
+async def _drain_parked_queues(
+    state: DashboardState, slot_keys: list[str], *, signout_drain: bool = False
+) -> None:
     """Start the next queued turn on each parked slot that is still idle.
 
     Runs once when memory preparation finishes. Each slot is re-checked under
@@ -397,11 +403,12 @@ async def _drain_parked_queues(state: DashboardState, slot_keys: list[str]) -> N
                     or slot.running
                     or slot.is_closing
                     or slot._stop_state != "idle"
+                    or (signout_hold_active(slot) and not signout_drain)
                 ):
                     continue
                 if not _memory_preparation_pending(state) and not _parked_queue_drain_admitted():
                     return
-                started = await _start_next_queued_turn(state, slot)
+                started = await _start_next_queued_turn(state, slot, signout_drain=signout_drain)
             if started:
                 state.push_slots_update()
         except Exception:
@@ -499,7 +506,7 @@ def idle_slot_admits_drain(state: DashboardState, slot: _ChatSlot) -> bool:
         and (task is None or task.done())
         and not slot._turn_admission_reserved
         and not slot.is_closing
-        and not slot._last_turn_auth_required
+        and not signout_hold_active(slot)
         and not slot._stopping
         and slot._stop_state == "idle"
     )
@@ -565,6 +572,7 @@ async def _start_next_queued_turn(
     slot: _ChatSlot,
     *,
     allow_user_during_subagents: bool = False,
+    signout_drain: bool = False,
     required_queue_id: str | None = None,
     predecessor_actor: str = "",
     predecessor_turn_id: str = "",
@@ -762,6 +770,9 @@ async def _start_next_queued_turn(
     # ``allow_user_during_subagents``: only the caller's Run now passes it, never
     # an id a drain picked itself (a queued arrival, a restored card).
     edit_held = edit_hold_blocks_user_turn(slot, run_now=allow_user_during_subagents)
+    head = slot._queue[:1]
+    resuming = any(map(_resumes_signout, slot._queue)) and head[0].get("_signout_retained")
+    allow_user_during_subagents |= bool(signout_drain or resuming) and any(map(persons_send, head))
     # Automatic promotion is skipped while a teardown or an open editor holds
     # the user entries: promoting one would set ``required_queue_id``, and that
     # plus the hold returns below before the system-only dequeue, parking a cron
@@ -770,6 +781,10 @@ async def _start_next_queued_turn(
     auto_priority = bool(
         priority_id and not required_queue_id and not teardown_held and not edit_held
     )
+    if auto_priority and any(persons_send(i) and i.get("_signout_retained") for i in slot._queue):
+        # A person's held prompts keep their order; only one at the head passes a child.
+        auto_priority = False
+        allow_user_during_subagents = allow_user_during_subagents or persons_send(slot._queue[0])
     if auto_priority:
         required_queue_id = priority_id
         allow_user_during_subagents = True
@@ -781,7 +796,7 @@ async def _start_next_queued_turn(
     ):
         # A ``session_run_queued`` choice runs next, as its idle path would run it.
         # Held like the promotion above: the mark stays and runs once the hold lifts.
-        required_queue_id, allow_user_during_subagents = chosen, True
+        required_queue_id, allow_user_during_subagents, explicit_request = chosen, True, True
 
     # A completion counts as a child until it has run: while it is still being
     # handed to this tab, or waits in the queue behind another system entry, a
@@ -898,6 +913,7 @@ async def _start_next_queued_turn(
             merge_enabled=merge
             and not required_queue_id
             and not any(item.get(RESTORED_QUEUE_KEY) for item in slot._queue),
+            selected=explicit_request,
         )
     if next_msg is None:
         return False
@@ -977,7 +993,10 @@ async def _start_next_queued_turn(
     # redacted as before. A merge folds only user sends together, so requiring
     # EVERY consumed entry to qualify keeps a mixed batch on the redacted path.
     deliver_as_typed = bool(consumed) and all(queue_entry_is_user_origin(item) for item in consumed)
-    if not deliver_as_typed:
+    model_as_typed = deliver_as_typed or (
+        bool(consumed) and all(item.get(MODEL_AS_TYPED_KEY) for item in consumed)
+    )
+    if not model_as_typed:
         next_msg, _ = redact_exfiltration_urls(next_msg)
         next_msg, _ = redact_credentials(next_msg)
     # An entry an app sent is never a cron or sub-agent event, whatever its text
@@ -1524,6 +1543,7 @@ async def _start_next_queued_turn(
 
     _run_kwargs: dict[str, Any] = {
         "_current_message": current_row,
+        "_queued_entries": tuple(consumed),
         "_synthetic_payload": synthetic_payload,
         "_directive_user_origin": directive_user_origin,
         "_directive_channel_origin": directive_channel_origin,

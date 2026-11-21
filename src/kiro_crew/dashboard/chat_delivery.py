@@ -36,6 +36,7 @@ from kiro_crew.dashboard.chat_utils_injected_rows import (
 )
 from kiro_crew.dashboard.slot_queue_repository import (
     ATTACHMENT_META_KEYS,
+    PUT_BACK_KEY,
     RESTORED_QUEUE_KEY,
     is_held_queue_entry,
     refused_durable_ids,
@@ -1817,14 +1818,17 @@ def queue_view(
     ``written`` holds the ids whose user row is already in the transcript
     (``responsive_chat.row_already_written``, read off the live slot): each gets
     ``meta.written: true``, because the cancel and edit endpoints refuse such an
-    entry and the card must not offer either."""
+    entry and the card must not offer either. A put-back entry among them also gets
+    ``meta.withdrawable: true``: its cancel is allowed, its edit still refused."""
     snapshot = list(queue)
     if refused is None:
         refused = refused_durable_ids(snapshot)
     views = [queue_entry_view(item) for item in snapshot]
-    for view in views:
+    for item, view in zip(snapshot, views):
         if view["id"] in refused:
             view.setdefault("meta", {})["durable"] = False
         if written and view["id"] in written:
             view.setdefault("meta", {})["written"] = True
+            if item.get(PUT_BACK_KEY):
+                view["meta"]["withdrawable"] = True
     return views
