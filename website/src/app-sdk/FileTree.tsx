@@ -191,7 +191,7 @@ function TreeBody({ client, projectDir, onOpenFile, selectedPath, searchQuery, a
  *  tree draws that failure only in its changed-files mode, which the export
  *  never uses, so without this an app that declared the read would lose its
  *  colours with no word why. A disabled observer of the tree's own status
- *  query: it reads that query's state and never sends a request. */
+ *  query: it reads that query's state and sends a request only on its Retry. */
 function StatusNotice({ client, projectDir }: { client: WorkspaceTreeClient; projectDir: string }) {
   const status = useQuery({
     queryKey: ['git-status', projectDir],
@@ -200,19 +200,31 @@ function StatusNotice({ client, projectDir }: { client: WorkspaceTreeClient; pro
   })
   if (!client.gitStatus || !status.error) return null
   const err = status.error
+  // A filter refusal is the repository's own setting, which no re-read changes;
+  // any other failed read can answer on a retry. The Retry sits beside the
+  // inline notice (which draws no actions), as the failed-refresh one does,
+  // and re-reads the tree's own status query.
+  const refused = isGitFilterRefusal(err)
   return (
-    // No hand-off: the hosting app's page may hold an unsaved draft of its own.
-    <ErrorNotice
-      variant="inline"
-      impact="partial"
-      className="mx-2 mt-1.5 whitespace-normal"
-      testId="app-file-tree-status-error"
-      message={isGitFilterRefusal(err)
-        ? i18nT(gitFilterRefusalCopyKey(gitFilterRefusalCause(err)))
-        // Says what the failure costs: the rows lose their changed-file marks.
-        : i18nT('appSdk.fileTree.status_failed')}
-      report={reportForError(err)}
-    />
+    <div className="mx-2 mt-1.5 flex flex-wrap items-center gap-1.5">
+      {/* No hand-off: the hosting app's page may hold an unsaved draft of its own. */}
+      <ErrorNotice
+        variant="inline"
+        impact="partial"
+        className="whitespace-normal"
+        testId="app-file-tree-status-error"
+        message={refused
+          ? i18nT(gitFilterRefusalCopyKey(gitFilterRefusalCause(err)))
+          // Says what the failure costs: the rows lose their changed-file marks.
+          : i18nT('appSdk.fileTree.status_failed')}
+        report={reportForError(err)}
+      />
+      {!refused && (
+        <Btn type="button" onClick={() => { void status.refetch() }}>
+          {i18nT('components.workspaceTree.folder_listing_retry')}
+        </Btn>
+      )}
+    </div>
   )
 }
 

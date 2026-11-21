@@ -6610,7 +6610,8 @@ The shared tree draws a failed status read only in its changed-files mode, which
 export never uses, so the export draws it itself: a partial `ErrorNotice` above the
 rows (the Git panel's filter-refusal copy, else its own `appSdk.fileTree.status_failed`,
 which says the changed files are not marked; the Files rail's `status_failed` is unchanged), read by a disabled
-observer of the tree's own `['git-status', dir]` query, which sends nothing. The rows
+observer of the tree's own `['git-status', dir]` query, which sends nothing until its Retry
+(drawn beside it, except for a filter refusal no re-read changes) re-reads that query. The rows
 stay usable, uncoloured. The export keys the tree on `projectDir`, so a page that switches project, even to one
 whose listing is cached, gets a fresh model: one project's loaded folders and refusals
 never carry into another's reads. Neither the refusal nor the failed-read notice carries the agent hand-off: it navigates
@@ -6623,7 +6624,7 @@ another read can answer differently. It takes the tree's place only while nothin
 a failed refresh of a listed tree (a poll, a focus refetch) keeps the tree mounted, with its
 loaded folders and selection, under an inline notice with a Retry beside it, as the Files rail
 does. When another read can answer differently that notice is `appSdk.fileTree.refresh_failed`
-("showing the last list"), since the rows on screen are the last listing. A host that hides the page (`info.active` false)
+("showing the last one"), since the rows on screen are the last listing. A host that hides the page (`info.active` false)
 pauses every tree read, the export's own and the shared tree's (`active`). The export
 calls `onOpenFile` exactly once per change of the opened file (none to A, or A to B). The
 opened file is a ref in the export, read and written synchronously: the last file it

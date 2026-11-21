@@ -379,7 +379,7 @@
     },
     "fileTree": {
       "not_declared": "Cette app ne peut pas afficher les fichiers du projet : ses autorisations ne déclarent pas {{path}}.",
-      "refresh_failed": "Impossible d’actualiser l’arborescence des fichiers ; la dernière liste reste affichée.",
+      "refresh_failed": "Impossible d’actualiser la liste des fichiers ; la dernière reste affichée.",
       "status_failed": "Impossible de vérifier quels fichiers ont changé, donc les fichiers modifiés ne sont pas signalés."
     },
     "projectPicker": {

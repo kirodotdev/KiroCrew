@@ -362,7 +362,7 @@
     },
     "fileTree": {
       "not_declared": "Diese App kann die Projektdateien nicht anzeigen – ihre Berechtigungen deklarieren {{path}} nicht.",
-      "refresh_failed": "Der Dateibaum konnte nicht aktualisiert werden; die letzte Liste wird angezeigt.",
+      "refresh_failed": "Die Dateiliste konnte nicht aktualisiert werden; die letzte wird angezeigt.",
       "status_failed": "Es ließ sich nicht prüfen, welche Dateien geändert wurden, daher sind geänderte Dateien nicht markiert."
     },
     "projectPicker": {

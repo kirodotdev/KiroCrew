@@ -451,6 +451,13 @@ describe('the App SDK FileTree', () => {
     expect(await screen.findByTestId('app-file-tree-status-error', {}, { timeout: 15000 }))
       .toHaveTextContent("Couldn't check which files changed, so changed files aren't marked.")
     expect(screen.getByTestId('file-tree')).toBeInTheDocument()
+    // A Retry beside it re-reads the status, and the notice goes once it answers.
+    const reads = () => fetchMock.mock.calls.map(pathOf).filter(p => p === FILE_TREE_PATHS.gitStatus).length
+    const before = reads()
+    statusStatus = 200
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.queryByTestId('app-file-tree-status-error')).toBeNull())
+    expect(reads()).toBeGreaterThan(before)
   }, 20000)
 
   it('draws no dashboard file action on an external tree row, contributed rows included', async () => {
@@ -619,7 +626,7 @@ describe('the App SDK FileTree', () => {
     treeStatus = 500
     await act(async () => { await appQueryClient(`file-tree-app-${appSeq}`).refetchQueries({ queryKey: ['project-tree', ROOT], exact: true }) })
     // It says the shown list is the last one, not that the tree failed to load.
-    expect(await screen.findByTestId('app-file-tree-error')).toHaveTextContent("Couldn't refresh the file tree; showing the last list.")
+    expect(await screen.findByTestId('app-file-tree-error')).toHaveTextContent("Couldn't refresh the file list; showing the last one.")
     // Same mount, same model: its loaded folders and selection are kept.
     expect(screen.getByTestId('file-tree')).toBeInTheDocument()
     expect(treeMock.last()).toBe(listed)

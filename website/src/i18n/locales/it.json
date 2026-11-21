@@ -379,7 +379,7 @@
     },
     "fileTree": {
       "not_declared": "Questa app non può mostrare i file del progetto: le sue autorizzazioni non dichiarano {{path}}.",
-      "refresh_failed": "Non è stato possibile aggiornare l’albero dei file; viene mostrato l’ultimo elenco.",
+      "refresh_failed": "Non è stato possibile aggiornare l’elenco dei file; viene mostrato l’ultimo.",
       "status_failed": "Non è stato possibile verificare quali file sono cambiati, quindi i file modificati non sono contrassegnati."
     },
     "projectPicker": {
