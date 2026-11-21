@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -495,3 +496,76 @@ class TestCronCreatorAdmission:
         state.conversation_log = _OwnerOpensMeanwhile()
 
         self._assert_not_creator(await self._refusal(state, self._SLOT))
+
+
+class _Crons:
+    def __init__(self, *jobs, error: Exception | None = None) -> None:
+        self._jobs = jobs
+        self._error = error
+
+    def list_jobs(self, include_disabled: bool = False):
+        assert include_disabled is True
+        if self._error is not None:
+            raise self._error
+        return list(self._jobs)
+
+
+def _bound_state(*jobs, error: Exception | None = None) -> SimpleNamespace:
+    return SimpleNamespace(crons=_Crons(*jobs, error=error))
+
+
+@pytest.fixture
+def session_bindings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    from kiro_crew.cron_service import session_bindings
+
+    monkeypatch.setattr(session_bindings, "data_home", lambda: tmp_path)
+    return session_bindings
+
+
+class TestCronBoundSessionKey:
+    _JOB = SimpleNamespace(id="nightly-dispatcher", session_key="dashboard:chat-7")
+
+    @pytest.mark.asyncio
+    async def test_a_cron_key_names_its_jobs_bound_session(self, session_bindings):
+        session_bindings.record_session_binding(self._JOB.id, self._JOB.session_key)
+
+        assert (
+            await _shared.cron_bound_session_key(_bound_state(self._JOB), _CRON_KEY)
+            == "dashboard:chat-7"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_per_run_key_names_its_jobs_bound_session(self, session_bindings):
+        state = _bound_state(self._JOB)
+        session_bindings.record_session_binding(self._JOB.id, self._JOB.session_key)
+
+        assert (
+            await _shared.cron_bound_session_key(state, f"{_CRON_KEY}:run-3") == "dashboard:chat-7"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_store_rewrite_without_a_matching_binding_is_refused(self, session_bindings):
+        session_bindings.record_session_binding(self._JOB.id, "dashboard:original")
+
+        assert await _shared.cron_bound_session_key(_bound_state(self._JOB), _CRON_KEY) == ""
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_job_is_bound_to_nothing(self):
+        assert (
+            await _shared.cron_bound_session_key(_bound_state(self._JOB), "cron:weekly-digest")
+            == ""
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_non_cron_key_is_bound_to_nothing(self):
+        assert (
+            await _shared.cron_bound_session_key(_bound_state(self._JOB), "dashboard:chat-7") == ""
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_registry_is_bound_to_nothing(self, caplog):
+        state = _bound_state(error=RuntimeError("store busy"))
+
+        with caplog.at_level(logging.WARNING):
+            assert await _shared.cron_bound_session_key(state, _CRON_KEY) == ""
+        assert "cron job lookup failed" in caplog.text

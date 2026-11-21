@@ -120,6 +120,37 @@ async def cron_slot_creator(request: web.Request) -> str:
     return session
 
 
+async def cron_bound_session_key(state: Any, cron_creator: str) -> str:
+    """Return the session key trusted for the caller's cron job, or ``""``.
+
+    The cron store is sandbox-writable, so its ``job.session_key`` is admitted
+    only when the gateway-only binding record for that job agrees. Sandboxed
+    writers cannot reach that record. A missing, unreadable or malformed store
+    or binding yields ``""``, which leaves the caller to the creator fence.
+    """
+    from kiro_crew.cron import cron_job_id_from_session_key
+    from kiro_crew.cron_service.session_bindings import read_session_binding
+
+    job_id = cron_job_id_from_session_key(cron_creator)
+    if not job_id:
+        return ""
+    try:
+        jobs = state.crons.list_jobs(include_disabled=True)
+    except Exception:
+        logger.warning("cron job lookup failed for %s", cron_creator, exc_info=True)
+        return ""
+    job = next((j for j in jobs if str(getattr(j, "id", "")) == job_id), None)
+    session_key = str(getattr(job, "session_key", "") or "") if job is not None else ""
+    if not session_key:
+        return ""
+    try:
+        recorded = await asyncio.to_thread(read_session_binding, job_id)
+    except Exception:
+        logger.warning("cron session binding lookup failed for %s", cron_creator, exc_info=True)
+        return ""
+    return session_key if recorded == session_key else ""
+
+
 async def cron_creator_admission(
     request: web.Request, state: Any, slot_name: str | None, cron_creator: str
 ) -> tuple[web.Response | None, bool, dict[str, Any]]:
