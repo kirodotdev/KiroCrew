@@ -131,7 +131,7 @@ describe('a canvas artifact', () => {
     render(wrap(<CanvasArtifactBody artifact={art(serializeCanvas(emptyCanvas()))} isCurrent />))
     addSticky()
     await act(async () => { await vi.advanceTimersByTimeAsync(800) })
-    expect(screen.getByText(/Hidden text on this canvas changed somewhere else/)).toBeTruthy()
+    expect(screen.getByText(/Text shown as \[REDACTED\] on this canvas changed somewhere else/)).toBeTruthy()
     expect(screen.queryByText('raw server text')).toBeNull()
     expect(screen.queryByText('Try saving again')).toBeNull()
 
@@ -220,6 +220,7 @@ describe('a canvas artifact', () => {
     render(wrap(<CanvasArtifactBody artifact={art(serializeCanvas(masked), { content_redacted: true })} isCurrent />))
     expect(screen.getByTestId('canvas-dock')).toBeTruthy()
     expect(screen.queryByTestId('canvas-readonly-note')).toBeNull()
+    expect(screen.getByTestId('canvas-masked-note')).toHaveTextContent('They are still saved.')
     addSticky()
     await act(async () => { await vi.advanceTimersByTimeAsync(800) })
     expect(updateArtifact).toHaveBeenCalledTimes(1)
@@ -231,6 +232,7 @@ describe('a canvas artifact', () => {
 
   it('a save whose reply masks more than the page sent is adopted, so the next save matches the stored copy', async () => {
     render(wrap(<CanvasArtifactBody artifact={art(serializeCanvas(withShapes(1)))} isCurrent />))
+    expect(screen.queryByTestId('canvas-masked-note')).toBeNull()
     const typed = (doc: string) => {
       const read = parseCanvas(doc)
       if (!read.ok) throw new Error('not a canvas')
@@ -242,6 +244,8 @@ describe('a canvas artifact', () => {
     expect(updateArtifact).toHaveBeenCalledTimes(1)
     const sent = (updateArtifact.mock.calls[0][1] as { content: string }).content
     expect(canvasDocument('board')).toBe(typed(sent))
+    // The masked value is still stored, and the page says so.
+    expect(screen.getByTestId('canvas-masked-note')).toBeTruthy()
     updateArtifact.mockResolvedValueOnce({ content_token: 't3' })
     addSticky()
     await act(async () => { await vi.advanceTimersByTimeAsync(800) })

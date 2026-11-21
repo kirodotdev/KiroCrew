@@ -93,6 +93,9 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
   // A refused masked merge fails the same way on every retry, so its notice
   // offers a reload instead.
   const [refusal, setRefusal] = useState<'stale' | 'refused' | null>(null)
+  // A save whose reply masked text the page sent (a credential typed in): the
+  // page now shows placeholders, so it says the values are still stored.
+  const [maskedSaved, setMaskedSaved] = useState(false)
   const resolvingRef = useRef(false)
   const [resolving, setResolving] = useState(false)
   // Bumped whenever content from outside replaces the canvas, so the editor
@@ -198,6 +201,7 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
           ownTokens.current.clear()
           setOwn(null)
         }
+        if (masked?.ok) setMaskedSaved(true)
         if (adopted !== null) {
           setCanvas(masked?.ok ? masked.canvas : null)
           setEpoch(e => e + 1)
@@ -433,6 +437,13 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
             className="pointer-events-none absolute left-3 top-3 rounded-md bg-bg-elevated px-2 py-0.5 text-[11px] text-muted shadow-sm"
             style={{ zIndex: 9 }}>
             {status}
+          </div>
+        )}
+        {editable && (artifact.content_redacted || maskedSaved) && (
+          <div data-testid="canvas-masked-note"
+            className="pointer-events-none absolute left-3 top-10 rounded-md bg-bg-elevated px-2 py-0.5 text-[11px] text-muted shadow-sm"
+            style={{ zIndex: 9 }}>
+            {t('components.canvas.masked_saved_note')}
           </div>
         )}
         {!editable && (
