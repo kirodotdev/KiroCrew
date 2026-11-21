@@ -29,6 +29,7 @@ import subprocess
 import sys as _sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -1042,6 +1043,10 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
 
     async def read_pty():
         reader_ended = False
+        # The shell's own thread, never the default executor: an idle shell parks
+        # this read for as long as it lives, so enough open tabs would hold every
+        # default worker and stop each to_thread caller in the gateway.
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mc-pty-reader")
         try:
             loop = asyncio.get_running_loop()
             if sess.winpty is not None:
@@ -1049,7 +1054,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             else:
                 reader = lambda: os.read(sess.master_fd, 4096)  # noqa: E731  # wokeignore:rule=master
             while True:
-                data = await loop.run_in_executor(None, reader)
+                data = await loop.run_in_executor(pool, reader)
                 if not data:
                     reader_ended = True
                     break
@@ -1058,6 +1063,9 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             # EIO: the child exited, or a teardown closed the fd under us.
             # _handle_pty_reader_end tells those apart.
             reader_ended = True
+        finally:
+            # A read still parked frees its thread when the shell ends.
+            pool.shutdown(wait=False)
         if reader_ended:
             await _handle_pty_reader_end(registry, sess, bus=notification_bus)
 
