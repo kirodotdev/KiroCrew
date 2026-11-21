@@ -562,10 +562,11 @@ def _run_cron(
     sequence: list[str] | None = None,
     persistent: bool = True,
     fail_call: int | None = None,
+    job=None,
 ):
     from kiro_crew.cron import CronJob, CronSchedule
 
-    job = CronJob(
+    job = job or CronJob(
         id="j1",
         name="poller",
         message="go",
@@ -635,6 +636,30 @@ def test_the_next_run_of_a_cron_missing_the_same_server_does_not_repeat_the_note
 
     assert "azure-devops" in first.last_result
     assert second.last_result == "the agent answer"
+
+
+def test_a_cron_whose_note_drops_out_still_treats_the_same_answer_as_a_duplicate():
+    """The warning leads only the first run, so it must not be part of the dedup key."""
+    job = _run_cron(_FakeClient(slow_reports=False))
+    posted = job.last_posted_hash
+    _run_cron(_FakeClient(slow_reports=False), job=job)
+
+    assert posted
+    assert job.last_posted_hash == posted
+    assert job.consecutive_dupes == 1
+
+
+def test_a_cron_whose_server_goes_missing_posts_the_same_answer_with_the_warning():
+    """A changed missing set is news: the same answer is not a duplicate then."""
+    job = _run_cron(_FakeClient(slow_reports=True))
+    posted = job.last_posted_hash
+    _run_cron(_FakeClient(slow_reports=False), job=job)
+
+    assert posted
+    assert job.last_posted_hash != posted
+    assert job.consecutive_dupes == 0
+    assert "azure-devops" in job.last_result
+    assert job.last_result.endswith("the agent answer")
 
 
 def test_a_stateless_cron_missing_the_same_server_does_not_repeat_the_note():
