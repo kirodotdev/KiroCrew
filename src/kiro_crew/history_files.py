@@ -225,6 +225,7 @@ def _cleanup_old_archives(retention_days: int | None = None, base: Path | None =
     adir = _archive_dir(base)
     cutoff = now - retention_days * 86400
     removed = 0
+    expired_stems: set[str] = set()
     # An absent archive directory is not a reason to skip the crew log half: a
     # session can hold a crew log long before anything of its transcript is
     # archived, so returning here would leave that half uncollected until the
@@ -235,12 +236,24 @@ def _cleanup_old_archives(retention_days: int | None = None, base: Path | None =
                 if p.stat().st_mtime < cutoff:
                     p.unlink()
                     removed += 1
+                    expired_stems.add(p.name.rpartition(ARCHIVE_SEGMENT_DELIMITER)[0])
             except OSError:
                 pass
     if removed:
         logger.info("Cleaned %d expired archive files (>%dd)", removed, retention_days)
+        _forget_expired_archive_text(adir.parent, expired_stems)
     _cleanup_expired_crew_logs(retention_days, now)
     return removed
+
+
+def _forget_expired_archive_text(sessions_dir: Path, stems: set[str]) -> None:
+    """Stop session search matching what retention just deleted, best-effort."""
+    try:
+        from kiro_crew.history_archive_text import forget_expired_archive_text
+
+        forget_expired_archive_text(sessions_dir, stems)
+    except Exception:
+        logger.warning("Session search could not forget expired archive text", exc_info=True)
 
 
 def _cleanup_expired_crew_logs(retention_days: int, now: float) -> None:

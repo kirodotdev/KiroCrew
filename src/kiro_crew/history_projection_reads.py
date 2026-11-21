@@ -378,37 +378,13 @@ class TranscriptReadProjection:
         the corpus once per page and archives change only on a rotation, so the
         multi-MB parse must not repeat per scroll step.
         """
-        facade = _history_facade()
-        adir = facade._archive_dir(self._log._dir)
-        stem = facade._safe_key(key) + facade.ARCHIVE_SEGMENT_DELIMITER
+        from kiro_crew.history_archive_text import rotated_segment_paths
 
-        def _seg_order(p: Path) -> tuple[str, int]:
-            # Same-second segments carry ``-N`` suffixes; lexicographic order
-            # puts ``-10`` before ``-2``, so split the numeric part out.
-            rest = p.name[len(stem) : -len(".jsonl")]
-            stamp, dash, suffix = rest.partition("-")
-            # The stamp itself contains one dash (YYYYMMDD-HHMMSS): re-join,
-            # then look for a SECOND dash carrying the collision counter.
-            if dash:
-                stamp2, dash2, suffix2 = suffix.partition("-")
-                stamp = f"{stamp}-{stamp2}"
-                suffix = suffix2 if dash2 else ""
-            try:
-                n = int(suffix) if suffix else 0
-            except ValueError:
-                n = 0
-            return (stamp, n)
-
-        try:
-            segs = sorted((p for p in adir.glob(f"{stem}*.jsonl")), key=_seg_order)
-        except OSError as exc:
-            # `return []` here is indistinguishable from "this session never
-            # rotated", and that is the one answer this function must not guess.
-            # An unreadable archive DIRECTORY hides an unknown number of rows, so
-            # every index above them moves and the reader is told their older
-            # history does not exist. Raise and let the handlers answer with the
-            # retryable 503 they already have.
-            raise OSError(f"rotated archive for {key} could not be enumerated") from exc
+        # Raises when the archive DIRECTORY cannot be listed: `return []` there is
+        # indistinguishable from "this session never rotated", and an unreadable
+        # archive hides an unknown number of rows, so every index above them would
+        # move. The handlers answer that with the retryable 503 they already have.
+        segs = rotated_segment_paths(self._log._dir, key)
         if not segs:
             return []
         sig: list[tuple[str, int, int]] = []
