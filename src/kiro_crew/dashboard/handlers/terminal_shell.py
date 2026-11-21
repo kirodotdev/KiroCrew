@@ -12,11 +12,27 @@ family that holds the name.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 
 from kiro_crew import platform_compat
+from kiro_crew.dashboard.handlers.files import _PathProbeBusy, _run_path_probe
 from kiro_crew.sandbox import without_python_env
+
+
+async def _probed_isdir(path: str, timeout: float) -> bool:
+    """Whether *path* is a directory, stat'ed on the path-probe pool, not the loop.
+
+    For the shell's default directory (the configured one or the home folder),
+    which can sit on a share that stops answering. A probe that is refused or does
+    not answer within *timeout* seconds counts as "not a directory", so the caller
+    falls back to the home folder instead of waiting on the mount.
+    """
+    try:
+        return await asyncio.wait_for(_run_path_probe(os.path.isdir, path), timeout=timeout)
+    except (asyncio.TimeoutError, _PathProbeBusy):
+        return False
 
 
 def _resolve_cwd(cfg: dict, requested: str | None) -> str:

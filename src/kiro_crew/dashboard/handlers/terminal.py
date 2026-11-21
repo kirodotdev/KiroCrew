@@ -82,6 +82,7 @@ from kiro_crew.dashboard.handlers.terminal_session import (
 )
 from kiro_crew.dashboard.handlers.terminal_shell import (
     _is_bash_shell,
+    _probed_isdir,
     _pty_child_env,
     _resolve_cwd,
     _resolve_shell,
@@ -785,7 +786,9 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                     "terminal: configured shell %r not executable; falling back to %r",
                     rejected_shell, shell,
                 )
-            if not request.query.get("cwd") and not os.path.isdir(cwd):
+            if not request.query.get("cwd") and not await _probed_isdir(
+                cwd, _TERMINAL_CWD_TIMEOUT_S
+            ):
                 cwd = os.path.expanduser("~")
             env = _pty_child_env({"KIROCREW_TERMINAL": "1"})
             argv = [shell, "-NoLogo"] if "powershell" in shell.lower() else [shell]

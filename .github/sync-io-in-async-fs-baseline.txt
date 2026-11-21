@@ -18,6 +18,3 @@
 #   python3 scripts/check_sync_io_in_async.py --report
 9 src/kiro_crew/apps/registry_pipeline/checkout.py
 1 src/kiro_crew/apps/registry_pipeline/recovery.py
-3 src/kiro_crew/cli_server.py
-1 src/kiro_crew/dashboard/handlers/terminal.py
-1 src/kiro_crew/dashboard/server.py
