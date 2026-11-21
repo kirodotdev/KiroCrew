@@ -1,6 +1,7 @@
 import { surfaceLabel } from '../../surfaces/registry'
 import { SortableAppNavRow, NavToggle } from './appRail'
 import { AppRailMenu } from './appRailMenu'
+import { hasRailMark } from './appRailStatus'
 import { railWidthFor } from '../../hooks/useRailWidth'
 import { FOCUS_INSET } from '../../hooks/useFocusMode'
 import { Compass, KeyRound, LayoutGrid, SquareTerminal, Smartphone, Search as SearchIcon } from 'lucide-react'
@@ -40,7 +41,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
     mobileNavScrimRef, mobileNavScrim, closeMobileNavDrawer, advertisedNavItems, sortedAppGroup,
     activeAppDragId, appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT,
     appsExpanded, toggleAppsExpanded, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates,
-    commandPalette, kiroUsageState, kiroSignInPrompt, openKiroSignIn,
+    railAppStatus, commandPalette, kiroUsageState, kiroSignInPrompt, openKiroSignIn,
     setReportProblemOpen, toggleNav, effectiveCollapsed, closeMobileNav, activePath, libraryNavActive,
     discoverNavActive, isChat, navRowActive,
   } = shell
@@ -56,6 +57,9 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
   // A drag ghost renders inside the scroller; the fade would dim it.
   const [mateDragActive, setMateDragActive] = useState(false)
   const dragActiveInRail = mateDragActive || activeAppDragId !== null
+
+  // An installed app's update and attention marks. Host rows carry no `appName`.
+  const appStatusOf = (n: { id: string; appName?: string }) => (n.appName ? railAppStatus[n.appName] : undefined)
 
   // Render one standard nav row (used by the top-fixed mains, the Apps list,
   // and the bottom-fixed section). Active-state, mobile close, chat pin
@@ -92,7 +96,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
           else navigate(n.path)
         }
         : undefined}
-      badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={isAppNavId(n.id) ? railAppBadges : appBadges} runState={n.appName ? railAppRunStates[n.appName] : undefined} />}
+      badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={isAppNavId(n.id) ? railAppBadges : appBadges} runState={n.appName ? railAppRunStates[n.appName] : undefined} appStatus={appStatusOf(n)} />}
     />
   )
 
@@ -254,6 +258,11 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 ? fullList.filter((n, i) => i < APPS_NAV_LIMIT || activePath === n.path || activePath.startsWith(n.path + '/'))
                 : fullList
               const hiddenCount = fullList.length - visible.length
+              // A row behind "N more" cannot show its update or attention mark,
+              // so the toggle carries one mark for all of them. Unread counts
+              // stay on their own rows, as they always have.
+              const hiddenMarked = hiddenCount > 0 && fullList.some(n =>
+                !visible.includes(n) && hasRailMark(appStatusOf(n)))
               // Apps rows are dnd-kit sortable. Rows reflow to open a gap as one
               // is dragged; the source dims and a DragOverlay renders the ghost.
               // SortableContext/DndContext add no DOM wrapper, so the parent grid
@@ -280,14 +289,14 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
               <DndContext sensors={appDndSensors} collisionDetection={closestCenter} onDragStart={handleAppDragStart} onDragEnd={handleAppDragEnd} onDragCancel={handleAppDragCancel}>
                 <SortableContext items={sortableRows.map(n => n.id)} strategy={verticalListSortingStrategy}>
                   {sortableRows.map(n => (
-                    <AppRailMenu key={n.id} row={n} dragActive={dragActive}>
+                    <AppRailMenu key={n.id} row={n} dragActive={dragActive} status={appStatusOf(n)} onNavigate={closeMobileNav}>
                       <div role="presentation"><SortableAppNavRow id={n.id}>{renderAppRow(n)}</SortableAppNavRow></div>
                     </AppRailMenu>
                   ))}
                 </SortableContext>
                 {/* Pulled-in active overflow row(s): static, non-draggable. */}
                 {pulledInRows.map(n => (
-                  <AppRailMenu key={n.id} row={n} dragActive={dragActive}>
+                  <AppRailMenu key={n.id} row={n} dragActive={dragActive} status={appStatusOf(n)} onNavigate={closeMobileNav}>
                     <div role="presentation">{renderAppRow(n)}</div>
                   </AppRailMenu>
                 ))}
@@ -304,6 +313,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                   collapsed={effectiveCollapsed}
                   expanded={appsExpanded}
                   hiddenCount={hiddenCount}
+                  marked={hiddenMarked}
                   onClick={toggleAppsExpanded}
                 />
               )}
