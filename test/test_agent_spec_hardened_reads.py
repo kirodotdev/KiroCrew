@@ -1213,6 +1213,9 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("forward:operation", "forward:source"),
         ("resolve_agent_model", "unknown"),
     ],
+    # The spawn tools' roster reads each user-level spec to mark one that mounts
+    # nothing; a denial belongs to the sub-agent surface that lists the names.
+    "kiro_crew/mcp_tools/spawn_parts/schemas.py": [("spawn_roster", "subagent")],
     # The spawn gate walks every spec for the PARENT agent's
     # ``toolsSettings.subagent.availableAgents`` allowlist, and keeps a file the
     # reader refuses as unreadable (refuse) rather than as "no spec"; a denial
@@ -1529,6 +1532,8 @@ _EXPECTED_DECLARED_CLAIM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # The start refusal for a contested name on the hosts that read their servers
     # from the session MCP read (R-SPEC-13).
     "kiro_crew/acp/session_mcp.py": [("session_start_spec_check", "acp")],
+    # The spawn roster's tool-less mark, judged on the claimant a spawn of the name runs.
+    "kiro_crew/mcp_tools/spawn_parts/schemas.py": [("spawn_roster", "subagent")],
 }
 _RATCHET_INVENTORY: dict[str, dict[str, list[tuple[str, str]]]] = {
     "declared_spec_claim": _EXPECTED_DECLARED_CLAIM_CALL_SITE_LABELS,
