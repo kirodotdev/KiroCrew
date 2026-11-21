@@ -67,6 +67,7 @@ from kiro_crew.slack.outbound import (
     settle_options_answer,
     take_options_several,
 )
+from kiro_crew.slack.thread_parent import is_slack_born
 from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger("kiro_crew.slack.interactions")
@@ -718,6 +719,16 @@ async def _answer_options(
             if (_asker_key and _orch and _orch.dashboard_state)
             else None
         )
+        # A Slack-born asker holds no slot for ROUTING, even when it has a dashboard
+        # tab: ``slack_options_slot`` reaches that tab so the control's bookkeeping
+        # can find it, but the conversation runs on the channel path. Pinning the
+        # answer to the tab would run it on the dashboard runner, which leaves the
+        # thread's status indicator up and splits the timing footer off as an empty
+        # message; a typed reply in the same thread does neither. An asker born on
+        # another channel (Discord, Telegram) keeps its pin: its answer has to
+        # reach the session that asked, not run as a Slack turn under its key.
+        if _asker_key and is_slack_born(_asker_key):
+            _pinned_slot = None
         _pinned_slot_name = getattr(_pinned_slot, "key", None)
         _route_pinned = _asker_key is not None
         # Whose record this control is, captured BEFORE the edit. A relink landing
