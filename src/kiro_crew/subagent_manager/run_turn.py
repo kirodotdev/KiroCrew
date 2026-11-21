@@ -741,6 +741,18 @@ async def _run_inner_impl(
         """
         nonlocal _final_segment
         attempts = 0
+
+        def _report_if_landed(ended: object) -> None:
+            # Every prompt that lands and is followed by another one in this
+            # run (a refusal resume, a Stop-hook continuation, a recovery
+            # nudge) is reported where it ends; the run's last prompt is
+            # reported by _count_success. Imported here like ActiveModelLine.
+            stop = str(getattr(ended, "stop_reason", "") or "")
+            if ended is not None and classify_stop_reason(stop).is_success:
+                from kiro_crew.llm_helpers import record_interaction_event
+
+                record_interaction_event(client, session_key, "subagent")
+
         # One-shot post-activity allowance, mirroring the main path's
         # ``_posttoken_retry_used`` rule (_on_acp_posttoken_transient, chat_turn/acp_recovery.py):
         # each continuation turn issued AFTER observed activity is an
@@ -915,6 +927,7 @@ async def _run_inner_impl(
                         yield _refused_turn
                         return
                     usage.settle(_refused_turn)
+                    _report_if_landed(_refused_turn)
                     _refusal_resumes[0] += 1
                     logger.info(
                         "Subagent %s: turn ended on a host refusal; resuming (%d/%d)",
@@ -938,18 +951,7 @@ async def _run_inner_impl(
                     # ``settle(None)`` reads the provider's own last-turn stats.
                     usage.settle(_ended)
                     _persist_usage_row(_ended)
-                    if (
-                        _ended is not None
-                        and classify_stop_reason(
-                            str(getattr(_ended, "stop_reason", "") or "")
-                        ).is_success
-                    ):
-                        # This prompt landed and the next one starts now, so it
-                        # is reported here; the run's last prompt is reported
-                        # by _count_success. Imported here like ActiveModelLine.
-                        from kiro_crew.llm_helpers import record_interaction_event
-
-                        record_interaction_event(client, session_key, "subagent")
+                    _report_if_landed(_ended)
                     logger.info(
                         "Subagent %s: a Stop hook asked to continue (%d)",
                         info.id,
@@ -973,15 +975,7 @@ async def _run_inner_impl(
                     # partial).
                     yield _withheld
                     return
-                if classify_stop_reason(
-                    str(getattr(_withheld, "stop_reason", "") or "")
-                ).is_success:
-                    # A completion withheld only for an infrastructure error
-                    # still landed, and another prompt follows, so it is
-                    # reported here like a Stop-hook continuation above.
-                    from kiro_crew.llm_helpers import record_interaction_event
-
-                    record_interaction_event(client, session_key, "subagent")
+                _report_if_landed(_withheld)
                 _final_segment = ""
                 msg = _nudge
                 continue

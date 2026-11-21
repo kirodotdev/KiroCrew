@@ -46,12 +46,6 @@ _EXTRA_SITES: list[tuple[str, str, str | None]] = [
     ("subagent_manager/run_turn.py", "_stream_with_transient_retry", "subagent"),
 ]
 
-#: Functions that report more than once: one per way a landed prompt is
-#: followed by another (a Stop-hook continuation, an infrastructure retry).
-_SITE_COUNTS: dict[tuple[str, str], int] = {
-    ("subagent_manager/run_turn.py", "_stream_with_transient_retry"): 2,
-}
-
 #: Modules that book a landed turn but must NOT report, with the reason.
 #: The dashboard turn reports too, but is not read here:
 #: ``test_source_pin_budget.py`` forbids new reads of the turn's source, and
@@ -105,7 +99,7 @@ def test_every_landed_turn_engine_reports_one_interaction_event() -> None:
     for rel, fn_name, surface in sites + _EXTRA_SITES:
         tree = ast.parse((_SRC / rel).read_text(encoding="utf-8"))
         surfaces = _reported_surfaces(_function(tree, fn_name))
-        if surfaces.count(surface) != _SITE_COUNTS.get((rel, fn_name), 1):
+        if surfaces.count(surface) != 1:
             missing.append(f"{rel}:{fn_name} reports {surfaces}, wants [{surface!r}]")
     assert not missing, "\n".join(missing)
 
@@ -141,6 +135,29 @@ def test_channel_and_webhook_sites_report_only_a_landed_turn() -> None:
         if len(guarded) != 1:
             unguarded.append(f"{rel}:{fn_name}")
     assert not unguarded, f"not under a landed check: {unguarded}"
+
+
+def test_every_subagent_prompt_followed_by_another_is_reported() -> None:
+    """A sub-agent run can send several prompts: a refusal resume, a Stop-hook
+    continuation, a recovery nudge. Each ends with ``usage.settle(<completion>)``
+    before the next prompt, so each such settle must be paired with a
+    ``_report_if_landed`` of the same completion."""
+    tree = ast.parse((_SRC / "subagent_manager/run_turn.py").read_text(encoding="utf-8"))
+    fn = _function(tree, "_stream_with_transient_retry")
+    settled: set[str] = set()
+    reported: set[str] = set()
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call) or len(node.args) != 1:
+            continue
+        arg = node.args[0]
+        if not isinstance(arg, ast.Name):
+            continue
+        if ast.unparse(node.func) == "usage.settle":
+            settled.add(arg.id)
+        elif getattr(node.func, "id", "") == "_report_if_landed":
+            reported.add(arg.id)
+    assert settled, "no settled completion found: the scan no longer reads the stream"
+    assert settled == reported, f"settled {sorted(settled)} but reported {sorted(reported)}"
 
 
 def test_no_engine_books_a_landed_turn_without_a_decision() -> None:
