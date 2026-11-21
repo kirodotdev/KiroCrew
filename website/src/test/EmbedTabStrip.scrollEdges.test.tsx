@@ -89,6 +89,11 @@ afterEach(() => {
 })
 
 describe('EmbedTabStrip scroll-edge cues', () => {
+  it('marks the strip as owning a sideways swipe, so one at its end never reaches the side panel', () => {
+    const { container } = renderStrip()
+    expect(scrollerOf(container).closest('[data-owns-scroll-x]')).not.toBeNull()
+  })
+
   it('shows no cue when every tab fits', () => {
     stubGeometry({ hidden: 0 })
     renderStrip()

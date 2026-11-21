@@ -688,7 +688,10 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, multi, ani
 
   return (
     <div className="pt-1">
-      <div className="relative">
+      {/* The whole row, arrows included, owns a sideways trackpad swipe even
+          at its end or when every chip fits, so the swipe never reaches the
+          chat's side panel (useTrackpadSwipe's OWNS_SCROLL_X_ATTR). */}
+      <div className="relative" data-owns-scroll-x="">
       {edges.left && <div className="absolute left-0 top-0 bottom-0 w-10 z-10 pointer-events-none bg-gradient-to-r from-bg to-transparent" />}
       {edges.right && <div className="absolute right-0 top-0 bottom-0 w-10 z-10 pointer-events-none bg-gradient-to-l from-bg to-transparent" />}
       {edges.left && (
@@ -736,7 +739,7 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, multi, ani
           the glass hairline is drawn 0.5px OUTSIDE each chip's box, so a row
           exactly one chip tall clips it. One pixel of padding, cancelled by the
           negative margin, lets the line through without changing row height. */}
-      <div ref={setScroller} data-tip-boundary className={`flex ${CHIP_ROW_GAP} overflow-x-auto items-end py-px -my-px`} style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+      <div ref={setScroller} data-tip-boundary className={`flex ${CHIP_ROW_GAP} overflow-x-auto items-end py-px -my-px`} style={{ scrollbarWidth: 'none', msOverflowStyle: 'none', overscrollBehaviorX: 'contain' }}>
         {options.map((o, i) => {
           const isPicked = picked.has(o)
           const chipPending = !!pendingOptions?.has(o)

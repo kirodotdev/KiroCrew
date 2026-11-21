@@ -167,6 +167,11 @@ describe('SessionTabStrip wheel', () => {
     renderStrip({ tabs: ['chat-1', 'chat-2', 'chat-3'] })
     expectWheelToScrollRow(screen.getByTestId('session-tab-scroller'))
   })
+
+  it('marks the strip as owning a sideways swipe, so one at its end never reaches the side panel', () => {
+    renderStrip({ tabs: ['chat-1', 'chat-2', 'chat-3'] })
+    expect(screen.getByTestId('session-tab-scroller').closest('[data-owns-scroll-x]')).not.toBeNull()
+  })
 })
 
 describe('SessionTabStrip all-tabs menu', () => {

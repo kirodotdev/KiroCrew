@@ -73,6 +73,12 @@ afterEach(() => {
 })
 
 describe('terminal tab close menu', () => {
+  it('marks the tab list as owning a sideways swipe, so one at its end never reaches the side panel', () => {
+    seedTabs(3)
+    renderWithProviders(<TerminalTabsView variant="dock" />)
+    expect(screen.getByRole('tablist').closest('[data-owns-scroll-x]')).not.toBeNull()
+  })
+
   it('opens on right-click and closes every tab to the right', async () => {
     const [first, second, third] = seedTabs(3)
     renderWithProviders(<TerminalTabsView variant="dock" />)
