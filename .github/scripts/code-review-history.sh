@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch the git objects Code Review's jobs read, and resolve their diff base.
+# Fetch the git objects Code Review's jobs read, and resolve their PR-head diff base.
 #
 # Run by the "Resolve diff base (merge-base)" step of every job in
 # code-review.yml and pr-hygiene.yml, right after `actions/checkout` with
@@ -16,8 +16,8 @@
 #      is not `tree:0`: on git 2.56, deepening a shallow clone with `tree:0`
 #      aborts in index-pack ("BUG: builtin/pack-objects.c: should_include_obj
 #      should only be called on existing objects").
-#   2. The tree and blobs of the merge-base. The diffs below read them, and
-#      git fetches each missing object on demand while they run.
+#   2. The tree and blobs of the merge-base. The explicit PR-head diffs below
+#      read them, and git fetches each missing object on demand while they run.
 #
 # Every network read happens in this script, which fails the step when a fetch
 # fails or any object of the four commits is still missing at the end. The
@@ -87,11 +87,11 @@ if ! merge_base="$(git merge-base "$BASE_TIP" "$HEAD_SHA")"; then
   exit 1
 fi
 
-# HEAD is the checked-out merge commit: the working tree, and what Semgrep's
-# baseline compares the merge-base with. A diff reads every file that differs
-# between its two commits. So after these three, each file of the merge-base,
-# the base tip and the head is local: it either matches the merge commit's
-# copy or one of the diffs read it.
+# HEAD is the checked-out merge commit. Explicit PR-head consumers compare the
+# branch merge-base with HEAD_SHA; Semgrep compares the merge ref's actual base
+# tip (HEAD^1) with HEAD. So after these three diffs, each file of the
+# merge-base, the base tip and the head is local: it either matches the merge
+# commit's copy or one of the diffs read it.
 for tip in HEAD "$HEAD_SHA" "$BASE_TIP"; do
   if ! retry git diff --binary "$merge_base" "$tip" > /dev/null; then
     echo "::error::Could not fetch the files that differ between $merge_base and $tip"
