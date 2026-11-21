@@ -88,13 +88,25 @@ jobs:
           path: cli-platform
           merge-multiple: true
 
+      # The pure wheel pins pysqlite3-binary, whose only wheels are cp310-cp312,
+      # so the runner image's own python (3.13+) cannot install it. Use the
+      # python build-wheel.yml builds with.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: python
+        with:
+          python-version: "3.12"
+          # cache disabled: the gate checks bytes that are about to be published,
+          # and an Actions cache is writable from any branch (zizmor cache-poisoning).
+
       - name: Gate - every platform wheel carries the pinned engine
         id: gate
+        env:
+          GATE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: |
           set -euo pipefail
           PURE=(cli-dist/*-py3-none-any.whl)
           [ "${#PURE[@]}" -eq 1 ] && [ -f "${PURE[0]}" ] || { echo "::error::expected one pure wheel"; exit 1; }
-          python3 -m venv "$RUNNER_TEMP/gate"
+          "$GATE_PYTHON" -m venv "$RUNNER_TEMP/gate"
           "$RUNNER_TEMP/gate/bin/pip" install --quiet "${PURE[0]}"
           WANT="manylinux_2_28_x86_64 manylinux_2_28_aarch64 macosx_11_0_arm64 macosx_11_0_x86_64"
           for TAG in $WANT; do
