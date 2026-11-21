@@ -331,6 +331,8 @@ class StreamRedactor:
         "_engine_tail",
         "_engine_pad",
         "_boundary",
+        "_hiding",
+        "_quiet_at",
     )
 
     def __init__(self, redactor: "Callable[[str], str] | None" = None) -> None:
@@ -346,6 +348,22 @@ class StreamRedactor:
         self._engine_tail = ""
         self._engine_pad = 0
         self._boundary = False
+        # Output hidden to the next line break (a Cookie line past its bound), and the
+        # buffer offset of a held Cookie name a feed may skip reading for.
+        self._hiding = False
+        self._quiet_at: int | None = None
+
+    def _shown(self, out: str) -> str:
+        """*out* with a hidden line's rest left out, to its line break. A tag holds no
+        line break, so the first break in *out* is at or after the raw line's own. A tag
+        written while hiding (a dropped value's) is shown: it holds no text."""
+        if not self._hiding:
+            return out
+        k = _submodule(_SEAM).line_break(out)
+        if k == -1:
+            return ""
+        self._hiding = False
+        return out[k:]
 
     def _redact_window(self, text: str) -> str:
         """Redact one context-incomplete window without URL-prefix exemptions."""
@@ -354,7 +372,7 @@ class StreamRedactor:
         suspension = redaction._TOKEN_PARAM_EXEMPT_SUSPENDED.set(True)
         try:
             with seam.look_behind(self._ctx, text):
-                return self._redact(text)
+                return self._shown(self._redact(text))
         finally:
             redaction._TOKEN_PARAM_EXEMPT_SUSPENDED.reset(suspension)
             self._left(text)
@@ -387,6 +405,20 @@ class StreamRedactor:
         _redaction = _submodule("redaction")
 
         if not chunk and not self._boundary:
+            return ""
+        # shortcut: a held Cookie line rescans the whole buffer on each feed; a chunk that
+        # only extends it is joined to the next feed instead.
+        quiet_at = self._quiet_at
+        self._quiet_at = None
+        start = 0 if quiet_at is None else quiet_at
+        if (
+            chunk
+            and (self._hiding or quiet_at is not None)
+            and not (self._discarding or self._engine_tail)
+            and _submodule(_SEAM).quiet(self._buf[start:], chunk)
+        ):
+            self._buf += chunk
+            self._quiet_at = quiet_at
             return ""
         self._buf += chunk
 
@@ -527,7 +559,16 @@ class StreamRedactor:
 
         # A unit the detectors have not decided yet is held whole, and one decided
         # while still running is dropped to its end.
-        engine = _submodule(_SEAM).stream_read(self._ctx, self._buf, boundary=self._boundary)
+        engine = _submodule(_SEAM).stream_read(
+            self._ctx, self._buf, boundary=self._boundary, hiding=self._hiding
+        )
+        if engine is not None and engine.tail == "line":
+            # A Cookie line past its bound: one tag, and its output hidden to the line
+            # break; the rest stays buffered and is read as before.
+            commit, self._buf = self._buf[: engine.cut], self._buf[engine.cut :]
+            out = self._redact_window(commit) if commit else ""
+            self._hiding = True
+            return out + engine.tag
         if engine is not None and engine.tail:
             commit, raw = self._buf[: engine.cut], self._buf[engine.cut :]
             self._buf = ""
@@ -708,6 +749,8 @@ class StreamRedactor:
             if engine is not None and engine.undecided:
                 i = min(i, _outside_batch_spans(self._buf, engine.cut))
 
+        if engine is not None and engine.quiet_from >= max(i, 0):
+            self._quiet_at = engine.quiet_from - max(i, 0)
         if i <= 0:
             return ""  # whole buffer is a (possibly partial) credential run — hold
         commit, self._buf = self._buf[:i], self._buf[i:]
@@ -739,16 +782,22 @@ class StreamRedactor:
             self._boundary = False
 
     def flush(self) -> str:
-        """Redact and return the buffered remainder; clears the buffer."""
+        """Redact and return the buffered remainder; clears the buffer. A Cookie line
+        being hidden stays hidden across the flush, to its line break: a flush at a
+        display boundary (a tool call) can fall inside the line."""
+        hiding = self._hiding
         if self._discarding or self._engine_tail:
             self._buf = ""
             self._discarding = False
             self._discard_kind = None
             self._end_engine_segment()
+            self._hiding = hiding
             return ""
         out = self._redact_window(self._buf) if self._buf else ""
+        hiding = self._hiding
         self._buf = ""
         self._end_engine_segment()
+        self._hiding = hiding
         return out
 
     def release_sentence_end(self) -> str:
@@ -765,10 +814,11 @@ class StreamRedactor:
         """
         if self.discarding or not ends_plain_sentence(self._buf):
             return ""
-        read = _submodule(_SEAM).stream_read(self._ctx, self._buf)
+        read = _submodule(_SEAM).stream_read(self._ctx, self._buf, hiding=self._hiding)
         if read is not None and (read.undecided or read.tail):
             return ""
         run, self._buf = self._buf, ""
+        self._quiet_at = None
         return self._redact_window(run)
 
     def _end_engine_segment(self) -> None:
@@ -776,6 +826,8 @@ class StreamRedactor:
         self._ctx = ""
         self._engine_tail = ""
         self._engine_pad = 0
+        self._hiding = False
+        self._quiet_at = None
 
     @property
     def held(self) -> str:
