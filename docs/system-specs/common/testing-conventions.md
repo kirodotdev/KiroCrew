@@ -5253,9 +5253,11 @@ git diff --stat "$f"                     # should show only what you had before
 ### Shard balance
 
 `ci.yml` assigns the backend suite to eight whole-file shards on Linux and Windows
-using `scripts.ci_file_shards`. Ownership is SHA-256 of the root-relative POSIX
-path, not a duration or test-count balance. Other shards skip the file before
-import, while discovery patterns and platform ignores remain pytest's own.
+using `scripts.ci_file_shards`. The default owner is SHA-256 of the root-relative
+POSIX path, not a duration or test-count balance; the pin files and a
+`--file-shard-targets` list (below) override it by measured time. Other shards
+skip the file before import, while discovery patterns and platform ignores remain
+pytest's own.
 
 The Linux full-suite run adds `--file-shard-pins scripts/ci_file_shard_pins.txt`:
 every file with a measured weight gets a fixed shard, placed so the eight shards'
