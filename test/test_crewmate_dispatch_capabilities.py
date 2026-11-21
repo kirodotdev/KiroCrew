@@ -97,6 +97,12 @@ def test_a_summary_name_carries_no_text_and_the_list_is_bounded(monkeypatch):
     assert "and 9 more" in text
 
 
+def test_an_app_server_is_named_with_its_app_colon_server_id():
+    spec = {"mcpServers": {"auto-improvement:auto-improvement": {}}, "tools": ["*"]}
+    line = catalog_mod.unusable_line(spec, {"auto-improvement:auto-improvement": "failed to start"})
+    assert "auto-improvement:auto-improvement (failed to start)" in line
+
+
 def test_the_conductors_own_create_and_send_carry_the_worker_capabilities(
     crewmate, gateway_has_issuetracker, pixel_file  # noqa: F811
 ):
