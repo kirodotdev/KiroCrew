@@ -3986,7 +3986,16 @@ them reads the tier off a cached row:
   to rank the row). An explicit refresh expires every manifest cache before it
   prewarms, so without this each refresh would re-clone the head of the index until
   the budget ran out and rows further down would never get their art; stale rows still
-  re-warm when the budget allows.
+  re-warm when the budget allows. When the batch budget cancels a row's in-flight
+  clone, the worker writes a `.budget-cancelled.json` marker beside the row's
+  manifest cache (no payload; its age is its mtime); an outer cancellation marks
+  nothing. A marked row that is not installed goes after the unmarked rows of its
+  own group, oldest mark first, and is never skipped, so the order is installed,
+  unmarked cold, marked cold, unmarked stale, marked stale: slow rows stop taking
+  every slot from rows not yet tried, and cold rows still go before stale ones
+  (#36688). A row that lands clears its marker,
+  and a marker no batch has renewed for `_PREWARM_BUDGET_MARK_TTL` (24 h) reads as
+  absent.
   Each retained candidate is slimmed to the fields a fetch and its
   caches read (`name`/`gitUrl`/`repo`/`branch`/`subdirectory`/`commit`/`_registry`),
   so a row's large `description` is not held for the batch's life; a retained field
@@ -4030,7 +4039,8 @@ them reads the tier off a cached row:
   `_CLONE_FAILURE_BACKOFF` (6 h — several index TTLs of quiet, far below the
   day-scale `_REWARM_AGE`), so a dead row stops stalling the hourly listing fetch
   instead of paying the full clone attempt every index interval. The
-  budget-cancellation path writes no record (a cancelled row is not a dead row),
+  budget-cancellation path writes no clone-failure record (a cancelled row is not
+  a dead row; it is only re-ranked),
   a later reaching clone removes the record, and an older or malformed record
   reads as absent so the row is retried once the window lapses. Both sidecar
   records (`.unobtainable.json` and `.clone-failed.json`) are read ONCE through a
