@@ -5,7 +5,8 @@ the rebuild's PATH, and says so only in a log WARNING. A user with no log open
 then sees the server listed on the dashboard while the agent has none of its
 tools, with nothing on screen to say why. This store is the durable copy of that
 one fact, written after each rebuild that lands its spec and read by
-``GET /api/mcp`` to put a plain reason on the server's row, and by
+``GET /api/mcp`` to put a plain reason on the server's row, by the
+``agent_spec_dead_paths`` probe of ``diagnose_settings``, and by
 ``agent.ensure_agent_materialized``, which reruns the rebuild before a
 default-agent session once a recorded command resolves again.
 
