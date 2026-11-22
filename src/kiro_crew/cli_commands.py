@@ -1034,6 +1034,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _memory_show,
         _memory_verb,
         _refuse_forget_outside_owner_terminal,
+        _refuse_v2_import_destination,
         _settle_created_database,
     )
     from kiro_crew.cli_commands_secrets import (  # noqa: F401
