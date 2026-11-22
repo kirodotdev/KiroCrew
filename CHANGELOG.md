@@ -2,9 +2,9 @@
 
 All notable changes to KiroCrew are documented in this file.
 
-## [0.13.1] - 2026-11-20
+## [0.13.1] - 2026-11-21
 
-A hot patch for 0.13.0: Bots that 0.13.0 held on every call work unattended again, and split view panes, queued messages and Fresh start behave after a missed turn or a restart. Conductor mode asks before it locks a chat that already has messages, and update, MCP sign-in, cloud launch, app store and security fixes land with them.
+A hot patch for 0.13.0: Bots that 0.13.0 held on every call work unattended again, and split view panes, queued messages and Fresh start behave after a missed turn or a restart. Conductor mode asks before it locks a chat that already has messages, apps that frame their own pages load inside a Remote Crew pane, and update, MCP sign-in, cloud launch, app store, Knowledge Library, Claude and security fixes land with them.
 
 ### Notable fixes
 
@@ -21,6 +21,20 @@ A hot patch for 0.13.0: Bots that 0.13.0 held on every call work unattended agai
 **Cloud crews.** A cloud crew launch on an automatically picked subnet retries in another Availability Zone when EC2 has no capacity for the size, stops retrying when you cancel, and names the zones it tried in its final error. A packaged install on a machine without git confirms the release tag over HTTPS, so its cloud crew runs your release instead of the development build from main.
 
 **KAS, AWS profiles, apps and browser.** A stored Kiro CLI pick whose KAS check got no answer at startup is asked again after 1, 5 and 15 minutes instead of waiting for a restart, and the project AWS profile picker answers before the dashboard gives up, reporting a profile that waits on a login as unavailable. The App Store listing answers within 5 seconds while app.json fetches run, and the browser tool reinstalls its engine by itself when an update removes its interpreter, showing the install under Settings > Browser.
+
+**Chat display and reconnects.** A chat row with nothing to show, such as a quiet turn that only changed files or a reply that is only a steering note, no longer draws an empty bubble, and the turn footer stays on the last reply you can see. When a proxy in front of the gateway ends the dashboard's connection with a normal close, the dashboard reconnects at once without flashing offline.
+
+**Apps.** An app that frames its own pages, such as a document editor, loads inside a Remote Crew pane instead of showing "misdirected request". An app that forwards the dashboard to a remote browser can start again, because the local sign-in token is issued to app backends as it was before 0.13.0's change to it.
+
+**Crew mode, agents and hooks.** A conductor chat opened outside any crew shows as a plain chat, the agent picker stays outside a crew, and a worker's mark is named. Add abilities carries an agent's rules beside its policy bundle and says why a block is refused. A custom agent on KAS sees the spawn tools up front, a spawn the Kiro CLI engine cannot serve names the real cause, and the spawn lists mark agents that have no tools. A hook's `tool_input` is built from the call's own parameters.
+
+**MCP, cron and Slack.** An edition's MCP server keeps its launch arguments when the Crew store names it. A cron job prints the MCP not ready warning only when it changes, and that warning no longer makes two cron results look different. A reply typed in a Slack thread linked to a session tells the agent which thread it is in.
+
+**KAS and Knowledge Library.** The grant vault accepts the kiro-path-client sign-in key and keeps an organization's MCP sign-in. Knowledge Library extraction runs through the background runtime on KAS, stops at once when Kiro CLI is signed out, and stops a batch's queued items at the first refusal.
+
+**Claude.** Crew no longer pins the model in `settings.local.json`, and when a model picked earlier is refused after a restart, the message names the model on offer.
+
+**Telemetry.** Every model turn that lands is reported once, whichever engine ran it, so Slack, Telegram, cron, heartbeat, task and subagent turns are counted too.
 
 **Security.** The shell safety checks no longer refuse a URL query that joins ids with "+" as a credential, or a read only search line such as grep piped to head as a file upload. A file upload refusal names the forms that pass, and a refusal that names an AWS credential variable carries guidance.
 
