@@ -233,7 +233,7 @@ so) and re-exported by `kiro_crew.subagent`, which stays the place to read and p
 | `_SETTLED_PROJECTION_CEILING_GB` | 2.0 | The most a learned settled figure may raise a dedicated start's price |
 | `_SETTLE_AFTER_SECS` | 120 | A row whose own session answered this long ago counts as settled where no sweep can measure it (macOS, Windows) |
 | `_SHARED_START_SAVING_GB` | 0.35 | What a start that shares its parent's runtime does not launch (the kiro-cli process and its first-session warm-up, measured); a shared start is priced at the dedicated projection less this, never below `_SHARED_START_MIN_GB` (0.05). See *Memory guard* |
-| `_RSS_SAMPLES_TO_SETTLE` | 2 | Sweeps before a dedicated worker counts as settled and owes nothing |
+| `_RSS_SAMPLES_TO_SETTLE` | 2 | Sweeps before a dedicated worker counts as settled and owes nothing (on macOS settled dedicated runtimes and shared sessions keep owing their own prices; see *What each outstanding start owes*) |
 | `_DEDICATED_TOPUP_WAIT_SECS` | 60 | Longest a start admitted at the shared price waits for the floor before launching a dedicated process anyway (polls every `_DEDICATED_TOPUP_POLL_SECS`, 2 s) |
 | `_ON_DONE_TIMEOUT` | 1200 | Outer cap (`subagent._ON_DONE_TIMEOUT`): max total seconds for semaphore wait + injection (20 minutes), enforced by `asyncio.wait_for` around `_on_done` in `subagent_manager/terminal.py`. Inside it, a channel or no-tab parent gets up to `_MAX_INJECT_ATTEMPTS` (2, `slack/gateway_runtime/subagent_injection.py`) injection attempts, the second only after a timeout, before the failure is queued. On expiry the parent session is reset unless a turn holds its lease (`sessions.turn_holder`): the cancelled route has released its own claim by then, so a turn still holding it is the parent's own, which keeps running. A permit that release handed to a queued delivery names no holder until that delivery runs, so the reset still clears the stuck provider for it |
 | `INJECTION_TIMEOUT` | 900 | Inner cap: max seconds for a single `stream_and_collect` call (15 minutes); default `_DEFAULT_INJECTION_TIMEOUT = 900.0`, tunable via `KIROCREW_INJECTION_TIMEOUT` (float seconds, clamped to `_ON_DONE_TIMEOUT`) |
@@ -341,10 +341,12 @@ figure and the unreadable-host fallback), dispatched per operating system (see
   `memory.high`, so the slice term is what lets the posture go `critical` on
   a bare host whose `MemAvailable` is still large while agent process memory
   has filled that ceiling.
-- **macOS** — reclaimable memory (free + inactive + speculative + purgeable
-  pages) via the Mach `host_statistics64` syscall through `ctypes`/`libSystem`
+- **macOS** — the kernel's own available figure (free + active + inactive
+  pages: everything not wired and not in the compressor) via the Mach
+  `host_statistics64` syscall through `ctypes`/`libSystem`
   (`_macos_vm_reclaimable_pages`), combined with the `os.sysconf` page size.
-  The spawn floor reads a tighter figure instead (below).
+  It is what `memory_pressure` prints as the free percentage. The spawn floor
+  reads the same figure (below).
   This is **in-process, non-blocking, no subprocess** — required because the
   probe runs on the gateway event loop at startup and the spawn-audit guard
   rejects unrouted subprocess spawns. A reload re-runs it off the loop
@@ -367,18 +369,28 @@ Windows. A known cgroup bound still applies when the Linux host reading fails;
 readings fail open only when neither host memory nor a finite cgroup limit is
 available.
 
-On macOS the gate does NOT read the reclaimable sum above. It reads
-`platform_compat.host_available_mib` in GiB (`_host_available_gb`, the reader Windows uses too):
-free + purgeable + `min(inactive, external_page_count)` pages, with speculative
-not re-added because `free_count` already holds it. The floor promises what
-stays free after a start, so it compares against what a new process can
-really take; the looser sum read about 3.5 GiB (about 32%) above it on a loaded
-Apple silicon host, because it counted dirty anonymous inactive pages as free
-(#21574). Only the gate moved: the auto cap's disabled-floor fallback and the
-TaskRunner figure (`compute_memory_sized_parallel_cap`) and the memory posture
-(`resource_status`) still read `_available_memory_gb`, the reclaimable sum. So
-on a loaded Mac the floor defers more starts than before at the same
-`spawn_min_memory_gb`; `test_subagent_macos_probe.py` pins both readings.
+On macOS the gate reads the same figure as the posture and the auto cap
+(`_macos_available_memory_gb`). macOS compresses or swaps idle app pages on
+demand, so a sum of only free and cache pages read a healthy Mac with large
+wired and compressed figures as nearly full, refused every start and said
+memory was tight while Activity Monitor showed green pressure. The real
+shortage signal on macOS is the kernel pressure level, and the gate's pressure
+hold below reads it. `test_subagent_macos_probe.py` pins the figure against a
+`vm_stat`-shaped sample. Windows keeps `platform_compat.host_available_mib`
+(`_host_available_gb`). This replaces the tighter floor figure from #21574
+(free + purgeable + file-backed inactive pages), so on macOS the floor, the
+TaskRunner's memory-sized auto value and the auto cap with the floor at 0 all
+see more memory than before. That figure does not drop as our own runtimes
+start, so each reader takes them off it: the floor (root and nested starts
+alike) charges every running sub-agent of ours its own price after it settles
+(a dedicated runtime its runtime price, a shared session its shared price), and the TaskRunner's memory-sized value and the auto cap with the floor
+at 0 size from the figure less what our settled runtimes and shared sessions
+hold
+(`_settled_runtime_hold_total_gb`, summed over every live manager in
+`_MEMORY_PRICE_HOLDERS`). The posture (`resource_status`) still shows the
+kernel figure. The pressure hold stops only root starts, and only while one of
+this gateway's dedicated runtimes runs; a first start, nested starts and
+TaskRunner sizing on a Mac that is really short see only the floor figure.
 Because the posture can read AMPLE while the floor holds every start, the
 `resource_status` tool also reports the floor on the gate's own figure
 (`resource_status.spawn_floor_reading`): the floor, that figure, and the bar the
@@ -611,8 +623,15 @@ and runs ~1.5x the PSS the prices are in, and a shared row's reading is a share
 of a runtime others use (its MCP servers also start after it binds). That
 double-counts a warming row's memory for at most two sweeps, toward reserving
 more. A settled row owes nothing, since its memory is already inside the
-free-memory reading. A dedicated row with no admitted price owes the dedicated
-projection; a shared one, nothing.
+free-memory reading, except on macOS: there a settled dedicated runtime and a
+settled shared session each keep owing their own admitted price for as long as
+they run (`_owes_price_once_settled`). The macOS figure counts free, active and inactive
+pages, and a running runtime's resident pages sit in active and inactive, so the
+figure does not drop as our runtimes start; without that charge every settled
+runtime would leave the bar and starts would fan out until the compressor ran.
+So each start of ours is counted once against the kernel figure. On Linux and
+Windows a settled shared row owes nothing. A dedicated row with no
+admitted price owes the dedicated projection; a shared one, nothing.
 Yielded parents retain their reservation; queued/terminal rows contribute none.
 A row parked at the spawn-approval prompt is registered and owes its price while
 it waits for an answer.

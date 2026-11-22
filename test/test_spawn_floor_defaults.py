@@ -26,6 +26,7 @@ from overload_fakes import mock_ctx, mock_sessions, wait_taskq_open
 
 import kiro_crew.resource_status as rs
 import kiro_crew.subagent as subagent_mod
+from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import AgentConfig
 from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB
@@ -366,7 +367,9 @@ def _row(**kw) -> SubagentInfo:
     return info
 
 
-def test_each_warming_row_owes_its_admitted_price_until_it_settles() -> None:
+def test_each_warming_row_owes_its_admitted_price_until_it_settles(monkeypatch) -> None:
+    # Off macOS: there a settled row keeps owing its price (start_pricing._owes_price_once_settled).
+    monkeypatch.setattr(platform_compat, "IS_MACOS", False)
     rows = [
         _row(id="shared-unbound", _start_price_gb=SHARED),
         _row(id="dedicated", _start_price_gb=1.4, last_rss_gb=0.4, _rss_samples=1),
@@ -382,8 +385,30 @@ def test_each_warming_row_owes_its_admitted_price_until_it_settles() -> None:
     assert reserve == pytest.approx(SHARED + SHARED + 1.4 + SHARED)
 
 
-def test_a_row_nothing_can_measure_settles_once_its_session_has_long_answered() -> None:
+def test_a_settled_row_keeps_its_start_price_on_macos(monkeypatch) -> None:
+    """The macOS figure counts a running runtime's resident pages as available,
+    so a settled dedicated runtime and a settled shared session each keep owing
+    their own admitted price there (``_owes_price_once_settled``)."""
+    monkeypatch.setattr(platform_compat, "IS_MACOS", True)
+    rows = [
+        _row(id="settled", _start_price_gb=1.4, last_rss_gb=1.5, _rss_samples=2),
+        _row(id="bound-settled", _start_price_gb=SHARED, _session_sharing=True, _rss_samples=2),
+        _row(id="queued", queued=True),
+    ]
+    reserve = _startup_memory_reserve_gb(rows, running_count=2, cost_gb=COST, next_start_gb=0.0)
+    assert reserve == pytest.approx(1.4 + SHARED)
+    # The same rows owe nothing off macOS: their memory is inside the reading.
+    monkeypatch.setattr(platform_compat, "IS_MACOS", False)
+    reserve = _startup_memory_reserve_gb(rows, running_count=2, cost_gb=COST, next_start_gb=0.0)
+    assert reserve == pytest.approx(0.0)
+
+
+def test_a_row_nothing_can_measure_settles_once_its_session_has_long_answered(
+    monkeypatch,
+) -> None:
     """macOS/Windows have no subtree reading, so ``_rss_samples`` never moves there."""
+    # Off macOS: there a settled row keeps owing its price (start_pricing._owes_price_once_settled).
+    monkeypatch.setattr(platform_compat, "IS_MACOS", False)
     now = 10_000.0
     long_ago = now - subagent_mod._SETTLE_AFTER_SECS
     fresh = _row(id="fresh", _start_price_gb=DEDICATED, _first_stream_mono=now - 5)
@@ -1384,6 +1409,8 @@ async def test_two_fallbacks_that_fit_one_at_a_time_both_start_in_turn(
 ) -> None:
     """Waiters do not each count the other's raised price and both hold: the one
     holding the turn re-checks without the one queued behind it."""
+    # Off macOS: there a settled row keeps owing its price (start_pricing._owes_price_once_settled).
+    monkeypatch.setattr(platform_compat, "IS_MACOS", False)
     host = _Host(monkeypatch, tmp_path, 2.9)  # not even one dedicated start fits yet
     mgr, _ = await _manager(monkeypatch, eligible=True)
     monkeypatch.setattr(subagent_mod, "_DEDICATED_TOPUP_POLL_SECS", 0.02)
