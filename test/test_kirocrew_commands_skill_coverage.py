@@ -81,8 +81,23 @@ def _user_facing_subcommands(
         for name, sub in action.choices.items():
             if name in helped:
                 found.add((*prefix, name))
-            found |= _user_facing_subcommands(sub, (*prefix, name))
+            found |= _user_facing_subcommands(sub, (*prefix, name, *_leading_positionals(sub)))
     return found
+
+
+def _leading_positionals(parser: argparse.ArgumentParser) -> tuple[str, ...]:
+    """The positionals ``parser`` takes before its sub-command, upper-cased as in the skill.
+
+    ``kirocrew app config NAME get`` takes the app's name before ``get``, so the skill
+    names that child with ``NAME`` in place.
+    """
+    leading: list[str] = []
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return tuple(leading)
+        if not action.option_strings:
+            leading.append(str(action.metavar or action.dest).upper())
+    return ()
 
 
 def _is_named(command: str, skill_text: str) -> bool:
@@ -130,7 +145,12 @@ class TestTheCoverageCheckCannotPassVacuously:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         commands = _user_facing_subcommands(_capture_parser(monkeypatch, tmp_path))
-        assert {("pod", "restart"), ("kas", "login"), ("secrets", "authorize")} <= commands
+        assert {
+            ("pod", "restart"),
+            ("kas", "login"),
+            ("secrets", "authorize"),
+            ("app", "config", "NAME", "get"),
+        } <= commands
 
     def test_the_walk_leaves_internal_commands_out(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

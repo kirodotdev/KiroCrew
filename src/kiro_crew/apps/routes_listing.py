@@ -15,10 +15,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.backend import list_app_processes
 from kiro_crew.apps.builtin_unavailable import mark_unavailable as _mark_unavailable
 from kiro_crew.apps.builtin_unavailable import unavailable_builtins as _unavailable_builtins
@@ -38,6 +40,14 @@ from kiro_crew.publish_governance import DEPLOY_WEB_PROVIDER_ID, publish_denied_
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.apps.routes")
+
+
+def _read_config_bytes(path: Path) -> bytes:
+    """The config file's bytes, ``b""`` when it is missing."""
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return b""
 
 
 def _stamp_installed_trust_repository(app: dict[str, Any]) -> dict[str, Any]:
@@ -467,6 +477,8 @@ async def handle_app_config(request: web.Request) -> web.Response:
     PUT replaces the config with the request body. A dashboard subject must be
     the owner to PUT; an app token reaches this handler only inside the scope
     ``token_auth`` already granted it (its own app, or a manifest grant).
+    A GET carries the file's ``ETag``; a PUT with ``If-Match`` writes only while the
+    file still has that tag, else 412 ``config_changed``.
     """
     name = request.match_info["name"]
     info = await asyncio.to_thread(get_app, name)
@@ -478,23 +490,35 @@ async def handle_app_config(request: web.Request) -> web.Response:
 
     from kiro_crew.apps.manager import app_data_dir
     from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.dashboard.conditional_get import strong_content_etag
 
     data_dir = app_data_dir(name)
     config_path = data_dir / "config.json"
+    # Every write below holds the app's own lock file, which an app backend holds across
+    # its own config read-modify-write; it runs off the event loop, so the acquire waits.
+    lock_path = data_dir / "config.json.lock"
 
     if request.method == "GET":
         if not await asyncio.to_thread(config_path.is_file):
             # Missing config (e.g. data dir wiped by an app update) — seed an
             # empty config so the app gets a valid response instead of hanging
             # on a perpetual "loading" state. The app repopulates it on first use.
+            # The read below then answers from the bytes on disk, so the body and its
+            # tag stay one snapshot even when a PUT lands before the seed.
+            def _seed() -> None:
+                with platform_compat.open_lock_file(lock_path) as fd:
+                    with platform_compat.file_lock(fd, exclusive=True):
+                        if not config_path.exists():
+                            atomic_write(config_path, "{}\n")
+
             try:
-                await asyncio.to_thread(atomic_write, config_path, "{}\n")
+                await asyncio.to_thread(_seed)
             except OSError:
-                pass
-            return web.json_response({})
+                return web.json_response({}, headers={"ETag": strong_content_etag(b"")})
         try:
-            text = await asyncio.to_thread(config_path.read_text, encoding="utf-8")
-            return web.json_response(json.loads(text))
+            raw = await asyncio.to_thread(config_path.read_bytes)
+            headers = {"ETag": strong_content_etag(raw)}
+            return web.json_response(json.loads(raw.decode("utf-8")), headers=headers)
         except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
             return web.json_response({"error": f"failed to read config: {exc}"}, status=500)
 
@@ -519,11 +543,32 @@ async def handle_app_config(request: web.Request) -> web.Response:
             {"error": "config must be a JSON object", "code": "body_not_object"}, status=400
         )
 
+    if_match = request.headers.get("If-Match")
+    content = json.dumps(body, indent=2) + "\n"
+
+    def _write() -> bool:
+        with platform_compat.open_lock_file(lock_path) as fd:
+            with platform_compat.file_lock(fd, exclusive=True):
+                if (
+                    if_match is not None
+                    and strong_content_etag(_read_config_bytes(config_path)) != if_match
+                ):
+                    return False
+                atomic_write(config_path, content)
+                return True
+
     try:
-        content = json.dumps(body, indent=2) + "\n"
-        await asyncio.to_thread(atomic_write, config_path, content)
+        written = await asyncio.to_thread(_write)
     except OSError as exc:
         return web.json_response({"error": f"failed to write config: {exc}"}, status=500)
+    if not written:
+        return web.json_response(
+            {
+                "error": "the app's config changed since it was read; nothing was written",
+                "code": "config_changed",
+            },
+            status=412,
+        )
 
     sel().log_api_access(
         caller="dashboard",
