@@ -1623,7 +1623,7 @@ unverifiable-shell refusal) or an id with no recorded event is answered with
 built or consulted refuses (fail closed). Refusal reasons keep their original text
 for the in-band result, while operator logs and SEL metadata use the shared
 fail-closed redaction helper. A refusal of a recorded event steers the host notice
-(`permission_floor.steer_refusal`, cause `DENY_CAUSE_POLICY`) into the turn after the
+(`_steer_host_deny`, cause `DENY_CAUSE_POLICY`) into the turn after the
 audit row and before the `reject_tool`, while the request is still unanswered; KAS and
 kiro-cli otherwise hand the model their fixed "rejected" text and the model reports a
 denial nobody made. A backend without refusal steer, and an id with no

@@ -38,7 +38,6 @@ from typing import Any
 from kiro_crew import hooks as hooks_mod
 from kiro_crew import sel as sel_mod
 from kiro_crew.config import KiroCrewConfig
-from kiro_crew.constants import DENY_CAUSE_POLICY
 from kiro_crew.hooks import hook_gate_kwargs
 
 logger = logging.getLogger(__name__)
@@ -139,24 +138,6 @@ def refusal_for(
     if security_only and not decision.security_deny:
         return None
     return decision.reason or "Blocked by security policy"
-
-
-async def steer_refusal(transport: Any, event: Any, reason: str) -> None:
-    """Tell the model, in-band, that the floor refused this call -- not the person.
-
-    Awaited by ``approve_tool`` AFTER the audit and BEFORE its ``reject_tool``: the
-    unanswered permission request is what keeps the turn in flight, so the notice is
-    queued instead of dropped. Without it KAS reads the rejection as "The user
-    rejected this tool call" and the model reports a denial nobody made.
-    Nothing is steered when no event was recorded for the request (the call's title
-    is then unknown) or the backend has no refusal steer; the reject always follows.
-    """
-    if event is None:
-        return
-    # circular import: llm_helpers_parts.tool_approval imports kiro_crew.acp as it loads.
-    from kiro_crew.llm_helpers_parts.tool_approval import _steer_host_deny
-
-    await _steer_host_deny(transport, event, reason, cause=DENY_CAUSE_POLICY)
 
 
 def audit_refusal(event: Any, reason: str, *, request_id: str | int = "") -> None:

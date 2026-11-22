@@ -68,7 +68,11 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED,
     permission_value_for,
 )
-from kiro_crew.constants import DENY_CAUSE_PROVENANCE_UNRETAINED, DENY_CAUSE_UNREADABLE_IDENTITY
+from kiro_crew.constants import (
+    DENY_CAUSE_POLICY,
+    DENY_CAUSE_PROVENANCE_UNRETAINED,
+    DENY_CAUSE_UNREADABLE_IDENTITY,
+)
 from kiro_crew.deny_notice import unreadable_identity_clause
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED, emit_counter
 from kiro_crew.security.deny_waiver import child_calls_marked
@@ -162,8 +166,10 @@ async def approve_tool(
         await asyncio.to_thread(
             permission_floor.audit_refusal, gate_event, reason, request_id=request_id
         )
-        await permission_floor.steer_refusal(self, gate_event, reason)
-        await self.reject_tool(request_id)
+        if gate_event is None:
+            await self.reject_tool(request_id)
+        else:
+            await self._reject_with_host_notice(gate_event, reason, cause=DENY_CAUSE_POLICY)
         return False
     if withdraw_if is not None and withdraw_if():
         # The floor's thread hop is an await: read again before anything else
