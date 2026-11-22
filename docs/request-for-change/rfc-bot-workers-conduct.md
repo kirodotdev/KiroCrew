@@ -8,7 +8,7 @@ audited-at: fe326b45c8
 doc-pr:
 implementation-prs: []
 tracking-issues: []
-supersedes: []
+supersedes: [rfc-conductor-split-default.md]
 superseded-by: []
 ---
 
@@ -621,6 +621,12 @@ The server-side spec already records nested dispatch from a member-created
 worker as intended (session-control.md, the nested-conductor design), so what
 the three statements govern is product shape, not the fence — which is why this
 is an RFC and not a fix.
+
+This RFC also supersedes #40737's no-dispatch rule when the per-Bot switch is
+on: the rule that a plain worker never dispatches and a split goes to a child
+conductor ([rfc-conductor-split-default.md](rfc-conductor-split-default.md)
+§2.5). With the switch on, the Bot's worker may dispatch. With the switch off
+(the default), #40737 still holds unchanged.
 
 ## 9. Relation to other open work
 
