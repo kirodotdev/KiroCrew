@@ -206,6 +206,16 @@ row's status, the time since Launch (`created_at`, on the shared 1 Hz
 clock); past 6 minutes a built-in (`aws_ec2`) job reads "Past the 6-minute
 estimate, … so far" instead.
 
+A launch card closes only when the launch needs nothing more
+(`launchCardDismissable` in `website/src/pages/settings/remoteCrewPanelModel.ts`):
+the job is `done`, its crew is registered with no error, and its sign-in is
+confirmed with no code left. Such a card shows a Hide card button and also
+closes by itself `LAUNCH_CARD_SHOWN_MS` (2 minutes) after the job's last write
+(`updated_at`). The closed job ids stay in this browser's `localStorage`
+(`mc-cloud-launch-dismissed`, the last 50), so a reload does not bring the
+card back. A failed, cancelled or running launch, or one still waiting on
+sign-in, keeps its card.
+
 `launch --subnet <subnet-id>` (and the optional Subnet ID field in Settings ›
 Remote Crew › Add Crew › Set up a new Crew, which reaches the same `ec2.deploy(subnet_id=...)`
 through `launch_engine`) bypasses discovery entirely —
