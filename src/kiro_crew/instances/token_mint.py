@@ -548,14 +548,17 @@ def ssh_spawn_argv_env(argv: list[str]) -> tuple[list[str], dict[str, str]]:
 
 
 # stderr phrases meaning the ``ProxyCommand`` could not find a program it runs:
-# SSM-based proxies' own "plugin missing" wording, and a POSIX shell's
+# SSM-based proxies' own "plugin missing" wording, a POSIX shell's
 # "not found" for a ProxyCommand whose first word is not on the PATH ssh gave it
-# (bash/zsh: "command not found"; dash/bash `exec`: "exec: foo: not found").
+# (bash/zsh: "command not found"; dash/bash `exec`: "exec: foo: not found"), and
+# Windows OpenSSH's, which spawns the ProxyCommand without a shell. Not its
+# "CreateProcessW failed error:2" line: that is also a prefix of error:225.
 PROXY_TOOL_MISSING_SIGNALS: tuple[str, ...] = (
     "session-manager-plugin is not installed",
     "sessionmanagerplugin is not found",
     "command not found",
     ": not found",
+    "posix_spawnp: no such file or directory",
 )
 
 # The PATH is named in the message so the reader can see what was searched; a
