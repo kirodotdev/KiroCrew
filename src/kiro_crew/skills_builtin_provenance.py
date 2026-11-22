@@ -24,6 +24,7 @@ from kiro_crew.skills_discovery import (
     _BUILTIN_SKILLS_DIR,
     _iter_skill_files,
     _project_skills_dir,
+    _recorded_bytes_match,
     skills_dir,
 )
 
@@ -239,7 +240,16 @@ def _skill_tree_fingerprint(
     inodes, non-regular files, sensitive paths, and any resolved path outside
     the root — so a component swapped between the walk and the open (or a
     hardlink planted at a walked name) reads as unprovable instead of leaking
-    outside bytes (e.g. credentials) into the hash.
+    outside bytes (e.g. credentials) into the hash. The packaged side admits a
+    hardlinked file only when its bytes match the installer's RECORD digest for
+    that exact path (:func:`kiro_crew.skills_discovery._recorded_bytes_match`),
+    which is how a hardlinking installer such as uv lays out the package; the
+    installed side never admits one.
+
+    ``assume_owner_rwx_dirs`` is set only when hashing the PACKAGED SOURCE: it
+    ORs owner rwx into every directory mode, so the fingerprint describes the
+    copy as it will exist after ``ensure_owner_rwx_dirs``, and it turns on the
+    RECORD admission of a hardlinked file above.
 
     ``strip_carried_opt_out`` hashes the tree as it was before the sync carried
     the user's Context-budget opt-out onto it: the top-level ``SKILL.md`` bytes
@@ -284,7 +294,10 @@ def _skill_tree_fingerprint(
             continue
         try:
             data = safe_read_file_bytes_nolink(
-                str(root / rel), within_root=str(root), max_bytes=budget
+                str(root / rel),
+                within_root=str(root),
+                max_bytes=budget,
+                admit_hardlinked=_recorded_bytes_match if assume_owner_rwx_dirs else None,
             )
         except FileTooLargeError:
             # Over the remaining byte budget: the tree costs more to prove

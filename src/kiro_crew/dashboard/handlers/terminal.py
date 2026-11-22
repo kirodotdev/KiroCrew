@@ -70,6 +70,7 @@ from kiro_crew.dashboard.handlers.terminal_placement import (
 from kiro_crew.dashboard.handlers.terminal_session import (
     _MAX_SESSION_ID_LEN,
     _MAX_SESSIONS,
+    _TERMINAL_MAX_SESSIONS,
     _completion_cfg,
     _completion_disabled,
     _get_config,
@@ -653,7 +654,14 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
     # At the cap, the longest-detached shell gives up its slot in the same step;
     # it ends only once this open goes ahead, and returns to its slot otherwise.
     evicted = None if existing else _take_shell_to_evict(registry, max_sessions, time.monotonic())
-    if not existing and len(registry) >= max_sessions:
+    at_cap = not existing and len(registry) >= max_sessions
+
+    # Reserve a placeholder so concurrent requests see the slot as taken
+    placeholder = not existing and not at_cap
+    if placeholder:
+        registry[session_id] = None
+
+    if at_cap:
         _sel().log_api_access(
             caller=caller,
             operation="terminal.ws.open",
@@ -661,12 +669,17 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             source="dashboard",
             resources=f"max_sessions={max_sessions}",
         )
-        return web.Response(status=409, text=f"Max {max_sessions} terminal sessions")
-
-    # Reserve a placeholder so concurrent requests see the slot as taken
-    placeholder = not existing
-    if placeholder:
-        registry[session_id] = None
+        # A browser cannot read a refused handshake's body, so the dashboard
+        # would redial and end on a bare "disconnected". Accept and send the
+        # coded refusal instead; no slot was reserved.
+        refusal_ws = web.WebSocketResponse(heartbeat=30, timeout=300)
+        await refusal_ws.prepare(request)
+        await _close_terminal_ws_bounded(
+            refusal_ws,
+            error_message=f"Max {max_sessions} terminal sessions",
+            error_code=_TERMINAL_MAX_SESSIONS,
+        )
+        return refusal_ws
 
     try:
         ws = ws_heartbeat.LagTolerantWebSocketResponse(heartbeat=30, timeout=300)

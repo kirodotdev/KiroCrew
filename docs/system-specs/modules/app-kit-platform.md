@@ -1230,6 +1230,7 @@ declared name with no proven owner is deleted by the general rule anyway.
 | host-managed server whose `spec_gate` is CLOSED (`kirocrew-computer` off or unsupported), absent | **deleted** — both spec writers `pop` it, so the rebuild would not re-add it and preserving it resurrects the backend the gate withholds |
 | `installed.json` present but corrupt | **refused** (500, `app_ownership_unreadable`) |
 | `installed.json` present but non-regular (broken symlink, directory, unstattable) | **refused** (500, `app_ownership_unreadable`) |
+| `installed.json` a link into a protected location | **refused** (500, `app_ownership_unreadable`) |
 | apps root present but not a directory | **refused** (500, `app_ownership_unreadable`) |
 | apps-root child listable but unstattable (e.g. a symlink loop) | **refused** (500, `app_ownership_unreadable`) |
 | app manifest unreadable | **refused** (500, `app_ownership_unreadable`) |
@@ -1578,6 +1579,12 @@ because an agent-owner lookup asks it once per installed app. It is scanned agai
 when a manifest source's directory inode or mtime moves, when the sources change,
 and after `execution.invalidate_shipped_builtin_apps`, which every app-record write
 and `invalidate_orphan_cache` (uninstall, cleanup, adoption) call.
+
+`discovery.discover_builtin_apps` keeps its scan of the package's own `builtins/`
+per process too, so gateway boot's registration, orphan check and public-id read
+share one scan. It is scanned again when that directory's inode or mtime moves, and
+a scan that skipped a manifest or left a path unchecked is never kept. Each caller
+gets its own copy of the list.
 
 ### 5.1 Resource-path containment is host-independent and flavour-explicit
 
@@ -3193,7 +3200,9 @@ the one-time import first, so the import's lock is the only lock needed.
   compare against. While it exists every reader of
   `installed.json` (`_read_installed`, so `is_app_enabled`, `get_app` and the
   permission checks, and `app_enabled_state`) reports the app disabled whatever
-  the file says, so the app's own code cannot turn itself back on. Only the
+  the file says (`app_enabled_state` answers unknown instead when the record cannot
+  be read or, when it is a link, the sensitive-path screen refuses it), so the
+  app's own code cannot turn itself back on. Only the
   owner-authenticated `enable_app` removes it, after it has run the one-time
   import itself so no importer re-records it; uninstall removes the approved set
   first and the disable only once the tree is gone, and a failed update, re-registration or uninstall puts it back as
@@ -6120,7 +6129,14 @@ is decided there and reaches no dashboard layer:
 
 - served only to a direct local request (`is_direct_local_request`, and not
   `is_proxied_request`): a loopback peer with no forwarding header, not relayed.
-  An `ssh -L` forward is served; a tailnet, relayed or proxied peer gets 421. A
+  An `ssh -L` forward is served; a tailnet, relayed or proxied peer gets 421.
+  A forward the container's host delivers into a container's loopback is served
+  too (`is_host_forwarded_request`): the socket's address is loopback and the
+  peer is link-local, as when the container's SSH server runs on its host and
+  its forwards arrive from the host's end of the link (for example
+  `169.254.255.193`), still with no forwarding header. The kernel drops a
+  `127.0.0.0/8` packet that arrives on a real interface, so only the host itself
+  produces that shape. Every other gate keeps `is_direct_local_request`. A
   request that arrived on the Session Manager listener's port gets 421 too,
   checked by listener (`SsmGate.owns`) because this router runs before that
   listener's gate;
@@ -6149,7 +6165,7 @@ is decided there and reaches no dashboard layer:
 usually not a dashboard port here (Instances spec §4). The pane's dashboard
 token carries the signed `embed_parent_port` claim, the hub page's port. When
 the token layer authenticates a dashboard (non-app) request with such a token,
-on a direct local request whose `Host` is `localhost`, `127.0.0.1` or
+on a direct local or host-forwarded request whose `Host` is `localhost`, `127.0.0.1` or
 `kirocrew.localhost` on a port P (no port in `Host` reads as 80, as the router
 reads it), it records
 `P -> {parent port: session_exp}` in memory (`apps/pane_ports.py`,
@@ -7204,25 +7220,29 @@ this repository without core changing.
 | worker slot modes | `register_worker_slot_mode(app_id)`, one per app | `dashboard/chat_handlers.py` `_CREATABLE_MODES` (section 23a) | the chat create paths accept `""` alone, plus an installed app's own id when it declares `permissions.hiddenSessions` (section 23a) |
 
 A builtin app registers from a `seams.py` at its package root. The first lookup of any
-seam imports every such module once, for each name in `BUILTIN_NAMES`, found by file so
-that no other app's package is imported. A seam therefore answers the same in the
-gateway, a CLI process and a test. That module is imported by core callers that never
-load the app's backend, so it binds paths and small provider objects, and each provider
+seam, or a `seams.release_app` that runs before any lookup, imports every such module
+once, for each name in `BUILTIN_NAMES`, found by file so that no other app's package is
+imported. A seam therefore answers the same in the gateway, a CLI process and a test.
+That module is imported by core callers that never load the app's backend, so it binds
+paths and small provider objects, and each provider
 method imports what it delegates to at call time. The aws-control package `__init__`
 serves `register_routes` lazily for the same reason. Any other in-process code, such as
 an installed app's `on_startup` hook, calls `seams.register` itself.
 
 An installed copy of a builtin (an adopted former built-in, section 33) registers under
-the builtin's id from its `on_startup`, so it replaces the builtin's provider while it
-is loaded. Its provider imports the copy's own modules at call time, and a disable, an
-update or an uninstall unloads them (`module_loader.unload_app_modules`), after which it
-could only raise. The unload therefore calls `seams.release_app(name)`, which hands each
-seam that app holds back to the provider its builtin's `seams.py` registered during the
-one-time load (kept in `_builtin_providers`). The core feature then answers from the wheel
-copy exactly as it did before adoption, whether or not the app is enabled. A seam no
-builtin provides stays with its app, and a builtin's own provider is never touched. A CLI
-process, and a gateway that boots with the app disabled, never run the copy's
-`on_startup`, so the builtin's provider answers there throughout.
+the builtin's id from its `on_startup`, so its provider answers while it is loaded,
+whether its `on_startup` runs before or after the one-time load: a load that finds the
+seam already held by the same id keeps the builtin's provider for the hand-back only.
+Its provider imports the copy's own modules at call time, and a disable, an update or an
+uninstall unloads them (`module_loader.unload_app_modules`), after which it could only
+raise. The unload therefore calls `seams.release_app(name)`. It first runs the one-time
+load if no lookup has run it yet, then hands each seam that app holds back to the
+provider its builtin's `seams.py` registered during that load (kept in
+`_builtin_providers`). The core feature then answers from the wheel copy exactly as it
+did before adoption, whether or not the app is enabled. A seam no builtin provides stays
+with its app, and a builtin's own provider is never touched. A CLI process, and a
+gateway that boots with the app disabled, never run the copy's `on_startup`, so the
+builtin's provider answers there throughout.
 
 A provider answers whether or not its app is enabled, because the core features above
 worked with aws-control switched off (its default). One app holds a seam: a second app
@@ -7233,8 +7253,10 @@ never the registry's, so a provider module registering from another thread canno
 deadlock it; a seams module therefore only registers while it is imported, and never
 looks a seam up. The registry is process state and holds no per-caller data.
 
-`test_app_seams.py` pins the registry, the shipped providers, the hand-back on an
-installed copy's unload, and each core caller's answer with no provider. `test_core_aws_control_decoupling.py` is the gate: no module
+`test_app_seams.py` pins the registry, the shipped providers, an installed copy's
+provider answering when it registers before the first lookup, the hand-back on its
+unload before or after that lookup, and each core caller's answer with no provider.
+`test_core_aws_control_decoupling.py` is the gate: no module
 under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports
 `kiro_crew.apps.builtins.aws_control` in any form. The string constants there that still
 name the package are a pinned list that may only shrink (see `aws-control.md`,
@@ -10366,15 +10388,26 @@ walker's `media` method in the isolated world (`browser_harness/media.py`), afte
 page check. A play the browser refuses gets one click on the element, after the page is judged again, and a `state` read writes no audit row (a player polls it). The SDK's
 `useBrowserMedia` (`website/src/app-sdk/browserMedia.ts`) is the page's handle (its `pollMs` is raised to at least 500 ms; a non-finite or non-positive value reads once); it sends
 through the scoped client, so the app declares `/api/browser/media`. Its `onEnded` option
-is the continuous-play cue: called once per ending, derived in the page from the `ended`
-field of the state it already polls, so it adds no route, no event and nothing the agent
-can reach. With the page closed the gateway itself reports the ending to the app's
+is the continuous-play cue: called once per ending, derived in the page from the `endId`
+field of the state it already polls (the first answer, with nothing to compare, counts an
+`ended` element), so it adds no route, no event and nothing the agent can reach. The
+walker counts endings in the tab itself (`mediaEnds` in `snapshot_walker.js`, once per
+document, in the isolated world): the `ended` event, or `emptied` within `END_NEAR_S`
+(2 s) of the end, since YouTube removes `src` at the end and leaves an element that is
+never `ended`. An ending counts after `END_GRACE_MS` (3 s) with no `playing` on the same
+`pathname` + `search` (an advert handing over to the video is dropped), or at once when
+`playing` comes at another address (the site's own autoplay); `ended` then reads true
+until the next `playing`, and `endId` (`<document id>:<count>`, null before the first)
+changes. Only the largest shown element's events count (a preview or sound effect is
+ignored), an element already ended when the listeners go in is counted at once, and a
+`playing` past the grace with no read between still counts the ending. The address is
+compared in the page and never returned. With the page closed the gateway itself reports the ending to the app's
 backend, when the app declares `backend.hooks.on_browser_media_ended`
 (`dashboard/handlers/browser_media_watch.py`): a successful op of the app's own agent
 (`browser_ops.run_browser_op`, a slot with approved sites) starts one watch per slot,
 which every `WATCH_S` (3 s) makes the same `state` read on the slot's own tab, skipping
 the tick while an agent op, a media request or a takeover holds the tab, and calls the
-hook once per ending with `(ctx, {"event": "browser_media_ended", "session_key",
+hook once per new `endId` (a watch's first read counts an `ended` element) with `(ctx, {"event": "browser_media_ended", "session_key",
 "origin", "duration"})` through `hooks_integration.dispatch_app_event` and
 `LifecycleDispatcher.start_event` / `finish_event`. The checks below and the hook's start
 run under `app_lifecycle_lock(app)`, and the started task joins `_DETACHED_HOOK_TASKS`,

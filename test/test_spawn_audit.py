@@ -291,7 +291,10 @@ FIRST_PARTY_SPAWNS: frozenset[str] = frozenset(
         # env into the child environment and ``LD_PRELOAD`` changes what code
         # runs for the same argv. Third-party servers and any customized
         # managed command/args/env compare unequal, pass False, and keep the
-        # full fail-close + opt-in behavior.
+        # full fail-close + opt-in behavior. On a centrally governed host the
+        # argv may start with a trusted absolute ``env`` binary
+        # (``sandbox_argv._unset_env_argv``) plus the policy markers the gateway
+        # derives itself (``policy_cache_only_env``), never spec text.
         "mcp_discovery_probe.py::probe_server",
         # The built-in SAPI synthesizer. The flag value is COMPUTED
         # (``engine == SYSTEM_ENGINE_SAPI``), so only the Windows branch claims

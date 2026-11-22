@@ -350,6 +350,8 @@ choice blob makes the usage line unreadable.
 | `kirocrew chat -m -` | Read that single message from stdin to end of file (`cli_chat_stdin.py`), e.g. `git diff \| kirocrew chat -m -`, so a long prompt needs no shell quoting and stays out of the process list. The turn is the same non-interactive `-m` turn. Refused with one stderr line and exit 1, before any backend starts: a terminal stdin (it never waits on a keyboard), an empty or whitespace-only stdin, more than 1 MiB, and bytes that are not UTF-8. Not read under `--headless`, which takes `--message-file`: `--headless -m -` exits 2 before any run starts, rather than seeding the run with `-` |
 | `kirocrew chat` | Interactive chat mode (readline, exit with Ctrl+D). On a harness other than kiro-cli and KAS the first message of each session carries Kiro Crew's session context (see [Session context](#session-context)) |
 | `kirocrew chat --model X` | Override model for this session |
+| `kirocrew chat --list` | Print the recorded terminal chats (see [Recorded terminal chats](#recorded-terminal-chats)), newest first: session id, last message time, the directory the command was started in, `--agent <name>` when one was given, and the first prompt line. Starts no backend |
+| `kirocrew chat --continue` | Reopen the newest recorded chat started in the current directory with the same `--agent` (no `--agent` matches only chats started without one) through the backend's own session restore, on KAS and Kiro CLI only. It exits 1, sending nothing and starting no new chat, when no chat matches, when that chat's run is still open in another terminal (where the platform gives a reboot-unique process token; `--continue` claims the entry for its own process as it picks it), on any other harness, or when the backend comes back on a session other than the one asked for; a restored chat is named on stderr (its time and first prompt line). With `-m` it answers one message and exits; `--model` changes the continued session's model. `--list` and `--continue` exclude each other and are refused with `--headless` (exit 2) |
 | `kirocrew chat --headless -m "seed"` | One unattended run on the running gateway of this data home (`cli_chat_headless.py`, design in `docs/request-for-change/rfc-builtin-eval.md` §12): signs in as the owner (and signs in again once when the session lapses: a 401, or a 403 carrying `X-Auth-Required: true`), opens one chat, sends the seed as an unattended turn (the gateway opens it with `[headless run cli:<run_id>]`, a nobody-typed marker the conductor's plan gate honours; a typed copy is defanged), polls until done, and never reads the terminal. `--mode conductor` opens it in conductor mode on the agent the gateway's `crew_mode_agent` resolves; `--approval-mode trust` puts that chat in Trust (audited; workers inherit it); `--until-done` stays through patrol and worker wakes until every ledger item is terminal or `--idle-grace` passes; `--cwd` (the chat's own project, no folder), `--timeout`, `--budget` (credits: the chats' saved turns plus their finished background agents, each counted when it ends), `--message-file` (sensitive paths refused), `--json`. A background agent that finished in the last 60 s keeps the run open, because the gateway can hold its result that long before it reaches the parent. With `work_ledger.remote_dispatch` on, a run exits 1 before opening a chat, because a remote crew's worker could not be stopped. A seed that opens with `/` or `@` exits 2: the marker opens the turn, so a command or saved prompt would not run. A pending approval, a question card, an `[OPTIONS:]` list or a ledger ask stops the run; every exit stops the run's chats and their background subagents (`POST /api/spawn/stop-all`) and closes them (history kept); a chat the gateway refuses to close is named in `unclosed`. Exit codes: 0 done, 1 error, 2 usage, 3 asked, 4 timeout, 5 budget, 6 not signed in, 7 sandbox refused, 8 no gateway, 9 incomplete (a conductor quiet with items still open), 130 interrupted. A headless-only flag without `--headless` exits 2 |
 | `kirocrew chat --agent <name>` | Chat as a crew member or a kiro agent. A `config.agents` key is a crew member and is resolved first through `resolve_agent_bindings`, as the dashboard and cron do: the session starts the member's bound kiro agent (the built-in `kirocrew` when it binds none) under the member's crew identity, with `--model` first and then the member's model pin. A member whose memory store is unusable is refused with a one-line error before anything spawns. Any other name is passed to kiro-cli as a kiro agent, unchanged. `agent.default_agent` is a template name and is never member-resolved. The tool gate keeps the name typed. The member's private memory store is not bound: every CLI chat shares the `cli_chat` session key, so a member bound to a named store opens its session with neither memory nor lessons (see [Session context](#session-context)). |
 | `kirocrew gateway` | Start the Kiro Crew server (dashboard + messaging channels) |
@@ -397,7 +399,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew logs -n N` | Show the last N lines (`--lines`, default 100; `0` shows none, useful with `-f`) |
 | `kirocrew logs -f` | Follow logs live (`--follow`). The Python fallback reopens the log by name on each poll, permits Windows rename-based rotation even during reads, streams appended UTF-8 text, and stops on Ctrl+C. A replacement file or detected truncation resets the read offset; a temporary missing path during rotation is retried on the next poll. Rotated backup files are not replayed. |
 | `kirocrew cloud launch/list/status/connect/tunnel/login/logout/stop/start/destroy/iam-policy/iam-boundary/doctor` | Provision, connect to, and manage a Kiro Crew EC2 instance in the user's AWS account. `iam-boundary` is the one-time admin step that pre-creates the immutable EC2 and Fargate crew permissions boundaries — see [cloud.md](cloud.md). |
-| `kirocrew security events` | Show recent SEL audit events (`-n N` for count, default 20; N must be 1 or more, so 0 or a negative exits 2 rather than reporting an empty log; `--until` keeps only entries before a relative age such as `2h` or an ISO 8601 instant) |
+| `kirocrew security events` | Show recent SEL audit events (`-n N` for count, default 20; N must be 1 or more, so 0 or a negative exits 2 rather than reporting an empty log; `--until` keeps only entries before a relative age such as `2h` or an ISO 8601 instant). `--operation`, `--outcome`, `--source` and `--caller` keep only rows whose field equals the value; the order is time window, then field filters over at most the newest 50,000 rows, then `-n`. See [sel.md](sel.md) |
 | `kirocrew security verify` | Verify SEL HMAC chain integrity |
 | `kirocrew security deny-list` | Show active deny patterns. The built-in half follows the opt-out in `denied_commands.json` (`disable_all`, `disabled_ids`), read the same way as Settings > Security: enabled rules are listed as enforced, turned-off rules under their own heading as not enforced, and once anything is turned off a rule kept on by a floor or a governance-ceiling pin says so, and a turned-off rule kept on only by a profile pin is listed in its own section, since the gate enforces it only for sessions bound to that profile; with no opt-out every built-in rule is listed as enforced. The user-configured half lists only what the gate enforces: the text entries of `hooks.auto_deny_tools` (a non-list value enforces none, and the command says so; non-text entries are counted, not listed). The deny planes those patterns feed: [security.md](security.md) |
 | `kirocrew snapshot [output_dir]` | Create a .tar.gz snapshot of all Kiro Crew state, into `output_dir` or the data home's snapshots dir. A bare `list` or `ls` as `output_dir` is refused (exit 1, nothing written, a hint naming `--list`) unless a directory of that name already exists; a path spelling such as `./list` is taken as written |
@@ -643,6 +645,17 @@ calls it too and lists the names in `disabled_hooks`. The restore prints the pau
 disabled and dropped names, and where to switch each back on (Schedules, Hooks). A merge
 into a home that already has a `hooks.json` keeps that file, so no bundle hook is named.
 Message-only crons are restored as they are.
+
+The same staging step holds back the bundle's agent config under `workspace/`
+(`snapshot._hold_back_agent_config`, names in `_AGENT_CONFIG_NAMES`: `.claude`,
+`.mcp.json`, `.kiro`, `.codex`, `.goose`, `.goosehints`, `.opencode`, `opencode.json(c)`,
+`.pi`, `.mimocode`, `mimocode.json(c)`), at any depth and matched ignoring case. The
+archive's copy is removed from the staged tree, so Merge installs none of them; Replace
+also copies the live tree's own copies into the staged tree, so the live config survives
+the swap and a name the live tree lacks ends up absent. The restore names each held path
+as kept or absent. Notes (`CLAUDE.md`, `AGENTS.md`) restore as usual and are named; Merge
+keeps a note the live tree already has. The dashboard import applies the same rule and
+lists the paths in `held_agent_config`.
 
 The dashboard import's Merge follows the same never-overwrite rule as
 `kirocrew restore --mode merge` for the settings documents (`config.json`,
@@ -1626,6 +1639,34 @@ After each message, checks `provider.context_usage_pct()`:
 
 CLI compaction is blocking (single-user, acceptable).
 
+### Recorded terminal chats
+
+`cli_chat_runs.py` keeps `<data home>/cli_chat_runs.json`, the list `--list` prints
+and `--continue` chooses from; nothing else reads it, and the dashboard History does
+not list these chats. A run writes its entry after each turn that completes: the
+session id (`provider.session_id`), the resolved directory the command was started in
+(every CLI chat's backend runs in the same workspace directory, so the session cannot
+answer it), the time, the first prompt line, the `--agent` name, and the run's pid
+with its reboot-unique process token (`platform_compat.own_process_start_time`). A new
+chat that sends nothing writes nothing; `--continue` rewrites the pid and token of the
+entry it picks before its first turn, so a second `--continue` sees that chat as open
+where the platform gives a process token. The entry follows the run: after a
+compaction restart its next completed turn moves the entry onto the new session and
+keeps the first prompt line. The newest 50 entries are kept. Each write is a
+read-modify-write under a file lock, published with `atomic_write`. A turn's write
+runs off the event loop, and one that fails is logged and the chat goes on; a claim
+that cannot be written refuses the `--continue` (exit 1).
+
+The file is in the data home, which the agent can write, so an entry can choose which
+session is loaded (a plain id token: letters, digits, `-`, `_`, with its first prompt
+line no longer than a run keeps and its other text no longer than the longest Windows
+path; any other entry is ignored), refuse it as still open, and set the time and first
+prompt line the restore prints. It never chooses the agent: a continued chat's agent
+always comes from its own command line. `--continue` sets the entry's id as the
+provider's resume id before `start()` and then requires `provider.client.resumed` and
+`provider.session_id` to name that session: a load that fails falls through to a fresh
+session, which must not be handed to the person as their earlier chat.
+
 ## Entry Point
 
 `console_scripts` in `setup.cfg` maps `kirocrew` → `kiro_crew._bootstrap:main`.
@@ -2034,8 +2075,15 @@ One flag is a MODE rather than a check and short-circuits before the list above 
    step is skipped and the printed line says so. The engine is Kiro Crew's own
    install, which step 3 lays down for the new release's pin, and the
    gateway's boot-time "kiro-cli is outdated" warning (`_warn_if_kiro_cli_outdated`) is skipped on
-   that route for the same reason. The relay route and every other harness
-   keep the step as it was.
+   that route for the same reason. The step is also skipped, the printed line
+   saying so, when no configured harness choice runs kiro-cli
+   (`crewmate_harness.kiro_cli_runs_anywhere`: `agent.acp_backend`,
+   `agent.member_acp_backend`, a Bot's `agents.<name>.acp_backend` pin and the
+   members of an enabled `agent.acp_failover` chain; each is Kiro CLI, or KAS
+   on the relay), so a Claude or Codex install does not wait up to 120 s on a
+   self-update with the gateway down; an unreadable config keeps the
+   step. The relay route and a selection that runs kiro-cli keep the step as it
+   was.
 3. Installs the release through `platform/release_apply.apply_release`: the
    backend via `pip install -e .` (`dep_sync.sync_or_reinstall`), then the KAS
    engine the new revision pins (see [The release is the unit of

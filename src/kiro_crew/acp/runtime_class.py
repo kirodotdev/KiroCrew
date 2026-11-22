@@ -422,7 +422,8 @@ class AcpRuntime:
         self._mcp_sign_in: tuple[str, str] | None = None
         # MCP re-attempts in flight on this process, as (session_id,
         # server_name): a reset without startOAuth for a server that failed
-        # for want of a credential -- see begin_mcp_reattempt.
+        # for want of a credential or lost its connection -- see
+        # begin_mcp_reattempt.
         self._mcp_reattempts: set[tuple[str, str]] = set()
         # Per session, the hook told when one of its sign-ins ends unconnected,
         # so the chat withdraws the dead link -- see set_mcp_sign_in_ended_hook.

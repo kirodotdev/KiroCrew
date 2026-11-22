@@ -1975,7 +1975,7 @@ async def test_a_refused_credential_stop_names_the_token_type_for_each_kind_of_c
     assert len(lease.requests) == 2
     for message in (str(stopped.value), reason):
         assert "credential is current" in message
-        assert "a team Crew on a crew API key needs API_KEY" in message
+        assert "a Shared Crew on a crew API key needs API_KEY" in message
         assert "a token from an outside identity provider needs EXTERNAL_IDP" in message
         assert "a Kiro sign-in leaves it empty" in message
         assert CREDENTIAL not in message

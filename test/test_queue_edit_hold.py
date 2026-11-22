@@ -11,6 +11,7 @@ without a save, and the deadline.
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -43,6 +44,10 @@ def _idle_state(tmp_path, monkeypatch):
     return state, slot, qid
 
 
+def _hold(item, holder: str = "") -> None:
+    item.setdefault(queue_edit_hold.EDIT_HOLD_KEY, {})[holder] = queue_edit_hold._clock() + 60.0
+
+
 def _user_rows(slot) -> list[str]:
     return [m["content"] for m in slot.messages if m.get("role") == "user"]
 
@@ -61,10 +66,15 @@ def _no_release_grace(_floor_monkeypatch):
     _floor_monkeypatch.setattr(queue_edit_hold, "RELEASE_GRACE_SECONDS", 0.0)
 
 
-async def _settle_background(state, slot) -> None:
+async def _settle_background(state, slot, holder: str | None = None) -> None:
     # A release leaves the hold for the grace; its expiry starts the drain.
+    # With *holder*, only that editor's hold is waited out.
+    def _gone(item) -> bool:
+        holds = item.get(queue_edit_hold.EDIT_HOLD_KEY) or {}
+        return not holds if holder is None else holder not in holds
+
     await async_wait_until(
-        lambda: not any(queue_edit_hold.EDIT_HOLD_KEY in i for i in slot._queue),
+        lambda: all(_gone(i) for i in slot._queue),
         describe=lambda: "the released hold's expiry",
     )
     pending = list(state._background_tasks)
@@ -77,7 +87,7 @@ async def test_the_drain_leaves_a_held_entry_queued(tmp_path, monkeypatch):
     from kiro_crew.dashboard import chat_runner
 
     state, slot, qid = _idle_state(tmp_path, monkeypatch)
-    slot._queue[0][queue_edit_hold.EDIT_HOLD_KEY] = queue_edit_hold._clock() + 60.0
+    _hold(slot._queue[0])
 
     spawn, run = _patched_turn_start()
     with spawn as spawned, run:
@@ -95,7 +105,7 @@ async def test_a_held_responsive_priority_entry_is_not_promoted(tmp_path, monkey
     state, slot, qid = _idle_state(tmp_path, monkeypatch)
     slot._queue[0][responsive_chat.RESPONSIVE_KEY] = True
     assert responsive_chat.first_priority_id(slot) == qid
-    slot._queue[0][queue_edit_hold.EDIT_HOLD_KEY] = queue_edit_hold._clock() + 60.0
+    _hold(slot._queue[0])
 
     spawn, run = _patched_turn_start()
     with spawn as spawned, run:
@@ -114,7 +124,7 @@ async def test_a_held_priority_entry_does_not_park_a_system_entry(tmp_path, monk
 
     state, slot, qid = _idle_state(tmp_path, monkeypatch)
     slot._queue[0][responsive_chat.RESPONSIVE_KEY] = True
-    slot._queue[0][queue_edit_hold.EDIT_HOLD_KEY] = queue_edit_hold._clock() + 60.0
+    _hold(slot._queue[0])
     slot._queue.append(
         {
             "id": "cron-1",
@@ -138,7 +148,7 @@ async def test_a_drain_picked_id_does_not_pass_the_hold(tmp_path, monkeypatch):
     from kiro_crew.dashboard import chat_runner
 
     state, slot, qid = _idle_state(tmp_path, monkeypatch)
-    slot._queue[0][queue_edit_hold.EDIT_HOLD_KEY] = queue_edit_hold._clock() + 60.0
+    _hold(slot._queue[0])
     arrived = slot.queue_append("arrived later", directive_user_origin=True)
 
     spawn, run = _patched_turn_start()
@@ -157,7 +167,7 @@ async def test_run_now_on_another_card_passes_the_hold(tmp_path, monkeypatch):
     from kiro_crew.dashboard import chat_runner
 
     state, slot, qid = _idle_state(tmp_path, monkeypatch)
-    slot._queue[0][queue_edit_hold.EDIT_HOLD_KEY] = queue_edit_hold._clock() + 60.0
+    _hold(slot._queue[0])
     other = slot.queue_append("run me now", directive_user_origin=True)
 
     spawn, run = _patched_turn_start()
@@ -182,7 +192,7 @@ async def test_a_composer_send_queues_behind_a_held_entry(tmp_path, monkeypatch)
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
     state, slot, qid = _idle_state(tmp_path, monkeypatch)
-    slot._queue[0][queue_edit_hold.EDIT_HOLD_KEY] = queue_edit_hold._clock() + 60.0
+    _hold(slot._queue[0])
 
     spawn, run = _patched_turn_start()
     with spawn as spawned, run:
@@ -210,7 +220,7 @@ async def test_a_composer_marked_send_waits_behind_the_card_being_edited(
     from kiro_crew.dashboard.chat_utils import COMPOSER_SEND_META
 
     state, slot, qid = _idle_state(tmp_path, monkeypatch)
-    slot._queue[0][queue_edit_hold.EDIT_HOLD_KEY] = queue_edit_hold._clock() + 60.0
+    _hold(slot._queue[0])
     later = slot.queue_append("sent while editing", "", {COMPOSER_SEND_META: True})
 
     spawn, run = _patched_turn_start()
@@ -248,7 +258,7 @@ async def test_a_composer_send_an_editor_held_keeps_its_mark_for_after_the_hold(
     state.broadcast_ws = MagicMock()
     slot = state.get_or_create_slot("chat-1")
     slot.queue_append("old words", directive_user_origin=True)
-    slot._queue[0][queue_edit_hold.EDIT_HOLD_KEY] = queue_edit_hold._clock() + 60.0
+    _hold(slot._queue[0])
 
     spawn, run = _patched_turn_start()
     with spawn as spawned, run:
@@ -354,7 +364,12 @@ async def test_cancelling_the_held_entry_sends_the_one_behind_it(tmp_path, monke
     with patch("kiro_crew.sel.sel") as mock_sel, spawn, run:
         mock_sel.return_value = MagicMock()
         async with TestClient(TestServer(app)) as client:
-            await client.post(f"/api/chat/slots/chat-1/queue/{qid}/editing", json={"editing": True})
+            # Under an editor's own id, as the dashboard holds: the cancel names
+            # no holder, so only the entry leaving the queue releases this hold.
+            await client.post(
+                f"/api/chat/slots/chat-1/queue/{qid}/editing",
+                json={"editing": True, "holder": "tab-a"},
+            )
             resp = await client.delete(f"/api/chat/slots/chat-1/queue/{qid}")
             assert resp.status == 200
             await _settle_background(state, slot)
@@ -366,7 +381,7 @@ async def test_cancelling_the_held_entry_sends_the_one_behind_it(tmp_path, monke
 def test_a_hold_past_its_deadline_no_longer_holds(monkeypatch):
     now = [1000.0]
     monkeypatch.setattr(queue_edit_hold, "_clock", lambda: now[0])
-    item = {"id": "q1", "content": "x", queue_edit_hold.EDIT_HOLD_KEY: 1000.0 + 5.0}
+    item = {"id": "q1", "content": "x", queue_edit_hold.EDIT_HOLD_KEY: {"": 1000.0 + 5.0}}
     assert queue_edit_hold.edit_held(item) is True
     now[0] = 1006.0
     assert queue_edit_hold.edit_held(item) is False
@@ -390,9 +405,9 @@ def test_the_dashboard_serves_the_hold_route():
 
 @pytest.mark.asyncio
 async def test_a_turn_ending_inside_the_release_grace_sends_nothing(tmp_path, monkeypatch):
-    # Moving from one card's editor to another's: the first editor's blur
-    # releases its card before the second card's click holds it. A turn that
-    # ends in between must still find the queue held.
+    # A move the press hold does not order (from the keyboard, with Ctrl held,
+    # from an older dashboard): the first editor's blur releases its card before
+    # the second card's click holds it. A turn ending in between finds it held.
     from kiro_crew.dashboard import chat_runner
 
     grace = queue_edit_hold.EDIT_HOLD_SECONDS
@@ -412,3 +427,169 @@ async def test_a_turn_ending_inside_the_release_grace_sends_nothing(tmp_path, mo
 
     spawned.assert_not_called()
     assert [q["id"] for q in slot._queue] == [first, second]
+
+
+_EDITING = "/api/chat/slots/chat-1/queue/{}/editing"
+
+
+@pytest.mark.asyncio
+async def test_closing_one_editor_keeps_the_entry_held_for_the_other(tmp_path, monkeypatch):
+    # The same card open in two tabs: closing it in one must not let the
+    # entry run with its old words while the other is still typing.
+    from kiro_crew.dashboard import chat_runner
+
+    state, slot, qid = _idle_state(tmp_path, monkeypatch)
+    spawn, run = _patched_turn_start()
+    with spawn as spawned, run:
+        async with TestClient(TestServer(_app(state))) as client:
+            for tab in ("tab-a", "tab-b"):
+                resp = await client.post(
+                    _EDITING.format(qid), json={"editing": True, "holder": tab}
+                )
+                assert resp.status == 200
+            await client.post(_EDITING.format(qid), json={"editing": False, "holder": "tab-a"})
+            await _settle_background(state, slot, holder="tab-a")
+            assert await chat_runner._start_next_queued_turn(state, slot) is False
+            spawned.assert_not_called()
+            assert [q["id"] for q in slot._queue] == [qid]
+            assert queue_edit_hold.edit_held(slot._queue[0])
+            await client.post(_EDITING.format(qid), json={"editing": False, "holder": "tab-b"})
+            await _settle_background(state, slot)
+
+    spawned.assert_called_once()
+    assert _user_rows(slot) == ["old words"]
+
+
+@pytest.mark.asyncio
+async def test_a_lapsed_editor_does_not_hold_the_entry_once_the_other_closes(tmp_path, monkeypatch):
+    # One tab was killed and stopped renewing, so its deadline passed; the
+    # other tab's release then drains, since a lapsed holder holds nothing.
+    now = [1000.0]
+    monkeypatch.setattr(queue_edit_hold, "_clock", lambda: now[0])
+    state, slot, qid = _idle_state(tmp_path, monkeypatch)
+    spawn, run = _patched_turn_start()
+    with spawn as spawned, run:
+        async with TestClient(TestServer(_app(state))) as client:
+            await client.post(_EDITING.format(qid), json={"editing": True, "holder": "killed"})
+            now[0] += queue_edit_hold.EDIT_HOLD_SECONDS - 10.0
+            await client.post(_EDITING.format(qid), json={"editing": True, "holder": "open"})
+            now[0] += 20.0
+            assert queue_edit_hold.edit_held(slot._queue[0])
+            await client.post(_EDITING.format(qid), json={"editing": False, "holder": "open"})
+            await _settle_background(state, slot, holder="open")
+
+    spawned.assert_called_once()
+    assert slot._queue == []
+    assert _user_rows(slot) == ["old words"]
+
+
+@pytest.mark.asyncio
+async def test_a_release_from_an_editor_that_holds_nothing_changes_nothing(tmp_path, monkeypatch):
+    state, slot, qid = _idle_state(tmp_path, monkeypatch)
+    spawn, run = _patched_turn_start()
+    with spawn as spawned, run:
+        async with TestClient(TestServer(_app(state))) as client:
+            await client.post(_EDITING.format(qid), json={"editing": True, "holder": "tab-a"})
+            before = dict(slot._queue[0][queue_edit_hold.EDIT_HOLD_KEY])
+            resp = await client.post(
+                _EDITING.format(qid), json={"editing": False, "holder": "stranger"}
+            )
+            assert resp.status == 200
+            assert slot._queue[0][queue_edit_hold.EDIT_HOLD_KEY] == before
+            pending = list(state._background_tasks)
+            if pending:
+                await await_until(asyncio.gather(*pending), what="background drains")
+
+    spawned.assert_not_called()
+    assert [q["id"] for q in slot._queue] == [qid]
+
+
+@pytest.mark.asyncio
+async def test_a_save_releases_only_its_own_editor(tmp_path, monkeypatch):
+    state, slot, qid = _idle_state(tmp_path, monkeypatch)
+    spawn, run = _patched_turn_start()
+    with patch("kiro_crew.sel.sel") as mock_sel, spawn as spawned, run:
+        mock_sel.return_value = MagicMock()
+        async with TestClient(TestServer(_app(state))) as client:
+            for tab in ("saver", "still-typing"):
+                await client.post(_EDITING.format(qid), json={"editing": True, "holder": tab})
+            resp = await client.patch(
+                f"/api/chat/slots/chat-1/queue/{qid}",
+                json={"content": "new words", "holder": "saver"},
+            )
+            assert resp.status == 200
+            await _settle_background(state, slot, holder="saver")
+            spawned.assert_not_called()
+            assert [q["content"] for q in slot._queue] == ["new words"]
+            assert set(slot._queue[0][queue_edit_hold.EDIT_HOLD_KEY]) == {"still-typing"}
+            await client.post(
+                _EDITING.format(qid), json={"editing": False, "holder": "still-typing"}
+            )
+            await _settle_background(state, slot)
+
+    spawned.assert_called_once()
+    assert _user_rows(slot) == ["new words"]
+
+
+@pytest.mark.asyncio
+async def test_a_holder_that_is_not_a_string_is_refused(tmp_path, monkeypatch):
+    state, slot, qid = _idle_state(tmp_path, monkeypatch)
+    async with TestClient(TestServer(_app(state))) as client:
+        hold = await client.post(_EDITING.format(qid), json={"editing": True, "holder": 7})
+        save = await client.patch(
+            f"/api/chat/slots/chat-1/queue/{qid}", json={"content": "new", "holder": ["x"]}
+        )
+        codes = ((await hold.json())["code"], (await save.json())["code"])
+    assert (hold.status, save.status) == (400, 400)
+    assert codes == ("invalid_field_type", "invalid_field_type")
+    assert slot._queue[0]["content"] == "old words"
+    assert queue_edit_hold.EDIT_HOLD_KEY not in slot._queue[0]
+
+
+@pytest.mark.asyncio
+async def test_a_holder_too_long_to_keep_is_refused(tmp_path, monkeypatch):
+    # The entry keeps the id the request names, so the length is bounded here.
+    state, slot, qid = _idle_state(tmp_path, monkeypatch)
+    long_id = "x" * (queue_edit_hold.MAX_HOLDER_LEN + 1)
+    async with TestClient(TestServer(_app(state))) as client:
+        hold = await client.post(_EDITING.format(qid), json={"editing": True, "holder": long_id})
+        save = await client.patch(
+            f"/api/chat/slots/chat-1/queue/{qid}", json={"content": "new", "holder": long_id}
+        )
+        codes = ((await hold.json())["code"], (await save.json())["code"])
+        fits = await client.post(
+            _EDITING.format(qid),
+            json={"editing": True, "holder": "x" * queue_edit_hold.MAX_HOLDER_LEN},
+        )
+    assert (hold.status, save.status) == (400, 400)
+    assert codes == ("holder_too_long", "holder_too_long")
+    assert slot._queue[0]["content"] == "old words"
+    assert fits.status == 200
+    assert set(slot._queue[0][queue_edit_hold.EDIT_HOLD_KEY]) == {
+        "x" * queue_edit_hold.MAX_HOLDER_LEN
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_entry_holds_a_bounded_set_of_editors(tmp_path, monkeypatch, caplog):
+    # A caller minting ids cannot grow the entry: past the cap the earliest
+    # deadline is dropped, and each drop is logged, so a lost hold is not
+    # mistaken for a lapse.
+    now = [1000.0]
+    monkeypatch.setattr(queue_edit_hold, "_clock", lambda: now[0])
+    state, slot, qid = _idle_state(tmp_path, monkeypatch)
+    entry = slot._queue[0]
+    queue_edit_hold.place_edit_hold(state, slot, entry, "live")
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.queue_edit_hold"):
+        for i in range(queue_edit_hold.MAX_EDIT_HOLDERS + 5):
+            now[0] += 0.001
+            queue_edit_hold.place_edit_hold(state, slot, entry, f"minted-{i}")
+    dropped = [r for r in caplog.records if "dropped the earliest hold" in r.getMessage()]
+    assert len(dropped) == 6
+    holds = entry[queue_edit_hold.EDIT_HOLD_KEY]
+    assert len(holds) == queue_edit_hold.MAX_EDIT_HOLDERS
+    # The earliest deadlines went first, so the newest editors are the ones held.
+    assert "live" not in holds
+    assert f"minted-{queue_edit_hold.MAX_EDIT_HOLDERS + 4}" in holds
+    assert queue_edit_hold.edit_held(entry)

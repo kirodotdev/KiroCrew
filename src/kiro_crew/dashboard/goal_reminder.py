@@ -10,7 +10,8 @@ have two schedules and none touches another's:
   at the shared time of day: daily ``M H * * *``, weekly ``M H * * <weekday>``,
   monthly ``M H <day> * *``, in the user's timezone; the heartbeat runs on its
   interval instead (``*/30 * * * *``, ``0 * * * *``, ``0 */2 * * *``,
-  ``0 */4 * * *``, :func:`cron_expr_for`);
+  ``0 */4 * * *``, :func:`cron_expr_for`), its hours narrowed to its active
+  hours when it has them (``0 8-19 * * *`` for 08:00 to 20:00);
 * off -> that cadence's schedule is removed.
 
 When a schedule fires, the gateway's cron callback hands the job here
@@ -65,7 +66,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from kiro_crew import crewmate_prompts, member_goals
+from kiro_crew import crewmate_prompts, member_goals, member_goals_hours
 from kiro_crew import members as members_mod
 from kiro_crew import session_directive
 from kiro_crew.dashboard_templates.page_look import PAGE_LOOK
@@ -114,13 +115,13 @@ def is_reminder_job(job: Any) -> bool:
     return cadence_of(job) is not None
 
 
-#: The heartbeat's cron expression per interval (minutes), on the clock's own
-#: marks: a 30-minute heartbeat runs at :00 and :30.
-_HEARTBEAT_EXPRS = {
-    30: "*/30 * * * *",
-    60: "0 * * * *",
-    120: "0 */2 * * *",
-    240: "0 */4 * * *",
+#: The heartbeat's minute field and hour step per interval (minutes), on the
+#: clock's own marks: a 30-minute heartbeat runs at :00 and :30.
+_HEARTBEAT_FIELDS = {
+    30: ("*/30", ""),
+    60: ("0", ""),
+    120: ("0", "/2"),
+    240: ("0", "/4"),
 }
 
 
@@ -135,7 +136,14 @@ def heartbeat_interval(schedules: dict[str, Any]) -> int:
 def cron_expr_for(cadence: str, schedules: dict[str, Any]) -> str:
     """The cron expression for *cadence* at the record's shared time (or interval)."""
     if cadence == member_goals.CADENCE_HEARTBEAT:
-        return _HEARTBEAT_EXPRS[heartbeat_interval(schedules)]
+        minutes, step = _HEARTBEAT_FIELDS[heartbeat_interval(schedules)]
+        hours = member_goals_hours.active_hours(schedules)
+        # The whole day keeps ``*``, so a heartbeat without active hours keeps its
+        # schedule and run history. A range always has both ends: a bare hour
+        # would read as a once-a-day expression to the cron store's jitter.
+        whole_day = hours == member_goals_hours.ACTIVE_HOURS_ALL_DAY
+        span = "*" if whole_day else f"{hours[0]}-{hours[1] - 1}"
+        return f"{minutes} {span}{step} * * *"
     hour, minute = (int(x) for x in str(schedules["time"]).split(":"))
     if cadence == member_goals.CADENCE_WEEKLY:
         return f"{minute} {hour} * * {int(schedules['weekday'])}"
@@ -585,6 +593,19 @@ def _heartbeat_handoff(ledger: bool = False) -> str:
     return _HEARTBEAT_WORKERS_LEDGER if ledger else _HEARTBEAT_WORKERS_V2
 
 
+def active_hours_line(rec: dict[str, Any]) -> str:
+    """`` between 08:00 and 20:00`` when the heartbeat has a window, else ``""``.
+
+    The wake tells the crewmate when its next wake is: with a window the gap
+    across the quiet hours is longer than the interval, which is what it plans
+    its hand-offs against.
+    """
+    hours = member_goals_hours.active_hours(rec["schedules"])
+    if hours == member_goals_hours.ACTIVE_HOURS_ALL_DAY:
+        return ""
+    return f" between {hours[0]:02d}:00 and {hours[1]:02d}:00"
+
+
 def heartbeat_prompt(
     rec: dict[str, Any],
     *,
@@ -617,7 +638,7 @@ def heartbeat_prompt(
         + (f"{stale} {HEARTBEAT_STALE_COUNTS}\n\n" if stale else "")
         + "When nothing above can move forward, call nothing_to_do at once, with no "
         "text before it.\n\n"
-        + f"This is your heartbeat, a wake every {every} that lets you keep your "
+        + f"This is your heartbeat, a wake every {every}{active_hours_line(rec)} that lets you keep your "
         "work moving while the user is away. Look at your goals and milestones "
         "above and at the open items in your work ledger, then move forward "
         "whatever you can without the user: one thing or several, as the work "

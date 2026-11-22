@@ -346,7 +346,8 @@ person's browser usable. If Kiro's Chromium is not downloaded yet, the start
 fails saying so, and Settings shows Install on the main card. A hand pick of
 `user_chrome` never falls back: it fails with the remote-debugging step.
 
-A Kiro's Chromium that exits before the daemon answers fails the start at once
+A Kiro's Chromium that exits before its debugging port opens, or before the
+daemon answers, fails the start at once
 with `Kiro's Chromium exited with code <n>`. On macOS and Linux its stderr goes
 to a pipe of the gateway's own, drained for the browser's whole life (only the
 newest 4 KiB kept, in memory), and its last stderr lines follow, redacted, so a
@@ -890,7 +891,11 @@ the end; a re-posted op held again starts a new hold on both sides): a poll afte
 answers `hold_over: true`, and the shim's own deadline is `HOLD_GRACE_S` later,
 only for a gateway that stopped answering. Either way the agent is told
 `user_in_control` ("held for 10 minutes; tell them you are waiting and end your
-turn"). An op the claim cut short mid-flight answers `interrupted` with `hold`:
+turn"). A hand-back that finds an op parked (`LiveSession.parked`) inside the hold,
+sending no words to chat, resumes every call parked there, one polling after the
+end too (`LiveSession.hold_handed_back`, kept until the next claim or turn, or a
+hand-back whose words go to chat). An op the claim cut short mid-flight
+answers `interrupted` with `hold`:
 the tool waits for the hand-back and then tells the agent to snapshot first; the op
 is never re-run blind. A cancelled tool call stops stepping. The turn's thinking
 line reads "Waiting for you to hand the browser back". Esc or "Hand back"
@@ -1096,7 +1101,13 @@ the person's: a later turn that never browses ends without folding it
 live, and **Close live view** in its menu (`POST /api/browser/live/close`,
 `LiveHub.close_view`) folds it back to the done line. A turn that browses after a
 reopen opens a NEW turn (`_open_turn` checks `turn_over`), the running stream
-carries over to it, and that turn's end folds it as usual; an agent op while the
+carries over to it, and that turn's end folds it as usual. The card opens that
+turn with no picture and Chrome sends no frame of a still page, so `turn_started`
+publishes the new turn and then restarts the cast (`LiveStream.restart`), which
+Chrome answers with the current picture at once; a view no card sees is left
+stopped. Chrome draws no frame at all of a tab it hides (a background tab, a
+covered or minimised window) and says so with `Page.screencastVisibilityChanged`,
+which the stream logs at info; an agent op while the
 person holds the reopened tab is held for the hand-back like any other. The done
 line keeps two actions: Open live and Replay when the tab is open (Open in Chrome
 moves into the live view's menu), else Replay and Open in Chrome.
@@ -1110,7 +1121,12 @@ turn that folds gets its own reopen. While that reopen is due or unanswered the
 view keeps its live face on the last frame, with no Take over, instead of the
 done face; a refusal or a closed tab ends the hold. The `turn_id` is the one the
 view already holds for its Show the live page button; the route and its checks
-are unchanged.
+are unchanged. A view reports on screen for each new turn in one write, never
+off and on again: the gateway may take two such writes in either order, and an
+off taken last stops the cast under a view that is on screen. Below the picture
+the view lists the turn's `steps` (the chat card's step strip), the latest five,
+newest last, behind a toggle that counts them all; nothing is listed while the
+person is in control.
 
 **Sign-in from the Secrets vault** (`browser_harness/vault_fill.py`). The agent's
 side does not change:
@@ -1293,7 +1309,8 @@ args, *, state, caller)`, which answers `(body, http_status)`. The route only
 authenticates and validates the body, then calls it; an app's `PagePort`
 (`apps/browser_page_port.py`, handed out by `ctx.browser.page(slot)`) calls the same function with the slot's own
 runtime key (`dashboard:<slot>`), so the Bot and an app share every gate from one
-copy, in this order: the `capabilities.browse` check for that key; the navigate gate
+copy (all but the gateway's own origins, which only the route's request carries),
+in this order: the `capabilities.browse` check for that key; the navigate gate
 on the address the op asks to open (`navigate`, and `tabs new` with a URL), which
 answers `url_blocked` before the browser starts, so a refused address is never
 requested even by a caller inside the gateway that skips the shim; an app slot's
@@ -1652,6 +1669,26 @@ key. Link and history landings are checked again before a page read, input or
 live-card follow with the same gate, so an unlisted private destination is blanked
 and refused rather than being operated through a link.
 
+The dashboard is refused under every name the gateway trusts as itself, not only
+its loopback port: a public URL whose origin (scheme, host, port, compared after
+the gate's own host folding) is in the gateway's live `allowed_origins` is
+refused. That set holds whichever of these the gateway trusts at the time:
+`dashboard.url` (and its host on the served port), a connected tunnel, the tailnet
+name, `KIROCREW_CORS_ORIGINS` entries, and the machine host name in a build that
+is not local-only; governance may drop any of them (an LTS build keeps only the
+ones a policy names). That set is what the CSRF and WebSocket checks accept as the
+owner's dashboard, and the agent's browser may be the person's own signed-in
+Chrome, so such a tab would act as the owner. Only the gateway knows that set (a
+tunnel or tailnet name joins at runtime), so the gateway judges the URL
+`navigate`, `tabs new` or `http_get` asks for (`url_blocked`) before it is
+requested, as well as every landing. An operator-listed loopback origin keeps its
+own rule above. The set comes from the route's request, so it is the Bot's: an
+app's own `PagePort` ops (one door, above) do not carry it, since an app's
+in-gateway code runs trusted and this gate is no boundary against it. **Accepted
+residual:** an address that reaches the gateway but is not one of those origins
+(another scheme or port on a trusted host, say) passes the gate, on the request
+and on every landing.
+
 Passwords never pass the model: `type` and `paste` refuse a password field, the
 frame masks one, and logins happen during takeover.
 
@@ -1667,8 +1704,9 @@ method (play, pause, seek, volume, state of the main `<video>`/`<audio>`) in the
 isolated world after the same page check (`browser_harness/media.py`). When the app
 declares `backend.hooks.on_browser_media_ended`, `handlers/browser_media_watch.py` makes
 that same `state` read every 3 s on the slot's tab after the agent's first successful op,
-never queueing for the op lock (a busy tick is skipped), and hands each ending to the
-owning app's backend ([app-kit-platform §45](app-kit-platform.md)).
+never queueing for the op lock (a busy tick is skipped), and hands each ending the
+walker counted (a new `endId`; the walker's `mediaEnds` also counts a source taken away
+at the end) to the owning app's backend ([app-kit-platform §45](app-kit-platform.md)).
 
 **A person's site grant.** A chat's own `browser` card offers, inside its Trust
 menu, a grant on the site the call acts on: "Trust reading pages on `<host>`" on a
@@ -1807,8 +1845,9 @@ agent browser this stack replaced. They are no longer fields. A `config.json`
 that still carries them loads, logs ONE warning naming each one whose value
 differs from the default older builds wrote into every config they saved
 (`use_builtin_browser: true`, `browser_view_port: 0`; `config/resolution.py`,
-`warn_retired_section_keys`), and drops them on the next save
-(`_SECTION_KEYS_DELIBERATELY_DROPPED`). `PUT /api/dashboard/config`
+`warn_retired_section_keys`), and drops them on the next save or locked write
+to `config.json` (`_SECTION_KEYS_DELIBERATELY_DROPPED`, `update_config_locked`).
+`PUT /api/dashboard/config`
 no longer accepts `use_builtin_browser`, and the change-card catalog no longer
 offers `browser.use-the-built-in-browser`.
 
@@ -1885,7 +1924,7 @@ modifies it, and the row is silent when the directory is absent.
 | A provider widens what it may set | off unless `browser.credentials.enabled`; cookies outside BOTH its declared domains and `browser.credentials.domains` are dropped; every cookie is a session cookie; the provider adds no launch switch |
 | A provider sends the tab somewhere the agent did not ask for | only after an agent `navigate` landed on a page of the provider's own (both domain lists, `https`, Kiro's Chromium, the opt-in on); the URL it returns must be `https`, in both domain lists and pass the committed-URL gate, and its landing is gated again; one try per op; the agent, the live card and the SEL see hosts and outcome codes, never the URL's path or query. **Accepted residual:** the single-use URL is visible in the tab's own address and history (Credentials, residual iv) |
 | A provider reads a file the agent planted | `credential_files.read_source_file`: `O_NOFOLLOW`, `fstat` on the open descriptor, owner uid, no group/other bits, size cap |
-| Local addresses | `navigate` keeps the public-only gate plus `dashboard.browser_local_origins`, applied TWICE by one shared predicate (`browser_harness/url_gate.py`): in the shim to the URL asked for, and in the gateway to the URL the navigation (or `back`) committed on, so a public page that redirects to loopback, private or link-local is refused (`redirect_refused`) and the tab moved to `about:blank`. **Accepted residual:** DNS rebinding (a public name resolving to a private address) is not seen by either check; names are not resolved |
+| Local addresses | `navigate` keeps the public-only gate plus `dashboard.browser_local_origins`, applied by one shared predicate (`browser_harness/url_gate.py`): in the shim to the URL asked for, and in the gateway to the URL asked for and the URL the navigation (or `back`) committed on, so a public page that redirects to loopback, private or link-local is refused (`redirect_refused`) and the tab moved to `about:blank`. The gateway adds the origins it trusts as itself (`allowed_origins`), so the dashboard is refused under a tunnel, tailnet or `dashboard.url` name too (`url_blocked` before the request). **Accepted residuals:** DNS rebinding (a public name resolving to a private address) is not seen by either check; names are not resolved. An address that reaches the gateway but is not one of its trusted origins passes |
 | Governance | `capabilities.browse` is checked on every call and a denial never falls back; the gateway asks it again, fail-closed, at every browser route, the engine start and every helper, so a direct POST or a policy pushed mid-session cannot keep a browser running |
 | Page content | treated as untrusted input; a URL, instruction or form target read off a page never decides the next navigation |
 | Agent obtains a vault login through a quick ask | the agent's `ask` and its outcome words are unchanged; the owner's card shows each login's entry name and username, never a password; a vault fill needs the person's click on the owner-only answer route (which refuses the internal secret) and goes through the same bound, re-verified fill; the item is re-read and re-matched against the bound origin at answer time; values never reach a log, the SEL, the replay, the live event, the poll or the tool result |

@@ -16,9 +16,8 @@ import InfoTip from '../../components/InfoTip'
 import { lazyRetry } from '../../components/lazyRetry'
 import SelectionToolbar, { selectionTextFrom, useSelectionActions } from '../../components/SelectionToolbar'
 import { useAppSelectionActions } from '../../selectionActions/useAppSelectionActions'
-import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightContext'
+import { useSearchHighlight, useCurrentOcc, useRevealMatch } from '../../hooks/SearchHighlightContext'
 import { applySearchHighlights, clearSearchHighlights } from '../../utils/domHighlight'
-import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
 import FileChangeChips, { type FileChangeEntry } from '../../components/FileChangeChips'
 import OpenFileChips from '../../components/OpenFileChips'
 import DecisionStrip from './DecisionStrip'
@@ -363,6 +362,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
 
   const { term, caseSensitive } = useSearchHighlight()
   const currentOcc = useCurrentOcc()
+  const revealMatch = useRevealMatch()
 
   useEffect(() => {
     const el = contentRef.current
@@ -370,13 +370,15 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
 
     const run = () => applySearchHighlights(el, term, caseSensitive, currentOcc)
     run()
-    // After highlighting, center the active occurrence so a jump lands on the
-    // exact searched text. Converges across frames so a far (just-mounted,
-    // unmeasured) row still lands correctly on the first click — see
-    // scrollCurrentMatchIntoView. Capture its cancel so the loop is aborted
-    // when this effect re-runs (next occurrence) or the message unmounts —
-    // otherwise rapid navigation piles up concurrent loops + window listeners.
-    const cancelScroll = currentOcc >= 0 ? scrollCurrentMatchIntoView(el) : undefined
+    // After highlighting, center the active occurrence when a find action asked
+    // for it, so a jump lands on the exact searched text; only once per action,
+    // so rows arriving, a remount or streamed text never move the reader.
+    // Converges across frames so a far (just-mounted, unmeasured) row still
+    // lands correctly on the first click — see scrollCurrentMatchIntoView.
+    // Capture its cancel so the loop is aborted when this effect re-runs (next
+    // occurrence) or the message unmounts — otherwise rapid navigation piles up
+    // concurrent loops + window listeners.
+    const cancelScroll = revealMatch(el)
 
     // The highlights are Ranges registered on a page-wide CSS.highlights entry
     // (see domHighlight), so this bubble's ranges MUST be withdrawn when it
@@ -410,7 +412,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     })
     observer.observe(el, { childList: true, subtree: true, characterData: true })
     return () => { disposed = true; observer.disconnect(); cancelScroll?.(); withdraw() }
-  }, [term, caseSensitive, currentOcc, effectiveContent, rawMode])
+  }, [term, caseSensitive, currentOcc, effectiveContent, rawMode, revealMatch])
 
   // Four whole-sentence keys, one per combination of the two optional clauses,
   // rather than a base sentence with ` and used …` / ` (… API cost)` appended.

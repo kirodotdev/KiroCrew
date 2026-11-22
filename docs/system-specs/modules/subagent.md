@@ -439,6 +439,11 @@ floor, the reserve and the host reading together (no read is taken, so an
 unanswered one cannot hold a start back). When enabled, the per-spawn guard adds
 `_startup_memory_reserve_gb` to it, so a start is admitted only if
 `available − Σ outstanding start prices − price(this start) ≥ spawn_min_memory_gb`.
+`available` counts at two decimals: `check_memory_available` rounds its reading
+before it compares, and the gate's inline path takes that verdict while its
+off-loop path, the dedicated top-up, the memory wake and the `resource_status`
+floor line compare the rounded figure it returns, so they all decide alike; a
+reading within 0.005 GB of the bar counts as the figure it rounds to.
 Below that a spawn waits in the queue (`low_memory`), durable or not; a capacity
 verdict never fails it, but the wait is bounded by `agent.subagent_queue_max_wait_secs`
 (§ Durable task queue, "A memory deferral has a max wait"). The governance, cwd and memory-identity checks that run
@@ -2737,7 +2742,7 @@ streamed turn with its nested `_stream_with_transient_retry`; the pre-stream ste
 calls -- the inherited approval policy, the shared or dedicated session acquisition,
 the cleanup identity, the child's memory and folder steering, the spawn records,
 the `AgentSpawn`/`UserPromptSubmit` hooks, and on a new claude session the line
-naming what of a named agent's `tools` and `model` it does not apply, prepended to
+naming a named agent's `model` pin it does not apply, prepended to
 the prompt and logged as a warning (`spec_builtin_tools_notice`) -- are plain functions in `turn_session.py`,
 which read the names tests patch on `kiro_crew.subagent` through a call-time
 `sys.modules` lookup, and which is not an owner: every `run_*.py` sibling is one),
@@ -2847,7 +2852,7 @@ A record's terminal outcome is three-way, with a **single canonical source**: th
 |---|---|---|---|---|---|
 | `end_turn`, absent | `succeeded` | — | `outcome=completed`, `record_success`, taskq `done` | normal completion | step `PASSED` |
 | `error: tool stall` | `stalled` | yes | continue-nudge in place ×`STOP_RECOVERY_MAX_RETRIES`, then `failed` (partial flagged) | `slot._tool_stall_retries` continue-nudge ×`STOP_RECOVERY_MAX_RETRIES`, then "Session stuck" | attempt fails → existing bounded retry ladder (retry prompt names the stall) |
-| `stale_recover` | `recovering` | yes | same budget as `stalled` (the sub-agent has no reset+resume ladder; a truly wedged session stalls again and exhausts the budget) | session reset + resume + continue-nudge, `slot._stale_recovery_retries` | attempt fails → retry ladder |
+| `stale_recover` | `recovering` | yes | same budget as `stalled` (the sub-agent has no reset+resume ladder; a truly wedged session stalls again and exhausts the budget); a run that streamed nothing yet (no text, tool call or native sub-agent activity) re-sends the prompt that was probed instead of the nudge | session reset + resume + continue-nudge, `slot._stale_recovery_retries`; a turn that streamed nothing, not even native sub-agent activity, re-sends the message verbatim | attempt fails → retry ladder |
 | `cancelled` | `cancelled` | no | `user_stopped` → neutral `stopped` (error unset); otherwise `error="cancelled (stop_reason=cancelled)…"`, tombstone `cancelled` | user stop | attempt fails → retry ladder |
 | `error: compaction failed` | `failed`; `recovering` only with `compaction_transient=True` | only transient | terminal `failed` (verdict not passed: no in-place replay is safe) | passes the ACP verdict; transient + nothing emitted → re-queue | attempt fails |
 | `refusal` | `failed` (`retryable=False`) | no | `failed` | actionable refusal notice, no retry | attempt fails |
@@ -2861,7 +2866,7 @@ A record's terminal outcome is three-way, with a **single canonical source**: th
 1. **yields its LANE slot through admission** — `admission.yield_slot(info, WaitRecord.dependency("session:<stop class>", source=liveness_oracle))`: `_release_slot` + `_running_count -= 1` + `_drain_queue()`, so queued work starts; the session (process, FDs, memory) stays alive and keeps its residency charge (SPEC-ADDENDUM §2: the logical slot is released, real resources are not pretended away). If a typed `waiting_input` status already yielded the slot earlier in the stream (below), this step is skipped;
 2. the durable row goes **`running -> waiting_dependency` under the run's own lease** (`wait_json` names the scope and the oracle as evidence) and a `stop_recovery` task event + progress marker (`{phase: yielded|readmitted, stop_class, attempt, slot_released}`) is appended. It deliberately does NOT transition to taskq `recovering`: that is the LOST-OWNER state, drops the lease and makes the id claimable — i.e. a duplicate run of the same task while the owner is alive;
 3. emits `subagent_waiting {state, reason, resume, residency_charged}` (from `yield_slot`), `subagent_recovering {attempt, max, stop_reason, stop_class}` and a SEL `subagent.stop_recovery` record;
-4. **re-admits through the pump** (`_await_lane_resume`: `admission.request_resume` queues a `_resume_id` entry at the front of the window; the coroutine parks on `info._resume_event` until `resume_grant` sets it — slot held again, row `running` under a NEW generation, `subagent_resumed`; bounded by `_RECOVERY_SLOT_WAIT_SECS`; never a poll of the running count) and sends `TOOL_STALL_RECOVERY_PREFIX` + `build_tool_stall_recovery_prompt(...)` on the SAME session — the preserved partial is finished, the original task is never re-sent. `stuck_input` is read from the completion's typed `status.wait_reason == waiting_input` first, the evidence-text marker second; `processes_terminated` is parsed from the terminal evidence so the continuation knows which old shell processes the watchdog ended and still checks for survivors. If re-admission is refused (deadline, shutdown, stop, reap) the resume entry is withdrawn, the budget is spent and the withheld completion is surfaced as `failed`.
+4. **re-admits through the pump** (`_await_lane_resume`: `admission.request_resume` queues a `_resume_id` entry at the front of the window; the coroutine parks on `info._resume_event` until `resume_grant` sets it — slot held again, row `running` under a NEW generation, `subagent_resumed`; bounded by `_RECOVERY_SLOT_WAIT_SECS`; never a poll of the running count) and sends `TOOL_STALL_RECOVERY_PREFIX` + `build_tool_stall_recovery_prompt(...)` on the SAME session — the preserved partial is finished, the original task is never re-sent. The one exception is a `stale_recover` completion of a run that has streamed nothing (no text, no tool call: the transient branch's `_had_activity` test; and no native sub-agent activity of this session): the probed prompt may not be held by the agent at all, so the prompt that was probed goes out again: the run's original prompt through `_active_line`, as the other replays of it do, or a Stop-hook continuation as it was written. `stuck_input` is read from the completion's typed `status.wait_reason == waiting_input` first, the evidence-text marker second; `processes_terminated` is parsed from the terminal evidence so the continuation knows which old shell processes the watchdog ended and still checks for survivors. If re-admission is refused (deadline, shutdown, stop, reap) the resume entry is withdrawn, the budget is spent and the withheld completion is surfaced as `failed`.
 
 **Typed input wait (W4)**: an `EVENT_STRUCTURED_STATUS` frame whose `status.wait_reason` is `waiting_input` (execution layer or liveness oracle; `acp-client.md` § Structured status protocol) makes the run yield its lane slot at once — `WaitRecord.input(tool_call_id)`, row `waiting_input`, `subagent_waiting {state: waiting_input, resume: input}` — while the blocked process stays resident. Under the default `cancel` policy the `error: tool stall` completion that follows re-enters through step 4 above.
 
@@ -4485,8 +4490,8 @@ when the parent's own call already returned every member it carries:
   parked completion of the run to the bell. What is told apart is a session
   that is gone or new, not whose it is: a live session on the key is continued,
   so a later run of a persistent job (same `cron:<job>` key) takes an earlier
-  run's completion, and so does the session a hard Stop's eager respawn
-  (`_eager_respawn`) started.
+  run's completion, and so does the session a hard Stop's respawn
+  (`_respawn_as`) started.
 - **The cron route's cleanup never resets under a live turn.** The route's "last
   subagent done" cleanup (`_reset_cron_parent_when_idle`) runs
   `reset(parent_key, skip_if_busy=True, skip_if_injecting=True)`, which declines
@@ -4921,7 +4926,16 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
   variable, so the generation records the resolved root as `codex_home` at spawn and
   the prune and `spawn_release` delete under it. A Codex generation without
   `codex_home`, a refused delete or a failed delete answers not done, and a release
-  then answers `not_disposed`. Unsupported providers and transient deletion
+  then answers `not_disposed`. A KAS run's session record belongs to the KAS
+  engine, so its cleanup queues the id in `released_sessions` (delay 0) and is
+  done once that entry is written; the next cleanup tick sends
+  `_kiro/session/delete` while KAS is the chat backend. An id the entry refuses
+  (`..`, a `/`), a write error, or a sandboxed process answers not done.
+  Only the prune queues it, in the same pass that removes the run folder a
+  continue resumes from; a `spawn_release` of a KAS conversation queues
+  nothing and answers `not_disposed`, because a continue may still resume the
+  session until the run is pruned.
+  Unsupported providers and transient deletion
   failures preserve
   both retry surfaces for later sweeps, capped at 90 days so a permanently missing
   cleanup route cannot accumulate private run folders forever. A sweep does not

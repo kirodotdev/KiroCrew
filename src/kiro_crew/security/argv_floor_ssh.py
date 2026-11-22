@@ -32,6 +32,7 @@ from . import argv_rules as _argv_rules
 from . import shell_normalizer as _shell_normalizer
 from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
 from .argv_floor_self import (
+    _heredoc_data_view,
     _self_token_frames,
     _static_substitution_output,
 )
@@ -1077,6 +1078,23 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
     the shell-builtin export spellings (``declare -x``/``typeset -x``), which
     are not leading-assignment syntax and so are not modeled by the walk.
     """
+    # A here-document body that no program on the line runs is data, not argv: the
+    # self floor's view blanks it, and the line read that way may allow. The view
+    # reads neither a ``\r`` (it drops one from a tag but not from the closing line,
+    # where bash keeps it) nor bash's join of a ``<<`` line that ends in a backslash,
+    # so on such a line this floor reads the whole line as before. bash matches a
+    # closing line case-sensitively, so the bodies are found on the words as written
+    # and only then lowered; without them the view is not taken. These guards only
+    # turn the allow off, so the floor never refuses more than without the view.
+    cased = raw_text if raw_text is not None and raw_text.lower() == text_lower else None
+    view = text_lower if cased is None else _heredoc_data_view(cased).lower()
+    if (
+        view != text_lower
+        and "\r" not in text_lower
+        and not any("<<" in ln and ln.endswith("\\") for ln in text_lower.split("\n"))
+        and not _is_ssh_to_self(view, own_line=own_line)
+    ):
+        return False
     # Single quotes read as literal only in the caller's own line, and only when it
     # has no live substitution opener before the splices below rewrite it: a spliced
     # static output (``x'y``) could otherwise pair into quotes around a live one.

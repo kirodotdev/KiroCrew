@@ -2067,6 +2067,26 @@ person to every device; `PUT` refuses a non-integer or a value outside
 0..`STAR_ORDER_MAX` with `invalid_star_order`, and clears it whenever the crew
 is not starred, so a re-star lands at the bottom. While a docked Bot's chat is
 open its dock row is the lit one, not the Bots page row.
+On the expanded desktop rail each docked Bot's row carries a "..." menu
+(`website/src/shell/nav/mateRowMenu.tsx`), the twin of an installed app's rail
+row menu, with exactly two items
+([decision](../../decisions/2026-11-13-a-sidebar-bot-rows-menu-carries-profile-and-remove-from-the-sidebar.md)).
+**Profile** (the card's own `pages.membersPage.profile_tab` label) navigates
+through `useGuardedLeave` to `/members?member=<name>` with the
+`OpenMateSessionsState` carrier (`website/src/lib/crewMode.ts`) naming
+`tab: 'profile'`, plus `leaveGranted` when the ask was answered; the Bots page
+opens the card on the tab the carrier names (Sessions when it names none or one
+the card lacks) through the schedule-draft guard, which it skips for a
+`leaveGranted` carrier (that question was just answered), then clears the
+state, so a reload does not reopen it. **Remove from the sidebar** is the
+dock's own optimistic unstar (`starred: false`, `star_order` zeroed, refetch on settle); a
+failure puts the row back and shows its `ErrorNotice` beside the rail, and focus
+moves to the next docked row, else the previous, else the rail's Bots row. The
+trigger is a sibling of the row inside a `group/approw` wrapper, revealed on
+hover or focus and always drawn where there is no hover; it and the open menu
+stop the presses a drag starts from, and it is not drawn mid-drag or on the
+drag ghost. The collapsed rail, the phone drawer and the phone tiles carry no
+row menu.
 
 Deleting a Bot is available on this page: the Bot's edit controls
 open `CrewEditorModal` in place, and its Danger pane deletes the
@@ -2644,8 +2664,9 @@ Profile uses the shared `Tablist` component with `labels="active"`: all four tab
 carry Lucide icons and accessible labels, while only the selected tab paints its
 word. The tabs are, in strip order, **Sessions**, **Schedules**, **Goals**, and
 **Profile** (the work first, the identity card last). The card opens on Sessions
-unless the opener names a tab (`openProfile(tab)`; today only the quiet-chat link
-calls it, and it asks for Sessions too). No
+unless the opener names a tab (`openProfile(tab)`: the quiet-chat link and a mate
+session's breadcrumb ask for Sessions; the side panel's send badge and the sidebar
+bot row menu ask for Profile). No
 tab carries a count, and there is no placeholder tab for a view that does not
 exist yet.
 
@@ -2771,7 +2792,13 @@ interval and, while it is on, "Each run uses credits. · up to 12 runs a day"
 (the daily bound, `wakesPerDay`), and its switch at the right (a switch state,
 never "Running", which read as work in progress beside the Bot's Idle);
 while it is on the interval picker (`HEARTBEAT_INTERVALS`, each option naming
-its daily bound) shows under the line. With no goal the switch is disabled and
+its daily bound) shows under the line, and under it **Only between**: two
+whole-hour pickers, the start (00:00 to 23:00) and the end (the hours after the
+start, up to 24:00), 00:00 to 24:00 by default. A start at or past the end moves
+the end to the hour after it, so the window is never empty, and the daily bound
+on the line and on each interval option counts only the wakes inside the window
+(`wakesPerDay(interval, from, to)`: 08:00 to 20:00 hourly reads "up to 12 runs a
+day"). With no goal the switch is disabled and
 the row says "Set a goal to turn these on.", as the check-ins do. The row reads
 and writes the goal record's `schedules` (`useMemberGoals`,
 `PUT /api/members/{slug}/goals/schedules`, one gateway-owned cron per switch,
@@ -3243,7 +3270,15 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   "Heartbeat (each run uses credits)", whose value when it turns on always
   names how often and the daily bound, the default too ("On, every 1 hr (up to
   24 runs a day)"), and "Every 1 hr (up to 24 runs a day)" for a changed
-  interval (`member_goals.wakes_per_day`: 48, 24, 12 or 6); the tool's description names each
+  interval (`member_goals.wakes_per_day`: 48, 24, 12 or 6 over the whole day, and
+  the wakes inside the Heartbeat's active hours when it has them, read off the
+  snapshot's `heartbeat_hours` (`change_card_catalog_kinds.HEARTBEAT_HOURS_KEY`) or
+  the goal card's `heartbeat.hours` -- the window is the Schedules tab's, never a
+  card field, so it is in neither `schedules` (the fields an Undo puts back) nor
+  what the conflict checks compare: `comparable_state` drops it for a check-ins
+  card, as it drops the whole `heartbeat` key for a goal card, so a window moved
+  between preview, apply and Undo refuses neither, and a card stored before the
+  window existed still undoes); the tool's description names each
   wake's credit cost too). One formatter writes the interval everywhere:
   `member_goals.interval_label` ("30 min", "1 hr", "2 hr", "4 hr") on the
   card, in the wake prompt and, through `interval_choices` /
@@ -3351,7 +3386,26 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   as 60), and its one schedule (`goal-heartbeat:<slug>`, removed with the
   Bot by `crew_removal._remove_goal_check_ins` like the others) runs on the
   clock's marks (`goal_reminder.cron_expr_for`: `*/30 * * * *`, `0 * * * *`,
-  `0 */2 * * *`, `0 */4 * * *`), never at the shared time of day.
+  `0 */2 * * *`, `0 */4 * * *`), never at the shared time of day. Its active
+  hours (`member_goals_hours.active_hours`), `active_from` (a whole hour, 0-23)
+  up to but not including `active_to` (1-24), in the zone the schedule runs in
+  (the record's timezone when it names one, else the gateway's default zone:
+  the host's unless one is configured), narrow that expression's hour field:
+  08:00 to 20:00 gives `*/30 8-19 * * *`,
+  `0 8-19 * * *`, `0 8-19/2 * * *` or `0 8-19/4 * * *`, so outside them no
+  wake is scheduled. The 2- and 4-hour steps count from the start (09:00 to
+  20:00 every 2 hr runs at the odd hours). A one-hour window is still a range
+  (`0 8-8/4 * * *`): a bare hour would get the cron store's daily jitter. The
+  whole day, 0 to 24 and the default, keeps the expressions above byte for
+  byte, so a Heartbeat without active hours keeps its schedule and run
+  history. A value that is not a whole hour in range, or a start not before
+  the end once the change is applied, is refused `invalid_active_hours`
+  (`member_goals_hours.hours_error`), and a
+  stored pair that is not a window reads as the whole day. The window does not
+  cross midnight, has no weekdays, and `set_check_ins` does not carry it: it is
+  set on the Schedules tab (decided 2026-11-13, docs/decisions). A host that
+  sleeps through a tick does not replay it: only a tick at most ten minutes
+  late runs late, once (`cron_service.schedule._skipped_cron_minute`).
   The floor and the default are a cost choice: each wake is a full model turn
   over the Bot's whole context, and a provider's prompt cache lives
   minutes, so no interval on the list finds the previous wake's cache warm and
@@ -3370,7 +3424,7 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   an unreadable card store counts as no card), the prompt drops new milestones
   from its next steps and says the card already waits on the user, so a wake
   does not propose a second card.
-  Changing the interval replaces that schedule. On the check-ins page the switch
+  Changing the interval or the active hours replaces that schedule. On the check-ins page the switch
   carries the line that each run uses credits with that interval's daily bound,
   and the interval picker shows under it while it is on, each option naming its
   own bound ("Every 1 hr · up to 24 runs a day"). Only the owner's schedules route and an applied
@@ -3383,7 +3437,11 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   (`mate_welcome.dispatch_hidden_turn`, `human_seen=False`,
   `mirror_reply_only=True`: a thread or channel linked to the chat gets only the
   wake's final reply, so a quiet wake posts nothing there)
-  built by `goal_reminder.heartbeat_prompt` from the current record. Right
+  built by `goal_reminder.heartbeat_prompt` from the current record; its cadence
+  sentence names the active hours when there are any
+  (`goal_reminder.active_hours_line`: "a wake every 1 hr between 08:00 and 20:00"),
+  because the gap across the quiet hours is what the Bot plans a hand-off
+  against. Right
   under the progress block, the prompt asks for `nothing_to_do` at once, with
   no text before it, when nothing can move forward. The rest of the prompt
   is written as principles: look at the goals, milestones and open work-ledger
@@ -3577,15 +3635,18 @@ slots to learn which thread it is, and a retired question looks its slot up by k
 that expires writes nothing to that log, so each record arms one timer per thread
 for its soonest open card's `expires_at` that reads the list again as a retired
 question does (after 60 s instead when a card is past its expiry but still open, or
-the append that emptied the list has not committed); the timer does not survive a
-gateway restart. The list
+the append that emptied the list has not committed). A timer does not survive a
+gateway restart, so once the restore has put the tabs back each thread idle since
+learns the session it last logged into (its newest crew-log unit, read off the
+loop) and has its list read again as a retired question does, which drops a card
+that expired while the gateway was down and arms the timer for the next one. The list
 reads the change-card store, and the settle runs on the serving loop, so each
 settle first awaits `CardStore.warm()` (the file and vault-key read in a worker
 thread); when warming fails nothing is recorded, so the last complete list stands
 rather than one missing the store's pending cards, and the cold store is never read on the loop (`test/test_crewmate_feed_cold_store.py`).
 A goal
-write while the thread has no live session (a milestones press between turns, a
-write after a restart) is held in `crewmate_feed._held_goals`, newest wins, and
+write before the feed knows the thread's session (no turn logged yet, or a
+restart still restoring the tabs) is held in `crewmate_feed._held_goals`, newest wins, and
 recorded on the thread's next growth, when its session is known. An
 entry is appended only when its snapshot differs from the last one this
 process recorded for that thread, so the check's own append records nothing.

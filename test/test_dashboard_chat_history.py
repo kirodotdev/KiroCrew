@@ -1338,6 +1338,153 @@ class TestTaskReviewTranscriptResume:
         assert _blocks_reads_session(state, request) is (mode == "temporary")
 
 
+class TestCronRunTranscriptResume:
+    """A sequence agent's or a stateless run's transcript reopens read-only.
+
+    Its metadata line names no session, so the tab would save every reply to a
+    second ``dashboard:`` file the delete witness refuses: the turn would run and
+    vanish. The reopened tab shows the transcript and refuses a reply with a
+    reason instead.
+    """
+
+    RUNS = [
+        pytest.param("cron:0a1b2c3d:writer", id="sequence-agent"),
+        pytest.param("cron:0a1b2c3d:1a2b3c4d", id="stateless-run"),
+    ]
+
+    @staticmethod
+    async def _seed(state, key: str, line: dict | None = None) -> str:
+        log = state.conversation_log
+        log.append(key, "user", "cron prompt")
+        log.append(key, "assistant", "cron result")
+        await asyncio.to_thread(log.update_metadata, key, line or {"origin": "cron"})
+        return log._path(key).stem
+
+    @staticmethod
+    def _rows(state, key: str) -> list[str]:
+        return [m["content"] for m in state.conversation_log.read_messages(key)]
+
+    @pytest.fixture
+    def ready(self, monkeypatch):
+        async def _ok(_request, **_kwargs):
+            return None
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_rewind.reject_if_kiro_unverified", _ok)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", RUNS)
+    async def test_a_reopened_run_transcript_refuses_a_reply_and_writes_nothing(
+        self, tmp_path, monkeypatch, ready, key
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        stem = await self._seed(state, key)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(f"/api/chat/slots/{stem}/resume", json={"key": stem})
+            assert resp.status == 200, await resp.text()
+            assert (await resp.json())["key"] == stem
+            slot = state.get_slot(stem)
+            assert state.serialize_slot(slot).get("cron_run_read_only") is True
+            assert slot.cron_run_read_only is True
+            before = list(slot.messages)
+
+            resp = await client.post("/api/chat", json={"slot": stem, "message": "follow-up"})
+            assert resp.status == 409, await resp.text()
+            assert (await resp.json())["code"] == "cron_run_read_only"
+
+            resp = await client.post(
+                f"/api/chat/slots/{stem}/rewind",
+                json={"at_message_index": 0, "content": "edited"},
+            )
+            assert resp.status == 409, await resp.text()
+            assert (await resp.json())["code"] == "cron_run_read_only"
+
+        assert slot.messages == before
+        assert slot.task is None
+        assert self._rows(state, key) == ["cron prompt", "cron result"]
+        assert self._rows(state, f"dashboard:{stem}") == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", RUNS)
+    async def test_a_turn_on_the_reopened_tab_runs_nothing(self, tmp_path, monkeypatch, key):
+        from kiro_crew.dashboard.chat_runner import _run_chat
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        stem = await self._seed(state, key)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(f"/api/chat/slots/{stem}/resume", json={"key": stem})
+            assert resp.status == 200, await resp.text()
+        slot = state.get_slot(stem)
+        assert state.serialize_slot(slot).get("cron_run_read_only") is True
+        state.broadcast_ws = MagicMock()
+
+        await _run_chat(state, slot, "run this here")
+
+        assert slot.messages[-1]["role"] == "error"
+        assert slot.messages[-1]["meta"]["notice"] == "cron_run_read_only"
+        assert any(c.args[0] == "chat_done" for c in state.broadcast_ws.call_args_list)
+        assert [m["role"] for m in slot.messages] == ["user", "assistant", "error"]
+        assert self._rows(state, key) == ["cron prompt", "cron result"]
+
+    @pytest.mark.asyncio
+    async def test_the_users_own_tab_named_like_a_run_stays_writable(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        async def _turn(_state, s, _message, **_kwargs):
+            s.append("assistant", "the answer")
+            s.append("done", "", "done")
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        own = "dashboard:cron_0a1b2c3d_writer"
+        await self._seed(state, own, {"title": "mine"})
+
+        with (
+            patch("kiro_crew.dashboard.chat_handlers._run_chat", new=_turn),
+            patch("kiro_crew.dashboard.chat_handlers._maybe_auto_title", new=AsyncMock()),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/cron_0a1b2c3d_writer/resume", json={"key": own}
+                )
+                assert resp.status == 200, await resp.text()
+                slot = state.get_slot("cron_0a1b2c3d_writer")
+                assert getattr(slot, "cron_run_read_only", False) is False
+                assert state.serialize_slot(slot).get("cron_run_read_only", False) is False
+                resp = await client.post(
+                    "/api/chat", json={"slot": "cron_0a1b2c3d_writer", "message": "follow-up"}
+                )
+                assert resp.status == 200, await resp.text()
+                await resp.text()
+
+        assert _save_slot_to_history(state, slot, force=True) is True
+        assert self._rows(state, own)[-2:] == ["follow-up", "the answer"]
+
+    @pytest.mark.asyncio
+    async def test_a_linked_job_transcript_is_not_marked(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        line = {"origin": "cron", "linked_session_key": "cron:0b1c2d3e"}
+        stem = await self._seed(state, "cron:0b1c2d3e", line)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(f"/api/chat/slots/{stem}/resume", json={"key": stem})
+            assert resp.status == 200, await resp.text()
+            assert (await resp.json())["key"] == "cron-0b1c2d3e"
+
+        slot = state.get_slot("cron-0b1c2d3e")
+        assert getattr(slot, "cron_run_read_only", False) is False
+        slot.append("user", "follow-up after resume")
+        slot.drain()
+        assert _save_slot_to_history(state, slot) is True
+
+
 # ── History key prefix handling ──
 
 

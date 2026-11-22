@@ -254,6 +254,7 @@ class _ChatSlot:
         "_fallback_slot_model",
         "_model_pick_gen",
         "_model_runtime_pick_gen",
+        "_turn_pick_gen",
         "_fallback_pick_gen",
         "_fallback_client_pick_epoch",
         "_refusal_fallback_primary",
@@ -344,6 +345,8 @@ class _ChatSlot:
         "executor",
         "instance_id",
         "remote_slot",
+        # A cron run's transcript reopened from History with nothing to save to.
+        "cron_run_read_only",
         "_turn_in_flight_generation",
         "_turn_in_flight_prompt",
         "_restored_turn_marker",
@@ -474,6 +477,7 @@ class _ChatSlot:
     executor: str
     instance_id: str
     remote_slot: str
+    cron_run_read_only: bool
     created_at: str
     _titled: bool
     _title_origin: str
@@ -538,6 +542,10 @@ class _ChatSlot:
     _pending_thread_parent: tuple[str, str, str] | None
     _model_pick_gen: int
     _model_runtime_pick_gen: int | None
+    #: The ``_model_pick_gen`` this slot's last turn ran under (stamped by the
+    #: turn's model settle), so a pick made since its session last ran a turn is
+    #: told from an older value. Runtime only, like the generation itself.
+    _turn_pick_gen: int
     _pending_memory_mode: str | None
     _app: str
     _human_seen: bool

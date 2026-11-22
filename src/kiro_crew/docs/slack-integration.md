@@ -144,6 +144,10 @@ With `slack.reactions_enabled` on, where Slack shows the bot's native thread sta
 while it is answered, removed when the reply lands (the reply is the done signal).
 A failed turn gets 😱.
 
+After each reply a small "Finished in 23s · ctx 8%" line shows how long the turn
+took and how full the context is. Set `slack.show_timing_footer` to `false` to hide
+it from the next reply on; choice buttons and the Link to Dashboard button still post.
+
 ## File attachments
 
 Slack ingests attachments on incoming messages and can upload local image references from completed replies, including a scheduled cron's result posted to Slack: an `![alt](/abs/path.png)` the reply embeds is uploaded as a native image into the same thread, limited to files inside the session's workspace. Outbound uploads are limited to 10 files, 10 MiB per file, and 25 MiB total per reply. A reference that cannot be sent is named in a short note in the thread rather than dropped.
@@ -167,6 +171,14 @@ there, each top-level DM message still starts its own thread session.
 
 Off by default, because turning it on routes your next DM to a different session
 than the previous one. Existing threads keep working either way.
+
+A button on the bot's Home tab whose `action_id` starts with `options_choice_`
+followed by a name rather than a bare number and does not contain `_done_`, and
+whose `value` starts with `action::`, starts a new thread in your DM with the
+bot, with the button's label as its first message. Such a turn does not join the
+DM's one session when `slack.dm_single_session` is on, and `!stop` or Slack's Stop
+button in its thread still stops it. A Home tab button is never marked as clicked,
+so each click starts another thread.
 
 ## Auto-connect new dashboard sessions
 

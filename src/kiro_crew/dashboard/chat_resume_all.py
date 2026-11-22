@@ -82,7 +82,7 @@ from kiro_crew.dashboard.chat_delivery import BACKGROUND_START_TASKS, START_BACK
 from kiro_crew.dashboard.chat_handlers import SlotContinueRefusal
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-from kiro_crew.dashboard.relay_archive import is_relay_archive
+from kiro_crew.dashboard.relay_archive import is_cron_run_read_only, is_relay_archive
 from kiro_crew.dashboard.slot_projection import summary_rows
 from kiro_crew.dashboard.state import (
     _log_task_exception,
@@ -152,8 +152,9 @@ def collect_interrupted_idle(
     construction is not in the payload at all, ``running`` (``turn_running``)
     and ``subagents_running`` must both be false, ``interrupted`` is
     ``is_turn_interrupted`` on the transcript and ``interrupted_stale`` is
-    ``is_interruption_stale``. Relay archives are skipped
-    first: they never run, and the sidebar leaves remote rows out of its count.
+    ``is_interruption_stale``. Relay archives and read-only cron run
+    transcripts are skipped first: they never run, and the sidebar leaves them
+    out of its count (``slotIsRemoteBound``).
 
     *crew_mode* is whether the pressing tab has the Crew Mode preview on
     (``crewModeEnabled``). Only then does the sidebar's ``crewModeView`` drop a
@@ -176,7 +177,7 @@ def collect_interrupted_idle(
     }
     crew_roots = _crew_roots(state) if crew_mode else {}
     for name, slot in slots:
-        if slot.key in under_construction or is_relay_archive(slot):
+        if slot.key in under_construction or is_relay_archive(slot) or is_cron_run_read_only(slot):
             continue
         # The chat page's own sessions only, as the sidebar lists them
         # (``isChatPageSurface``): a member's DM thread or a sub-agent row lives

@@ -56,6 +56,8 @@ def _unmeasurable_slice(monkeypatch: pytest.MonkeyPatch) -> None:
 _REAL_SLICE_PROBE = rs._read_agent_slice_tasks
 #: The genuine cost-log reader, bound the same way.
 _REAL_LEARNED_SETTLED = rs._read_learned_settled
+#: The genuine spawn-floor figure reader, bound the same way.
+_REAL_SPAWN_FLOOR_FIGURE = rs._read_spawn_floor_figure
 
 
 # ── _classify ────────────────────────────────────────────────────────────────
@@ -1410,6 +1412,30 @@ def test_an_unblocked_line_never_shows_a_gate_figure_below_the_bar(monkeypatch) 
         m = re.search(r"gate reads ([0-9.]+) GB.*?at least ([0-9.]+) GB", text)
         assert m, text
         assert float(m.group(1)) >= float(m.group(2)), text
+
+
+@pytest.mark.parametrize("settled_gb, reading_gb", [(0.82, 2.46875), (0.823, 2.474)])
+def test_the_verdict_its_figure_and_the_floor_line_agree_near_the_bar(
+    monkeypatch, tmp_path, settled_gb: float, reading_gb: float
+) -> None:
+    """A host reading within 0.005 GB of the bar (2.47 GB, then 2.473 GB): the
+    verdict the gate's inline path takes, the comparison of the returned figure
+    its off-loop path makes and the floor line all give the same answer."""
+    import kiro_crew.subagent as sa
+
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(f"MemAvailable: {round(reading_gb * 1024 * 1024)} kB\n", encoding="utf-8")
+    real = sa.check_memory_available
+    monkeypatch.setattr(
+        sa, "check_memory_available", lambda min_gb: real(min_gb=min_gb, path=str(meminfo))
+    )
+    monkeypatch.setattr(rs, "_read_spawn_floor_figure", _REAL_SPAWN_FLOOR_FIGURE)
+    monkeypatch.setattr(rs, "_read_learned_settled", lambda: {"kirocrew": settled_gb})
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    ok, figure = real(min_gb=reading.min_start_gb, path=str(meminfo))
+    assert reading.available_gb == figure
+    assert ok == (figure >= reading.min_start_gb)  # what the off-loop gate path compares
+    assert reading.blocked == (not ok)
 
 
 def test_a_remote_caller_takes_no_reading_and_is_never_blocked(monkeypatch) -> None:

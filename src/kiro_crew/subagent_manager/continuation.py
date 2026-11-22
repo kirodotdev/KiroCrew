@@ -1343,7 +1343,8 @@ class ContinuationCoordinator(ManagerComponent):
         was no sid to dispose). A backend whose store has no delete route here,
         a Claude session with no trusted recorded cwd, or a Codex session with no
         trusted recorded store answers ``False`` and the caller reports
-        ``not_disposed`` instead of ``released``.
+        ``not_disposed`` instead of ``released``. A KAS session answers
+        ``False`` too: its delete is queued by the prune, not here.
 
         Demoting the persisted source of truth matters: with the disk fallback in
         place, a stale ``keep=True`` would re-warm the continuable cache after
@@ -1354,6 +1355,7 @@ class ContinuationCoordinator(ManagerComponent):
         """
         # Not an ``_impl``, so it keeps this module's globals: import at call
         # time, which also keeps ``patch.object(subagent, ...)`` effective.
+        from ..agent_sdk.backends import ACP_BACKEND_KAS
         from ..agent_sdk.claude_transcripts import is_claude_provider_label
         from ..agent_sdk.codex_transcripts import is_codex_provider_label
         from ..subagent import _cleanup_session_files_sync, logger, update_state
@@ -1377,6 +1379,12 @@ class ContinuationCoordinator(ManagerComponent):
                 return bool(
                     _cleanup_session_files_sync(sid, provider_label, cwd=cwd, codex_home=codex_home)
                 )
+            if provider_label == ACP_BACKEND_KAS:
+                # A KAS record is deleted on a later cleanup tick, not here, and a
+                # continue may still resume it until then. The prune queues that
+                # delete once the run is due, in the same pass that removes the
+                # run folder a continue would resume from.
+                return False
             return bool(_cleanup_session_files_sync(sid, provider_label))
         except Exception:
             logger.debug("release_conversation: file cleanup failed", exc_info=True)

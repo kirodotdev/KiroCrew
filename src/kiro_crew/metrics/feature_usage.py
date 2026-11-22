@@ -19,6 +19,8 @@ counter                                        one increment per
 
 ``kirocrew.app.run_time``                      finished turn of an app's session,
                                                adds its seconds (``duration``)
+``kirocrew.app.credits``                       finished turn of an app's session
+                                               that billed credits, adds them
 ``kirocrew.app.present``                       installed app, once per UTC day
                                                (``status``, ``backend``)
 ``kirocrew.app.opened``                        app page mounted or ``openCommand``
@@ -77,6 +79,7 @@ APP_UPDATED = "kirocrew.app.updated"
 APP_UNINSTALLED = "kirocrew.app.uninstalled"
 APP_SESSION_STARTED = "kirocrew.app.session_started"
 APP_RUN_TIME = "kirocrew.app.run_time"
+APP_CREDITS = "kirocrew.app.credits"
 APP_PRESENT = "kirocrew.app.present"
 APP_OPENED = "kirocrew.app.opened"
 APP_FOREGROUND_TIME = "kirocrew.app.foreground_time"
@@ -485,6 +488,37 @@ def record_app_run_time(owning_app: object, duration_ms: object) -> None:
         )
     except Exception:  # telemetry must never break the measured path
         logger.debug("app run time emit failed", exc_info=True)
+
+
+def record_app_credits(owning_app: object, credits: object) -> None:
+    """Add one finished turn's credits to the app that owns its session.
+
+    *owning_app* is the trusted app of the session that ran the turn, as on
+    :func:`record_app_run_time`; empty or not a string records nothing. Zero,
+    negative or non-finite credits add nothing: a backend that bills in dollars
+    leaves credits at 0, and a recorded 0 would read as a measured free turn.
+    Never raises.
+    """
+    if not isinstance(owning_app, str) or not owning_app:
+        return
+    if isinstance(credits, bool) or not isinstance(credits, (int, float)):
+        return
+    if not 0 < credits < math.inf:
+        return
+    try:
+        from kiro_crew.metrics.provider import get_recorder
+
+        get_recorder().counter(
+            APP_CREDITS,
+            credits,
+            unit="credit",
+            attrs={
+                "app": app_public_id(owning_app),
+                "entity_version": app_public_version(owning_app),
+            },
+        )
+    except Exception:  # telemetry must never break the measured path
+        logger.debug("app credits emit failed", exc_info=True)
 
 
 #: Whether an installed app is enabled, on ``kirocrew.app.present``.

@@ -1252,8 +1252,8 @@ the finding: an unnamed site records `user`.
 | `openai_compat.api_completions` | API request body | `user`, or `app` when the request carries one |
 | `chat_regenerate` (regenerate, edit-resend) | the user's own message, re-run; for Regenerate, the gateway prompt row its reply answers (a workflow follow-up, a heartbeat prompt, the sub-agent synthesis) when there is one | `user`, or `app` when the request carries one |
 | `chat_rewind` | the user's own message, rewound | `user`, or `app` when the request carries one |
-| queue drain (`_finish_queue_cycle`) | the consumed entry's enqueue-time `kind`, else an actor stamped on the entry | `cron`, `subagent`, `app` (an MCP app message), `resource` (a resource wake), `autonudge` (a re-routed automation notice), the stamped actor, else `user` |
-| queue drain, a synthetic recovery | the original turn's actor, stamped at requeue (`meta.turnActor`) | whatever that turn's was |
+| queue drain (`_finish_queue_cycle`) | the consumed entry's enqueue-time `kind` or automation-steer mark, else an actor stamped on the entry | `cron`, `subagent`, `app` (an MCP app message), `resource` (a resource wake), `autonudge` (a re-routed automation notice, or a requeued work-ledger wake), the stamped actor, else `user` |
+| queue drain, a synthetic recovery | the original turn's actor, stamped at requeue (`meta.turnActor`); a restored turn's retry also keeps `_turn_provenance_restored` | whatever that turn's was |
 | `handlers/messaging` cron branch | a cron notification | `cron` |
 | `slack/gateway` cron branch | a cron notification | `cron` |
 | `_fire_dashboard_nudge` (`slack/gateway_runtime/nudge_dashboard_fire.py`) | a nudge/monitor wake (`_directive_self_wake`) | `autonudge` |

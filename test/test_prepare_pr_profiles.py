@@ -654,6 +654,10 @@ def test_scoped_frontend_gate_keeps_the_lanes_npm_test_used_to_carry():
         )
 
 
+# A whole-tree scan: CI's surface selector and the related-set checks read every
+# test file, about 37 s of CPU alone and 86-90 s on a loaded shard, so the
+# suite-wide 120 s is no margin. The tree_scan group gives it that group's 300 s.
+@pytest.mark.xdist_group(name="tree_scan_scoped_runner_self_test")
 def test_scoped_runner_self_test_passes():
     """The runner's escalations are its whole contract, so CI runs its self-test.
 

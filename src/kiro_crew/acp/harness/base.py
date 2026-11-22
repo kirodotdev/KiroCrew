@@ -878,13 +878,15 @@ class HarnessAdapter(LaunchAdapter):
         mcp_servers: list[dict[str, Any]],
         *,
         zero_tools: bool = False,
+        builtin_tools: tuple[str, ...] | None = None,
         stub_token: str = "",
     ) -> dict[str, Any] | None:
         """The ``_meta`` entries this session's request carries, built after its array, or None.
 
         *stub_token* is the token the runtime minted to name THIS session's brokered
         servers, for a host that also hands the session's identity to the tools it
-        runs.
+        runs. *builtin_tools* is the mirror's ``SessionProjection.builtin_tools``, the
+        harness built-ins the session keeps (``None`` for all of them).
         """
         return None
 

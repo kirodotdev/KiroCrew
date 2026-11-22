@@ -1,7 +1,7 @@
 /** The three list lanes: the conductor lane (sessions nested under the one that
  *  opened them), the flat lane (date segments, no folders) and the folder tree,
- *  with the drag overlay and the chat-pane drop target the flat and tree lanes
- *  share. */
+ *  with the drag overlay and the chat-area drop targets (the open chat, or each
+ *  Split View pane) the flat and tree lanes share. */
 import { Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { OverlayPortal } from '../../components/overlayRoot'
@@ -17,7 +17,7 @@ import { SessionRowWindowContext } from '../chat/sessionRowWindow'
 import { slotActivityTs } from '../chat/sessionOrder'
 import { i18nT } from '../../i18n/t'
 import { sidebarCollision } from './dnd/collision'
-import { ChatPaneDropZone, RootDropHint, SortableFolderBlock, FolderDragGhost, SessionDragGhost } from './dnd/targets'
+import { ChatPaneDropZone, SplitPaneDropZones, RootDropHint, SortableFolderBlock, FolderDragGhost, SessionDragGhost } from './dnd/targets'
 import type { Slot } from './types'
 import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import { citedCreatorOf } from './conductor'
@@ -73,7 +73,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
     folderDragWithheld, folderNameMatchIds, folderReorderable, folderSubtrees, folders,
     handleSidebarDragCancel, handleSidebarDragEnd, handleSidebarDragOver, handleSidebarDragStart,
     heldDisplacedRef, heldLane, hiddenByContainer, hoverPinRef, isActiveRow, kindSections, laneRowWindow, laneScrollMemory,
-    laneSlots, lineage, listNarrowed, localGroupHeader, localSlots, onDropSessionRef, pinned,
+    laneSlots, lineage, listNarrowed, localGroupHeader, localSlots, onDropSessionRef, onShowSessionInPane, pinned,
     renderCrewGroups, renderFolderBlock, renderFolderCreateError, renderHiddenReveal,
     renderOlderSessionsHint, renderSessionRow, renderStaleSection, reportDndActive, rootFolderIds,
     rootFolders, rowAnimEnabled, searchHeader, searchLaneActive, searchRanked, setLaneScrollEl, shownCrewGroups, shownCrewRowCount,
@@ -95,6 +95,12 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
       memoryMode: localSlots.find(x => x.key === activeDrag.id)?.memory_mode,
     })
     : null
+  // The drag's target in the chat area, flat and tree lanes alike: in Split View
+  // one per pane, otherwise the open chat's composer.
+  const chatDropZone = !chatDropTarget || activeDrag?.type !== 'session' ? null
+    : onShowSessionInPane
+      ? <SplitPaneDropZones host={chatDropTarget} draggedKey={activeDrag.id} onShow={onShowSessionInPane} />
+      : onDropSessionRef && createPortal(<ChatPaneDropZone refusal={draggingRefRefusal} />, chatDropTarget)
   // True while dragging a folder that currently has a parent — the only case
   // where "drop on the root lane to move to top level" applies.
   const draggingNestedFolder = activeDrag?.type === 'folder' && !!folders.find(f => f.id === activeDrag.id)?.parent_id
@@ -388,8 +394,9 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
           // Inactive without folders (the toggle is hidden then too), so a
           // persisted flat preference can never strand the user.
           //
-          // Its DndContext carries EXACTLY ONE target: the chat pane. No
-          // SortableContext and no folder droppables are registered, so
+          // Its DndContext carries the chat-area targets (the chat pane, or
+          // each pane in Split View). No SortableContext and no folder
+          // droppables are registered, so
           // dragging a session into the open chat works here just as it does in
           // the tree, while row order stays a pure function of the sort key —
           // there is nothing for a drop inside the lane to land on. (Order is
@@ -401,11 +408,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
             measuring={dndMeasuring}
             onDragStart={handleSidebarDragStart} onDragEnd={handleSidebarDragEnd} onDragCancel={handleSidebarDragCancel}>
             <DndActiveProbe report={reportDndActive} />
-            {chatDropTarget && onDropSessionRef && activeDrag?.type === 'session'
-              && createPortal(
-                <ChatPaneDropZone refusal={draggingRefRefusal} />,
-                chatDropTarget,
-              )}
+            {chatDropZone}
             <SessionRowWindowContext.Provider value={laneRowWindow.rowWindow}>
             <motion.div ref={setLaneScrollEl} onScroll={laneScrollMemory.onScroll} layoutScroll={rowAnimEnabled} className={`${LIST_BODY_CLS} flex flex-col`} style={{ scrollbarWidth: 'none' }} data-testid="flat-view-lane">
               {/* Flat view renders no folder headers, so the per-folder mount
@@ -520,11 +523,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                *  React portals preserve context, and useDroppable measures the
                *  node where it actually renders. Mounted only during a session
                *  drag, and only when a pane and a handler exist. */}
-              {chatDropTarget && onDropSessionRef && activeDrag?.type === 'session'
-                && createPortal(
-                  <ChatPaneDropZone refusal={draggingRefRefusal} />,
-                  chatDropTarget,
-                )}
+              {chatDropZone}
               {/* Root lane is the fallback drop target: dropping a session on
                *  empty space (not over a folder) ungroups it (folderId: null). */}
               <DndDroppable id="root-lane" data={{ type: 'folder-drop', folderId: null }}>

@@ -218,7 +218,12 @@ planes live, this dashboard among them, so driving one would let the agent reach
 an interface it is not supposed to operate. Only public HTTP(S) targets open,
 plus the exact `host:port` origins you list under **Settings → Browser → Local
 preview origins** (a dev server you want it to check, say). The dashboard's own
-port is refused even when listed.
+port is refused even when listed, and so is every other non-loopback origin
+(scheme, host and port) the gateway trusts as itself at the time, such as its
+`dashboard.url` (and that host on the dashboard's port), a connected tunnel, its
+tailnet name or a `KIROCREW_CORS_ORIGINS` entry. An address that reaches the
+dashboard without being one of those (a private DNS alias, say) is not
+recognised.
 
 The gate does not resolve DNS names. A hostname that later resolves to a private
 address can therefore pass this check, so a successful navigation is not proof

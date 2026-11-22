@@ -858,6 +858,12 @@ def list_kinds() -> list[dict[str, Any]]:
     ]
 
 
+#: Where a ``crewmate.check_ins`` snapshot keeps the Heartbeat's active hours:
+#: the card reads them for its daily bound and never writes them, so they are
+#: neither a field below nor part of what the conflict checks compare
+#: (``dashboard.change_cards_readers.comparable_state``).
+HEARTBEAT_HOURS_KEY = "heartbeat_hours"
+
 #: The fields a ``crewmate.check_ins`` card may set.
 CHECK_IN_FIELDS = (
     "daily",

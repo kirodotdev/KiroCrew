@@ -97,6 +97,7 @@ like `_bg`; other unrecognized session keys retain the legacy `slack` fallback.
 - **Read paths pin the segment directory:** the read-side readers (`recent`, `verify_integrity`) open `security_events.d` itself through `_open_segment_dir` before enumerating; a directory that refuses to pin — planted link, non-directory, or vanished — contributes NO segments to any read (fail closed; a missing dir was already "no segments"), instead of being walked by name. Enumeration stays the bounded `_SEGMENT_SCAN_CAP` walk on every platform, but where the pin carries a descriptor it goes through `os.scandir(pin.fd)` — a path swap can neither redirect nor empty the scan (immune to the swap-mid-read-then-restore shape) — and only the identity-pin platform revalidates the directory's identity after the walk, failing closed on a mismatch. Where directory descriptors exist, every per-file open (`_open_segment` with `dir_fd`) also resolves RELATIVE to the pinned descriptor, so a swap after enumeration still cannot redirect a read; Windows has no directory descriptors, so its pin revalidates the directory's `lstat` `(st_dev, st_ino)` identity before each child open instead, with the residual between revalidations bounded by the rotation-time repair (`_ensure_segment_dir` unlinks a linked segment dir at rotation/prune). The per-file funnel (`O_NOFOLLOW`/`O_NONBLOCK`, descriptor `fstat` regular-file check, name↔descriptor identity) is unchanged, and the LIVE log is never pinned: its writer follows an operator's symlink, so its readers must too. Because the swap is itself tampering, `verify_integrity(detailed=True)` reports a THIRD outcome — `history_verifiable=False` with a `reason` — when the directory refused to pin (planted link, not a directory, an actual directory the OS refused to open, or one that vanished between the pin's `lstat` and its open — every pin failure except ABSENCE confirmed at first sight) or was replaced mid-verification, and the CLI (`kirocrew security verify`) and `GET /api/sel/verify` surface it (`Audit history UNVERIFIABLE` / `integrity: "unverifiable"`) instead of reporting intact over the live log alone; the CLI derives its live-log clause from the same pass's counts, so a tampered live log is reported as such rather than "intact". A directory that simply does not exist yet (fresh install) stays verifiable.
 - Verification: `verify_integrity()` walks the chain and reports tampered entries
 - **A chain tip that cannot be read is unknown, never genesis.** Only an absent or empty log, or one with no parseable record, starts the chain at `""`. When the log is present but cannot be opened (held open without sharing, `EACCES`), `_read_last_hash` raises. Construction still succeeds: it logs a warning and marks the tip unknown, and the first append reads the tip again under its locks. A re-anchor whose read raises keeps the live-log identity it compared against, so the next append reads the tip again too. While the read keeps failing, the append fails like any unwritable audit: a `critical=True` audit is denied, and a best-effort batch is dropped and counted in `dropped_events` (the writer retries only a transient error, and `EACCES`, which a Windows sharing violation also raises, is not one).
+- **Construction records the live log's identity before it reads the tip.** The two reads take no cross-process lock, so another process can append between them. Identity first, that append leaves the recorded `(st_dev, st_ino, st_size)` older than the file, and the first append's size check re-reads the tip under the chain lock. Tip first, the identity would already count a record the tip does not know, and the first append would chain off a stale `prev_hash` that `kirocrew security verify` reports as tampering. A construction with nothing overlapping reads the tip once.
 - Append-only: no in-place edits; pruning rewrites with chain rebuild
 - **Second protocol anchored on this key — domain-separated:** `session_pid_sig.py`
   authenticates the `session_pid_<pid>.txt` -> session-key mapping consumed by
@@ -211,6 +212,7 @@ Every process that writes the log can rotate and trim it, each at its own moment
 | TaskRunner | `tool_invocation` rows for permission decisions during decomposition and step execution | `task_planner.py`, `tool_permission.py` (`TaskrunnerRows`, through `task_executor.py`'s `sel`) |
 | Subagent | Permission requests during subagent execution | `tool_permission.py` (`SubagentRows`, through `subagent.py`'s `sel`) |
 | Background tasks | Permission requests via `_resolve_permission()` | `llm_helpers_parts/tool_approval.py` |
+| MCP tool calls | the `tool_invocation` rows the shared audit wrapper writes for MCP tool calls (`source=mcp`, `operation` = tool name, `outcome` completed / failed, `error` `validation_failed` / `execution_failed`); an `execution_failed` answer that ends in ` [code]` or ` [code, field=...]`, where the code is a lowercase letter then up to 63 lowercase letters, digits or `_` (the work-ledger tools' documented codes, e.g. `crew_log_off`), records that token as `metadata.code`. Only the answer's tail is read, so any answer text that ends this way (a caller-chosen field value included) records its token; no other part of the answer is logged | `mcp_shared_calls.py` (`call_tool_with_logging`) |
 | MCP core tools | `spawn_run`, `learn_add`, `task_run` calls and outcomes | `mcp_core.py` |
 | MCP cron tools | `cron_add`, `cron_remove`, etc. calls and outcomes | `mcp_cron.py`, `mcp_cron_vet.py` |
 | Session directives | Structured monitor create/update/stop application outcomes; every refusal records `denied` rather than `success` | `dashboard/session_directive_apply.py` |
@@ -240,11 +242,20 @@ Every process that writes the log can rotate and trim it, each at its own moment
 
 ```text
 kirocrew security events [-n LIMIT] [--since AGE_OR_TIME] [--until AGE_OR_TIME]
+                         [--operation V] [--outcome V] [--source V] [--caller V]
 kirocrew security verify
 ```
 
 `events` defaults to 20 rows. `--since` and `--until` accept relative ages such
 as `30m`, `2h`, and `7d`, or ISO 8601 dates/timestamps.
+
+`--operation`, `--outcome`, `--source` and `--caller` each keep a row only when its
+`operation`, `outcome`, `source` or `caller_identity` equals the value exactly (no
+pattern); several flags must all match. The time window applies first, then the field
+filters over at most 50,000 of the newest rows in that window (`sel_filter.CLI_SCAN_LIMIT`),
+then `-n` cuts the result. A scan that used the whole budget without filling `-n` prints a
+note on stderr: set an earlier `--until` to reach older rows. With no field flag, the
+log's own `recent` answers as before.
 
 ## Thread Safety
 

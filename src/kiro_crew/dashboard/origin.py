@@ -136,6 +136,39 @@ def is_direct_local_request(request: web.Request) -> bool:
     return not any(h in request.headers for h in _PROXY_FORWARD_HEADERS)
 
 
+def is_host_forwarded_request(request: web.Request) -> bool:
+    """Return ``True`` for a port forward the container's host delivered to loopback.
+
+    Some development containers run their SSH server on the host rather than in
+    the container. An ``ssh -L`` forward to the container's ``127.0.0.1`` then
+    arrives from the host's end of the container's link-local link (a peer such
+    as ``169.254.255.193``), not from loopback, so :func:`is_direct_local_request`
+    refuses it although it is the same SSH forward that arrives from loopback
+    on an ordinary host.
+
+    Admitted only when the socket's own address is loopback and the peer is
+    link-local. The kernel drops a packet for ``127.0.0.0/8`` that arrives on a
+    real interface, so a non-loopback peer on a loopback socket exists only where
+    the host itself routes into the container's loopback: the same host-level
+    position as SSH to this machine, which :func:`is_direct_local_request`
+    already accepts. Forwarding headers and the Session Manager listener are
+    refused exactly as there.
+
+    For app web origins only. The secret-reveal and config-write gates keep
+    :func:`is_direct_local_request`.
+    """
+    if is_ssm_request(request) or any(h in request.headers for h in _PROXY_FORWARD_HEADERS):
+        return False
+    transport = request.transport
+    sockname = transport.get_extra_info("sockname") if transport is not None else None
+    if not isinstance(sockname, tuple) or not sockname or not is_loopback(str(sockname[0])):
+        return False
+    try:
+        return ipaddress.ip_address(request.remote or "").is_link_local
+    except ValueError:
+        return False
+
+
 def is_proxied_request(request: web.Request) -> bool:
     """Return ``True`` when ``request.remote`` is a PROXY rather than the client.
 

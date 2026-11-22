@@ -283,6 +283,41 @@ def kas_runs_here(config: Any) -> bool:
     return False
 
 
+def kiro_cli_runs_anywhere(config: Any) -> bool:
+    """Whether any configured harness choice spawns kiro-cli. In memory.
+
+    The main and crewmate backends, a Bot's own pin, and the members of an enabled
+    ``agent.acp_failover`` chain. A choice runs kiro-cli when it is Kiro CLI, or KAS
+    served through kiro-cli's relay (``agent.kas_bundle`` off). A stored value is
+    read as written, so a pin that would land elsewhere still counts, and a Bot that
+    :func:`kas_runs_here` moves onto KAS counts too: the answer errs toward keeping
+    kiro-cli maintained. Never raises on a missing field.
+    """
+    from kiro_crew.acp_failover import failover_policy
+
+    agent = getattr(config, "agent", None)
+    relay = not getattr(agent, "kas_bundle", False)
+    chosen: list[object] = [
+        getattr(agent, "acp_backend", ""),
+        getattr(agent, "member_acp_backend", ""),
+    ]
+    for crew in list(getattr(config, "agents", {}) or {}):
+        pin = crewmate_pin_for(config, str(crew))
+        if pin is not None:
+            chosen.append(_backends.backend_from_stored(pin.stored))
+    policy = failover_policy(getattr(agent, "acp_failover", {}))
+    if policy.enabled:
+        chosen.extend(_backends.backend_from_stored(name) for name in policy.chain)
+    if any(
+        backend == _backends.ACP_BACKEND_KIRO or (relay and backend == _backends.ACP_BACKEND_KAS)
+        for backend in chosen
+    ):
+        return True
+    # A Bot that lands on KAS without choosing it (a worker spec KAS must carry, a pin
+    # to a harness Bots cannot run on) still runs through kiro-cli's relay.
+    return relay and kas_runs_here(config)
+
+
 def _note_pin_fallback(crew: str, pinned: str, landed: str) -> None:
     """Say once per process per Bot and harness where its pin runs instead (H3, H17)."""
     with _VERDICT_LOCK:

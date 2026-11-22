@@ -7,7 +7,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { AppApiProvider, BROWSER_MEDIA_PATH, useBrowserMedia } from '../app-sdk/index'
 
-const PLAYING = { kind: 'video', paused: false, ended: false, currentTime: 12, duration: 200, volume: 1, muted: false }
+const PLAYING = { kind: 'video', paused: false, ended: false, endId: null, currentTime: 12, duration: 200, volume: 1, muted: false }
 
 let bodies: Record<string, unknown>[]
 let answer: () => Response
@@ -51,8 +51,10 @@ describe('useBrowserMedia', () => {
     ])
   })
 
-  it('calls onEnded once per ending, however many polls see it', async () => {
-    let state = { ...PLAYING }
+  /** Mounts the hook with an `onEnded` that records each call's `currentTime`, and a
+   *  route that answers whatever `setState` last set. */
+  async function mountEnded(first: Record<string, unknown>) {
+    let state = first
     answer = () => new Response(JSON.stringify({ ok: true, session_key: 'app-tunes-1', media: state }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     const ended: number[] = []
     const wrapper = ({ children }: { children: ReactNode }) =>
@@ -61,18 +63,52 @@ describe('useBrowserMedia', () => {
       () => useBrowserMedia('app-tunes-1', { onEnded: m => ended.push(m.currentTime) }),
       { wrapper },
     )
-    await waitFor(() => expect(result.current.media).toEqual(PLAYING))
+    await waitFor(() => expect(result.current.media).toEqual(first))
+    const read = async (next: Record<string, unknown>) => {
+      state = next
+      await act(async () => { await result.current.refresh() })
+    }
+    return { ended, read }
+  }
+
+  it('calls onEnded once per ending the tab counted, however many polls see it', async () => {
+    const { ended, read } = await mountEnded({ ...PLAYING })
     expect(ended).toEqual([])
-    state = { ...PLAYING, paused: true, ended: true, currentTime: 200 }
-    await act(async () => { await result.current.refresh() })
-    await act(async () => { await result.current.refresh() })
+    await read({ ...PLAYING, paused: true, ended: true, endId: 'd0c:1', currentTime: 200 })
+    await read({ ...PLAYING, paused: true, ended: true, endId: 'd0c:1', currentTime: 200 })
     expect(ended).toEqual([200])
     // The next song plays and ends: a second call.
-    state = { ...PLAYING, currentTime: 1 }
-    await act(async () => { await result.current.refresh() })
-    state = { ...PLAYING, paused: true, ended: true, currentTime: 180 }
-    await act(async () => { await result.current.refresh() })
+    await read({ ...PLAYING, endId: 'd0c:1', currentTime: 1 })
+    await read({ ...PLAYING, paused: true, ended: true, endId: 'd0c:2', currentTime: 180 })
     expect(ended).toEqual([200, 180])
+    // A navigation counts again from one under another document's id.
+    await read({ ...PLAYING, currentTime: 3 })
+    await read({ ...PLAYING, paused: true, ended: true, endId: 'e1f:1', currentTime: 90 })
+    expect(ended).toEqual([200, 180, 90])
+  })
+
+  it('calls onEnded when the site took the source away at the end', async () => {
+    // YouTube's element after a song: paused at 0, no duration, never `ended`
+    // itself. The tab counted the ending as it happened.
+    const { ended, read } = await mountEnded({ ...PLAYING })
+    await read({ ...PLAYING, paused: true, ended: false, endId: 'd0c:1', currentTime: 0, duration: null })
+    await read({ ...PLAYING, paused: true, ended: false, endId: 'd0c:1', currentTime: 0, duration: null })
+    expect(ended).toEqual([0])
+  })
+
+  it('does not call onEnded for an element the tab did not count as ending', async () => {
+    // An advert ending on the same page before the song: `ended` for a moment,
+    // dropped by the tab once the song plays, so no `endId` moves.
+    const { ended, read } = await mountEnded({ ...PLAYING })
+    await read({ ...PLAYING, paused: true, ended: true, currentTime: 15, duration: 15 })
+    await read({ ...PLAYING, currentTime: 1 })
+    expect(ended).toEqual([])
+  })
+
+  it('calls onEnded once for media already ended when the page mounts', async () => {
+    const { ended, read } = await mountEnded({ ...PLAYING, paused: true, ended: true, endId: 'd0c:4', currentTime: 200 })
+    await read({ ...PLAYING, paused: true, ended: true, endId: 'd0c:4', currentTime: 200 })
+    expect(ended).toEqual([200])
   })
 
   it('reports the route refusal code', async () => {

@@ -37,6 +37,7 @@ import { NAV_ITEMS } from './navItems'
 import { surfaceLabel } from '../../surfaces/registry'
 import { NavToggle, SortableAppNavRow } from './appRail'
 import { NavItem } from './navRow'
+import { MateRowMenu, mateNavId } from './mateRowMenu'
 
 /** Whether the dock's Mates group is unfolded past `DOCK_MATES_LIMIT`,
  *  persisted like the Apps list's `mc-apps-expanded`. */
@@ -134,7 +135,7 @@ function MateNavItem({ m, ...props }: { m: MemberRosterRow } & Omit<ComponentPro
   return (
     <NavItem
       {...props}
-      navId={`mate-${m.slug}`}
+      navId={mateNavId(m)}
       path={`/members?member=${encodeURIComponent(m.name)}`}
       label={crewDisplayName(m)}
       icon={<CrewAvatar seed={m.name} avatar={(m as { avatar?: unknown }).avatar} size={20} working={running ? 'subtle' : undefined} />}
@@ -264,6 +265,26 @@ export function DockMatesSection({ collapsed, isMobile, onNavigate, onDragActive
     },
   })
 
+  // "Remove from the sidebar" on a row's menu: the dock's own unstar, written
+  // the way `reorder` writes. It zeroes `star_order` as the server does, so the
+  // dock order and its drag writes never read a slot the server has cleared.
+  const unstar = useMutation({
+    mutationFn: (m: MemberRosterRow) => api.updateKirocrewAgent(m.name, { starred: false }),
+    onMutate: async (m) => {
+      await queryClient.cancelQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+      queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, rows =>
+        rows?.map(r => (r.name === m.name ? { ...r, starred: false, star_order: 0 } : r)))
+    },
+    // Put the row back where it was; the notice says why it came back.
+    onError: async (_err, m) => {
+      await queryClient.cancelQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+      queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, rows =>
+        rows?.map(r => (r.name === m.name ? { ...r, starred: m.starred, star_order: m.star_order } : r)))
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY }),
+  })
+  const removeFromDock = unstar.mutate
+
   const onDragStart = useCallback((e: DragStartEvent) => {
     if (reorder.isPending || reorderInFlight.current) return
     setDragId(String(e.active.id))
@@ -287,13 +308,26 @@ export function DockMatesSection({ collapsed, isMobile, onNavigate, onDragActive
     ? <DockMatesNotice collapsed={collapsed} isMobile={isMobile} message={i18nT('components.matesDock.load_failed')} report={reportForError(loadError)} testId="dock-mates-load-error" onDismiss={loadNotice.dismiss} />
     : reorder.isError
       ? <DockMatesNotice collapsed={collapsed} isMobile={isMobile} message={i18nT('components.matesDock.reorder_failed')} report={reportForError(reorder.error)} testId="dock-mates-reorder-error" onDismiss={() => reorder.reset()} />
-      : null
+      : unstar.isError
+        ? <DockMatesNotice collapsed={collapsed} isMobile={isMobile} message={i18nT('components.matesDock.unstar_failed')} report={reportForError(unstar.error)} testId="dock-mates-unstar-error" onDismiss={() => unstar.reset()} />
+        : null
 
   if (ordered.length === 0) return notice
 
   const header = NAV_ITEMS.find(n => n.id === 'members')
   const row = (m: MemberRosterRow) => (
     <MateNavItem m={m} active={open === m.name} collapsed={collapsed} onClick={onNavigate} />
+  )
+  // A list row: on the expanded desktop rail it carries the "..." menu as a
+  // sibling of the row, as navRail.tsx's `renderAppRow` carries the pop-out
+  // action; the drag ghost stays the bare `row()`. Not offered mid-drag.
+  const listRow = (m: MemberRosterRow) => (
+    !collapsed && !isMobile ? (
+      <div className="relative group/approw [&>.nav-item]:pr-9" data-dock-mate-row={mateNavId(m)}>
+        {row(m)}
+        {!dragId && <MateRowMenu m={m} onRemove={removeFromDock} />}
+      </div>
+    ) : row(m)
   )
   const dragged = dragId ? ordered.find(m => m.name === dragId) : undefined
 
@@ -312,12 +346,12 @@ export function DockMatesSection({ collapsed, isMobile, onNavigate, onDragActive
         <SortableContext items={sortableRows.map(m => m.name)} strategy={verticalListSortingStrategy}>
           {sortableRows.map(m => (
             <div key={m.name} role="presentation" data-testid={`dock-mate-${m.slug}`}>
-              <SortableAppNavRow id={m.name}>{row(m)}</SortableAppNavRow>
+              <SortableAppNavRow id={m.name}>{listRow(m)}</SortableAppNavRow>
             </div>
           ))}
         </SortableContext>
         {staticRows.map(m => (
-          <div key={m.name} role="presentation" data-testid={`dock-mate-${m.slug}`}>{row(m)}</div>
+          <div key={m.name} role="presentation" data-testid={`dock-mate-${m.slug}`}>{listRow(m)}</div>
         ))}
         <DragOverlay>{dragged ? row(dragged) : null}</DragOverlay>
       </DndContext>

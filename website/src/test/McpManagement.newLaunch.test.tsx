@@ -288,7 +288,8 @@ describe('a row paused by an added launch', () => {
     // The same Before/After the page shows for any changed launch.
     expect(within(details).getByText(M('details_approved'))).toBeTruthy()
     expect(within(details).getByText(M('details_new'))).toBeTruthy()
-    expect(pres(details)).toEqual(['/opt/alpha --one', '/opt/alpha --one\n/opt/alpha --two'])
+    // An added launch is drawn on its own, so its env keys sit under its command.
+    expect(pres(details)).toEqual(['/opt/alpha --one', '/opt/alpha --one', '/opt/alpha --two'])
 
     fireEvent.click(approve)
     await waitFor(() => expect(setStub).toHaveBeenCalledWith('alpha-mcp', true, 'pinned-identity'), { timeout: 5000 })

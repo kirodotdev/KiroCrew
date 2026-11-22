@@ -1117,10 +1117,10 @@ const { media, error, busy, play, pause, seek, setVolume } = sdk.useBrowserMedia
 
 | Member | Does |
 |---|---|
-| `media` | the playing element's state: `kind`, `paused`, `ended`, `currentTime`, `duration` (null when unknown), `volume` (0 to 1), `muted`; null before the first answer |
+| `media` | the playing element's state: `kind`, `paused`, `ended` (true once the tab counted an ending, also one the site answered by taking the source away, until something plays), `currentTime`, `duration` (null when unknown), `volume` (0 to 1), `muted`; null before the first answer |
 | `error` | the last refusal's code: `no_tab` (no tab open for that session yet), `no_media` (no `<video>` or `<audio>` on the page), `redirect_refused` (the page left your approved sites; it was moved to `about:blank`), `not_app_browser`, `not_declared`, `policy_denied` |
 | `play()`, `pause()`, `seek(seconds)`, `setVolume(0..1)`, `refresh()` | one request each: a `POST` per button; `refresh`, the first read and each poll are a `GET` that changes nothing |
-| `onEnded(media)` (option) | called once each time an answer first shows `ended: true`; again only after the element plays and ends anew. A song that has already ended when the page mounts counts once |
+| `onEnded(media)` (option) | called once for each ending the tab counted; again only after something plays and ends anew. A song that has already ended when the page mounts counts once |
 
 For continuous play, poll and let the ending pick the next song:
 
@@ -1162,9 +1162,18 @@ async def on_media_ended(ctx, event):
 The gateway calls it once per ending, whether or not your page is open: after your
 agent's first successful `browser` op in a slot, it reads that tab's media state every 3
 seconds (the read `useBrowserMedia` makes, skipped while the browser is busy or the
-person has taken the tab over) and calls your hook when an element newly shows
-`ended`. The same ending is not reported twice; a new song that plays and ends is a new
-call. The hook runs in the gateway like your other hooks, with the same `ctx`; an async
+person has taken the tab over) and calls your hook for each new ending the tab counted.
+The same ending is not reported twice; a new song that plays and ends is a new call.
+
+The tab counts an ending as it happens, so neither the page nor the gateway has to read
+at that moment: the element's `ended` event, or its source going away within 2 seconds
+of the end (YouTube removes the source when a song ends, leaving the element paused at
+0 with no duration, and `duration` in the event is then `null`). An ending counts once
+nothing plays on the same page for 3 seconds after it, so an advert that hands over to
+the video on the same page is not one, and the reports arrive up to that much later.
+The page moving on to another address and playing there (the site's own autoplay) counts
+at once. Only the page's largest media element is followed, so a small preview ending
+is not one, and media already ended when the tab is first read counts once. The hook runs in the gateway like your other hooks, with the same `ctx`; an async
 hook gets 30 seconds before the gateway stops waiting for it. Keep it short: turning
 your app off or uninstalling it waits for a hook that is still running, and
 withdrawing its trust fails until the hook returns. Nothing of the page is
@@ -1228,6 +1237,10 @@ import * as sdk from '@kirocrew/app-sdk'
 | `state` | `idle` before the slot has browsed, else `live`, `in_control`, `waiting_allow`, `login_needed`, `done` or `error` |
 | `url`, `title` | the page's address and title |
 | `claim()`, `release(note?)` | take over, hand back; `false` when refused or not allowed |
+
+Below the picture the view lists what the Bot did this turn (the chat card's step
+strip): the latest five actions, newest last, behind a toggle that counts them all
+and that the person may fold. It needs no prop and no change in your app.
 
 `useBrowserCoords(slot)` answers `toPage(x, y)` (view point to frame pixels, `null` outside
 the picture) and `toView(x, y)` (frame pixels to view point), for the `BrowserView` of that
@@ -1479,10 +1492,12 @@ answer (a `dict`, or a `list` of dicts) unless the row says otherwise. No
 TypeScript client ships, so `GatewayStatus`, `CronJob` and their siblings are
 response-shape names rather than importable types.
 
-When `app_name` is set and no explicit auth is provided, the Python client uses
-the app secret the Gateway gave its backend at spawn (`KIROCREW_PROXY_SECRET`, when
-`KIROCREW_APP_NAME` names the same app). Only with a Gateway older than that does it
-fall back to `~/.kiro/crew/apps/{name}/.app_secret`. Code that runs in the Gateway
+When `app_name` is set and no explicit auth or `app_secret` is provided, the Python
+client uses the app secret the Gateway gave its backend at spawn
+(`KIROCREW_PROXY_SECRET`, when `KIROCREW_APP_NAME` names the same app). Only with a
+Gateway older than that does it fall back to `~/.kiro/crew/apps/{name}/.app_secret`.
+A self-managed app passes the secret its registration returned as `app_secret=`.
+Code that runs in the Gateway
 process, an app's `backend.hooks`, has no secret: pass `base_url=ctx.gateway_origin()`,
 `token=await ctx.app_token()` and `on_auth_expired=ctx.app_token`, and build no client
 when `ctx.gateway_origin()` returns `""` (see
@@ -2799,9 +2814,9 @@ The request body of `POST /api/chat/slots/{slot}/context` is
 
 `POST /api/chat/slots/{slot}/note` drops a short declarative line into a chat that is both visible in the transcript immediately and known to the agent on the user's next message — without firing an LLM turn. Context injection alone is silent; a transcript append alone is invisible to the model, because a live provider forwards only the new user message. The note endpoint does both writes against one slot.
 
-Body: `{ content, source?, maxAge?, ephemeral? }`. A note always does both writes -- there is no visible-only or context-only mode. The visible line is appended as `role: "inject"` with `cls: "reconcile-note"`, and its content is redacted (credentials, inside URLs too) before it reaches the transcript. A credential-shaped `content` seats no context half, because the context half is model-visible pending context (see the boundary under Context Injection): the redacted visible line is still written and `contextSkipped` is true. The bubble's author pill comes from the authenticated app identity, never from the body's `source`. A dashboard user's note has no pill, and neither does a note from an app whose name is over 64 characters or contains a control character. The body's `source` is only the label of the context frame. `maxAge` defaults to 24h for the context half when the key is omitted, so a note nobody follows up on expires instead of attaching to an unrelated message later. An explicit null means no expiry, the same as it does on `/context` — the two endpoints share the field and do not give it opposite meanings. The same `source`/`maxAge`/`content` constraints above apply.
+Body: `{ content, source?, maxAge?, ephemeral? }`. A note always asks for both writes -- there is no visible-only or context-only mode; the visible line is written alone only in the `contextSkipped` cases below. The visible line is appended as `role: "inject"` with `cls: "reconcile-note"`, and its content is redacted (credentials, inside URLs too) before it reaches the transcript. A credential-shaped `content` seats no context half, because the context half is model-visible pending context (see the boundary under Context Injection): the redacted visible line is still written and `contextSkipped` is true. The bubble's author pill comes from the authenticated app identity, never from the body's `source`. A dashboard user's note has no pill, and neither does a note from an app whose name is over 64 characters or contains a control character. The body's `source` is only the label of the context frame. `maxAge` defaults to 24h for the context half when the key is omitted, so a note nobody follows up on expires instead of attaching to an unrelated message later. An explicit null means no expiry, the same as it does on `/context` — the two endpoints share the field and do not give it opposite meanings. The same `source`/`maxAge`/`content` constraints above apply.
 
-Returns `{ ok, appended, visibleDeferred, deliveryConditional, contextSkipped, pending }`. `contextSkipped` is true whenever the context half is refused but the visible line is still written: the source's per-source context cap is full, the whole 50-entry pending-context queue has no seat, **or** the content is credential-shaped. The request is **not** rejected in any of these cases, because the caps and the credential check protect the context queue rather than the transcript. The full-queue refusal is checked at admission on both arms — an immediate note (`append_pending_context` returns false) and a note held during a running turn (`has_pending_context_seat()` is false) — so a held note never acknowledges a context half the turn-end flush would then drop. Merge-card contexts being read by a running turn count toward both the per-source cap and the 50-entry ceiling until that turn ends. If a turn is already running the note is held until that turn ends -- `appended` is false and `visibleDeferred` is true -- so that it lands on the next turn rather than the one it was written during. Ordering is preserved, and `deliveryConditional` is true whenever a note is held -- because a hold is delivered only if the slot still routes to the SAME session when the turn ends. An unbound slot can acquire a foreign binding while the note waits (a cron result or workflow injection claims an empty `linked_session_key` with no running gate), and both the transcript path and the next turn's session resolve that binding at flush time rather than at the POST. When that happens BOTH halves of the note are dropped rather than retargeted, because writing them would surface content authorized for one conversation inside another; the drop is recorded in the security-event log. So a 200 with `visibleDeferred: true` promises ordering against the running turn, not that the note will certainly be written. `pending` counts held entries as well as queued ones.
+Returns `{ ok, appended, visibleDeferred, deliveryConditional, contextSkipped, pending }`. `contextSkipped` is true whenever the context half is refused but the visible line is still written: the source's per-source context cap is full, the whole 50-entry pending-context queue has no seat, the content is credential-shaped, **or** the session is linked or mirrored to a channel (a linked thread, an outbound mirror, the channel a conversation started in), even while that link is paused. That channel never shows the note's line, so the note is not queued for the agent's next turn, whose reply the channel would read. A later session reset that replays the transcript still carries the line, as it does for any note. The request is **not** rejected in any of these cases, because each of them guards the context half rather than the transcript. The full-queue refusal is checked at admission on both arms — an immediate note (`append_pending_context` returns false) and a note held during a running turn (`has_pending_context_seat()` is false) — so a held note never acknowledges a context half the turn-end flush would then drop. Merge-card contexts being read by a running turn count toward both the per-source cap and the 50-entry ceiling until that turn ends. If a turn is already running the note is held until that turn ends -- `appended` is false and `visibleDeferred` is true -- so that it lands on the next turn rather than the one it was written during. Ordering is preserved, and `deliveryConditional` is true whenever a note is held -- because a hold is delivered only if the slot still routes to the SAME session when the turn ends. An unbound slot can acquire a foreign binding while the note waits (a cron result or workflow injection claims an empty `linked_session_key` with no running gate), and both the transcript path and the next turn's session resolve that binding at flush time rather than at the POST. When that happens BOTH halves of the note are dropped rather than retargeted, because writing them would surface content authorized for one conversation inside another; the drop is recorded in the security-event log. So a 200 with `visibleDeferred: true` promises ordering against the running turn, not that the note will certainly be written. `pending` counts held entries as well as queued ones.
 
 **A 200 for a held note is a durable acknowledgement — for a slot that has a durable identity.** The hold is persisted verbatim (both halves, the silent context included) into the slot's own session metadata *before* the 200 is returned and replayed by both slot-restore paths after a gateway restart. A plain note retires when the save commits its delivered row. A merge card's context is consumed once a turn has sent it in a prompt kiro-cli kept, whether or not that turn completes; a turn whose prompt never went out, was stopped before its reply finished, or was re-queued after an empty response puts that context back at the queue front. Consumption is not retirement: the card's hold is retired only by a later full save that proves its row, either because that save's window carries the row or because the entry carries the delivered mark described next. A consumed card whose row has left every live window and carries no delivered mark keeps its hold inert until a restart restores and re-flushes its row without replaying context; a later full save can then retire it. The card row and a delivered mark commit atomically, so a restart before the consumption stamp lands re-queues the context without writing a second card row even after the row rotates out of the live transcript. A note accepted with `visibleDeferred: true` therefore survives a restart and is delivered, unaltered, on the first turn after it. An immediate note posted to that slot before then delivers the restored hold first, so the older note keeps its place ahead of the newer one. Two edges keep the original gateway-lifetime meaning instead: a memory-only deployment (no conversation log at all), and a slot that has never been persisted (no metadata line to attach the hold to -- such a tab does not itself survive a restart, so there is no restored slot the note could outlive). Do **not** re-post a held note after a restart; the restored hold delivers it, and a re-post would put the same line in the transcript twice. Three boundary refusals protect that promise: a note posted during a running turn is capped at 4,000 characters (`413`, code `deferred_note_too_large` -- shorten it or wait for the turn to end), a slot whose durable hold is full answers `429 deferred_notes_full` until its rows are saved, and a slot that is rebound to another session while the hold is persisting answers the endpoint's uniform `404` -- the note was neither delivered nor made durable (a note the turn-end flush drops at that same rebind seam takes this `404` too; the 200 stands only when the note observably exists in a delivered row or the durable hold). The one retry-the-same-request signal is a `503` with code `deferred_note_persist_failed`, which means the durable write itself failed and the note was **not** accepted. The queued context of an *immediate* (non-held) note still behaves exactly as `/context`'s queue always has -- in memory, for this gateway lifetime. Note the retention consequence of durability: a HELD note's context half -- the trusted-caller channel, which is deliberately not redacted -- lives on disk in the session metadata until delivery or retirement, while an immediate note's context lives only in memory.
 
@@ -2848,6 +2863,7 @@ KiroCrewClient(
     base_url="",              # default: http://localhost:{KIROCREW_PORT or 5476}
     token="",                 # optional for localhost
     app_name="",              # app-scoped storage and secret lookup
+    app_secret="",            # the app's secret, used with app_name
     timeout=30,               # request timeout seconds
     max_retries=3,            # retry count
     retry_base_delay=1.0,     # base delay for backoff
@@ -2857,8 +2873,8 @@ KiroCrewClient(
 )
 ```
 
-With `app_name` set and no `token` or `on_auth_expired`, the client takes the
-app secret from `KIROCREW_PROXY_SECRET` when `KIROCREW_APP_NAME` is that app (a
+With `app_name` set and no `app_secret`, `token` or `on_auth_expired`, the client
+takes the app secret from `KIROCREW_PROXY_SECRET` when `KIROCREW_APP_NAME` is that app (a
 backend the Gateway started). An older Gateway kept it at
 `$KIROCREW_HOME/apps/{name}/.app_secret`, which the client reads only as a fallback.
 In an app's hooks, which run in the Gateway process, pass `base_url=ctx.gateway_origin()`,
@@ -2867,12 +2883,18 @@ last one after a 401 or 403,
 which is how an expired token is renewed. When `ctx.gateway_origin()` returns `""`,
 build no client, because an empty `base_url` falls back to `KIROCREW_PORT` or 5476.
 
+A self-managed app passes the secret its registration returned as `app_secret=`,
+together with the Gateway's `base_url`: the default dials `KIROCREW_PORT` or 5476,
+which can be another Gateway. The client exchanges that secret for its token and
+again after a 401 or 403. `app_secret` is ignored without `app_name`. An explicit
+`on_auth_expired` still renews the token instead.
+
 For a remote Gateway, pass `token=...` or call `await client.authenticate()`
 after entering the context. Local loopback requests need no token. Setting
-`app_name` alone only locates the app secret; it does not authenticate during
-`__aenter__`. The client sends `token` as the session cookie, so it must be an
-app token or a session the Gateway issued: a sign-in link (`kirocrew token`) is
-refused there until it is traded for a session with one
+`app_name`, with or without `app_secret`, does not authenticate during
+`__aenter__`. The client sends `token` as the session cookie, so
+it must be an app token or a session the Gateway issued: a sign-in link
+(`kirocrew token`) is refused there until it is traded for a session with one
 `GET /api/status?token=<link>` (redirects off; keep the `mc_token_<port>`
 `Set-Cookie` value).
 
@@ -3378,7 +3400,8 @@ Security and lifecycle:
   app's folder. An app installed before this keeps working once its secret is handed over
   again: the old `.app_secret` file is never accepted, the next backend start stores a NEW
   secret and passes it here, and a self-managed app gets one in the response of its next
-  registration. A backend left running across the upgrade has no secret until it restarts.
+  registration (pass it to the Python client as `app_secret=`). A backend left running
+  across the upgrade has no secret until it restarts.
 - A backend that runs in the gateway process (`backend.hooks`, no `entryPoint`) gets no
   secret and needs none: [`ctx.app_token()`](#app-token-ctxapp_token) returns its app
   token and `ctx.gateway_origin()` the origin to call. The first load of its hooks after the upgrade stores a new secret and removes

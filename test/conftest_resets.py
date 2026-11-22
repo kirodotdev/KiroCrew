@@ -506,6 +506,21 @@ def _forget_enterprise_profile_pin():
     forget()
 
 
+@per_test_guard
+def _forget_pinned_gateway_spec_path():
+    """Forget the gateway ``PATH`` part a broker start or gatewayd pins for its life."""
+    import sys
+
+    def forget() -> None:
+        module = sys.modules.get("kiro_crew.env")
+        if module is not None:
+            module._PINNED_GATEWAY_SPEC_PATH = None
+
+    forget()
+    yield
+    forget()
+
+
 def forget_home_bound_caches() -> None:
     """Empty the process caches the boot smoke test checks before it boots.
 
@@ -1156,6 +1171,28 @@ def _reset_subagent_memory_price_holders():
             module = sys.modules.get(name)
             if module is not None:
                 module._MEMORY_PRICE_HOLDERS.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
+def _reset_builtin_discovery_scan():
+    """Start each test with no kept scan of the package's builtin apps.
+
+    ``apps.discovery._package_scan`` keeps the last whole scan of the package's
+    ``builtins/`` for the process, keyed on that directory's inode and mtime only. A
+    test that patches the manifest reader or the path screen would otherwise read the
+    scan an earlier test on the worker left.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.apps.discovery")
+        if module is not None:
+            module._package_scan = None
 
     clear()
     try:

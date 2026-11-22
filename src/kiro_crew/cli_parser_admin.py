@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from kiro_crew import cli_help, platform_compat
 from kiro_crew.cli_arg_types import positive_int
 from kiro_crew.cli_cloud import add_size_choices as _cloud_size_choices
+from kiro_crew.sel_filter import FIELD_KEYS
 
 if TYPE_CHECKING:
     _Commands = argparse._SubParsersAction[argparse.ArgumentParser]
@@ -161,6 +162,12 @@ def register_security_parser(sub: _Commands) -> None:
     )
     sel_parser.add_argument("--since", default="", help=f"Only entries at or after {_time_help}")
     sel_parser.add_argument("--until", default="", help=f"Only entries before {_time_help}")
+    # Each filter keeps a row only when its own field equals the value exactly.
+    for _name, _key in FIELD_KEYS.items():
+        _field = _key.replace("_", " ")
+        sel_parser.add_argument(
+            f"--{_name}", default="", help=f"Only entries whose {_field} is this"
+        )
     sec_sub.add_parser("verify", help="Verify security event log HMAC integrity")
 
 

@@ -2,7 +2,8 @@
 
 The ``AcpRuntimeError`` family the handle and ``AcpRuntime`` raise, and ``AcpRuntimeProtocol``,
 the interface the handle needs from the runtime. ``kiro_crew.acp.session_handle`` re-exports
-every name, and ``kiro_crew.acp.runtime`` imports them from there.
+every name but ``AcpResumeNotRestored``, and ``kiro_crew.acp.runtime`` imports them from there;
+``AcpResumeNotRestored`` is imported from here by its raiser and its catcher.
 """
 
 from __future__ import annotations
@@ -55,6 +56,10 @@ class AcpFrameTooLarge(AcpRuntimeError):
     # falls back to matching this message's prose.
     transient = False
     session_start_failed = False
+
+
+class AcpResumeNotRestored(AcpRuntimeError):
+    """A KAS ``session/load`` with ``require_replay`` that replayed no earlier turn."""
 
 
 class AcpModeNotFound(AcpRuntimeError):

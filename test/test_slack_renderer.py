@@ -9,9 +9,11 @@ Block Kit approve/deny buttons and the interactive approval await/resolve.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from redaction_structured_cases import github_classic
+from slack_handler_helpers import hide_slack_timing_footer
 
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
@@ -1607,6 +1609,72 @@ class TestOptionsFooterCancellationDefersFinalize:
             assert renderer.turn_finalized is True
 
         asyncio.run(scenario())
+
+
+class TestTimingFooterSetting:
+    """``slack.show_timing_footer`` decides whether the transport turn shows its
+    "Finished in" line, in the stream's seal or as a post of its own. Off, a footer
+    carrying choices still posts them -- and is still recorded for the
+    strike-through -- and an empty footer posts nothing."""
+
+    @staticmethod
+    def _end_turn(accumulated: str):
+        rec = _RecSlack()
+        texts: list[str] = []
+        record = rec.post_blocks
+
+        async def _post_blocks(channel, blocks, text, thread_ts=None, **kw):
+            texts.append(text)
+            return await record(channel, blocks, text, thread_ts, **kw)
+
+        rec.post_blocks = _post_blocks  # type: ignore[assignment]
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        renderer._accumulated = accumulated
+        asyncio.run(renderer.on_done())
+        footers = [kw["blocks"] for name, kw in rec.calls if name == "post_blocks"]
+        return footers, texts, renderer
+
+    def test_by_default_the_seal_carries_the_footer_as_it_always_has(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        renderer._accumulated = "the answer is 42"
+        asyncio.run(renderer.on_done())
+        (stop,) = [kw for m, kw in rec.calls if m == "stop_stream"]
+        assert stop == {
+            "final_text": "the answer is 42",
+            "blocks": [
+                {"type": "context", "elements": [{"type": "mrkdwn", "text": "Finished in 0s"}]}
+            ],
+        }
+        assert "post_blocks" not in [m for m, _ in rec.calls], "the seal already carries it"
+
+    def test_off_seals_a_streamed_answer_without_the_timing_line(self, monkeypatch, tmp_path):
+        hide_slack_timing_footer(monkeypatch, tmp_path)
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="the answer is 42"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        (stop,) = [kw for m, kw in rec.calls if m == "stop_stream"]
+        assert stop == {"final_text": "the answer is 42", "blocks": None}
+        assert "post_blocks" not in [m for m, _ in rec.calls], "an empty footer must not post"
+        assert renderer.turn_finalized is True
+
+    def test_off_still_posts_the_choices_without_the_timing_line(self, monkeypatch, tmp_path):
+        hide_slack_timing_footer(monkeypatch, tmp_path)
+        footers, texts, renderer = self._end_turn("pick one\n[OPTIONS: alpha | beta]")
+        assert len(footers) == 1, "the choices ride only in the footer, so it must post"
+        assert [b["type"] for b in footers[0]] == ["actions"]
+        assert "Finished in" not in json.dumps(footers[0])
+        assert texts == ["Options"], "the notification text must not read 'Finished in'"
+        posted = renderer.posted_options
+        assert posted is not None and posted.choices == ("alpha", "beta")
+        assert posted.text == "Options" and list(posted.blocks) == footers[0]
+        assert renderer.turn_finalized is True
 
 
 class TestTransportRedactionNotice:

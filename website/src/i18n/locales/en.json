@@ -151,7 +151,8 @@
       "not_granted": "This app may not show the browser yet. Approve its browser access on the app's page in Apps.",
       "note_not_sent_not_saved": "Your note was not sent to the Bot, and this browser could not keep a copy. Copy it now: {{note}}",
       "tab_gone": "The Bot's tab is closed, so there is no live page to show.",
-      "app_off": "This app is turned off, so it can't show the browser. Turn it on in Apps to see the page again."
+      "app_off": "This app is turned off, so it can't show the browser. Turn it on in Apps to see the page again.",
+      "actions": "What the Bot did"
     }
   },
   "apps": {
@@ -5393,7 +5394,10 @@
     },
     "matesDock": {
       "load_failed": "Couldn't load your starred bots.",
-      "reorder_failed": "Couldn't save the new order of your bots."
+      "remove_from_sidebar": "Remove from the sidebar",
+      "reorder_failed": "Couldn't save the new order of your bots.",
+      "row_menu": "More actions for {{name}}",
+      "unstar_failed": "Couldn't remove this bot from the sidebar."
     },
     "mcpBrowserModal": {
       "add_server": "Add Server",
@@ -7913,6 +7917,7 @@
         "crew_name_undispatchable": "This thread's crew name cannot be dispatched. Rename or recreate the bot.",
         "code_channel_worktree_not_ready": "This code channel's worktree is not ready, so the message was not run. Send it again in a moment.",
         "remote_crew_read_only": "This chat ran on a remote crew and is read-only now. Open the crew's own session to keep going.",
+        "cron_run_read_only": "This cron run's transcript can be read here but not replied to. Start a new chat to follow up on it.",
         "archive_failed_turn_cancelled": "Archiving this tab failed after its running turn was cancelled. The tab was kept, but that turn did not finish — send your message again to continue.",
         "kas_signed_out": "Not signed in to Kiro. Sign in from Settings → Kiro account, then send your message again.",
         "windows_spawn_blocked": "Windows would not start the agent program ({{binary}}). AppLocker, an EDR product or group policy on this computer likely blocked it. Ask your IT administrator to allow that file, then start a new chat.",
@@ -9669,6 +9674,9 @@
       "goals_heartbeat_hint": "Every {{interval}}, finds work on its own",
       "goals_heartbeat_every": "Every {{interval}}",
       "goals_heartbeat_interval": "How often",
+      "goals_heartbeat_hours": "Only between",
+      "goals_heartbeat_hours_from": "Active from",
+      "goals_heartbeat_hours_to": "Active until",
       "goals_heartbeat_credits": "Each run uses credits.",
       "goals_heartbeat_per_day_one": "up to {{count}} run a day",
       "goals_heartbeat_per_day_other": "up to {{count}} runs a day",
@@ -11870,6 +11878,7 @@
         "checking_against_default_no_region": "Checked with your default AWS credentials, with no region set.",
         "checking_against_no_region": "Checked against profile {{profile}}, with no region set.",
         "cloud_crew_name": "{{productName}} Cloud ({{tag}})",
+        "hide_launch_card": "Hide card",
         "code_ready": "Your sign-in code is ready",
         "code_ready_for": "The sign-in code for {{name}} is ready",
         "confirm_cancel_remove": "Yes, remove “{{tag}}”",
@@ -12075,6 +12084,7 @@
         "your_code": "Your code: {{code}}",
         "reported_host": "{{host}} (reported)",
         "reported_host_hint": "This crew reports being on this machine. This dashboard has no route to it and never dials it — the connection rides the crew that reaches it.",
+        "restart_clears_draft": "Restarting clears your unsaved crew form.",
         "results_stale": "The profile or Region changed since this check. Re-check to update.",
         "crew_enabled": "Connections: On",
         "crew_disabled": "Connections: Off",

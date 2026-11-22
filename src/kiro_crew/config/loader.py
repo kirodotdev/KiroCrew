@@ -745,6 +745,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _HARNESS_CHOICE_KEYS,
         _JSON_TYPE_LABELS,
         _MEMBER_HARNESS_KEY,
+        _POD_ENV,
         _SECURITY_BOUNDED_FIELDS,
         MEMBER_BACKEND_INHERITED_ATTR,
         _agent_section_fields,

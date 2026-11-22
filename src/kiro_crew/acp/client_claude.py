@@ -119,7 +119,7 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
         # this process does not have one. Per instance and never reset -- a client
         # that re-spawns is the same owner across spawns.
         self._seed_owner = uuid.uuid4().hex
-        # The built-ins a crewmate worker keeps (``SessionProjection.builtin_tools``),
+        # The built-ins a crewmate worker or a named agent keeps (``SessionProjection.builtin_tools``),
         # carried as claude's ``tools`` option; None keeps the harness's preset.
         self._claude_worker_builtin_tools: tuple[str, ...] | None = None
         # Set when the claude backend's "Compacting..." notice is seen inside a

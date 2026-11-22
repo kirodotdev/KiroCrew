@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_sdk.drivers.acp_vocab import EngineFallbackWalk
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
+from kiro_crew.dashboard.relay_archive import is_cron_run_read_only
 from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT, row_mid
 from kiro_crew.llm_helpers import _NO_PRIOR_STATS
 from kiro_crew.metrics.usage_attrs import set_current_trigger, trigger_for_dashboard_turn
@@ -224,16 +225,27 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # before reaching here, but they are many and a new one is easy to add. This
     # is the single place that makes running one on this machine impossible
     # regardless of caller. An error row + ``chat_done`` matches the shape a
-    # refused turn takes, so the composer unblocks rather than hanging.
-    if getattr(slot, "executor", "") == "remote":
-        logger.warning("refusing to run relay archive %s", slot.key)
-        slot.append(
-            "error",
-            "This chat ran on a remote crew and is read-only now. Open the "
-            "crew's own session to keep going.",
-            "msg msg-err",
-            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REMOTE_CREW_READ_ONLY),
-        )
+    # refused turn takes, so the composer unblocks rather than hanging. A cron
+    # run's transcript the History resume marked read-only is refused the same
+    # way: its tab has no transcript a reply could be saved to.
+    if getattr(slot, "executor", "") == "remote" or is_cron_run_read_only(slot):
+        logger.warning("refusing to run read-only chat %s", slot.key)
+        if is_cron_run_read_only(slot):
+            slot.append(
+                "error",
+                "This cron run's transcript can be read here but not replied to. "
+                "Start a new chat to follow up on it.",
+                "msg msg-err",
+                meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_CRON_RUN_READ_ONLY),
+            )
+        else:
+            slot.append(
+                "error",
+                "This chat ran on a remote crew and is read-only now. Open the "
+                "crew's own session to keep going.",
+                "msg msg-err",
+                meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REMOTE_CREW_READ_ONLY),
+            )
         # The one exit with no tail: an archive's queue must never drain here.
         turn_exit.handed_off = True
         await _send_chat_done(state, slot)
@@ -526,6 +538,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # double-stream text or re-run a side-effecting tool.
     _turn_emitted = False
     turn._turn_emitted = _turn_emitted
+    # Whether this turn's own native sub-agents reported in (a roster or a child's
+    # frame). Not a turn-emit, but a child may have acted, so a stall probe of the
+    # turn continues it instead of sending the message again.
+    turn._turn_native_activity = False
     # Did this turn stream text the user has ALREADY READ, which a later tool
     # boundary then flushed out of `assistant_text`? The three tool-boundary flushes
     # (_on_text_chunk's post-tool-group text in stream_chunks, _on_tool_call in tool_rows,

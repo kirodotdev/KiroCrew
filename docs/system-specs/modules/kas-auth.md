@@ -893,8 +893,8 @@ engine instead ([aws-control.md](aws-control.md)).
   Kiro CLI keeps its own kiro-cli login. It is deliberately NOT on Settings >
   Overview: a provider chooser on the landing page read as a required step to
   every user, first-run installs included. Settings search finds it by "sign
-  out" and "switch account". `KasLoginGate` itself is still not mounted at the app
-  root; the full-screen form stays available for that.
+  out" and "switch account". The full-screen `KasLoginGate` form is mounted only
+  by the LTS sign-in-only gateway and the first-run hold below.
 - **One sign-in flow, many places.** The flow's state and actions (status read,
   begin loopback or device code, poll, the loopback-to-device fallback, cancel and
   its settle, the landed result) live in `website/src/hooks/useKasLogin.ts`
@@ -929,6 +929,28 @@ engine instead ([aws-control.md](aws-control.md)).
   finds the next spawn on the bundle route and no usable Crew sign-in; false when
   any of that cannot be worked out. A relay that kiro-cli's own login starts never
   gets the prompt. It leaves as soon as the shared status reads authenticated.
+- **First run offers the full-screen sign-in, with a Skip.** On a page load whose
+  first resolved `GET /api/kiro-prerequisite` (one the LTS paths do not answer with
+  their own screen) reported `initial_setup_complete: false`, `KiroPrerequisiteGate`
+  renders every admission through `FirstRunSignInHold`
+  (`website/src/components/FirstRunSignInHold.tsx`), which reads that same
+  `chat_needs_sign_in` and, while it is true, shows `KasLoginGate` with a **Skip
+  for now** over the app, which stays mounted and hidden behind it. It reads the
+  field when the gate first renders the app from a resolved status with the agent
+  known, and decides only from an answer fetched from then on, never one cached
+  while a setup screen was up. The first-run reading is latched for the load, so
+  the gate's own marker write does not drop it, and a returning user is never
+  held, signed out or not: the prompt above stays their way in. The hold lets go,
+  for the rest of the load, on a stored sign-in, on a sign-in status that cannot
+  be read at all, on Skip, or on a `false` answer; a failed `GET /api/kas-bundle`
+  holds nothing. The app stays mounted in every pass, its own tree and its local
+  overlay container hidden while held (`useFirstRunSignInHeld`), so what the user
+  entered before the answer (an unsaved onboarding answer, say) is still there
+  after a Skip or a sign-in. Skip saves nothing: no config key, no browser flag.
+  While `chat_needs_sign_in` is true the tour's last card
+  (`components.onboardingFlow.pop_chat_body_sign_in_first`) names Settings → Kiro
+  account instead of saying the agent is ready. Decision:
+  [2026-11-13](../../decisions/2026-11-13-first-run-offers-the-kiro-sign-in-with-a-skip.md).
 - **A signed-out chat names every sign-in that can fix it.** The row follows
   where the turn ran, read from the route the last KAS spawn recorded
   (`kas_route.last_spawn_route`); which sign-in the relay draws is unchanged.

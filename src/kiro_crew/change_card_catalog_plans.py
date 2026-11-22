@@ -32,6 +32,7 @@ from kiro_crew.change_card_catalog_kinds import (
     _SETTING_ORDER,
     CREWMATE_CREATE_SCHEDULE_STEP,
     DEFAULT_CREWMATE_TEMPLATE,
+    HEARTBEAT_HOURS_KEY,
     KIND_CONNECTION_CONNECT,
     KIND_CREWMATE_CAPABILITIES,
     KIND_CREWMATE_CHECK_INS,
@@ -652,7 +653,7 @@ def build_preview(
                     "field": GOAL_HEARTBEAT_FIELD,
                     "after": offer["checked"],
                     "interval": every,
-                    "per_day": _goals.wakes_per_day(every),
+                    "per_day": _goals.wakes_per_day(every, offer["hours"]),
                 }
             )
             goal_body["heartbeat_offer"] = (
@@ -750,13 +751,14 @@ def build_preview(
         if not snapshot.get("has_goal") and any(p.get(c) is True for c in _goals.CADENCES):
             raise _fail("no_goal", "the Bot has no goal to check in on yet")
         label = str(context.get("label") or p["member"])
+        hours = snapshot.get(HEARTBEAT_HOURS_KEY)
         out["title"] = f"Set the check-ins for “{label}”"
         out["changes"] = [
             {
                 "label": CHECK_IN_LABELS[k],
                 "field": k,
-                "before": _check_in_value(k, before_ci.get(k)),
-                "after": _check_in_value(k, v),
+                "before": _check_in_value(k, before_ci.get(k), hours),
+                "after": _check_in_value(k, v, hours),
             }
             for k, v in changed.items()
         ]
@@ -767,7 +769,7 @@ def build_preview(
                 if row["field"] == _goals.CADENCE_HEARTBEAT:
                     row["after"] = (
                         f"On, every {_goals.interval_label(every)} "
-                        f"(up to {_goals.wakes_per_day(every)} runs a day)"
+                        f"(up to {_goals.wakes_per_day(every, hours)} runs a day)"
                     )
         out["scope"] = {"members": [label], "count": 1, "only_this_member": True}
         out["apply"] = [
@@ -1582,7 +1584,7 @@ GOAL_HEARTBEAT_FIELD = "heartbeat_offer"
 
 
 def _goal_heartbeat_offer(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any] | None:
-    """The goal card's Heartbeat checkbox, ``{checked, interval}``, or ``None`` for none.
+    """The goal card's Heartbeat checkbox, ``{checked, interval, hours}``, or ``None`` for none.
 
     Offered while the snapshot reads the Heartbeat off and never declined
     (the record's ``heartbeat_offer`` is not ``declined``). A snapshot taken
@@ -1595,7 +1597,11 @@ def _goal_heartbeat_offer(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[s
     every = hb.get("interval")
     if not _goals.is_heartbeat_interval(every):
         every = _goals.DEFAULT_HEARTBEAT_INTERVAL
-    return {"checked": p.get("heartbeat", True) is not False, "interval": every}
+    return {
+        "checked": p.get("heartbeat", True) is not False,
+        "interval": every,
+        "hours": hb.get("hours"),
+    }
 
 
 def _goal_path(slug: str) -> str:
@@ -1623,8 +1629,8 @@ CHECK_IN_LABELS = {
 _WEEKDAY_NAMES = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
 
 
-def _check_in_value(key: str, value: Any) -> str | None:
-    """How one check-in field reads on the card."""
+def _check_in_value(key: str, value: Any, hours: Any = None) -> str | None:
+    """How one check-in field reads on the card, *hours* being its active hours."""
     if value is None:
         return None
     if key in _goals.CADENCES:
@@ -1636,7 +1642,7 @@ def _check_in_value(key: str, value: Any) -> str | None:
     if key == "interval" and isinstance(value, int):
         return (
             f"Every {_goals.interval_label(value)} "
-            f"(up to {_goals.wakes_per_day(value)} runs a day)"
+            f"(up to {_goals.wakes_per_day(value, hours)} runs a day)"
         )
     return str(value)
 

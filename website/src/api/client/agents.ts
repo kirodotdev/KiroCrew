@@ -247,7 +247,9 @@ export interface MemberGoal {
 }
 
 /** The check-in switches and their shared timing. weekday: 0 = Sunday.
- *  The heartbeat runs every `interval` minutes (30, 60, 120 or 240; 60 by default), not at `time`. */
+ *  The heartbeat runs every `interval` minutes (30, 60, 120 or 240; 60 by default), not at `time`,
+ *  and only in its active hours: whole hours from `active_from` (0-23) up to, not including,
+ *  `active_to` (1-24); 0 and 24, the default, are the whole day. */
 export interface GoalSchedules {
   time: string
   timezone: string
@@ -258,6 +260,8 @@ export interface GoalSchedules {
   month_day: number
   heartbeat: boolean
   interval: number
+  active_from: number
+  active_to: number
 }
 
 /** A saved weekly report or monthly review (an artifact). */

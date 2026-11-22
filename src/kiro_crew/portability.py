@@ -100,6 +100,7 @@ from kiro_crew.portability_archive import (
     logger,
     manifest_is_memory_only,
 )
+from kiro_crew.portability_export import unbundled_apps
 from kiro_crew.portability_templates import (
     AGENT_TEMPLATE_SECRET_PLACEHOLDER,
     AGENT_TEMPLATES_DIR,
@@ -978,6 +979,19 @@ def apply_import_zip(
         # removed from the extraction here, and reported.
         vetted_settings = _vet_archive_settings(snap, summary)
 
+        # Before either branch as well: the archive's agent config under ``workspace/``
+        # (``.claude/``, ``.mcp.json``, ``.kiro/`` ...) must not govern the next agent
+        # session, so Merge never adds it and Replace stages this install's own copy. The
+        # CLI restore applies the same rule. Imported here, not at module level: the
+        # facade binds only the names `test_portability_facade` lists.
+        from kiro_crew.snapshot import _hold_back_agent_config
+
+        held_config, _notes = _hold_back_agent_config(
+            snap, mc, None, mode, allow_unpinned=not staging_pinned
+        )
+        if held_config:
+            summary["held_agent_config"] = [f"workspace/{name}" for name in held_config]
+
         if mode == "replace":
             # Strip sensitive files and skills/auto/ from snapshot before replace
             for excluded_name in EXPORT_EXCLUDE:
@@ -1265,6 +1279,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _keep_for_export,
         _keep_store_for_export,
         _manifest_entry_size,
+        _named_in_export,
         _open_contained_file,
         _open_verified,
         _plan_sessions,

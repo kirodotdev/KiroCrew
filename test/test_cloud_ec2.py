@@ -1361,7 +1361,7 @@ class TestResolveExplicitSubnet:
 
     def test_missing_subnet_raises(self, monkeypatch):
         monkeypatch.setattr(aws, "checked_json", lambda *a, **k: {"Subnets": []})
-        with pytest.raises(aws.AWSError, match="not found"):
+        with pytest.raises(aws.AWSError, match=r"not found.*the Subnet ID and Region \(--region\)"):
             ec2.resolve_explicit_subnet("subnet-gone", "dev", "us-east-1")
 
     def test_no_egress_subnet_raises(self, monkeypatch):
@@ -1447,7 +1447,7 @@ class TestStatusAndList:
                 "",
             ),
         )
-        with pytest.raises(aws.AWSError, match="NOT tagged"):
+        with pytest.raises(aws.AWSError, match="NOT tagged.*launch again from the dashboard"):
             ec2.find_stack("t1", "dev", "us-east-1")
 
     def test_find_stack_raises_on_instance_tag_mismatch(self, monkeypatch):
@@ -1476,7 +1476,7 @@ class TestStatusAndList:
                 "",
             ),
         )
-        with pytest.raises(aws.AWSError, match="isn't this launch's stack|not 't1'"):
+        with pytest.raises(aws.AWSError, match="not 't1'.*Launch again from the dashboard"):
             ec2.find_stack("t1", "dev", "us-east-1")
 
     def test_find_stack_ok_when_instance_tag_matches(self, monkeypatch):

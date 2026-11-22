@@ -39,6 +39,7 @@ import { RefusalLaunch, SHARE_BUTTON_CLASS } from './McpManagementLaunchReview'
 import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
 import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { McpShareDiagram } from './McpShareDiagram'
+import { uiLocation } from '../../uiLocations/uiLocation'
 
 export const HERO_TITLE_ID = 'mcp-hero-title'
 const SWITCH_NOTE_ID = 'mcp-hero-switch-note'
@@ -72,6 +73,7 @@ function HeroSwitch({
       aria-checked={on}
       aria-label={i18nT('pages.mcpManagement.share_switch_label')}
       aria-describedby={describedBy}
+      {...uiLocation('mcp.share-switch')}
       disabled={disabled}
       onClick={onClick}
       className="inline-flex shrink-0 items-center rounded-full p-1 transition-colors hover:bg-[var(--hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
@@ -340,6 +342,7 @@ export function ApprovalCard({
           className={SHARE_BUTTON_CLASS}
           aria-describedby="mcp-approval-title"
           onClick={onReview}
+          {...uiLocation('mcp.review-approve')}
         >
           {i18nT('pages.mcpManagement.review_approve')}
         </Btn>

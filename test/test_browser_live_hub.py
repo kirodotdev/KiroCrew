@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from browser_live_helpers import SESSION, FakeRelay
+from browser_live_helpers import SESSION, FakeClock, FakeRelay, frame_event, make_jpeg
 
 from kiro_crew.browser_harness import live_hub as lh
 from kiro_crew.browser_harness import screencast as sc
@@ -44,6 +44,9 @@ class FakeStream:
 
     async def set_visible(self, visible: bool) -> None:
         self.calls.append(("visible", visible))
+
+    async def restart(self) -> None:
+        self.calls.append(("restart", None))
 
     async def set_takeover(self, active: bool) -> None:
         self.calls.append(("takeover", active))
@@ -976,6 +979,97 @@ async def test_a_turn_that_browses_after_a_reopen_joins_the_running_stream(hub) 
     h.turn_ended("chat-1")  # this turn's end is what folds it now
     await _settled(h)
     assert sess.stream is None and wire.events[-1][1]["state"] == "done"
+
+
+class StillPageRelay(LedgerRelay):
+    """Chrome showing a still page: each screencast start answers with one frame of
+    it, and nothing more comes until the page changes (measured on Chromium: a
+    start answers in about 10 ms, then 0 frames in 3 s of a still page)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pushes: list[asyncio.Future[Any]] = []
+
+    async def send(
+        self, method: str, params: dict[str, Any] | None = None, session_id: str | None = None
+    ) -> dict[str, Any]:
+        answer = await super().send(method, params, session_id)
+        if method == "Page.startScreencast" and self.on_event is not None:
+            self.pushes.append(asyncio.ensure_future(self.on_event(frame_event(make_jpeg(64, 40)))))
+        return answer
+
+    async def drained(self) -> None:
+        while not all(p.done() for p in self.pushes):
+            await asyncio.gather(*self.pushes, return_exceptions=True)
+
+
+class OrderedWire(Wire):
+    """Events and frames in the one order they went out."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.order: list[str] = []
+
+    async def publish(self, name: str, data: Any) -> int:
+        self.order.append(f"event:{data.get('turn_id')}")
+        return await super().publish(name, data)
+
+    async def send_frame(self, blob: bytes) -> int:
+        self.order.append("frame")
+        return await super().send_frame(blob)
+
+
+def _real_stream(*a: Any, **k: Any) -> sc.LiveStream:
+    clock = FakeClock()
+    return sc.LiveStream(*a, clock=clock, sleep=clock.sleep, auto_control=False, **k)
+
+
+async def test_a_turn_that_joins_a_running_stream_gets_a_picture_of_a_still_page_at_once() -> None:
+    wire = OrderedWire()
+    h = lh.LiveHub(clock=lambda: 100.0)
+    h.bind(wire.publish, wire.send_frame)
+    relay = StillPageRelay()
+
+    async def settle() -> None:
+        await _settled(h)
+        await relay.drained()
+        await _settled(h)
+
+    h.turn_started("chat-1", "t1")
+    h.bind_target("chat-1", "tgt")
+    await h.start_stream(
+        "chat-1", relay, "tgt", browser="user_chrome", headless=False, stream_factory=_real_stream
+    )
+    h.turn_ended("chat-1")
+    await settle()
+    # The view folded and came back (a stayLive app view, or Open live): one picture.
+    assert await h.reopen("chat-1", relay, stream_factory=_real_stream) == lh.REOPEN_LIVE
+    await settle()
+    stream = h.get("chat-1").stream
+    assert stream is not None and stream.casting
+    wire.order.clear()
+
+    # The next turn joins that stream on a page that is not changing: the card opens
+    # the turn with no picture, and the frame that answers the restart follows its
+    # event, so it lands on the new turn.
+    h.turn_started("chat-1", "t2")
+    await settle()
+    assert h.get("chat-1").stream is stream
+    assert wire.order[0] == "event:t2" and wire.order.count("frame") == 1, wire.order
+
+    # No card sees the view: nothing is asked of Chrome, and the cast stays stopped.
+    await h.set_visible("chat-1", True, "tab-a")
+    await h.set_visible("chat-1", False, "tab-a")
+    await settle()
+    starts = len(relay.methods("Page.startScreencast"))
+    h.turn_ended("chat-1")
+    await settle()
+    assert await h.reopen("chat-1", relay, stream_factory=_real_stream) == lh.REOPEN_LIVE
+    wire.order.clear()
+    h.turn_started("chat-1", "t3")
+    await settle()
+    assert "frame" not in wire.order and h.get("chat-1").stream.casting is False
+    assert len(relay.methods("Page.startScreencast")) == starts
 
 
 class _Clock:

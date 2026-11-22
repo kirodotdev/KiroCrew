@@ -9,6 +9,7 @@ from typing import Any
 
 from kiro_crew.apps.hidden_sessions import listed_surface
 from kiro_crew.dashboard.agent_welcome import welcome_preview
+from kiro_crew.dashboard.relay_archive import is_cron_run_read_only
 from kiro_crew.dashboard.slot_preparing import is_preparing, preparing_caption
 from kiro_crew.dashboard.slot_queue_repository import is_held_queue_entry
 from kiro_crew.dashboard.slot_row_memo import memo_redacted, memo_row_summary, summarize_rows
@@ -558,6 +559,9 @@ class SlotProjection:
             # shipping it to a browser buys nothing.
             "executor": slot.executor,
             "instance_id": slot.instance_id,
+            # A cron run's transcript reopened read-only (``relay_archive``):
+            # the client hides the reply actions as it does for a relay archive.
+            "cron_run_read_only": is_cron_run_read_only(slot),
             "row_identity": resolved_row_identity(slot),
             "artifact": slot._artifact,
             # Durable rows only, like ``last_ts``: the save path keeps no other row.

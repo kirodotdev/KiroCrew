@@ -407,7 +407,7 @@ MCP_APP_MESSAGE_KIND = "mcp_app_message"
 RESOURCE_WAKE_KIND = "resource_wake"
 
 #: A runner notice re-routed into a crew member's own next turn — today the
-#: automation arm/revision/stop refusal (``session_directive_apply``). A member
+#: automation arm/revision/stop or person-only refusal (``session_directive_apply``). A member
 #: DM draws messages only and never replays a ``notice`` row to the model, so a
 #: refused directive there would reach neither the person nor the crewmate; this
 #: kind delivers it as an ``inject`` row the crewmate's turn carries. System

@@ -4887,7 +4887,7 @@ comment header per owner. The module-level code these owners hold is re-imported
 | Module | Owns |
 |---|---|
 | `skills_auto_model` | The `auto/` namespace and its on-disk layout, `AutoSkillProvenance` and the generated `SKILL.md` renderer, `ClaimRefusal`, and the pending-queue observer hooks |
-| `skills_discovery` | The skills directory, the packaged and trusted provider roots, the installed package's RECORD admission of a hardlinked `SKILL.md`, screening and adoption of the configured extra roots (`reconfigure`), the tree walk `_iter_skill_files` with its no-follow traversal of a trusted project, and the bounds on how long a walk's answer is served |
+| `skills_discovery` | The skills directory, the packaged and trusted provider roots, the installed package's RECORD admission of a hardlinked `SKILL.md` or packaged built-in skill file (`kiro_crew/builtin_skills/`), screening and adoption of the configured extra roots (`reconfigure`), the tree walk `_iter_skill_files` with its no-follow traversal of a trusted project, and the bounds on how long a walk's answer is served |
 | `skills_builtin_provenance` | The tree fingerprint, the provenance marker, the ownership check (`_verified_unchanged_fingerprint`), `installed_skill_currency`, the released-former-built-in skip it shares with the sync (`_ships_for_released_app`), and the deployed cron-script source verdicts |
 | `skills_builtin_sync` | The packaged-skill sync (`_ensure_builtin_skills`, `sync_builtins`) with its claim, retirement, quarantine and opt-out carry, stale and relocated cleanup (`_RELOCATED_SKILLS`), and `remove_retired_conductor_skill` |
 | `skills_body_reads` | The project trust key and its audit, the enumerated-read choke point (`_read_enumerated_skill_bytes`) and the frontmatter cache, `load_skill` and the global body reader, exact-key reads of the scoped catalog with their paging, and the shapes that mark a tool call as a skill-body read |
@@ -5500,7 +5500,17 @@ also keeps the `RECORD` rows for `.json` files under `kiro_crew/apps/builtins/<a
 which `_installed_builtin_app_file_match` checks for a shipped built-in app's
 `app.json` and the agent specs its manifest declares, never another `.json` the
 `RECORD` lists ([security](security.md)); `_installed_package_bytes_match` admits only
-a path named `SKILL.md`.
+a path named `SKILL.md`. It also keeps the `RECORD` rows for every file under
+`kiro_crew/builtin_skills/`. The built-in skill sync reads the packaged tree through
+them: `skills_builtin_provenance._skill_tree_fingerprint`, when it hashes the
+packaged source (`assume_owner_rwx_dirs`), passes
+`admit_hardlinked=_recorded_bytes_match`, so a hardlinked packaged file counts only
+when its bytes match the digest `RECORD` lists for that exact path. The update
+fingerprint, the provenance marker and the doctor's currency check therefore hold on
+a hardlinked install. The installed copy in the skills dir is always hashed with the
+plain refusal. `skills_builtin_sync._carried_skill_md` reads the packaged `SKILL.md`
+with `admit_hardlinked=_installed_package_bytes_match`, so a carried
+`inject_on_trigger: false` survives an update on such an install.
 Rewriting `RECORD` takes write access to the tree holding the package code, which
 already decides what the gateway runs. Project reads retain descriptor confinement
 and their byte cap.
@@ -6823,7 +6833,13 @@ alias was deleted or a symlink retargeted. Repeat calls avoid a re-walk only thr
   and refuses a non-empty directory, so the most it can destroy is a rival's EMPTY
   directory, while skipping it would strand this call's own directory behind a
   permanent 409 — the harm the whole arm exists to prevent. That bound is what makes
-  it the one place a name is removed unverified.
+  it the one place the pinned branch removes a name unverified.
+  The by-name branch (no directory descriptors, e.g. Windows) and `create_auto_skill`
+  share `authoring._write_new_skill_md`: an exclusive `open("x")` whose failure removes
+  `SKILL.md` through `pinned_fs.unlink_verified_by_name` (only while it holds the inode
+  the open created) and then `rmdir`s by name the directory the call made, under the same
+  `rmdir(2)` bound (only while empty), never a parent, before re-raising the original
+  error, so the name can be created again.
 - Path traversal protection: `_safe_name()` rejects `..` and `\` (allows `/` for nesting)
 
 **Foreign-agent import:** only user-authored skills are eligible. Imported
@@ -7028,7 +7044,7 @@ Updates the replacement keeps stay queued beside the newer one, and approving an
 
 `_auto_slug_claim_lock` is an advisory exclusive lock on `skills/.auto-slug-claim.lock` — a dot-prefixed plain file at the skills root, skipped by discovery, placed outside `auto/` so taking it does not create the auto namespace as a side effect of a refused claim. It yields whether the lock was ACQUIRED, and an unacquired lock is a REFUSAL: opening the file can fail on a read-only home, and the acquire can lose within its seconds-long ceiling. Each namespace's claim is additionally an atomic `mkdir(exist_ok=False)`, so a claim lost to a concurrent writer refuses instead of overwriting, but `mkdir` alone cannot make the cross-namespace pair safe because the two paths create different directories.
 
-**Both claim paths return `None` rather than raising or half-succeeding.** `stage_skill_candidate` returns `None` when nothing is queued: an invalid slug, an oversized procedure, an unacquired lock, or no free name across `<slug>` and siblings `<slug>-2..-50`. A `None` means the candidate is NOT on disk and the caller MUST take its rejection branch, because a name returned from a path that wrote nothing is recorded as a staged candidate that does not exist, and the offset advance makes that loss permanent and invisible. `create_auto_skill` and `restore_auto_skill` likewise answer `None` on refusal, which their callers audit as a rejection.
+**Both claim paths return `None` rather than raising or half-succeeding.** `stage_skill_candidate` returns `None` when nothing is queued: an invalid slug, an oversized procedure, an unacquired lock, or no free name across `<slug>` and siblings `<slug>-2..-50`. A `None` means the candidate is NOT on disk and the caller MUST take its rejection branch, because a name returned from a path that wrote nothing is recorded as a staged candidate that does not exist, and the offset advance makes that loss permanent and invisible. `create_auto_skill` and `restore_auto_skill` likewise answer `None` on refusal, which their callers audit as a rejection. A write failure is not a refusal: `create_auto_skill` removes what it made (see `create_skill`'s by-name branch) and re-raises, as `stage_skill_candidate` does.
 
 **One of those refusals is transient, and only that one is retried.** An invalid slug, an oversized procedure and an exhausted sibling walk are properties of the CANDIDATE: refused once, refused forever. An unacquired claim lock is a property of the MOMENT. A caller reading a bare `None` cannot tell them apart, so a claim path also fills in a `ClaimRefusal` when one is supplied, setting `retryable` for the lock case alone.
 
