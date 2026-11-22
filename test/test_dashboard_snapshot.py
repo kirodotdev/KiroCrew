@@ -185,10 +185,10 @@ def test_the_page_text_is_read_with_the_fixed_expression_and_kept_as_given():
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        # Longer than the cap: cut again here, the length kept.
+        # Longer than the kept cap: whole, so the caller can redact it before it cuts.
         (
             {"text": "x" * 7000, "length": 7000},
-            dashboard_page_image.PageText("x" * dashboard_page_image.MAX_TEXT_CHARS, 7000),
+            dashboard_page_image.PageText("x" * 7000, 7000),
         ),
         # A length that is not a whole number of at least the text's own falls back to it.
         ({"text": "abc", "length": "9"}, dashboard_page_image.PageText("abc", 3)),
@@ -211,6 +211,9 @@ def test_the_page_text_reply_is_not_trusted(value, expected):
         _text_reply({"text": "leaked"}, exceptionDetails={"text": "Uncaught"}),
         _text_reply("just a string"),
         _text_reply({"text": 42}),
+        # Over the read cap: the expression's null, or a page script's own long string.
+        _text_reply({"text": None, "length": dashboard_page_image.MAX_READ_CHARS + 1}),
+        _text_reply({"text": "x" * (dashboard_page_image.MAX_READ_CHARS + 1)}),
         {"result": "not an object"},
         {},
     ],
@@ -219,6 +222,66 @@ def test_a_page_text_reply_that_is_not_the_expressions_answer_is_no_text(reply):
     call, _sent = _calls(reply)
 
     assert dashboard_page_image.read_text(call) is None
+
+
+def _run_text_expression(body_js: str, marks_js: str = "[]") -> dict[str, Any]:
+    """TEXT_EXPRESSION's answer in node over a fake document whose innerText is *body_js*."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    script = (
+        f"const marks = {marks_js};"
+        "globalThis.document = {querySelectorAll: () => marks,"
+        " createTextNode: (s) => ({textContent: s}),"
+        " body: {get innerText() {"
+        f"return {body_js} + marks.map((m) => m.added).join('');"
+        "}}};"
+        f"process.stdout.write(JSON.stringify({dashboard_page_image.TEXT_EXPRESSION}));"
+    )
+    out = subprocess.run(
+        [node, "-e", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=True,
+    )
+    return json.loads(out.stdout)
+
+
+_MARK_JS = (
+    "[{added: '', getAttribute(n) { return {'data-dashboard-missing': 'true',"
+    " 'data-dashboard-missing-label': 'not current'}[n] ?? null; },"
+    " appendChild(t) { this.added += t.textContent; }}]"
+)
+
+
+def test_the_expression_hands_back_the_whole_text_so_it_is_redacted_before_any_cut():
+    """#40937: a cut in the page can keep part of a secret; the page no longer cuts."""
+    long = _run_text_expression(f"'x'.repeat({dashboard_page_image.MAX_TEXT_CHARS + 50})")
+    assert long == {"text": "x" * (dashboard_page_image.MAX_TEXT_CHARS + 50), "length": 6050}
+    # Normal cases as before: a short page, an emoji counted once, a frame mark as text.
+    assert _run_text_expression("'Open PRs\\n7 \U0001f600'") == {
+        "text": "Open PRs\n7 \U0001f600",
+        "length": 12,
+    }
+    marked = _run_text_expression("'Fleet 42'", marks_js=_MARK_JS)
+    assert marked == {"text": "Fleet 42 [not current]", "length": 22}
+
+
+def test_the_expression_gives_no_text_over_the_read_cap():
+    over = _run_text_expression(f"'x'.repeat({dashboard_page_image.MAX_READ_CHARS + 1})")
+    assert over == {"text": None, "length": dashboard_page_image.MAX_READ_CHARS + 1}
+    assert dashboard_page_image.read_text(lambda _p: _text_reply(over)) is None
+
+
+def test_the_read_cap_fits_the_runs_message_cap():
+    """Twelve bytes of JSON a code point at worst (an escaped surrogate pair), with room
+    for the framing."""
+    assert dashboard_page_image.MAX_READ_CHARS * 12 < dashboard_verify._MAX_MESSAGE_BYTES * 0.6
 
 
 # --------------------------------------------------------------------------- #
@@ -640,6 +703,36 @@ def test_the_snapshot_text_crosses_the_tabs_redaction_and_the_save_check_has_non
     # redacted text, so a redaction does not read as a cut.
     assert text.length == len(page)
     assert "text" not in saved and secret not in json.dumps(saved)
+
+
+def test_a_secret_the_cut_falls_inside_is_redacted_not_shown_in_part(glue):
+    """#40937: the whole text is redacted, then cut, so no start of the key is kept."""
+    secret = github_classic()
+    cap = dashboard_page_image.MAX_TEXT_CHARS
+    page = "x " * ((cap - 20) // 2) + secret + " tail"  # a cut first keeps ~20 of it
+    glue.answer = dashboard_verify.Verification(
+        dashboard_verify.STATUS_PASSED, text=dashboard_page_image.PageText(page, len(page))
+    )
+
+    _wire, _image, text = member_dashboard_fields.snapshot_package_page(
+        SLUG, CREW, "slot-1", _GLUE_PACKAGE, None, "dashboard-7", 4, None
+    )
+
+    assert len(text.text) == cap and text.length == len(page)
+    assert all(secret[i : i + 8] not in text.text for i in range(len(secret) - 7))
+
+
+def test_a_short_page_text_comes_back_as_it_was_read(glue):
+    page = "Fleet\n4242 \U0001f600 [not current]"
+    glue.answer = dashboard_verify.Verification(
+        dashboard_verify.STATUS_PASSED, text=dashboard_page_image.PageText(page, len(page))
+    )
+
+    _wire, _image, text = member_dashboard_fields.snapshot_package_page(
+        SLUG, CREW, "slot-1", _GLUE_PACKAGE, None, "dashboard-7", 4, None
+    )
+
+    assert text == dashboard_page_image.PageText(page, len(page))
 
 
 def test_a_snapshot_error_line_is_counted_from_view_html_not_the_theme(glue):
