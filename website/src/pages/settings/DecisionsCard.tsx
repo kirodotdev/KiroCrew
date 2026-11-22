@@ -864,12 +864,17 @@ export function DecisionsCard() {
             {/* Every row's state as a SENTENCE, for a reader who gets no chip at all.
                 One per row rather than one for the shown row: a reader arrowing down
                 the list is told each point's state as they reach it, which is the only
-                way the list is scannable without sight. */}
+                way the list is scannable without sight. Browse mode reads this block
+                as text, so each row is its own paragraph, worded by one catalog
+                message that joins the point's description to its status. */}
             <div className="sr-only">
               {rows.map(row => (
-                <span key={row.id} id={pointStatusId(row.id)}>
-                  {`${POINT_WHAT[row.id] ?? row.id} ${statusWord(row)}`}
-                </span>
+                <p key={row.id} id={pointStatusId(row.id)}>
+                  {i18nT('pages.developer.featurePreviewsTab.decisions_point_status_sentence', {
+                    what: POINT_WHAT[row.id] ?? row.id,
+                    status: statusWord(row),
+                  })}
+                </p>
               ))}
             </div>
 

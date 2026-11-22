@@ -15778,6 +15778,7 @@
         "decisions_status_judged_by_small_model": "작은 모델이 판단",
         "decisions_status_needs_scope": "허락이 필요",
         "decisions_status_off": "꺼짐",
+        "decisions_point_status_sentence": "{{what}} {{status}}",
         "decisions_global": "공통 설정",
         "decisions_api_key_label": "Jev API 키",
         "decisions_api_key_desc": "{{productName}}을(를) 실행하는 컴퓨터의 이 대시보드 비밀 보관소에 들어갑니다. config.json에는 들어가지 않고, 저장한 뒤에는 다시 보여 주지 않습니다.",

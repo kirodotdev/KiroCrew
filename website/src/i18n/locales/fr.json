@@ -16620,6 +16620,7 @@
         "decisions_status_judged_by_small_model": "Jugé par le petit modèle",
         "decisions_status_needs_scope": "Ton accord manque",
         "decisions_status_off": "Désactivé",
+        "decisions_point_status_sentence": "{{what}} {{status}}",
         "decisions_global": "Réglages communs",
         "decisions_api_key_label": "Clé d'API Jev",
         "decisions_api_key_desc": "Conservée dans le coffre de secrets de ce tableau de bord, sur la machine qui exécute {{productName}}, jamais dans config.json, et jamais réaffichée après l'enregistrement.",

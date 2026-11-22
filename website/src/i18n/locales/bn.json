@@ -16199,6 +16199,7 @@
         "decisions_status_judged_by_small_model": "ছোট মডেল বিচার করেছে",
         "decisions_status_needs_scope": "তোমার সম্মতি দরকার",
         "decisions_status_off": "বন্ধ",
+        "decisions_point_status_sentence": "{{what}} {{status}}",
         "decisions_global": "সবার জন্য সেটিং",
         "decisions_api_key_label": "Jev-এর API কী",
         "decisions_api_key_desc": "যে মেশিন {{productName}} চালায়, সেখানেই এই ড্যাশবোর্ডের গোপন ভাণ্ডারে থাকে — config.json-এ কখনও নয়, আর সেভ করার পর আর দেখানো হয় না।",

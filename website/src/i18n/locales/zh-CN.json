@@ -15778,6 +15778,7 @@
         "decisions_status_judged_by_small_model": "由小模型判断",
         "decisions_status_needs_scope": "还需你同意",
         "decisions_status_off": "已关闭",
+        "decisions_point_status_sentence": "{{what}}{{status}}",
         "decisions_global": "共用设置",
         "decisions_api_key_label": "Jev API 密钥",
         "decisions_api_key_desc": "存在运行 {{productName}} 那台机器上、本面板的密钥库里，不会写进 config.json，保存后也不会再显示。",

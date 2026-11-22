@@ -16199,6 +16199,7 @@
         "decisions_status_judged_by_small_model": "Vom kleinen Modell beurteilt",
         "decisions_status_needs_scope": "Braucht dein OK",
         "decisions_status_off": "Inaktiv",
+        "decisions_point_status_sentence": "{{what}} {{status}}",
         "decisions_global": "Gemeinsame Einstellungen",
         "decisions_api_key_label": "Jev-API-Schlüssel",
         "decisions_api_key_desc": "Liegt im Geheimnis-Speicher dieses Dashboards auf dem Rechner, der {{productName}} ausführt, nie in config.json, und wird nach dem Speichern nie wieder angezeigt.",

@@ -15778,6 +15778,7 @@
         "decisions_status_judged_by_small_model": "小さなモデルが判断",
         "decisions_status_needs_scope": "許可が必要",
         "decisions_status_off": "停止中",
+        "decisions_point_status_sentence": "{{what}}{{status}}",
         "decisions_global": "共通の設定",
         "decisions_api_key_label": "Jev の API キー",
         "decisions_api_key_desc": "{{productName}} を動かしているマシンの、このダッシュボードのシークレット保管庫に入ります。config.json には入らず、保存したあと再表示されることもありません。",

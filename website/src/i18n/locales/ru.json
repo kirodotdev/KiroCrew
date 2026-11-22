@@ -17041,6 +17041,7 @@
         "decisions_status_judged_by_small_model": "Решает маленькая модель",
         "decisions_status_needs_scope": "Нужно ваше согласие",
         "decisions_status_off": "Выключено",
+        "decisions_point_status_sentence": "{{what}} {{status}}",
         "decisions_global": "Общие настройки",
         "decisions_api_key_label": "Ключ API Jev",
         "decisions_api_key_desc": "Хранится в хранилище секретов этой панели на машине, где работает {{productName}}, никогда в config.json, и после сохранения больше не показывается.",

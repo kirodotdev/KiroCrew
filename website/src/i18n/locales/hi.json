@@ -16199,6 +16199,7 @@
         "decisions_status_judged_by_small_model": "छोटे मॉडल ने तय किया",
         "decisions_status_needs_scope": "तुम्हारी हामी चाहिए",
         "decisions_status_off": "बंद",
+        "decisions_point_status_sentence": "{{what}} {{status}}",
         "decisions_global": "साझा सेटिंग",
         "decisions_api_key_label": "Jev की API कुंजी",
         "decisions_api_key_desc": "जो मशीन {{productName}} चलाती है, उसी पर इस डैशबोर्ड के सीक्रेट भंडार में रहती है — config.json में कभी नहीं, और सेव करने के बाद फिर दिखाई नहीं जाती।",

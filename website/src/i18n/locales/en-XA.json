@@ -15655,6 +15655,7 @@
         "decisions_status_judged_by_small_model": "[Ĵùðğèð ƀý ţĥè şɱàĺĺ ɱøðèĺ ··················]",
         "decisions_status_needs_scope": "[Ñèèðş ýøùŕ ØĶ ············]",
         "decisions_status_off": "[Øƒƒ ·····]",
+        "decisions_point_status_sentence": "[{{what}} {{status}} ··]",
         "decisions_global": "[Şĥàŕèð şèţţìñğş ··············]",
         "decisions_api_key_label": "[Ĵèṽ ÀÞÌ ķèý ··········]",
         "decisions_api_key_desc": "[Ķèþţ ìñ ţĥìş ðàşĥƀøàŕð'ş şèçŕèţ şţøŕè øñ ţĥè ɱàçĥìñè ţĥàţ ŕùñş {{productName}}, ñèṽèŕ ìñ çøñƒìğ.ĵşøñ, àñð ñèṽèŕ şĥøẁñ àğàìñ øñçè ýøù şàṽè ìţ. ······································]",

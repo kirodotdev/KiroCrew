@@ -16620,6 +16620,7 @@
         "decisions_status_judged_by_small_model": "Giudicato dal modello piccolo",
         "decisions_status_needs_scope": "Serve il tuo consenso",
         "decisions_status_off": "Spento",
+        "decisions_point_status_sentence": "{{what}} {{status}}",
         "decisions_global": "Impostazioni comuni",
         "decisions_api_key_label": "Chiave API di Jev",
         "decisions_api_key_desc": "Resta nell'archivio dei segreti di questa dashboard, sulla macchina che esegue {{productName}}, mai in config.json, e non viene più mostrata dopo il salvataggio.",

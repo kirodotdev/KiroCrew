@@ -16620,6 +16620,7 @@
         "decisions_status_judged_by_small_model": "Juzgado por el modelo pequeño",
         "decisions_status_needs_scope": "Falta tu permiso",
         "decisions_status_off": "Apagado",
+        "decisions_point_status_sentence": "{{what}} {{status}}",
         "decisions_global": "Ajustes compartidos",
         "decisions_api_key_label": "Clave de API de Jev",
         "decisions_api_key_desc": "Se guarda en el almacén de secretos de este panel, en la máquina que ejecuta {{productName}}, nunca en config.json, y no se vuelve a mostrar después de guardarla.",

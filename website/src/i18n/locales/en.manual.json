@@ -11059,6 +11059,7 @@
         "decisions_status_judged_by_small_model": "Judged by the small model",
         "decisions_status_needs_scope": "Needs your OK",
         "decisions_status_off": "Off",
+        "decisions_point_status_sentence": "{{what}} {{status}}",
         "decisions_global": "Shared settings",
         "decisions_api_key_label": "Jev API key",
         "decisions_api_key_desc": "Kept in this dashboard's secret store on the machine that runs {{productName}}, never in config.json, and never shown again once you save it.",
