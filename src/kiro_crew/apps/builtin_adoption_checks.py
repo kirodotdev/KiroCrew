@@ -209,6 +209,13 @@ def permission_refusal(name: str, manifest: Any) -> str | None:
     # wheel copy the owner already runs does.
     if manifest.permissions.chatSlots and not (old_manifest and old_manifest.permissions.chatSlots):
         return "permission_widening"
+    # The same for the chats its page may open: no prefix, folder, agent or memory
+    # mode the wheel copy does not declare.
+    launch = manifest.permissions.chatLaunch
+    if launch is not None and not launch.within(
+        old_manifest.permissions.chatLaunch if old_manifest else None
+    ):
+        return "permission_widening"
     approved = _approved_grants_after_manifest_change(
         existing_approved=_effective_approved_grants(name, existing),
         old_permissions=grant_source(old_manifest),

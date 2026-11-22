@@ -67,6 +67,7 @@ _STEP_DOC_NAMES = {
     "scripts/check_brand_name.py": "brand-lint",
     "scripts/check_comment_history.py": "comment-history-lint",
     "scripts/check_focus_cue.py": "focus-cue-lint",
+    "scripts/check_emoji_icons.py": "emoji-icon-lint",
     "scripts/check_feature_map.py": "feature-map-lint",
     "scripts/check_changelog_history.py": "changelog-history",
     "scripts/check_decisions_history.py": "decision-ledger-history",
@@ -137,7 +138,7 @@ class TestFastGateDocParity:
         )
 
     def test_step_table_matches_the_gates_source_gates_runs(self) -> None:
-        # The job table says there are fourteen gates; this is the table that
+        # The job table says there are fifteen gates; this is the table that
         # names them, so a gate added to or dropped from the job must move a
         # row here too.
         workflow = fast_gate_source_gate_steps()

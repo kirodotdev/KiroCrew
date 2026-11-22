@@ -270,7 +270,9 @@ async def _install_transaction(
         _suspend_app_for_session_approval_reconsent,
     )
 
-    result = await install_from_registry(name, resolved_entry=entry, start_disabled=True)
+    result = await install_from_registry(
+        name, resolved_entry=entry, start_disabled=True, via="default"
+    )
     if not result.get("ok"):
         return result
     if result.get("needsClientInstall"):

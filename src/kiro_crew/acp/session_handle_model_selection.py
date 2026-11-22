@@ -16,7 +16,7 @@ Instance fields written: ``_advertised_models_changed``, ``_available_models``,
 ``inherited_model``, ``model_pin_partial``, ``model_pin_refused``.
 
 Instance fields read: ``_engine_fallback``, ``_runtime``, ``_session_id``,
-``last_prompt_stats``, ``request_vault_identity``.
+``kas_bundle_engine_version``, ``last_prompt_stats``, ``request_vault_identity``.
 """
 
 from __future__ import annotations
@@ -207,6 +207,21 @@ def model_select_envelope(resp: dict[str, Any]) -> dict[str, Any] | None:
             envelope["currentModelId"] = current
         return envelope
     return None
+
+
+def select_lists_only_its_current_model(select: dict[str, Any]) -> bool:
+    """Whether a :func:`model_select_envelope` names one model, the one its session runs.
+
+    KAS answers ``session/load`` this way from kiro-cli 3.4 (measured on 3.4.1):
+    ``session/new`` lists every model the account is served, a reload of the same
+    session lists only its current one, and the engine still accepts a
+    ``session/set_config_option`` for a model outside it. Such a select says what
+    the session runs, not what the account is served, so it is neither the list a
+    pin is judged against nor the account's catalog. An ``auto``-only select is not
+    this shape: a ``session/new`` answers it too, and it keeps its own rules.
+    """
+    ids = [m.get("modelId") for m in select.get("availableModels", [])]
+    return len(ids) == 1 and ids[0] != DEFAULT_MODEL and ids[0] == select.get("currentModelId")
 
 
 def session_models_envelope(resp: dict[str, Any], backend: str) -> Any:
@@ -666,6 +681,17 @@ def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
     self.active_agent = (
         self._crew_agent_name(current_agent) if isinstance(current_agent, str) else ""
     )
+    store_config_options(self, resp)
+
+
+def store_config_options(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
+    """Absorb a ``configOptions`` list and the model list it or *resp* carries.
+
+    The half of :func:`store_session_config` that does not read ``modes``, so a
+    KAS ``config_option_update`` can run it too: from engine 0.66.117 the
+    ``session/new`` answer carries no ``model`` select and the engine sends it
+    in a ``config_option_update`` about 0.3 s later.
+    """
     config_options = resp.get("configOptions")
     if isinstance(config_options, list):
         self._config_options = config_options
@@ -682,9 +708,14 @@ def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
         self._kas_auto_fallback = (
             pick_served_default("auto", ids) if select.get("currentModelId") == "auto" else ""
         )
-        # A response without a select (some ``session/load`` answers) keeps the
-        # list an earlier response gave.
-        if self._runtime.acp_backend == ACP_BACKEND_KAS and ids:
+        # A response without a select (some ``session/load`` answers), or with one
+        # naming only the session's current model (a KAS ``session/load``), keeps
+        # the list an earlier response gave.
+        if (
+            self._runtime.acp_backend == ACP_BACKEND_KAS
+            and ids
+            and not select_lists_only_its_current_model(select)
+        ):
             self._kas_served_ids = ids
         # KAS sends no ``models`` object, so the select's ``currentValue`` is
         # the only place it says which model the session runs (``auto`` on a
@@ -750,6 +781,62 @@ def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
     elif isinstance(models, list):
         self._available_models = parse_advertised_models({"availableModels": models})
         self._mark_available_models_captured()
+
+
+#: How long a new KAS session waits for its ``model`` select after ``session/new``.
+#: Measured about 0.3 s on engine 0.66.117 and 0.66.119.
+#: shortcut: a fixed bound; raise it if a slow model service makes the select later.
+_KAS_SELECT_WAIT_SECS = 2.0
+#: Quiet window per drain round while waiting for that select.
+_KAS_SELECT_POLL_SECS = 0.1
+
+
+async def settle_kas_model_select(self: AcpSessionHandle) -> None:
+    """Read a KAS select that came after the session answer, then judge the default.
+
+    From engine 0.66.117 ``session/new`` answers without its ``model`` select
+    and the engine sends it in a ``config_option_update`` about 0.3 s later.
+    The KAS start path (``_wait_managed_mcp``) calls this after its notification
+    drain. On an engine known to send the select late (the bundle route, whose
+    version Crew pins) the start-path check found no select, so: while the select
+    is still missing, the queue is drained (through ``drain_init``, so every
+    frame gets the same handling) until it is in or the bound runs out, and the
+    served-default check then runs on it, whether the drain or this wait read
+    it. A no-op on other backends and on an engine that answers with the select.
+    """
+    if not self._runtime.acp_backend == ACP_BACKEND_KAS:
+        return
+    from kiro_crew.acp.kas_engine_features import engine_sends_model_select_late
+
+    if not engine_sends_model_select_late(self.kas_bundle_engine_version):
+        return
+    # Counted in rounds rather than read off a clock, so the bound holds
+    # whatever the drain's own timing does.
+    for _ in range(int(_KAS_SELECT_WAIT_SECS / _KAS_SELECT_POLL_SECS)):
+        if self._kas_served_ids or not self._runtime.is_alive():
+            break
+        await self.drain_init(
+            duration=_KAS_SELECT_POLL_SECS,
+            idle_exit=_KAS_SELECT_POLL_SECS,
+            no_report_ceiling=0.0,
+        )
+    if self._kas_served_ids:
+        await self.ensure_served_default()
+
+
+def absorb_config_options(self: AcpSessionHandle, config_options: list[Any]) -> None:
+    """Take the ``configOptions`` a ``config_option_update`` pushed.
+
+    One reader for the live update path and the start-up drain. On KAS it is
+    :func:`store_config_options`, since from engine 0.66.117 the ``model``
+    select arrives here rather than in ``session/new``; other backends only
+    replace the options and resync effort.
+    """
+    if self._runtime.acp_backend == ACP_BACKEND_KAS:
+        store_config_options(self, {"configOptions": config_options})
+    else:
+        self._config_options = config_options
+        self._sync_effort_levels()
 
 
 def _feed_advertised_model_cache(self: AcpSessionHandle) -> None:

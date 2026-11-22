@@ -361,6 +361,11 @@ class AcpProvider(LLMProvider):
         return self._client.work_scratch_dir
 
     @property
+    def sandbox_mode(self) -> str | None:
+        """The tier this session's process was spawned under (H14), read like ``work_scratch_dir``."""
+        return self._client.sandbox_mode
+
+    @property
     def child_fidelity_aware(self) -> bool:
         """See AcpSessionHandle.child_fidelity_aware.
 
@@ -532,17 +537,25 @@ class AcpProvider(LLMProvider):
     @property
     def tested_version_notice(self) -> str:
         """The notice when this session's harness reports a release outside the one
-        Crew tested it on (goose, codex, claude, pi and kiro-cli today, and the kiro-cli
-        a KAS relay runs under), else ``""``. A warning, never a refusal.
+        Crew tested it on (goose, codex, claude, pi, deepseek and kiro-cli today, and
+        the kiro-cli a KAS relay runs under), else ``""``. A warning, never a refusal.
         """
-        from kiro_crew.acp.client_turn_control import untested_version_issue
+        from kiro_crew.acp.client_turn_control import (
+            TESTED_VERSION_READ_AT_SPAWN,
+            untested_version_issue,
+        )
 
         # No default: a client with no backend is not kiro-cli, whose id is "".
         backend = getattr(self._client, "backend", None)
-        if isinstance(backend, str) and (
-            notice := untested_version_issue(backend, self.agent_version)
-        ):
-            return notice
+        if isinstance(backend, str):
+            # A handshake that names no release is not read: its spawn's disk read is.
+            version = (
+                getattr(self._client, "harness_installed_version", "")
+                if backend in TESTED_VERSION_READ_AT_SPAWN
+                else self.agent_version
+            )
+            if notice := untested_version_issue(backend, version):
+                return notice
         notice = getattr(self._client, "kas_untested_version_notice", "")
         return notice if isinstance(notice, str) else ""
 
@@ -569,6 +582,13 @@ class AcpProvider(LLMProvider):
         ``auto`` it asked for, because its folder's settings file is not Crew's,
         else ``""``. Recorded when the settings seed ran."""
         notice = getattr(self._client, "claude_mode_pinned_notice", "")
+        return notice if isinstance(notice, str) else ""
+
+    @property
+    def engine_fallback_notice(self) -> str:
+        """The notice that this chat runs on kiro-cli because the build default's
+        first move to Kiro Crew's engine failed, else ``""``. Recorded at the start."""
+        notice = getattr(self._client, "kas_engine_fallback_notice", "")
         return notice if isinstance(notice, str) else ""
 
     @property
@@ -667,6 +687,16 @@ class AcpProvider(LLMProvider):
         """
         value = getattr(self._client, "kas_auto_approved_capabilities", None)
         return value if isinstance(value, frozenset) else None
+
+    @property
+    def kas_folder_hooks_projected(self) -> bool:
+        """Whether this session's registered batch projects a folder agent's hooks.
+
+        Read off the live handle (``AcpSessionHandle.kas_folder_hooks_projected``):
+        only a KAS session records it, and a client with no handle answers False.
+        """
+        handle = getattr(self._client, "_handle", None)
+        return getattr(handle, "kas_folder_hooks_projected", False) is True
 
     @property
     def kas_projected_agent(self) -> str:

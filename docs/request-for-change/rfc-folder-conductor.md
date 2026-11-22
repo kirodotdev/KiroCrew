@@ -3,8 +3,8 @@ title: Folder conductor — every sidebar folder is a conductor you can talk to
 status: draft
 author: zezhexu
 created: 2026-10-19
-last-audited: 2026-10-19
-audited-at: 88914fd0d1
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: null
 implementation-prs: []
 tracking-issues: [18335, 22010]

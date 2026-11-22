@@ -142,12 +142,23 @@ export interface TailnetMobileQr {
  * `tunnel.relay_enabled`. `requested` is what config asks for. `locked` says this
  * build ignores the setting (an LTS build's tunnel lock), so no restart connects.
  * `running` says the relay client is connected now, so other devices can reach this
- * Crew. The dashboard can only turn it off; turning it on is the terminal command.
+ * Crew. `relayed` says this page reached the Crew through the Kiro relay, where the
+ * server refuses the off (it could only be undone at the machine), so the card
+ * shows the state read-only. The dashboard can only turn it off; turning it on is
+ * the terminal command.
  */
+/** The one key of the `/api/remote-control` read (the card and the settings search). */
+export const REMOTE_CONTROL_QUERY_KEY = ['remote-control'] as const
+
 export interface RemoteControlState {
   requested: boolean
   locked: boolean
   running: boolean
+  /** Not connected yet but on its way (starting, or waiting for a host token): no restart needed. */
+  connecting?: boolean
+  relayed?: boolean
+  /** Why config keeps a requested relay from starting, in plain words; absent otherwise. */
+  problem?: string
 }
 
 export function createRemoteAccessEndpoints({ get, post, put, j }: ClientTransport) {

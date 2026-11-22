@@ -169,6 +169,7 @@ def _render_session_summary(resp: dict[str, Any]) -> str:
     it and says where the route left something out.
     """
     state_line = "still working" if resp.get("running") else "idle"
+    state_line += _activity_suffix(resp)
     head = f"\U0001f9ed `{resp.get('target', '')}` — {resp.get('title', '')} ({state_line})"
     if not resp.get("enabled"):
         return (
@@ -885,14 +886,30 @@ def _run_session_send(args: dict[str, Any], ctx: ToolContext) -> str:
             "is running, so it reads it mid-work. Watch what it does with it "
             "with session_read_message." + caps
         )
+    if resp.get("pending_steer"):
+        return (
+            f"\U0001f4e8 pending-steer for `{target}` (steer {str(resp.get('steer_id', ''))[:16]}) "  # emoji-ok: tool text, the glyph of its sibling replies
+            "— it could not take your message "
+            "this instant, so the gateway holds it and injects it at the target's next "
+            "tool-call boundary in the same turn. session_status then shows "
+            "delivered@<time> for that steer id; if the turn ends first it is queued and "
+            "the next turn starts at once. Do not re-send it." + caps
+        )
+    if resp.get("steer_state"):
+        # Not pending: the same steer is still on its way into the running turn.
+        return (
+            f"\U0001f4e8 Already on its way to `{target}` — the same steer is still going "  # emoji-ok: tool text, the glyph of its sibling replies
+            "into its running turn. Nothing was sent again." + caps
+        )
     if resp.get("started"):
         return (
             f"\U0001f4e8 Delivered to `{target}` — it started a turn on your message. "
             "Watch the result with session_read_message." + caps
         )
-    # A steer that could not be injected lands here, on the queue: say so, or
-    # the caller reads "queued" as "the target was busy" and never learns its
-    # steer did not cut anything.
+    # A plain send that waits for the turn to end lands here, and so does a steer
+    # the gateway queued without holding it (no pending_steer): say so, or the
+    # caller reads "queued" as "the target was busy" and never learns its steer
+    # did not cut anything.
     queued_note = (
         " Your steer could not go into the running turn, so it was queued instead." if steer else ""
     )
@@ -975,12 +992,29 @@ def _run_session_broadcast(args: dict[str, Any], ctx: ToolContext) -> str:
             lines.append(f"  \u2705 `{target}` — cut into its running turn")
         elif row.get("started"):
             lines.append(f"  \u2705 `{target}` — started a turn on it")
+        elif row.get("pending_steer"):
+            lines.append(
+                f"  ✅ `{target}` — pending-steer {str(row.get('steer_id', ''))[:16]}: injected at its next tool-call "  # emoji-ok: tool text, the glyph of its sibling rows
+                "boundary, or queued with the next turn started at once if the turn ends first"
+            )
+        elif row.get("steer_id") and row.get("steer_state"):
+            # Not pending: the same steer is still on its way into the running turn.
+            lines.append(
+                f"  \u2705 `{target}` — same steer {str(row['steer_id'])[:16]} already on its "  # emoji-ok: tool text, the glyph of its sibling rows
+                "way into its running turn; nothing was sent again"
+            )
         else:
-            # A steer that could not be injected lands here, for the reason
-            # session_send spells out: reporting a plain queue would leave the
-            # caller believing that target was interrupted.
-            fell_back = " (steer fell back to the queue)" if mode == "steer" else ""
-            lines.append(f"  \u2705 `{target}` — queued until its turn ends{fell_back}")
+            # A steer the gateway queued without holding it lands here, for the
+            # reason session_send spells out: reporting a plain queue would leave
+            # the caller believing that target was interrupted.
+            fell_back = (
+                " (steer fell back to the queue)"
+                if mode == "steer" and not row.get("steer_state")
+                else ""
+            )
+            lines.append(
+                f"  \u2705 `{target}` — queued until its turn ends{fell_back}"  # emoji-ok: tool text, the glyph of its sibling rows
+            )
     if delivered < requested:
         lines.append(
             "Some targets were not reached — the rows above say which and why. "
@@ -1124,23 +1158,27 @@ def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
 
 
 def _run_session_handoff(args: dict[str, Any], ctx: ToolContext) -> str:
+    body: dict[str, Any] = {"target": args["target"], "to": args["to"]}
+    if args.get("bind") is True:
+        body["bind"] = True
     try:
-        resp = ctx.client.post(
-            "/api/session-control/handoff",
-            {"target": args["target"], "to": args["to"]},
-            session_key=ctx.caller_key,
-        )
+        resp = ctx.client.post("/api/session-control/handoff", body, session_key=ctx.caller_key)
     except DashboardError as refused:
         return f"Error: could not hand that session over: {refused.error}"
     target = resp.get("target", args["target"])
     manager = resp.get("manager", args["to"])
-    return (
+    text = (
         f"\U0001f91d Handed `{target}` to `{manager}`. That session manages it now: it "
         "can send to, read, stop and close it. If you are a fenced session you lose "
         "that reach, unless agent.session_manager_chain is on and you still manage "
         "that session. It cannot hand the session back to you. Who created it is "
         "unchanged."
     )
+    if resp.get("bind") is True:
+        text += f" It may also bind `{target}` to its work-ledger items now; you may not."
+        if resp.get("release_note"):
+            text += f" {resp['release_note']}"
+    return redact(text)
 
 
 def _run_session_adopt(args: dict[str, Any], ctx: ToolContext) -> str:
@@ -1182,14 +1220,36 @@ def _run_session_release(args: dict[str, Any], ctx: ToolContext) -> str:
     )
 
 
-def _status_activity_suffix(row: dict[str, Any]) -> str:
-    """``, last activity 40s ago — <link>`` from a live status row's own fields.
+def _activity_suffix(row: dict[str, Any]) -> str:
+    """The closed activity kinds a live session row reports."""
+    labels = {
+        "turn": "turn",
+        "admission": "turn admission",
+        "subagents": "sub-agents",
+        "subagents_queued": "sub-agents queued",
+        "workflow": "workflow",
+        "synthesis": "synthesis",
+        "preparing": "preparation",
+        "compaction": "compaction",
+        "automation": "automation",
+        "unknown": "unknown work",
+    }
+    raw = row.get("activity")
+    if not isinstance(raw, list):
+        return ""
+    shown = [labels[kind] for kind in raw if kind in labels]
+    return f", active: {', '.join(shown)}" if shown else ""
 
-    Both are state, never transcript text: the server stamps the newest row's
-    age, and attaches a credential-free dashboard link only for a code channel's
-    conductor. Absent fields add nothing, so ordinary rows read as before.
+
+def _status_activity_suffix(row: dict[str, Any]) -> str:
+    """``, active: workflow, last activity 40s ago — <link>`` from a live row.
+
+    Activity is a closed server-authored list. The other fields are state, never
+    transcript text: the server stamps the newest row's age, and attaches a
+    credential-free dashboard link only for a code channel's conductor. Absent
+    fields add nothing, so ordinary rows read as before.
     """
-    parts = ""
+    parts = _activity_suffix(row)
     since = row.get("since_activity_s")
     if isinstance(since, int) and not isinstance(since, bool) and since >= 0:
         if since < 120:
@@ -1202,6 +1262,14 @@ def _status_activity_suffix(row: dict[str, Any]) -> str:
     link = row.get("dashboard_link")
     if isinstance(link, str) and link:
         parts += f" — {link}"
+    # Peer steers held for a tool boundary, and how recent ones settled: an id the
+    # send reply named, and a state, never text.
+    receipts = [r for r in row.get("steer_receipts") or [] if isinstance(r, dict)][:8]
+    if receipts:
+        shown = ", ".join(
+            f"{str(r.get('steer_id', ''))[:16]} {str(r.get('state', ''))[:40]}" for r in receipts
+        )
+        parts += f"; steers: {shown}"
     return parts
 
 
@@ -1227,6 +1295,7 @@ def _run_session_read_message(args: dict[str, Any], ctx: ToolContext) -> str:
     state_line = "still working" if resp.get("running") else "idle"
     if resp.get("pending_approval"):
         state_line = _pending_approval_phrase(resp)
+    state_line += _activity_suffix(resp)
     queued = resp.get("queue_depth", 0)
     if queued:
         state_line += f", {queued} message(s) queued"
@@ -1495,3 +1564,41 @@ def _run_session_queue(args: dict[str, Any], ctx: ToolContext) -> str:
     except DashboardError as refused:
         return f"Error: could not {action} that session's queue: {refused.error}"
     return _render_session_queue(resp)
+
+
+def _run_session_run_queued(args: dict[str, Any], ctx: ToolContext) -> str:
+    try:
+        resp = ctx.client.post(
+            "/api/session-control/run-queued",
+            {"target": args["target"], "queue_id": args["queue_id"]},
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        return f"Error: could not run that queued message: {refused.error}"
+    target = " ".join(str(resp.get("target") or args["target"]).split())
+    queue_id = " ".join(str(resp.get("queue_id") or args["queue_id"]).split())
+    outcome = resp.get("outcome")
+    if outcome == "started":
+        return f"\u25b6\ufe0f `{target}` started your queued message `{queue_id}` now. Nothing was stopped."
+    if outcome == "stopping":
+        return (
+            f"\U0001f6d1 Stopped the running turn on `{target}`; its work is discarded. "
+            f"Your queued message `{queue_id}` runs next, ahead of the rest of the queue, "
+            "which is kept. Its transcript shows the stop card."
+        )
+    if outcome == "idle":
+        return (
+            f"\u2139\ufe0f `{target}` had no active turn to stop. Your queued message "
+            f"`{queue_id}` is at the front and runs when the target's turn ends."
+        )
+    if outcome == "compacting":
+        # ``stop`` rides along only when the entry was promoted before the decline.
+        place = "is at the front of" if resp.get("stop") else "keeps its place in"
+        return (
+            f"\u2139\ufe0f `{target}` is compacting its context, so nothing was stopped. "
+            f"`{queue_id}` {place} the queue; try again once the compaction finishes."
+        )
+    return (
+        f"\u2139\ufe0f `{target}`: {resp.get('info') or 'stop already in progress'} — "
+        f"nothing changed, and `{queue_id}` keeps its place in the queue."
+    )

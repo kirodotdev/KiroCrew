@@ -1,7 +1,8 @@
 # Getting Started with Kiro Crew
 
 Kiro Crew is an autonomous AI agent layer that runs on your own machine on top of
-the kiro-cli (KiroACP) backend. It adds persistent memory, scheduled jobs,
+a Kiro agent engine: by default KAS, kiro-cli's v3 engine, reached through
+kiro-cli. It adds persistent memory, scheduled jobs,
 background subagents, self-learning, and multi-session orchestration, and you
 talk to it from a web dashboard, from the terminal, or from messaging channels
 like Slack, Discord, and Telegram.
@@ -12,7 +13,7 @@ like Slack, Discord, and Telegram.
 |-------------|------------|-------|
 | **Python** + pip | Backend | `>= 3.12` |
 | **Node.js** + npm | Building the dashboard from source | `>= 22.12` (24 LTS recommended) |
-| **`kiro-cli`** | Driving the LLM | Required, on your `PATH` |
+| **`kiro-cli`** | Driving the LLM | On your `PATH`, unless you run Kiro Crew's own engine (`kirocrew kas install`) |
 
 Node is only needed to *build* the dashboard. The prebuilt wheel, the macOS DMG,
 and the Linux AppImage all ship the dashboard already bundled, so if you install
@@ -77,9 +78,10 @@ The dashboard has to be built before the backend install, because the built
 `website/dist` is staged into the package and served by the gateway. `make
 build` does both steps plus a `.venv`.
 
-### Agent backend: `kiro-cli` (required)
+### Agent backend: `kiro-cli`
 
-`kiro-cli` is the only provider (`agent.provider` is fixed to `acp`). Install it
+The default harness is KAS (`agent.acp_backend: kas`), reached through
+kiro-cli's ACP relay; `kiro` selects kiro-cli's own engine. Install kiro-cli
 per its own docs, make sure the binary resolves on your `PATH`, and log in:
 
 ```bash
@@ -88,6 +90,19 @@ kiro-cli login
 
 On the first dashboard launch, the Set up Kiro page walks through installing the
 CLI and completing sign-in.
+
+To run without kiro-cli, `kirocrew kas install` downloads Kiro Crew's own
+pinned engine and Node runtime, and `agent.kas_bundle: true` makes the `kas`
+backend use it; `kirocrew kas route` prints which program owns the sign-in.
+
+**Where to sign in on the Kiro Agent (KAS) harness.** Where kiro-cli cannot run
+(not installed, or not signed in), KAS chats run on Kiro Crew's own engine and use
+Kiro Crew's own Kiro sign-in. Sign in from the dashboard's **Kiro account**
+settings tab (a chat that needs it
+offers the same sign-in above the message box), or in a terminal on the gateway host with
+`kirocrew kas login`. A chat error saying "Not signed in to Kiro" or "Access
+denied. Please check your authentication." is fixed there; then send the message
+again.
 
 Already a kiro-cli user? [Coming from kiro-cli](coming-from-kiro-cli.md) covers
 what carries over (agents, MCP servers, steering, your login), why a Crew chat

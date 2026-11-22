@@ -359,6 +359,16 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
                 reclaimable: fmtBytes(data.reclaimable_bytes),
               })}
             </p>
+            {/* Another program's store, never part of the totals above and never
+                moved from here, so it is said beside them rather than added in. */}
+            {(data.claude_code?.sessions ?? 0) > 0 && (
+              <p className="text-[12px] text-muted mt-0.5">
+                {i18nT('pages.sessionStorage.claude_code_kept', {
+                  count: data.claude_code?.sessions ?? 0,
+                  size: fmtBytes(data.claude_code?.bytes ?? 0),
+                })}
+              </p>
+            )}
           </div>
 
           {/* Blocked reason */}

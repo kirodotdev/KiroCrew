@@ -4,6 +4,7 @@
  * first, newest unread first, and no folder position is ever written.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { Profiler } from 'react'
 import { render, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -139,7 +140,7 @@ const SLOTS = [
 ] as unknown as ChatSlot[]
 const UNREAD = ['s-b', 's-d']
 
-function renderSidebar(folders: ChatFolder[], unread: string[] = UNREAD) {
+function renderSidebar(folders: ChatFolder[], unread: string[] = UNREAD, onCommit: () => void = () => {}) {
   const store = createTestStore({
     dashboard: {
       status: {}, connected: true, slots: SLOTS, approvalMode: 'normal',
@@ -160,10 +161,12 @@ function renderSidebar(folders: ChatFolder[], unread: string[] = UNREAD) {
       <Provider store={store}>
         <ThemeProvider>
           <MemoryRouter>
-            <ChatSidebar
-              slots={SLOTS} activeSlot={null} unreadSlots={u}
-              history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
-            />
+            <Profiler id="sidebar" onRender={() => onCommit()}>
+              <ChatSidebar
+                slots={SLOTS} activeSlot={null} unreadSlots={u}
+                history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
+              />
+            </Profiler>
           </MemoryRouter>
         </ThemeProvider>
       </Provider>
@@ -220,6 +223,55 @@ describe('chat sidebar — move folders with unread chats to the top', () => {
     // Display only: the stored positions and the server-side mode are untouched.
     expect(view.qc.getQueryData<ChatFolder[]>(['chat-folders'])).toEqual(FOLDERS)
     expect(patchConfig).not.toHaveBeenCalled()
+  })
+
+  it('sits behind a separator under the folder modes and names its note as its description', async () => {
+    localStorage.setItem('mc-sidebar-folders-unread-first', '1')
+    const view = renderSidebar(FOLDERS)
+    fireEvent.keyDown(view.getByLabelText('Sort and filter sessions'), { key: 'Enter' })
+    const item = await view.findByTestId('folder-order-unread-first')
+    expect(item.previousElementSibling).toHaveAttribute('role', 'separator')
+    expect(item).toHaveAccessibleDescription('Folders cannot be dragged into place while this is on')
+  })
+
+  it.each([['off', false], ['on', true]])('%s, the pointer crossing the list re-renders the sidebar only while the option is on', (_state, on) => {
+    if (on) localStorage.setItem('mc-sidebar-folders-unread-first', '1')
+    const onCommit = vi.fn()
+    const view = renderSidebar(FOLDERS, UNREAD, onCommit)
+    const list = view.getByRole('region', { name: 'Sessions' })
+    onCommit.mockClear()
+    fireEvent.pointerEnter(list)
+    fireEvent.pointerLeave(list)
+    expect(onCommit.mock.calls.length > 0).toBe(on)
+  })
+
+  it('turned on from the menu while the pointer is over the list, the order holds until it leaves', async () => {
+    const view = renderSidebar(FOLDERS)
+    const list = view.getByRole('region', { name: 'Sessions' })
+    fireEvent.pointerEnter(list)
+    fireEvent.keyDown(view.getByLabelText('Sort and filter sessions'), { key: 'Enter' })
+    fireEvent.click(await view.findByTestId('folder-order-unread-first'))
+    await waitFor(() => expect(drawnFolderIds(view.container)).toEqual(['fd', 'fb', 'fa', 'fc']))
+    // D's chat is read now; the live order would be B first and D back in place.
+    view.setUnread(['s-b'])
+    expect(drawnFolderIds(view.container)).toEqual(['fd', 'fb', 'fa', 'fc'])
+    fireEvent.pointerLeave(list)
+    expect(drawnFolderIds(view.container)).toEqual(['fb', 'fa', 'fc', 'fd'])
+  })
+
+  it('on, a hover holds the order last drawn, not the one the sidebar mounted with', () => {
+    localStorage.setItem('mc-sidebar-folders-unread-first', '1')
+    const view = renderSidebar(FOLDERS)
+    const list = view.getByRole('region', { name: 'Sessions' })
+    // D's chat is read before the pointer arrives, so B floats alone.
+    view.setUnread(['s-b'])
+    expect(drawnFolderIds(view.container)).toEqual(['fb', 'fa', 'fc', 'fd'])
+    fireEvent.pointerEnter(list)
+    expect(drawnFolderIds(view.container)).toEqual(['fb', 'fa', 'fc', 'fd'])
+    view.setUnread(['s-b', 's-d'])
+    expect(drawnFolderIds(view.container)).toEqual(['fb', 'fa', 'fc', 'fd'])
+    fireEvent.pointerLeave(list)
+    expect(drawnFolderIds(view.container)).toEqual(['fd', 'fb', 'fa', 'fc'])
   })
 
   it('flipping the toggle while the pointer is over the list applies at once, both ways', async () => {

@@ -189,47 +189,6 @@ def test_lesson_tail_cannot_overwrite_a_later_owner_write(env, monkeypatch, name
     assert tuple(after) == tuple(before)
 
 
-@pytest.mark.parametrize("source", ["user_explicit", "consolidation"])
-def test_lazy_lesson_backfill_cannot_overwrite_owner_edit(env, monkeypatch, source):
-    tier = env.tiers[""]
-    old_rule = "Validate database backups before deployment"
-    new_rule = "Keep network retries below three attempts"
-    assert tier.write_lesson(old_rule)
-    key = tier.get_lessons()[0]["key"]
-    paused, resume = Event(), Event()
-
-    def embed(text):
-        if text == old_rule:
-            paused.set()
-            assert resume.wait(10)
-            return [1.0, 0.0]
-        return [0.0, 1.0] if text == new_rule else [1.0, 1.0]
-
-    tier.embed_fn = embed
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(
-            tier.write_lesson, "Archive monthly invoices for accounting", source=source
-        )
-        try:
-            assert paused.wait(10)
-            assert (
-                tier.set_semantic(
-                    key,
-                    {"rule": new_rule, "category": "knowledge", "negative": None},
-                    1.0,
-                    "user_explicit",
-                )
-                is None
-            )
-            tier._backfill_lesson_embeddings(pace=False)
-        finally:
-            resume.set()
-        wait_until(future.done)
-        assert future.result()
-    row = next(row for row in tier.get_lessons() if row["key"] == key)
-    assert struct.unpack("2f", row["embedding"]) == (0.0, 1.0)
-
-
 @pytest.mark.parametrize("name", ["", "member-alice"])
 def test_recall_inference_does_not_hold_database_lock(env, name):
     tier = env.tiers[name]

@@ -50,6 +50,7 @@ reader (``docs/system-specs/modules/subagent.md``).
 from __future__ import annotations
 
 import logging
+import math
 import os
 import shutil
 import sys
@@ -1148,9 +1149,10 @@ class SpawnFloorReading:
             return f"{head}; {self.unknown_note} — BLOCKED: {_BLOCKED_NOTE}"
         if self.available_gb < 0:
             return f"{head}; the gate's memory figure is unreadable here, so starts are not held"
+        figure, bar = self._figure_and_bar_text()
         line = (
-            f"{head}; the gate reads {self.available_gb:.1f} GB, a top-level start needs at least "
-            f"{self.min_start_gb:.2f} GB (more for a dedicated one or while other "
+            f"{head}; the gate reads {figure} GB, a top-level start needs at least "
+            f"{bar} GB (more for a dedicated one or while other "
             "starts are warming)"
         )
         if self.blocked:
@@ -1166,11 +1168,26 @@ class SpawnFloorReading:
                 f"new top-level subagents cannot start now ({self.unknown_note}); "
                 "they wait in the queue"
             )
+        figure, bar = self._figure_and_bar_text()
         return (
             f"new top-level subagents cannot start now — the gate reads "
-            f"{self.available_gb:.1f} GB and one needs at least {self.min_start_gb:.2f} GB; "
+            f"{figure} GB and one needs at least {bar} GB; "
             "they wait in the queue until memory frees"
         )
+
+    def _figure_and_bar_text(self) -> tuple[str, str]:
+        """The gate figure and the start bar at two decimals, ordered as the gate compares them.
+
+        Rounding both to nearest can print a held figure equal to or above its bar,
+        so a blocked reading rounds the figure down and the bar up.
+        """
+        if not self.blocked:
+            return f"{self.available_gb:.2f}", f"{self.min_start_gb:.2f}"
+        cents_figure = math.floor(round(self.available_gb * 100, 6))
+        cents_bar = math.ceil(round(self.min_start_gb * 100, 6))
+        if cents_figure >= cents_bar:
+            cents_figure = cents_bar - 1
+        return f"{cents_figure / 100:.2f}", f"{cents_bar / 100:.2f}"
 
 
 def _read_spawn_floor_figure(min_gb: float) -> tuple[float, str]:

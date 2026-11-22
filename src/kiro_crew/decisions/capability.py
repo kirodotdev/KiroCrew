@@ -47,7 +47,9 @@ still holds.
 from __future__ import annotations
 
 import logging
+import re
 
+from kiro_crew import edition
 from kiro_crew.platform.governance_profiles import (
     governance_answer_generation,
     governance_permits,
@@ -78,16 +80,32 @@ DECISIONS_LOCAL_SCOPE = "capabilities.decisions_local"
 #: :data:`PROVIDER_SAGEMAKER`. A ceiling that does not name the list permits every one,
 #: so the standalone default is unchanged. "No model" (:data:`PROVIDER_NONE`) is never
 #: asked: it sends and runs nothing, so it is the way out under any ceiling. An
-#: endpoint the owner wrote by hand has no id and is never asked either.
+#: endpoint the owner wrote by hand has no id and is never asked either; an LTS
+#: build refuses it, and hosted Jev, whatever the list says (:func:`edition_refuses`).
 PROVIDERS_LIST = "providers"
 #: Allow-list id of the hosted provider; the stored preset id, so it never moves.
 PROVIDER_HOSTED = "jev"
 #: Allow-list id of any ``sagemaker://`` address, valid or not.
 PROVIDER_SAGEMAKER = "sagemaker"
 #: What ``local_models.active_id`` answers for a hand-written address: not a list id.
+#: An LTS build's :func:`provider_id` answers it too, and refuses it
+#: (:func:`edition_refuses`).
 _UNGOVERNED = "custom"
 #: "No model": never asked about, never refused.
 PROVIDER_NONE = "none"
+#: Allow-list id of Cloudflare's Clef model on Workers AI, in an LTS build only
+#: (:func:`provider_id`). In ``oss`` a Clef address is a hand-written endpoint.
+PROVIDER_CLEF = "clef"
+
+#: The exact Clef address ``docs/decisions.md`` documents, model name and all. Matched
+#: whole, so no other host or path can borrow the id.
+_CLEF_ENDPOINT = re.compile(
+    r"https://api\.cloudflare\.com/client/v4/accounts/[0-9a-fA-F]{32}"
+    r"/ai/run/@cf/cloudflare/(clef|clef-flash)"
+)
+#: Jev's registrable domain. An LTS build refuses every endpoint host under it
+#: (:func:`targets_denied`), whatever a policy's lists say.
+_JEV_DOMAIN = "typesafe.ai"
 
 #: Tool name the SEL ``governance_decision`` row carries, so an operator reading
 #: the trail can tell this decision apart from the consent rows beside it.
@@ -121,6 +139,8 @@ def provider_id(endpoint: object, model: object) -> str | None:
     ``None`` for any other address: an endpoint the owner wrote by hand is theirs to
     point anywhere, so the list does not govern it. The row's ``enabled`` (the full
     off switch) and the ``endpoints`` list still do, on every path that asks them.
+    An LTS build answers :data:`PROVIDER_CLEF` for Clef's documented address and
+    ``custom``, which it refuses, for any other.
 
     A preset is read from the address's shape. That is enough for an allow list: a
     preset-shaped address is sent to only while the runtime attests that preset's
@@ -133,7 +153,27 @@ def provider_id(endpoint: object, model: object) -> str | None:
     if is_sagemaker_endpoint(endpoint):
         return PROVIDER_SAGEMAKER
     named = local_models.active_id(endpoint, model)
-    return None if named == _UNGOVERNED else named
+    if named != _UNGOVERNED:
+        return named
+    if not edition.is_lts():
+        return None
+    # LTS: a hand-written address may point at Jev's host, so it gets an id the
+    # build refuses (:func:`edition_refuses`). Only Clef's exact documented address
+    # is told apart, and only when the model names the one in its path.
+    clef = _CLEF_ENDPOINT.fullmatch(endpoint.strip()) if isinstance(endpoint, str) else None
+    if clef is not None and model == clef.group(1):
+        return PROVIDER_CLEF
+    return _UNGOVERNED
+
+
+def edition_refuses(provider: str | None) -> bool:
+    """Whether this build refuses decision model *provider* whatever any tier says.
+
+    An LTS build locks hosted Jev off (:data:`PROVIDER_HOSTED`) and every
+    hand-written address (``custom``), because one can point at Jev's
+    host. No policy, profile or local config widens it. ``False`` in ``oss``.
+    """
+    return edition.is_lts() and provider in (PROVIDER_HOSTED, _UNGOVERNED)
 
 
 def provider_ids() -> tuple[str, ...]:
@@ -250,6 +290,11 @@ def is_decisions_denied(
         if local:
             return any(denied_sides(surface_key))
         return _row_denied(surface_key, DECISIONS_SCOPE)
+    if edition_refuses(provider):
+        from kiro_crew.edition_locks import LOCKED_REASON
+
+        _audit_row(surface_key, DECISIONS_SCOPE, "denied", LOCKED_REASON)
+        return True
     _prime_profiles()
     before = _answer_generation()
     denied = [_row_denied(surface_key, DECISIONS_SCOPE)]
@@ -279,7 +324,8 @@ def permitted_providers(surface_key: str = DASHBOARD_SURFACE_KEY) -> dict[str, b
     _prime_profiles()
     before = _answer_generation()
     answers = {
-        pid: not _row_denied(surface_key, DECISIONS_SCOPE, f"{PROVIDERS_LIST}:{pid}", audit=False)
+        pid: not edition_refuses(pid)
+        and not _row_denied(surface_key, DECISIONS_SCOPE, f"{PROVIDERS_LIST}:{pid}", audit=False)
         for pid in ids
     }
     if before is None or _answer_generation() != before:
@@ -344,23 +390,7 @@ def _row_denied(surface_key: str, scope: str, item: str = "", *, audit: bool = T
     it, for a reader that asks about many items to decide what to offer rather than
     to act on an answer.
     """
-    from kiro_crew.edition_locks import UNNAMED_REASON, follows_policy, locked_off
-
     try:
-        if scope == DECISIONS_SCOPE and not item and locked_off():
-            # LTS: content sent to a decision provider follows this hosted
-            # row and is off by default (RFC LTS edition, Red "Content sent
-            # to external decisions"). Evaluated without the seam's own audit, so
-            # the one row written records the final answer.
-            decision = governance_permits(
-                scope, "", session_key=surface_key, log_warning=False, fail_closed=True
-            )
-            permitted = bool(getattr(decision, "permitted", False))
-            denied = not permitted or not follows_policy(decision)
-            reason = UNNAMED_REASON if permitted and denied else getattr(decision, "reason", "")
-            if audit:
-                _audit_row(surface_key, scope, "denied" if denied else "allowed", reason)
-            return denied
         if not audit:
             decision = governance_permits(
                 scope, item, session_key=surface_key, log_warning=False, fail_closed=True
@@ -401,8 +431,9 @@ def targets_denied(
     ``endpoints:<host>`` for every reading of its host. A ruleset the
     policy does not name permits, so a ceiling without these lists answers exactly
     as before. Every item is evaluated and audited, never short-circuited, so which
-    rows appear does not depend on another item's answer. Fail-closed, like
-    :func:`is_decisions_denied`. Blocking: call off the event loop.
+    rows appear does not depend on another item's answer. The one exception is an
+    LTS build's lock on Jev's host, refused first with one row of its own.
+    Fail-closed, like :func:`is_decisions_denied`. Blocking: call off the event loop.
 
     ``audit=False`` gives the same answer, with the same policy-generation bracket,
     without writing a ``governance_decision`` row for any item: the settings read that
@@ -415,12 +446,23 @@ def targets_denied(
     items = [f"points:{point}"] if point is not None else []
     if model is not None:
         items.append(f"models:{model}")
+    hosts: tuple[str, ...] = ()
     if endpoint is not None:
         # Every host a client could read the endpoint as, so a parser
         # disagreement or a root-dot spelling cannot reach a refused host.
         from kiro_crew.platform.governance_parts.matching import url_policy_hosts
 
-        items.extend(f"endpoints:{host}" for host in url_policy_hosts(endpoint))
+        hosts = url_policy_hosts(endpoint)
+        items.extend(f"endpoints:{host}" for host in hosts)
+    if edition.is_lts() and any(h == _JEV_DOMAIN or h.endswith("." + _JEV_DOMAIN) for h in hosts):
+        # LTS locks Jev off by its host too, whatever the ``endpoints`` list says. The
+        # backstop for an address :func:`edition_refuses` does not see: a hand-written
+        # one already is ``custom``, so this catches a preset-shaped one on Jev's host.
+        if audit:
+            from kiro_crew.edition_locks import LOCKED_REASON
+
+            _audit_row(surface_key, DECISIONS_SCOPE, "denied", LOCKED_REASON)
+        return True
     # One request's items must be answered by ONE policy: a swap between two of
     # them could pair one policy's permit for the model with another's permit for
     # the endpoint. Bracketed as in :func:`denied_sides`, failing closed if it moved.

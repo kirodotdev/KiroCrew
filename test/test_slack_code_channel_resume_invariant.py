@@ -278,6 +278,7 @@ PRODUCERS: list[tuple[str, str | None, str | None, bool, bool]] = [
     ("queue drain: monitor wake", "nudge", None, False, True),
     ("queue drain: cron run", "inject", "cron", False, True),
     ("queue drain: MCP app message", "inject", "mcp_app", False, True),
+    ("queue drain: MCP resource wake", "inject", "resource", False, True),
     ("queue drain: automation notice", "inject", "automation_notice", False, True),
     ("queue drain: heartbeat prompt", "inject", "heartbeat", False, True),
     ("queue drain: workflow follow-up", "inject", "workflow", False, True),

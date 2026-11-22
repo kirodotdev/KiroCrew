@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from typing import Any
 
@@ -35,6 +36,10 @@ logger = logging.getLogger("kirocrew.app.dev-fleet.broker")
 #: through the broker than it was when the backend read the file itself.
 _CACHE_TTL_SECS = live._LIVE_TTL
 _REQUEST_TIMEOUT_SECS = 5.0
+#: Re-exchange the secret this long before the token's ``expires_in`` runs out, so a
+#: read never presents a token that expires while the request is in flight. Several
+#: request timeouts, because the deadline is checked before the request is sent.
+_TOKEN_REFRESH_MARGIN_SECS = 30.0
 
 
 class GatewayPointerBroker:
@@ -52,6 +57,9 @@ class GatewayPointerBroker:
         self._secret = app_secret
         self._app = app_name
         self._token: str | None = None
+        #: Wall-clock instant the token must be re-exchanged by; ``inf`` when the
+        #: gateway gave no ``expires_in``, which leaves only the 401/403 re-exchange.
+        self._token_due = math.inf
         self._cached: live.PointerState | None = None
         self._cached_at = 0.0
         self._lock = asyncio.Lock()
@@ -108,8 +116,14 @@ class GatewayPointerBroker:
         return _parse_state(payload)
 
     async def _ensure_token(self) -> str:
-        if self._token:
+        # Wall-clock time, the clock the gateway on this same host judges ``exp`` by.
+        # Monotonic time stops while the host is suspended, so a token would look
+        # fresh after a resume the gateway already counts as expired.
+        if self._token and time.time() < self._token_due:
             return self._token
+        # Taken before the request, so the deadline can only be early: the gateway
+        # mints the token after this instant.
+        sent_at = time.time()
         async with self._client().post(
             f"{self._base}/api/apps/{self._app}/token",
             headers={"X-App-Secret": self._secret},
@@ -120,7 +134,15 @@ class GatewayPointerBroker:
         token = data.get("token") if isinstance(data, dict) else None
         if not isinstance(token, str) or not token:
             raise live.PointerUnavailable("app token exchange returned no token")
+        expires_in = data.get("expires_in")
+        usable = (
+            isinstance(expires_in, (int, float))
+            and not isinstance(expires_in, bool)
+            and math.isfinite(expires_in)
+            and expires_in > 0
+        )
         self._token = token
+        self._token_due = sent_at + expires_in - _TOKEN_REFRESH_MARGIN_SECS if usable else math.inf
         return token
 
     async def _get_state(self, token: str, fresh: bool) -> dict[str, Any] | None:

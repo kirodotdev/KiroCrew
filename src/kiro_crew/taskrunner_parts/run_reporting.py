@@ -205,7 +205,7 @@ async def _extract_lesson(self: TaskRunner, task: Task, run: Project | None = No
         logger.info("Lesson extracted from task %d: %s", task.index, rule)
         if run:
             run.lessons_learned.append(rule)
-        await self._notify("\U0001f4dd Lesson learned", rule)
+        await self._notify("Lesson learned", rule)
     except Exception:
         logger.debug("Lesson extraction failed", exc_info=True)
 
@@ -228,7 +228,13 @@ async def _call_llm_for_lesson(
                 session_key,
                 agent=agent or None,
             )
-        return await stream_and_collect_json(client, prompt)
+        # Not a person's turn: a person-only directive is refused and audited;
+        # the JSON text is left as it is, so the refusal lives in its SEL row.
+        from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
+
+        return await stream_and_collect_json(
+            client, prompt, on_event=person_only_directive_refuser(session_key, [])
+        )
     except Exception:
         logger.debug("LLM lesson extraction call failed", exc_info=True)
         return None

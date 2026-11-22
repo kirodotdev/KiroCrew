@@ -69,6 +69,13 @@ export interface KiroPrerequisiteStatus {
    * absence (undefined ⇒ not permitted), never treat it as true.
    */
   unsandboxed_exec_permitted?: boolean
+  /**
+   * The setup page may name `agent.sandbox_allow_unsandboxed_exec`: the deployment
+   * names its workload identity (`KIROCREW_WORKLOAD_IDENTITY`), as a team Crew pod
+   * does, and no governance floor requires a sandbox. Owner only; false for anyone
+   * else and absent on older gateways.
+   */
+  container_boundary_hint?: boolean
   /** Runtime-enforced harness ids whose credential mask cannot apply at the effective tier. */
   sandbox_blocked_backends?: string[]
   /** Machine-readable: 'transient' | 'foreign_sandbox' | 'no_backend' | ''. */
@@ -177,6 +184,19 @@ export interface ConfigSetHintsV1 {
 export interface KasBundleStatus {
   /** `agent.kas_bundle` as saved. */
   enabled: boolean
+  /**
+   * The Settings engine choice: the saved `agent.kas_bundle`, else what this build
+   * prefers (a packaged build prefers the built-in engine). Optional: an older
+   * gateway sends no such key.
+   */
+  engine_choice?: 'engine' | 'kiro_cli'
+  /** Whether `agent.kas_bundle` is saved at all, so `engine_choice` is the user's. */
+  choice_saved?: boolean
+  /**
+   * Owner only: kiro-cli is signed in here and Kiro Crew is not, so new chats stay on
+   * kiro-cli until Kiro Crew is signed in once, then move to the built-in engine.
+   */
+  sign_in_moves_to_engine?: boolean
   /** The engine version this Kiro Crew release pins. */
   pinned_version: string
   /** The version the harness runs: the pin, unless the gateway's environment overrides it. */
@@ -194,6 +214,13 @@ export interface KasBundleStatus {
   /** The last install's failure, as the remedy text; '' when none. */
   error: string
   /**
+   * Why this host cannot run the engine (its glibc, OS or architecture), as the
+   * full sentence a refused install reports; '' when it can, or once installed.
+   * Every install on such a host is refused, so no Install or Retry is offered.
+   * Optional: an older gateway sends no such key.
+   */
+  host_unsupported?: string
+  /**
    * The route the last KAS spawn in this gateway took, or null before the first.
    * `automatic` is true when Crew's own engine was chosen without `agent.kas_bundle`:
    * kiro-cli's relay cannot run here (`reason`: 'no_kiro_cli' | 'kiro_cli_signed_out'),
@@ -206,6 +233,13 @@ export interface KasBundleStatus {
     reason: string
     summary: string
   } | null
+  /**
+   * True when a new chat would fail for lack of Kiro Crew's own sign-in: KAS
+   * is the main harness and its next spawn takes the bundle route with no
+   * usable sign-in. The gateway decides; false for a non-owner, when unknown,
+   * and from an older gateway that sends no such key.
+   */
+  chat_needs_sign_in?: boolean
 }
 
 export interface KasLoginStatus {

@@ -310,6 +310,7 @@ from kiro_crew.dashboard.file_api.uploads import (  # noqa: F401
     _content_matches_ext,
     _content_mismatch_message,
     _fit_stored_name,
+    _inside_upload_dir,
     _log_upload_diagnostic,
     _name_max,
     _resolve_raster_ext,
@@ -732,6 +733,9 @@ _ALLOWED_TEXT_EXT = {
     # unknown extension as text, this just lets them past the upload boundary.
     ".rem",
     ".ret",
+    # Saved email messages (RFC 5322 / MIME): ASCII headers plus a body whose
+    # binary parts are base64 or quoted-printable, so they read as plain text.
+    ".eml",
     ".py",
     ".js",
     ".ts",

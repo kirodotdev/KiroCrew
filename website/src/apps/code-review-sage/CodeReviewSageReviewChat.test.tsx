@@ -25,7 +25,7 @@ import type { ChatState, ChatTurn } from './lib/types'
 
 const chatState = vi.fn()
 const followupStart = vi.fn()
-const createChatSlot = vi.fn()
+const createAppChatSlot = vi.fn()
 const navigate = vi.fn()
 
 class FakeSageApiError extends Error {
@@ -45,7 +45,7 @@ vi.mock('./api', () => ({
 }))
 
 vi.mock('../../api/client', () => ({
-  api: { createChatSlot: (...a: unknown[]) => createChatSlot(...a) },
+  api: { createAppChatSlot: (...a: unknown[]) => createAppChatSlot(...a) },
 }))
 
 vi.mock('react-router-dom', () => ({
@@ -101,7 +101,7 @@ describe('ReviewChat', () => {
   beforeEach(() => {
     chatState.mockReset()
     followupStart.mockReset()
-    createChatSlot.mockReset()
+    createAppChatSlot.mockReset()
     navigate.mockReset()
   })
 
@@ -183,19 +183,20 @@ describe('ReviewChat', () => {
       folder_id: 'fold1',
       title: 'followup-pr#42-fix the thing',
     })
-    createChatSlot.mockResolvedValue({ key: 'sage-followup-abc123def456' })
+    createAppChatSlot.mockResolvedValue({ key: 'sage-followup-abc123def456' })
     await expand()
     await waitFor(() => expect(screen.getByRole('button',
       { name: /continue the follow-up session/i })).toBeTruthy())
     fireEvent.click(screen.getByRole('button',
       { name: /continue the follow-up session/i }))
-    await waitFor(() => expect(createChatSlot).toHaveBeenCalled())
-    const call = createChatSlot.mock.calls[0]
-    expect(call[0]).toBe('sage-followup-abc123def456')
-    expect(call[1]).toBe('sage-reviewer')
-    expect(call[4]).toBe('persistent')
-    expect(call[5]).toBeUndefined()   // title
-    expect(call[7]).toBeUndefined()   // folder_id
+    await waitFor(() => expect(createAppChatSlot).toHaveBeenCalled())
+    const call = createAppChatSlot.mock.calls[0]
+    expect(call[0]).toBe('code-review-sage')
+    expect(call[1]).toBe('sage-followup-abc123def456')
+    expect(call[2]).toBe('sage-reviewer')
+    expect(call[3]).toBe('persistent')
+    expect(call[4]).toBeUndefined()   // title
+    expect(call[5]).toBeUndefined()   // folder_id
   })
 
   it('arms the resume, then creates the slot, then navigates to it', async () => {
@@ -207,7 +208,7 @@ describe('ReviewChat', () => {
       folder_id: 'fold1',
       title: 'followup-pr#42-fix the thing',
     })
-    createChatSlot.mockResolvedValue({ key: 'sage-followup-abc123def456' })
+    createAppChatSlot.mockResolvedValue({ key: 'sage-followup-abc123def456' })
     await expand()
     await waitFor(() => expect(
       screen.getByRole('button', { name: /open a follow-up session/i })).toBeTruthy())
@@ -217,12 +218,15 @@ describe('ReviewChat', () => {
     // The slot is created through the dashboard's own endpoint, carrying the
     // agent the review RAN as: a follow-up created under a different agent gets
     // a different tool surface than the session it is resuming.
-    await waitFor(() => expect(createChatSlot).toHaveBeenCalled())
-    const call = createChatSlot.mock.calls[0]
-    expect(call[0]).toBe('sage-followup-abc123def456')
-    expect(call[1]).toBe('sage-reviewer')
-    expect(call[5]).toBe('followup-pr#42-fix the thing')
-    expect(call[7]).toBe('fold1')
+    await waitFor(() => expect(createAppChatSlot).toHaveBeenCalled())
+    const call = createAppChatSlot.mock.calls[0]
+    // An app launch, held to the manifest's `permissions.chatLaunch`.
+    expect(call[0]).toBe('code-review-sage')
+    expect(call[1]).toBe('sage-followup-abc123def456')
+    expect(call[2]).toBe('sage-reviewer')
+    expect(call[3]).toBe('persistent')
+    expect(call[4]).toBe('followup-pr#42-fix the thing')
+    expect(call[5]).toBe('fold1')
     await waitFor(() => expect(navigate).toHaveBeenCalledWith(
       '/chat?sid=sage-followup-abc123def456'))
   })
@@ -239,7 +243,7 @@ describe('ReviewChat', () => {
       screen.getByRole('button', { name: /open a follow-up session/i })).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: /open a follow-up session/i }))
     await waitFor(() => expect(screen.getByText(/no longer on disk/i)).toBeTruthy())
-    expect(createChatSlot).not.toHaveBeenCalled()
+    expect(createAppChatSlot).not.toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
   })
 
@@ -259,14 +263,14 @@ describe('ReviewChat', () => {
   })
 
   it('names the action it failed at, not a question nobody asked', async () => {
-    // A createChatSlot failure is not a SageApiError, so it lands on the generic
+    // A createAppChatSlot failure is not a SageApiError, so it lands on the generic
     // string. The user clicked a button and asked nothing, so copy about an
     // unanswered question would be actively misleading.
     chatState.mockResolvedValue(state())
     followupStart.mockResolvedValue({
       ok: true, slot_key: 'k', agent: 'a', folder_id: '', title: 't',
     })
-    createChatSlot.mockRejectedValue(new Error('no slot capacity'))
+    createAppChatSlot.mockRejectedValue(new Error('no slot capacity'))
     await expand()
     await waitFor(() => expect(
       screen.getByRole('button', { name: /open a follow-up session/i })).toBeTruthy())

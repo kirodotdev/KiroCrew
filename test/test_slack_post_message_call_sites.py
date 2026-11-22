@@ -108,17 +108,18 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "slack/gateway_runtime/subagent_wiring.py": (1, "owner DM with a subagent notice"),
     "slack/handler_runtime/commands.py": (
-        78,
+        79,
         "slash and text command replies: fixed status and help text, the"
-        " channel-agent link refusal, and the !channel config-save refusal",
+        " channel-agent link refusal, and the !channel and !voice global"
+        " config-save refusals",
     ),
     "slack/handler_runtime/delivery.py": (
         5,
         "turn answer, its parts, and redaction and failure notices",
     ),
     "slack/handler_runtime/dispatch.py": (
-        9,
-        "command and hook replies, status and permission notices",
+        10,
+        "command and hook replies, status and permission notices, the shared-user refusal",
     ),
     "slack/handler_runtime/inbound.py": (
         4,
@@ -152,16 +153,24 @@ BASELINE: dict[str, tuple[int, str]] = {
         "stop and reset notices, resume label, new-session greeting",
     ),
     "slack/interactions_settings.py": (2, "allowlist approved and denied DMs"),
+    "slack/owner_claim.py": (1, "fixed welcome DM to a newly confirmed owner"),
     "slack/renderer.py": (
-        6,
-        "the channel renderer: placeholders, answer parts, fallback and notices",
+        2,
+        "the channel renderer: options fallback and notices",
     ),
     "slack/renderer_stream_debt.py": (
         1,
         "the renderer's fixed delivery-debt notice when its stream append is refused",
     ),
+    "slack/renderer_thinking.py": (
+        1,
+        "the renderer's Thinking reply, posted above the answer before it opens",
+    ),
     "slack/transport.py": (1, "the Slack transport adapter: forwards content the caller rendered"),
-    "slack/transport_dispatch.py": (4, "hook reply, stats, ping and transport error text"),
+    "slack/transport_dispatch.py": (
+        5,
+        "hook reply, stats, ping, transport error text and the shared-user refusal",
+    ),
 }
 
 

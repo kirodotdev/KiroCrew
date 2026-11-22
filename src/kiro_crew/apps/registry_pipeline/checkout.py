@@ -16,6 +16,20 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
+from kiro_crew.apps.registry_pipeline.clone_metadata import (
+    _HEAD_READ_LIMIT,
+    _PACKED_REFS_READ_LIMIT,
+    _read_clone_branch,
+    _read_git_metadata_bounded,
+)
+from kiro_crew.apps.registry_pipeline.gh_credential import (
+    _gh_access,
+    _gh_credential_env,
+    _gh_refusal_sentence,
+    _github_https_repo,
+    _private_github_shaped,
+    _resolve_gh_git,
+)
 from kiro_crew.apps.registry_pipeline.git_targets import (
     _GIT_EXEC_NEUTRALIZER_PAIRS,
     _git_network_failure_hint,
@@ -24,6 +38,7 @@ from kiro_crew.apps.registry_pipeline.git_targets import (
     _git_target_is_unsupported,
     _git_transport_env,
     _is_ssh_git_url,
+    _lfs_endpoint_pin_argv,
     _loggable_git_transport_output,
     _redacted_git_failure_class,
     _same_git_target,
@@ -318,122 +333,6 @@ async def _clone_origin_matches(dest: Path, git_url: str) -> bool:
     return origin is not None and _same_git_target(origin, git_url)
 
 
-# Upper bound on any single git-metadata read of a file INSIDE a checkout
-# (``.git/HEAD``, a loose ref). Those files are agent-writable — an app's own
-# build script can rewrite them — so their size is ATTACKER-controlled: an app
-# can replace one with (or symlink it to) a multi-gigabyte / sparse file, and
-# an unbounded read would load it into gateway memory. A well-formed value here
-# is a single line (a ``ref:`` line or a 40/64-char SHA), tens of bytes, so a
-# few-hundred-byte cap makes the read a no-op for hostile content while a real
-# ref fits comfortably. This bound is applied at EVERY checkout-resident git
-# read, not just one call site — the round-11 lesson is that gating a single
-# caller leaves the primitive exploitable from the next one.
-_HEAD_READ_LIMIT = 512  # bytes
-
-
-# Upper bound on the ``.git/packed-refs`` read. It is line-oriented (one ref per
-# line) so it can legitimately be larger than a single ref file, but it is still
-# agent-writable checkout content, so the read is capped rather than unbounded.
-# A shallow single-branch app clone packs a handful of refs; this ceiling covers
-# a realistic repo while still refusing a hostile multi-megabyte replacement.
-_PACKED_REFS_READ_LIMIT = 1 << 20  # 1 MiB
-
-
-def _read_git_metadata_bounded(path: Path, limit: int) -> str | None:
-    """Read at most *limit* bytes of a git-metadata file, or None on failure.
-
-    The read is BOUNDED because *path* lives inside a checkout whose contents an
-    app's build script can rewrite (see :data:`_HEAD_READ_LIMIT`): reading a
-    ref file whole would let an oversized/sparse/symlinked replacement exhaust
-    gateway memory. Content that exactly fills the bound is treated as
-    truncated/hostile and returns None, so a caller never acts on a partial
-    token. Missing file, unreadable, or non-UTF-8 all fail closed to None.
-
-    The read is also SYMLINK-CONTAINED: *path* is a checkout-resident file whose
-    name (``.git/HEAD``, a loose ref, ``packed-refs``) an app's build script can
-    replace with a symlink pointing at a protected file (``~/.aws/credentials``,
-    an SSH key). A bare ``open()`` would follow that link and read the target
-    through the sensitive-path ceiling, so the read is routed through
-    :func:`kiro_crew.hooks.safe_read_prefix`, which canonicalizes via ``realpath``
-    and refuses a resolved target ``is_sensitive_path`` flags before any read,
-    then opens the canonical path ``O_NOFOLLOW`` as TOCTOU defense against a
-    final-component symlink swap. A rejected (or unreadable) path fails closed to
-    None, so the size bound and the containment gate share one fail-closed exit.
-    """
-    from kiro_crew import hooks
-
-    raw = hooks.safe_read_prefix(str(path), limit)
-    if raw is None:
-        # Rejected by the sensitive-path gate, a followed symlink refused
-        # O_NOFOLLOW, missing, or otherwise unreadable — all fail closed.
-        return None
-    try:
-        data = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-    # Filling the bound means the real content was larger — refuse rather than
-    # act on a value that may have been cut mid-token. Measured on the decoded
-    # text so a multi-byte tail cannot slip a value past the bound.
-    if len(data) >= limit:
-        return None
-    return data
-
-
-def _read_clone_branch(clone_dir: Path) -> str | None:
-    """Read the current branch of an existing git clone.
-
-    Returns the branch name (e.g. ``"main"``), or None if the clone does not
-    exist, is in detached HEAD state, or the branch cannot be determined.
-    Reads ``.git/HEAD`` directly (stdlib-only, no subprocess spawn) — mirrors
-    the fail-closed posture of :func:`_clone_origin_matches`.
-
-    The read is BOUNDED to :data:`_HEAD_READ_LIMIT` bytes. ``.git/HEAD`` lives
-    inside a checkout an app's build script can rewrite, so its size is
-    attacker-controlled; reading it whole would let a multi-gigabyte or sparse
-    replacement exhaust gateway memory. A well-formed HEAD fits in a few
-    hundred bytes, so a ``ref:`` line that does not resolve within the bound is
-    treated as malformed and fails closed (returns None). This is what closes
-    the memory-exhaustion class at EVERY call site, not just the ones a caller
-    happens to gate.
-
-    A ``.git`` that is a *file* (worktree / submodule gitfile) rather than a
-    directory also fails closed (``is_file()`` on the nested path returns
-    False), so no fast path is attempted for those layouts.
-    """
-    head_file = clone_dir / ".git" / "HEAD"
-    if not head_file.is_file():
-        return None
-    raw = _read_git_metadata_bounded(head_file, _HEAD_READ_LIMIT)
-    if raw is None:
-        # Missing, unreadable, non-UTF-8, or oversized (filled the bound) — the
-        # bounded reader already failed closed on hostile/truncated content.
-        return None
-    head_content = raw.strip()
-    # A normal branch checkout has HEAD = "ref: refs/heads/<branch>"
-    _REF_PREFIX = "ref: refs/heads/"
-    if head_content.startswith(_REF_PREFIX):
-        branch = head_content[len(_REF_PREFIX) :]
-        if not branch:
-            return None
-        return branch
-    # Detached HEAD (raw SHA) or unexpected format — fail closed.
-    return None
-
-
-async def _clone_branch_matches(dest: Path, branch: str) -> bool:
-    """Whether *dest* has *branch* checked out (exact string equality).
-
-    Fails closed: an unreadable or detached HEAD, a missing ``.git/HEAD``,
-    or an empty *branch* to compare against all return False — the caller
-    must fall through to the throwaway clone so admission sees the correct
-    branch's manifest.
-    """
-    if not branch:
-        return False
-    clone_branch = await asyncio.to_thread(_read_clone_branch, dest)
-    return clone_branch == branch
-
-
 _KILL_GRACE_PERIOD = 5  # seconds to wait after SIGTERM before SIGKILL
 
 
@@ -469,6 +368,7 @@ async def _git_fetch_ref(
     mask_local_git_config: bool = False,
     forward_ssh_auth_sock: bool = False,
     index_originated: bool = False,
+    gh_path: str = "",
 ) -> dict[str, Any] | None:
     """Materialise *dest* from one remote ref. Returns None on success.
 
@@ -512,6 +412,16 @@ async def _git_fetch_ref(
     *index_originated* says the caller runs this fetch credential-free in the
     strict sandbox for an install (see :func:`_git_clone_or_pull`), so an ssh host
     name that did not resolve is reported as :data:`_STRICT_SSH_ROUTE_CODE`.
+
+    *gh_path* is a validated ``gh`` binary from :func:`_gh_access`. When set, the
+    network step alone signs in through it (:func:`_gh_credential_env`). It keeps
+    *sandbox_mode* and gets back only ``~/.config/gh``, where ``gh`` reads its
+    sign-in, so the cloud, cluster and ssh folders that tier hides stay hidden;
+    its output is reduced to fixed labels like any credentialed fetch.
+    Init, remote setup and checkout keep *clone_env* and *sandbox_mode*. Every
+    step, not only the network one, runs the git :func:`_resolve_gh_git` validated,
+    and none runs without it. It never combines with embedded credentials or an
+    index-originated fetch.
     """
     transport_target = credential_target or git_url
     if _git_target_is_unsupported(transport_target):
@@ -538,9 +448,18 @@ async def _git_fetch_ref(
             "name": dest.name,
             "error": "embedded git credentials require an HTTP(S) target",
         }
+    if gh_path and (credentialed_transport or index_originated):
+        raise ValueError("a gh sign-in is only for an owner-designated, credential-free URL")
     # The network step's output is reduced to fixed labels whenever it ran with a
     # credential, a proxy password included, so no echo of one reaches the log.
-    redact_network_output = credentialed_transport or _proxy_env_has_credentials(git_url)
+    redact_network_output = (
+        credentialed_transport or bool(gh_path) or _proxy_env_has_credentials(git_url)
+    )
+
+    # With a gh sign-in, EVERY step runs the validated git, init and checkout
+    # included: a git found on PATH could write `.git/config` (a URL rewrite to a
+    # remote helper) that the credentialed fetch would then honour.
+    trusted_git: list[str] = []
 
     async def run(
         argv: list[str],
@@ -549,21 +468,43 @@ async def _git_fetch_ref(
         timeout: int,
         network: bool = False,
     ) -> tuple[int, str]:
+        if gh_path:
+            if not trusted_git:
+                trusted_git.append(await asyncio.to_thread(_resolve_gh_git))
+            if not trusted_git[0]:
+                return 128, "no trusted git executable for the gh-credentialed fetch"
+            argv = [trusted_git[0], *argv[1:]]
         # Prepend the hooks/fsmonitor neutralizer to EVERY git spawn (network or
         # not): the init/checkout steps run with *clone_env*, which carries no such
         # override, so without this a repo-shipped ``post-checkout`` executes during
-        # checkout. ``argv[0]`` is always ``git``; the ``-c`` overrides go right after
-        # it so they precede the subcommand.
-        argv = [argv[0], *_HOOKS_NEUTRALIZER_ARGV, *argv[1:]]
+        # checkout. The ``-c`` overrides go right after the executable so they
+        # precede the subcommand. The LFS pin keeps a smudge in the checkout on
+        # *git_url*'s host whatever the repository's ``.lfsconfig`` names.
+        argv = [argv[0], *_HOOKS_NEUTRALIZER_ARGV, *_lfs_endpoint_pin_argv(git_url), *argv[1:]]
         fwd = forward_ssh_auth_sock and network  # the agent socket is for the network step only
+        # The gh sign-in step keeps its tier and gets back `~/.config/gh` alone, the
+        # one folder `gh` reads its sign-in from; every other credential folder the
+        # tier hides stays hidden. It is an https fetch, so no ssh agent either.
+        visible: tuple[str, ...] = ()
+        if network and gh_path:
+            fwd = False
+            # Spelled as the sandbox spells its home (`str(Path.home())`), so the
+            # lift names the exact path of the tier's mask.
+            visible = (os.path.join(str(Path.home()), ".config", "gh"),)
         sandboxed, _cleanup = await wrap_argv_async(
-            argv, mode=sandbox_mode, forward_ssh_auth_sock=fwd, _prepare=wrap_argv
+            argv,
+            mode=sandbox_mode,
+            forward_ssh_auth_sock=fwd,
+            extra_visible_dirs=visible,
+            _prepare=wrap_argv,
         )
         sandboxed = cgroup_scope_argv(sandboxed)
         if network:
             process_env = _git_network_env(
                 _git_transport_env(credential_target, git_url, clone_env), git_url
             )
+            if gh_path:
+                process_env = _gh_credential_env(process_env, gh_path)
             # English output, whatever the operator's locale: the missing-ref retry
             # and the network hint below classify it (see `_GIT_CLONE_LOCALE`).
             process_env["LC_ALL"] = _GIT_CLONE_LOCALE
@@ -808,10 +749,12 @@ async def _git_fetch_commit(
     sandbox_mode: str,
     forward_ssh_auth_sock: bool = False,
     index_originated: bool = False,
+    gh_path: str = "",
 ) -> dict[str, Any] | None:
     """Materialise *dest* at exactly *commit*. Returns None on success.
 
-    *index_originated* is forwarded to :func:`_git_fetch_ref`; see there.
+    *index_originated* and *gh_path* are forwarded to :func:`_git_fetch_ref`; see
+    there.
     """
     return await _git_fetch_ref(
         git_url,
@@ -823,6 +766,7 @@ async def _git_fetch_commit(
         sandbox_mode=sandbox_mode,
         forward_ssh_auth_sock=forward_ssh_auth_sock,
         index_originated=index_originated,
+        gh_path=gh_path,
     )
 
 
@@ -837,6 +781,7 @@ async def _git_fetch_branch(
     sandbox_mode: str,
     mask_local_git_config: bool = False,
     forward_ssh_auth_sock: bool = False,
+    gh_path: str = "",
 ) -> dict[str, Any] | None:
     """Fetch and check out *branch* without exposing credentials to checkout.
 
@@ -856,6 +801,7 @@ async def _git_fetch_branch(
         sandbox_mode=sandbox_mode,
         mask_local_git_config=mask_local_git_config,
         forward_ssh_auth_sock=forward_ssh_auth_sock,
+        gh_path=gh_path,
     )
 
 
@@ -870,6 +816,8 @@ async def _git_clone_or_pull(
     pending_cleanup: list[Path] | None = None,
     restorable_stale: list[Path] | None = None,
     commit: str = "",
+    gh_path: str = "",
+    gh_fallback: bool = True,
 ) -> dict[str, Any] | None:
     """Clone credential-free *git_url*, or fast-forward it if already present.
 
@@ -903,6 +851,14 @@ async def _git_clone_or_pull(
     :func:`anonymous_git_env` and forces the ``strict`` OS sandbox (``~/.ssh``
     hidden), so a hostile index entry pointing at a private *sibling* repo on the
     owner's own trusted forge cannot be read with the gateway's identity.
+
+    A private GitHub repository: when an owner-designated attempt at an
+    ``https://github.com/<owner>/<repo>`` URL fails the way a private repository
+    fails (:func:`_private_github_shaped`), and *gh_fallback* allows it, the host's
+    ``gh`` is checked (:func:`_gh_access`) and the whole call runs once more with
+    *gh_path*. That second run takes the split fetch, so only its network step
+    signs in. When ``gh`` cannot read the repository the call fails with the
+    ``gh_*`` cause as ``code``. An index-originated call never reaches ``gh``.
     """
     transport_target = credential_target or git_url
     if _git_target_is_unsupported(transport_target):
@@ -919,9 +875,27 @@ async def _git_clone_or_pull(
     if _strip_git_target_userinfo(credential_target) != git_url:
         raise ValueError("credential_target does not match git_url")
     credentialed_transport = credential_target != git_url
+    if gh_path and (credentialed_transport or index_originated):
+        raise ValueError("a gh sign-in is only for an owner-designated, credential-free URL")
+    github_repo = _github_https_repo(git_url)
+    if gh_fallback and not gh_path and not index_originated and not credentialed_transport:
+        if github_repo:
+            return await _git_clone_or_pull_with_gh(
+                git_url,
+                branch,
+                dest,
+                log_lines,
+                github_repo=github_repo,
+                pending_cleanup=pending_cleanup,
+                restorable_stale=restorable_stale,
+                commit=commit,
+            )
     # A proxy URL holding a password is a credential too: it takes the split path,
     # so no checkout-time filter inherits it (see `_proxy_env_has_credentials`).
-    isolate_transport = credentialed_transport or _proxy_env_has_credentials(git_url)
+    # A gh sign-in takes it as well: only the network step may run the helper.
+    isolate_transport = (
+        credentialed_transport or bool(gh_path) or _proxy_env_has_credentials(git_url)
+    )
 
     clone_env = anonymous_git_env() if index_originated else minimal_env()
     sandbox_mode = "strict" if index_originated else _context_clone_sandbox_mode(git_url)
@@ -1170,7 +1144,15 @@ async def _git_clone_or_pull(
             # agent-influenced git spawn. The hooks/fsmonitor neutralizer is spliced
             # right after ``git`` so a repo-shipped hook cannot run during the pull.
             pull_cmd, _cleanup = await wrap_argv_async(
-                ["git", *_HOOKS_NEUTRALIZER_ARGV, "pull", "--ff-only", git_url, branch],
+                [
+                    "git",
+                    *_HOOKS_NEUTRALIZER_ARGV,
+                    *_lfs_endpoint_pin_argv(git_url),
+                    "pull",
+                    "--ff-only",
+                    git_url,
+                    branch,
+                ],
                 mode=sandbox_mode,
                 forward_ssh_auth_sock=forward_sock,
                 _prepare=wrap_argv,
@@ -1179,6 +1161,7 @@ async def _git_clone_or_pull(
             pull_env = _git_network_env(
                 _git_transport_env(credential_target, git_url, clone_env), git_url
             )
+            pull_env["LC_ALL"] = _GIT_CLONE_LOCALE
             proc = await create_subprocess_limited(
                 *pull_cmd,
                 cwd=str(dest),
@@ -1243,6 +1226,7 @@ async def _git_clone_or_pull(
                 sandbox_mode=sandbox_mode,
                 forward_ssh_auth_sock=forward_sock,
                 index_originated=index_originated,
+                gh_path=gh_path,
             )
             if result is not None:
                 return result
@@ -1258,6 +1242,7 @@ async def _git_clone_or_pull(
                 credential_target=credential_target,
                 clone_env=clone_env,
                 sandbox_mode=sandbox_mode,
+                gh_path=gh_path,
             )
             if result is not None:
                 return result
@@ -1269,6 +1254,7 @@ async def _git_clone_or_pull(
         clone_cmd = [
             "git",
             *_HOOKS_NEUTRALIZER_ARGV,
+            *_lfs_endpoint_pin_argv(git_url),
             "clone",
             "--depth",
             "1",
@@ -1285,6 +1271,7 @@ async def _git_clone_or_pull(
         transport_env = _git_network_env(
             _git_transport_env(credential_target, git_url, clone_env), git_url
         )
+        transport_env["LC_ALL"] = _GIT_CLONE_LOCALE
 
         proc = await create_subprocess_limited(
             *sandboxed_cmd,
@@ -1458,3 +1445,58 @@ async def _git_clone_or_pull(
                             f"{moved_aside}: {exc}; recover your files from "
                             f"{moved_aside}"
                         )
+
+
+async def _git_clone_or_pull_with_gh(
+    git_url: str,
+    branch: str,
+    dest: Path,
+    log_lines: list[str],
+    *,
+    github_repo: str,
+    pending_cleanup: list[Path] | None,
+    restorable_stale: list[Path] | None,
+    commit: str,
+) -> dict[str, Any] | None:
+    """The owner-designated clone of *github_repo*, then once more through ``gh``.
+
+    The first attempt is the ordinary one. Only a failure of the git transport
+    itself that reads like a private repository (no ``code``, or
+    ``git_clone_failed``, and :func:`_private_github_shaped` output) goes on;
+    every structural refusal (an untrusted host, a checkout that cannot be moved
+    aside, a pinned commit that did not land) is returned as it is.
+    """
+    start = len(log_lines)
+    result = await _git_clone_or_pull(
+        git_url,
+        branch,
+        dest,
+        log_lines,
+        pending_cleanup=pending_cleanup,
+        restorable_stale=restorable_stale,
+        commit=commit,
+        gh_fallback=False,
+    )
+    if result is None or result.get("code") not in (None, "git_clone_failed"):
+        return result
+    if not _private_github_shaped("\n".join(str(line) for line in log_lines[start:])):
+        return result
+    gh_path, cause = await _gh_access(github_repo)
+    if cause:
+        sentence = _gh_refusal_sentence(cause, github_repo)
+        log_lines.append(sentence)
+        return {"ok": False, "name": dest.name, "code": cause, "error": sentence}
+    log_lines.append(
+        f"{github_repo} looks private; retrying with the GitHub CLI sign-in on this computer..."
+    )
+    return await _git_clone_or_pull(
+        git_url,
+        branch,
+        dest,
+        log_lines,
+        pending_cleanup=pending_cleanup,
+        restorable_stale=restorable_stale,
+        commit=commit,
+        gh_path=gh_path,
+        gh_fallback=False,
+    )

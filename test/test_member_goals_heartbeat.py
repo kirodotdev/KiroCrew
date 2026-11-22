@@ -221,7 +221,7 @@ def test_a_wake_is_one_hidden_turn_whose_handoff_follows_the_session_tools(
     _floor_monkeypatch.setattr(goal_reminder, "member_has_session_tools", lambda _m: has_tools)
     assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == "started"
     ((args, kwargs),) = sent
-    assert args[1] is slot and kwargs == {"human_seen": False}
+    assert args[1] is slot and kwargs == {"human_seen": False, "mirror_reply_only": True}
     prompt = args[2]
     assert prompt.startswith("[Heartbeat]")
     assert "Keep docs current" in prompt and "pages reviewed" in prompt
@@ -356,6 +356,12 @@ def test_a_hidden_turn_carries_no_person_so_nothing_to_do_ends_it(_floor_monkeyp
 
     mate_welcome.dispatch_hidden_turn(State(), Slot(), "[Heartbeat] ...", human_seen=False)
     assert seen["_turn_actor"] == "gateway"
+    # Any other hidden turn mirrors as before; the Heartbeat's stamp reaches the turn.
+    assert seen["_mirror_reply_only"] is False
+    mate_welcome.dispatch_hidden_turn(
+        State(), Slot(), "[Heartbeat] ...", human_seen=False, mirror_reply_only=True
+    )
+    assert seen["_mirror_reply_only"] is True
     flags = {
         "producer_is_user_facing": bool(seen.get("_directive_user_origin")),
         "producer_is_self_wake": bool(seen.get("_directive_self_wake")),
@@ -579,7 +585,7 @@ def test_a_wake_loads_an_unloaded_thread_and_starts_one_turn(_floor_monkeypatch)
     # heartbeat switch stops a wake, not the tab), then the parked-send pass runs.
     assert loads == [(slot.key, True), ("drain", True)]
     ((args, kwargs),) = sent
-    assert args[1] is slot and kwargs == {"human_seen": False}
+    assert args[1] is slot and kwargs == {"human_seen": False, "mirror_reply_only": True}
     assert args[2].startswith("[Heartbeat]")
     # The next wake finds the thread loaded and loads nothing.
     assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == "started"

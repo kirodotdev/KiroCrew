@@ -36,13 +36,15 @@ LOCKED_PILLOW = "12.3.0"
 #: The oldest glibc :data:`LOCKED_PILLOW` publishes a Linux wheel for.
 PILLOW_WHEEL_MIN_GLIBC: tuple[int, int] = (2, 27)
 
-#: The two names in the missing list that are not a header file.
+#: The names in the missing list that are not a header file.
 MISSING_COMPILER = "a C compiler (gcc)"
 MISSING_PYTHON_HEADERS = "this Python's headers (Python.h)"
+MISSING_ARCHIVER = "an archiver (ar)"
 
 #: The C compilers pip's build can use, by the names ``PATH`` may hold, besides the
 #: one ``$CC`` or the interpreter's own ``CC`` names (setuptools compiles with that).
 _COMPILERS: tuple[str, ...] = ("cc", "gcc")
+_NAMED = "{program} (this build's {var})"
 
 #: Where the system's development headers live on Linux (Linux only: never read
 #: off Linux).
@@ -66,9 +68,10 @@ _HEADERS: tuple[str, ...] = ("zlib.h", "jpeglib.h")
 
 #: Package per missing item, per package manager. Python's headers have none: the
 #: gateway's interpreter is rarely the system one, so no package is guessed.
+_TOOLCHAIN = {MISSING_COMPILER: "gcc", MISSING_ARCHIVER: "binutils"}
 _PACKAGES: dict[str, dict[str, str]] = {
-    "yum": {MISSING_COMPILER: "gcc", "zlib.h": "zlib-devel", "jpeglib.h": "libjpeg-turbo-devel"},
-    "apt-get": {MISSING_COMPILER: "gcc", "zlib.h": "zlib1g-dev", "jpeglib.h": "libjpeg-dev"},
+    "yum": {**_TOOLCHAIN, "zlib.h": "zlib-devel", "jpeglib.h": "libjpeg-turbo-devel"},
+    "apt-get": {**_TOOLCHAIN, "zlib.h": "zlib1g-dev", "jpeglib.h": "libjpeg-dev"},
 }
 
 Which = Callable[[str], "str | None"]
@@ -83,6 +86,7 @@ def missing_build_deps(
     python_include: Path | None = None,
     env: Mapping[str, str] | None = None,
     sysconfig_cc: str | None = "",
+    sysconfig_ar: str | None = "",
 ) -> list[str]:
     """What pip needs to build :data:`LOCKED_PILLOW` here and cannot find; ``[]`` if nothing.
 
@@ -96,9 +100,17 @@ def missing_build_deps(
     env = os.environ if env is None else env
     if sysconfig_cc == "":
         sysconfig_cc = sysconfig.get_config_var("CC")
+    sysconfig_ar = sysconfig.get_config_var("AR") if sysconfig_ar == "" else sysconfig_ar
     missing: list[str] = []
-    if not _has_compiler((env.get("CC"), sysconfig_cc), which):
-        missing.append(MISSING_COMPILER)
+    cc = _named_tool((env.get("CC"), sysconfig_cc))
+    if not (cc and _found(cc, which)):
+        if not any(which(name) for name in _COMPILERS):
+            missing.append(MISSING_COMPILER)
+        elif cc:
+            missing.append(_NAMED.format(program=cc, var="CC"))
+    ar = _named_tool((env.get("AR"), sysconfig_ar))
+    if ar and not _found(ar, which):
+        missing.append(_NAMED.format(program=ar, var="AR") if which("ar") else MISSING_ARCHIVER)
     include = python_include if python_include is not None else Path(sysconfig.get_path("include"))
     if not _is_file(include / "Python.h"):
         missing.append(MISSING_PYTHON_HEADERS)
@@ -121,6 +133,9 @@ def refusal(missing: Sequence[str], *, glibc: tuple[int, int], which: Which = sh
         text += f" Install them, then install Browser Harness again: {command}"
     if MISSING_PYTHON_HEADERS in missing:
         text += f" ({sys.executable} ships no development headers.)"
+    named = tuple(_NAMED.format(program="", var=var) for var in ("CC", "AR"))
+    if any(item.endswith(named) for item in missing):
+        text += " Point CC and AR at tools this host has (CC=gcc AR=ar), then restart the gateway."
     return text
 
 
@@ -144,16 +159,20 @@ def _env_include_dirs(env: Mapping[str, str]) -> list[str]:
     return dirs
 
 
-def _has_compiler(specs: Iterable[str | None], which: Which) -> bool:
-    """A compiler ``$CC`` or the interpreter's ``CC`` names exists, or ``cc``/``gcc`` does."""
+def _named_tool(specs: Iterable[str | None]) -> str:
+    """The program the build runs: the first of ``$CC``/``CC`` (or ``AR``) naming one."""
     for spec in specs:
         try:
-            program = shlex.split(spec)[0] if spec else ""
+            program = (shlex.split(spec) or [""])[0] if spec else ""
         except ValueError:
             program = ""
-        if program and (which(program) or (os.path.isabs(program) and _is_file(Path(program)))):
-            return True
-    return any(which(name) for name in _COMPILERS)
+        if program:
+            return program
+    return ""
+
+
+def _found(program: str, which: Which) -> bool:
+    return bool(which(program)) or (os.path.isabs(program) and _is_file(Path(program)))
 
 
 def _install_command(missing: Sequence[str], which: Which) -> str | None:

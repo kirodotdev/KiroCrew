@@ -5,15 +5,19 @@ assistant text. The dashboard shows the outcome on the tool card, but a linked
 Slack thread only had the collapsed stream's task step, so a quiet cycle looked
 like one that never ran. These drive a REAL turn through ``turn_harness.run_turn``
 as a monitor wake and assert the outcome line is posted to the thread.
+
+A Bot's Heartbeat wake is the exception: it mirrors only a real reply, so a
+quiet one writes nothing to the thread (``_mirror_reply_only``).
 """
 
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from typing import Any
 
 import pytest
-from turn_harness import TurnContext, TurnScript, run_turn
+from turn_harness import TurnContext, TurnRecord, TurnScript, run_turn
 
 from kiro_crew import session_directive
 from kiro_crew.acp.types import (
@@ -24,6 +28,8 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
     AcpEvent,
 )
+from kiro_crew.dashboard import chat_delivery
+from kiro_crew.dashboard.chat_utils_injected_rows import SYNTHETIC_RECOVERY_KIND
 from kiro_crew.dashboard.session_directive_apply_outcome import QUIET_END_OUTCOME_PREFIX
 from kiro_crew.slack.client import SlackClientOps
 
@@ -70,21 +76,34 @@ def _quiet_end(note: str | None) -> list[AcpEvent]:
     ]
 
 
-async def _run_linked_wake(events: list[AcpEvent]) -> _RecordingSlack:
+async def _run_linked(
+    events: list[AcpEvent],
+    *,
+    message: str,
+    run_kwargs: dict[str, Any],
+    prepare: Callable[[TurnContext], None] | None = None,
+) -> tuple[_RecordingSlack, TurnRecord]:
     slack = _RecordingSlack()
 
     def _linked(ctx: TurnContext) -> None:
         ctx.state.slack_client = slack
         ctx.state.sessions.set_slack_link("dashboard:chat-1", "thread-1", "C-1")
+        if prepare is not None:
+            prepare(ctx)
 
-    await run_turn(
+    record = await run_turn(
         TurnScript(
-            events=events,
-            message="[auto-nudge cycle 3]\ncheck the runs",
-            user_row=False,
-            run_kwargs={"_directive_self_wake": True},
-            setup=_linked,
+            events=events, message=message, user_row=False, run_kwargs=run_kwargs, setup=_linked
         )
+    )
+    return slack, record
+
+
+async def _run_linked_wake(events: list[AcpEvent]) -> _RecordingSlack:
+    slack, _record = await _run_linked(
+        events,
+        message="[auto-nudge cycle 3]\ncheck the runs",
+        run_kwargs={"_directive_self_wake": True},
     )
     return slack
 
@@ -130,3 +149,93 @@ class TestQuietEndReachesTheThread:
         posts = slack.posts()
         assert any("went red on lint" in p for p in posts), posts
         assert not any(QUIET_END_OUTCOME_PREFIX in p for p in posts), posts
+
+
+# A hidden gateway turn as ``goal_reminder.fire`` stamps a Bot's Heartbeat wake.
+_HEARTBEAT = {"_synthetic_payload": True, "_turn_actor": "gateway", "_mirror_reply_only": True}
+_THREAD_WRITES = {
+    "post_message",
+    "post_blocks",
+    "start_stream",
+    "append_task",
+    "stop_stream",
+    "delete_message",
+    "update_message",
+    "append_stream",
+    "upload_file",
+}
+
+
+async def _run_heartbeat(events: list[AcpEvent]) -> _RecordingSlack:
+    slack, record = await _run_linked(
+        events, message="[Heartbeat]\ncheck in", run_kwargs=_HEARTBEAT
+    )
+    # The turn ran to its end: a turn that never started writes nothing either.
+    assert record.stop_reason == STOP_REASON_END_TURN, record.stop_reason
+    return slack
+
+
+class TestAHeartbeatWakeMirrorsOnlyItsReply:
+    @pytest.mark.asyncio
+    async def test_a_quiet_heartbeat_writes_nothing_to_the_thread(self, monkeypatch) -> None:
+        from kiro_crew.dashboard import chat_runner
+
+        sent: list[str] = []
+
+        async def _capture(_state: Any, _key: str, text: str, **_kw: Any) -> None:
+            sent.append(text)
+
+        monkeypatch.setattr(chat_runner, "_deliver_cross_surface_reply", _capture)
+        slack = await _run_heartbeat(_quiet_end("heartbeat: nothing to move"))
+        writes = [(n, a) for n, a in slack.calls if n in _THREAD_WRITES]
+        assert writes == [], slack.calls
+        assert not any(t.strip() for t in sent), sent
+
+    @pytest.mark.asyncio
+    async def test_an_answering_heartbeat_posts_only_its_answer(self) -> None:
+        slack = await _run_heartbeat(
+            [
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="t1", title="read_1", tool_kind="read"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Two pages went stale."),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )
+        names = [n for n, _ in slack.calls]
+        assert "start_stream" not in names and "append_task" not in names, slack.calls
+        assert slack.posts() == ["Two pages went stale."], slack.calls
+
+    @pytest.mark.parametrize("heartbeat", [False, True])
+    @pytest.mark.asyncio
+    async def test_a_retry_of_the_wake_keeps_the_rule(self, monkeypatch, heartbeat: bool) -> None:
+        """An empty reply requeues the wake (``_queue_recovery``) and the drain runs
+        the retry: a Heartbeat's retry mirrors only its reply too, and an ordinary
+        hidden turn's retry keeps the normal mirror."""
+        recovery_metas: list[dict[str, Any]] = []
+
+        def _record_recoveries(ctx: TurnContext) -> None:
+            real_insert = type(ctx.slot).queue_insert
+
+            def _insert(self: Any, index: int, content: str, *args: Any, **kwargs: Any) -> str:
+                if kwargs.get("kind") == SYNTHETIC_RECOVERY_KIND:
+                    recovery_metas.append(dict(kwargs.get("meta") or {}))
+                return real_insert(self, index, content, *args, **kwargs)
+
+            monkeypatch.setattr(type(ctx.slot), "queue_insert", _insert)
+
+        _slack, record = await _run_linked(
+            [AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)],
+            message="[Heartbeat]\ncheck in",
+            run_kwargs={**_HEARTBEAT, "_mirror_reply_only": heartbeat},
+            prepare=_record_recoveries,
+        )
+        # Read at call time, so the module still collects on a tree without the key.
+        mark = chat_delivery.MIRROR_REPLY_ONLY_META_KEY
+        [entry_meta] = recovery_metas
+        assert entry_meta.get(mark, False) is heartbeat
+        [retry] = record.successors
+        assert retry.args[0] == "[Heartbeat]\ncheck in"
+        assert retry.kwargs["_synthetic_recovery_turn"] is True
+        assert retry.kwargs.get("_mirror_reply_only", False) is heartbeat
+        # Queue plumbing only: the retry's row does not carry the mark.
+        assert record.window[-1]["role"] == "inject"
+        assert mark not in (record.window[-1].get("meta") or {})

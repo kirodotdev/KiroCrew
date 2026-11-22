@@ -31,6 +31,24 @@ export interface CardKindSpec {
   Option?: ComponentType<KindBodyProps>
 }
 
+/** The switches a check-ins card can turn on or off; its other fields are timing. */
+const CHECK_IN_SWITCHES: ReadonlySet<string> = new Set(['daily', 'weekly', 'monthly', 'heartbeat'])
+
+/**
+ * A check-ins card's primary names what the press does, read from the rows the
+ * gateway built (a switch restated at its current value gets no row and is not
+ * written): only switches turned on says "Turn on", only switches turned off
+ * says "Turn off", and a mix or a timing-only change says "Save".
+ */
+function checkInsPrimary(card?: Card): string {
+  const set = (card?.changes ?? [])
+    .map(c => (c.field && CHECK_IN_SWITCHES.has(c.field) ? card?.params[c.field] : undefined))
+    .filter((v): v is boolean => typeof v === 'boolean')
+  if (set.length > 0 && set.every(v => v)) return i18nT('components.changeCards.primary_crewmate_check_ins')
+  if (set.length > 0 && set.every(v => !v)) return i18nT('components.changeCards.primary_crewmate_check_ins_off')
+  return i18nT('components.changeCards.primary_crewmate_check_ins_save')
+}
+
 export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
   'setting.change': {
     icon: Cog, label: () => i18nT('components.changeCards.kind_setting_change'),
@@ -77,7 +95,7 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
   },
   'crewmate.check_ins': {
     icon: AlarmClock, label: () => i18nT('components.changeCards.kind_crewmate_check_ins'),
-    primary: () => i18nT('components.changeCards.primary_crewmate_check_ins'), Body: OneCrewmateBody,
+    primary: checkInsPrimary, Body: OneCrewmateBody,
   },
   'crewmate.dashboard_page': {
     icon: LayoutDashboard, label: () => i18nT('components.changeCards.kind_crewmate_dashboard_page'),

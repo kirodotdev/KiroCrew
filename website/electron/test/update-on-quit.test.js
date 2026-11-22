@@ -340,6 +340,87 @@ test("D-c: with no arm, or an arm for the version already running, nothing runs"
   assert.strictEqual((await startupApply({ app: notManaged.app, store: notManaged.store, managed: null, managedPath: () => "", log: notManaged.log })).outcome, "none");
 });
 
+// The update command's child stays open until the test releases it, so what
+// happens WHILE it runs can be observed. Every other command exits 1 at once.
+// `restore` closes a child still held, so a failed assertion cannot leave the
+// executor's apply timeout keeping the run alive.
+function heldUpdateSpawn() {
+  const commands = [];
+  const orig = cp.spawn;
+  let held = null;
+  const release = (code) => {
+    const child = held;
+    held = null;
+    if (child) child.emit("close", code, null);
+  };
+  cp.spawn = (command) => {
+    commands.push(command);
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    if (command === MANAGED.updateCommand) held = child;
+    else setImmediate(() => child.emit("close", 1, null));
+    return child;
+  };
+  return { commands, release, restore: () => { release(1); cp.spawn = orig; } };
+}
+
+function showApplyingSpy(events) {
+  return (version) => {
+    events.push(`show:${version}`);
+    return () => events.push("hide");
+  };
+}
+
+for (const { code, outcome, after } of [
+  { code: 0, outcome: "relaunching", after: ["hide", "relaunch", "exit:0"] },
+  { code: 1, outcome: "failed", after: ["hide"] },
+]) {
+  test(`D-c: the install window shows while the update command runs and is taken down when it exits ${code}`, async (t) => {
+    const f = startFixture();
+    f.sp.restore();
+    const held = heldUpdateSpawn();
+    t.after(held.restore);
+    let settled = false;
+    const run = startupApply({
+      app: f.app, store: f.store, managed: MANAGED, managedPath: () => "/usr/bin", log: f.log,
+      showApplying: showApplyingSpy(f.events),
+    }).then((r) => { settled = true; return r; });
+    await drainTurns();
+    assert.deepStrictEqual(held.commands, [MANAGED.updateCommand], "the update command is running");
+    assert.strictEqual(settled, false);
+    assert.deepStrictEqual(f.events, ["show:2.0.0"], "shown with the armed version before the command ends");
+    held.release(code);
+    const r = await run;
+    assert.strictEqual(r.outcome, outcome);
+    assert.deepStrictEqual(f.events, ["show:2.0.0", ...after]);
+  });
+}
+
+test("D-c: no install window when nothing is applied: no arm, governed, a gateway running, or already installed", async (t) => {
+  const events = [];
+  const showApplying = showApplyingSpy(events);
+  const noArm = startFixture();
+  t.after(noArm.sp.restore);
+  noArm.arm.clear();
+  const base = (f) => ({ app: f.app, store: f.store, managed: MANAGED, managedPath: () => "", log: f.log, showApplying });
+  assert.strictEqual((await startupApply(base(noArm))).outcome, "none");
+  const governed = startFixture();
+  t.after(governed.sp.restore);
+  assert.strictEqual((await runStartupApply({ ...base(governed), readGovernance: () => "governed" })).outcome, "governed");
+  const running = startFixture();
+  t.after(running.sp.restore);
+  assert.strictEqual(
+    (await startupApply({ ...base(running), probeGateway: async () => ({ running: true }) })).outcome,
+    "gateway-running",
+  );
+  const same = startFixture();
+  t.after(same.sp.restore);
+  same.app.getVersion = () => "2.0.0";
+  assert.strictEqual((await startupApply(base(same))).outcome, "already-installed");
+  assert.deepStrictEqual(events, []);
+});
+
 test("D-c: with no arm the start path probes nothing, reads no policy and never holds the gateway start", async (t) => {
   const calls = [];
   const spy = {

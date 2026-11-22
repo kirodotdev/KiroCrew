@@ -327,6 +327,7 @@ class SlotProjection:
         parse_cls_meta: Callable[[str], dict | None],
         is_turn_interrupted: Callable[[list[dict]], bool],
         is_interruption_stale: Callable[[list[dict], float], bool],
+        newest_error_is_sign_in: Callable[[list[dict]], bool],
         is_system_notice: Callable[[str, dict], bool],
         latest_transcript_ts: Callable[..., str | None],
         last_message_preview: Callable[[str], str],
@@ -366,6 +367,7 @@ class SlotProjection:
                 strip_options=strip_options,
                 is_system_notice=is_system_notice,
                 last_message_preview=last_message_preview,
+                retry_kind=_cu.TRANSIENT_RETRY_KIND,
             ),
         )
         last_ts = summary.last_ts
@@ -441,6 +443,8 @@ class SlotProjection:
         # Still `interrupted` for the row and the composer; only the bulk Resume
         # leaves it out (the sidebar's count and `collect_interrupted_idle`).
         interrupted_stale = interrupted and is_interruption_stale(rows, time.time())
+        # The row then names the sign-in first, as the composer's hint does.
+        interrupted_by_sign_in = interrupted and newest_error_is_sign_in(rows)
 
         pending_approval_info: dict[str, str] | None = None
         if slot_pending:
@@ -609,10 +613,18 @@ class SlotProjection:
             "pending_approval_info": pending_approval_info,
             "last_activity_ts": last_activity_ts,
             "last_agent_ts": last_agent_ts,
+            # The newest row that badges this chat when no window saw it, by the live per-mode rule.
+            "unread_ts": (
+                (last_agent_ts if pending_approval or needs_input else summary.last_reply_ts)
+                if slot.mode == "member"
+                else summary.last_unread_ts
+            ),
+            "unread_failed": slot.mode != "member" and summary.unread_failed,
             "waiting_for_input": waiting_for_input,
             "needs_input": needs_input,
             "interrupted": interrupted,
             "interrupted_stale": interrupted_stale,
+            "interrupted_by_sign_in": interrupted_by_sign_in,
             "stop_state": slot._stop_state,
             "wait_state": slot._wait_state,
             "created": slot.created_at,

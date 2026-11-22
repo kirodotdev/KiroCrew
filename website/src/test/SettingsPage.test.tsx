@@ -39,6 +39,8 @@ vi.mock('../pages/settings/DeveloperPanel', () => ({ DeveloperPanel: () => <div 
 // Stubbed for the same reason the others are, plus one of its own: the real
 // panel's release notes call api.releases(), which the fixed method set below
 // does not carry.
+// Mocked so a test can prove the hidden Advanced panel never mounts.
+vi.mock('../pages/settings/AdvancedPanel', () => ({ AdvancedPanel: () => <div data-testid="advanced-panel" /> }))
 vi.mock('../pages/settings/AboutPanel', () => ({ AboutPanel: () => <div data-testid="about-panel" /> }))
 
 // ChannelsPanel renders real (it owns the remap target) — silence its status
@@ -77,6 +79,7 @@ if (!window.matchMedia) {
 
 import SettingsPage from '../pages/SettingsPage'
 import { PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag } from '../utils/previewFlags'
+import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
 
 // The Webhooks tab is preview-gated and the gate reads real localStorage, so a
 // flag left set by one test would decide another test's roster.
@@ -103,6 +106,17 @@ function renderAt(route: string) {
 }
 
 describe('SettingsPage tabs', () => {
+  it('lists no Advanced tab, and its old address opens the first tab instead', () => {
+    renderAt('/settings/advanced')
+    expect(screen.queryByRole('button', { name: 'Advanced' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('advanced-panel')).not.toBeInTheDocument()
+    expect(screen.getByTestId('overview-panel')).toBeInTheDocument()
+  })
+
+  it('gives Settings search no entry that opens the Advanced page', () => {
+    expect(SETTINGS_REGISTRY.filter(e => e.tab === 'advanced')).toEqual([])
+  })
+
   it('hides Session Environments and its deep link until enabled', () => {
     renderAt('/settings/session-environments')
     expect(screen.queryByRole('button', { name: 'Session Environments' })).not.toBeInTheDocument()

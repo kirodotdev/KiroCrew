@@ -50,6 +50,7 @@ from kiro_crew.apps.registry import (
     minimal_env,
 )
 from kiro_crew.apps.registry_pipeline.checkout import _HOOKS_NEUTRALIZER_ARGV
+from kiro_crew.apps.registry_pipeline.git_targets import _lfs_endpoint_pin_argv
 from kiro_crew.apps.registry_pipeline.subprocess_env import (
     _git_network_env,
     _proxy_env_has_credentials,
@@ -557,6 +558,7 @@ async def _fetch_git_blob(
             clone_cmd = [
                 "git",
                 *_HOOKS_NEUTRALIZER_ARGV,
+                *_lfs_endpoint_pin_argv(git_url),
                 "clone",
                 "--depth",
                 "1",

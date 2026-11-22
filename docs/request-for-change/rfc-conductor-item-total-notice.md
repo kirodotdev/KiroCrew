@@ -3,8 +3,8 @@ title: The goal conductor keeps its item total out of round reports and says it 
 status: superseded
 author: kirocrew agent session, directed by adlio
 created: 2026-10-20
-last-audited: 2026-10-27
-audited-at: ab57fba809
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 22427
 implementation-prs: [22417]
 tracking-issues: [22415]

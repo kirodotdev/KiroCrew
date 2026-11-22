@@ -359,9 +359,9 @@ def note_keepalive(self: AcpSessionHandle) -> None:
 
     A blocking MCP tool on this session (``wait``, ``spawn_sub_agents``)
     sends no frame while it runs, so this is the only sign it is alive.
-    The runtime's ``_last_activity`` is process-wide and the tool-idle clock
-    deliberately ignores it (a co-tenant's traffic must not defer this
-    session's stall), so the touch is stamped here, where the clock reads it.
+    The runtime's ``_last_activity`` is process-wide and both idle clocks
+    deliberately ignore it (a co-tenant's traffic must not defer this
+    session's stall), so the touch is stamped here, where the clocks read it.
     """
     now = time.monotonic()
     since = self._parked_since
@@ -380,8 +380,8 @@ def note_keepalive(self: AcpSessionHandle) -> None:
 def _runtime_idle_secs(self: AcpSessionHandle) -> float:
     """Seconds since the runtime last moved a frame on ANY of its sessions.
 
-    The only place the runtime's activity clock is read outside the dispatch
-    loop's own per-session bookkeeping. A caller must NOT read the result as
+    The only place a session handle reads the runtime's activity clock; the
+    dispatch loop's idle clocks never do. A caller must NOT read the result as
     this session's idleness: on a shared process a co-tenant's traffic keeps
     it near zero while this session has produced nothing.
     """

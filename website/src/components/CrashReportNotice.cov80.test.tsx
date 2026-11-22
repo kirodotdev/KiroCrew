@@ -1,8 +1,9 @@
 import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
 import CrashReportNotice from './CrashReportNotice'
+import { fmtDateTime } from '../i18n/format'
 
-type Summary = { newCount: number }
+type Summary = { newCount: number; lastCrashAt?: string | null }
 
 const get = vi.fn<[], Promise<Summary>>()
 const reveal = vi.fn<[], Promise<{ ok: boolean; error?: string }>>()
@@ -14,9 +15,13 @@ function bridge(present: boolean) {
   else delete w.crashReportsAPI
 }
 
+const LAST_CRASH_AT = '2026-10-28T19:19:55.283Z'
+
 function summary(over: Partial<Summary> = {}): Summary {
-  return { newCount: 2, ...over }
+  return { newCount: 2, lastCrashAt: LAST_CRASH_AT, ...over }
 }
+
+const COUNT_TEXT = 'New crash records saved on this machine: 2. Attach them when you report the problem.'
 
 describe('CrashReportNotice', () => {
   beforeEach(() => {
@@ -33,6 +38,46 @@ describe('CrashReportNotice', () => {
     const notice = await screen.findByRole('status')
     expect(notice).toHaveTextContent(/closed unexpectedly/i)
     expect(notice).toHaveTextContent(/2/)
+    // The stock transparent Btn has no edge on the banner's warn tint until hovered.
+    for (const name of [/Show diagnostics/, /Report issue/]) {
+      const button = within(notice).getByRole('button', { name })
+      expect(button).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(button).not.toHaveClass('bg-transparent')
+      expect(button).not.toHaveClass('border-border')
+    }
+  })
+
+  // The expected date comes from fmtDateTime: this test checks the line, and
+  // format.test.ts owns the date format itself.
+  it('shows when the newest crash happened, directly under the unchanged count', async () => {
+    renderWithProviders(<CrashReportNotice />)
+    const latest = await screen.findByTestId('crash-notice-latest')
+    expect(latest).toHaveTextContent(`Latest crash: ${fmtDateTime(LAST_CRASH_AT)}`)
+    const count = screen.getByText(COUNT_TEXT)
+    expect(count.nextElementSibling).toBe(latest)
+  })
+
+  it('omits the time line when the main process sends lastCrashAt: null', async () => {
+    get.mockResolvedValue(summary({ lastCrashAt: null }))
+    renderWithProviders(<CrashReportNotice />)
+    const notice = await screen.findByRole('status')
+    expect(screen.getByText(COUNT_TEXT)).toBeInTheDocument()
+    expect(screen.queryByTestId('crash-notice-latest')).not.toBeInTheDocument()
+    expect(notice).not.toHaveTextContent(/latest crash/i)
+  })
+
+  // An older shell sends the count alone; a missing or malformed time must
+  // never render as the formatter's "—" placeholder.
+  it.each([
+    ['an older shell that sends no lastCrashAt', { newCount: 2 }],
+    ['a malformed lastCrashAt', { newCount: 2, lastCrashAt: 'not a time' }],
+  ])('omits the time line for %s', async (_label, payload) => {
+    get.mockResolvedValue(payload as Summary)
+    renderWithProviders(<CrashReportNotice />)
+    const notice = await screen.findByRole('status')
+    expect(screen.getByText(COUNT_TEXT)).toBeInTheDocument()
+    expect(screen.queryByTestId('crash-notice-latest')).not.toBeInTheDocument()
+    expect(notice).not.toHaveTextContent('—')
   })
 
   it('never renders without the desktop bridge, and never probes for one', async () => {
@@ -120,7 +165,9 @@ describe('CrashReportNotice', () => {
     expect(dialog).toHaveTextContent(/report a problem/i)
     const note = within(dialog).getByRole('textbox', { name: /what happened/i })
     expect((note as HTMLTextAreaElement).value).toMatch(/closed unexpectedly/i)
-    expect((note as HTMLTextAreaElement).value).toMatch(/2/)
+    expect((note as HTMLTextAreaElement).value).toBe(
+      'The app closed unexpectedly. New crash records saved on this machine: 2.',
+    )
     expect(reveal).not.toHaveBeenCalled()
   })
 

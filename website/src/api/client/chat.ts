@@ -304,6 +304,18 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
         ...(project_from_slot ? { project_from_slot } : {}),
       }).then(j).then(takeSessionFolderNotice) as Promise<ChatSlot>
     },
+    /** Create, or reopen, the person's chat a built-in app's page launches inside
+     *  its manifest's `permissions.chatLaunch` (the gateway refuses anything else).
+     *  The same create as `createChatSlot` with `app_launch` naming the app. */
+    createAppChatSlot: (app: string, name: string, agent: string, memory_mode: string, title?: string, folder_id?: string) =>
+      post('/api/chat/slots', {
+        name,
+        agent,
+        memory_mode,
+        ...(title ? { title } : {}),
+        ...(folder_id ? { folder_id } : {}),
+        app_launch: app,
+      }).then(j).then(takeSessionFolderNotice) as Promise<ChatSlot>,
     /** Inject silent background context into a slot — consumed on the next user
      * message. Used by the artifact companion chat to name the bound artifact so
      * the user's first message needs no slug boilerplate. */
@@ -389,6 +401,8 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
      *  both, and they mute independently, so the row has to say which it is. */
     pauseMirror: (slot: string, paused: boolean, origin = false) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/mirror-pause', { paused, origin }).then(j),
     channelTargets: () => fetch('/api/chat/channel-targets').then(j),
+    /** The private Telegram topics the bot already has a conversation in. */
+    channelTopics: () => fetch('/api/chat/channel-topics').then(j),
     linkMirror: (slot: string, channelType: string, targetId: string) => post(
       '/api/chat/slots/' + encodeURIComponent(slot) + '/mirror-link',
       { channel_type: channelType, target_id: targetId },

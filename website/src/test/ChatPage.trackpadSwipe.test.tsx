@@ -819,10 +819,10 @@ describe('ChatPage — a two-finger trackpad swipe moves the right side panel on
       Object.defineProperty(ev, 'source', { value: f.contentWindow })
       window.dispatchEvent(ev)
     })
-    expect(said.at(-1)).toEqual({ type: 'mc-frame-wheel-armed', on: true })
+    expect(said.at(-1)).toEqual({ type: 'mc-frame-wheel-armed', on: true, natural: null })
     // A bottom dock turns the swipe off: the frame is told to stop.
     act(() => { setSidePanelDock('bottom') })
-    await waitFor(() => expect(said.at(-1)).toEqual({ type: 'mc-frame-wheel-armed', on: false }))
+    await waitFor(() => expect(said.at(-1)).toEqual({ type: 'mc-frame-wheel-armed', on: false, natural: null }))
   })
 
   it.each([

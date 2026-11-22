@@ -999,3 +999,86 @@ def test_every_channel_file_carries_the_version_release_notes(path: Path, job: s
     assert run.index(derive) < run.index(
         "<<EOF"
     ), "the notes must be read before the feed is written"
+
+
+# ---------------------------------------------------------------------------
+# The macOS differential-update blockmap: optional, credential-free, and only
+# ever paired with the bytes the CDN serves.
+# ---------------------------------------------------------------------------
+
+
+def test_mac_blockmap_job_holds_no_credentials_and_runs_when_publish_does() -> None:
+    """The blockmap job installs npm packages and runs them, so it must never
+    share a job with the publish role: no environment (the OIDC subject the
+    role trusts) and no permission beyond reading the repository. Its `if` is
+    publish's own, so a blockmap exists for every publish and for no other run."""
+    jobs = _jobs(MAC_WORKFLOW)
+    blockmap = jobs["blockmap"]
+    assert blockmap.get("permissions") == {"contents": "read"}
+    assert "environment" not in blockmap
+    assert blockmap["if"] == jobs["publish"]["if"]
+    assert "blockmap" in jobs["publish"]["needs"]
+
+
+def test_a_failed_blockmap_job_never_holds_the_release() -> None:
+    """A missing blockmap makes that version's updates full downloads, which is
+    what every mac update was before it existed. It must not stop the feed."""
+    jobs = _jobs(MAC_WORKFLOW)
+    assert "needs.blockmap" not in jobs["publish"]["if"]
+    # A failed job would still fail the workflow its callers gate the GitHub
+    # release and the promotion record on.
+    assert jobs["blockmap"].get("continue-on-error") is True
+    steps = _steps(MAC_WORKFLOW, "publish")
+    for name in ("Download update blockmap", "Publish update blockmap"):
+        assert _step(steps, name).get("continue-on-error") is True, name
+
+
+def test_mac_blockmap_is_published_beside_the_zip_before_the_feed() -> None:
+    steps = _steps(MAC_WORKFLOW, "publish")
+    zip_pub = _step_index(steps, "Publish notarized artifact to distribution bucket")
+    blockmap_pub = _step_index(steps, "Publish update blockmap")
+    feed = _step_index(steps, "Write update feed")
+    assert zip_pub < blockmap_pub < feed
+    run = steps[blockmap_pub]["run"]
+    # MacUpdater fetches `<zip url>.blockmap`; any other key is never read.
+    assert '--key "${DESKTOP_KEY}.blockmap"' in run
+    assert "public, max-age=31536000, immutable" in run
+    assert "--if-none-match" in run
+
+
+def test_mac_blockmap_is_published_only_for_the_bytes_it_describes() -> None:
+    """A blockmap for other bytes makes the client rebuild a zip whose sha512
+    fails, so the update is refused. Both pairings are checked before the
+    write: the blockmap's record against the local zip, and, on a re-run that
+    kept an earlier zip, the served bytes against the local zip."""
+    run = _step(_steps(MAC_WORKFLOW, "publish"), "Publish update blockmap")["run"]
+    assert "openssl dgst -sha512 -binary" in run and "base64 -w 0" in run
+    assert '"$BUILT_FROM" != "$LOCAL_SHA512"' in run
+    assert 'if [ "$ZIP_PUT" = "kept" ]' in run
+    assert '"$SERVED_SHA512" != "$LOCAL_SHA512"' in run
+    zip_run = _step(
+        _steps(MAC_WORKFLOW, "publish"), "Publish notarized artifact to distribution bucket"
+    )["run"]
+    assert "ZIP_PUT=kept" in zip_run and 'echo "ZIP_PUT=${ZIP_PUT}" >> "$GITHUB_ENV"' in zip_run
+
+
+def test_mac_blockmap_comes_from_the_pinned_electron_builder() -> None:
+    """The client compares old and new blockmaps block by block, so every
+    version's must come from the same chunker: electron-builder's own, at the
+    exact version the build pins. A separate .blockmap file is gzip, which is
+    what electron-updater gunzips."""
+    import json
+
+    electron = ROOT / "website" / "electron"
+    script = (electron / "scripts" / "build-zip-blockmap.js").read_text(encoding="utf-8")
+    assert "require('app-builder-lib/out/targets/blockmap/blockmap')" in script
+    assert "buildBlockMap(zip, 'gzip', outBlockmap)" in script
+    pinned = json.loads((electron / "package.json").read_text(encoding="utf-8"))
+    builder = pinned["devDependencies"]["electron-builder"]
+    assert re.fullmatch(r"\d+\.\d+\.\d+", builder), "electron-builder must stay pinned exact"
+    lock = json.loads((electron / "package-lock.json").read_text(encoding="utf-8"))
+    assert lock["packages"]["node_modules/app-builder-lib"]["version"] == builder
+    steps = _steps(MAC_WORKFLOW, "blockmap")
+    install = _step(steps, "Install the pinned electron-builder")
+    assert install["working-directory"] == "website/electron"
+    assert install["run"].startswith("npm ci --ignore-scripts")

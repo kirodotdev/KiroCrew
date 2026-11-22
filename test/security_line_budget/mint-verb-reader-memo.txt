@@ -1,0 +1,4 @@
++10
+The credential-mint reader keeps its answer per suffix text for the length of one gate call
+(`_mint_verb_in_text`, a pure reader marked `once_per_call`), so a command of N
+never-closing substitutions reads each suffix once instead of once per frame. No verdict moves.

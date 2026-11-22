@@ -33,6 +33,7 @@ from kiro_crew.apps.manager_records import (
     _approved_grants_row,
     _is_sidecar_entry,
     _read_installed,
+    _recorded_app_names,
     _write_installed,
     app_dir,
     apps_dir,
@@ -436,17 +437,19 @@ def missing_agent_reason(agent: str, *, member: str = "") -> str:
 def list_apps() -> list[dict[str, Any]]:
     """Return metadata for all installed apps."""
     # Deferred: frame_sources stays off an MCP server's pre-list import budget.
+    from kiro_crew.apps.browser_sdk import browser_grant_row  # noqa: PLC0415
+    from kiro_crew.apps.browser_sites import browser_sites_grant_row  # noqa: PLC0415
     from kiro_crew.apps.frame_sources import frame_sources_grant_row  # noqa: PLC0415
+    from kiro_crew.apps.kiro_operations import kiro_operations_grant_row  # noqa: PLC0415
 
     root = apps_dir()
-    if not root.is_dir():
+    names = _recorded_app_names(root)
+    if not names:
         return []
     orphaned_set = detect_orphaned_builtins()
     adoption_markers = _adoption_rows_context()
     result: list[dict[str, Any]] = []
-    for entry in sorted(root.iterdir()):
-        if _is_sidecar_entry(entry.name) or not entry.is_dir():
-            continue
+    for entry in (root / name for name in names):
         try:
             meta = _read_installed(entry.name)
         except InstalledRecordShapeError as exc:
@@ -502,6 +505,9 @@ def list_apps() -> list[dict[str, Any]]:
             **user_session_reach_grant_row(entry.name, manifest_data),
             **desktop_capabilities_grant_row(entry.name, manifest_data),
             **frame_sources_grant_row(entry.name, manifest_data),
+            **browser_sites_grant_row(entry.name, manifest_data),
+            **kiro_operations_grant_row(entry.name, manifest_data),
+            **browser_grant_row(entry.name, manifest_data),
             "manifest": manifest_data,
         }
         # Include migratedTo if non-empty
@@ -519,7 +525,10 @@ def list_apps() -> list[dict[str, Any]]:
 def get_app(name: str) -> dict[str, Any] | None:
     """Return full metadata for a single installed app, or None."""
     # Deferred: frame_sources stays off an MCP server's pre-list import budget.
+    from kiro_crew.apps.browser_sdk import browser_grant_row  # noqa: PLC0415
+    from kiro_crew.apps.browser_sites import browser_sites_grant_row  # noqa: PLC0415
     from kiro_crew.apps.frame_sources import frame_sources_grant_row  # noqa: PLC0415
+    from kiro_crew.apps.kiro_operations import kiro_operations_grant_row  # noqa: PLC0415
 
     meta = _read_installed(name)
     if not meta:
@@ -551,6 +560,9 @@ def get_app(name: str) -> dict[str, Any] | None:
         **user_session_reach_grant_row(name, manifest_data),
         **desktop_capabilities_grant_row(name, manifest_data),
         **frame_sources_grant_row(name, manifest_data),
+        **browser_sites_grant_row(name, manifest_data),
+        **kiro_operations_grant_row(name, manifest_data),
+        **browser_grant_row(name, manifest_data),
         "manifest": manifest_data,
     }
     adoption_markers = _adoption_rows_context()

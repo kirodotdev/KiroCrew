@@ -3,8 +3,8 @@ title: Conductor chat board -- no second full task board in a chat whose Dashboa
 status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-09
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: null
 implementation-prs: [18608]
 tracking-issues: []

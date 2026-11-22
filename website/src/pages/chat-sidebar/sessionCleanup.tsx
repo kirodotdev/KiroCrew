@@ -1,7 +1,7 @@
 /** Clean up sessions: the archive window, its dry-run preview and the archive
  *  write (`useSessionCleanup`), and the header menu's panel that drives them. */
 import { useState } from 'react'
-import { BrushCleaning } from 'lucide-react'
+import { BrushCleaning, ChevronRight } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { deleteSlot, fetchHistory } from '../../store/chatSlice'
@@ -102,7 +102,7 @@ export function renderSessionCleanupPanel(shell: SidebarScope): React.ReactNode 
                         <button type="button" aria-expanded={cleanupExpanded} aria-controls={CLEANUP_LIST_ID} className="ml-1 text-accent hover:underline cursor-pointer bg-transparent border-none p-0 text-[12px]" onClick={() => setCleanupExpanded(!cleanupExpanded)}>
                           {cleanupExpanded
                             ? i18nT('pages.chatSidebar.hide_sessions_count', { count: archivable.length, n: fmtNumber(archivable.length) })
-                            : i18nT('pages.chatSidebar.show_sessions_count', { count: archivable.length, n: fmtNumber(archivable.length) })} ▸
+                            : i18nT('pages.chatSidebar.show_sessions_count', { count: archivable.length, n: fmtNumber(archivable.length) })} <ChevronRight className="lucide-inline" />
                         </button>
                       )}
                       {cleanupExpanded && archivable.length > 0 && (

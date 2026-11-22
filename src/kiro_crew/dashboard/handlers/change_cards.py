@@ -45,6 +45,11 @@ from kiro_crew import change_card_catalog as catalog
 from kiro_crew.dashboard import change_cards as cards
 from kiro_crew.dashboard import chat_cards
 from kiro_crew.dashboard.change_cards import CardError, CardStore, card_store_for
+from kiro_crew.dashboard.handlers._bounded_read import (
+    TIMED_OUT,
+    bounded_read,
+    timed_out_for_model,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -263,21 +268,44 @@ async def _closed_on_disk(state: Any, store: CardStore) -> "frozenset[str]":
     reader = getattr(log, "get_metadata_status", None)
     if not callable(reader):
         return frozenset()
-    from kiro_crew.dashboard.chat_utils import drained_to_thread, slot_transcript_key
-
     keys = {
         rec["slot_key"] for rec in store.pending(None) if rec.get("status") == cards.STATUS_PENDING
     }
     closed: set[str] = set()
     for key in keys:
-        try:
-            meta, readable = await drained_to_thread(reader, slot_transcript_key(key))
-        except Exception:
-            logger.debug("persisted-close read failed for %s", key, exc_info=True)
-            continue
-        if readable and meta and meta.get("closed"):
+        if await _persisted_close(reader, key):
             closed.add(key)
     return frozenset(closed)
+
+
+async def _persisted_close(reader: Callable[[str], Any], slot_key: str) -> bool:
+    """Whether *slot_key*'s session metadata, read off the loop, carries ``closed``.
+
+    An unreadable or absent record, and a read that raises, answer False: only a
+    record that was read and says closed counts as closure.
+    """
+    from kiro_crew.dashboard.chat_utils import drained_to_thread, slot_transcript_key
+
+    try:
+        meta, readable = await drained_to_thread(reader, slot_transcript_key(slot_key))
+    except Exception:
+        logger.debug("persisted-close read failed for %s", slot_key, exc_info=True)
+        return False
+    return bool(readable and meta and meta.get("closed"))
+
+
+async def slot_closure_recorded(state: Any, slot_key: str) -> bool:
+    """Whether *slot_key* has a readable persisted ``closed`` flag.
+
+    Only a close whose history save committed counts. An absent slot and an
+    in-memory close tombstone both answer False. Callers own the other gates:
+    the restore having run, and no live slot or runtime carrying the key.
+    """
+    log = getattr(state, "conversation_log", None)
+    reader = getattr(log, "get_metadata_status", None)
+    if not callable(reader):
+        return False
+    return await _persisted_close(reader, slot_key)
 
 
 async def _json_body(request: web.Request) -> dict[str, Any]:
@@ -438,7 +466,20 @@ async def api_cards_agent_capabilities(request: web.Request) -> web.Response:
             {"error": "member is required", "code": "invalid_member"}, status=400
         )
     try:
-        view = await asyncio.to_thread(cards.member_capabilities_view, request.app, member)
+        view = await bounded_read(
+            lambda name: cards.member_capabilities_view(request.app, name),
+            member,
+            what="Capabilities",
+        )
+    except TimeoutError:
+        return web.json_response(
+            {
+                "error": timed_out_for_model(member),
+                "code": "capabilities_unavailable",
+                "reason": TIMED_OUT,
+            },
+            status=503,
+        )
     except catalog.CardCatalogError as exc:
         return _refusal(exc)
     return web.json_response(view)
@@ -665,6 +706,8 @@ async def propose_for_caller(
     except (CardError, catalog.CardCatalogError) as exc:
         if undo_claim is not None:
             await undo_claim()
+        if isinstance(exc, CardError) and exc.code == "duplicate_card":
+            exc = await _show_waiting_card_again(request, slot_key, kind, params, exc)
         return _refusal(exc)
     store = _store(request)
     try:
@@ -683,6 +726,31 @@ async def propose_for_caller(
     delivered = await _broadcast(request.app["state"], public)
     _audit(sk, "cards.propose", "ok", resources=_card_resources(public))
     return web.json_response({**public, "delivered_clients": delivered})
+
+
+async def _show_waiting_card_again(
+    request: web.Request, slot_key: str, kind: str, params: dict[str, Any], exc: CardError
+) -> CardError:
+    """Draw the pending card a repeated proposal names again at the end of the chat.
+
+    The repeat is still refused; its text says where the card now is only once the
+    row was written. A card being applied stays where it is.
+    """
+    store = _store(request)
+    same = store.open_duplicate(slot_key, kind, params)
+    if same is None or same["status"] != cards.STATUS_PENDING:
+        return exc
+    public = store.public(same)
+    state = request.app["state"]
+    await chat_cards.load_conversation_window(state, public)
+    if not chat_cards.record_change_shown_again(state, public):
+        return exc
+    return CardError(
+        409,
+        "duplicate_card",
+        f"the same change is already on card {same['id']}, waiting for the person: "
+        "it is shown again at the end of the chat",
+    )
 
 
 async def api_cards_agent_status(request: web.Request) -> web.Response:
@@ -1048,6 +1116,12 @@ async def api_cards_cancel(request: web.Request) -> web.Response:
         revert = store.snapshot(rec)
         store.cancel(rec, body.get("revision"))
         published = await _publish(request, rec, revert)
+        from kiro_crew.dashboard import mate_user_actions
+
+        # The user's Decline: saved, so the crewmate thread that raised it is told.
+        mate_user_actions.note_card(
+            request.app["state"], rec, mate_user_actions.CARD_DECLINED, own_wake=False
+        )
         if rec.get("kind") in catalog.WORKFLOW_KINDS:
             _audit(
                 str(request.get("user") or "owner"),
@@ -1378,6 +1452,15 @@ def _arm_card_undo_cron_guard(
 
         # Only an admitted import card step may write (or take back) carried files.
         request[REQ_CARD_IMPORT_FILES] = rec["id"]
+    if kind == catalog.KIND_CREWMATE_IMPORT and str(plan_step.get("path", "")).endswith(
+        "/dashboard/template"
+    ):
+        from kiro_crew.dashboard.handlers.member_import_dashboard import (
+            REQ_CARD_IMPORT_DASHBOARD,
+        )
+
+        # Only an admitted import card step may set the new Bot's dashboard.
+        request[REQ_CARD_IMPORT_DASHBOARD] = True
     if kind == catalog.KIND_FOLDER_STEERING:
         replaced = (rec.get("params") if op == catalog.OP_UNDO else rec.get("before")) or {}
         request[REQ_CARD_FOLDER_STEERING_EXPECT] = catalog.string_items(
@@ -1490,7 +1573,51 @@ async def change_card_middleware(
         if 200 <= resp.status < 300:
             _record_memory(route, route_match_info(request), body, before, "via settings page")
         return resp
-    return await _run_card_step(request, handler, route, card_id)
+    resp_status = 0
+    try:
+        resp = await _run_card_step(request, handler, route, card_id)
+        resp_status = resp.status
+        return resp
+    finally:
+        _note_card_step(request, card_id, resp_status)
+
+
+#: Request attribute: the card record as it was before this step was admitted.
+_REQ_CARD_BEFORE = "card_step_before"
+#: Request attribute: this step's route was called (a refusal before it changed nothing).
+_REQ_CARD_STEP_RAN = "card_step_ran"
+
+
+def _note_card_step(request: web.Request, card_id: str, resp_status: int) -> None:
+    """Tell the crewmate thread that raised the card what this step settled. Never raises.
+
+    Read from the record as saved: a transition whose save failed was put back, so
+    it settles nothing (:func:`mate_user_actions.step_outcome`).
+    """
+    before = request.get(_REQ_CARD_BEFORE)
+    if not isinstance(before, dict):
+        return
+    try:
+        from kiro_crew.dashboard import mate_user_actions
+
+        state = request.app["state"]
+        rec = card_store_for(state).get(card_id)
+        op = (request.headers.get(HEADER_CARD_OP) or "").strip().lower()
+        outcome = mate_user_actions.step_outcome(
+            before,
+            rec,
+            op,
+            refused=request.get(_REQ_CARD_STEP_RAN) is True
+            and (resp_status == 0 or resp_status >= 400),
+        )
+        mate_user_actions.note_card(
+            state,
+            rec,
+            outcome,
+            own_wake=request.get(mate_user_actions.REQ_CARD_OWN_WAKE) is True,
+        )
+    except Exception:
+        logger.debug("card %s answer note skipped", card_id, exc_info=True)
 
 
 async def _run_card_step(
@@ -1514,6 +1641,7 @@ async def _run_card_step(
         # The record as it was before this step was admitted: what disk holds
         # until the admission is saved, and what an unsaved verdict reverts to.
         revert = store.snapshot(rec)
+        request[_REQ_CARD_BEFORE] = revert
         admitted = store.begin_step(
             rec,
             revision=request.headers.get(HEADER_CARD_REVISION),
@@ -1612,6 +1740,7 @@ async def _run_card_step(
                     )
                 )
         handler_started = True
+        request[_REQ_CARD_STEP_RAN] = True
         _arm_card_undo_cron_guard(request, rec, op, plan_step)
         resp = await handler(request)
     except web.HTTPException as exc:
@@ -1825,29 +1954,31 @@ async def _complete(request: web.Request, rec: dict[str, Any], *, partial: bool)
     ):
         # A card press starts no turn: tell the crewmate, so the work that waited
         # on the capability moves to a worker that has it.
-        from kiro_crew.dashboard import goal_setup
+        from kiro_crew.dashboard import goal_setup, mate_user_actions
 
-        goal_setup.schedule_capabilities_nudge(
+        if goal_setup.schedule_capabilities_nudge(
             request.app.get("state"),
             rec["slot_key"],
             str(rec.get("title") or ""),
             card_member=str(params.get("member") or ""),
-        )
+        ):
+            request[mate_user_actions.REQ_CARD_OWN_WAKE] = True
     from kiro_crew import mate_tool_access
 
     if rec["kind"] == catalog.KIND_CREWMATE_UPDATE and mate_tool_access.is_tool_access_card(params):
         # The user turned the crewmate's preview on (Turn on): the request that
         # raised this card becomes its own capabilities card, and the conductor
         # is reloaded onto the request tools and told.
-        from kiro_crew.dashboard import goal_setup
+        from kiro_crew.dashboard import goal_setup, mate_user_actions
 
-        goal_setup.schedule_tool_access_nudge(
+        if goal_setup.schedule_tool_access_nudge(
             request.app.get("state"),
             rec["slot_key"],
             app=request.app,
             session_key=str(rec.get("session_key") or ""),
             card_member=str(params.get("name") or ""),
-        )
+        ):
+            request[mate_user_actions.REQ_CARD_OWN_WAKE] = True
 
 
 def register_change_card_routes(app: web.Application) -> None:

@@ -23,6 +23,7 @@ from kiro_crew import constants
 from kiro_crew.constants import (
     _RAW_OPTIONS_RE_LINE,
     OPTIONS_RE_LINE,
+    _line_marker_candidates,
     _marker_labels_have_unmatched_opener,
 )
 
@@ -67,12 +68,7 @@ def test_text_without_the_head_is_not_scanned(monkeypatch):
 
 
 def _whole_text(text: str) -> list[tuple[tuple[int, int], dict[str, str | None]]]:
-    """The reference answer: the raw pattern over all of *text*, plus the balance filter."""
-    return [
-        (m.span(), m.groupdict())
-        for m in _RAW_OPTIONS_RE_LINE.finditer(text)
-        if not _marker_labels_have_unmatched_opener(m.group("labels"))
-    ]
+    return [(m.span(), m.groupdict()) for m in _RAW_OPTIONS_RE_LINE.finditer(text)]
 
 
 #: Fragments the grammar gives meaning to, so generated text keeps landing on
@@ -128,9 +124,22 @@ _FRAGMENTS = [
 @example("\n  \n**[OPTIONS: a]**")
 @example("[OPTIONS: a | b]  \n\nmore")
 def test_line_scan_matches_the_whole_text_scan(text):
-    got = [(m.span(), m.groupdict()) for m in OPTIONS_RE_LINE.finditer(text)]
+    got = [(m.span(), m.groupdict()) for m in _line_marker_candidates(_RAW_OPTIONS_RE_LINE, text)]
     assert got == _whole_text(text)
-    assert OPTIONS_RE_LINE.sub("", text) == _RAW_OPTIONS_RE_LINE.sub(
-        lambda m: m.group(0) if _marker_labels_have_unmatched_opener(m.group("labels")) else "",
-        text,
-    )
+
+
+@settings(max_examples=500)
+@given(st.lists(st.sampled_from(_FRAGMENTS), max_size=40).map("".join))
+@example("[OPTIONS: a | b] [OPTIONS: c | d]")
+@example("[OPTIONS: a [OPTIONS: b | c]\n[OPTIONS: d]")
+def test_sub_removes_exactly_the_balanced_markers_finditer_yields(text):
+    spans = [m.span() for m in OPTIONS_RE_LINE.finditer(text)]
+    for m in OPTIONS_RE_LINE.finditer(text):
+        assert not _marker_labels_have_unmatched_opener(m.group("labels"))
+    assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:]))
+    kept, cursor = [], 0
+    for start, end in spans:
+        kept.append(text[cursor:start])
+        cursor = end
+    kept.append(text[cursor:])
+    assert OPTIONS_RE_LINE.sub("", text) == "".join(kept)

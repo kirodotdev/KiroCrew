@@ -76,18 +76,15 @@ class TestGitRelease:
         assert release_apply.apply_release(_git([])) == 0
         assert release_engine_installs == [(_PY, expected)]
 
-    def test_an_engine_only_on_disk_that_did_not_refresh_still_switches(self, monkeypatch):
-        """Route off, engine on disk, download fails: the git update still succeeds."""
-        monkeypatch.setattr(dep_sync, "sync_or_reinstall", lambda *a, **k: 0)
+    def test_any_engine_failure_stops_the_git_update_whatever_the_switch(self, monkeypatch):
+        """Engine guarantee: an exit the install did not choose fails too."""
+        assert not hasattr(release_apply, "ENGINE_SKIPPED_MESSAGE")
+        assert not hasattr(release_apply, "ENGINE_OPTIONAL_FAILED_EXIT")
         monkeypatch.setattr(
-            release_apply,
-            "_install_engine",
-            lambda _py, _ctx: release_apply.ENGINE_SKIPPED_MESSAGE,
+            release_apply, "_spawn_build_child", lambda *a, **k: (4, b"", b"HTTP 403\n")
         )
-        messages: list[tuple[str, bool]] = []
-        assert release_apply.apply_release(_git(messages)) == 0
-        assert (release_apply.ENGINE_SKIPPED_MESSAGE, False) in messages
-        assert not any(error for _m, error in messages)
+        with pytest.raises(release_apply.EngineInstallError):
+            _real_install_engine(_PY, _BuildContext())
 
     def test_an_engine_failure_is_engine_failed_and_names_the_install(self, monkeypatch):
         monkeypatch.setattr(dep_sync, "sync_or_reinstall", lambda *a, **k: 0)
@@ -186,34 +183,6 @@ class TestWheelRelease:
         assert engine_calls == [(tmp_path / "crew-venv-9.9.9" / "bin" / "python3", ctx)]
         assert progress == [release_apply.ENGINE_STEP_MESSAGE]
 
-
-class TestWheelReleaseSkippedEngine:
-    def test_an_engine_only_on_disk_that_did_not_refresh_still_promotes(
-        self, monkeypatch, tmp_path
-    ):
-        """Route off, engine on disk, download fails: the wheel update still switches."""
-
-        def apply(**kwargs):
-            kwargs["install_engine"](tmp_path / "crew-venv-9.9.9", _BuildContext())
-            return tmp_path / "crew-venv-9.9.9"
-
-        monkeypatch.setattr(wheel_engine, "apply_wheel_update", apply)
-        monkeypatch.setattr(
-            release_apply,
-            "_install_engine",
-            lambda _py, _ctx: release_apply.ENGINE_SKIPPED_MESSAGE,
-        )
-        progress: list[str] = []
-        release = release_apply.WheelRelease(
-            channel="stable",
-            feed_base="https://f",
-            artifact_base="https://a",
-            expected_version="9.9.9",
-            progress=progress.append,
-        )
-        assert release_apply.apply_release(release) == tmp_path / "crew-venv-9.9.9"
-        assert progress[-1] == release_apply.ENGINE_SKIPPED_MESSAGE
-
     def test_a_bundle_route_engine_failure_never_promotes(self, monkeypatch, tmp_path):
         promoted: list[bool] = []
 
@@ -237,16 +206,6 @@ class TestWheelReleaseSkippedEngine:
             release_apply.apply_release(release)
         assert promoted == []
 
-
-class TestEngineStep:
-    def test_the_optional_exit_is_reported_not_raised(self, monkeypatch):
-        monkeypatch.setattr(
-            release_apply,
-            "_spawn_build_child",
-            lambda *a, **k: (release_apply.ENGINE_OPTIONAL_FAILED_EXIT, b"", b"HTTP 403\n"),
-        )
-        assert _real_install_engine(_PY, _BuildContext()) == release_apply.ENGINE_SKIPPED_MESSAGE
-
     def test_runs_the_new_release_install_through_the_update_spawn(self, monkeypatch):
         spawned: list = []
 
@@ -266,33 +225,6 @@ class TestEngineStep:
                 True,
             )
         ]
-
-    @pytest.mark.parametrize("rc", [-9, 1, 137], ids=["signal", "error", "shell-kill"])
-    def test_an_optional_child_that_ends_any_other_way_is_reported_not_raised(
-        self, monkeypatch, rc
-    ):
-        """The child named its refresh optional first; however it then ends, the
-        update goes on (a signal, an exit the install did not choose)."""
-        out = f"{release_apply.ENGINE_OPTIONAL_MARKER}\nFetching manifest ...\n".encode()
-        monkeypatch.setattr(
-            release_apply, "_spawn_build_child", lambda *a, **k: (rc, out, b"Killed\n")
-        )
-        assert _real_install_engine(_PY, _BuildContext()) == release_apply.ENGINE_SKIPPED_MESSAGE
-
-    def test_the_marker_only_counts_as_a_whole_line(self, monkeypatch):
-        out = f"note: {release_apply.ENGINE_OPTIONAL_MARKER}\n".encode()
-        monkeypatch.setattr(release_apply, "_spawn_build_child", lambda *a, **k: (1, out, b""))
-        with pytest.raises(release_apply.EngineInstallError):
-            _real_install_engine(_PY, _BuildContext())
-
-    def test_an_optional_child_ends_itself_before_the_update_kills_it(self):
-        """The update's kill reads as a failed install, so both of the optional
-        refresh's own bounds sit below it, with room for the child to exit."""
-        assert (
-            release_apply.ENGINE_OPTIONAL_DEADLINE_SECS
-            < release_apply.ENGINE_OPTIONAL_HARD_STOP_SECS
-            < release_apply.ENGINE_INSTALL_TIMEOUT_SECS - 60
-        )
 
     def test_a_nonzero_exit_raises_with_the_childs_reason(self, monkeypatch):
         monkeypatch.setattr(

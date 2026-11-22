@@ -256,6 +256,12 @@ class _Host:
         # Same reason: added after the move. The real section walks the host's
         # ledger stores, which no frozen report can pin.
         mp.setattr(workload, "_doctor_ledger_backlog", self._marker("_doctor_ledger_backlog"))
+        # Same reason: it reads the session tree checkpoint's marker under the data home.
+        mp.setattr(
+            workload,
+            "_doctor_session_tree_checkpoint",
+            self._marker("_doctor_session_tree_checkpoint"),
+        )
         mp.setitem(sys.modules, "faiss", None)
         mp.setitem(sys.modules, "amazon_transcribe", None)
         mp.setitem(sys.modules, "amazon_transcribe.client", None)
@@ -487,6 +493,7 @@ Other Channels
 Loop-stall Crash Dumps
   dumps:       ✅ no crash dumps found (healthy)
   dump dir:    <TMP>/dumps
+  <<_doctor_session_tree_checkpoint>>
 
 Connectivity
   kiro-cli:    ✅ kiro-cli 1.2.3
@@ -799,6 +806,7 @@ Loop-stall Crash Dumps
     job: nightly
     job is currently auto-paused
   dump dir:    <TMP>/dumps
+  <<_doctor_session_tree_checkpoint>>
 
 Connectivity
   kiro-cli:    ⏭  skipped (not installed)
@@ -1091,6 +1099,10 @@ Collecting diagnostics bundle (secrets are redacted)...
 """
 
 
+def _pin_bundle_alignment(monkeypatch) -> None:
+    monkeypatch.setattr(services, "_bundle_version_alignment", lambda: "aligned (1.2.3)")
+
+
 def test_bundle_mode_prints_only_the_bundle(host, capsys, monkeypatch) -> None:
     result = SimpleNamespace(
         zip_path=host.tmp / "diag.zip",
@@ -1098,7 +1110,13 @@ def test_bundle_mode_prints_only_the_bundle(host, capsys, monkeypatch) -> None:
         total_redactions=3,
         skipped=["gateway.log"],
     )
-    monkeypatch.setattr(cli_doctor.diagnostics, "collect_bundle", lambda: result)
+    collected: list[dict] = []
+    _pin_bundle_alignment(monkeypatch)
+    monkeypatch.setattr(
+        cli_doctor.diagnostics,
+        "collect_bundle",
+        lambda **kwargs: collected.append(kwargs) or result,
+    )
     monkeypatch.setattr(
         cli_doctor.diagnostics, "terminal_issue_url", lambda r: "https://example.invalid/issues/new"
     )
@@ -1108,6 +1126,7 @@ def test_bundle_mode_prints_only_the_bundle(host, capsys, monkeypatch) -> None:
     assert out == _BUNDLE
     assert code is None
     assert host.calls == []
+    assert collected == [{"version_alignment": "aligned (1.2.3)"}]
 
 
 def test_bundle_mode_prints_the_bundle_when_the_companion_does_not_compose(
@@ -1116,7 +1135,8 @@ def test_bundle_mode_prints_the_bundle_when_the_companion_does_not_compose(
     result = cli_doctor.diagnostics.BundleResult(
         zip_path=host.tmp / "diag.zip", filename="diag.zip"
     )
-    monkeypatch.setattr(cli_doctor.diagnostics, "collect_bundle", lambda: result)
+    _pin_bundle_alignment(monkeypatch)
+    monkeypatch.setattr(cli_doctor.diagnostics, "collect_bundle", lambda **_: result)
 
     def refuse_context():
         raise PlatformCompositionError("companion did not compose")
@@ -1134,9 +1154,10 @@ def test_bundle_mode_prints_the_bundle_when_the_companion_does_not_compose(
 
 
 def test_bundle_mode_exits_one_when_the_bundle_cannot_be_written(host, capsys, monkeypatch) -> None:
-    def refuse():
+    def refuse(**_):
         raise OSError("disk full")
 
+    _pin_bundle_alignment(monkeypatch)
     monkeypatch.setattr(cli_doctor.diagnostics, "collect_bundle", refuse)
 
     out, code = host.run(capsys, bundle=True)

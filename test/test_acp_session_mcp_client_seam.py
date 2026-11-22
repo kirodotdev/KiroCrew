@@ -585,11 +585,8 @@ class TestClientSeam:
         from kiro_crew import model_registry
 
         substitute = "global.anthropic.claude-sonnet-4-6[1m]"
-        monkeypatch.setattr(
-            model_registry,
-            "_ADVERTISED_MODELS",
-            {"claude_code": ["global.anthropic.claude-opus-5[1m]", substitute]},
-        )
+        # The pin is not advertised, so the retry adopts the substitute.
+        monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {"claude_code": [substitute]})
         _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
         client = AcpClient(
             work_dir=tmp_path,

@@ -162,6 +162,12 @@ def _person(value: Any) -> str:
     return str(user.get("displayName") or user.get("name") or user.get("slug") or "")
 
 
+def _account(value: Any) -> str:
+    """The stable account key of *value*; two accounts can share a display name."""
+    user = projection._as_dict(value)
+    return str(user.get("name") or user.get("slug") or "")
+
+
 class _Client:
     """One fetch's view of one instance: the base URL and an open session."""
 
@@ -366,6 +372,7 @@ def _comment_rows(client: _Client, activities: Any, partial: list[str]) -> list[
     if page.get("isLastPage", True) is False:
         projection._mark_partial(partial, "review discussions")
     rows: list[dict[str, Any]] = []
+    verdicts: dict[str, list[dict[str, Any]]] = {}
 
     def add_comment(
         comment: dict[str, Any], thread: str, anchor: dict[str, Any], depth: int
@@ -408,6 +415,12 @@ def _comment_rows(client: _Client, activities: Any, partial: list[str]) -> list[
                     projection._as_dict(activity.get("commentAnchor")),
                     0,
                 )
+        elif action == "UNAPPROVED":
+            # A withdrawal leaves the reviewer with no verdict, so their earlier
+            # review rows are dropped. Keyed by account, not display name.
+            account = _account(activity.get("user"))
+            for row in verdicts.pop(account, []) if account else []:
+                rows.remove(row)
         elif action in _REVIEW_STATES:
             if len(rows) >= _MAX_COMMENTS:
                 projection._mark_partial(partial, "review discussions")
@@ -428,6 +441,7 @@ def _comment_rows(client: _Client, activities: Any, partial: list[str]) -> list[
                     "resolved": False,
                 }
             )
+            verdicts.setdefault(_account(activity.get("user")), []).append(rows[-1])
     return rows
 
 

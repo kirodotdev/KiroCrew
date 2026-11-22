@@ -65,14 +65,6 @@ export function liveMateThreads(rows: readonly { key?: string; mode?: string }[]
   return new Set(rows.filter(r => r.mode === 'member' && r.key).map(r => r.key as string))
 }
 
-/** The live mate threads among `rows` whose sessions leave the person's lists for
- *  the Bot's Sessions tab: every one but those whose Bot turned on "Show in my
- *  Sessions list" (the server's `show_sessions_in_list` stamp on the thread's row).
- *  Read over the FULL slot store, like `liveMateThreads`. */
-export function mateThreadsHidingSessions(rows: readonly { key?: string; mode?: string; show_sessions_in_list?: boolean }[]): ReadonlySet<string> {
-  return new Set(rows.filter(r => r.mode === 'member' && r.key && r.show_sessions_in_list !== true).map(r => r.key as string))
-}
-
 /** The slot keys that are busy, each slot's own key plus the mate thread it was
  *  dispatched from (`mate_root`): a mate is working while ANY session in its tree
  *  is, as a waiting worker already badges the mate as needing you. A slot is busy
@@ -210,6 +202,22 @@ export function runsCrewMode(agent: string | null | undefined, kind: string | nu
   return conductors.has(agent) || (!!stamp && stamp === agent)
 }
 
+/** Whether the composer shows `slot` as a conductor mode chat (the bolt, no agent
+ *  picker): it runs Crew Mode (`runsCrewMode`) and the gateway has not said it is
+ *  outside every crew. The gateway stamps `crew_mode_root` on every row it lists,
+ *  `false` on a session that is no root, and `crew_root` on a root's crew
+ *  members; a row that carries no stamp yet (a switch's own answer, before the
+ *  next slot frame) keeps the conductor's look. So a chat another session opened
+ *  on a conductor outside any crew (a Bot's or a plain chat's `session_create`),
+ *  stamped not-a-root and no crew member, keeps its agent picker: the gateway
+ *  does not lock its agent and nests nothing under it (#39260). */
+export function showsAsCrewMode(slot: {
+  agent?: string; agent_kind?: string; crew_mode_agent?: string; crew_mode_root?: boolean; crew_root?: string | null
+} | null | undefined): boolean {
+  if (!slot || !runsCrewMode(slot.agent, slot.agent_kind, slot.crew_mode_agent)) return false
+  return slot.crew_mode_root !== false || !!crewRootOf(slot)
+}
+
 /** Whether `name` is the default agent: the switch is offered only there. The
  *  literal `kirocrew` counts only while no default agent is configured; with
  *  one configured, a chat on the `kirocrew` template is that template. */
@@ -240,14 +248,26 @@ export function newChatCrewModeAgent(slot: {
   return configuredAgent
 }
 
+/** The fields `withoutConductors` and `agentCycleTarget` read off a row. */
+type ConductorFilterRow = { name: string; selection_kind?: string; kiro_agent?: string; source?: string; memory_store?: string }
+
+/** Whether a member row is the roster's copy of the template it is named after
+ *  rather than a crewmate the person created: it runs that template, and it is
+ *  not what the person's create path writes (`source` `kirocrew` with memory of
+ *  its own). The agents sync and the default-agent pick write such copies. */
+function rosterCopyOfTemplate(row: ConductorFilterRow): boolean {
+  if (row.selection_kind !== 'member' || row.kiro_agent !== row.name) return false
+  return row.source !== 'kirocrew' || (row.memory_store ?? 'default') === 'default'
+}
+
 /** Rows of a normal chat's agent picker: every conductor left out, since the
- *  composer's Crew Mode switch (this part) is the way onto one; crewmates kept
- *  whatever their name. The picker and the Split View pane picker read through
- *  this one function; the keyboard cycle (`agentCycleTarget`) skips conductors on
- *  its own. On a gateway without Crew Mode no template is a conductor, so every
- *  row passes. */
-export function withoutConductors<T extends { name: string; selection_kind?: string }>(choices: T[]): T[] {
-  return choices.filter(c => c.selection_kind === 'member' || !isConductorAgent(c.name))
+ *  composer's Crew Mode switch (this part) is the way onto one, and so is the
+ *  roster's copy of a conductor template; crewmates kept whatever their name.
+ *  The picker and the Split View pane picker read through this one function;
+ *  the keyboard cycle (`agentCycleTarget`) skips conductors on its own. On a
+ *  gateway without Crew Mode no template is a conductor, so every row passes. */
+export function withoutConductors<T extends ConductorFilterRow>(choices: T[]): T[] {
+  return choices.filter(c => (c.selection_kind === 'member' && !rosterCopyOfTemplate(c)) || !isConductorAgent(c.name))
 }
 
 /** Every surface that can show a session's pending tool approval. Listed so one
@@ -281,7 +301,7 @@ export function crewApprovalDecidableHere(
  *  it on. A worker whose root is closed keeps its row: no panel lists it, and its
  *  own approval or question must still reach the person. `rootsOnly` keeps just
  *  the roots, for the session filter's Crew Mode chip. */
-export function crewModeView<T extends { key?: string; mode?: string; crew_root?: string; crew_mode_root?: boolean; mate_root?: string; show_sessions_in_list?: boolean; slack_list_hidden?: boolean; pending_approval?: boolean; needs_input?: boolean }>(
+export function crewModeView<T extends { key?: string; mode?: string; crew_root?: string; crew_mode_root?: boolean; mate_root?: string; slack_list_hidden?: boolean; pending_approval?: boolean; needs_input?: boolean }>(
   rows: T[], rootsOnly = false, mateThreads?: ReadonlySet<string>, activeKey?: string | null,
 ): T[] {
   // With `slack.show_in_session_list` off, a conversation that started in Slack
@@ -290,10 +310,9 @@ export function crewModeView<T extends { key?: string; mode?: string; crew_root?
   if (rows.some(r => r.slack_list_hidden)) rows = rows.filter(r => !slackRowHidden(r, activeKey))
   if (rootsOnly) return rows.filter(r => crewModeRoot(r))
   // A mate's session leaves the list while its mate thread is live (the mate's
-  // Sessions tab lists it), unless its Bot shows its sessions in the person's list,
-  // before the Crew Mode return so that branch is unchanged. `mateThreads` is the
-  // full store's (`mateThreadsHidingSessions`); without it, those among `rows`.
-  const mates = mateThreads ?? mateThreadsHidingSessions(rows)
+  // Sessions tab lists it), before the Crew Mode return so that branch is unchanged. `mateThreads` is the
+  // full store's (`liveMateThreads`); without it, those among `rows`.
+  const mates = mateThreads ?? liveMateThreads(rows)
   if (mates.size) rows = rows.filter(r => { const mate = mateRootOf(r); return !mate || !mates.has(mate) })
   if (!crewModeEnabled()) return rows
   const listed = new Set<string>()
@@ -351,14 +370,15 @@ export function autoOpenRows<T extends { crew_root?: string; mate_root?: string;
  *  cycle: an empty list, a chat in Crew Mode (`runsCrewMode`), which has no agent
  *  picker to mirror, or a `locked` chat: the caller passes the row's RAW
  *  `crew_mode_root` stamp, set only on a chat the gateway refuses to move.
- *  Crewmates are kept whatever their name. */
-export function agentCycleTarget<T extends { name: string; selection_kind?: string }>(
+ *  Crewmates are kept whatever their name; the roster's copy of a conductor
+ *  template is skipped with it. */
+export function agentCycleTarget<T extends ConductorFilterRow>(
   agents: T[], current: string, currentKind: string | undefined, step: 1 | -1, crewStamp?: string, locked = false,
 ): string | null {
   // The raw `crew_mode_root` stamp is the gateway's own lock (`crew_mode_locked`),
   // in every build; where conductor mode is offered, every such chat has no picker.
   if (locked || runsCrewMode(current, currentKind, crewStamp)) return null
-  const rows = agents.filter(a => a.selection_kind === 'member' || !conductors.has(a.name))
+  const rows = agents.filter(a => (a.selection_kind === 'member' && !rosterCopyOfTemplate(a)) || !conductors.has(a.name))
   if (rows.length === 0) return null
   const idx = rows.findIndex(a => a.name === current)
   const next = idx === -1 ? (step === 1 ? 0 : rows.length - 1) : (idx + step + rows.length) % rows.length

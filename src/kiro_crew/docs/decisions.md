@@ -86,6 +86,8 @@ When decision models are turned off for the dashboard, the Decisions card shows 
 
 When only some are allowed, each model that is not allowed is still listed under **Decision model**, greyed out with "Not allowed by your administrator.", and cannot be chosen. A model that is not allowed is sent nothing wherever your administrator's policy refuses it, even if you chose it earlier or wrote its address into `config.json` by hand. A consent you gave stays recorded and counts again if your administrator later allows that model. **No model** is always available. An address of your own that you set in `config.json` (`decisions.provider.endpoint`) is not one of the listed models, so this list does not limit it; turning decision models off entirely still does.
 
+In the LTS edition, Jev hosted by TypeSafe is always off, and so is any address of your own: neither is ever sent anything, whatever the policy or `config.json` says. The other models (the local models, SageMaker and Cloudflare Clef) work unless your administrator's policy turns them off.
+
 The hosted provider's API key field is part of that provider's entry under **Decision model**: choose **Jev, hosted by TypeSafe** and the field appears beneath it.
 
 ## Using Cloudflare Clef
@@ -109,6 +111,7 @@ Set `provider` in `config.json` by hand (the Decision model picker only offers J
 
 - `model` must be `clef` or `clef-flash`, matching the model in the endpoint path (`@cf/cloudflare/clef` or `@cf/cloudflare/clef-flash`).
 - Store a Cloudflare API token that can run Workers AI in the [secrets vault](secrets-vault.md) under `TYPESAFE_API_KEY`. The name is fixed, whichever provider the key belongs to. It is sent as `Authorization: Bearer <token>`.
+- In the LTS edition Clef counts as its own model only at exactly this address, with your 32-character account id and `model` matching the path; any other address is refused like an address of your own.
 - Changing the endpoint withdraws your consent: turn the Decisions switch off and on again on the card, which shows the Cloudflare address you are agreeing to send messages to.
 - Pricing, rate limits and latency are Cloudflare's; see the [Clef model page](https://developers.cloudflare.com/workers-ai/models/clef/). Kiro Crew keeps its connection to the provider open between decisions, so only the first decision after a quiet spell pays the connection set-up (over a second to Cloudflare's API); raise `timeout_ms` if that one, or a busy model, times out, and remember that a slow answer only means the decision falls back.
 
@@ -169,7 +172,7 @@ You do not install or start anything yourself. When you press **Use** and the mo
 2. **Install.** A Python 3.12 environment of about 1 GB is built for the model with `uv`, from a lock that pins every package to the version the card's figures were measured with. On Linux, PyTorch comes from its CPU-only index. This happens once per model and takes a few minutes.
 3. **Start.** The model's server starts in the background, sandboxed, and listens on `127.0.0.1` only. The card says **Running on this machine** once it answers.
 
-The weights, with their license and notice files, live under `~/.kiro/crew/decisions/models/<model>/`; the model's software and its log live under `~/.kiro/crew/run/decisions/<model>/`. The server runs for as long as Kiro Crew does: it stops when you switch to another model and when the gateway exits, and starts again when the gateway does. If it exits on its own it is restarted a few times; if it keeps failing, the card shows why, with the end of the server's log, and a **Try again** button. **Remove download** under a model you are not using deletes its files and environment to give the disk space back.
+The weights, with their license and notice files, live under `~/.kiro/crew/decisions/models/<model>/`; the model's software and its log live under `~/.kiro/crew/run/decisions/<model>/`. The server runs for as long as Kiro Crew does: it stops when you switch to another model and when the gateway exits, and starts again when the gateway does. If it exits on its own it is restarted a few times; if it keeps failing, the card shows why, with the end of the server's log, and a **Try again** button. **Remove <model> download** (with its size) under a model you are not using deletes its files and environment to give the disk space back.
 
 What changes when you switch:
 

@@ -369,16 +369,19 @@ async def handle_optimize(request: web.Request) -> web.Response:
     full_prompt = f"[System-{nonce}: {OPTIMIZER_SYSTEM}]\n\n{user_msg}"
 
     try:
+        logger.debug("Optimizer: acquiring dedicated session")
+        # Not under the 30s budget below: a slow start it cancelled would be
+        # killed as a failed setup and the draft handed back unchanged. The
+        # start's own stage budgets bound it instead.
+        client, _is_new, _resumed = await state.sessions.get_or_create(
+            optimizer_session_key,
+            agent="kirocrew-lite",
+            # The owner is waiting on the composer (kiro_crew.start_priority).
+            start_priority=owner_start_priority(request),
+        )
 
         async def _optimize() -> str:
-            """Acquire session, stream, release — all under one timeout."""
-            logger.debug("Optimizer: acquiring dedicated session")
-            client, _is_new, _resumed = await state.sessions.get_or_create(
-                optimizer_session_key,
-                agent="kirocrew-lite",
-                # The owner is waiting on the composer (kiro_crew.start_priority).
-                start_priority=owner_start_priority(request),
-            )
+            """Stream the rewrite and release the session."""
             logger.debug("Optimizer: session acquired, streaming")
             try:
                 text = ""

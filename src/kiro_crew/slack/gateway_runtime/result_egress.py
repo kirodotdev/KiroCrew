@@ -508,7 +508,7 @@ async def _deliver_result(
             # lock _titled so display_title returns it, and persist it so it
             # survives a gateway restart (best-effort, off the event loop).
             seed = " ".join(task_summary.split())
-            slot.title = f"💓 {seed}"[:80] if seed else title
+            slot.title = f"{seed}"[:80] if seed else title
             slot._titled = True
             await self._persist_slot_title(slot)
             slot.append("assistant", f"{title}\n\n{result_text}", "msg msg-a")

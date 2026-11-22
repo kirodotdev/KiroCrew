@@ -161,9 +161,64 @@ async def test_get_all_history_filter_by_job_id(store: CronHistoryStore) -> None
     await store.append(_record(job_id="b", run_id="r2"))
     await store.append(_record(job_id="a", run_id="r3"))
 
-    records, total = await store.get_all_history(job_id="a")
+    records, total = await store.get_all_history(job_ids=["a"])
     assert total == 2
     assert all(r["job_id"] == "a" for r in records)
+
+
+async def _busy_and_daily(tmp_path: Path) -> CronHistoryStore:
+    """A minute job pushing all but one of a daily job's 8 runs out of the index.
+
+    Small caps stand in for the defaults (2,000 / 100) so the store fills in a
+    few dozen appends: the index keeps 20 rows, each job file 10.
+    """
+    store = CronHistoryStore(
+        base_dir=tmp_path, cron_max_records_per_job=10, cron_max_index_records=20
+    )
+    for i in range(7):
+        await store.append(_record(job_id="daily", run_id=f"d{i}", finished_at=1000.0 + i))
+    for i in range(30):
+        await store.append(_record(job_id="minute", run_id=f"m{i}", finished_at=2000.0 + i))
+        if i == 25:
+            await store.append(_record(job_id="daily", run_id="d7", finished_at=2025.5))
+    return store
+
+
+@pytest.mark.asyncio
+async def test_job_filtered_history_serves_runs_that_left_the_index(tmp_path: Path) -> None:
+    store = await _busy_and_daily(tmp_path)
+
+    records, total = await store.get_all_history(job_ids=["daily"], limit=100)
+    assert total == 8
+    assert [r["run_id"] for r in records] == [f"d{i}" for i in range(7, -1, -1)]
+    assert all("trace" not in r for r in records)
+
+
+@pytest.mark.asyncio
+async def test_unfiltered_history_still_reads_only_the_index(tmp_path: Path) -> None:
+    store = await _busy_and_daily(tmp_path)
+    index = [
+        json.loads(line)
+        for line in (tmp_path / "cron-history" / "_index.jsonl").read_text().splitlines()
+    ]
+
+    records, total = await store.get_all_history(limit=100)
+    assert total == 20
+    assert records == index[::-1]
+    page, page_total = await store.get_all_history(offset=5, limit=3)
+    assert page_total == 20
+    assert page == index[::-1][5:8]
+
+
+@pytest.mark.asyncio
+async def test_job_ids_off_the_directory_or_onto_the_index_add_no_file_rows(
+    tmp_path: Path,
+) -> None:
+    store = await _busy_and_daily(tmp_path)
+    (tmp_path / "escape.jsonl").write_text(json.dumps(_record(job_id="x").to_dict()) + "\n")
+
+    assert await store.get_all_history(job_ids=["../escape"]) == ([], 0)
+    assert await store.get_all_history(job_ids=["_index"]) == ([], 0)
 
 
 @pytest.mark.asyncio
@@ -203,7 +258,7 @@ async def test_non_object_jsonl_rows_do_not_break_history_reads_or_delete(
     empty_page, job_total = await store.get_job_history("job1", offset=1, limit=1)
     assert job_total == 1
     assert empty_page == []
-    filtered_rows, filtered_total = await store.get_all_history(job_id="job1")
+    filtered_rows, filtered_total = await store.get_all_history(job_ids=["job1"])
     assert filtered_total == 1
     assert [row["run_id"] for row in filtered_rows] == ["r1"]
 

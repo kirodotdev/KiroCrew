@@ -19,7 +19,8 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``,
 ``_pending_oauth_requests``, ``_pi_mcp_handoff``, ``_pi_mcp_server_names``, ``_pid``,
 ``_process``, ``_process_adapter``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_prompt_or_tool_seen``, ``_resume_session_id``, ``_resumed``, ``_sandbox_cleanup``,
-``_session_agent_spec``, ``_session_harness_deny_rules``, ``_session_id``, ``_session_key``,
+``_scope_unit``, ``_session_agent_spec``, ``_session_harness_deny_rules``, ``_session_id``,
+``_session_key``,
 ``_session_mcp_cache``, ``_session_mcp_snapshot``, ``_session_mcp_unhonoured``,
 ``_spawn_start_token``, ``_spawn_work_dir``, ``_spec_denied_tools``,
 ``_spec_shell_allowlist``, ``_spec_write_allowlist``, ``_spec_write_cwd``,
@@ -717,6 +718,7 @@ def _reset_state(self: AcpClient) -> None:
     # The instance id names the process that just ended; a replacement spawn
     # mints its own, so nothing may keep answering with this one in between.
     self._process_instance = ""
+    self._scope_unit = ""
     # A walk wedged on the dead PID's /proc entry can never speak for the
     # replacement process, so release it with the oracle it sampled into.
     self._retire_liveness_state()

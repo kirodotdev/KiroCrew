@@ -470,3 +470,28 @@ def test_an_unauditable_auto_approve_steers_the_audit_cause(monkeypatch):
     text = _notice(client)
     assert "could not write the audit record" in text
     assert client.approved == []
+
+
+@pytest.mark.parametrize("edition", ["lts", "oss"])
+def test_an_org_ask_on_a_kas_web_call_is_refused_by_a_webhook_turn(monkeypatch, edition):
+    """``web_ask_rule``: nobody is attached to a webhook turn, so in LTS a hook
+    auto-approve does not answer KAS's ask on an organisation's web rule."""
+    from types import SimpleNamespace
+
+    from kiro_crew import web_ask_rule
+
+    monkeypatch.setattr(web_ask_rule, "edition", SimpleNamespace(is_lts=lambda: edition == "lts"))
+    event = _permission_event(
+        title="Fetching https://example.com",
+        tool_kind="fetch",
+        is_shell=False,
+        harness_tool_id="web_fetch",
+        kas_builtin_ids=True,
+        kas_managed_ask=True,
+    )
+    client, sel, _gate, _text = _drive(monkeypatch, TOOL_AUTO_APPROVE, event=event)
+    if edition == "lts":
+        assert client.approved == [] and client.rejected == [_REQUEST_ID]
+        assert [r["error"] for r in _denial_rows(sel)] == ["web_ask_rule"]
+    else:
+        assert client.approved == [_REQUEST_ID]

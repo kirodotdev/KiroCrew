@@ -57,9 +57,11 @@ def _ffmpeg_candidate_dirs() -> list[str]:
     Ordered most-trusted first regardless, and `_find_ffmpeg` consults
     `platform_compat.trusted_system_path` ahead of this list entirely.
 
-    On Windows the two idiomatic install locations are the winget/Chocolatey
-    machine-wide ``%ProgramFiles%\\ffmpeg\\bin`` and the winget/scoop user-scope
-    ``%LOCALAPPDATA%\\Programs\\ffmpeg\\bin``. Expanded once at import time. The two
+    On Windows the two install locations are the machine-wide
+    ``%ProgramFiles%\\ffmpeg\\bin`` and the user-scope
+    ``%LOCALAPPDATA%\\Programs\\ffmpeg\\bin``. winget's portable ``Gyan.FFmpeg``
+    package lands in neither (it unpacks under a versioned ``WinGet\\Packages``
+    folder), so no remedy may name it. Expanded once at import time. The two
     POSIX dirs are left out there: Windows resolves them against the current drive.
     """
     dirs = ["/opt/homebrew/bin", "/usr/local/bin"]

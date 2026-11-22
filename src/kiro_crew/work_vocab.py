@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Mapping, Sequence
 from typing import Any, NotRequired, TypedDict
 
 #: The projection that folds ``work/recorded`` into a board, as its readers name it.
@@ -84,6 +85,21 @@ def waits_on_person(
     )
 
 
+def ask_is_current(events: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether the item's ``ask`` record explains the question waiting now, by the
+    ledger's own event order (*events*, oldest first): no ``report`` was appended
+    after the newest ``ask`` event. Stamps have whole-second resolution and would
+    tie, so the order decides. A tail cut short of the ``ask`` event counts as
+    current only when it holds no report either."""
+    for event in reversed(events):
+        kind = event.get("kind")
+        if kind == "ask":
+            return True
+        if kind == "report":
+            return False
+    return True
+
+
 #: ``steer`` is a person's own text typed into a worker (actor ``person``). A person's
 #: steer outranks the conductor's decision: the conductor reads new steer events
 #: before it decides and never overrules them. ``retire`` is the hub moving a remote
@@ -146,7 +162,11 @@ def coerce_dispatch_tags(raw: object) -> tuple[str, ...]:
     for tag in raw:
         if isinstance(tag, str) and DISPATCH_TAG_RE.fullmatch(tag) and tag not in out:
             out.append(tag)
-    return tuple(out[:MAX_DISPATCH_TAGS])
+            # A peer's headroom feeds this list too: stop at the cap so a long
+            # one costs one pass, not a quadratic scan of the tail.
+            if len(out) == MAX_DISPATCH_TAGS:
+                break
+    return tuple(out)
 
 
 #: Fields a conductor action may set on an item. What the write route logs from
@@ -194,6 +214,10 @@ WORK_MAX_ARTIFACT_VALUE_CHARS: int = 512
 #: A retire reason and a stamp, as stored on a retired binding.
 WORK_MAX_RETIRE_REASON_CHARS: int = 64
 WORK_MAX_STAMP_CHARS: int = 64
+#: The retire reasons a conductor may give on ``work_ledger_record action=retire``
+#: (rfc-conductor-remote-dispatch §5b): the worker is stuck on a login, or the crew
+#: lacks what the item needs. ``crew_unreachable`` is the hub's own, never a caller's.
+WORK_CONDUCTOR_RETIRE_REASONS: tuple[str, ...] = ("login_blocked", "wrong_crew")
 
 #: Each retired binding's text fields and their caps.
 _RETIRED_BINDING_TEXT: dict[str, int] = {
@@ -298,6 +322,10 @@ WORK_DISCUSSION_OBJECT_LISTS: dict[str, tuple[int, dict[str, int]]] = {
     "recent": (6, {"who": 20, "text": 200}),
 }
 WORK_DISCUSSION_COUNTS: dict[str, int] = {"round": 99, "minutes": 1440}
+#: ``rounds``: the talk so far, one entry a round (``{round, lines}``), each line
+#: one participant's ``{who, text}``, so the Board reads it in place. Caps:
+#: ``(max rounds, max lines a round, {key: max chars})``; the grill stops by six.
+WORK_DISCUSSION_ROUNDS: tuple[int, int, dict[str, int]] = (6, 4, {"who": 20, "text": 120})
 #: What ``thread`` must look like: the Board's own LINKABLE rule, so the link it
 #: draws is one the host opens.
 WORK_DISCUSSION_THREAD_RE = re.compile(
@@ -315,7 +343,7 @@ def discussion_problem(raw: Any) -> tuple[str, str, str] | None:
     if not isinstance(raw, dict):
         return ("invalid", "discussion", "discussion must be an object")
     known = {"phase", *WORK_DISCUSSION_TEXT_CHARS, *WORK_DISCUSSION_STRING_LISTS}
-    known |= {*WORK_DISCUSSION_OBJECT_LISTS, *WORK_DISCUSSION_COUNTS}
+    known |= {*WORK_DISCUSSION_OBJECT_LISTS, *WORK_DISCUSSION_COUNTS, "rounds"}
     for key in raw:
         if key not in known:
             return ("invalid", f"discussion.{key}", f"discussion has no field {key!r}")
@@ -373,6 +401,47 @@ def discussion_problem(raw: Any) -> tuple[str, str, str] | None:
             for key, cap in shape.items():
                 if bad := text(entry.get(key), cap, f"{at}.{key}"):
                     return bad
+    return _rounds_problem(raw.get("rounds", []), text)
+
+
+def _rounds_problem(value: Any, text: Any) -> tuple[str, str, str] | None:
+    """Why ``discussion.rounds`` is not valid, as :func:`discussion_problem` says it."""
+    most, most_lines, shape = WORK_DISCUSSION_ROUNDS
+    where = "discussion.rounds"
+    if not isinstance(value, list):
+        return ("invalid", where, f"{where} must be a list")
+    if len(value) > most:
+        return ("too_long", where, f"{where} has {len(value)} entries; the cap is {most}")
+    for i, entry in enumerate(value):
+        at = f"{where}[{i}]"
+        if not isinstance(entry, dict):
+            return ("invalid", at, f"{at} must be an object")
+        for key in entry:
+            if key not in ("round", "lines"):
+                return ("invalid", f"{at}.{key}", f"{at} has no field {key!r}")
+        number = entry.get("round")
+        cap = WORK_DISCUSSION_COUNTS["round"]
+        if isinstance(number, bool) or not isinstance(number, int) or not 1 <= number <= cap:
+            return ("invalid", f"{at}.round", f"{at}.round must be 1..{cap}")
+        lines = entry.get("lines")
+        if not isinstance(lines, list):
+            return ("invalid", f"{at}.lines", f"{at}.lines must be a list")
+        if len(lines) > most_lines:
+            return (
+                "too_long",
+                f"{at}.lines",
+                f"{at}.lines has {len(lines)} entries; the cap is {most_lines}",
+            )
+        for j, line in enumerate(lines):
+            line_at = f"{at}.lines[{j}]"
+            if not isinstance(line, dict):
+                return ("invalid", line_at, f"{line_at} must be an object")
+            for key in line:
+                if key not in shape:
+                    return ("invalid", f"{line_at}.{key}", f"{line_at} has no field {key!r}")
+            for key, chars in shape.items():
+                if bad := text(line.get(key), chars, f"{line_at}.{key}"):
+                    return bad
     return None
 
 
@@ -393,6 +462,12 @@ def coerce_discussion(raw: Any) -> dict[str, Any] | None:
         out[name] = list(raw.get(name, []))
     for name in WORK_DISCUSSION_OBJECT_LISTS:
         out[name] = [dict(entry) for entry in raw.get(name, [])]
+    # Only when sent: an older report has none, and its fold stays as it was.
+    if "rounds" in raw:
+        out["rounds"] = [
+            {"round": entry["round"], "lines": [dict(line) for line in entry["lines"]]}
+            for entry in raw["rounds"]
+        ]
     return out
 
 

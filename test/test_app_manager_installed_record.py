@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -635,3 +636,168 @@ class TestRecordThatIsNotAnObject:
     def test_a_legacy_record_with_a_non_string_source_still_reads(self, app_home):
         self._write(app_home, "legacy-record", {"name": "legacy-record", "source": 1})
         assert _read_installed("legacy-record").name == "legacy-record"
+
+
+class TestListingReusesTheWalk:
+    """``list_apps`` walks the apps folder only when the folder changed.
+
+    Strays (entries with no record) cost nothing on an unchanged folder, while each
+    record is still read on every call, so an in-place edit shows at once.
+    """
+
+    _SETTLED_NS = 1_000_000_000_000_000_000  # 2001, long past the settle window
+
+    def _record(self, app_home, name, **fields):
+        root = app_home / "apps" / name
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "installed.json").write_text(
+            json.dumps({"name": name, "enabled": True, **fields}), encoding="utf-8"
+        )
+
+    def _settle(self, app_home, ns=_SETTLED_NS):
+        os.utime(app_home / "apps", ns=(ns, ns))
+
+    def _count_walks(self, monkeypatch, app_home):
+        from kiro_crew.apps import manager_records
+
+        walks: list[str] = []
+        real = manager_records.os.scandir
+        # manager_records.os is the shared os module, so other callers' one-time
+        # scans of the apps folder (credential masks, orphaned built-ins, the
+        # grants import) reach this patch too; only the listing's own walk counts.
+        listing_walk = manager_records._recorded_app_names.__code__
+
+        def counting(path=".", *args, **kwargs):
+            if sys._getframe(1).f_code is listing_walk:
+                walks.append(os.fspath(path))
+            return real(path, *args, **kwargs)
+
+        monkeypatch.setattr(manager_records.os, "scandir", counting)
+        return walks
+
+    def test_an_unchanged_folder_is_not_walked_again(self, app_home, monkeypatch):
+        self._record(app_home, "real-app")
+        for i in range(5):
+            (app_home / "apps" / f"stray-{i}" / "data").mkdir(parents=True)
+        self._settle(app_home)
+        walks = self._count_walks(monkeypatch, app_home)
+
+        first = [r["name"] for r in list_apps()]
+        second = [r["name"] for r in list_apps()]
+
+        assert first == second == ["real-app"]
+        assert len(walks) == 1
+
+    def test_a_changed_folder_is_walked_again(self, app_home, monkeypatch):
+        self._record(app_home, "real-app")
+        self._settle(app_home)
+        walks = self._count_walks(monkeypatch, app_home)
+
+        assert [r["name"] for r in list_apps()] == ["real-app"]
+        (app_home / "apps" / "stray" / "data").mkdir(parents=True)
+        self._settle(app_home, ns=self._SETTLED_NS + 1_000_000_000)
+        assert [r["name"] for r in list_apps()] == ["real-app"]
+
+        assert walks == [os.fspath(app_home / "apps")] * 2
+
+    def test_an_in_place_record_edit_is_seen(self, app_home):
+        self._record(app_home, "real-app", version="1.0.0")
+        self._settle(app_home)
+        assert [r["version"] for r in list_apps()] == ["1.0.0"]
+
+        self._record(app_home, "real-app", version="2.0.0")
+        self._settle(app_home)
+
+        assert [r["version"] for r in list_apps()] == ["2.0.0"]
+
+    def test_a_record_written_into_a_stray_entry_is_listed(self, app_home):
+        (app_home / "apps" / "late-app" / "data").mkdir(parents=True)
+        self._settle(app_home)
+        assert list_apps() == []
+
+        _write_installed("late-app", InstalledApp(name="late-app"))
+
+        # Touched, so another process's listing sees the new record too.
+        assert (app_home / "apps").stat().st_mtime_ns != self._SETTLED_NS
+        assert [r["name"] for r in list_apps()] == ["late-app"]
+
+    def test_a_scan_started_inside_the_settle_window_is_not_reused(self, app_home, monkeypatch):
+        from kiro_crew.apps import manager_records
+        from kiro_crew.testing.clock import ManualClock
+
+        apps_root = app_home / "apps"
+        (apps_root / "late-app" / "data").mkdir(parents=True)
+        self._settle(app_home)
+        clock = ManualClock(start=self._SETTLED_NS / 1e9 + 2)  # inside the 3 s window
+        clock.install(monkeypatch, manager_records)
+        real_scandir = manager_records.os.scandir
+        # manager_records.os is the shared os module: only the listing's own walk
+        # moves the clock, not another caller's scan of the apps folder.
+        listing_walk = manager_records._recorded_app_names.__code__
+
+        def slow_walk(path=".", *args, **kwargs):
+            if sys._getframe(1).f_code is listing_walk:
+                clock.advance(5)  # the walk ends past the window
+            return real_scandir(path, *args, **kwargs)
+
+        monkeypatch.setattr(manager_records.os, "scandir", slow_walk)
+
+        assert list_apps() == []
+        self._record(app_home, "late-app")
+        self._settle(app_home)  # The write landed in the same timestamp tick.
+
+        assert [record["name"] for record in list_apps()] == ["late-app"]
+
+    @pytest.mark.skipif(os.name == "nt", reason="chmod does not deny directory search on Windows")
+    @pytest.mark.skipif(
+        getattr(os, "geteuid", lambda: 0)() == 0,
+        reason="root bypasses directory search permissions",
+    )
+    def test_a_transient_inspection_failure_is_not_reused(self, app_home):
+        self._record(app_home, "temporarily-unreadable")
+        app_root = app_home / "apps" / "temporarily-unreadable"
+        original_mode = stat.S_IMODE(app_root.stat().st_mode)
+        self._settle(app_home)
+
+        app_root.chmod(0)
+        try:
+            assert list_apps() == []
+        finally:
+            app_root.chmod(original_mode)
+
+        assert [record["name"] for record in list_apps()] == ["temporarily-unreadable"]
+
+    def test_a_symlink_loop_entry_is_skipped(self, app_home):
+        self._record(app_home, "real-app")
+        (app_home / "apps" / "loop").symlink_to(app_home / "apps" / "loop")
+
+        assert [r["name"] for r in list_apps()] == ["real-app"]
+
+    def test_a_record_moved_aside_and_back_is_listed(self, app_home):
+        self._record(app_home, "real-app")
+        self._settle(app_home)
+        assert [r["name"] for r in list_apps()] == ["real-app"]
+        record = app_home / "apps" / "real-app" / "installed.json"
+        aside = record.with_name("installed.json.aside")
+
+        record.rename(aside)
+        (app_home / "apps" / "other").mkdir()
+        self._settle(app_home, ns=self._SETTLED_NS + 1)  # a new walk, with the record away
+        assert list_apps() == []
+        aside.rename(record)  # moves the entry's mtime, not the apps folder's
+
+        assert [r["name"] for r in list_apps()] == ["real-app"]
+
+    def test_a_record_moved_aside_right_after_install_is_listed(self, app_home):
+        (app_home / "apps").mkdir(parents=True, exist_ok=True)
+        _write_installed("new-app", InstalledApp(name="new-app"))
+        assert [r["name"] for r in list_apps()] == ["new-app"]  # a scan inside the window
+        record = app_home / "apps" / "new-app" / "installed.json"
+        aside = record.with_name("installed.json.aside")
+
+        record.rename(aside)
+        self._settle(app_home)
+        assert list_apps() == []
+        aside.rename(record)
+
+        assert [r["name"] for r in list_apps()] == ["new-app"]

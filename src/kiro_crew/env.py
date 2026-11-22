@@ -723,14 +723,18 @@ def ensure_node(timeout: float = 180.0) -> str | None:
 
 @functools.lru_cache(maxsize=1)
 def is_toolbox_install() -> bool:
-    """Return True if the running kirocrew binary was installed via Toolbox."""
+    """Return True if the running kirocrew binary was installed via Toolbox.
+
+    Toolbox installs every tool under its root: ``~/.toolbox`` on POSIX, and on
+    Windows ``%LOCALAPPDATA%\\Toolbox`` (:func:`_windows_toolbox_root`).
+    """
     exe = Path(sys.executable).resolve()
-    toolbox_dir = (Path.home() / ".toolbox").resolve()
-    try:
-        exe.relative_to(toolbox_dir)
-        return True
-    except ValueError:
-        return False
+    roots = [Path.home() / ".toolbox"]
+    if platform_compat.IS_WINDOWS and (
+        windows_root := _windows_toolbox_root(os.path.expanduser("~"), None)
+    ):
+        roots.append(Path(windows_root))
+    return any(exe.is_relative_to(root.resolve()) for root in roots)
 
 
 @functools.lru_cache(maxsize=1)
@@ -778,6 +782,20 @@ def _own_kirocrew_dirs() -> list[str]:
     return env_own_kirocrew.own_kirocrew_dirs(_validated_bin_dir)
 
 
+def _windows_toolbox_root(resolved_home: str, pinned_home: str | None) -> str | None:
+    """Builder Toolbox's Windows root, ``%LOCALAPPDATA%\\Toolbox``.
+
+    The Windows counterpart of ``~/.toolbox``: its ``bin`` directory
+    (:func:`_windows_toolbox_bin_dir`) and the tools Toolbox installs live under it.
+
+    ``LOCALAPPDATA`` names the account running this process, so a caller that
+    pinned another account's *pinned_home* gets that home's ``AppData\\Local``.
+    """
+    local = os.environ.get("LOCALAPPDATA", "") if pinned_home is None else ""
+    base = local or os.path.join(resolved_home, "AppData", "Local")
+    return _validated_bin_dir(os.path.join(base, "Toolbox"))
+
+
 def _windows_toolbox_bin_dir(resolved_home: str, pinned_home: str | None) -> str | None:
     """Builder Toolbox's Windows bin dir, ``%LOCALAPPDATA%\\Toolbox\\bin``.
 
@@ -787,12 +805,10 @@ def _windows_toolbox_bin_dir(resolved_home: str, pinned_home: str | None) -> str
     that edit (or by a launcher that does not read it) never sees. So the Agent
     Harness probe reported a Toolbox-installed Claude Code as not installed.
 
-    ``LOCALAPPDATA`` names the account running this process, so a caller that
-    pinned another account's *pinned_home* gets that home's ``AppData\\Local``.
+    It is ``bin`` under :func:`_windows_toolbox_root`, which resolves the account.
     """
-    local = os.environ.get("LOCALAPPDATA", "") if pinned_home is None else ""
-    base = local or os.path.join(resolved_home, "AppData", "Local")
-    return _validated_bin_dir(os.path.join(base, "Toolbox", "bin"))
+    root = _windows_toolbox_root(resolved_home, pinned_home)
+    return os.path.join(root, "bin") if root else None
 
 
 def user_tool_bin_dirs(home: str) -> list[str]:

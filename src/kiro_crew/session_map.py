@@ -132,6 +132,12 @@ MIRROR_OPT_OUT_FLAG = "mirror_opt_out"
 #: it is consumed, by the first cold start that honours it.
 SUPPRESS_REPLAY_FLAG = "suppress_replay"
 
+#: The on-disk copy of a session's post-compaction re-injection flag: a restart
+#: drops the in-memory flag, and the resume that follows still owes the context
+#: the compaction took. Cleared once the turn that consumed it lands, and when a
+#: claim starts fresh.
+COMPACTED_FLAG = "compacted_since_reinjection"
+
 #: The sid of a fresh native session that still owes its Kiro Crew history: the
 #: session was mapped at creation, but no turn has delivered the history to it yet
 #: (``SessionManager.mark_first_turn_history_owed`` writes it, the settle in
@@ -1280,6 +1286,24 @@ class SessionMap:
             for key, entry in self._data.items()
             if isinstance(sid := entry.get("sid"), str) and sid
         }
+
+    @_guarded
+    def mapped_sid_cwds(self, provider: str) -> frozenset[tuple[str, str]]:
+        """``(sid, cwd)`` of every entry mapped under *provider* with both recorded.
+
+        Compared by equality against the label the entry was mapped under, so only
+        the named provider's sessions are returned. A sid two keys share appears
+        once, under each cwd recorded for it.
+        """
+        return frozenset(
+            (sid, cwd)
+            for entry in self._data.values()
+            if entry.get("provider") == provider
+            and isinstance(sid := entry.get("sid"), str)
+            and sid
+            and isinstance(cwd := entry.get("cwd"), str)
+            and cwd
+        )
 
     @_guarded
     def reserve_generation(self, session_key: str) -> None:

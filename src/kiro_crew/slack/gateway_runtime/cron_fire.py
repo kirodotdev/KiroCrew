@@ -9,8 +9,9 @@ to the agent it dispatches, and acquiring the session that agent runs in; and
 arming the scheduler once memory is ready, and saying when startup moved an
 unreadable cron store aside.
 
-Orchestrator fields read: ``_cfg``, ``_no_crons``, ``_running_script_ids``,
-``ctx_builder``, ``dashboard_state``, ``sessions``.
+Orchestrator fields read: ``_cfg``, ``_cron_injecting``, ``_no_crons``,
+``_running_script_ids``, ``cron_svc``, ``ctx_builder``, ``dashboard_state``,
+``sessions``, ``subagent_mgr``.
 Orchestrator fields written: ``_cron_armed``, ``_cron_quarantine``,
 ``_cron_reconciled``, ``_cron_runs_holding`` (a message run's task, from before its
 first acquire to its end), ``cron_svc``.
@@ -34,7 +35,9 @@ if TYPE_CHECKING:
         LLMProvider,
         Path,
         _await_cron_fire_time_gate,
+        _defer_cron_before_dispatch,
         _pre_create_cron_slot,
+        _subagent_work_pending,
         agent_sequence_dispatches,
         build_cron_session_context,
         cron_job_env_without_reserved,
@@ -104,7 +107,7 @@ def _annotate_model_downgrade(job: CronJob, text: str) -> str:
     # job.model is LLM-controllable via MCP; redact before it
     # reaches Slack/dashboard through last_result.
     safe_model = redact_credentials(redact_exfiltration_urls(job.model)[0])[0]
-    return f"⚠️ Model '{safe_model}' unavailable; ran with default.\n\n" + text
+    return f"Warning: Model '{safe_model}' unavailable; ran with default.\n\n" + text
 
 
 async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
@@ -317,6 +320,27 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
     # A run the service's stop cuts short is filed cancelled and not retried,
     # so the owner is told here rather than left with only the history row.
     self.cron_svc.set_interrupt_alert(self._alert_cron_interrupted)
+    # A persisted auto-pause never runs again until resumed; the save that
+    # detects its rising edge runs on a worker thread, so the callback only
+    # hands the async notice to this loop. The futures are tracked so the
+    # exit path can drain a notice still in flight, bounded, before the loop
+    # ends. Per-service, like the two alerts above: it dies with the service.
+    # Read into a local while the create above still narrows the Optional:
+    # the nested def below would widen the attribute for the checker.
+    _cron_svc = self.cron_svc
+    _loop = asyncio.get_running_loop()
+
+    def _notify_auto_pause(job: CronJob, streak: int, reason: str) -> None:
+        fut = asyncio.run_coroutine_threadsafe(
+            self._alert_cron_auto_paused(job, streak, reason), _loop
+        )
+        # add() runs on whatever thread the save fired on while the done
+        # callback discards on the loop thread; each set operation is atomic
+        # under the GIL, so no lock is needed around the pair.
+        self._auto_pause_alerts.add(fut)
+        fut.add_done_callback(self._auto_pause_alerts.discard)
+
+    _cron_svc.set_auto_pause_alert(_notify_auto_pause)
     if self._no_crons:
         logger.info("Cron scheduler disabled (--no-crons)")
     else:
@@ -964,6 +988,59 @@ def _retained_session_agent_mismatch(
     if isinstance(live_agent, str) and live_agent and live_agent != (agent or ""):
         return live_agent
     return None
+
+
+async def _cron_key_work_pending(self: GatewayOrchestrator, key: str) -> bool:
+    """Whether sub-agent work or an injection still runs on *key*'s session.
+
+    A sub-agent probe that raises counts as pending: a batch is never reset under
+    work nobody could rule out.
+    """
+    if self._cron_injecting.get(key, 0) > 0:
+        return True
+    if not self.subagent_mgr:
+        return False
+    try:
+        return await _subagent_work_pending(self.subagent_mgr, key)
+    except Exception:  # noqa: BLE001 - counted as pending
+        logger.debug(
+            "cron: sub-agent work on %s unreadable; counted as pending", key, exc_info=True
+        )
+        return True
+
+
+async def _cron_batch_kind_defers(
+    self: GatewayOrchestrator,
+    job: CronJob,
+    key: str,
+    provider: Any,
+    *,
+    reprojected: bool,
+) -> bool:
+    """Defer a scheduled fire that cannot run on the batch a person's turn projected.
+
+    That batch recorded withholding what the fire auto-approves
+    (``kas_project_hooks.scheduled_turn_reprojects``), so the fire re-projects it
+    first. Before the re-projection, it waits while work is pending on *key*
+    (``_cron_key_work_pending``: sub-agent work, an injection, or a probe that
+    raised); after it (*reprojected*), it waits when the batch is still
+    person-kind, never running on it or dropping the spec's hooks. A manual Run is
+    never deferred: its person is there to answer the asks, so with work pending it
+    runs as projected, without the kind reset (the caller's ``scheduled=False``).
+    """
+    from kiro_crew.agent_sdk.kas_project_hooks import scheduled_turn_reprojects
+
+    if not scheduled_turn_reprojects(provider):
+        return False
+    if self.cron_svc is not None and self.cron_svc.run_trigger(job.id) == "manual":
+        return False
+    if not reprojected and not await self._cron_key_work_pending(key):
+        return False
+    logger.info("Cron '%s': %s runs a person's batch; deferring this fire", job.name, key)
+    _defer_cron_before_dispatch(
+        job, "the session runs a batch a person's turn projected and cannot be re-projected yet"
+    )
+    return True
 
 
 def _announce_cron_quarantine(self: GatewayOrchestrator) -> None:

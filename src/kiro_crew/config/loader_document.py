@@ -13,8 +13,10 @@ import hashlib as _hashlib
 import json
 import logging
 import os
+import secrets
 import stat as _stat
 import sys
+import threading
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -141,35 +143,28 @@ def acp_backend_stored_runs_kas() -> bool:
 
 
 def acp_backend_bundle_route() -> bool:
-    """Whether the stored ``agent.kas_bundle`` is on (the bundled KAS engine route).
+    """Whether a SAVED ``agent.kas_bundle`` is ``true`` (the bundled KAS engine route).
 
     Reads the documents (overlay winning) like :func:`acp_backend_stored_as_kiro`.
     On the bundle route a Kiro CLI pick stays on kiro-cli: KAS there spawns Crew's
     own bundled engine, which kiro-cli's own v3 support says nothing about, so the
     gateway floor and the per-process probe both decline to promote the pick.
-    An absent key reads :func:`kas_bundle_build_default`, as the loader does.
-    A stored value that is not a bool reads the same default, as the loader's
-    ``_safe_bool`` does, so the two readers agree.
+    An absent key is ``False``, as the loader reads it: a packaged build only
+    PREFERS the engine for an unset key (``acp.kas_build_default``), which leaves
+    a Kiro CLI pick where it was. A stored value that is not a bool reads ``False``
+    too, as the loader's ``_safe_bool`` does, so the two readers agree.
     """
     stored = _stored_agent_value("kas_bundle")
-    return stored if isinstance(stored, bool) else kas_bundle_build_default()
+    return stored if isinstance(stored, bool) else False
 
 
-def kas_bundle_build_default() -> bool:
-    """What an UNDECLARED ``agent.kas_bundle`` resolves to in this build.
+def kas_bundle_declared() -> bool:
+    """Whether ``config.json`` or the overlay names ``agent.kas_bundle`` at all.
 
-    True only in a build the nightly pipeline stamped (``_build_info.BUILD_CHANNEL
-    == "nightly"``, :mod:`kiro_crew.build_channel`), so the nightly lane runs the
-    bundled engine by default while stable, insider and source builds keep the
-    relay. A fact about the build's bytes, never the ``channel`` file a user can
-    switch before the update lands. Like :func:`unsandboxed_exec_platform_default`
-    it is resolved into the loaded value, and ``save()`` leaves the key off disk
-    while it is undeclared, so a nightly install that later takes a stable build
-    goes back to the stable default instead of keeping a value nobody chose.
+    A saved value always wins over the build's preference
+    (``acp.kas_build_default``), so the route asks this before applying it.
     """
-    from kiro_crew.build_channel import is_nightly_build
-
-    return is_nightly_build()
+    return _agent_key_declared("kas_bundle")
 
 
 #: The ``agent`` keys whose absent value is resolved from the host or the build,
@@ -874,9 +869,54 @@ def _config_write_lock(p: Path, *, wait: bool = True) -> Iterator[None]:
     fd = platform_compat.open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
     try:
         with platform_compat.file_lock(fd, exclusive=True, wait=wait):
-            yield
+            held = _held_lock_paths()
+            key = str(lock_path)
+            held[key] = held.get(key, 0) + 1
+            try:
+                yield
+            finally:
+                held[key] -= 1
+                if not held[key]:
+                    del held[key]
     finally:
         os.close(fd)
+
+
+#: Per sidecar lock path, how many :func:`_config_write_lock` holds this thread is
+#: inside, so code that runs both inside a locked write of THAT file and outside one
+#: can tell which it is in.
+_write_lock_held = threading.local()
+
+
+def _held_lock_paths() -> dict[str, int]:
+    held: dict[str, int] | None = getattr(_write_lock_held, "paths", None)
+    if held is None:
+        held = _write_lock_held.paths = {}
+    return held
+
+
+@contextlib.contextmanager
+def try_config_write_lock(p: Path) -> Iterator[bool]:
+    """Yield whether this thread may write *p*'s config now, never waiting.
+
+    ``True`` inside a :func:`_config_write_lock` this thread already holds, or
+    when the sidecar lock is free and taken for the block; ``False`` when another
+    writer holds it (or it cannot be taken), and the caller skips its write.
+    """
+    target = _lock_target(p)
+    if str(target.parent / (target.name + ".lock")) in _held_lock_paths():
+        yield True
+        return
+    try:
+        held = _config_write_lock(target, wait=False)
+        held.__enter__()
+    except Exception:
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        held.__exit__(None, None, None)
 
 
 def update_config_locked(
@@ -1029,19 +1069,23 @@ def update_config_locked(
     except OSError:
         pass
     with _config_write_lock(p, wait=wait_for_lock):
+        unreadable: ConfigReadError | None = None
         try:
             data = read_config_for_update(p)
-        except ConfigReadError:
+        except ConfigReadError as e:
             if on_corrupt == "fail":
                 raise
             # on_corrupt="reset": treat as empty inside the same lock hold.
-            data = {}
+            unreadable, data = e, {}
         result = mutate(data)
         if result is None:
             return data
         if stamp_meta:
             result = stamp_config_meta(result)
-        write_config_atomically(p, result, fsync=fsync, resolving_pending=resolving_pending)
+        if unreadable is None:
+            write_config_atomically(p, result, fsync=fsync, resolving_pending=resolving_pending)
+        else:
+            _replace_keeping_unreadable(p, result, unreadable, fsync, resolving_pending)
         # A same-size replacement can retain an indistinguishable fingerprint
         # on a coarse-timestamp filesystem. Clear eagerly before reporting the
         # write complete so the next load cannot serve the pre-write snapshot,
@@ -1052,6 +1096,44 @@ def update_config_locked(
         if after_write is not None:
             after_write()
         return result
+
+
+def _replace_keeping_unreadable(
+    p: Path, result: dict, error: ConfigReadError, fsync: bool, resolving_pending: bool
+) -> None:
+    """Write *result* over the unreadable *p*, keeping its bytes in ``<p>.unreadable``.
+
+    ``.bak`` is the migration's copy of a valid file, so this copy takes its own
+    name, and it is owner-only before any byte lands: the file can hold inline
+    credentials. The bytes are staged beside it first and take the name only once
+    the write has landed, so a write the publish floor refuses leaves the earlier
+    copy as it was. A copy that cannot be staged refuses the reset rather than lose
+    the only bytes there are.
+    """
+    kept = p.with_name(p.name + ".unreadable")
+    # A name of its own per attempt: a copy an earlier reset left under its staged
+    # name (the rename failed) is the only bytes it saved, and this one must not
+    # overwrite it or, if the write is refused, delete it.
+    staged = p.with_name(f"{p.name}.unreadable.{secrets.token_hex(4)}.staged")
+    try:
+        # Read as the loader reads, so a FIFO or device is refused, not waited on
+        # while the config write lock is held.
+        unreadable_bytes = loosening_provenance.read_regular_with_retry(p)
+        atomic_write(staged, unreadable_bytes, restrict_to_owner=True)
+    except OSError as copy_error:
+        raise error from copy_error
+    try:
+        write_config_atomically(p, result, fsync=fsync, resolving_pending=resolving_pending)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            staged.unlink()
+        raise
+    try:
+        os.replace(staged, kept)
+    except OSError:
+        # The bytes are safe under the staged name; say where they are.
+        kept = staged
+    logger.warning("%s; replaced it and kept its previous bytes in %s", error, kept)
 
 
 def _notify_live_watch() -> None:

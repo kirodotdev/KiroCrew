@@ -14,9 +14,12 @@ export const REMOTE_CREW_PREFLIGHT_GUIDE_URL =
   'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/remote-crew-on-ec2.md#set-up-pre-flight-credential-helper-not-found-or-plugin-refused'
 
 // Typed by the user, so never a catalog value: the AWS config file's usual
-// place and the command that prints a program's full path.
+// place, the command that prints a program's full path, and the commands that
+// create a profile.
 export const AWS_CONFIG_FILE = '~/.aws/config'
 export const whichCommand = (name: string) => `which ${name}`
+export const AWS_CONFIGURE_SSO_COMMAND = 'aws configure sso'
+export const AWS_CONFIGURE_COMMAND = 'aws configure'
 
 /** The credentials row's sentence when the AWS CLI could not find the
  *  credential_process helper by its bare name: the edit to make first, then why. */
@@ -25,6 +28,15 @@ export function credentialHelperMissingSentence(name: string): string {
     name,
     file: AWS_CONFIG_FILE,
     command: whichCommand(name),
+  })
+}
+
+/** The credentials row's sentence when the gateway's AWS credentials are
+ *  environment variables: the profile to create first, then why. */
+export function envCredentialsSentence(): string {
+  return i18nT('pages.settings.remoteCrewPanel.credentials_env_vars', {
+    sso: AWS_CONFIGURE_SSO_COMMAND,
+    configure: AWS_CONFIGURE_COMMAND,
   })
 }
 
@@ -150,6 +162,24 @@ function refusalCopy(r: ToolRefusal): PluginRefusalCopy {
 export function pluginRefusalCopy(p: CloudPreflight): PluginRefusalCopy | null {
   if (p.session_manager_plugin || !p.session_manager_plugin_refused_path) return null
   return refusalCopy(pluginRefusalOf(p))
+}
+
+/** A shell line that runs `sudo` as a command, not merely names it. */
+const RUNS_SUDO = /(^|[\s;&|(])sudo\s/
+
+/** The plugin row's next step for a plugin that is simply not installed, or
+ *  null when it is installed or refused (refusals have pluginRefusalCopy). Says
+ *  that a sudo install needs admin rights and what to ask an administrator for,
+ *  before the reader runs the command; with no command for this platform it
+ *  points at AWS's install page instead. A command without sudo (Homebrew)
+ *  needs no warning, so it gets none. */
+export function pluginMissingSteps(p: CloudPreflight): PluginRefusalCopy['steps'] | null {
+  if (p.session_manager_plugin || p.session_manager_plugin_refused_path) return null
+  const link = { href: SESSION_MANAGER_PLUGIN_INSTALL_URL, label: i18nT('pages.settings.remoteCrewPanel.plugin_install_page') }
+  const command = p.session_manager_plugin_command || ''
+  if (!command) return { text: i18nT('pages.settings.remoteCrewPanel.plugin_missing_no_command'), link }
+  if (RUNS_SUDO.test(command)) return { text: i18nT('pages.settings.remoteCrewPanel.plugin_missing_needs_admin'), link }
+  return null
 }
 
 /** The credentials row's wording when the gateway found an `aws` CLI and refused

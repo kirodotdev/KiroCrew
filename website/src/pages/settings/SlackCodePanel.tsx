@@ -1,6 +1,6 @@
 /**
  * Settings → Slack → Slack Code: the registered Slack Code switches (Agent
- * sessions and Code channels; see `slackCodeSwitches`), the code-channel defaults (folder /
+ * sessions, Code channels and Slack tools for your agents; see `slackCodeSwitches`), the code-channel defaults (folder /
  * agent / model / effort), and the "Update your Slack app" panel.
  *
  * The draft lives in `SlackPanel` (one Save for the whole page); this module
@@ -8,7 +8,8 @@
  * written to the PUT, and how it renders.
  */
 import { Suspense, lazy } from 'react'
-import { CheckCircle2, Info } from 'lucide-react'
+import { Trans } from 'react-i18next'
+import { AlertTriangle, CheckCircle2, Info } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { Badge } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -17,6 +18,10 @@ import { i18nT } from '../../i18n/t'
 import { SlackManifestUpdate, useInstallRecheckFailed, useSlackManifestStatus } from './SlackManifestUpdate'
 import { SLACK_CODE_SWITCHES } from './slackCodeSwitches'
 import type { SlackCodeDraft } from './slackCodeDraft'
+import { tipDocHref } from '../../utils/docsLink'
+
+/** The Connections guide: its opening section says how the gallery is turned back on. */
+const CONNECTIONS_GUIDE_URL = tipDocHref('connections.md') ?? undefined
 
 export { slackCodeDraftFrom, slackCodePayload, type SlackCodeDraft } from './slackCodeDraft'
 
@@ -124,7 +129,12 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
                 label={i18nT('pages.settings.slackPanel.slackCode.code_channels')}
                 description={i18nT('pages.settings.slackPanel.slackCode.code_channels_desc')}
                 checked={draft.switches.code_channels}
-                onChange={v => onChange({ switches: { ...draft.switches, code_channels: v } })}
+                // A first enable turns helper agents on with it (the server does
+                // the same); turning it back off before saving undoes that.
+                onChange={v => onChange({
+                  switches: { ...draft.switches, code_channels: v },
+                  ...(draft.dispatchOnEnable ? { dispatch: v } : {}),
+                })}
                 disabled={readOnly}
                 configKey="slack.code_channels"
               />
@@ -134,7 +144,7 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
                 <Badge variant="aim" className="text-[11px] font-sans px-1.5 py-0 flex-none">{i18nT('pages.settings.slackPanel.slackCode.stage_tag')}</Badge>
               </div>
               {data.code_channels && <CapabilityLine capability={data.code_channels_capability} updatePending={updatePending} />}
-              {/* ── Sub-toggle: its own opt-in, never turned on by Code channels. ── */}
+              {/* ── Sub-toggle: on with a first enable of Code channels, then its own switch. ── */}
               {draft.switches.code_channels && (
                 <div className="mt-3 ml-6 border-l border-border pl-4" data-testid="slack-code-dispatch">
                   <SettingsToggle
@@ -164,6 +174,72 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
                 </div>
               )}
             </div>
+            {/* ── Slack tools for your agents (Slack MCP). Manifest-only: the
+                gateway runs nothing for it, so it has no capability line. Shown
+                only when Connections offers the Slack card it is for, or when
+                it is already on (so it can be turned off). ── */}
+            {(data.slack_mcp_card || data.slack_mcp) && (
+            <div>
+              <SettingsToggle
+                label={i18nT('pages.settings.slackPanel.slackCode.slack_mcp')}
+                description={i18nT('pages.settings.slackPanel.slackCode.slack_mcp_desc')}
+                checked={draft.switches.slack_mcp}
+                onChange={v => onChange({ switches: { ...draft.switches, slack_mcp: v } })}
+                disabled={readOnly}
+                configKey="slack.slack_mcp"
+              />
+              {/* What the app gains, in the manifest's own terms, for the reader
+                  who wants it: the description above stays in plain words. */}
+              {/* Normal text contrast, not muted: faint text on this row read as
+                  a disabled control in the light theme. */}
+              <details className="text-[12px] text-text mt-1" data-testid="slack-mcp-details">
+                <summary className="cursor-pointer">{i18nT('pages.settings.slackPanel.slackCode.slack_mcp_details_title')}</summary>
+                <p className="m-0 mt-1">{i18nT('pages.settings.slackPanel.slackCode.slack_mcp_details')}</p>
+                {/* Why there is no Slack card; the guide to bring it back sits in
+                    the no-card point in the box below, where the reader acts. */}
+                {!data.slack_mcp_card && (
+                  <p className="m-0 mt-1" data-testid="slack-mcp-details-no-card">
+                    {i18nT('pages.settings.slackPanel.slackCode.slack_mcp_details_no_card')}
+                  </p>
+                )}
+              </details>
+              {/* No separate "safe to flip" note: the description above opens with
+                  what flipping the switch does, before what agents can see. The
+                  one-way PKCE step is named at the save step in the update panel
+                  below, where it happens, never on the switch. */}
+              {/* Only once the switch is on: that is when the manifest carries
+                  these lines and saving it in Slack is the next step. No link
+                  to Connections: this page holds an unsaved draft (the switch
+                  just turned on), and leaving the page would drop it. */}
+              {draft.switches.slack_mcp && (
+                <div className="flex items-start gap-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 mt-2" data-testid="slack-mcp-before">
+                  <AlertTriangle size={12} className="text-warn flex-none mt-0.5" aria-hidden />
+                  <div className="flex flex-col gap-1 min-w-0 text-[12px] text-text">
+                    <span className="font-semibold">{i18nT('pages.settings.slackPanel.slackCode.slack_mcp_before')}</span>
+                    <ul className="m-0 pl-4 list-disc flex flex-col gap-0.5">
+                      {/* No Slack card: the one point that decides the rest, first.
+                          The fix is the link itself, inside the sentence, so a
+                          translator can put it where the grammar needs it. */}
+                      {!data.slack_mcp_card && (
+                        <li data-testid="slack-mcp-no-card">
+                          <Trans
+                            i18nKey="pages.settings.slackPanel.slackCode.slack_mcp_no_card"
+                            components={{
+                              // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label
+                              guide: <a href={CONNECTIONS_GUIDE_URL} target="_blank" rel="noopener noreferrer" className="underline" />,
+                            }}
+                          />
+                        </li>
+                      )}
+                      <li>{i18nT('pages.settings.slackPanel.slackCode.slack_mcp_internal')}</li>
+                      {data.slack_mcp_card && <li>{i18nT('pages.settings.slackPanel.slackCode.slack_mcp_connect')}</li>}
+                      <li>{i18nT('pages.settings.slackPanel.slackCode.slack_mcp_expiry')}</li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </div>
+            )}
           </div>
 
           {draft.switches.code_channels && (

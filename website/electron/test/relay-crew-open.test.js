@@ -19,7 +19,7 @@ function fakeWindowModule() {
   const opened = [];
   const openWindow = (opts) => {
     const w = {
-      opts, focused: 0, closed: false, cbs: { status: [], closed: [], visibility: [], unreachable: [], action: [], chord: [] },
+      opts, focused: 0, closed: false, cbs: { status: [], closed: [], visibility: [], unreachable: [], action: [], chord: [], theme: [], loaded: [] },
       endpointId: opts.endpointId,
       notices: [],
       reload() {},
@@ -27,6 +27,8 @@ function fakeWindowModule() {
       onUnreachable: (cb) => w.cbs.unreachable.push(cb),
       onNoticeAction: (cb) => w.cbs.action.push(cb),
       onChord: (cb) => w.cbs.chord.push(cb),
+      onThemeDark: (cb) => w.cbs.theme.push(cb),
+      onLoaded: (cb) => w.cbs.loaded.push(cb),
       focus() { w.focused += 1; },
       close() { if (!w.closed) { w.closed = true; w.cbs.closed.forEach((cb) => cb()); } },
       isClosed: () => w.closed,
@@ -209,18 +211,35 @@ test("the preload bridge carries only the endpoint ID, a rect and its viewport, 
     'open: (endpointId) => ipcRenderer.invoke("relay-crew:open", String(endpointId || "")),\n'
       + '  closeAll: () => ipcRenderer.invoke("relay-crew:close-all"),\n'
       + '  openPane: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:open-pane", String(endpointId || ""), rect, viewport),\n'
+      + '  prewarmPane: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:prewarm-pane", String(endpointId || ""), rect, viewport),\n'
       + '  setPaneBounds: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:pane-bounds", String(endpointId || ""), rect, viewport),\n'
       + '  setPaneOverlay: (endpointId, active) => ipcRenderer.invoke("relay-crew:pane-overlay", String(endpointId || ""), !!active),\n'
       + '  setPaneInactive: (endpointId, inactive) => ipcRenderer.invoke("relay-crew:pane-inactive", String(endpointId || ""), !!inactive),\n'
       + '  closePane: (endpointId) => ipcRenderer.invoke("relay-crew:pane-close", String(endpointId || "")),\n'
+      + '  // This shell sends a pane\'s `loaded` event, so the dashboard may wait for it.\n'
+      + '  paneLoadEvents: true,\n'
       + '  onPaneEvent: (cb) => {\n'
       + '    const handler = (_e, m) => cb({\n'
       + '      type: String(m?.type || ""),\n'
       + '      endpointId: String(m?.endpointId || ""),\n'
       + '      index: Number.isInteger(m?.index) ? m.index : -1,\n'
+      + '      dark: typeof m?.dark === "boolean" ? m.dark : null,\n'
       + '    });\n'
       + '    ipcRenderer.on("relay-crew:pane-event", handler);\n'
       + '    return () => ipcRenderer.removeListener("relay-crew:pane-event", handler);\n'
+      + '  },\n'
+      + '  onOpenRequest: (cb) => {\n'
+      + '    const handler = (_e, endpointId) => { if (typeof endpointId === "string") cb(endpointId); };\n'
+      + '    if (openRequestHandler) ipcRenderer.removeListener("relay-crew:open-request", openRequestHandler);\n'
+      + '    openRequestHandler = handler;\n'
+      + '    ipcRenderer.on("relay-crew:open-request", handler);\n'
+      + '    void ipcRenderer.invoke("relay-crew:open-requests", true, ++openRequestSeq).catch(() => {});\n'
+      + '    return () => {\n'
+      + '      if (openRequestHandler !== handler) return;\n'
+      + '      openRequestHandler = null;\n'
+      + '      ipcRenderer.removeListener("relay-crew:open-request", handler);\n'
+      + '      void ipcRenderer.invoke("relay-crew:open-requests", false, ++openRequestSeq).catch(() => {});\n'
+      + '    };\n'
       + '  },',
   );
 });
@@ -275,6 +294,25 @@ test("opening a Crew whose renewal stopped mints again and reloads, and a refusa
   assert.equal(reloads, 1, "a refused mint leaves the window as it is");
   assert.equal(w.closed, false);
   assertNoSecrets([...s.logs]);
+});
+
+test("opening a Crew whose window shows the relay's error page reloads it, and a healthy one is only focused", async () => {
+  const s = setup();
+  assert.deepEqual(await s.opener.open(ID), { ok: true });
+  const w = s.win.opened[0];
+  let reloads = 0;
+  let error = true;
+  w.reload = () => { reloads += 1; };
+  w.showsError = () => error;
+  assert.deepEqual(await s.opener.open(ID), { ok: true });
+  assert.equal(reloads, 1, "a window left on the relay's answer loads the Crew again");
+  assert.equal(w.focused, 1);
+  assert.equal(s.requests.length, 1, "renewal still runs, so no second mint");
+  error = false;
+  assert.deepEqual(await s.opener.open(ID), { ok: true });
+  assert.equal(reloads, 1, "a window on the Crew is only raised");
+  assert.equal(w.focused, 2);
+  assert.ok(s.logs.some((l) => l.includes("reloaded")));
 });
 
 test("a restart whose window closes mid-mint stops the new renewal, and a second click mints once", async () => {
@@ -547,7 +585,7 @@ test("a first open sends no marker and each window's renewal sends its own", asy
   for (const w of s.win.opened) w.close();
 });
 
-test("SIGN_IN_CHANGED on one window's renewal closes only that window", async () => {
+test("SIGN_IN_CHANGED on one page's renewal closes every relay Crew: the account is the app's", async () => {
   const { made, createRenewal } = recordedRenewals();
   const s = setup({
     createRenewal,
@@ -561,14 +599,13 @@ test("SIGN_IN_CHANGED on one window's renewal closes only that window", async ()
   assert.equal(a.closed, true);
   assert.equal(a.opts.getToken(), null);
   assert.equal(made[0].isStopped(), true);
-  assert.equal(b.closed, false, "the other window stays open");
-  assert.equal(b.opts.getToken(), `${TOKEN}-b`, "and keeps its token");
-  assert.equal(made[1].isStopped(), false);
-  assert.deepEqual(changedLogs(s), [`relay crew ${ID}: open -> closed (SIGN_IN_CHANGED)`]);
+  assert.equal(b.closed, true, "the other page, opened as the same account, closes too");
+  assert.equal(b.opts.getToken(), null);
+  assert.equal(made[1].isStopped(), true);
+  assert.deepEqual(changedLogs(s).sort(), [`relay crew ${ID}: open -> closed (SIGN_IN_CHANGED)`, `relay crew ${OTHER}: open -> closed (SIGN_IN_CHANGED)`].sort());
   assert.ok(noMarkerLogged(s));
   assertNoSecrets([...s.logs]);
   await assertReopensFresh(s, [ID]);
-  b.close();
 });
 
 test("a restart after a switch sends the window's marker, closes the window and answers SIGN_IN_CHANGED", async () => {
@@ -618,13 +655,17 @@ test("a late answer for a renewal stopped by a hand close changes nothing", asyn
 // --- The window's notices: an offline host, lost access, Check again ---
 
 const UNAVAILABLE_TEXT = {
-  title: "Team Crew is currently unavailable", body: "", check: "Check again", close: "Close window",
+  title: "Team Crew is currently unavailable",
+  // Says why and what to do (Bug Bash row 46): the body used to be empty.
+  body: "The machine running it is offline, or Kiro Crew is not running there. Once it is back, press Check again.",
+  check: "Check again",
+  close: "Close",
 };
 const NO_ACCESS_TEXT = {
   title: "You no longer have access to Team Crew.",
   body: "To get access back, ask your admin.",
   check: "",
-  close: "Close window",
+  close: "Close",
 };
 
 test("a CREW_OFFLINE renewal stop shows the unavailable notice in that window and closes nothing", async () => {
@@ -707,6 +748,27 @@ test("Check again mints a new token and reloads when the host is back", async ()
   assert.equal(w.opts.getToken(), `${TOKEN}-2`);
   assert.equal(w.notices.length, 1, "no second notice");
   w.close();
+});
+
+test("the menu's Reload with the notice up mints first, so the page never loads with no token; a refusal keeps the notice", async () => {
+  const { createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), refusal("CREW_OFFLINE"), okFor(`${TOKEN}-2`)] });
+  await s.opener.open(ID);
+  const w = s.win.opened[0];
+  const reloads = [];
+  w.reload = (o) => { reloads.push({ token: w.opts.getToken(), ...o }); };
+  w.cbs.unreachable.forEach((cb) => cb());
+  assert.equal(w.opts.getToken(), null, "the notice is up and its renewal stopped");
+  assert.deepEqual(await s.opener.reload(ID, { ignoreCache: false }), { ok: false, error: "CREW_OFFLINE" });
+  assert.deepEqual(reloads, [], "a refused mint loads nothing");
+  assert.deepEqual(w.notices, [UNAVAILABLE_TEXT, UNAVAILABLE_TEXT]);
+  assert.deepEqual(await s.opener.reload(ID, { ignoreCache: true }), { ok: true });
+  assert.deepEqual(reloads, [{ token: `${TOKEN}-2`, ignoreCache: true }], "loaded only with the new token, Force Reload's flag kept");
+  assert.deepEqual(await s.opener.reload(ID), { ok: true });
+  assert.equal(reloads.length, 2, "a live renewal reloads at once");
+  assert.equal(s.requests.length, 3, "and mints nothing");
+  w.close();
+  assert.deepEqual(await s.opener.reload(ID), { ok: false, error: "UNAVAILABLE" });
 });
 
 test("Check again while the host is still gone shows the notice again and does not retry on its own", async () => {
@@ -798,6 +860,91 @@ test("with no pane, open still opens a window of its own", async () => {
   assert.equal(s.opener.paneFor(ID), null, "a window is not a pane");
 });
 
+test("a pane asked for a Crew already in a window focuses the window and answers window: true, opening no pane", async () => {
+  const s = setup();
+  await s.opener.open(ID);
+  const pane = { parent: {}, dashboard: {}, bounds: { x: 0, y: 0, width: 10, height: 10 } };
+  assert.deepEqual(await s.opener.open(ID, pane), { ok: true, window: true });
+  assert.equal(s.win.opened[0].focused, 1);
+  assert.equal(s.panes.opened.length, 0);
+  assert.deepEqual(await s.opener.open(ID), { ok: true }, "a window asked for answers as before");
+});
+
+const PANE = { parent: {}, dashboard: {}, bounds: { x: 0, y: 0, width: 10, height: 10 } };
+
+test("a pane asked for a window whose renewal stopped restarts the window and answers window: true", async () => {
+  const made = [];
+  const createRenewal = ({ mint, holder }) => {
+    const r = {
+      stopped: false,
+      async start() { const g = await mint(); holder.set(g.accessToken); return { ok: true }; },
+      attach() {},
+      setHidden() {},
+      stop() { r.stopped = true; holder.clear(); },
+      isStopped: () => r.stopped,
+    };
+    made.push(r);
+    return r;
+  };
+  const s = setup({ createRenewal });
+  await s.opener.open(ID);
+  made[0].stop();
+  assert.deepEqual(await s.opener.open(ID, PANE), { ok: true, window: true });
+  assert.equal(made.length, 2, "restarted");
+  assert.equal(s.panes.opened.length, 0);
+});
+
+test("a pane asked while a window open is in flight joins it and answers window: true", async () => {
+  const s = setup();
+  const windowOpen = s.opener.open(ID);
+  assert.deepEqual(await s.opener.open(ID, PANE), { ok: true, window: true });
+  assert.deepEqual(await windowOpen, { ok: true });
+  assert.equal(s.panes.opened.length, 0);
+});
+
+test("a real pane never answers window: true, new or focused", async () => {
+  const s = setup();
+  assert.deepEqual(await s.opener.open(ID, PANE), { ok: true });
+  assert.deepEqual(await s.opener.open(ID, PANE), { ok: true });
+  assert.equal(s.panes.opened.length, 1);
+});
+
+test("prewarm opens a pane for a Crew that is not open, and touches a Crew that is open in no way", async () => {
+  const made = [];
+  const createRenewal = ({ mint, holder }) => {
+    const r = {
+      stopped: false,
+      async start() { const g = await mint(); holder.set(g.accessToken); return { ok: true }; },
+      attach() {},
+      setHidden() {},
+      stop() { r.stopped = true; holder.clear(); },
+      isStopped: () => r.stopped,
+    };
+    made.push(r);
+    return r;
+  };
+  const s = setup({ createRenewal });
+  assert.deepEqual(await s.opener.prewarm(`${ID}.evil`, PANE), { ok: false, error: "INVALID_ENDPOINT" });
+  assert.deepEqual(await s.opener.prewarm(ID, PANE), { ok: true });
+  assert.equal(s.panes.opened.length, 1);
+  assert.deepEqual(await s.opener.prewarm(ID, PANE), { ok: false, error: "ALREADY_OPEN" }, "an open pane");
+  // A window of its own, with its renewal stopped: a click would raise it and mint again.
+  await s.opener.open(OTHER);
+  made[1].stop();
+  assert.deepEqual(await s.opener.prewarm(OTHER, PANE), { ok: false, error: "ALREADY_OPEN" });
+  assert.equal(s.win.opened[0].focused ?? 0, 0, "not raised");
+  assert.equal(made.length, 2, "no new mint");
+  assert.equal(s.panes.opened.length, 1);
+});
+
+test("prewarm leaves an open already in flight alone", async () => {
+  const s = setup();
+  const clicked = s.opener.open(ID, PANE);
+  assert.deepEqual(await s.opener.prewarm(ID, PANE), { ok: false, error: "ALREADY_OPEN" });
+  assert.deepEqual(await clicked, { ok: true });
+  assert.equal(s.panes.opened.length, 1);
+});
+
 test("paneFor answers an open pane and the dashboard it was opened from, and null once it closes", async () => {
   const s = setup();
   const dashboard = { id: "dashboard" };
@@ -821,7 +968,7 @@ test("closeAll closes a pane and stops its renewal", async () => {
   assert.equal(s.opener.paneFor(ID), null);
 });
 
-test("a pane's chord and close reach only the dashboard that opened it, and a window sends neither", async () => {
+test("a pane's chord, theme, load and close reach only the dashboard that opened it, and a window sends none", async () => {
   const s = setup();
   const sent = { mine: [], other: [] };
   const dashboard = (into, destroyed = false) => ({
@@ -831,14 +978,41 @@ test("a pane's chord and close reach only the dashboard that opened it, and a wi
   await s.opener.open(OTHER, { parent: {}, dashboard: dashboard(sent.other, true), bounds: { x: 0, y: 0, width: 10, height: 10 } });
   const [pane, gone] = s.panes.opened;
   pane.cbs.chord.forEach((cb) => cb(2));
+  pane.cbs.theme.forEach((cb) => cb(true));
+  pane.cbs.loaded.forEach((cb) => cb());
   gone.cbs.chord.forEach((cb) => cb(1));
   s.opener.closeAll("SIGNED_OUT");
   assert.deepEqual(sent.mine, [
     ["relay-crew:pane-event", { endpointId: ID, type: "chord", index: 2 }],
+    ["relay-crew:pane-event", { endpointId: ID, type: "theme", dark: true }],
+    ["relay-crew:pane-event", { endpointId: ID, type: "loaded" }],
     ["relay-crew:pane-event", { endpointId: ID, type: "closed" }],
   ]);
   assert.deepEqual(sent.other, [], "nothing to a destroyed dashboard");
   await s.opener.open(ID);
   assert.equal(s.win.opened[0].cbs.chord.length, 0, "a window registers no chord listener");
+  assert.equal(s.win.opened[0].cbs.theme.length, 0, "nor a theme listener");
   assertNoSecrets([...sent.mine]);
+});
+
+test("a reopen waits for the last page's partition wipe before it builds the page", async () => {
+  let wiped;
+  const wipe = new Promise((resolve) => { wiped = resolve; });
+  const win = fakeWindowModule();
+  const opener = createRelayCrewOpener({
+    requestToken: async () => okFor(TOKEN),
+    openWindow: win.openWindow,
+    openPane: win.openWindow,
+    createRenewal: createRelayCrewRenewal,
+    createTokenHolder,
+    partitionCleared: (id) => (id === ID ? wipe : Promise.resolve()),
+    log: () => {},
+  });
+  const opening = opener.open(ID);
+  await settle();
+  assert.equal(win.opened.length, 0, "no page while the wipe runs");
+  wiped();
+  assert.deepEqual(await opening, { ok: true });
+  assert.equal(win.opened.length, 1);
+  win.opened[0].close();
 });

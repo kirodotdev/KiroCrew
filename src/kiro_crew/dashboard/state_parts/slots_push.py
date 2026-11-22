@@ -67,9 +67,9 @@ logger = logging.getLogger("kiro_crew.dashboard.state")
 
 
 #: Fields a ``push_slot_patch`` row may carry. Each reads the same in a one-row
-#: patch as in the full frame because its dashboard-user projection is identical
-#: for every audience; per-audience fields such as ``source_links`` require a
-#: full frame. The sub-agent counts (``subagents_running`` / ``subagents_queued``)
+#: patch as in the full frame because its projection is identical for every
+#: audience; per-audience fields such as ``source_links`` require a full frame.
+#: The sub-agent counts (``subagents_running`` / ``subagents_queued``)
 #: are deliberately NOT here: they are derived from the sub-agent manager rather
 #: than the slot row, so ``push_subagent_patch`` re-states them on lifecycle flushes.
 _SLOT_PATCH_FIELDS = frozenset(
@@ -344,13 +344,15 @@ def refresh_app_state() -> None:
     The hidden-chat listing first: it clears the queued flag, so a change landing
     after that point asks again and the gate's sets below never miss it. Then the
     tool gate's own-server sets, so a removed or replaced app stops being granted
-    without a restart.
+    without a restart. Last, the public app ids the app metrics label with.
     """
     from kiro_crew.apps import hidden_sessions
     from kiro_crew.apps.builtin_adoption_gate import refresh_gate_app_trust
+    from kiro_crew.metrics.feature_usage import refresh_public_app_ids
 
     hidden_sessions.refresh_hiding_apps()
     refresh_gate_app_trust()
+    refresh_public_app_ids()
 
 
 def bind_serving_loop(self: DashboardState, loop: asyncio.AbstractEventLoop) -> None:
@@ -515,11 +517,19 @@ def _do_slots_broadcast(self: DashboardState) -> None:
     # The generic frame is skipped only when a diff socket takes the list and
     # nothing else would receive the generic one.
     generic = not any_diff or self._has_generic_slots_audience()
+    # The dashboard-user view's readers are the non-owner dashboard-user sockets
+    # the generic frame reaches and the dashboard-user diff sockets. SSE reads
+    # the bare list, and an app socket's rows are the same from either list.
+    # Building that view with no reader open would SEL-audit public-status
+    # decisions for a non-owner who received nothing, so the generic frame then
+    # carries the bare list.
+    user_view = bool(diff_user) or _user_view_socket_open(self, legacy_only=legacy_only)
     slots_data, slots_data_ws, owner_slots = self.serialize_slot_views(
         owner=bool(owner_ws_clients or diff_owner),
-        # Only the generic frame and dashboard-user diff sockets read that view.
-        **({} if generic or diff_user else {"user": False}),
+        **({} if user_view else {"user": False}),
     )
+    if not user_view:
+        slots_data_ws = slots_data
     # With a diff socket open every row is serialized on its own, since the
     # delta compares rows as text; those texts then build every other frame of
     # the pass too, so no row is dumped twice. Without one, a whole-list dump
@@ -680,6 +690,25 @@ def _has_generic_slots_audience(self: DashboardState) -> bool:
     )
 
 
+def _user_view_socket_open(state: DashboardState, *, legacy_only: bool) -> bool:
+    """True when a socket that receives the generic frame's dashboard-user view is open.
+
+    That is a non-owner dashboard-user socket ``_send_ws_all`` hands the generic
+    ``slots`` frame to: outside the diff set, and on a legacy-only frame outside
+    the patch set. An app socket is not one: ``filter_slots_for_app`` strips every
+    field the view adds to the bare rows, so it receives the same rows from either.
+    """
+    owners = getattr(state, "_owner_ws_clients", None) or set()
+    return any(
+        not ws.closed
+        and ws not in owners
+        and ws.get("_is_dashboard_user", False)
+        and ws.get(SLOT_DIFF_WS_FLAG, False) is not True
+        and not (legacy_only and ws.get(SLOT_PATCH_WS_FLAG, False))
+        for ws in list(getattr(state, "_ws_clients", None) or ())
+    )
+
+
 def _broadcast_slots_note(
     self: DashboardState,
     slots_data: list[dict],
@@ -745,9 +774,11 @@ def push_slot_patch(self: DashboardState, key: str, fields: Iterable[str]) -> No
     ``push_slots_update(legacy_only=True)``, so an old tab kept open across
     a gateway restart sees the same thing it always did.
 
-    The values come from the dashboard-user projection of the slot, so a
-    patched field reads exactly as it would in the full frame (the title is
-    redacted the same way). Only fields in :data:`_SLOT_PATCH_FIELDS` are
+    The values come from the slot's bare projection, which differs from every
+    other audience's only in ``source_links``, so a patched field reads exactly
+    as it would in the full frame (the title is redacted the same way). The bare
+    projection decides no chip status, so a patch writes no public-status SEL
+    row. Only fields in :data:`_SLOT_PATCH_FIELDS` are
     accepted because ``source_links`` and other per-audience fields require a
     full frame, and the sub-agent counts are derived off the slot row
     (``push_subagent_patch`` owns those). A slot that is gone or still under
@@ -766,10 +797,10 @@ def push_slot_patch(self: DashboardState, key: str, fields: Iterable[str]) -> No
     if "title" in field_names:
         # A renamed title must also be the name a closed-creator label reads once this
         # slot closes, and that registry is otherwise fed only by full frames. Taken
-        # from the same dashboard-user projection the patch sends, so it is redacted
-        # the same way, and BEFORE the audience checks: a rename nobody is watching
+        # from the same projection the patch sends, so it is redacted the same
+        # way, and BEFORE the audience checks: a rename nobody is watching
         # still names the creator for whoever opens the sidebar after it closes.
-        row = self.serialize_slot(slot, dashboard_user=True)
+        row = self.serialize_slot(slot)
         try:
             from kiro_crew.dashboard.session_memory import remember_slot_title
 
@@ -784,7 +815,7 @@ def push_slot_patch(self: DashboardState, key: str, fields: Iterable[str]) -> No
     if not self._has_slot_patch_clients():
         return
     if row is None:
-        row = self.serialize_slot(slot, dashboard_user=True)
+        row = self.serialize_slot(slot)
     patch: dict[str, Any] = {"key": key}
     for field in field_names:
         if field in row:

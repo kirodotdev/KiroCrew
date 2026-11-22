@@ -8,6 +8,7 @@ import { createTestStore } from '../../test/helpers'
 import { sseMcpAppRender } from '../../store/chatSlice'
 import { i18nT } from '../../i18n/t'
 import type { PanelTab } from '../../hooks/usePanelTabs'
+import { api } from '../../api/client'
 
 /* ── The kept-mounted tab bodies, rendered from their own module with the viewers
  *    stubbed: the cases the panel specs do not reach through `SidePanel` (an MCP
@@ -41,7 +42,8 @@ vi.mock('../../components/MarkdownPanel', () => ({
     return <div data-testid="markdown-panel">{browserRail}{onPopout && <button type="button" onClick={onPopout}>pop out</button>}</div>
   }),
 }))
-vi.mock('./FileBrowserRail', () => ({
+vi.mock('./FileBrowserRail', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./FileBrowserRail')>()),
   default: ({ onFileOpen }: { onFileOpen: (abs: string, diff: boolean, opts?: { line?: number }) => void }) => (
     <button type="button" onClick={() => onFileOpen('/repo/b.ts', false, { line: 3 })}>rail row</button>
   ),
@@ -183,6 +185,29 @@ describe('TabBody', () => {
     const diff: PanelTab = { ...file, id: 'wtdiff:/repo/p.ts', kind: 'wtdiff' }
     renderWith(<TabBody {...bodyProps(diff)} />)
     expect(screen.queryByText('pop out')).toBeNull()
+  })
+
+  it("starts a folder tab's Back list fresh in another chat that has a tab with the same id", async () => {
+    vi.spyOn(api, 'browseFiles').mockImplementation(async (p: string) => (
+      { path: p, parent: p === '/repo/docs' ? '/repo' : '/', dirs: [], files: [] }
+    ))
+    onTestFinished(() => vi.restoreAllMocks())
+    const tab: PanelTab = { id: 'folder:/repo/docs', kind: 'folder', title: 'docs', path: '/repo/docs' }
+    // Same providers across both renders, so only the slot differs. No project dir keeps the listing.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = createTestStore()
+    const inChat = (slot: string) => (
+      <QueryClientProvider client={client}>
+        <Provider store={store}><TabBody {...bodyProps(tab, { slot, projectDir: undefined })} /></Provider>
+      </QueryClientProvider>
+    )
+    const { rerender } = render(inChat('chat-a'))
+    fireEvent.click(await screen.findByText(i18nT('pages.chat.folderPanel.parent_folder')))
+    const backLabel = i18nT('pages.chat.folderPanel.back')
+    expect(screen.getByRole('button', { name: backLabel })).toHaveAttribute('aria-disabled', 'false')
+
+    rerender(inChat('chat-b'))
+    expect(screen.getByRole('button', { name: backLabel })).toHaveAttribute('aria-disabled', 'true')
   })
 
   it('reports a restored file whose read throws, naming the file and the reason', async () => {

@@ -170,17 +170,15 @@ def ssm_principal(invite_id: str, alias: str = "") -> Principal:
 def local_operator_principal(token_subject: str) -> Principal:
     """The local operator, keyed by the subject of the token they hold.
 
-    The owner's subjects are labelled with this machine's name; the id is the
-    subject's alone, so the label never changes who the principal is.
+    The owner's subjects are labelled with :func:`owner.owner_name`; the id is
+    the subject's alone, so the label never changes who the principal is.
     """
     from kiro_crew.shared_crew import owner
 
     subject = token_subject.strip()
     if not subject:
         return Principal.unknown()
-    label = (
-        owner.machine_name(token_subject=subject) if owner.is_owner_subject(subject) else subject
-    )
+    label = owner.owner_name(token_subject=subject) if owner.is_owner_subject(subject) else subject
     return Principal(
         id=principal_id_for(PROVIDER_LOCAL, LOCAL_ISSUER, subject),
         kind=PrincipalKind.HUMAN,

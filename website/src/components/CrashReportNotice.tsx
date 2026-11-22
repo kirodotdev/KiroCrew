@@ -20,10 +20,11 @@
  * in-memory: main.js scans once per app session, so a new launch with no new
  * crash produces `newCount: 0` and nothing renders anyway.
  *
- * The renderer is told a COUNT and nothing else — not even a timestamp. Paths,
- * filenames and exception codes stay in the main process (see `crashNoticeSummary` in
- * electron/crash-collector.js) — the reveal action is a main-process gesture
- * that names no path, so this component never holds one.
+ * The renderer is told the count and when the newest crash happened, so a
+ * weeks-old crash does not read like one that just occurred. Paths, file names,
+ * module names and exception codes stay in the main process (see
+ * `crashNoticeSummary` in electron/crash-collector.js) — the reveal action is a
+ * main-process gesture that names no path, so this component never holds one.
  */
 import { useEffect, useState } from 'react'
 import { AlertTriangle, Bug, FolderOpen, X } from 'lucide-react'
@@ -32,6 +33,7 @@ import ErrorNotice from './ErrorNotice'
 import ReportProblemModal from './ReportProblemModal'
 
 import { i18nT } from '../i18n/t'
+import { fmtDateTime, toDate } from '../i18n/format'
 
 /**
  * Bridge from electron/preload.js. Absent in a plain browser and in the PWA,
@@ -42,6 +44,7 @@ const crashReportsAPI = (): CrashReportsAPI | undefined => window.crashReportsAP
 
 export default function CrashReportNotice() {
   const [count, setCount] = useState(0)
+  const [lastCrashAt, setLastCrashAt] = useState<Date | null>(null)
   const [dismissed, setDismissed] = useState(false)
   const [revealError, setRevealError] = useState<string | null>(null)
   const [reportOpen, setReportOpen] = useState(false)
@@ -76,7 +79,13 @@ export default function CrashReportNotice() {
     // gateway shares this preload), and that is a correct outcome, not an error
     // worth putting on screen.
     void api.get()
-      .then(summary => { if (alive) setCount(summary.newCount) })
+      .then(summary => {
+        if (!alive) return
+        setCount(summary.newCount)
+        // An older shell sends no time; a missing or malformed one hides the
+        // line rather than printing the formatter's "—".
+        setLastCrashAt(toDate(summary.lastCrashAt))
+      })
       .catch(() => {})
     return () => { alive = false }
   }, [])
@@ -109,6 +118,11 @@ export default function CrashReportNotice() {
                 which only exist for keys registered in i18n/pluralKeys.json. */}
             {i18nT('components.crashNotice.diagnostics_were_saved_locally', { n: count })}
           </div>
+          {lastCrashAt && (
+            <div className="text-[13px] text-muted mt-1" data-testid="crash-notice-latest">
+              {i18nT('components.crashNotice.latest_crash', { date: fmtDateTime(lastCrashAt) })}
+            </div>
+          )}
         </div>
         <button
           type="button"
@@ -120,22 +134,23 @@ export default function CrashReportNotice() {
         </button>
       </div>
       <div className="mt-3 flex flex-col sm:flex-row gap-2 sm:pl-[30px]">
+        {/* The stock Btn is transparent, so on the warn tint it has no edge until hovered. */}
         <Btn
           onClick={() => { void revealCrashFolder() }}
-          className="w-full sm:w-auto justify-center"
+          className="w-full sm:w-auto justify-center border-border-strong bg-bg-elevated"
         >
           <FolderOpen size={14} /> {i18nT('components.crashNotice.show_diagnostics')}
         </Btn>
         {/* The shared Report a Problem flow (bundle + pre-filled GitHub issue),
-            started with the one crash fact this banner holds — the count — in
-            the note. The renderer is never told more (see the header), so the
-            note names no path, filename or exception code. That bundle is the
+            started with the crash count in the note. The renderer is never
+            told a path, file name or exception code (see the header), so the
+            note names none. That bundle is the
             gateway's: it does not carry the desktop crash ledger, which is why
             the banner still asks the user to attach what "Show diagnostics"
             reveals, and why neither action is styled as the primary one. */}
         <Btn
           onClick={() => setReportOpen(true)}
-          className="w-full sm:w-auto justify-center"
+          className="w-full sm:w-auto justify-center border-border-strong bg-bg-elevated"
         >
           <Bug size={14} /> {i18nT('components.crashNotice.report_issue')}
         </Btn>

@@ -1,0 +1,7 @@
++25
+A heredoc piped into a shell is read as its script whatever the shell's arguments hold:
+`rm_floor._pipe_recipients` finds every command the pipe may feed (the next one read, and
+the one starting first after it on its own line, which a quoted substitution in the
+shell's words puts after its own commands) by bisecting sorted offsets, and
+`_reads_pipe` says whether that command is a shell reading the pipe. No check is
+relaxed.

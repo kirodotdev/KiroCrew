@@ -187,6 +187,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _audited_probe,
         _binary_stamp,
         _drop_too_old_off_relay,
+        _identity_environment,
         _latch_login_only,
         _probe,
         _probe_acp_support,

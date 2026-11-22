@@ -1025,6 +1025,13 @@ class CapabilityManager(Protocol):
 
         The edition resolves any version/source internally — NO Amazon-internal
         version-set concept is exposed on this operation or the public API.
+
+        In an LTS build the core first asks an OPTIONAL op,
+        ``async skill_names(package) -> List[str]``: the names of the skills the
+        package holds, resolved without installing anything. Each name is checked
+        against the policy's ``skill`` term (RFC D13). A manager without the op, or
+        a listing that fails or names nothing, has its skill installs refused
+        there. The ``oss`` edition never asks it.
         """
         ...
 

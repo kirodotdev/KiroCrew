@@ -44,7 +44,7 @@ describe('InstancesPanel', () => {
     ;vi.mocked(api.patchConfig).mockResolvedValue({})
     const u = userEvent.setup()
     renderWithProviders(<InstancesPanel />)
-    expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
+    expect(await screen.findByText('Remote Crew is off')).toBeInTheDocument()
     await u.click(screen.getByRole('button', { name: /Enable remote crew management/i }))
     await waitFor(() => expect(api.patchConfig).toHaveBeenCalledWith('instances.enabled', true))
   })

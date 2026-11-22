@@ -65,7 +65,11 @@ from kiro_crew.security.mcp_body_fields import (
     warn_body_field_matches,
 )
 from kiro_crew.security.paths_resolver import bounded_judgment
-from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
+from kiro_crew.security.readonly_bash import (
+    command_invokes_git,
+    is_read_only_bash,
+    may_write_through_git_flag,
+)
 from kiro_crew.tool_gate_busy import hook_gate_busy
 
 if TYPE_CHECKING:
@@ -284,6 +288,7 @@ async def _resolve_permission(
     session_key: str = "",
     agent: str = "",
     app: str = "",
+    app_run: tuple[str, str] = ("", ""),
     on_decision: Callable[[str, str, str], None] | None = None,
     spec_floor: Callable[[LLMEvent], Awaitable[str | None]] | None = None,
 ) -> bool:
@@ -303,8 +308,10 @@ async def _resolve_permission(
     unconditional checks), ``"always_deny_hook"`` (a HookManager security deny),
     ``"policy_deny"`` (the governance ceiling, whether reached through the hook
     gate or through a regex-tier rule that only a governance PIN put back into
-    the effective set), or ``""`` for an approval, an interactive rejection or an
-    approval prompt that expired unanswered.
+    the effective set), ``"always_deny_transport"`` (the transport's security
+    floor refused an approval), ``"batch_write_guard"`` (the batch write guard
+    deferred an approval to the next step), or ``""`` for an approval, an
+    interactive rejection or an approval prompt that expired unanswered.
     The ``always_deny`` prefix is therefore what marks a refusal as "the attempt
     itself was the problem"; everything else describes policy state or an absent
     approver. Note that the same regex match can land under either label — what
@@ -332,6 +339,18 @@ async def _resolve_permission(
             request_id=event.request_id,
             **extra,
         )
+
+    def _log_send_refused() -> None:
+        # ``approve_tool`` answers both the batch write guard and the security
+        # floor with False; only the floor is a security block.
+        from kiro_crew.agent_sdk import batch_guard_refusal_outcome, take_batch_guard_refusal
+
+        reason = take_batch_guard_refusal(provider, event.request_id)
+        if reason is None:
+            _log(OUTCOME_REJECTED_TRANSPORT_FLOOR, metadata={"mechanism": "always_deny_transport"})
+            return
+        outcome, metadata = batch_guard_refusal_outcome(reason)
+        _log(outcome, metadata=metadata)
 
     # Audit FIRST, before any wire I/O for this decision, at every deny below:
     # the steer and the rejection both await the ACP pipe, and a backend that
@@ -829,9 +848,11 @@ async def _resolve_permission(
     # no rung below approves a call it covers on its own; the caller's approver
     # is asked as a person's (``held_call``), and with none the call is refused.
     # A READ_ONLY turn has no approver, so a held read is refused there.
-    from kiro_crew import mate_held_rules
+    # An organisation's ``ask`` on a KAS web call (``web_ask_rule``) is held the same
+    # way under every policy: KAS asks so a person answers.
+    from kiro_crew import mate_held_rules, web_ask_rule
 
-    _held = (
+    _bot_held = (
         await asyncio.to_thread(
             mate_held_rules.held_for, event, session_key=session_key, agent=agent
         )
@@ -843,6 +864,8 @@ async def _resolve_permission(
         )
         else []
     )
+    _web_held = web_ask_rule.held_phrases(event)
+    _held = list(_bot_held) + _web_held
 
     if policy in (ToolApprovalPolicy.HOOK_BASED, ToolApprovalPolicy.READ_ONLY) and hooks:
         tool_result = await run_in_tool_gate_pool(
@@ -852,6 +875,7 @@ async def _resolve_permission(
             session_key=session_key,
             agent=agent,
             app=app,
+            app_run=app_run,
             **hook_gate_kwargs(event),
             # READ_ONLY asks for the classifier's verdict alone: the gate skips
             # its grant tiers (`auto_approve_tools`, app-own-server), which vouch
@@ -916,10 +940,7 @@ async def _resolve_permission(
                 if approval_sent is not False:
                     _log("auto_approved", metadata={"reason": "hook_auto_approve"})
                 else:
-                    _log(
-                        OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                        metadata={"mechanism": "always_deny_transport"},
-                    )
+                    _log_send_refused()
                 return approval_sent is not False
             if name_grant.should_log_decline(session_key, _ng_refusal):
                 logger.warning(
@@ -978,7 +999,13 @@ async def _resolve_permission(
     # name-grant check the read-only approve ran -- so it is refused instead.
     if policy == ToolApprovalPolicy.HOOK_BASED and hooks and on_tool_approval is None:
         _git_command = name_grant.shell_command_for_event(event)
-        if _git_command and command_invokes_git(_git_command) and is_read_only_bash(_git_command):
+        # A git command that may write a file through a flag
+        # (`git blame --output=F`) is refused here too, not auto-approved.
+        if (
+            _git_command
+            and command_invokes_git(_git_command)
+            and (is_read_only_bash(_git_command) or may_write_through_git_flag(_git_command))
+        ):
             _log("rejected", metadata={"reason": "git_read_headless_reject"})
             await _steer_host_deny(
                 provider,
@@ -991,15 +1018,20 @@ async def _resolve_permission(
             return False
 
     if _held and on_tool_approval is None:
-        _log("rejected", metadata={"reason": "bot_limit_held_headless"})
-        await _steer_host_deny(
-            provider,
-            event,
-            "this call falls under a Bot limit that could not be applied as written ("
-            + "; ".join(_held)
-            + "), so a person must approve it, and this surface has no approver",
-            cause=DENY_CAUSE_SURFACE_POLICY,
-        )
+        if _bot_held:
+            _log("rejected", metadata={"reason": "bot_limit_held_headless"})
+            _why = (
+                "this call falls under a Bot limit that could not be applied as written ("
+                + "; ".join(_bot_held)
+                + "), so a person must approve it, and this surface has no approver"
+            )
+        else:
+            _log("rejected", metadata={"reason": "web_ask_rule_headless"})
+            _why = (
+                "; ".join(_web_held)
+                + ", so a person must approve it, and this surface has no approver"
+            )
+        await _steer_host_deny(provider, event, _why, cause=DENY_CAUSE_SURFACE_POLICY)
         await provider.reject_tool(event.request_id)
         return False
 
@@ -1036,5 +1068,5 @@ async def _resolve_permission(
     if approval_sent is not False:
         _log("auto_approved")
     else:
-        _log(OUTCOME_REJECTED_TRANSPORT_FLOOR, metadata={"mechanism": "always_deny_transport"})
+        _log_send_refused()
     return approval_sent is not False

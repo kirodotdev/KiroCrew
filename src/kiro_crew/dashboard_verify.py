@@ -779,14 +779,15 @@ def _defined_by(name: str, url: str) -> bool:
     Read from the URL alone, because nothing was fetched: ``Chart`` for ``.../chart.js@4``,
     ``d3`` for ``.../d3/7.8.5/d3.min.js``, ``ReactDOM`` for ``.../react-dom``. A name the
     URL does not suggest is the page's own, so a typo on a page that loads a library is
-    still reported.
+    still reported. ``js`` is filler on its own but joins a neighbouring library word, so
+    ``jsyaml`` for ``.../js-yaml`` and ``videojs`` for ``.../video.js@8``.
     """
-    words = [
-        word
-        for word in re.sub(r"[^a-z0-9]+", " ", urlsplit(url).path.lower()).split()
-        if word not in _URL_FILLER
-    ]
+    every = re.sub(r"[^a-z0-9]+", " ", urlsplit(url).path.lower()).split()
+    words = [word for word in every if word not in _URL_FILLER]
     words += [a + b for a, b in zip(words, words[1:])]
+    words += [
+        a + b for a, b in zip(every, every[1:]) if "js" in (a, b) and not {a, b} <= _URL_FILLER
+    ]
     return any(
         word == wanted or (len(wanted) >= 4 and word.startswith(wanted))
         for wanted in _LIBRARY_ALIASES.get(name) or (name.lower(),)
@@ -868,7 +869,9 @@ class _Collector:
         if isinstance(description, str) and description:
             message = description.split("\n", 1)[0]
         elif "value" in exception:
-            message = f"{text} {exception['value']}"
+            value = exception["value"]
+            shown = value if isinstance(value, str) else json.dumps(value, default=str)
+            message = f"{text} {shown}"
         else:
             message = text
         line, column, url = _first_frame(details.get("stackTrace"))
@@ -1544,14 +1547,18 @@ def verify_page(
         if browser is None:
             return _skipped(
                 "no system-installed Chromium or Chrome was found on this machine (the gateway "
-                "runs only a browser that this account cannot modify)",
+                "runs only a browser that this account cannot modify, at one of: "
+                f"{', '.join(_SYSTEM_BROWSERS)}). To fix it, install Google Chrome or the "
+                "distribution's Chromium package system-wide, not as a snap",
                 started,
             )
         python = find_launcher_python()
         if python is None:
             return _skipped(
                 "no system-installed Python was found to start the browser (the gateway runs "
-                "only a Python that this account cannot modify)",
+                "only a Python that this account cannot modify, at one of: "
+                f"{', '.join(_SYSTEM_PYTHONS)}). To fix it, install the distribution's python3 "
+                "package system-wide",
                 started,
             )
         if not _SLOT.acquire(blocking=False):

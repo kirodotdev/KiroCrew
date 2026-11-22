@@ -1390,6 +1390,18 @@ describe('turn stats footer (elapsed time + credits)', () => {
     expect(screen.getByTestId('turn-stats').textContent!.replace(/\s+/g, ' ').trim()).toMatch(/^2\.50 credits ·\s*1m 24s\s*·\s*Cache rebuilt$/)
   })
 
+  it('words an inferred rebuild as likely and says it is an estimate', () => {
+    render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5, cache: 'likely' }} />)
+    const chip = screen.getByTestId('turn-cache-likely')
+    expect(chip).toHaveTextContent('Cache likely rebuilt')
+    expect(screen.queryByTestId('turn-cache-rewrite')).not.toBeInTheDocument()
+    const tip = within(chip).getByRole('button', { name: 'More information' })
+    expect(tip.getAttribute('title')).toMatch(/probably stored again/)
+    expect(tip.getAttribute('title')).toMatch(/estimate/)
+    expect(chip.className).not.toMatch(/\bborder\b|\brounded-full\b/)
+    expect(screen.getByTestId('turn-stats').textContent!.replace(/\s+/g, ' ').trim()).toMatch(/^2\.50 credits ·\s*1m 24s\s*·\s*Cache likely rebuilt$/)
+  })
+
   it('draws no cache chip when the key is absent or holds another value', () => {
     const { rerender } = render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5 }} />)
     expect(screen.queryByTestId('turn-cache-rewrite')).not.toBeInTheDocument()

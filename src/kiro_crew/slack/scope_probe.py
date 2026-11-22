@@ -42,8 +42,8 @@ _REINSTALL_HINT = (
     "(groups:history / message.groups) — reinstall the Slack app from the "
     "bundled manifest to restore private-channel message delivery. A manifest "
     "from `kirocrew manifest` renames the slash command to /kirocrew-<alias>; "
-    "run the `kirocrew config set slack.command` line it prints, then restart "
-    "the gateway."
+    "the gateway answers it, and running the `kirocrew config set slack.command` "
+    "line it prints keeps later manifest updates on that name (no restart)."
 )
 
 

@@ -142,6 +142,7 @@ const DECORATIVE: Array<[file: string, snippet: string, why: string]> = [
   ['pages/chat/BrowserLiveCardViews.tsx', 'pointer-events-none absolute inset-0 grid place-items-center bg-bg/40 opacity-0', '"Click to take over" hint over the frame; the header\'s Take over button is the control and a tap on the frame claims too'],
   ['pages/ArtifactDetailPageHeader.tsx', '<Pencil size={14}', 'edit glyph inside the always-visible rename button'],
   ['pages/chat/SessionTitleControl.tsx', '<Pen size=', 'edit glyph beside the always-visible title'],
+  ['pages/members/MembersPageThreadHeader.tsx', 'data-testid="member-identity-pill-chevron"', 'chevron inside the always-visible identity stack button; hidden at rest by owner decision'],
   ['pages/settings/SecurityPanelPosture.tsx', '<ExternalLink size={11}', 'external-link glyph on an always-visible row'],
   ['components/WelcomeView.tsx', '[@media(min-width:640px)_and_(min-height:600px)]:group-hover:line-clamp-none', 'unclamps a suggestion\'s text on hover; one tap sends the full text to the composer'],
 ]

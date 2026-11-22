@@ -19,7 +19,20 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent / "src/kiro_crew/slack/code_channels"
-MODULES = ("tools.py", "wrapup.py", "commands.py", "workspace/service.py")
+MODULES = (
+    "tools.py",
+    "wrapup.py",
+    "commands.py",
+    "workspace/service.py",
+    "workspace/code_tab.py",
+    "workspace/publishing.py",
+    "views.py",
+    "comments.py",
+    "actions.py",
+    "notices.py",
+    "tabs.py",
+    "worker_stop.py",
+)
 COMMIT = {"commit_if_not_stopped", "_commit"}  # tools._commit raises on a refusal
 
 #: Calls that change channel state or Slack: store and record writes, the status
@@ -73,9 +86,6 @@ ALLOWED: dict[tuple[str, str, str], str] = {
         "stores the id of a canvas Slack already created; dropping it would make "
         "the next publish create or refuse a second canvas"
     ),
-    ("tools.py", "_publish_canvas_locked", "plan_view_id"): (
-        "stores the id of a Plan tab Slack already attached"
-    ),
     ("tools.py", "_drop_create_intent", "_maybe_created"): (
         "undoes this call's own create intent after Slack refused the create"
     ),
@@ -103,8 +113,49 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("workspace/service.py", "_point_session", "_set_project"): _SETUP,
     ("workspace/service.py", "plan_session", "put"): _SETUP,
     ("workspace/service.py", "_recover_folder", "put"): _SETUP,
-    ("workspace/service.py", "republish_bar", "put"): _PUBLISHED,
     ("workspace/service.py", "_refresh", "put"): _PUBLISHED,
+    ("workspace/code_tab.py", "_owe_tab", "put"): (
+        "records, before the send, that the Code tab may carry helper agents; "
+        "skipping it would lose track of what Slack may show"
+    ),
+    ("workspace/code_tab.py", "_unowe_tab", "put"): (
+        "undoes this call's own write-ahead after Slack refused the send it was for"
+    ),
+    ("workspace/code_tab.py", "_take_down_owed", "put"): (
+        "records a Code tab takedown Slack already answered (or that it is still "
+        "owed); skipping it would lose track of what Slack shows"
+    ),
+    ("workspace/publishing.py", "republish_bar", "put"): _PUBLISHED,
+    ("workspace/publishing.py", "turn_bar", "put"): _PUBLISHED,
+    ("views.py", "record_view", "update_async"): (
+        "stores the id of a tab Slack already opened; a Stop refuses the setView "
+        "itself (SurfaceClient._call)"
+    ),
+    ("views.py", "forget_view", "update_async"): (
+        "drops the id of a tab Slack already removed, so it is never removed twice"
+    ),
+    ("views.py", "reconcile", "update_async"): (
+        "drops record entries Slack's own list no longer has (a removed tab)"
+    ),
+    ("views.py", "set_origin", "update_async"): (
+        "re-labels whose PR a tab Slack already shows; no Slack call, and the "
+        "label fences that tab's later removal"
+    ),
+    ("tabs.py", "_publish_workers", "_last_write"): (
+        "stamps a Workers-tab write Slack already took (the edit gap counts from it)"
+    ),
+    ("tabs.py", "_publish_workers", "_sent"): (
+        "records the digest of a Workers-tab write Slack already took"
+    ),
+    ("notices.py", "notify_refusal", "_locks"): (
+        "takes the channel's notice lock (an asyncio.Lock), not channel state"
+    ),
+    ("notices.py", "_notify_once", "update_async"): (
+        "records a dashboard notice already told, so it is told once; nothing reaches Slack"
+    ),
+    ("commands.py", "tell_refused", "_forget_request"): (
+        "a refused command disarms its own /wrap-up request: the safe direction"
+    ),
     ("commands.py", "_gh_signed_in", "_gh_cache"): (
         "caches a gh sign-in probe for the process; not channel state"
     ),
@@ -118,10 +169,15 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("wrapup.py", "_post_wrap_up", "_mark_wrapped"): (
         "stamps a wrap-up Slack already posted (with its ts above)"
     ),
+    ("wrapup.py", "_point_summary", "update_async"): (
+        "records the summary_message Slack already accepted, so the work board "
+        "never displaces a current wrap-up"
+    ),
 }
 
-#: Functions never run as admitted work: a person's own click or command, or a
-#: turn hook. The commit point lets their writes through unconditionally
+#: Functions never run as admitted work (a person's own click or command, or a
+#: turn hook), or whose every write asks the act gate right before it. The
+#: commit point lets their writes through unconditionally
 #: (``commit_if_not_stopped`` is True outside an admission), so a check there
 #: would be a no-op.
 UNADMITTED: dict[tuple[str, str], str] = {
@@ -134,6 +190,19 @@ UNADMITTED: dict[tuple[str, str], str] = {
     ("wrapup.py", "_finish_archive"): "completes a person's Archive click",
     ("wrapup.py", "_stamp_archived"): "the Archive click's own stamp",
     ("commands.py", "handle_slash"): "a person's slash command",
+    ("comments.py", "read_comments"): (
+        "the turn-end hook and the idle poll (admitted in its own pass); each write"
+        " asks _refused (act_refusal, Stop included) right before it"
+    ),
+    ("comments.py", "_deliver"): (
+        "read_comments' delivery; each route and mark asks _refused (act_refusal,"
+        " Stop included) right before it"
+    ),
+    ("comments.py", "on_turn_end"): "turn hook",
+    ("comments.py", "poll_once"): "the idle-channel poll, a background task",
+    ("actions.py", "_respond"): "answers a person's own context-bar click",
+    ("worker_stop.py", "_handle"): "a person's Workers-tab Stop click",
+    ("worker_stop.py", "_respond"): "answers a person's own Workers-tab Stop click",
 }
 
 
@@ -477,10 +546,11 @@ def test_every_raw_send_in_the_board_modules_is_a_classified_writer() -> None:
 def test_the_board_writes_no_folder_placement():
     """``session_create`` is the one place a code-channel worker is filed (in the
     channel's own folder, unless the channel turned conductor mode on). The board
-    only reads: no module under ``board/`` assigns a ``folder_id`` or writes a
-    session's metadata record."""
+    only reads: no module under ``board/`` (nor the workspace's worker readers)
+    assigns a ``folder_id`` or writes a session's metadata record."""
     writes = ("update_metadata", "update_metadata_if", "_slot_meta_txn_lock", "set_slot_folder")
-    for path in sorted((ROOT / "board").glob("*.py")):
+    readers = [ROOT / "workspace" / name for name in ("worker_prs.py", "worker_diff.py")]
+    for path in sorted((ROOT / "board").glob("*.py")) + readers:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             targets = (
@@ -493,3 +563,49 @@ def test_the_board_writes_no_folder_placement():
             if isinstance(node, (ast.Attribute, ast.Name)):
                 name = node.attr if isinstance(node, ast.Attribute) else node.id
                 assert name not in writes, f"{path.name}:{node.lineno} uses {name}"
+
+
+#: The agents-client writes that may carry the board's workers: *gate* is required.
+GATED_CLIENT_WRITES = ("set_diff_view",)
+
+
+def test_the_agents_client_asks_the_gate_last_and_every_caller_passes_one() -> None:
+    client = _tree("client.py")
+    for name in GATED_CLIENT_WRITES:
+        fn = next(
+            n
+            for n in ast.walk(client)
+            if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef) and n.name == name
+        )
+        kwonly = {a.arg: d for a, d in zip(fn.args.kwonlyargs, fn.args.kw_defaults)}
+        assert "gate" in kwonly and kwonly["gate"] is None, f"{name}: gate must be required"
+    call = _async_fn("client.py", "_call")
+    own = _own_nodes(call)
+    send = min(
+        (n for n in own if isinstance(n, ast.Await) and "_api_call" in ast.unparse(n)), key=_pos
+    )
+    gate = [n for n in own if isinstance(n, ast.Call) and _callee(n) == "_gate_admits"]
+    assert gate and _pos(gate[0]) < _pos(send)
+    assert not any(
+        isinstance(a, ast.Await) and _pos(gate[0]) < _pos(a) < _pos(send) for a in own
+    ), "an await sits between the gate and the send"
+    surface_call = _async_fn("surface_client.py", "_call")
+    supers = [
+        n
+        for n in _own_nodes(surface_call)
+        if isinstance(n, ast.Call) and _callee(n) == "_call" and "super()" in ast.unparse(n)
+    ]
+    assert supers and all(any(k.arg == "gate" for k in n.keywords) for n in supers)
+    # Every caller, the workspace's ``self._call("set_diff_view", ...)`` included.
+    missing: list[str] = []
+    for path in sorted(ROOT.rglob("*.py")):
+        rel = str(path.relative_to(ROOT))
+        for n in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(n, ast.Call):
+                continue
+            named = _callee(n)
+            if named == "_call" and n.args and isinstance(n.args[0], ast.Constant):
+                named = str(n.args[0].value)
+            if named in GATED_CLIENT_WRITES and not any(k.arg == "gate" for k in n.keywords):
+                missing.append(f"{rel}:{n.lineno} {named}")
+    assert missing == [], missing

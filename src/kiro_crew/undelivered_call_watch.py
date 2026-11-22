@@ -13,13 +13,14 @@ conductor's work-ledger watch forward.
 
 What it trusts, and why that is enough:
 
-* Only a harness whose answer was captured live (KAS, pi, OpenCode), by the
+* Only a harness whose answer was captured live (KAS, pi, OpenCode, Claude), by the
   provider's own label (positive identity, harness-parity H5); the answers are in
   :mod:`kiro_crew.agent_sdk.unresolved_tool_answers`.
 * Only a ``tool_call`` frame with no server and no tool identity, kind ``other``:
   how those harnesses frame a call they could not resolve, with the name the model
   called as its wire title. A shell call is kind ``execute``, a resolved MCP call
-  names its server.
+  names its server. Claude's ``tool_call`` frame names no server even for a
+  resolved MCP call, so on Claude the answer below is what tells the two apart.
 * Only a result with that harness's status whose output IS its could-not-resolve
   answer, naming the same worker tool as the frame. OpenCode's answer goes on to
   list every tool the session has, so for OpenCode the output's head must be it.
@@ -58,7 +59,7 @@ WORK_SERVER = "kirocrew-work"
 #: test) so judging a frame does not load the store.
 _WORKER_TOOLS: frozenset[str] = frozenset({"work_brief", "work_report"})
 
-#: The tool kind KAS, pi and OpenCode give a call they could not resolve.
+#: The tool kind KAS, pi, OpenCode and Claude give a call they could not resolve.
 _UNRESOLVED_KIND = "other"
 
 #: The longest output read: a whole answer, or the head of OpenCode's. Every
@@ -171,7 +172,16 @@ async def record_undelivered_call(worker_session_key: str, tool: str) -> dict[st
             work_ledger.settle_undelivered(worker_session_key, seen)
         raise
     if noted is not None:
-        conductor_wake.wake_for_undelivered_report(noted["conductor_slot_key"], noted["item_id"])
+        from kiro_crew.tracing import work as trace_work
+
+        try:
+            # A span under the item, which the conductor's next patrol turn links to.
+            await trace_work.report_undelivered(noted)
+        finally:
+            # The wake is owed even when the trace is cancelled: the record committed.
+            conductor_wake.wake_for_undelivered_report(
+                noted["conductor_slot_key"], noted["item_id"]
+            )
     return noted
 
 

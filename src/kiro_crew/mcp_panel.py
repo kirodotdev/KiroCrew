@@ -319,6 +319,33 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "define its own complete design in view.html."
                         ),
                     },
+                    "widgets": {
+                        "type": "array",
+                        "maxItems": 4,
+                        "items": {"type": "object"},
+                        "description": (
+                            "Optional phone home-screen widgets for this page, shown "
+                            "to the Bot's owner only. Leave it out to keep the stored "
+                            "widgets; pass [] to remove them. Up to 4 widgets, each "
+                            '`{"id", "title", "sizes", "blocks", "tap"}`: `id` is '
+                            "lowercase letters, digits and '-' (at most 32, unique, "
+                            "never `status`); `title` 1-40 characters; `sizes` a subset "
+                            "of `small`, `medium`, `large`; `tap` only "
+                            '`{"open": "bot"}` (the default); 1-6 `blocks`, most '
+                            "important first (small draws 2, medium 4). A block's "
+                            "`type` is `title` (`text` or `field`), `metric` (`label`, "
+                            "`field`, `format`, `unit`, `warn_at`, `bad_at`, "
+                            "`higher_is_worse`), `list` (`label`, `field`, `item_text`, "
+                            "`item_detail`, `max_items` 1-5), `progress` (`label`, "
+                            "`field`, `total` or `total_field`), `sparkline` (`label`, "
+                            "`field`, `point`, `max_points` 2-48) or `status` (`label`, "
+                            "`field`, `tones` mapping values to ok/warn/bad/idle). "
+                            "`field` names a field of this `model.types`; a widget "
+                            "holds no HTML and no values, and the phone shows every "
+                            "string as plain text. An example and the block table "
+                            "follow."
+                        ),
+                    },
                 },
                 "required": ["model", "view"],
             },
@@ -434,12 +461,16 @@ def _tool_definitions() -> list[dict[str, Any]]:
 
 
 def _list_tools() -> list[dict[str, Any]]:
-    """The tool surface, unconditionally.
+    """The tool surface, with one conditional part.
 
     Reaching this process at all means an agent spec referenced the set, so the
-    assignment already happened and there is nothing left to gate here.
+    assignment already happened and there is nothing left to gate here, except
+    ``widgets`` on ``dashboard_save``, advertised only while the ``widgets``
+    feature preview is on (``widgets_preview``).
     """
-    return _tool_definitions()
+    from kiro_crew.widgets_preview import widgets_enabled, with_widgets_schema
+
+    return with_widgets_schema(_tool_definitions(), widgets_enabled())
 
 
 def _strict_session_key() -> tuple[str, str]:
@@ -601,6 +632,23 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                     "`view` and a `theme`, and all three are saved together"
                 )
             page[key] = part
+        # Optional fourth: forwarded only when sent, so a save without it keeps the
+        # stored widgets exactly as it did before widgets existed.
+        widgets = args.get("widgets")
+        if widgets is not None:
+            from kiro_crew.widgets_preview import mcp_refusal
+
+            # Behind the `widgets` feature preview: refused before the gateway is
+            # called, so nothing is saved.
+            refusal = mcp_refusal(args)
+            if refusal is not None:
+                return refusal
+            if not isinstance(widgets, list):
+                return (
+                    "Error: `widgets` must be a list of widgets -- leave it out to "
+                    "keep the stored ones, or pass [] to remove them"
+                )
+            page["widgets"] = widgets
         sk, err = _strict_session_key()
         if err:
             return err

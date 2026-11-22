@@ -53,6 +53,19 @@ def _make_client(events):
     return client
 
 
+def _open_gates(monkeypatch):
+    """Let the PreToolUse gate and the spec hooks pass, so a case asserting
+    channel trust's approval reads only the trust path. Both read the live
+    config, keystone and governance state, which another test in the same
+    worker can leave set; a refusal there means ``approve_tool`` never runs."""
+
+    async def _no_spec_refusal(*_a, **_k):
+        return None
+
+    monkeypatch.setattr("kiro_crew.permission_floor.refusal_for", lambda event, **kwargs: None)
+    monkeypatch.setattr("kiro_crew.channel.pre_tool_refusal", _no_spec_refusal)
+
+
 def test_blocked_tools_cover_both_messaging_tools():
     assert "send_message" in CHANNEL_AGENT_BLOCKED_TOOLS
     assert "send_notification" in CHANNEL_AGENT_BLOCKED_TOOLS
@@ -283,6 +296,7 @@ async def test_a_held_bot_limit_is_not_approved_by_channel_trust(monkeypatch, he
     """``mate_held_rules``: channel trust never approves a call a held Bot limit covers."""
     from kiro_crew import mate_held_rules
 
+    _open_gates(monkeypatch)
     monkeypatch.setattr("kiro_crew.sel.sel", lambda: MagicMock())
     monkeypatch.setattr(mate_held_rules, "held_for", lambda *a, **k: ["deny shell"] if held else [])
     monkeypatch.setattr(
@@ -301,6 +315,41 @@ async def test_a_held_bot_limit_is_not_approved_by_channel_trust(monkeypatch, he
     client = _make_client(events)
     await _stream_task(_make_agent(), _make_channel(), client, "hi")
     if held:
+        client.approve_tool.assert_not_awaited()
+    else:
+        client.approve_tool.assert_awaited_once_with(8)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edition", ["lts", "oss"])
+async def test_an_org_ask_on_a_kas_web_call_is_not_approved_by_channel_trust(monkeypatch, edition):
+    """``web_ask_rule``: in LTS channel trust never answers KAS's ask on an
+    organisation's web rule; an ``oss`` build approves it as before."""
+    from kiro_crew import mate_held_rules, web_ask_rule
+
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: MagicMock())
+    monkeypatch.setattr(mate_held_rules, "held_for", lambda *a, **k: [])
+    _open_gates(monkeypatch)
+    monkeypatch.setattr(web_ask_rule, "edition", SimpleNamespace(is_lts=lambda: edition == "lts"))
+    monkeypatch.setattr(
+        "kiro_crew.channel.session_mode_permitted", lambda mode: True, raising=False
+    )
+    events = [
+        SimpleNamespace(
+            kind=EVENT_PERMISSION_REQUEST,
+            text="Fetching https://example.com",
+            title="Fetching https://example.com",
+            request_id=8,
+            tool_input="{}",
+            harness_tool_id="web_fetch",
+            kas_builtin_ids=True,
+            kas_managed_ask=True,
+        ),
+        SimpleNamespace(kind=EVENT_COMPLETE),
+    ]
+    client = _make_client(events)
+    await _stream_task(_make_agent(), _make_channel(), client, "hi")
+    if edition == "lts":
         client.approve_tool.assert_not_awaited()
     else:
         client.approve_tool.assert_awaited_once_with(8)

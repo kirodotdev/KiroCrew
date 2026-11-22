@@ -1341,10 +1341,10 @@ function initAutoUpdate(deps) {
 
 /**
  * Finish an armed update at app start, in Electron main, before the gateway
- * spawns and before any window opens (D-c). Only an install whose
+ * spawns and before the main window opens (D-c). Only an install whose
  * EXTERNALLY-MANAGED marker names an updateCommand can have one.
  */
-function runStartupApply({ app, store, resourcesPath = process.resourcesPath, log, managed = undefined, probeGateway = null, Notification = null }) {
+function runStartupApply({ app, store, resourcesPath = process.resourcesPath, log, managed = undefined, probeGateway = null, Notification = null, showApplying = null }) {
   return applyArmedUpdateAtStart({
     app,
     store,
@@ -1352,6 +1352,7 @@ function runStartupApply({ app, store, resourcesPath = process.resourcesPath, lo
     managedPath,
     log,
     probeGateway,
+    showApplying,
     notifyGatewayRunning: Notification
       ? (stopCommand) => new Notification({
         title: "Update not installed",

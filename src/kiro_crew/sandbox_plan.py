@@ -199,6 +199,14 @@ class PlanHost:
     #: spelling: renaming one carries the seal away. Seatbelt gets every one; the namespace
     #: backend only those this uid could rename, since it pins each with a mount.
     readonly_ancestor_guards: tuple[str, ...] = ()
+    #: The EXISTING ancestors of each ``extra_hidden_dirs`` entry (namespace: those this uid
+    #: could rename). A missing folder holds nothing a rename could carry away, and a deny
+    #: on its name would stop the child creating it, so the host lists only what exists now.
+    caller_ancestor_guards: tuple[str, ...] = ()
+    #: Namespace only: the ``apps/<app>`` folder of each app that declares a credential
+    #: mask, taken out of :attr:`readonly_ancestor_guards` and pinned AFTER the masks,
+    #: so the masks and ``data/``'s pin stay on the mount an update's rename keeps.
+    mask_parent_pins: tuple[str, ...] = ()
     #: The probes for each absolute ``extra_writable_dirs`` candidate.
     carveout_probes: tuple[CarveoutProbe, ...] = ()
     #: The operator's ``agent.sandbox_readonly_paths``, one probe per configured entry
@@ -394,6 +402,9 @@ class ConfinementPlan:
     #: path-based rule. On Linux a bind mount moves with its directory, and the parents
     #: the agent could rename are pinned through ``runtime_ancestor_guards`` instead.
     operator_ancestor_guards: tuple[str, ...] = ()
+    #: :attr:`PlanHost.mask_parent_pins`, which the namespace launcher binds over
+    #: themselves after every mask. Always empty on the Seatbelt plan.
+    mask_parent_pins: tuple[str, ...] = ()
 
     @property
     def sensitive_dirs(self) -> tuple[str, ...]:
@@ -1233,6 +1244,16 @@ def _namespace_plan(
                 (
                     *host.readonly_ancestor_guards,
                     *(
+                        fold(guard)
+                        for guard in host.caller_ancestor_guards
+                        if any(
+                            m.origin == "caller"
+                            and not m.cancelled
+                            and m.path.startswith(fold(guard).rstrip("/") + "/")
+                            for m in masks
+                        )
+                    ),
+                    *(
                         pin
                         for entry, pins in host.operator_parent_pins
                         if entry in operator_readonly
@@ -1260,6 +1281,7 @@ def _namespace_plan(
         exec_cwd=request.exec_cwd,
         operator_readonly=tuple(operator_readonly),
         operator_writable=tuple(operator_writable),
+        mask_parent_pins=host.mask_parent_pins,
     )
 
 
@@ -1382,8 +1404,23 @@ def _seatbelt_plan(
     hide_ssh = tier == "strict"
     ssh_dir = os.path.join(home, ".ssh")
     runtime_parents = list(host.voice_runtime_parents)
+    # A caller mask is a path rule here, so renaming a directory above it would reach the
+    # masked file under a new name: guard each existing ancestor of a live mask the way the
+    # runtime parents' are.
+    live_caller = [m.path for m in masks if m.origin == "caller" and not m.cancelled]
+    caller_ancestor_guards = [
+        guard
+        for guard in host.caller_ancestor_guards
+        if any(path.startswith(guard.rstrip("/") + "/") for path in live_caller)
+    ]
     ancestor_guards = list(
-        dict.fromkeys((*host.voice_runtime_ancestor_guards, *host.readonly_ancestor_guards))
+        dict.fromkeys(
+            (
+                *host.voice_runtime_ancestor_guards,
+                *host.readonly_ancestor_guards,
+                *caller_ancestor_guards,
+            )
+        )
     )
     home_files = [os.path.join(home, f) for f in files]
     # Validated against every seal the profile emits, and emitted last: Seatbelt is
@@ -1483,6 +1520,7 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
         "private_dir_ids": {path: list(pair) for path, pair in ids.private_dir_ids.items()},
         "readonly_dirs": list(plan.readonly),
         "parent_pins": list(plan.runtime_ancestor_guards),
+        "mask_parent_pins": list(plan.mask_parent_pins),
         "writable_dirs": list(plan.writable),
         "sensitive_files": list(plan.sensitive_files),
         "fail_closed_file_masks": [list(entry) for entry in ids.fail_closed_file_masks],

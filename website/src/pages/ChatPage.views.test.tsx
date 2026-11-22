@@ -42,6 +42,7 @@ vi.mock('./chat/ChatHeaderMenu', () => ({
 vi.mock('./chat/SessionTitleControl', () => ({ default: () => null }))
 vi.mock('../components/InboundLinkChip', () => ({ default: () => null }))
 vi.mock('../components/ChatHeaderChips', () => ({ default: () => null }))
+vi.mock('../components/crew/CrewWorkerBreadcrumb', () => ({ CrewWorkerBreadcrumb: () => null }))
 vi.mock('./chat', async (orig) => ({
   ...(await orig<typeof import('./chat')>()),
   PinnedPrompt: (p: { onToggleExpanded: () => void; onJump: () => void }) => { seen.pinnedPrompt = p; return null },
@@ -263,6 +264,25 @@ describe('ChatTitleOverlay', () => {
     render(<ChatTitleOverlay {...base({ activityOpen: false, embedMode: undefined, popout: false })} />)
     const btn = screen.getByRole('button', { name: 'Open activity panel' })
     expect(registeredCopies('location', 'chat.side-panel-open')).toEqual([btn])
+  })
+
+  it('offers the side-panel toggle in a pop-out window, on the title row and the Crew-worker breadcrumb, and not in an embedded chat', () => {
+    const toggleAct = vi.fn()
+    const worker = { key: 'slot-a', crew_root: 'root-1' } as never
+    const { unmount } = render(<ChatTitleOverlay {...base({ embedMode: 'chat', popout: true, activityOpen: false, toggleAct })} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open activity panel' }))
+    expect(toggleAct).toHaveBeenCalledTimes(1)
+    unmount()
+    const popoutWorker = render(<ChatTitleOverlay {...base({ embedMode: 'chat', popout: true, activityOpen: false, toggleAct, currentSlot: worker })} />)
+    fireEvent.click(screen.getByTestId('crew-worker-open-panel'))
+    expect(toggleAct).toHaveBeenCalledTimes(2)
+    popoutWorker.unmount()
+    const embedded = render(<ChatTitleOverlay {...base({ embedMode: 'chat', popout: false, activityOpen: false, toggleAct })} />)
+    expect(screen.queryByRole('button', { name: 'Open activity panel' })).toBeNull()
+    embedded.unmount()
+    render(<ChatTitleOverlay {...base({ embedMode: 'chat', popout: false, activityOpen: false, toggleAct, currentSlot: worker })} />)
+    expect(screen.getByTestId('crew-worker-header')).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-worker-open-panel')).toBeNull()
   })
 
   it('toggles and jumps to the pinned prompt', () => {

@@ -30,7 +30,7 @@ import tempfile
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew import aws_consent, speech_providers
+from kiro_crew import aws_consent, platform_compat, speech_providers
 from kiro_crew.constants import md_link_destination, strip_control_comments
 from kiro_crew.deploy.engine import resolve_aws_bin
 from kiro_crew.emoji_list import STANDARD_EMOJIS
@@ -574,31 +574,20 @@ def text_to_ssml(
     return f"<speak>{prosody}</speak>"
 
 
-async def _kill_and_reap(
-    proc: "asyncio.subprocess.Process", label: str, *, timed_out: bool
-) -> None:
+async def _kill_and_reap(proc: "asyncio.subprocess.Process", *, timed_out: bool) -> None:
     """Terminate and drain a child ``asyncio.wait_for`` already gave up on.
 
     ``wait_for`` cancels ``communicate()`` but never terminates the child, and a
-    caller cancellation (client disconnect) or an interpreter-exit signal arrives
-    the same way, so without this a zombie keeps consuming CPU after we return.
-
-    The reap goes through ``communicate()`` rather than ``wait()``: the pipe
-    readers are already cancelled, so a killed child blocked on a full PIPE would
-    never be drained and ``wait()`` would hang. On the non-timeout path a repeat
-    cancellation landing on the reap is swallowed so the ORIGINAL exception is
-    the one that propagates; on the timeout path it is a genuinely new
-    cancellation and is let out.
+    caller cancellation arrives the same way. :func:`platform_compat.kill_and_reap`
+    kills it and reaps it under a bound in a shielded task, so a repeat cancel
+    cannot abandon the reap while the child still holds its files (Windows
+    refuses to remove them) and re-delivers that cancel afterwards. On the
+    non-timeout path it is swallowed so the ORIGINAL exception propagates; on
+    the timeout path it is a genuinely new cancellation and is let out.
     """
     try:
-        proc.kill()
-    except OSError:
-        pass
-    try:
-        await proc.communicate()
-    except Exception:
-        logger.debug("%s wait after kill failed", label, exc_info=True)
-    except BaseException:
+        await platform_compat.kill_and_reap(proc)
+    except asyncio.CancelledError:
         if timed_out:
             raise
 
@@ -672,7 +661,7 @@ async def _run_tts_subprocess(
             timed_out = isinstance(exc, asyncio.TimeoutError)
             if timed_out:
                 logger.error("%s timed out after %ds; killing subprocess", label, timeout)
-            await _kill_and_reap(proc, label, timed_out=timed_out)
+            await _kill_and_reap(proc, timed_out=timed_out)
             if not timed_out:
                 raise  # cancellation/interrupt must propagate to the caller
             return False
@@ -954,7 +943,7 @@ async def list_system_voices() -> list[dict[str, str]]:
         stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
     except BaseException as exc:
         timed_out = isinstance(exc, asyncio.TimeoutError)
-        await _kill_and_reap(proc, "system voice probe", timed_out=timed_out)
+        await _kill_and_reap(proc, timed_out=timed_out)
         if not timed_out:
             raise
         logger.error("system voice enumeration timed out")
@@ -1362,7 +1351,7 @@ async def upload_voice_to_slack(
             thread_ts=thread_ts,
             file=audio_path,
             filename=f"voice-reply.{ext}",
-            title="\U0001f50a Voice Reply",
+            title="Voice Reply",
         )
         return True
     except Exception:
@@ -1413,6 +1402,17 @@ def _stitch_ffmpeg() -> str | None:
             found,
         )
     return found
+
+
+def _stitch_output_missing_or_empty(output: str) -> bool:
+    # The mkstemp allocation always exists, so "ffmpeg produced no output"
+    # manifests as an empty file, not an absent one.
+    return not os.path.exists(output) or os.path.getsize(output) == 0
+
+
+def _read_file_bytes(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
 
 
 async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None:
@@ -1492,28 +1492,15 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
         )
         try:
             await asyncio.wait_for(proc.communicate(), timeout=30)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
             # asyncio.wait_for cancels communicate() but does NOT terminate
             # the child — kill it explicitly (mirroring the polly
             # path) so it stops consuming CPU and, on Windows, releases the
             # output handle that would otherwise make the unlink in the
             # ``finally`` below fail and re-leak the file.
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            try:
-                await proc.communicate()
-            except Exception:
-                logger.debug("ffmpeg wait after kill failed", exc_info=True)
+            await _kill_and_reap(proc, timed_out=not isinstance(exc, asyncio.CancelledError))
             raise
-        if (
-            proc.returncode != 0
-            or not os.path.exists(output)
-            # The mkstemp allocation always exists, so "ffmpeg produced no
-            # output" manifests as an empty file, not an absent one.
-            or os.path.getsize(output) == 0
-        ):
+        if proc.returncode != 0 or await asyncio.to_thread(_stitch_output_missing_or_empty, output):
             return None
         succeeded = True
         return output
@@ -1584,8 +1571,7 @@ async def streaming_voice_reply(
         if not mp3_path:
             continue
         try:
-            with open(mp3_path, "rb") as f:
-                mp3_bytes = f.read()
+            mp3_bytes = await asyncio.to_thread(_read_file_bytes, mp3_path)
             yield i, sentence, mp3_bytes
         finally:
             try:

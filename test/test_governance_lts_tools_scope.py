@@ -145,6 +145,26 @@ def test_lts_pathless_search_is_refused_by_the_read_confinement(lts: None) -> No
     assert _grep("", ceiling=open_reads, own_scopes=_ROW_READ).permitted
 
 
+def test_lts_pathless_web_search_refusal_is_not_about_a_path_alone(lts: None) -> None:
+    """The no-target marker is asked in ``network.egress`` too, so its refusal says so."""
+    ceiling = _closed(
+        tools={"mode": "allow", "allow": ["web_search"]},
+        network={"egress": {"mode": "allow", "allow": ["example.com"]}},
+    )
+    decision = gate_decision(
+        ceiling,
+        None,
+        "Searching the web for 'hello'",
+        raw_params={"query": "hello"},
+        extra_titles=("web_search",),
+        own_scopes=("tools", "network.egress"),
+    )
+    assert not decision.permitted
+    assert decision.item == governance._NO_TARGET_ITEM
+    assert decision.reason == f"policy denies: {governance._NO_TARGET_ITEM.refusal}"
+    assert "web address" in decision.reason
+
+
 def test_lts_missing_target_marker_never_lands_in_the_working_directory(
     lts: None, monkeypatch: pytest.MonkeyPatch, tmp_path: object
 ) -> None:
@@ -188,6 +208,12 @@ def test_lts_write_not_sent_as_an_edit_meets_the_write_scope(lts: None) -> None:
             own_scopes=_ROW_WRITE,
         )
         assert not decision.permitted, kind
+        assert decision.item == governance._NO_TARGET_ITEM, kind
+        # The call names a path, so the refusal must not ask it to name one.
+        refusal = governance._NO_WRITE_TARGET_ITEM.refusal
+        assert decision.reason == f"policy denies: {refusal}", kind
+        assert "as a file edit" in decision.reason, kind
+        assert "name the path or address in the call" not in decision.reason, kind
 
 
 def test_lts_core_mcp_passes_and_other_servers_do_not(lts: None) -> None:

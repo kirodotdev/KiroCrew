@@ -1,11 +1,11 @@
 import { useEffect, useState, lazy, Suspense, type ReactNode } from 'react'
 import { TOPBAR_FOCUS_Z, TOPBAR_Z } from '../../lib/themeDecorLayer'
-import { kiroUsageSegment } from './kiroUsageReadout'
+import { kiroSignInSegment, kiroUsageSegment } from './kiroUsageReadout'
 import { metricsSegment, MetricsErrorNotice } from './metricsReadout'
 import { ResourcePostureChip } from './resourcePostureChip'
 import { Bell, Fullscreen, Loader2, Menu, Plug, Unplug } from 'lucide-react'
 import { motion } from 'framer-motion'
-import { isWinElectron } from '../../lib/electron'
+import { isWinElectron, isLinuxFramelessElectron, shellServesLinuxAppMenu } from '../../lib/electron'
 import { setNativeBadgeCount } from '../platform/electronBridge'
 import { SELECTION_INERT_ATTR } from '../../pages/chat/useSelectionInertOverlays'
 import { PackLoaderImage } from '../../pages/chat/PackLoaderImage'
@@ -18,6 +18,7 @@ import { getCapsuleSegments } from '../../apps/capsuleSegments'
 import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
 import { useNavShortcutHint } from '../../hooks/useNavShortcutHint'
 import FeedbackPill from '../../components/FeedbackPill'
+import HoverTip from '../../components/HoverTip'
 import { Glass } from '../../components/Glass'
 import WindowsTitlebarMenu from '../../components/WindowsTitlebarMenu'
 import { NavHistoryArrows } from '../../components/NavHistoryArrows'
@@ -31,15 +32,24 @@ import MilestonesIndicator, { MilestonesPill } from '../../components/milestones
 import MilestonesSheet from '../../components/milestones/MilestonesSheet'
 import { useExplorePreviewSwitch } from '../../components/milestones/useMilestones'
 import { useExplorePreview } from '../../hooks/usePreviewFlag'
+import { isEmbeddedPane } from '../../lib/embedded'
 
 // Lazy, like App.tsx's update-found popup: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
 const UpdatePill = lazy(() => import('../../components/UpdatePill'))
 // The switcher with its Team Crews group, lazy so the relay list's code stays
-// out of the app core. Only the desktop app has the bridge it needs.
+// out of the app core. The group renders nothing while the relay viewer is off.
 const TeamCrewsSwitcher = lazy(() => import('../../components/TeamCrewsGroup'))
-const hasRelayCrewBridge = () =>
-  typeof (window as { relayCrewAPI?: { open?: unknown } }).relayCrewAPI?.open === 'function'
+
+/** The Crew switcher with Team Crews (the plain one until its code loads); an SSH
+ *  pane's own bar lists the Remote Crews its window relays (lib/paneRelayCrews.ts). */
+function CrewSwitcher() {
+  return !isEmbeddedPane() ? (
+    <Suspense fallback={<InstanceTabBar variant="inline" />}>
+      <TeamCrewsSwitcher variant="inline" />
+    </Suspense>
+  ) : <InstanceTabBar variant="inline" />
+}
 
 // Corner radius, in px, of the top bar's Liquid Glass pills (the search
 // trigger, the readout capsule; components/FeedbackPill.tsx carries the same
@@ -115,20 +125,15 @@ function NotificationsBellButton() {
 
   return (
     <div ref={containerRef} className="relative">
+      <HoverTip label={unacked.length > 0 ? i18nT('app.notification_count', { count: unacked.length }) : i18nT('app.notifications')}>
       <button
         className={`flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 relative ${open ? 'text-accent' : 'text-muted hover:text-text'}`}
         onClick={sheet.toggle}
-        // Chord declared to assistive tech ONLY, deliberately not in the tooltip.
-        // The render-time i18n gate scans `TEXT_ATTRS` (render-scan.mjs:293 --
-        // title, aria-label, placeholder, alt, aria-placeholder) for Latin runs
-        // under the en-XA pseudolocale, and its attribute branch (:499) has no
-        // opaque escape: the `[data-i18n-opaque]` / `kbd` exemption applies to
-        // ELEMENTS, so a keycap can be exempted in text but never inside an
-        // attribute value. A chord appended here read as 220 untranslated-attribute
-        // findings. `aria-keyshortcuts` is not in that list and is the standards
-        // declaration anyway, so the non-visual route survives; the VISIBLE hint
-        // stays a rail affordance, where it can be marked opaque.
-        title={unacked.length > 0 ? i18nT('app.notification_count', { count: unacked.length }) : i18nT('app.notifications')}
+        // Chord declared to assistive tech ONLY, deliberately not in the hover
+        // hint (navShortcutHint.test.tsx pins it): the hint is the base copy, and
+        // `aria-keyshortcuts` is the standards declaration, so the non-visual
+        // route survives. The VISIBLE chord stays a rail affordance, where the
+        // render-time i18n gate's `kbd` / `[data-i18n-opaque]` escape can mark it.
         aria-label={i18nT('app.notifications')}
         {...uiLocation('shell.notifications', bellRef)}
         aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
@@ -142,6 +147,7 @@ function NotificationsBellButton() {
           </span>
         )}
       </button>
+      </HoverTip>
       {/* The sheet's scope owner, outside the sheet's own open conditional. */}
       <GuideRevealScope id="menu:shell.notifications" open={open}>
         <NotificationSheet sheet={sheet} />
@@ -161,7 +167,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
   const {
     connected, gatewayConnecting, updateAvailable, authRequired, gatewayStatusMsg, gatewayStatusAnnounce, relayRetrying, focusModeChord, focusModeExitMsgVisible, focusChromeInert, dispatch, colorTheme, resolvedMode, branding, avatar, isMobile, focusMode,
     toggleFocusMode, focusActive, topPeek, topPeekSurface, topChromeShown, quickSearchLauncher, commandPalette,
-    setKiroUsageOpen, kiroUsageState, usageSegmentHidden, metrics, capsuleCollapsed, setCapsuleCollapsed,
+    setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroSignInPrompt, openKiroSignIn, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, setReportProblemOpen,
     requestFeature, toggleNav, mobileSingle, membersRoute, membersBarPending, mobileNavOpen, topbarSearch,
   } = shell
@@ -172,6 +178,12 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
   // Desktop only: the phone form has no full-width search to hide (its centre
   // track is already `auto`), and its layout is not this setting's to change.
   const searchHidden = !isMobile && !topbarSearch
+  // The search trigger's hint, gated on the same condition as the trigger's
+  // label and aria-label, so the hint never contradicts the words under the
+  // cursor or promises the corpus search the launcher deliberately omits. The
+  // owned branch drops "(K)" because the chord is already printed in the
+  // visible label.
+  const searchHint = quickSearchLauncher ? i18nT('app.open_command_bar') : i18nT('app.search_everywhere_k')
   return (
     <>
       {/* The one Milestones panel; the top-bar indicator, the phone menu row
@@ -251,12 +263,32 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
         {!mobileSingle && (
         <div className="tb-left relative h-full">
           <div className="tb-measure">
-          {/* Windows only: the application menu shares this cluster. It needs no
-              width reservation of its own: the identity group is sized by its own
-              grid track, and the menu growing from the hamburger to its six
-              labels therefore consumes the GROUP's width -- which its collapse
-              ladder responds to -- instead of eating the centred search's. */}
-          {!isMobile && isWinElectron && <WindowsTitlebarMenu />}
+          {/* The application menu shares this cluster. Its name reflects the
+              platform it is modelled on, and it serves every frameless surface:
+              Windows, and Linux under a CSD Wayland compositor, which draws no
+              menu bar of its own. A framed window is excluded because its
+              compositor draws that bar itself.
+              It needs no width reservation of its own: the identity group is
+              sized by its own grid track, and the menu growing from the
+              hamburger to its six labels therefore consumes the GROUP's width
+              -- which its collapse ladder responds to -- instead of eating the
+              centred search's.
+              `!isMobile` is deliberate, and this surface stays desktop-only:
+              below MOBILE_BREAKPOINT the trigger is hidden, and the native
+              accelerators Menu.setApplicationMenu installs host every action
+              that carries one. The accelerator-less items in
+              electron/app-menu.js have no host at that width -- the same gap a
+              Windows window has, which hides its native bar outright.
+              The Linux term also asks the SHELL, not just the window:
+              `shellServesLinuxAppMenu` is the installed shell saying its
+              `menuItems` guard admits this surface. The two halves install
+              separately, so an older shell reports `linuxFrameless` while
+              still answering [] -- mounting on the window alone would paint a
+              trigger whose popups open empty. Windows keeps its original
+              single term, having never needed the capability. */}
+          {!isMobile
+            && (isWinElectron || (isLinuxFramelessElectron && shellServesLinuxAppMenu))
+            && <WindowsTitlebarMenu />}
 
           {/* Route-history Back/Forward (#8258). Desktop layout only: on mobile
               the platform owns Back (left-edge swipe), and the drill-in surfaces
@@ -293,11 +325,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
           )}
           {/* Desktop app only: the same switcher, plus Team Crews while the relay
               viewer is on. Until its code loads, the plain switcher stands in. */}
-          {hasRelayCrewBridge() ? (
-            <Suspense fallback={<InstanceTabBar variant="inline" />}>
-              <TeamCrewsSwitcher variant="inline" />
-            </Suspense>
-          ) : <InstanceTabBar variant="inline" />}
+          <CrewSwitcher />
           </div>
         </div>
         )}
@@ -314,7 +342,9 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             width and the sessions toggle stays on the gutter. */}
         {mobileSingle && (
           <div data-testid="topbar-lead" className="relative h-full flex items-center gap-1.5 min-w-0">
-            <InstanceTabBar variant="inline" />
+            {/* The same switcher as the wide bar, so a note's Open on a Team Crew
+                (`?relay_crew=`) is read at every width. */}
+            <CrewSwitcher />
             {getTopBarWidgets().map(w => (
               <ErrorBoundary key={w.id} scope={`topbar-widget:${w.id}`} fallback={null}>
                 <w.component />
@@ -351,7 +381,9 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               recipe) rendered as the button, the same material as the
               sidebar's search field and the composer dock: no border and no
               fill of its own, `glass-hover` for the hover step. */}
+          {/* Its HoverTip wrapper takes the trigger's `flex-1` track. */}
           {!searchHidden && (
+          <HoverTip label={searchHint} className="flex-1 min-w-0">
           <Glass
             as="button"
             type="button"
@@ -370,16 +402,6 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
                 ? i18nT('app.open_command_bar')
                 : i18nT('app.search_sessions_files_and_commands')
             }
-            // Gated on the same condition as the label and aria-label above. Leaving
-            // this one unconditional made the hover contradict the words under the
-            // cursor and promise the corpus search the launcher deliberately omits --
-            // the diff's own fix applied to two of three attributes. The owned branch
-            // drops "(K)" because the chord is already printed in the visible label.
-            title={
-              quickSearchLauncher
-                ? i18nT('app.open_command_bar')
-                : i18nT('app.search_everywhere_k')
-            }
           >
             <span className="text-[13px] truncate min-w-0">
               {quickSearchLauncher
@@ -387,17 +409,19 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
                 : i18nT('app.k_search_for_anything')}
             </span>
           </Glass>
+          </HoverTip>
           )}
           {/* Focus mode. `aria-pressed` rather than a second label, so a screen
               reader gets the state from the control instead of from copy that
               would have to be kept in step with the icon. */}
+          <HoverTip label={i18nT(IS_MAC ? 'app.focus_mode_title_mac' : 'app.focus_mode_title')}>
           <button
             type="button"
             data-testid="focus-mode-toggle"
             // A sighted keyboard user who activates this with Enter/Space is the
             // one person the inert chrome leaves stranded: the toggle they just
             // pressed vanishes, Tab cannot bring it back, and the chord that can
-            // lived only in the hover title. So on a keyboard activation that
+            // lived only in the hover hint. So on a keyboard activation that
             // turns focus mode ON, the shared shell notice (the agent-switch card)
             // shows the same sentence the live region speaks, in display
             // spelling. `detail === 0` is how a keyboard-synthesised click differs
@@ -412,15 +436,15 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             className={`flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 ${focusMode ? 'text-accent' : 'text-muted hover:text-text'}`}
             aria-label={i18nT('app.focus_mode')}
             aria-pressed={focusMode}
-            // The chord as currently bound (focusModeChord): the `title` below
-            // names the default for sighted hover, this names the live one for
+            // The chord as currently bound (focusModeChord): the hint names the
+            // default for sighted hover, this names the live one for
             // assistive tech. Omitted when the user unbound it.
             aria-keyshortcuts={focusModeChord ?? undefined}
             {...uiLocation('shell.focus-mode')}
-            title={i18nT(IS_MAC ? 'app.focus_mode_title_mac' : 'app.focus_mode_title')}
           >
             <Fullscreen size={15} />
           </button>
+          </HoverTip>
           </div>
         )}
         {/* Mobile centre cell. On the chat page it is the slot the chat page
@@ -519,12 +543,12 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             const offline = !connected && !gatewayConnecting
             // `gatewayStatusMsg` (useAppShell) is the announced cause; see its
             // comment for why auth wording wins over transport state. It mirrors
-            // the branch the button `title` already uses (minus the
+            // the branch the button's hint already uses (minus the
             // collapse-toggle suffix, which is interaction text, not a status
             // cause).
             // The connection dot doubles as the capsule collapse toggle, so its
             // accessible name must name that action -- not just the gateway
-            // state. title and aria-label share this composed value; the
+            // state. The hint and aria-label share this composed value; the
             // role="status" live region stays pure gatewayStatusAnnounce (a status
             // region announces the connection cause, not the button's toggle
             // affordance, which would speak "click to collapse" on every
@@ -544,11 +568,10 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             // Padding + negative margin keep a usable hit target without
             // growing the visual dot.
             segments.push(
+              <HoverTip key="conn" label={capsuleActionMsg} className="tb-capsule-keep">
               <button
-                key="conn"
-                className="tb-capsule-keep flex items-center justify-center p-1.5 -m-1.5 rounded-full bg-transparent border-none cursor-pointer shrink-0"
+                className="flex items-center justify-center p-1.5 -m-1.5 rounded-full bg-transparent border-none cursor-pointer shrink-0"
                 onClick={() => { pulseCapsuleLayout(); setCapsuleCollapsed(c => !c) }}
-                title={capsuleActionMsg}
                 aria-label={capsuleActionMsg}
                 aria-expanded={!capsuleCollapsed}
               >
@@ -571,6 +594,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
                     implicit button role for screen readers. */}
                 <span role="status" className="sr-only">{gatewayStatusAnnounce}</span>
               </button>
+              </HoverTip>
             )
             // Resource pressure indicator — always visible when tight/critical
             if (sysMetrics?.posture && sysMetrics.posture !== 'ample' && sysMetrics.posture !== 'unknown') {
@@ -586,7 +610,9 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             }
             if (!capsuleCollapsed) {
             if (!isMobile) segments.push(metricsSegment(metrics, seg))
-            const usage = kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUsageOpen }, seg, isMobile)
+            const usage = kiroSignInPrompt
+              ? kiroSignInSegment(openKiroSignIn, seg, isMobile)
+              : kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUsageOpen }, seg, isMobile)
             if (usage) segments.push(usage)
             }
             // Extension slot: downstream-registered capsule segments (e.g. an
@@ -757,7 +783,11 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             noHandoffReason="The gateway is offline, so a hand-off to the agent cannot be delivered."
             message={gatewayStatusAnnounce}
             messageClassName="text-danger-text"
-            className="absolute left-0 right-0 top-full z-[1] pointer-events-none justify-center h-6 font-medium bg-danger-subtle border-b border-danger/30"
+            // z-40: on the Crewmates page the identity stack hangs its name
+            // chip below the bar (fixed, z-30, in this header's stacking
+            // context: `.topbar-glass` has a transform). The offline message
+            // is the transient one and the phone's only one, so it wins.
+            className="absolute left-0 right-0 top-full z-40 pointer-events-none justify-center h-6 font-medium bg-danger-subtle border-b border-danger/30"
             testId="mobile-offline-strip"
           />
         )}

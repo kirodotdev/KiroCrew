@@ -1,4 +1,5 @@
 import { ApiError } from '../api/apiError'
+import { isLoopbackHost } from '../lib/loopbackHost'
 import { safeSetItem } from '../utils/safeStorage'
 
 /**
@@ -68,16 +69,6 @@ function defaultSchemeFor(u: URL): 'http' | 'https' {
   return 'https'
 }
 
-/** Loopback hostnames that share cookies by host (port-agnostic). */
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '[::1]', '::1'])
-
-/** True for any host that resolves to the local machine and can therefore share
- *  host-scoped cookies with a same-host dashboard — the loopback IPs/names plus
- *  the `*.localhost` reserved TLD (e.g. `kirocrew.localhost`, which the desktop
- *  app and tunnels use). */
-export function isLoopbackHost(h: string): boolean {
-  return LOOPBACK_HOSTS.has(h) || h === 'localhost' || h.endsWith('.localhost')
-}
 
 /** Loopback hosts an `http://` preview may be FRAMED on while the dashboard
  *  itself is served over `https`. Two conditions, and a host has to meet both:

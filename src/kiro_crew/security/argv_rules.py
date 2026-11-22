@@ -83,7 +83,71 @@ _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
 #: ``find`` options whose following words, up to ``;`` or ``+``, are a command.
 _FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
+#: ``git`` subcommands whose operands are a file list (``git add s* notes.txt``).
+#: ``git`` is not in :data:`shell_normalizer._DATA_CONSUMER_PROGRAMS` -- it runs
+#: subcommands, some of which execute (``git -c alias.x='!cmd' x``) -- so the
+#: path-taking subcommands are named one by one. Only ``add`` is listed: each
+#: entry here turns off a DNS check, so a new one needs its own allow and
+#: refuse rows first.
+_GIT_FILE_SUBCOMMANDS = frozenset({"add"})
+
+#: The only program words read as git: the bare name and the system install
+#: paths. Any other path could be a link to another program (``/tmp/x/git``
+#: pointing at ssh), so it keeps the normal check. The paths are compared as
+#: command text, not opened, so the same set holds on every platform.
+_PLAIN_GIT_PROGRAMS = frozenset(
+    {"git"} | {f"/{d}/git" for d in ("usr/bin", "bin", "usr/local/bin", "opt/homebrew/bin")}
+)
+
+
+#: Characters that end, join, group, redirect or expand a shell command. A line
+#: holding any of them is not one simple command, so it gets no git exemption.
+_NOT_ONE_SIMPLE_COMMAND_CHARS = frozenset(";|&(){}`$<>\n\r")
+
+
+#: The only ``VAR=`` prefixes a plain ``git add`` line may carry. Each names
+#: where git reads its repository data; none chooses what program runs.
+#: ``PATH``, ``GIT_EXEC_PATH``, ``LD_*`` and every other name do, so a line
+#: with any of them keeps the normal check.
+_GIT_ADD_SAFE_ASSIGNMENTS = frozenset({"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"})
+
+
+def is_one_plain_git_add_line(line: str) -> bool:
+    """True when the submitted *line* is exactly one simple ``git add`` command.
+
+    The git file-operand exemption is granted only to such a line. Any line
+    that holds a separator, a group, a function body, a substitution, an
+    expansion, a redirect or a second line keeps the normal DNS check, so no
+    earlier word on the line (``git(){ …; }``, ``function git``, ``alias
+    git=…``) can change what ``git`` runs. Only the assignments in
+    :data:`_GIT_ADD_SAFE_ASSIGNMENTS` may come before the program word, which
+    must be one of :data:`_PLAIN_GIT_PROGRAMS`.
+    """
+    if any(ch in _NOT_ONE_SIMPLE_COMMAND_CHARS for ch in line):
+        return False
+    words = line.split()
+    start = 0
+    while start < len(words) and ENV_ASSIGNMENT_RE.match(words[start]):
+        if words[start].split("=", 1)[0] not in _GIT_ADD_SAFE_ASSIGNMENTS:
+            return False
+        start += 1
+    return start + 1 < len(words) and _is_plain_git(words[start]) and words[start + 1] == "add"
+
+
+def _is_plain_git(word: str) -> bool:
+    """True when *word* is exactly one of :data:`_PLAIN_GIT_PROGRAMS`.
+
+    Not :func:`_shell._program_basename`: that helper peels ``$(`` and backticks
+    to widen deny matches, so it would read ``$(git`` -- the start of a
+    substitution that bash expands to nothing -- as the program ``git``.
+    """
+    return word in _PLAIN_GIT_PROGRAMS
+
+
 _SEPARATORS = frozenset({";", "|", "||", "&", "&&", "{", "}"})
+
+#: Reserved words after which the next word is still in command position.
+_COMPOUND_OPENERS = frozenset({"then", "do", "else", "elif", "{", "(", "!"})
 
 #: Programs whose ``-c`` value is a command line. Read again from the dequoted
 #: word, since the shared walk can misread a payload inside ``"$( )"``.
@@ -95,8 +159,15 @@ _SYSTEM_DIRS = ("/usr", "/etc", "/sbin", "/boot", "/lib", "/lib64")
 _CHMOD_DASH_MODE = re.compile(r"^-[rwxXst]+(?:,[ugoa]*[-+=][rwxXst]*)*$")
 
 
-def _program_args(tokens: "list[str]") -> "tuple[str, list[str]] | None":
-    """The program a command runs and its arguments, wrappers and ``VAR=x`` stepped over."""
+def _program_index(tokens: "list[str]", options: "list[str] | None" = None) -> "int | None":
+    """Index in *tokens* of the program a command runs, wrappers and ``VAR=x`` stepped over.
+
+    *options* is *tokens* in the case they were written in, when the caller has
+    it: a wrapper's option words are read from it (``sudo -H`` takes no value,
+    ``sudo -h`` does), and ``sudo -e`` / ``--edit`` runs no program at all.
+    Without it the option words are read from *tokens* as they are.
+    """
+    opts = tokens if options is None else options
     i = 0
     while i < len(tokens):
         token = tokens[i]
@@ -110,32 +181,46 @@ def _program_args(tokens: "list[str]") -> "tuple[str, list[str]] | None":
         program = _shell._program_basename(token)
         wrapper = _WRAPPERS.get(program)
         if wrapper is None:
-            return program, tokens[i + 1 :]
+            return i
         value_opts, positionals = wrapper
         i += 1
-        while i < len(tokens) and tokens[i].startswith("-") and tokens[i] != "-":
-            if tokens[i] == "--":
+        while i < len(tokens) and opts[i].startswith("-") and opts[i] != "-":
+            if opts[i] == "--":
                 i += 1
                 break
-            i += 2 if tokens[i] in value_opts else 1
+            if options is not None and program == "sudo" and opts[i] in ("-e", "--edit"):
+                return None  # sudoedit: every later word is a file it edits
+            i += 2 if opts[i] in value_opts else 1
         i += positionals
     return None
 
 
-def _split_commands(tokens: "list[str]") -> "list[list[str]]":
-    """*tokens* (one frame's flat argv) cut into one argv per command.
+def _program_args(tokens: "list[str]") -> "tuple[str, list[str]] | None":
+    """The program a command runs and its arguments, wrappers and ``VAR=x`` stepped over."""
+    i = _program_index(tokens)
+    if i is None:
+        return None
+    return _shell._program_basename(tokens[i]), tokens[i + 1 :]
 
-    A comment runs to the next separator; a ``find -exec`` command is its own argv.
+
+def _split_commands_indexed(tokens: "list[str]") -> "list[list[tuple[int, str]]]":
+    """*tokens* cut into one command per argv, each word kept with its index.
+
+    The one place comment and separator boundaries are decided; callers that
+    need the original token index (the ssh floor's execute-position walk) read
+    it here rather than re-deriving the boundaries. A comment runs to the next
+    separator. ``find -exec`` subcommands are NOT included (they are appended by
+    :func:`_split_commands`, which has no index to preserve).
     """
-    out: list[list[str]] = []
-    current: list[str] = []
+    out: list[list[tuple[int, str]]] = []
+    current: list[tuple[int, str]] = []
     in_comment = False
-    for token in tokens:
+    for i, token in enumerate(tokens):
         if in_comment:
             in_comment = token != ";"
             continue
         if not token:  # an empty word (``chmod "" 777 x``) is an argument, not a separator
-            current.append(token)
+            current.append((i, token))
             continue
         if token.startswith("#"):
             in_comment = True
@@ -143,16 +228,207 @@ def _split_commands(tokens: "list[str]") -> "list[list[str]]":
             # A separator glued to a word (``https://x;``) keeps the word.
             word = token.rstrip(";|&")
             if word and word not in _SEPARATORS and not word.endswith("{"):
-                current.append(word)
+                current.append((i, word))
         else:
-            current.append(token)
+            current.append((i, token))
             continue
         if current:
             out.append(current)
         current = []
     if current:
         out.append(current)
+    return out
+
+
+def _split_commands(tokens: "list[str]") -> "list[list[str]]":
+    """*tokens* (one frame's flat argv) cut into one argv per command.
+
+    A comment runs to the next separator; a ``find -exec`` command is its own argv.
+    """
+    out = [[word for _, word in command] for command in _split_commands_indexed(tokens)]
     return [*out, *(sub for argv in out for sub in _find_exec_argvs(argv))]
+
+
+def _executed_program_indices(tokens: "list[str]", cased: "list[str] | None" = None) -> "set[int]":
+    """Indices in *tokens* that bash runs as a program, wrappers and ``VAR=x`` stepped over.
+
+    One per command and per ``case`` arm body: program position, or the program a wrapper in
+    :data:`_WRAPPERS` runs (``env s?h``, ``sudo s?h``, ``xargs s?h``).  Every
+    other word is an operand of some program.  A word ending in ``)`` in
+    program position is a ``case`` arm pattern (``s*)``) or a subshell close,
+    not a program.  ``find -exec`` commands are not marked (their words keep no
+    index).  *cased* is *tokens* in the case they were written in, read for the
+    wrapper option words (see :func:`_program_index`).
+    """
+    executed: set[int] = set()
+    case_patterns, arm_bodies = _case_arm_pattern_indices(tokens)
+    for command in _split_commands_indexed(tokens):
+        words = [word for _, word in command]
+        # A word cut off a glued separator (``-H;``) keeps its lowered reading.
+        options = None
+        if cased is not None:
+            options = [cased[j] if cased[j].lower() == word else word for j, word in command]
+        # A case arm body's first word (``x) s?h …``) starts a command too.
+        for start in [0] + [k for k, (j, _) in enumerate(command) if k and j in arm_bodies]:
+            found = _program_index(words[start:], None if options is None else options[start:])
+            if found is None or words[start + found].endswith(")"):
+                continue
+            idx = start + found
+            origin = command[idx][0]
+            # A word in a ``case`` arm's pattern list (``s* | r* )``) is a pattern the
+            # shell matches ``$x`` against, not a program it runs; the ``|`` is case
+            # alternation, not a pipe, so the command splitter wrongly starts a new
+            # command at each alternative. Do not read such a word as a run verb.
+            if origin in case_patterns:
+                continue
+            # ``x=$(ls s* l*)`` / ``n=`ls s* l*` `` / ``files=( s* *.* )``: the
+            # resolver steps over the ``VAR=`` word and lands on the next token, but
+            # bash does not run that token as a program here.  It is an array element,
+            # or the operand of a command the substitution runs in its own frame.
+            if found and _assignment_opens_a_construct(words[idx - 1]):
+                continue
+            executed.add(origin)
+    return executed
+
+
+def _file_operand_indices(tokens: "list[str]", cased: "list[str] | None" = None) -> "set[int]":
+    """Indices in *tokens* that are a plain operand of ``git`` running a file subcommand.
+
+    ``git add`` (the one subcommand in :data:`_GIT_FILE_SUBCOMMANDS`) takes
+    file paths, so a wildcard among its
+    operands is a file name and the ssh-to-self walk skips the DNS lookup on the
+    words after it.  Programs whose every argument is already a path (``cp``,
+    ``ls``, ``cat`` …) need nothing here -- the data-consumer exemption
+    (:func:`_data_consumer_exempt`) already reads them -- and ``tar`` is left
+    out of both on purpose, because ``tar -I <prog>`` / ``--rsh-command`` runs
+    its argument.
+
+    The floor calls this only for a submitted line that
+    :func:`is_one_plain_git_add_line` accepts, so the checks below are a
+    second layer inside one simple command.
+
+    Fail-closed and sure: ``git`` must be the command's OWN program word,
+    written as bare ``git`` or a system install path (only a ``VAR=`` assignment
+    may precede it, never a wrapper or a substitution), so a wrapper that
+    misreads an option and lands on ``git`` cannot reach here, and the operands
+    are read only AFTER a recognised file subcommand, so no option value is
+    marked.  Any command this does not recognise keeps the DNS check.  The
+    literal loopback and own-name checks still run (``git add s* localhost``
+    stays refused); only the DNS lookup is skipped.  *cased* carries the
+    original case so a mixed-case alias (``ADD``) is not read as the built-in.
+    """
+    operands: set[int] = set()
+    for command in _split_commands_indexed(tokens):
+        words = [word for _, word in command]
+        start = 0
+        while start < len(words) and ENV_ASSIGNMENT_RE.match(words[start]):
+            start += 1
+        # The program word is read in its ORIGINAL case and must be a plain
+        # ``git``: ``$(git add y) /usr/bin/s?h <self alias>`` starts with the
+        # word ``$(git``, which bash expands to nothing before it runs the ssh.
+        if start >= len(words) or cased is None or not _is_plain_git(cased[command[start][0]]):
+            continue
+        # The subcommand must be the word IMMEDIATELY after ``git``.  A global
+        # option or its value between them (``git -C x add``, ``git --namespace
+        # add``, ``git -c k=v add``) is not a subcommand, so the command is left
+        # unmarked and keeps its DNS check.  The name is matched lowercase in
+        # the ORIGINAL case (via ``cased``), so a mixed-case shell alias
+        # (``ADD``) is not taken for the built-in ``add``.  When ``cased`` is
+        # absent -- a substitution body is re-read from lowered text only -- no
+        # exemption is granted, so the git reading is top-level only and a
+        # ``$(git ADD …)`` alias keeps the DNS check.
+        sub = start + 1
+        if sub >= len(words) or words[sub] not in _GIT_FILE_SUBCOMMANDS:
+            continue
+        if cased is None or cased[command[sub][0]] != words[sub]:
+            continue
+        for k in range(sub + 1, len(words)):
+            # A separator glued inside a word (``x;s?h``, ``x&&s?h``) keeps the
+            # whole word in this command's argv, but bash runs what follows the
+            # separator as its OWN command. Stop the scan there and mark nothing
+            # past it, so the floor still reads that command's ssh verb with its
+            # DNS check (``git add x;s?h <self alias>`` stays refused). The same
+            # holds for a ``)`` or backtick that closes a substitution the git
+            # command sits in (``$(cd /tmp; git add x) /usr/bin/s?h …``): what
+            # follows it is the outer command, not a git operand.
+            if any(sep in words[k] for sep in ";|&()`"):
+                break
+            if not words[k].startswith("-"):
+                operands.add(command[k][0])
+    return operands
+
+
+def _case_arm_pattern_indices(tokens: "list[str]") -> "tuple[set[int], set[int]]":
+    """Indices in *tokens* that sit in a ``case`` arm's pattern list, and the
+    index of each arm body's first word.
+
+    Between ``case``'s ``in`` (or an arm's ``;;``, ``;;&`` or ``;&``) and that
+    arm's closing ``)``,
+    each word -- and the ``|`` that separates alternatives -- is a pattern the
+    shell matches the case word against, never a program it runs. The command
+    splitter treats the ``|`` as a pipe and would start a fresh command at each
+    alternative, so those words must be taken out of the run-verb reading. The
+    word right after the closing ``)`` is the arm body's program, which the
+    splitter does not see as a command start. Nested
+    ``case`` statements are tracked on a stack; glued separators (``esac;``,
+    ``id;;``) are read off the token. Only a ``case`` in command position opens
+    one (``echo case in x`` does not): a command's first word, a word after a
+    :data:`_COMPOUND_OPENERS` word in command position, or an arm body's first word.
+    """
+    patterns: set[int] = set()
+    bodies: set[int] = set()
+    stack: list[str] = []  # per open case: "await_in", "pattern" or "body"
+    starts = {command[0][0] for command in _split_commands_indexed(tokens)}
+    program_position = False
+    for i, tok in enumerate(tokens):
+        here, program_position = program_position or i in starts, False
+        if tok.rstrip(";&| ") == "esac":
+            if stack:
+                stack.pop()
+            continue
+        if tok == "case":
+            if here:
+                stack.append("await_in")
+            continue
+        program_position = here and tok in _COMPOUND_OPENERS
+        state = stack[-1] if stack else None
+        if state == "await_in":
+            if tok == "in":  # a bare ``for … in`` with no open case never reaches here
+                stack[-1] = "pattern"
+        elif state == "pattern":
+            if tok != "|":
+                patterns.add(i)
+                if ")" in tok:  # the arm's close ends the pattern list
+                    stack[-1] = "body"
+                    program_position = True
+                    bodies.add(i + 1)
+        elif state == "body" and (";;" in tok or ";&" in tok):
+            # ``;;``, ``;;&`` and ``;&`` (fall through) each end an arm, so the
+            # next word opens the next arm's pattern list.
+            stack[-1] = "pattern"
+    return patterns, bodies
+
+
+def _assignment_opens_a_construct(word: str) -> bool:
+    """True if *word* is a ``VAR=`` assignment opening an array literal or an unclosed
+    command substitution.
+
+    The token the resolver lands on after such a word is an array element
+    (``files=( s* …``) or the first operand of the command the substitution runs
+    (``x=$(ls s* …``, ``n=`ls s* …``).  Neither is a program bash runs in this
+    frame -- the substitution's own program is marked in the frame the floor
+    walks for that substitution -- so the ssh gate must not read it as a run verb.
+    A CLOSED substitution (``x=$(true) prog``) does not shield the word after it.
+    """
+    if not ENV_ASSIGNMENT_RE.match(word):
+        return False
+    rest = word.split("=", 1)[1]
+    # ``(`` masks to ``\x05`` inside a quoted nested payload (``bash -c '…( … )…'``).
+    if rest[:1] in ("(", "\x05"):  # VAR=( elem ...   an array literal
+        return True
+    if "$(" in rest and rest.count("(") > rest.count(")"):  # VAR=$(cmd ...  open $( )
+        return True
+    return rest.count("`") % 2 == 1  # VAR=`cmd ...   an open backtick
 
 
 def _find_exec_argvs(argv: "list[str]") -> "list[list[str]]":

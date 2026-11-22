@@ -13,7 +13,7 @@ vi.mock('../../api/client', () => ({
 }))
 
 import { api } from '../../api/client'
-import { AllSettingsList, valueAt } from './AllSettingsList'
+import { AllSettingsList, CURRENT_PREVIEW_ITEMS, valueAt } from './AllSettingsList'
 
 // Exercise the real select's native path, including its busy guard.
 vi.mock('../../hooks/useIsTouchDevice', () => ({ useIsTouchDevice: () => true }))
@@ -462,5 +462,71 @@ describe('valueAt', () => {
   it('walks a dotted path and stops at a non-object', () => {
     expect(valueAt({ a: { b: 1 } }, 'a.b')).toBe(1)
     expect(valueAt({ a: 3 }, 'a.b')).toBeUndefined()
+  })
+})
+
+describe('AllSettingsList rows with a long current value', () => {
+  const APPS = ['personal-shopper', 'design-critique', 'meeting-notes', 'travel-planner', 'code-review-sage', 'expense-tracker', 'recipe-box', 'spec-builder']
+  const LONG_ENTRIES = [
+    { path: 'agent.apps_trusted', type: 'array', label: 'Trusted Apps', help: '', defaultValue: [], allSettings: { mode: 'control', page: { tab: 'security' } } },
+    { path: 'agent.sandbox_extra_paths', type: 'array', label: 'Sandbox extra paths', help: '', defaultValue: [], allSettings: { mode: 'readonly', reason: 'safety' } },
+    { path: 'mcp_gateway.keep_alive_servers', type: 'array', label: 'Keep-alive servers', help: '', defaultValue: [], allSettings: { mode: 'edit', control: 'str_list', resettable: true } },
+  ]
+  const PATHS = ['/a', '/b', '/c', '/d', '/e', '/f']
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ entries: LONG_ENTRIES }), { status: 200 })))
+    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({
+      agent: { apps_trusted: APPS, sandbox_extra_paths: PATHS },
+      mcp_gateway: { keep_alive_servers: ['github'] },
+    })
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('shows the first items of a long list and a toggle for the rest, on a link row', async () => {
+    renderWithProviders(<AllSettingsList />)
+    const row = await waitFor(() => rowFor('agent.apps_trusted'))
+    const current = row.querySelector('[data-current-value]')!
+    expect(current.textContent).toBe(`Current: ${APPS.slice(0, CURRENT_PREVIEW_ITEMS).join(', ')}`)
+    const toggle = within(row).getByRole('button', { name: `Show all (${APPS.length})` })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(toggle)
+    expect(current.textContent).toBe(`Current: ${APPS.join(', ')}`)
+    expect(within(row).getByRole('button', { name: 'Show less' }).getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('folds a long list on a read-only row too, and leaves a short list whole', async () => {
+    renderWithProviders(<AllSettingsList />)
+    const readOnly = await waitFor(() => rowFor('agent.sandbox_extra_paths'))
+    expect(within(readOnly).getByRole('button', { name: `Show all (${PATHS.length})` })).toBeTruthy()
+    const short = rowFor('mcp_gateway.keep_alive_servers')
+    expect(within(short).queryByRole('button', { name: /Show all/ })).toBeNull()
+  })
+
+  // happy-dom draws no layout, so pin one pane-width breakpoint for the row
+  // and its controls. A narrow pane must stay stacked even in a wide viewport.
+  it('keeps rows stacked until the container fits the label and widest control', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ entries: [...LONG_ENTRIES, ENTRIES[1]] }), { status: 200 })))
+    const { container } = renderWithProviders(<AllSettingsList />)
+    await screen.findByLabelText('Idle timeout')
+    expect(container.firstElementChild).toHaveClass('@container')
+    for (const entry of [...LONG_ENTRIES, ENTRIES[1]]) {
+      const row = rowFor(entry.path)
+      expect(row).toHaveClass('flex-col', '@2xl:flex-row', '@2xl:items-start', '@2xl:justify-between', '@2xl:gap-4')
+      expect(row.querySelector('[data-row-label]')).toHaveClass('@2xl:min-w-[14rem]')
+      expect(row.querySelector('[data-row-control]')).toHaveClass('min-w-0', '@2xl:items-end', '@2xl:max-w-[50%]')
+      for (const element of [row, ...row.querySelectorAll('[class]')]) {
+        expect([...element.classList].some(cls => cls.startsWith('sm:'))).toBe(false)
+      }
+    }
+    const linked = rowFor('agent.apps_trusted')
+    const current = linked.querySelector('[data-current-value]')!
+    expect(current).toHaveClass('[overflow-wrap:anywhere]')
+    expect(current.parentElement).toHaveClass('@2xl:items-end')
+    expect(current.parentElement?.parentElement).toHaveClass('@2xl:items-end')
+    expect(rowFor('agent.sandbox_extra_paths').querySelector('[data-current-value]')?.parentElement).toHaveClass('@2xl:items-end')
+    expect(screen.getByLabelText('Keep-alive servers').parentElement).toHaveClass('w-full', '@2xl:w-64')
+    expect(screen.getByLabelText('Idle timeout')).toHaveClass('w-full', '@2xl:w-48')
   })
 })

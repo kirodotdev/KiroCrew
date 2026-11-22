@@ -36,6 +36,8 @@ _STOP_ALIASES = frozenset(("!stop", "!cancel", "/stop", "/cancel"))
 # "!session link to a certain session") resolves here too instead of being sent
 # to the model.
 _SESSIONS_ALIASES = frozenset(("!sessions", "/sessions", "!session", "/session"))
+# ``!bots`` (plural) is a typo-safe alias for the same reason.
+_BOT_ALIASES = frozenset(("!bot", "/bot", "!bots", "/bots"))
 # ``!models`` (plural) is a typo-safe alias for the same reason.
 _MODEL_ALIASES = frozenset(("!model", "/model", "!models", "/models"))
 _STATUS_ALIASES = frozenset(("!status", "/status"))
@@ -53,7 +55,7 @@ def parse_command_argument(text: str) -> str:
 def parse_command(text: str) -> str | None:
     """Return the command name for *text*, or None when it is not a command.
 
-    One of 'new', 'compact', 'model', 'agent', 'status', 'sessions',
+    One of 'new', 'compact', 'model', 'agent', 'status', 'sessions', 'bot',
     'link', 'unlink', 'stop', 'help'.
     """
     stripped = text.strip()
@@ -68,6 +70,8 @@ def parse_command(text: str) -> str | None:
         return "unlink"
     if cmd in _SESSIONS_ALIASES:
         return "sessions"
+    if cmd in _BOT_ALIASES:
+        return "bot"
     if cmd in _MODEL_ALIASES:
         return "model"
     if cmd in _AGENT_ALIASES:
@@ -135,6 +139,7 @@ COMMAND_SPEC: tuple[tuple[str, str], ...] = (
     ("agent", "Show the agent, or switch it by name"),
     ("status", "Show gateway runtime stats and the approval mode"),
     ("sessions", "Continue a recent or matching session here (owner only)"),
+    ("bot", "Talk to one of your Bots here, in its own thread (owner only)"),
     ("link", "Resume mirroring dashboard replies here (on by default)"),
     ("unlink", "Stop mirroring dashboard replies here"),
     ("stop", "Stop the current reply and clear the queue"),
@@ -175,6 +180,14 @@ _COMMAND_OPTIONS: dict[str, tuple[dict[str, Any], ...]] = {
             "type": _APP_OPTION_STRING,
             "name": "query",
             "description": "Match a session by title or slot name",
+            "required": False,
+        },
+    ),
+    "bot": (
+        {
+            "type": _APP_OPTION_STRING,
+            "name": "name",
+            "description": "Match a Bot by its name",
             "required": False,
         },
     ),

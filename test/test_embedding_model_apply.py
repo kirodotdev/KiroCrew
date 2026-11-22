@@ -730,25 +730,6 @@ class TestCommitTimeGenerationCheck:
         finally:
             store.close()
 
-    def test_lazy_backfill_generation_is_sampled_before_the_embed(self) -> None:
-        """Sampling AFTER _try_embed returns would tag an old blob as current.
-
-        _try_embed returns None when a swap spans its own call, so the only value
-        that identifies the blob's space is the one read BEFORE the embed. This
-        asserts the source order, since the post-return gap is a few instructions
-        wide and cannot be driven deterministically from a test.
-        """
-        import inspect
-
-        src = inspect.getsource(VectorMemoryStore.write_lesson)
-        sample = src.find("backfill_generation = self._space_generation")
-        embed = src.find("existing_emb = self._try_embed(")
-        assert -1 not in (sample, embed), "lazy-backfill sampling not found"
-        assert sample < embed, (
-            "the generation must be sampled BEFORE the embed, or a swap in the "
-            "post-return gap tags a previous-space blob with the new generation"
-        )
-
     def test_both_persisting_paths_recheck_under_the_lock(self) -> None:
         """Guard against a refactor dropping the re-check from either path."""
         import ast

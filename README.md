@@ -261,11 +261,9 @@ Kiro Crew sends **one anonymous heartbeat per day** so maintainers can see how
 many copies are actively running and which releases, Python minors, and install
 paths still need support. After a successful install or update from the official
 app catalog, it also sends one anonymous per-app receipt. Both signals are
-enabled by default, but first egress waits until the first-run privacy disclosure
-has been shown; they use the same controls below.
+enabled by default and use the same controls below.
 
-To turn it off, click **Turn off** on the Privacy screen of first-run
-onboarding, or flip **Settings > Privacy > Send anonymous usage heartbeat** in
+To turn it off, flip **Settings > Privacy > Send anonymous usage heartbeat** in
 the dashboard. Or from a terminal:
 
 ```bash
@@ -275,23 +273,15 @@ export DO_NOT_TRACK=1             # everything: local metrics and the heartbeat
 kirocrew telemetry status         # print both switches and exactly what would be sent
 ```
 
-Turn off and `kirocrew telemetry disable` write the same settings, so either
-one sticks across restarts and upgrades. `KIROCREW_TELEMETRY_DISABLED` and
+The Settings switches and `kirocrew telemetry disable` write the same settings,
+so either one sticks across restarts and upgrades. `KIROCREW_TELEMETRY_DISABLED` and
 `DO_NOT_TRACK` override them: when one is set, the dashboard toggle is disabled
 and says so. An existing install that turned the heartbeat off, wrote
 `telemetry.enabled: false`, or sets `DO_NOT_TRACK` keeps local recording off
-after an upgrade and is not asked again, with one exception. Builds before
-recording was on by default wrote `telemetry.enabled: false` into every new
-config. The written value looks the same whether the old build or the person
-wrote it, so an install whose only reason for being off is a written
-`telemetry.enabled: false` sees the Privacy screen once, even if the person
-chose that value. It is an off form that names Kiro telemetry and offers Turn on
-performance metrics or Keep off. Until you turn them on, only the daily
-heartbeat and official app install receipts are sent, and no performance
-metrics are recorded. A
-terminal-only install gets one line pointing at `kirocrew telemetry enable`
-instead. When the Privacy screen's text changes, existing users see it once
-more at their next dashboard load while local recording is on.
+after an upgrade and is not asked again. That includes the written
+`telemetry.enabled: false` that builds before recording was on by default put
+into every new config: it stays off until you turn recording on in Settings >
+Privacy or with `kirocrew telemetry enable`.
 
 **Exactly these five fields are sent, at most once per day, and nothing else:**
 
@@ -318,11 +308,10 @@ entries. Apps from user-configured registries, local-directory installs, and
 self-registered apps emit nothing, so private app names never leave the machine.
 If the receipt-only secret cannot be persisted, the receipt is skipped.
 
-This list used to be nine fields. Release channel, OS, CPU architecture and
-governance posture were **removed** — each was coarse on its own, but the
-instance id is stable, so those attributes all describe the *same* copy and
-together they narrowed the group any one install blends into far more than any
-single field suggests.
+Release channel, OS, CPU architecture and governance posture are **not sent**.
+Each is coarse on its own, but the instance id is stable, so those attributes
+would all describe the *same* copy and together narrow the group any one install
+blends into far more than any single field suggests.
 
 We report this as **Daily Active Crews** rather than "users": Kiro Crew has
 no account system of its own, and the Kiro sign-in that `kiro-cli` uses for
@@ -352,16 +341,15 @@ See [docs/system-specs/modules/governance.md](docs/system-specs/modules/governan
 
 This is separate from `telemetry.enabled`, which controls performance metrics.
 They are on by default, are recorded on your machine, are capped at 30 days and
-100 MB, and turn off with the same Turn off button, `kirocrew telemetry disable`,
-`KIROCREW_TELEMETRY=0` or `DO_NOT_TRACK=1`. A terminal-only install prints a
-one-line notice about them on its first start.
+100 MB, and turn off with the Settings > Privacy switch, `kirocrew telemetry disable`,
+`KIROCREW_TELEMETRY=0` or `DO_NOT_TRACK=1`. The first `kirocrew gateway`,
+`kirocrew run` or `kirocrew chat` start prints a one-line notice about them to
+stderr, once per install and notice version; it waits for no answer.
 
 While they are on, the public build also sends the reviewed product usage metrics
 (which features are used and how long things take; no prompts, files, paths or
-credentials) to Kiro telemetry, labelled with a hashed install ID. Nothing is sent
-until the Privacy screen, or the one-line terminal notice, has named it. It is
-not sent from an enterprise (LTS) build or a CI runner, and every off switch
-above stops it. See
+credentials) to Kiro telemetry, labelled with a hashed install ID. It is not sent
+from an enterprise (LTS) build or a CI runner, and every off switch above stops it. See
 [docs/guides/telemetry-otlp-export.md](docs/guides/telemetry-otlp-export.md#the-kiro-telemetry-destination)
 and [docs/system-specs/modules/metrics.md](docs/system-specs/modules/metrics.md).
 

@@ -791,8 +791,8 @@ class TestReporting:
         assert "# Eval Results" in report
         assert "test" in report
 
-    def test_the_report_is_never_ascii(self):
-        """Every result carries a ✅ or ❌, so the report cannot be saved as ASCII.
+    def test_the_report_keeps_non_ascii_turn_text(self):
+        """A turn's non-ASCII text reaches the report, so it cannot be saved as ASCII.
 
         This is the premise the artifact writer rests on: `_run_eval` hands this
         string straight to `write_eval_artifacts`, and the coverage tests around
@@ -804,7 +804,7 @@ class TestReporting:
                 name="test",
                 sessions=[SessionResult(name="s1", turns=[
                     TurnResult(
-                        user_message="q",
+                        user_message="café",
                         agent_response="r",
                         assertion_results=[
                             (Assertion(type=AssertionType.CONTAINS, value="r"), ok),
@@ -813,6 +813,7 @@ class TestReporting:
                 ])],
             )
             assert result.passed is ok
+            assert f"## {'PASS' if ok else 'FAIL'} test" in format_results([result])
             with pytest.raises(UnicodeEncodeError):
                 format_results([result]).encode("ascii")
 

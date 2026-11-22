@@ -243,9 +243,16 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_cron_origin_key", "method", "(self, parent_key: 'str') -> 'str'"),
         (
+            "_cron_channel_pin",
+            "method",
+            "(self, parent_key: 'str', *, pin: 'tuple[str, str] | None' = None)"
+            " -> 'tuple[str, str, str] | None'",
+        ),
+        (
             "_deliver_cron_to_channel",
             "async method",
-            "(self, origin_key: 'str', text: 'str', *, actor_key: 'str') -> 'bool'",
+            "(self, origin_key: 'str', text: 'str', *, actor_key: 'str',"
+            " pin: 'tuple[str, str] | None' = None) -> 'bool'",
         ),
         ("_cron_job_is_silent", "method", "(self, parent_key: 'str') -> 'bool'"),
         ("_cron_dm_user", "method", "(self, job: 'CronJob') -> 'str'"),
@@ -345,6 +352,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
     ),
     "update_schedule": (
         ("_UPDATE_STOP_GRACE_SECS", "value", "'float'"),
+        ("_in_flight_work_census", "method", "(self) -> 'list[work_holders.Holder]'"),
         ("_in_flight_work_counts", "method", "(self) -> 'tuple[int, int]'"),
         ("_count_in_flight_work", "method", "(self) -> 'int'"),
         ("_live_update_handler_tasks", "method", "(self) -> 'list[asyncio.Task[Any]]'"),
@@ -472,7 +480,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_interactive_approval",
             "method",
-            "(self, source: 'str', slot_resolver: 'Callable[[str], str] | None' = None, nudge_key: 'str' = '', *, raise_when_unreachable: 'bool' = False, requester: 'str' = '', on_host_decision: 'Callable[[str, str], None] | None' = None) -> 'ToolApprovalCallback'",
+            "(self, source: 'str', slot_resolver: 'Callable[[str], str] | None' = None, nudge_key: 'str' = '', *, raise_when_unreachable: 'bool' = False, requester: 'str' = '', on_host_decision: 'Callable[[str, str], None] | None' = None, follows_approval_mode: 'bool' = False) -> 'ToolApprovalCallback'",
         ),
         (
             "_heartbeat_approval",
@@ -597,6 +605,12 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "method",
             "(self, job: 'CronJob', key: 'str', agent: 'str | None') -> 'str | None'",
         ),
+        ("_cron_key_work_pending", "async method", "(self, key: 'str') -> 'bool'"),
+        (
+            "_cron_batch_kind_defers",
+            "async method",
+            "(self, job: 'CronJob', key: 'str', provider: 'Any', *, reprojected: 'bool') -> 'bool'",
+        ),
         ("_announce_cron_quarantine", "method", "(self) -> 'None'"),
         ("_start_cron_after_memory_ready", "async method", "(self) -> 'None'"),
     ),
@@ -605,7 +619,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_deliver_script_result",
             "async method",
-            "(self, job: 'CronJob', message: 'str', *, remove: 'bool' = False) -> 'None'",
+            "(self, job: 'CronJob', message: 'str', *, remove: 'bool' = False,"
+            " pin: 'tuple[str, str] | None' = None) -> 'None'",
         ),
         ("_cron_run_script", "async method", "(self, job: 'CronJob') -> 'str | None'"),
         ("_live_internal_secret", "method", "(self) -> 'str'"),
@@ -647,7 +662,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_deliver_failure_alert",
             "async method",
-            "(self, job: 'CronJob', *, mrkdwn: 'str', plain: 'str', actor_key: 'str', silent: 'bool' = False) -> 'tuple[bool, bool, bool]'",
+            "(self, job: 'CronJob', *, mrkdwn: 'str', plain: 'str', actor_key: 'str', silent: 'bool' = False, pin: 'tuple[str, str] | None' = None) -> 'tuple[bool, bool, bool]'",
         ),
         (
             "_advance_failure_dedup",
@@ -655,9 +670,15 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(self, job: 'CronJob', failure_hash: 'str', *, channel_delivered: 'bool', slack_failed: 'bool') -> 'None'",
         ),
         (
+            "_alert_cron_auto_paused",
+            "async method",
+            "(self, job: 'CronJob', streak: 'int', reason: 'str') -> 'None'",
+        ),
+        (
             "_alert_cron_failure",
             "async method",
-            "(self, job: 'CronJob', detail: 'str', *, denied: 'bool' = False) -> 'None'",
+            "(self, job: 'CronJob', detail: 'str', *, denied: 'bool' = False, "
+            "exit_code: 'int | None' = None, pin: 'tuple[str, str] | None' = None) -> 'None'",
         ),
         (
             "_alert_cron_interrupted",
@@ -1209,26 +1230,6 @@ def test_an_owner_imports_the_facade_and_its_siblings_only_for_type_checking() -
     assert offenders == []
 
 
-def test_every_owner_with_a_coroutine_is_in_the_config_dir_guard() -> None:
-    """``test_no_config_dir_in_async`` scans the files it lists, so an owner that
-    gains an ``async def`` must be listed there, or its coroutines escape the guard."""
-    guard = _SRC.parent / "test" / "test_no_config_dir_in_async.py"
-    listed: set[str] = set()
-    for node in ast.parse(guard.read_text(encoding="utf-8")).body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == "_ASYNC_CHECKED_FILES" for t in node.targets
-        ):
-            listed = {elt.value for elt in node.value.elts if isinstance(elt, ast.Constant)}
-    assert listed, "_ASYNC_CHECKED_FILES not found; this check went stale"
-    with_coroutines = {
-        f"slack/gateway_runtime/{name}"
-        for name, tree in _owner_trees()
-        if any(isinstance(n, ast.AsyncFunctionDef) for n in ast.walk(tree))
-    }
-    assert with_coroutines, "no owner defines a coroutine; this check went stale"
-    assert sorted(with_coroutines - listed) == []
-
-
 def test_a_second_facade_import_recomposes_the_owners_onto_it(tmp_path: Path) -> None:
     """A test that purges the facade and imports it again gets owners that run on
     the NEW namespace, and the orchestrator's qualnames are not prefixed twice."""
@@ -1293,7 +1294,7 @@ def test_a_fresh_facade_import_loads_every_owner(tmp_path: Path) -> None:
 #: guards at its new home (``slack-gateway.md``, Composition).
 _GUARDED_TOKEN_HOMES: dict[str, frozenset[str]] = {
     "persist_token_record": frozenset({"cron_turn", "gateway", "heartbeat_turns"}),
-    ".read_messages": frozenset({"cron_delivery", "nudge_wiring"}),
+    ".read_messages": frozenset({"nudge_wiring"}),
     "begin_turn": frozenset({"nudge_channel_fire"}),
     "os._exit": frozenset({"exit_path"}),
     "save_conversation_turn_off_loop": frozenset(

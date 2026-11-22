@@ -5,6 +5,10 @@ suite. The i18n render gate is ci.yml's own ``i18n-render`` job: it needs no
 gateway, and its two DEV builds plus a two-tree Chromium render starve the
 Playwright suite past its wall-clock ceiling on a hosted 4-vCPU runner.
 
+The E2E job is sharded: every leg runs the smoke lane, which takes its part of
+the Playwright suite from ``KIROCREW_E2E_SHARD`` (``<i>/<K>``), and the memory UI
+lane runs once, on leg 1.
+
 Linux CI only. Each lane is a subreaper: harness gateways start new sessions,
 so a process-group signal alone cannot drain them after pytest is interrupted.
 No product imports, new dependencies, test selection, or test-policy overrides.
@@ -36,6 +40,17 @@ COMMANDS = {
         "test/e2e/test_memory_ui_evidence.py",
     ],
 }
+
+
+def _lanes(shard: str | None) -> list[str]:
+    """The lanes this leg runs: every lane unsharded or on leg 1, else smoke only.
+
+    The smoke lane's harness refuses a malformed value, so only the leg number is
+    read here.
+    """
+    if shard and shard.split("/")[0] != "1":
+        return ["smoke"]
+    return list(COMMANDS)
 
 
 def _children() -> list[int]:
@@ -172,7 +187,8 @@ def main() -> int:
     script = str(Path(__file__).resolve())
     # Separate supervisors give the UI its own unchanged 12-minute cap without
     # cancelling the smoke lane or losing adopted grandchildren from either.
-    return _supervise({lane: [sys.executable, script, lane] for lane in COMMANDS}, grace=5.0)
+    lanes = _lanes(os.environ.get("KIROCREW_E2E_SHARD"))
+    return _supervise({lane: [sys.executable, script, lane] for lane in lanes}, grace=5.0)
 
 
 if __name__ == "__main__":

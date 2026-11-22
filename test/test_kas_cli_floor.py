@@ -743,6 +743,117 @@ class TestAKiroCliPickWaitsForTheFloor:
         assert seen == [{"kas_defaulted": False, "kiro_selected": True}]
 
 
+class TestAnUnknownKiroCliPickVerdictIsAskedAgain:
+    """A Kiro CLI pick whose boot verdict was unknown is asked about again later.
+
+    A probe that timed out on a busy host, or a run the sandbox launcher ended, says
+    nothing about kiro-cli. Asked only once, it kept the pick on the v2 launch until
+    the next restart.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stored_kiro_pick(self, _floor_monkeypatch):
+        from kiro_crew.agent_sdk import kas_floor_wait
+        from kiro_crew.config import loader, loader_document
+        from kiro_crew.slack import gateway
+
+        _floor_monkeypatch.setattr(loader, "acp_backend_declared", lambda: True)
+        _floor_monkeypatch.setattr(loader, "member_acp_backend_declared", lambda: True)
+        _floor_monkeypatch.setattr(loader_document, "acp_backend_stored_as_kiro", lambda: True)
+        _floor_monkeypatch.setattr(gateway, "_KAS_CLI_FLOOR_TASK", None)
+        _floor_monkeypatch.setattr(kas_floor_wait, "_armed", None)
+        _floor_monkeypatch.setattr(
+            kas_floor_wait, "KIRO_PICK_VERDICT_RETRY_SECS", (0.0, 0.0)  # flake-ok: zero waits
+        )
+
+    @staticmethod
+    def _helps(monkeypatch, *answers):
+        """``kas_relay_help`` answers *answers* in turn, then repeats the last one."""
+        calls = []
+
+        def _fake(binary):
+            calls.append(binary)
+            return answers[min(len(calls), len(answers)) - 1]
+
+        monkeypatch.setattr(kiro_cli, "kas_relay_help", _fake)
+        return calls
+
+    @staticmethod
+    def _floor(cfg):
+        from kiro_crew.slack import gateway
+
+        async def _run():
+            await asyncio.wait_for(gateway._start_kas_cli_floor(cfg), timeout=30)
+
+        asyncio.run(_run())
+
+    def test_an_unknown_boot_verdict_moves_the_pick_once_kiro_cli_answers(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        calls = self._helps(monkeypatch, None, _NEW_HELP)
+        self._floor(_cfg(acp_backend=KIRO))
+        assert len(calls) == 2
+        assert registry.kiro_cli_offers_kas() is True
+        assert registry.kiro_cli_pick_backend() == KAS
+
+    def test_it_stops_asking_once_the_pick_is_no_longer_stored(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        from kiro_crew.config import loader_document
+
+        # Stored at boot (the spawn gate's read, then the floor's), changed before the
+        # second ask.
+        reads = iter([True, True])
+        monkeypatch.setattr(
+            loader_document, "acp_backend_stored_as_kiro", lambda: next(reads, False)
+        )
+        calls = self._helps(monkeypatch, None, _NEW_HELP)
+        self._floor(_cfg(acp_backend=KIRO))
+        assert len(calls) == 1
+        assert registry.kiro_cli_offers_kas() is False
+
+    @pytest.mark.parametrize("help_text", [_NEW_HELP, _OLD_HELP])
+    def test_a_known_verdict_is_not_asked_again(
+        self, monkeypatch, pinned_cli, kas_selectable, help_text
+    ):
+        calls = self._helps(monkeypatch, help_text)
+        self._floor(_cfg(acp_backend=KIRO))
+        assert len(calls) == 1
+
+    def test_the_retries_are_bounded(self, monkeypatch, pinned_cli, kas_selectable):
+        calls = self._helps(monkeypatch, None)
+        self._floor(_cfg(acp_backend=KIRO))
+        assert len(calls) == 3
+        assert registry.kiro_cli_pick_backend() == KIRO
+
+    def test_a_waiting_spawn_is_released_by_the_first_verdict(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        from kiro_crew.agent_sdk import kas_floor_wait
+        from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
+        from kiro_crew.slack import gateway
+
+        # Only the verdict can release the spawn: the gate's own bound is far away,
+        # and so is the second ask.
+        monkeypatch.setattr(
+            kas_floor_wait, "KAS_FLOOR_WAIT_SECS", 600.0  # flake-ok: a bound that never fires
+        )
+        monkeypatch.setattr(
+            kas_floor_wait, "KIRO_PICK_VERDICT_RETRY_SECS", (600.0,)  # flake-ok: never reached
+        )
+        self._helps(monkeypatch, None)
+
+        async def _run():
+            floor = gateway._start_kas_cli_floor(_cfg(acp_backend=KIRO))
+            try:
+                await asyncio.wait_for(await_kas_floor_verdict(member=False), timeout=30)
+                assert not floor.done(), "the floor stopped asking about the pick"
+            finally:
+                floor.cancel()
+
+        asyncio.run(_run())
+
+
 class TestSpawnWaitsForADefaultedFloor:
     """A spawn racing the floor on a defaulted KAS waits for its verdict."""
 
@@ -1379,6 +1490,7 @@ class TestTheProbeRunsTheSpawnBinary:
         monkeypatch.delenv(kiro_cli.BUNDLED_KIRO_DIR_ENV, raising=False)
         # The fixed macOS install directories would find a real install.
         monkeypatch.setattr(kiro_cli, "_MACOS_SYSTEM_DIRS", ())
+        monkeypatch.setattr(kiro_cli, "_LINUX_SYSTEM_DIRS", ())
 
         # A pass-through sandbox: the stand-in still runs for real, but the test
         # does not depend on whether this host can build user namespaces.

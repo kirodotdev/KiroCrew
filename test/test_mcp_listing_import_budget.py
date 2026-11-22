@@ -70,11 +70,26 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for each server: the rule table reads headers and encoded credentials in
 #: two modules of its own (``redaction_structured.headers`` and ``.encoded``) where
 #: ``.protection`` was one.
+#: Raised by 1 for each server: the line-cap split of ``security.argv_floor_ssh`` moved
+#: the ssh verb gate into the owner ``security.argv_floor_ssh_gate``, which the floor
+#: imports with the rest of its owners; the module count rose by that one file and nothing
+#: new loads.
+#: Raised by 1 again for all four: the ssh-to-self floor's substitution-body check lives in
+#: its own module, ``kiro_crew.security.argv_floor_ssh_bodies``, which the deny floor that
+#: every listing already loads imports.
+#: Raised by 1 for each server: ``edition_locks.relay_selected``, which the composition
+#: root asks, reads the relay switch through ``remote_control.hosting`` (a stdlib-only
+#: leaf), since an unset ``tunnel.relay_enabled`` decides by the Crew's credential; the
+#: module count rose by that one file and nothing else loads. The relay client itself
+#: loads only when a tunnel starts (``platform.bootstrap.LazyRelayTunnelProvider``).
+#: Raised by 1 for ``mcp-core`` (491 to 492): the resource-subscription tools'
+#: declarations live in their own ``kiro_crew.mcp_tools.catalog.resources``, which
+#: the core listing loads from ``mcp_tools.DOMAIN_MODULES`` like every other domain.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 488,
-    "mcp-cron": 358,
-    "mcp-guide": 352,
-    "mcp-mate": 353,
+    "mcp-core": 492,
+    "mcp-cron": 361,
+    "mcp-guide": 355,
+    "mcp-mate": 356,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

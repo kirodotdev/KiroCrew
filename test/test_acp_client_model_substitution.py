@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F401 - fixture
 from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401 - fixture
+from claude_settings_tier_helpers import empty_claude_settings_tiers
 from redaction_structured_cases import github_classic
 
 import kiro_crew.acp.client as acp_client
@@ -252,6 +253,11 @@ class TestSubstitutionFollow:
     This is the no-sessionId path the earlier suite did not cover.
     """
 
+    @pytest.fixture(autouse=True)
+    def _empty_user_and_managed_tiers(self, tmp_path, _floor_monkeypatch):
+        """The re-seed compares rendered bytes, which the host's ``~/.claude`` would change."""
+        empty_claude_settings_tiers(tmp_path, _floor_monkeypatch)
+
     def _advisory_resp(self):
         # Mirrors what _wait_for_response returns on the advisory: empty dict,
         # plus it sets _last_substitution_model as a side effect (simulated here).
@@ -338,15 +344,15 @@ class TestSubstitutionFollow:
             lambda wire_servers: guard_calls.append(list(wire_servers or []))
         )
         sent = []
-        settings = tmp_path / ".claude" / "settings.local.json"
 
         async def _send(method, params):
             sent.append(list(params.get("mcpServers") or []))
             if len(sent) == 1 and lose_surface:
-                # A link: the one shape that can be neither governed nor left out
-                # of the session's setting sources.
-                settings.unlink()
-                settings.symlink_to(tmp_path / "elsewhere.json")
+                # The path turns unusable (a link, or a sensitive target): the one
+                # shape that can be neither governed nor left out of the session's
+                # setting sources. Patched rather than built with a real symlink,
+                # so the case runs on hosts without symlink privilege.
+                monkeypatch.setattr(acp_client, "_claude_settings_usable", lambda _path: False)
             return len(sent)
 
         waits = 0
@@ -429,6 +435,167 @@ class TestSubstitutionFollow:
         # The first attempt leaves the model to the adapter, as before.
         assert seeded == [None, "global.anthropic.claude-opus-5-5"]
 
+    _PIN = "global.anthropic.claude-opus-4-8[1m]"
+    _OTHER = "global.anthropic.claude-sonnet-4-6[1m]"
+
+    def _warm_pinned_client(self, tmp_path, monkeypatch, advertised):
+        """A client pinned to ``_PIN`` on a warm cache advertising *advertised*."""
+        from kiro_crew import model_registry
+        from kiro_crew.acp import seed_provenance as sp
+
+        monkeypatch.setattr(sp, "_RECORDS", {})
+        monkeypatch.setattr(sp, "_LIVE", {})
+        monkeypatch.setattr(sp, "_SHARERS", {})
+        monkeypatch.setattr(sp, "_sidecar_path", lambda: tmp_path / "seeds.json")
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        monkeypatch.setattr(
+            model_registry,
+            "_ADVERTISED_MODELS",
+            {client._model_registry_namespace: tuple(advertised)},
+        )
+        client._model = self._PIN
+        client._write_claude_local_settings()
+        client._resolve_session_mcp_servers = lambda: []  # type: ignore[assignment]
+        client._pooled_mcp_servers = lambda: []  # type: ignore[assignment]
+        return client
+
+    async def _start_refused(self, client, tmp_path, substitute, *, refusals):
+        """Run one start whose first *refusals* session/new calls name *substitute*;
+        returns the ``model`` each session/new went out with and the response."""
+        settings = tmp_path / ".claude" / "settings.local.json"
+        seeded = []
+
+        async def _send(method, params):
+            seeded.append(json.loads(settings.read_text()).get("model"))
+            return len(seeded)
+
+        async def _wait(req_id, timeout=0.0, *, method="", expected_mcp=None):
+            if len(seeded) <= refusals:
+                client._last_substitution_model = substitute
+                return {}
+            return {"sessionId": "retry-session"}
+
+        client._send_request = _send  # type: ignore[assignment]
+        client._wait_for_response = _wait  # type: ignore[assignment]
+        response = await client._new_session_following_substitution()
+        return seeded, response
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("substitute", [_OTHER, _PIN], ids=["other_model", "the_pin"])
+    async def test_a_served_pin_survives_a_refused_inherited_default(
+        self, tmp_path, monkeypatch, substitute
+    ):
+        # The seed names no pin, so the refused model is the user's inherited
+        # default. A pin the backend advertises is served: the retry names it,
+        # whether the advisory offers another model or the pin itself.
+        client = self._warm_pinned_client(tmp_path, monkeypatch, [self._PIN, self._OTHER])
+        seeded, response = await self._start_refused(client, tmp_path, substitute, refusals=1)
+        assert response == {"sessionId": "retry-session"}
+        assert seeded == [None, self._PIN]
+        assert client._model == self._PIN
+
+    @pytest.mark.asyncio
+    async def test_a_pin_not_served_adopts_the_substitute(self, tmp_path, monkeypatch):
+        client = self._warm_pinned_client(tmp_path, monkeypatch, [self._OTHER])
+        seeded, response = await self._start_refused(client, tmp_path, self._OTHER, refusals=1)
+        assert response == {"sessionId": "retry-session"}
+        assert seeded == [None, self._OTHER]
+        assert client._model == self._OTHER
+
+    @pytest.mark.asyncio
+    async def test_a_refused_pin_falls_back_once_to_the_offered_model(self, tmp_path, monkeypatch):
+        # A session on the offered model beats one that never starts.
+        client = self._warm_pinned_client(tmp_path, monkeypatch, [self._PIN, self._OTHER])
+        seeded, response = await self._start_refused(client, tmp_path, self._OTHER, refusals=2)
+        assert response == {"sessionId": "retry-session"}
+        assert seeded == [None, self._PIN, self._OTHER]
+        assert client._model == self._OTHER
+
+    @pytest.mark.asyncio
+    async def test_a_start_never_retries_more_than_twice(self, tmp_path, monkeypatch):
+        client = self._warm_pinned_client(tmp_path, monkeypatch, [self._PIN, self._OTHER])
+        seeded, response = await self._start_refused(client, tmp_path, self._OTHER, refusals=9)
+        assert response == {}
+        assert seeded == [None, self._PIN, self._OTHER]
+
+    @pytest.mark.asyncio
+    async def test_a_sibling_sharing_the_seed_carries_the_retry_model_inline(
+        self, tmp_path, monkeypatch
+    ):
+        # A shared seed is not rewritten, so the retry's model must reach the
+        # adapter on the envelope's flag tier, or the retry inherits the refused
+        # default again.
+        owner = self._warm_pinned_client(tmp_path, monkeypatch, [self._PIN, self._OTHER])
+        sibling = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        sibling._model = self._PIN
+        sibling._write_claude_local_settings()
+        assert sibling._claude_settings_shared is True
+        assert owner._claude_settings_authored is True
+        sibling._resolve_session_mcp_servers = lambda: []  # type: ignore[assignment]
+        sibling._pooled_mcp_servers = lambda: []  # type: ignore[assignment]
+        sent = []
+
+        async def _send(method, params):
+            sent.append(json.loads(json.dumps(params)))
+            return len(sent)
+
+        async def _wait(req_id, timeout=0.0, *, method="", expected_mcp=None):
+            if len(sent) == 1:
+                sibling._last_substitution_model = self._OTHER
+                return {}
+            return {"sessionId": "retry-session"}
+
+        sibling._send_request = _send  # type: ignore[assignment]
+        sibling._wait_for_response = _wait  # type: ignore[assignment]
+        response = await sibling._new_session_following_substitution()
+        assert response == {"sessionId": "retry-session"}
+        first, retry = sent
+        assert "model" not in (first.get("_meta") or {}).get("claudeCode", {}).get(
+            "options", {}
+        ).get("settings", {})
+        assert retry["_meta"]["claudeCode"]["options"]["settings"]["model"] == self._PIN
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("advertised", "substitute", "refusals", "seeded_after", "started", "model"),
+        [
+            pytest.param([], _OTHER, 1, [_OTHER], True, _OTHER, id="no_cache"),
+            pytest.param([_OTHER], _OTHER, 1, [_OTHER], True, _OTHER, id="cache_agrees"),
+            pytest.param([_PIN, _OTHER], _OTHER, 1, [_OTHER], True, _OTHER, id="cache_stale"),
+            pytest.param(
+                [_PIN, _OTHER], _OTHER, 9, [_OTHER], False, _OTHER, id="offered_refused_too"
+            ),
+            pytest.param([_PIN], _PIN, 1, [], False, _PIN, id="adopted_model_offered_again"),
+            pytest.param([_PIN], _OTHER, 0, [], True, _PIN, id="adopted_model_still_allowed"),
+        ],
+    )
+    async def test_a_model_adopted_earlier_and_refused_now_falls_back_to_the_offered_one(
+        self, tmp_path, monkeypatch, advertised, substitute, refusals, seeded_after, started, model
+    ):
+        # An earlier start adopted _PIN. The policy now refuses it and offers
+        # _OTHER, and the process restarted on the same client. An advertised
+        # list older than the policy may still name _PIN: the retry must name
+        # _OTHER and never re-send _PIN.
+        client = self._warm_pinned_client(tmp_path, monkeypatch, advertised)
+        client._adopted_substitute_model = self._PIN
+        client._write_claude_local_settings()
+        seeded, response = await self._start_refused(
+            client, tmp_path, substitute, refusals=refusals
+        )
+        assert seeded == [self._PIN, *seeded_after]
+        assert response == ({"sessionId": "retry-session"} if started else {})
+        assert client._model == model
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_of_the_model_the_seed_names_is_not_retried(
+        self, tmp_path, monkeypatch
+    ):
+        # No served pin: the one retry names the substitute, and its refusal stands.
+        client = self._warm_pinned_client(tmp_path, monkeypatch, [self._OTHER])
+        seeded, response = await self._start_refused(client, tmp_path, self._OTHER, refusals=9)
+        assert response == {}
+        assert seeded == [None, self._OTHER]
+
     @pytest.mark.asyncio
     async def test_happy_path_no_retry(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
@@ -456,27 +623,36 @@ class TestSubstitutionFollow:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("model", "substitute"),
+        ("model", "substitute", "adopted"),
         [
             # Advisory fired but substitute could not be parsed (None) -> we do NOT
             # retry; caller gets an empty resp and raises a clear error upstream.
             pytest.param(
                 "global.anthropic.claude-opus-4-8[1m]",
                 None,
+                None,
                 id="no_infinite_retry_when_substitute_unparseable",
             ),
-            # Defensive: if the gateway "substitutes" to the model we already asked
-            # for, don't loop -- treat as terminal (no retry).
+            # The seed already names the substitute, so the backend refused it as
+            # named: don't loop -- treat as terminal (no retry).
             pytest.param(
                 "global.anthropic.claude-sonnet-4-6[1m]",
                 "global.anthropic.claude-sonnet-4-6[1m]",
-                id="no_retry_when_substitute_same_as_current",
+                "global.anthropic.claude-sonnet-4-6[1m]",
+                id="no_retry_when_the_seed_already_names_the_substitute",
             ),
         ],
     )
-    async def test_terminal_advisory_is_not_retried(self, tmp_path, model, substitute):
+    async def test_terminal_advisory_is_not_retried(
+        self, tmp_path, monkeypatch, model, substitute, adopted
+    ):
+        from kiro_crew import model_registry
+
+        monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         client._model = model
+        if adopted is not None:
+            client._adopted_substitute_model = adopted
         client._write_claude_local_settings = MagicMock()  # type: ignore[assignment]
 
         sent = []

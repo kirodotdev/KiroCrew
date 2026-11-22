@@ -406,7 +406,7 @@ class TestSnapshotImportDoesNotStripThroughALink:
         (swapme / "backups").mkdir(parents=True)
         (swapme / "backups" / "old.db").write_text("inside", encoding="utf-8")
 
-        real_pred = portability.is_host_local_store_state
+        real_pred = portability._is_host_local
         swapped: list[tuple[str, ...]] = []
 
         def swap_then_judge(rel):  # type: ignore[no-untyped-def]
@@ -416,7 +416,7 @@ class TestSnapshotImportDoesNotStripThroughALink:
                 make_dir_link(swapme, victim)
             return real_pred(rel)
 
-        with mock.patch.object(portability, "is_host_local_store_state", swap_then_judge):
+        with mock.patch.object(portability, "_is_host_local", swap_then_judge):
             portability._strip_host_local_store_state(snap)
 
         assert swapped, "the fixture never swapped the store, so nothing was proved"
@@ -444,7 +444,7 @@ class TestSnapshotImportDoesNotStripThroughALink:
         (store / "backups").mkdir(parents=True)
         (store / "backups" / "old.db").write_text("inside", encoding="utf-8")
 
-        real_pred = portability.is_host_local_store_state
+        real_pred = portability._is_host_local
         swapped: list[tuple[str, ...]] = []
         backups = store / "backups"
 
@@ -455,7 +455,7 @@ class TestSnapshotImportDoesNotStripThroughALink:
                 make_dir_link(backups, victim)
             return real_pred(rel)
 
-        with mock.patch.object(portability, "is_host_local_store_state", swap_then_judge):
+        with mock.patch.object(portability, "_is_host_local", swap_then_judge):
             portability._strip_host_local_store_state(snap)
 
         assert swapped, "the fixture never swapped the directory, so nothing was proved"

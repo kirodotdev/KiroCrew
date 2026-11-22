@@ -2,7 +2,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Bookmark, Globe, X, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, ChevronDown, Star, FileText, FilePlus } from 'lucide-react'
+import { AlertTriangle, Bookmark, Globe, X, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, ChevronDown, Star, FileText, FilePlus, Shapes } from 'lucide-react'
 import { useCollapseOnScroll, COLLAPSE_MS, CHROME_ATTR } from '../hooks/useCollapseOnScroll'
 import { DndContext, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent } from '@dnd-kit/core'
 import SegmentedControl from '../components/SegmentedControl'
@@ -31,6 +31,7 @@ import SessionDocPreview from '../components/library/SessionDocPreview'
 import ArtifactScopeChips, { type ArtifactChatScopeParam } from '../components/library/ArtifactScopeChips'
 import type { SortKey, SortState, LibraryDrag, FolderActions } from '../components/library/LibraryTable'
 import { useColumnCount } from '../hooks/useColumnCount'
+import { useConfirm } from '../components/ConfirmDialog'
 
 import { i18nT } from '../i18n/t'
 import { LiveSitesNotice } from '../components/library/LiveSiteLink'
@@ -329,6 +330,8 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     handleAddArtifactFile,
     newArtifactMut,
     handleNewArtifact,
+    newCanvasMut,
+    handleNewCanvas,
   } = useArtifactsPageCreate({ qc, navigate, invalidateFolders, view, filtersActive, scopeFolderId, sideNav })
 
   const folderActions = useMemo<FolderActions>(() => ({
@@ -798,11 +801,21 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     available: isHome ? homeArtifacts.length > 0 : gridEntries.length > 0,
   })
 
-  const handleDelete = useCallback((a: Artifact) => {
-    if (window.confirm(i18nT('pages.artifactsPage.remove_artifact_confirm', { slug: a.slug }))) {
-      deleteMut.mutate(a.slug)
-    }
-  }, [deleteMut])
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
+  const handleDelete = useCallback(async (a: Artifact) => {
+    if (confirmOpen || (deleteMut.isPending && deleteMut.variables === a.slug)) return
+    const slug = a.slug
+    const ok = await confirm({
+      title: i18nT('pages.artifactsPage.remove_from_library'),
+      // The catalog string holds a paragraph break. Splitting it avoids pre-line, which would
+      // let the slug add breaks of its own.
+      body: i18nT('pages.artifactsPage.remove_artifact_confirm', { slug }).split('\n\n').map((paragraph, i) => (
+        <p key={i} className="mt-2 first:mt-0">{paragraph}</p>
+      )),
+      confirmLabel: i18nT('pages.artifactsPage.remove_from_library'),
+    })
+    if (ok) deleteMut.mutate(slug)
+  }, [confirm, confirmOpen, deleteMut])
 
   const errMessage = error ? (error instanceof Error ? error.message : String(error)) : null
   const asMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -815,7 +828,9 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
       ? asMessage(addArtifactMut.error)
       : newArtifactMut.error
         ? asMessage(newArtifactMut.error)
-        : materializeMut.error
+        : newCanvasMut.error
+          ? asMessage(newCanvasMut.error)
+          : materializeMut.error
           ? asMessage(materializeMut.error)
           : pinMut.error
             ? asMessage(pinMut.error)
@@ -825,7 +840,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 ? asMessage(updateFolderMut.error)
                 : null
   const resetMutErrors = () => {
-    deleteMut.reset(); addArtifactMut.reset(); newArtifactMut.reset(); materializeMut.reset()
+    deleteMut.reset(); addArtifactMut.reset(); newArtifactMut.reset(); newCanvasMut.reset(); materializeMut.reset()
     pinMut.reset(); createFolderMut.reset(); updateFolderMut.reset()
     setAddError(null)
   }
@@ -861,7 +876,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   const chromeHostRef = useRef<HTMLDivElement | null>(null)
   const chromeCollapsed = useCollapseOnScroll(chromeHostRef, isMobile && galleryOwnsScroll)
 
-  if (isLoading) return <div className="p-6 text-muted">{i18nT('pages.artifactsPage.loading')}</div>
+  if (isLoading) return <>{confirmDialog}<div className="p-6 text-muted">{i18nT('pages.artifactsPage.loading')}</div></>
 
   // Both controls below are rendered ONCE and placed differently per width, not
   // duplicated per branch: the view switcher owns a framer `layoutId`, and two
@@ -908,6 +923,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   // `isLoading` early return, because hooks cannot run after it.
   return (
     <>
+      {confirmDialog}
       {/* One DndContext spans the side list, breadcrumb, folder cards and
           gallery/table so artifacts and folders can be dragged between all
           of them. It renders no DOM of its own. */}
@@ -1098,6 +1114,9 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                   <DropdownMenuItem onSelect={handleAddArtifact}>
                     <FileText size={13} className="text-muted shrink-0" /> {i18nT('pages.artifactsPage.import_from_a_file')}
                   </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={handleNewCanvas} disabled={newCanvasMut.isPending} data-testid="artifacts-new-canvas">
+                    {newCanvasMut.isPending ? <Loader2 size={13} className="animate-spin shrink-0" /> : <Shapes size={13} className="text-muted shrink-0" />} {i18nT('pages.artifactsPage.new_canvas')}
+                  </DropdownMenuItem>
                   {/* On a phone this menu is also where the folder action lives:
                     * three peer controls do not fit a 320px line in the wide
                     * locales (fr/it/bn run ~40% longer than en), and clipping
@@ -1212,6 +1231,8 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
             <ArtifactsQuickCreate
               onNewDoc={handleNewArtifact}
               newDocBusy={newArtifactMut.isPending}
+              onNewCanvas={handleNewCanvas}
+              newCanvasBusy={newCanvasMut.isPending}
               onImport={handleAddArtifact}
               importBusy={addArtifactMut.isPending}
               onNewFolder={handleNewFolder}

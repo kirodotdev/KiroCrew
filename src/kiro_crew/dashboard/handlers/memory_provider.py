@@ -413,8 +413,46 @@ def _switch_refusal(body: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
             "pin_members": pin_members,
             "grant_egress": caps.egress == "remote" and body.get("egress_consent") is True,
             "app_version": provider.app_version,
+            "installed_at": getattr(provider, "installed_at", ""),
         },
     )
+
+
+def _grant_for_checked_install(
+    provider_id: str, app_version: str, installed_at: str, checked_since: float
+) -> bool:
+    """Record consent for the install the switch checked; ``False`` when it changed.
+
+    The app's record lock spans the re-check and the write, the lock install and
+    uninstall hold while they clear an app's consent, so an uninstall and reinstall
+    cannot land between the check and the grant. ``installedAt`` has one-second
+    resolution, so an install stamped in the second the switch began (*checked_since*)
+    or later cannot be told from a reinstall during it, and is refused; a retry a
+    second later is granted.
+    """
+    from kiro_crew.apps.manager import hold_app_record_lock, holds_app_record_locks
+
+    parts = app_client.split_id(provider_id)
+    if parts is None:
+        return False
+
+    @holds_app_record_locks
+    def locked() -> bool:
+        hold_app_record_lock(parts[0])
+        current = app_client.provider_for_id(provider_id)
+        if (
+            current is None
+            or current.app_version != app_version
+            or getattr(current, "installed_at", "") != installed_at
+        ):
+            return False
+        started = consent.parse_installed_at(installed_at)
+        if started is not None and started >= math.floor(checked_since):
+            return False
+        consent.grant_egress(provider_id, app_version, installed_at)
+        return True
+
+    return bool(locked())
 
 
 async def api_memory_provider_put(request: web.Request) -> web.Response:
@@ -426,13 +464,29 @@ async def api_memory_provider_put(request: web.Request) -> web.Response:
     if refusal is not None:
         return refusal
     assert body is not None
+    checked_since = time.time()
     error, code, writes = await asyncio.to_thread(_switch_refusal, body)
     if error:
         _audit(caller, "switch", "denied", error=code)
         return _json_error(error, code, 409 if code != "invalid_mode" else 400, writes)
     if writes.pop("grant_egress", False):
-        await asyncio.to_thread(consent.grant_egress, writes["id"], writes["app_version"])
+        granted = await asyncio.to_thread(
+            _grant_for_checked_install,
+            writes["id"],
+            writes["app_version"],
+            writes["installed_at"],
+            checked_since,
+        )
+        if not granted:
+            _audit(caller, "switch", "denied", error="provider_changed")
+            return _json_error(
+                "The provider's app changed while this was being saved. Try again.",
+                "provider_changed",
+                409,
+                {},
+            )
     writes.pop("app_version", None)
+    writes.pop("installed_at", None)
     pin_members = writes.pop("pin_members", [])
     await _write_provider_config(writes, pin_members)
     _audit(caller, "switch", "allowed", resources=f"{writes['mode']}:{writes.get('id', '')}")

@@ -14,6 +14,12 @@ export interface SlackCodeDraft {
   /** `slack.code_channel_dispatch`, the sub-toggle under Code channels. Not a
    *  registered switch: it carries no manifest scope. */
   dispatch: boolean
+  /** As read: turning Code channels on also turns `dispatch` on (nothing stored
+   *  yet). Never edited; the card shows the sub-toggle on with that switch. */
+  dispatchOnEnable: boolean
+  /** As read: config.local.json sets (or may set) `dispatch`, so the sub-toggle
+   *  is locked and its value is never sent. Never edited. */
+  dispatchLocked: boolean
   folder: string
   agent: string
   /** INHERIT_MODEL ('auto') = keep the agent's own model. */
@@ -21,6 +27,8 @@ export interface SlackCodeDraft {
   effort: string
   /** One of APPROVAL_MODES; 'ask' (the default) is stored as unset. */
   approval: string
+  /** `code_channel_defaults.conductor_mode`, "Always use conductor mode"; off is stored as unset. */
+  conductorMode: boolean
 }
 
 /** The approval modes a code channel's session can start in, in picker order.
@@ -43,34 +51,50 @@ export function slackCodeDraftFrom(c: SlackConfigData): SlackCodeDraft {
   return {
     switches: Object.fromEntries(SLACK_CODE_SWITCHES.map(k => [k, !!c[k]])) as Record<SlackCodeSwitchKey, boolean>,
     dispatch: c.code_channel_dispatch === true,
+    dispatchOnEnable: c.code_channel_dispatch_on_enable === true,
+    dispatchLocked: c.code_channel_dispatch_overlay === true,
     folder: resolvedId || (d?.folder ?? ''),
     agent: d?.agent ?? '',
     model: d?.model ?? INHERIT_MODEL,
     effort: d?.reasoning_effort ?? '',
     approval: approvalFromWire(d?.approval_mode),
+    conductorMode: d?.conductor_mode === true,
   }
 }
 
 /** The PUT fields for the Slack Code slice: only what differs from *saved*, so a
  *  save of an unrelated Slack field never re-validates a default (a stored model
  *  that has since become unavailable must not block a token change). A cleared
- *  picker sends null, which clears the stored value. */
-export function slackCodePayload(d: SlackCodeDraft, saved: SlackCodeDraft): Partial<SlackConfigSave> {
+ *  picker sends null, which clears the stored value. With *conductorLocked*
+ *  (config.local.json sets the switch, or may), `conductor_mode` is left out: the
+ *  card shows it disabled, so a draft edit made before the lock landed is not
+ *  something the person can see or undo, and sending it would refuse the whole
+ *  save. */
+export function slackCodePayload(d: SlackCodeDraft, saved: SlackCodeDraft, conductorLocked = false): Partial<SlackConfigSave> {
   const out: Partial<SlackConfigSave> = {}
   for (const k of SLACK_CODE_SWITCHES) {
     if (d.switches[k] !== saved.switches[k]) out[k] = d.switches[k]
   }
-  if (d.dispatch !== saved.dispatch) out.code_channel_dispatch = d.dispatch
+  // On a save that turns Code channels on, the sub-toggle's shown value is always
+  // sent (unless config.local.json owns it, where the toggle is locked): the
+  // server would otherwise decide helpers from the files as they are now, which
+  // a card read earlier may not show, and an off chosen here is then stored as
+  // an explicit off.
+  const enabling = d.switches.code_channels && !saved.switches.code_channels && !saved.dispatchLocked
+  if (d.dispatch !== saved.dispatch || enabling) out.code_channel_dispatch = d.dispatch
   const wire = (x: SlackCodeDraft) => ({
     folder: x.folder || null,
     agent: x.agent || null,
     model: x.model && x.model !== INHERIT_MODEL ? x.model : null,
     reasoning_effort: x.effort || null,
     approval_mode: x.approval === 'ask' ? null : x.approval,
+    conductor_mode: x.conductorMode ? true : null,
   })
   const next = wire(d)
   const prev = wire(saved)
-  const changed = (Object.keys(next) as (keyof typeof next)[]).filter(k => next[k] !== prev[k])
+  const changed = (Object.keys(next) as (keyof typeof next)[])
+    .filter(k => next[k] !== prev[k])
+    .filter(k => !(conductorLocked && k === 'conductor_mode'))
   if (changed.length) {
     out.code_channel_defaults = Object.fromEntries(changed.map(k => [k, next[k]]))
   }

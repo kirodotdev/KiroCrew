@@ -145,6 +145,10 @@ class LoopbackUnavailableError(Exception):
     """
 
 
+class _LoopbackExchangeError(Exception):
+    """A loopback sign-in's code exchange failed after the browser came back."""
+
+
 class InvalidRegionError(Exception):
     """A caller-supplied region is outside the AWS region-name grammar.
 
@@ -156,7 +160,14 @@ class InvalidRegionError(Exception):
 
 
 class InvalidStartUrlError(Exception):
-    """A caller-supplied Identity Center start URL is not one SSO-OIDC can take."""
+    """A caller-supplied Identity Center start URL is not one SSO-OIDC can take.
+
+    ``reason`` is the broken rule's name from ``LoginTargetError``.
+    """
+
+    def __init__(self, message: str, *, reason: str = "") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 def _canonical_start_url(raw: str) -> str:
@@ -180,7 +191,8 @@ def _canonical_start_url(raw: str) -> str:
         reason = str(exc)
         raise InvalidStartUrlError(
             f"{reason[:1].upper()}{reason[1:]}. Use your company's AWS access portal "
-            "URL, which looks like https://your-company.awsapps.com/start."
+            "URL, which looks like https://your-company.awsapps.com/start.",
+            reason=exc.reason,
         ) from exc
 
 
@@ -312,6 +324,19 @@ def _release(entry: _PendingKind) -> None:
         entry.task.cancel()
 
 
+async def _release_and_wait(entries: list[_PendingKind]) -> None:
+    """Release each entry, then wait until its listener task has unwound.
+
+    Cancelling only asks the listener to stop; its socket closes when the task
+    runs its cleanup. Waiting here means the port is free once the caller returns.
+    """
+    for entry in entries:
+        _release(entry)
+    tasks = [entry.task for entry in entries if isinstance(entry, _PendingLoopbackLogin)]
+    if tasks:
+        await asyncio.wait(tasks)
+
+
 class KasLoginService:
     """Login orchestration for the KAS-mode auth subsystem.
 
@@ -361,8 +386,7 @@ class KasLoginService:
         async with self._lock:
             entries = list(self._pending.values())
             self._pending.clear()
-        for entry in entries:
-            _release(entry)
+        await _release_and_wait(entries)
         if self._session is not None and not self._session.closed:
             await self._session.close()
         self._session = None
@@ -926,6 +950,11 @@ class KasLoginService:
             self._run_loopback(sock, port, provider, state, verifier),
             name=f"kas-loopback-{port}",
         )
+        # Closed however the task ends, including a cancel before its first step,
+        # which never enters _run_loopback. The listener normally closes it with
+        # its runner first; a second close is a no-op, and closing a listening
+        # socket does not block the loop.
+        task.add_done_callback(lambda _task: sock.close())
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=LOOPBACK_TIMEOUT_SECS)
         result = await self._register_pending(
             _PendingLoopbackLogin(task=task, provider=provider, expires_at=expires_at),
@@ -949,17 +978,18 @@ class KasLoginService:
         state: str,
         verifier: str,
     ) -> KasToken:
-        """Serve the callback and exchange the code. Owns the socket.
+        """Serve the callback and exchange the code.
+
+        The socket is closed by the task's done callback (see ``begin_loopback``),
+        not here: a task cancelled before its first step never runs this body.
 
         Returns the token WITHOUT persisting it: the poll persists through
         ``_save_token`` under the pending lock, only while the login is still
         registered, so a cancelled login ("use a code instead", start over) can
         never leave a credential behind that the user did not see land.
         """
-        try:
-            callback = await portal.wait_for_callback(
-                sock, port, state, timeout_secs=LOOPBACK_TIMEOUT_SECS
-            )
+
+        async def _exchange(callback: dict) -> KasToken:
             redirect_uri = portal.rebuild_redirect_uri(
                 port, callback["path"], callback["login_option"]
             )
@@ -968,21 +998,28 @@ class KasLoginService:
             # callback's login_option so the stored provider matches the account.
             chosen = _social_from_login_option(callback["login_option"]) or provider
             session = await self._http()
-            return await portal.exchange_code(
-                chosen, callback["code"], verifier, redirect_uri, session=session
-            )
-        finally:
-            # The listener normally closes the socket with its runner; closing an
-            # already-closed socket is a no-op, so this only matters for the path
-            # where serving never started (cancel racing setup).
-            await asyncio.to_thread(sock.close)
+            try:
+                return await portal.exchange_code(
+                    chosen, callback["code"], verifier, redirect_uri, session=session
+                )
+            except (portal.PortalAuthError, aiohttp.ClientError, asyncio.TimeoutError) as err:
+                # The browser came back; the auth service, reached or not, did not finish.
+                raise _LoopbackExchangeError(str(err)) from err
+
+        # The tab's page waits for the exchange, so it never says "Login complete"
+        # for a sign-in the exchange then fails.
+        return await portal.wait_for_callback(
+            sock, port, state, _exchange, timeout_secs=LOOPBACK_TIMEOUT_SECS
+        )
 
     async def _poll_loopback(self, login_id: str, pending: _PendingLoopbackLogin) -> dict[str, Any]:
         """Report the listener task's state; terminal outcomes drop the entry.
 
-        A timeout or a listener failure carries ``code: loopback_failed`` so the
-        dashboard can degrade to the device flow for the same provider without a
-        detour through an error screen.
+        A timeout (``loopback_timeout``) or a listener failure lets the dashboard
+        degrade to the device flow for the same provider without a detour through
+        an error screen. A failure's code names its cause so the code screen can say
+        why: ``loopback_wrong_address``, ``loopback_exchange_failed``, else
+        ``loopback_failed``.
         """
         if not pending.task.done():
             if datetime.now(timezone.utc) < pending.expires_at:
@@ -1010,7 +1047,13 @@ class KasLoginService:
         if isinstance(err, portal.PortalTimeoutError):
             return {"status": "expired", "code": "loopback_timeout"}
         logger.warning("loopback login failed: %s", err)
-        return {"status": "error", "code": "loopback_failed", "error": str(err)}
+        if isinstance(err, portal.PortalAddressError):
+            code = "loopback_wrong_address"
+        elif isinstance(err, _LoopbackExchangeError):
+            code = "loopback_exchange_failed"
+        else:
+            code = "loopback_failed"
+        return {"status": "error", "code": code, "error": str(err)}
 
     async def cancel(self, login_id: str) -> None:
         """Abandon a pending login, releasing its callback port if it holds one.
@@ -1096,4 +1139,4 @@ class KasLoginService:
         async with self._lock:
             entry = self._drop_records(login_id)
         if entry is not None:
-            _release(entry)
+            await _release_and_wait([entry])

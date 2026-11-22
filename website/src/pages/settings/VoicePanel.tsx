@@ -9,6 +9,7 @@ import AwsConsentGate from '../../components/AwsConsentGate'
 import { i18nT } from '../../i18n/t'
 import { Info } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
+import { useViewerIsNotOwner } from '../../hooks/sharedCrew/useSharedCrew'
 import SpeechProviderNotice from '../../components/SpeechProviderNotice'
 import { parseSpeechProviders, speechProviderNotice, speechProviderOptions } from '../../lib/speechProviders'
 import { languageOptionLabel } from '../../lib/sttProviders'
@@ -122,6 +123,9 @@ export function VoicePanel() {
   // (install one, or switch provider), so it is surfaced rather than left to a
   // failed synthesis. Only claimed once the probe has actually answered.
   const systemUnavailable = isSystem && systemVoicesQ.isSuccess && !systemVoicesQ.data.available
+  // The engine is installed on the Crew's computer, which a teammate cannot reach,
+  // so they get the same status without the install command.
+  const { notOwner } = useViewerIsNotOwner()
   // A failed probe would otherwise collapse to a picker offering only the OS
   // default, which reads as "this host has one voice" rather than as a failure.
   const systemVoicesFailed = isSystem && systemVoicesQ.isError
@@ -219,7 +223,9 @@ export function VoicePanel() {
                        user who installs espeak-ng would otherwise stare at this
                        line until a full reload. */
                     <div className="flex flex-wrap items-center gap-2 mb-2 text-[13px]" data-testid="system-engine-absent">
-                      <span className="flex items-center gap-1.5"><Info size={13} className="lucide-inline" /> {i18nT('pages.settings.voicePanel.this_host_has_no_built_in_speech_engine_install_es')}</span>
+                      <span className="flex items-center gap-1.5"><Info size={13} className="lucide-inline" /> {notOwner
+                        ? i18nT('pages.settings.voicePanel.no_engine_teammate')
+                        : i18nT('pages.settings.voicePanel.this_host_has_no_built_in_speech_engine_install_es')}</span>
                       {/* "Check again", not "Retry": nothing failed here. The engine is
                           absent, so this re-runs detection after the user installs one --
                           the two genuine fetch failures below keep "Retry". */}

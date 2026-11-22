@@ -212,3 +212,30 @@ class TestSectionConstruction:
                 assert "alice" not in persisted["agents"]
         with pytest.raises(UnknownMemoryStore):
             require_memory_store(store)
+
+
+@pytest.mark.parametrize(
+    "stored",
+    ["Infinity", "1e400", "1" + "0" * 400, "1e308"],
+    ids=["infinity", "1e400", "huge-int", "finite-but-infinite-in-bytes"],
+)
+def test_a_non_finite_ingest_cap_loads_as_the_default(tmp_path, monkeypatch, stored):
+    """``Infinity`` and ``1e400`` parse as ``inf``; a 401-digit int has no float;
+    ``1e308`` is finite, but times 1 MiB it is ``inf``.
+
+    Each must load as the default cap, so the settings read can turn it into bytes.
+    """
+    from kiro_crew.config.memory_sections import KnowledgeConfig
+    from kiro_crew.dashboard.upload_limits import knowledge_ceiling_bytes
+
+    monkeypatch.setattr(loader, "config_dir", lambda: tmp_path)
+    path = tmp_path / "config.json"
+    _write(path, {"knowledge": {"max_ingest_file_mb": 7}})
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(": 7}", f": {stored}}}"), encoding="utf-8"
+    )
+
+    cfg = loader.KiroCrewConfig.load()
+
+    assert cfg.knowledge.max_ingest_file_mb == KnowledgeConfig().max_ingest_file_mb
+    assert knowledge_ceiling_bytes(100, cfg.knowledge.max_ingest_file_mb) > 0

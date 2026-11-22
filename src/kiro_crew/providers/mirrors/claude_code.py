@@ -8,8 +8,8 @@ The only backend that needs BOTH faces:
   mounts its own user- and project-scope ``mcpServers`` and plugins beside it):
   empty means the harness works and every Crew tool is absent, with no error.
 * **File** — ``<work_dir>/.claude/settings.local.json``, which the adapter loads
-  itself, carries the model allowlist, the resolved model, the permission mode
-  and the deny rules derived from ``disabledTools``.
+  itself, carries the model allowlist, the permission mode and the deny rules
+  derived from ``disabledTools``. The pinned model is pushed live, never written.
 
 The translation itself lives in :mod:`kiro_crew.acp.session_mcp` (spec entry ->
 array element, ``tools`` allowlist, registry filter) and in ``AcpClient``'s

@@ -33,6 +33,7 @@ and the reopened view's "Close").
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -114,6 +115,51 @@ def _owned_session_key(request: web.Request, body: dict[str, Any]) -> str | None
 Action = Callable[[LiveHub, str, dict[str, Any]], Awaitable[dict[str, Any] | web.Response]]
 
 
+def _turned_off_app(request: web.Request, key: str) -> str:
+    """The app that owns *key*'s slot when that app is turned off, else "".
+
+    Who may see or drive the browser of an app's slot: no one while the app is off,
+    from any surface (its own page's ``BrowserView`` or the chat card), because the
+    app that owns the slot is not running. A person's own chat has no app and is not
+    affected. Ending something (hand back, close) is always allowed.
+    """
+    slots = getattr(request.app["state"], "_slots", None) or {}
+    app = str(getattr(slots.get(key), "_app", "") or "")
+    if not app:
+        return ""
+    from kiro_crew.apps.manager import is_app_enabled  # noqa: PLC0415 - apps sit below dashboard
+
+    return "" if is_app_enabled(app) else app
+
+
+async def end_live_view(hub: LiveHub, key: str) -> None:
+    """Stop *key*'s live view: hand back a takeover, fold a finished turn, stop the stream.
+
+    The stream runs while ANY dashboard tab marks the view seen, and each tab marks it
+    under its own client id (``TAB_ID``), so every mark the session holds is cleared,
+    not only the anonymous one.
+    """
+    try:
+        if hub.in_control(key):
+            await hub.release(key)
+        await hub.close_view(key)
+        sess = hub.get(key)
+        tabs = set(getattr(sess, "visible_tabs", None) or ()) | {""}
+        for tab in tabs:
+            await hub.set_visible(key, False, tab)
+    except Exception:  # noqa: BLE001 - each step is best effort; the refusal still stands
+        logger.debug("browser live: ending the view of %s failed", key, exc_info=True)
+
+
+async def end_app_browser_views(state: Any, app: str) -> None:
+    """End the live view of every slot *app* owns, as the app is turned off."""
+    hub = get_live_hub()
+    slots = getattr(state, "_slots", None) or {}
+    for key, slot in list(slots.items()):
+        if str(getattr(slot, "_app", "") or "") == app:
+            await end_live_view(hub, key)
+
+
 #: How a route asks ``capabilities.browse``: audited (someone acted), unaudited (a
 #: per-frame or per-key leg, which would write a row per repeat), or not at all (it
 #: only ends something, so a deny must not block it).
@@ -138,6 +184,13 @@ async def _run(
     if key is None:
         return _error("unknown_session", "session_key does not name an open session", 404)
     hub = get_live_hub()
+    off_app = "" if policy == UNGATED else await asyncio.to_thread(_turned_off_app, request, key)
+    if off_app:
+        # The app was turned off since this view opened (another tab, the CLI):
+        # end what is still running, so a stale page cannot keep the stream or a
+        # takeover alive, and say why.
+        await end_live_view(hub, key)
+        return _error("app_disabled", "the app that owns this chat is turned off", 403)
     try:
         result = await action(hub, key, body)
     except InputEventError as exc:

@@ -32,6 +32,11 @@ GET /api/lessons api_lessons
 POST /api/lessons api_lessons_create
 DELETE /api/lessons api_lessons_delete
 PATCH /api/lessons api_lessons_update
+HEAD /api/resource-subscriptions api_resource_subscriptions_list
+GET /api/resource-subscriptions api_resource_subscriptions_list
+POST /api/resource-subscriptions api_resource_subscribe
+POST /api/resource-subscriptions/remove api_resource_unsubscribe
+POST /api/resource-subscriptions/operator api_resource_subscriptions_operator
 HEAD /api/session-ledger api_session_ledger_get
 GET /api/session-ledger api_session_ledger_get
 POST /api/session-ledger/record api_session_ledger_record
@@ -111,6 +116,8 @@ PUT /api/members/{slug}/goals/schedules api_member_goals_schedules
 POST /api/members/{slug}/import-files api_member_import_files
 DELETE /api/members/{slug}/import-files api_member_import_files_undo
 POST /api/members/{slug}/dashboard/page-offer api_member_page_offer
+POST /api/members/{slug}/dashboard/template api_member_import_dashboard
+DELETE /api/members/{slug}/dashboard/template api_member_import_dashboard_undo
 GET /api/cards/agent/kinds api_cards_agent_kinds
 GET /api/cards/agent/settings api_cards_agent_settings
 GET /api/cards/agent/capabilities api_cards_agent_capabilities
@@ -138,6 +145,7 @@ HEAD /api/chat/slots/{slot}/crew-workers/{worker}/recap api_crew_worker_recap
 GET /api/chat/slots/{slot}/crew-workers/{worker}/recap api_crew_worker_recap
 POST /api/chat/slots/{slot}/crew-workers/pause api_crew_pause
 POST /api/chat/slots/{slot}/crew-workers/resume api_crew_resume
+POST /api/chat/slots/{slot}/terminal-run api_slot_terminal_run
 HEAD /api/crons api_crons
 GET /api/crons api_crons
 POST /api/crons api_crons_create
@@ -145,6 +153,8 @@ DELETE /api/crons api_cron_batch_delete
 HEAD /api/crons/history api_cron_history_all
 GET /api/crons/history api_cron_history_all
 POST /api/crons/tools api_cron_tools
+HEAD /api/crons/{job_id} api_cron_get
+GET /api/crons/{job_id} api_cron_get
 DELETE /api/crons/{job_id} api_cron_delete
 PATCH /api/crons/{job_id} api_cron_update
 PUT /api/crons/{job_id}/secrets api_cron_secret_grant
@@ -209,6 +219,7 @@ GET /api/crew-sessions/read api_crew_sessions_read
 POST /api/session-control/queue api_session_control_queue
 HEAD /api/session-control/crews api_session_control_crews
 GET /api/session-control/crews api_session_control_crews
+POST /api/session-control/run-queued api_session_control_run_queued
 HEAD /api/browser/status api_browser_harness_status
 GET /api/browser/status api_browser_harness_status
 POST /api/browser/install api_browser_harness_install

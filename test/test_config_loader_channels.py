@@ -1,6 +1,6 @@
 """The messaging channel sections load fail-closed.
 
-Slack reactions, tracking channels, enterprise ids and the Home tab cap; the
+Slack reactions, tracking channels, enterprise ids, the Home tab cap and switch; the
 Feishu, Telegram and WeChat (``weixin``) allow-lists; the legacy ``wechat`` key
 that still populates WeCom; and the shared ``messaging`` scope and reset fields. A
 malformed value degrades to the safe default, never to an open gate. The WeCom
@@ -13,6 +13,7 @@ import json
 import unittest.mock
 from pathlib import Path
 
+import pytest
 from config_loader_helpers import _load_from_dict, _load_from_dict_with_logs
 
 from kiro_crew.config.loader import KiroCrewConfig
@@ -26,6 +27,19 @@ def test_slack_home_tab_sessions_per_kind_parsed_and_round_trips():
     # Survives a to_dict() -> load() round-trip.
     reloaded = _load_from_dict(loaded.to_dict())
     assert reloaded.slack.home_tab_sessions_per_kind == 42
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [(False, False), (True, True), ("false", True), (0, True), (None, True)],
+)
+def test_slack_home_tab_builtin_reads_true_unless_stored_false(stored, expected):
+    # Only a real boolean false turns the built-in Home tab page off; a missing or
+    # non-boolean value keeps it, and the value survives a round-trip.
+    loaded = _load_from_dict({"slack": {"home_tab_builtin": stored}})
+    assert loaded.slack.home_tab_builtin is expected
+    assert _load_from_dict(loaded.to_dict()).slack.home_tab_builtin is expected
+    assert _load_from_dict({"slack": {}}).slack.home_tab_builtin is True
 
 
 class TestReactionsEmptyStringFiltering:

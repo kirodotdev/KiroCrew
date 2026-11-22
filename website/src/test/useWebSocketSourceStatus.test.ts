@@ -248,4 +248,28 @@ describe('useWebSocket pull-request status sync', () => {
     expect(link).toMatchObject({ url: URL_A, state: 'merged', ci: 'passed' })
     unmount()
   })
+
+  it('patches a chip in the expanded "+N" list, which the slots payload never holds', () => {
+    // The expanded list is a react-query read of every link. Chips behind "+N"
+    // are not in the Redux slots, so a delta for one of them only helps if it
+    // lands in this cache too.
+    const URL_B = 'https://github.com/acme/repo/pull/8'
+    const expandedKey = ['session-source-links', 'chat-a', 'sig'] as const
+    const bare = { provider: 'github' as const, number: 8, label: '#8', url: URL_B }
+    qc.setQueryData(expandedKey, [
+      { provider: 'github', number: 7, label: '#7', url: URL_A, state: 'open', ci: 'running' },
+      bare,
+    ])
+    const { ws, unmount } = connect()
+
+    act(() => {
+      ws.simulateMessage({ type: 'source_status', data: { url: URL_B, state: 'merged', ci: 'passed', origin: 'chip' } })
+    })
+
+    const links = qc.getQueryData<Array<{ url: string; state?: string; ci?: string }>>(expandedKey)
+    expect(links?.[1]).toMatchObject({ url: URL_B, state: 'merged', ci: 'passed' })
+    // The sibling chip is untouched.
+    expect(links?.[0]).toMatchObject({ url: URL_A, state: 'open', ci: 'running' })
+    unmount()
+  })
 })

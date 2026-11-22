@@ -335,8 +335,8 @@ def crew_loads_spec_steering(provider_type: str | None) -> bool:
     """Whether Crew puts the agent spec's ``file://`` steering into this session's prompt.
 
     *provider_type* is the session's provider label, as context assembly receives
-    it. True for a harness in ``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`` (claude and
-    codex), which is handed no spec and so reads none of its ``resources``.
+    it. True for a harness in ``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`` (claude,
+    codex, opencode and pi), which is handed no spec and so reads none of its ``resources``.
     """
     from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_LOADS_SPEC_STEERING
 
@@ -346,7 +346,8 @@ def crew_loads_spec_steering(provider_type: str | None) -> bool:
 def reads_project_agents_md(provider_type: str | None) -> bool:
     """Whether the harness behind *provider_type* reads the project's ``AGENTS.md`` itself.
 
-    True for a harness in ``ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD`` (codex), which
+    True for a harness in ``ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD`` (codex, opencode,
+    pi), which
     reads the file from the session's working directory. Crew's steering load
     leaves that file out there.
     """
@@ -1513,6 +1514,7 @@ async def run_kiro_native_commands(
 
     from kiro_crew.acp.client import AcpAuthRequired, AcpError, AcpTimeoutError
     from kiro_crew.sandbox import configured_sandbox_mode
+    from kiro_crew.startup_deadline import startup_deadline
 
     sandbox_mode = await asyncio.to_thread(configured_sandbox_mode)
     client = _native_command_client_factory()(
@@ -1530,7 +1532,9 @@ async def run_kiro_native_commands(
         return results
 
     try:
-        return "ok", await asyncio.wait_for(_run(), timeout=timeout_seconds)
+        # Not wait_for: a start this deadline cuts is a startup timeout.
+        async with startup_deadline(timeout_seconds):
+            return "ok", await _run()
     except AcpAuthRequired:
         return "kiro_auth_required", []
     except (asyncio.TimeoutError, AcpTimeoutError):

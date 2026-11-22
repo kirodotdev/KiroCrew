@@ -85,6 +85,7 @@ def _legacy_loop() -> SimpleNamespace:
         stopped_reason="",
         approval_stalled=False,
         banner="",
+        message="keep checking",
     )
 
 

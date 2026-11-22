@@ -183,6 +183,9 @@ GATEWAY_NOTICE_HARNESS_TASK_STOPPED = "harness_task_stopped"
 # ``status``, the HTTP status (int), absent for a request that got no response.
 GATEWAY_NOTICE_HARNESS_API_RETRY = "harness_api_retry"
 
+# The resource-subscription wake budget row (``dashboard/resource_wakes``).
+GATEWAY_NOTICE_RESOURCE_WAKE_BUDGET_PAUSED = "resource_wake_budget_paused"
+
 #: English fallback ``content`` for the recovery rows above. Plain language: no
 #: "backend", no "hiccup" (the parity test lints every ``GATEWAY_*_TEXT``).
 GATEWAY_CONNECTION_LOST_RETRYING_TEXT = "⟳ Connection lost — retrying…"

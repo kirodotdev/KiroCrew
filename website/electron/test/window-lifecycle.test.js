@@ -1138,6 +1138,7 @@ describe("dashboard window wiring order", () => {
       "view.on:did-finish-load",
       "win.on:swipe",
       "view.on:input-event",
+      "view.on:did-finish-load",
       "win.on:closed",
       "win.on:resize",
       "win.on:closed",
@@ -1453,7 +1454,10 @@ describe("window chrome controls", () => {
     const stored = {};
     const nativeTheme = { themeSource: "system", shouldUseDarkColors: false };
     const lifecycle = createWindowLifecycle(validOptions({
-      electron: { nativeTheme },
+      electron: {
+        nativeTheme,
+        BaseWindow: { getFocusedWindow: () => null, getAllWindows: () => [] },
+      },
       store: { get: () => null, set: (key, value) => { stored[key] = value; } },
     }));
     lifecycle.chrome.setThemeAccent("#abc");
@@ -1977,5 +1981,20 @@ describe("tray icon setting", () => {
     h.lifecycle.syncTray();
     assert.deepEqual(h.lifecycle.trayIcon.set(false), { show: false, canHide: true });
     assert.equal(h.live(), 0);
+  });
+
+  it("offers minimize to tray on Windows while the icon shows, and never on macOS", async () => {
+    const h = trayHarness({ closeAction: "quit" }, "win32");
+    h.lifecycle.syncTray();
+    assert.deepEqual(await h.lifecycle.minimizeToTray.set(true), { on: true, offered: true, canEnable: true });
+    h.lifecycle.trayIcon.set(false);
+    assert.deepEqual(await h.lifecycle.minimizeToTray.get(), { on: false, offered: true, canEnable: false });
+    assert.equal(h.data.minimizeToTray, true, "the choice returns with the icon");
+    assert.equal((await trayHarness({}, "darwin").lifecycle.minimizeToTray.get()).offered, false);
+  });
+
+  it("wires the main window's minimize to the tray hide, reading the live icon", () => {
+    assert.match(SOURCE, /mainWindow\.on\("minimize", minimizeToTray\.minimizeHandler\(mainWindow\)\);/);
+    assert.match(SOURCE, /createMinimizeToTray\(\{ store, platform, trayShown: \(\) => tray !== null, log: glog \}\)/);
   });
 });

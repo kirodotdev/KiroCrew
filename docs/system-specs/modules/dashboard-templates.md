@@ -30,8 +30,8 @@ of them belongs in the same pull request as the others:
 
 Shared pieces live in `src/kiro_crew/dashboard_templates/__init__.py` (the `Unsaid`
 sentinel, the fold readers, the single exit to a card) and
-`src/kiro_crew/dashboard_templates/parity.py` (the page reader and the two structural
-rules). The authoring procedure is the `dashboard-template` skill, and its
+`src/kiro_crew/dashboard_templates/parity.py` (the page reader and the structural
+rules: `control_tags_used`, `outbound_references`, `dropped_text_attributes`). The authoring procedure is the `dashboard-template` skill, and its
 `scaffold.py` emits all four artifacts from one field list so they cannot disagree about
 what the fields are.
 
@@ -132,7 +132,7 @@ to a cold refold.
 The catalogue is **generated from the code** by `scripts/fold_catalogue.py`, which walks
 the fold registry and emits two committed artifacts beside the authoring skill: a markdown
 section the skill points a reader at, and a JSON document the scaffold reads to validate
-`--fold`. For each fold it records the name, whether it is keyed by session or by slot,
+`--fold`. For each fold it records the name, whether it is keyed by session, by slot or by tree,
 the entry types that move it, one sentence saying what it answers, and every field of its
 rendered value with that field's Python type.
 
@@ -180,10 +180,11 @@ web tools (every input is on disk or behind `gh`), and no cron, artifact, deploy
 reads its diff before it lands.
 
 The spec is registered in `OWNED_KIRO_AGENT_FILES` as `kirocrew-dashboard-author.json`,
-so the runtime installs and rebuilds it: `rebuild_agent_config` calls
-`_install_dashboard_author_agent`, which writes the spec from the skill's
-`agent-spec.md` at every gateway start and re-filters its auto-approve grants through
-the governance ceiling (dropping `fs_read`).
+so the runtime installs and rebuilds it: `rebuild_agent_config` reaches
+`_install_dashboard_author_agent` through `_install_sibling_specs`, which writes the spec
+from the skill's `agent-spec.md` at every gateway start and re-filters its auto-approve
+grants through the governance ceiling (dropping `fs_read`). A file at that name whose
+bytes do not match the installer's recorded ownership digest is left untouched.
 
 ## What a page may not contain
 
@@ -195,9 +196,11 @@ its own ground: a dashboard states facts rather than offering a choice. No `form
 `meta`, `base`, `template`, `noscript`. That list is `CONTROL_TAGS` in `parity.py`, the
 one authoritative copy; the skill body and the Bot's spec restate it, and a test in
 `test_dashboard_templates.py` holds all three to the set so an addition cannot drift.
-Separately, and read by its own function `outbound_references`: no `src`, so no images;
+Separately, and read by its own function `outbound_references`: no `src` or `srcset`, so no images;
 no `href` that is not a same-document fragment, matched on the attribute's local name so
-an SVG `xlink:href` counts. `style`, `details`/`summary`, inline SVG and CSS are the
+an SVG `xlink:href` counts. And, read by `dropped_text_attributes`: no `alt`, `title`,
+`start` or `value` carrying text, because the host deletes those attributes and a fact in
+one never reaches the reader. `style`, `details`/`summary`, inline SVG and CSS are the
 template's own, with one limit on the SVG: a binding may not sit inside it. Whether SVG
 paints a string depends on the whole ancestor chain and not on the element carrying the
 value -- `text` paints, the same `text` under `defs` or `clipPath` paints nothing -- so

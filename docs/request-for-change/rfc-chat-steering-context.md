@@ -3,8 +3,8 @@ title: What's in this chat's context — list the steering a chat receives, then
 status: partial
 author: RohanK6
 created: 2026-11-08
-last-audited: 2026-11-09
-audited-at: 52a2ebb3c2
+last-audited: 2026-11-20
+audited-at: fc89562d69
 doc-pr: 33133
 implementation-prs: [33600, 33966]
 tracking-issues: [33112, 29940, 30158, 31952]
@@ -24,7 +24,7 @@ P1 is on main from
 steering load only (folder steering deferred,
 [#34598](https://github.com/kirodotdev/KiroCrew/issues/34598)); the member essentials envelope is not filtered yet
 ([#33955](https://github.com/kirodotdev/KiroCrew/issues/33955)). P3 is
-open. Tracks
+open (checked at `fc89562d69`: no turn-boundary steering digest on main). Tracks
 [#33112](https://github.com/kirodotdev/KiroCrew/issues/33112). Every main-side
 reference was read at `231c0b28e7`. KAS steering behaviour is quoted from
 [#32179](https://github.com/kirodotdev/KiroCrew/pull/32179), open when this was

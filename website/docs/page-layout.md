@@ -55,6 +55,40 @@ refuses to shrink and the whole page scrolls instead.
 `PageHeader` also takes an `actions` node, rendered right-aligned on the title
 row. Put page-level buttons there rather than in the first `Card`.
 
+### Settings groups: a heading over one box
+
+Every Settings group is a heading, an optional one-line description, then ONE
+rounded box whose direct children are rows split by hairlines. The page itself is
+never wrapped in a card. All groups share one content width
+(`SETTINGS_CONTENT_MAX_W`, 720px) so the right edges line up from group to group.
+
+- **Row layout.** A small control or a setting that saves on its own sits on one
+  row: caption left, control right (`SettingsField` `layout="inline-fixed"` for
+  dropdowns, `"inline-auto"` for segmented controls and steppers). The control
+  sizes to its own content (dropdowns with a 12rem floor), so a long selected
+  label shows whole, and a trigger that is still cut carries the full text as its
+  `title`. The row wraps on the width the group box gives it, never on a viewport
+  breakpoint: when the caption (12rem basis) and the control do not fit side by
+  side, as in a narrow Settings pane, the control drops under the caption at full
+  width instead of being clipped. Inline rows are inline only inside a group box;
+  outside one they render stacked. Text a person types in order (a form) stays
+  `"stacked"`: caption above, full-width box below, so the box and its error
+  message are not squeezed into half a column.
+- **One indent.** A group heading, its description and any loose note between the
+  heading and the box start at the row text's inset (16px), never at the box
+  edge. Draw a heading with `SettingsSection` or `SettingsGroupHeader`, not a bare
+  `h4`: those two are the only owners of the indent. Loose text inside a
+  `SettingsSection` body gets the indent from the body itself.
+- **No box inside a box.** A `SettingsCard` or a grouped `Card` drawn inside
+  another box loses its own frame (`index.css`, `[data-settings-box]`). A row
+  that draws its own border is a bug: make it a plain row. A list of framed
+  choices (the harness picker) sits on the page directly, not inside a box.
+- **Inside a `Card`** in Settings (`CardFrameContext` `grouped`), the `CardTitle`
+  (or a flex header row holding it) and a following `<p>` move above the box as
+  the heading and description.
+- **Save** sits under the box, right-aligned to the box edge. A destructive
+  action sits apart from the constructive one, on its own row.
+
 ### A Settings tab's section list stays in view
 
 Tabs that host `SettingsSubNav` (Chat, Display, Notifications, Channels, Security)
@@ -347,9 +381,9 @@ under it.
 The same reading applies at the TOP of a chat that a host crowns with a glass
 chip: the Members page's DM header (the Glass identity pill, the switcher, the
 panel opener) floats over the pane's top edge and the conversation scrolls under
-it (#18325). `ChatPane` takes the band's measured height as `topInset` and pads
+it. `ChatPane` takes the band's measured height as `topInset` and pads
 its scroller's rows below it (a Bot's chat draws no pinned-prompt band,
-#18346, so the inset is the only thing it pays); the host measures the header
+so the inset is the only thing it pays); the host measures the header
 with `useMeasuredHeight`, never a constant. Anything with controls that sits between such a header and the pane
 (a notice, a greeting card) stays in flow, padded below the header, and the pane
 then takes no inset: a control under the glass is an ambiguous tap. The row and
@@ -487,7 +521,7 @@ Inline within a `Card`, built from the shared primitives:
   since a native `<select>` cannot host a filter box, per-option sublabels or a
   command menu. Reaching for one of those does not mean the touch case has been
   handled for you; whether that scroller is a real defect on a phone is
-  unresolved in #5551. `NativeSelect` is the single file exempted from the
+  unresolved. `NativeSelect` is the single file exempted from the
   `no-restricted-syntax` rule; do not add a second.
 - `Toggle` for a boolean switch. It carries `role="switch"`, `aria-checked` and
   `aria-disabled` itself, so do not re-add them.

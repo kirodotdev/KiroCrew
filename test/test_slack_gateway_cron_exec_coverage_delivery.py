@@ -300,7 +300,7 @@ class TestCronChannelDelivery:
 
         transport.send_message.assert_awaited_once()
         sent = transport.send_message.await_args.args[1]
-        assert "⏰ Cron: channel probe" in sent and "all clear" in sent
+        assert "Cron: channel probe" in sent and "all clear" in sent
         orch.slack.post_blocks.assert_not_awaited()
         orch.slack.post_message.assert_not_awaited()
 

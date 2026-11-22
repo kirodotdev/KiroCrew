@@ -87,6 +87,7 @@ from kiro_crew.acp.kas_agents_mcp_servers import (  # noqa: F401 - re-exported
     NOT_RUN_INSECURE_URL,
     NOT_RUN_REGISTRY,
     NOT_RUN_REGISTRY_IF_GOVERNED,
+    NOT_RUN_SCOPE_MUTED,
     WithheldOut,
     _project_mcp_servers,
 )
@@ -189,6 +190,8 @@ from kiro_crew.acp.kas_spec_denies import (
     uncarried_denied_commands,
     web_fetch_carried,
     web_fetch_gate,
+    web_fetch_regranted,
+    with_blocked_host_asks,
 )
 from kiro_crew.acp.kas_spec_grants import SHELL_SETTINGS_KEYS, shell_auto_allows_readonly
 from kiro_crew.acp.kas_tool_limits import (  # noqa: F401
@@ -952,6 +955,11 @@ def to_client_custom_agent(
         block["rules"] = [*(block.get("rules") or []), *skill_scope_rules]
         permissions = block
         _audit_skill_scope(skill_scope_rules, agent_id)
+    # A `web_fetch.blocked` entry KAS cannot carry as a host deny that Crew's gate
+    # refuses: an `ask` on its host brings a fetch there to the gate. Read before
+    # them: whether those asks alone hold back a fetch the policy ran unprompted.
+    web_fetch_lifted = web_fetch_regranted(tools_settings, spec.get("permissions"), permissions)
+    permissions = with_blocked_host_asks(permissions, tools_settings)
     if permissions:
         out["permissions"] = permissions
     # Read before the hook asks AND from the raw inputs: an ``ask`` or ``deny`` the
@@ -989,11 +997,15 @@ def to_client_custom_agent(
         commands=answered_commands,
         commands_answered=CREW_ANSWERED_COMMANDS_KEY in out,
     )
-    # A plain-URL `web_fetch.trusted` grant, held back by any blocked match.
+    # A plain-URL `web_fetch.trusted` grant, held back by any blocked match, and
+    # the blocked entries the gate refuses; with the asks above, a fetch they hold
+    # back that no entry reaches is granted by name.
     web_fetch = web_fetch_gate(tools_settings, spec.get("permissions"))
     if web_fetch:
         base = denies or {"builtins": [], "commands": [], "deniedCommands": [], "deniedPaths": []}
         denies = {**base, **web_fetch}
+        if web_fetch_lifted:
+            denies["builtins"] = sorted({*denies["builtins"], "web_fetch"})
     # A `deniedCommands` entry KAS received no rule for: the gate refuses what it
     # names on every approval policy, so an auto-approved call cannot run it. It
     # grants nothing (a record with no lifted grant only refuses).

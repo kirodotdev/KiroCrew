@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../test/helpers'
 import MemoryFailuresCard from './MemoryFailuresCard'
 import { ApiError } from '../../api/apiError'
@@ -192,5 +192,51 @@ describe('MemoryFailuresCard', () => {
     renderWithProviders(<MemoryFailuresCard />)
 
     expect(await screen.findByRole('alert')).toHaveTextContent('boom')
+  })
+})
+
+describe('MemoryFailuresCard table keyboard stop', () => {
+  /** `hidden` px of table beyond the right edge of a 320px scroller. jsdom does
+   *  no layout, so the geometry the scroller reads is stubbed. */
+  function stubGeometry(hidden: number) {
+    const proto = window.HTMLElement.prototype
+    vi.spyOn(proto, 'clientWidth', 'get').mockReturnValue(320)
+    vi.spyOn(proto, 'scrollWidth', 'get').mockReturnValue(320 + hidden)
+    vi.spyOn(proto, 'scrollLeft', 'get').mockReturnValue(0)
+  }
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('makes a clipped table with no rows a Tab stop named after the card', async () => {
+    // The empty state holds nothing focusable, so its hidden columns need a stop.
+    stubGeometry(40)
+    api.recurringFailures.mockResolvedValue({ failures: [], window_days: 7 })
+    renderWithProviders(<MemoryFailuresCard />)
+    await screen.findByText('No repeated failures')
+    const region = screen.getByRole('region', { name: 'Repeated failures' })
+    expect(region).toHaveAttribute('tabindex', '0')
+    expect(region.querySelector('table')).not.toBeNull()
+  })
+
+  it('makes a clipped table a Tab stop while an open draft holds every row button', async () => {
+    // The draft takes its row's button away and disables the others, so nothing
+    // inside takes focus until the draft closes.
+    stubGeometry(40)
+    renderWithProviders(<MemoryFailuresCard />)
+    await userEvent.click(await screen.findByRole('button', { name: /Draft lesson/ }))
+    const region = screen.getByRole('region', { name: 'Repeated failures' })
+    expect(region).toHaveAttribute('tabindex', '0')
+    expect(region.querySelector('table')).not.toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('region', { name: 'Repeated failures' })).toBeNull()
+  })
+
+  it('adds no stop to a clipped table whose rows hold a control', async () => {
+    stubGeometry(40)
+    renderWithProviders(<MemoryFailuresCard />)
+    const draft = await screen.findByRole('button', { name: /Draft lesson/ })
+    const scroller = draft.closest('table')!.parentElement!
+    expect(scroller).not.toHaveAttribute('tabindex')
+    expect(scroller).not.toHaveAttribute('role')
+    expect(scroller).not.toHaveAttribute('aria-label')
   })
 })

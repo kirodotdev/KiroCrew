@@ -9,7 +9,13 @@
 const test = require("node:test");
 const assert = require("node:assert");
 
-const { parseMochiEnabled, remoteEnabledState, hostDisabledMeansTeardown } = require("../instanceGate");
+const {
+  localMochiState,
+  parseMochiEnabled,
+  remoteEnabledState,
+  hostDisabledMeansTeardown,
+  windowHostOwnsMochi,
+} = require("../instanceGate");
 
 test("both payload shapes are understood", () => {
   // {apps: [...]} — the documented shape.
@@ -26,6 +32,46 @@ test("answered-but-Mochi-absent is a real 'no', not a non-answer", () => {
   assert.strictEqual(parseMochiEnabled({ apps: [{ name: "issue-radar", enabled: true }] }), false);
   assert.strictEqual(parseMochiEnabled({ apps: [] }), false);
   assert.strictEqual(parseMochiEnabled([]), false);
+});
+
+test("a remote whose Mochi record the window host serves cannot host the built-in pet", () => {
+  // That record declares a manifest `desktop` block: its windows are the host's,
+  // not the pages this pet loads. A definite no, on or off there.
+  const DESKTOP = { windows: [{ id: "pet", entry: "desktop/pet.mjs", kind: "overlay" }] };
+  for (const enabled of [true, false]) {
+    const apps = [{ name: "mochi", enabled, manifest: { name: "mochi", desktop: DESKTOP } }];
+    assert.strictEqual(parseMochiEnabled({ apps }), false);
+    assert.strictEqual(windowHostOwnsMochi(apps), true);
+  }
+  // The built-in record has no block: unchanged.
+  const builtin = [{ name: "mochi", enabled: true, origin: "builtin", manifest: { name: "mochi" } }];
+  assert.strictEqual(parseMochiEnabled(builtin), true);
+  assert.strictEqual(windowHostOwnsMochi(builtin), false);
+  // Another app's block says nothing about Mochi's.
+  const other = [{ name: "mochi", enabled: true, manifest: {} }, { name: "pets", enabled: true, manifest: { desktop: DESKTOP } }];
+  assert.strictEqual(parseMochiEnabled(other), true);
+  assert.strictEqual(windowHostOwnsMochi(other), false);
+});
+
+test("this computer's Mochi record the window host serves stands the built-in pet down, on or off", () => {
+  const DESKTOP = { windows: [{ id: "pet", entry: "desktop/pet.mjs", kind: "overlay" }] };
+  for (const enabled of [true, false]) {
+    const apps = [{ name: "mochi", enabled, manifest: { name: "mochi", desktop: DESKTOP } }];
+    assert.strictEqual(localMochiState(apps), "hosted", `enabled=${enabled}`);
+    // A block this shell's rules refuse still counts: the record ships no pet pages.
+    assert.strictEqual(localMochiState([{ ...apps[0], manifest: { name: "mochi", desktop: { windows: [] } } }]), "hosted");
+  }
+  // The built-in record has no block: the pet follows the switch, as before.
+  assert.strictEqual(localMochiState([{ name: "mochi", enabled: true, origin: "builtin", manifest: { name: "mochi" } }]), "enabled");
+  assert.strictEqual(localMochiState([{ name: "mochi", enabled: false, manifest: { name: "mochi", desktop: null } }]), "disabled");
+  assert.strictEqual(localMochiState([{ name: "mochi", enabled: true }]), "enabled");
+  // Another app's block says nothing about Mochi's, and an absent Mochi is a real no.
+  assert.strictEqual(
+    localMochiState([{ name: "mochi", enabled: true, manifest: {} }, { name: "pets", enabled: true, manifest: { desktop: DESKTOP } }]),
+    "enabled",
+  );
+  assert.strictEqual(localMochiState([{ name: "pets", enabled: true, manifest: { desktop: DESKTOP } }]), "disabled");
+  assert.strictEqual(localMochiState([]), "disabled");
 });
 
 test("an ununderstandable payload is a NON-answer (null), never false", () => {

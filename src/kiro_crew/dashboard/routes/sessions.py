@@ -148,6 +148,14 @@ def register(app: web.Application) -> None:
         "/api/chat/slots/{slot}/environment/file",
         session_environment_handlers.api_chat_slot_environment_file_put,
     )
+    # Connected computers (feature preview): the connector socket and the
+    # enrolled computers' list, Disconnect and Remove. Every path is literal and under
+    # its own /api/connected-computers/ prefix, so nothing here is shadowed.
+    # Registered with the preview off too; the handlers import the socket, broker
+    # and credential code on first request, never here.
+    from kiro_crew.connected_computers.remote_routes import register_all as _connected_computers
+
+    _connected_computers(app)
     app.router.add_post(
         "/api/session-environments/check",
         session_environment_handlers.api_session_environments_check,
@@ -192,6 +200,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/chat/slots/{slot}/mirror-unlink", chat.api_chat_slot_mirror_unlink)
     app.router.add_post("/api/chat/slots/{slot}/mirror-pause", chat.api_chat_slot_mirror_pause)
     app.router.add_get("/api/chat/channel-targets", chat.api_channel_targets)
+    app.router.add_get("/api/chat/channel-topics", chat.api_channel_topics)
     app.router.add_get("/api/slack/channels", chat.api_slack_channels)
 
     # OpenAI-compatible API

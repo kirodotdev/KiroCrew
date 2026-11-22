@@ -223,8 +223,8 @@ describe('OverviewPage — mission control', () => {
     expect(screen.getByTestId('edition-panel')).toBeInTheDocument()
   })
 
-  // The Kiro sign-in card serves the KAS backend only, so it lives under the
-  // switch that picks KAS, on Settings > Agent Harness. On the landing page
+  // The Kiro sign-in card lives on its own Settings > Kiro account tab. On the
+  // landing page
   // its provider chooser read as a required step to every user, first-run
   // installs included. Asserted so it is not re-added: neither the card nor a
   // read of its status belongs here.
@@ -239,7 +239,7 @@ describe('OverviewPage — mission control', () => {
 
   it('carries no "sign-in moved" signpost either, whichever backend is selected', async () => {
     const { api } = await import('../api/client')
-    // The time-boxed pointer to Settings > Agent Harness is retired: the page
+    // The time-boxed pointer to the sign-in card is retired: the page
     // neither renders it nor reads the backend to decide whether to.
     const first = renderWithProviders(<OverviewPage />, { store: statusStore() })
     expect(await screen.findByText('Memory')).toBeInTheDocument()
@@ -303,10 +303,12 @@ describe('OverviewPage — whole-sentence lines', () => {
   })
 
   it('puts the uptime where the language puts it, and says running in German', async () => {
-    await act(async () => { await i18next.changeLanguage('hi') })
-    const hindi = renderWithProviders(<OverviewPage />, { store: statusStore() })
-    expect(screen.getByText(line('DIV', '2h 30m से चालू · v0.1.0'))).toBeInTheDocument()
-    hindi.unmount()
+    // Bengali puts the uptime first. Hindi no longer does: there it would sit
+    // right before the postposition से, which is also its seconds unit (#36385).
+    await act(async () => { await i18next.changeLanguage('bn') })
+    const bengali = renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(screen.getByText(line('DIV', '2h 30m ধরে চালু · v0.1.0'))).toBeInTheDocument()
+    bengali.unmount()
 
     await act(async () => { await i18next.changeLanguage('de') })
     renderWithProviders(<OverviewPage />, { store: statusStore() })

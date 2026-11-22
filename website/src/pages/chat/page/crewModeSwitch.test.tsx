@@ -16,17 +16,19 @@ import { closeActivityPanel, openActivityPanel } from '../../../store/chatSlice'
 
 const mobile = vi.hoisted(() => ({ value: false }))
 vi.mock('../../../hooks/useIsMobile', () => ({ useIsMobile: () => mobile.value }))
+const askAppConfirm = vi.hoisted(() => vi.fn<(opts: { title: string; body?: unknown; confirmLabel: string; primary?: boolean }) => Promise<boolean>>())
+vi.mock('../../../lib/appConfirm', () => ({ askAppConfirm }))
 vi.mock('../../../hooks/usePanelTabs', async importOriginal => ({ ...await importOriginal<object>(), dropPanelViews: vi.fn() }))
 
 const plain = (key: string, agent = 'default'): ChatSlot => ({ key, agent, agent_kind: 'template', memory_mode: 'persistent', origin: 'user' } as unknown as ChatSlot)
 
-function setup(openView: (kind: ViewKind) => void = () => {}) {
+function setup(openView: (kind: ViewKind) => void = () => {}, { autoOpenBoard = true }: { autoOpenBoard?: boolean } = {}) {
   const pending: Array<{ resolve: (ok?: boolean) => void }> = []
   const switchAgent = vi.fn((_agent: string) => new Promise<boolean>(resolve => { pending.push({ resolve: (ok = true) => resolve(ok) }) }))
   const store = createTestStore()
   const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>
   const hook = renderHook(
-    ({ slot }: { slot: ChatSlot }) => useCrewModeSwitch({ currentSlot: slot, defaultAgent: 'default', hasUserMessage: false, switchAgent, openView }),
+    ({ slot }: { slot: ChatSlot }) => useCrewModeSwitch({ currentSlot: slot, defaultAgent: 'default', hasUserMessage: false, switchAgent, openView, autoOpenBoard }),
     { wrapper, initialProps: { slot: plain('a') } },
   )
   return { hook, pending, switchAgent, store }
@@ -186,37 +188,71 @@ describe('useCrewModeSwitch entering a conductor mode root', () => {
   beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); localStorage.clear() })
   afterEach(() => { setCrewModeCatalog(undefined, undefined); mobile.value = false })
 
-  const enter = () => {
+  // `autoOpenBoard` is Auto-Open Board in Side Panel: `undefined` while the
+  // dashboard config read is still in flight.
+  const enter = (autoOpenBoard: boolean | undefined) => {
     const store = createTestStore()
     const openView = vi.fn()
     const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>
-    renderHook(() => useCrewModeSwitch({ currentSlot: plain('root', 'kirocrew-conductor'), defaultAgent: 'default', hasUserMessage: true, switchAgent: vi.fn(), openView }), { wrapper })
-    return { store, openView }
+    const hook = renderHook(
+      ({ autoOpen }: { autoOpen: boolean | undefined }) => useCrewModeSwitch({ currentSlot: plain('root', 'kirocrew-conductor'), defaultAgent: 'default', hasUserMessage: true, switchAgent: vi.fn(), openView, autoOpenBoard: autoOpen }),
+      { wrapper, initialProps: { autoOpen: autoOpenBoard } },
+    )
+    return { store, openView, hook }
   }
 
   it('opens the side panel on the Crew tab on a desktop', () => {
-    const { store, openView } = enter()
+    const { store, openView } = enter(true)
     expect(store.getState().chat.activityOpen).toBe(true)
     expect(openView).toHaveBeenCalledWith('workers')
   })
 
   it('leaves a phone on the chat', () => {
     mobile.value = true
-    const { store, openView } = enter()
+    const { store, openView } = enter(true)
     expect(store.getState().chat.activityOpen).toBe(false)
     expect(openView).not.toHaveBeenCalled()
   })
 
   it('keeps a panel the person closed in this chat closed on a return', () => {
     localStorage.setItem('mc-activity-open:root', 'false')
-    const { store, openView } = enter()
+    const { store, openView } = enter(true)
     expect(store.getState().chat.activityOpen).toBe(false)
     expect(openView).not.toHaveBeenCalled()
   })
 
   it('leaves the tab the person picked in front on a return', () => {
     localStorage.setItem('mc-activity-open:root', 'true')
-    const { openView } = enter()
+    const { openView } = enter(true)
+    expect(openView).not.toHaveBeenCalled()
+  })
+
+  it('leaves the panel closed with Auto-Open Board in Side Panel off', () => {
+    const { store, openView } = enter(false)
+    expect(store.getState().chat.activityOpen).toBe(false)
+    expect(openView).not.toHaveBeenCalled()
+  })
+
+  it('waits for the setting to load, then opens the side panel on the Board', () => {
+    const { store, openView, hook } = enter(undefined)
+    expect(store.getState().chat.activityOpen).toBe(false)
+    expect(openView).not.toHaveBeenCalled()
+    hook.rerender({ autoOpen: true })
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(openView).toHaveBeenCalledWith('workers')
+  })
+
+  it('keeps the panel closed when the setting loads off', () => {
+    const { store, openView, hook } = enter(undefined)
+    hook.rerender({ autoOpen: false })
+    expect(store.getState().chat.activityOpen).toBe(false)
+    expect(openView).not.toHaveBeenCalled()
+  })
+
+  it('opens nothing when the setting turns on during the visit', () => {
+    const { store, openView, hook } = enter(false)
+    hook.rerender({ autoOpen: true })
+    expect(store.getState().chat.activityOpen).toBe(false)
     expect(openView).not.toHaveBeenCalled()
   })
 })
@@ -245,6 +281,43 @@ describe('useCrewModeSwitch a new chat created in conductor mode', () => {
     await act(async () => { pending[0].resolve(true) })
     expect(store.getState().chat.activityOpen).toBe(true)
   })
+
+  it('leaves the panel closed when Auto-Open Board in Side Panel is off', () => {
+    const openView = vi.fn()
+    const { hook, store } = setup(openView, { autoOpenBoard: false })
+    hook.rerender({ slot: plain('a', 'kirocrew-conductor') })
+    expect(store.getState().chat.activityOpen).toBe(false)
+    expect(openView).not.toHaveBeenCalled()
+  })
+})
+
+describe('useCrewModeSwitch a new chat on a conductor default agent', () => {
+  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'], 'kirocrew-conductor'); localStorage.clear() })
+  afterEach(() => setCrewModeCatalog(undefined, undefined))
+
+  // The chip is not offered (there is no plain agent to go back to), so the
+  // chat is entered on the conductor: the setting alone decides the panel.
+  const enterNew = (autoOpenBoard: boolean) => {
+    const store = createTestStore()
+    const openView = vi.fn()
+    const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>
+    const hook = renderHook(() => useCrewModeSwitch({ currentSlot: plain('new', 'kirocrew-conductor'), defaultAgent: 'kirocrew-conductor', hasUserMessage: false, switchAgent: vi.fn(), openView, autoOpenBoard }), { wrapper })
+    expect(hook.result.current.crewModeOn).toBe(true)
+    expect(hook.result.current.crewModeEligible).toBe(false)
+    return { store, openView }
+  }
+
+  it('opens the side panel on the Board with Auto-Open Board in Side Panel on', () => {
+    const { store, openView } = enterNew(true)
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(openView).toHaveBeenCalledWith('workers')
+  })
+
+  it('leaves the panel closed with Auto-Open Board in Side Panel off', () => {
+    const { store, openView } = enterNew(false)
+    expect(store.getState().chat.activityOpen).toBe(false)
+    expect(openView).not.toHaveBeenCalled()
+  })
 })
 
 describe('useCrewModeSwitch turning conductor mode on', () => {
@@ -255,7 +328,7 @@ describe('useCrewModeSwitch turning conductor mode on', () => {
     const store = createTestStore()
     const openView = vi.fn()
     const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>
-    const hook = renderHook(() => useCrewModeSwitch({ currentSlot: plain('fresh'), defaultAgent: 'default', hasUserMessage: false, switchAgent: vi.fn(() => new Promise<void>(() => {})), openView }), { wrapper })
+    const hook = renderHook(() => useCrewModeSwitch({ currentSlot: plain('fresh'), defaultAgent: 'default', hasUserMessage: false, switchAgent: vi.fn(() => new Promise<void>(() => {})), openView, autoOpenBoard: true }), { wrapper })
     act(() => { hook.result.current.turnOnCrewMode() })
     return { store, openView }
   }
@@ -282,7 +355,7 @@ describe("useCrewModeSwitch the welcome page's Board button", () => {
     const store = createTestStore()
     const openView = vi.fn()
     const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>
-    const hook = renderHook(() => useCrewModeSwitch({ currentSlot: plain('root', 'kirocrew-conductor'), defaultAgent: 'default', hasUserMessage: true, switchAgent: vi.fn(), openView }), { wrapper })
+    const hook = renderHook(() => useCrewModeSwitch({ currentSlot: plain('root', 'kirocrew-conductor'), defaultAgent: 'default', hasUserMessage: true, switchAgent: vi.fn(), openView, autoOpenBoard: true }), { wrapper })
     store.dispatch(closeActivityPanel())
     openView.mockClear()
     act(() => { hook.result.current.openTaskBoard!() })
@@ -302,5 +375,50 @@ describe("useCrewModeSwitch the welcome page's Board button", () => {
     const { store, openView } = press()
     expect(store.getState().chat.activityOpen).toBe(true)
     expect(openView).toHaveBeenCalledWith('workers')
+  })
+})
+
+describe('useCrewModeSwitch turning conductor mode on in a chat that has messages', () => {
+  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); askAppConfirm.mockReset(); localStorage.clear() })
+  afterEach(() => setCrewModeCatalog(undefined, undefined))
+
+  const render = (hasUserMessage: boolean) => {
+    const switchAgent = vi.fn(async (_agent: string, _kind?: 'member' | 'template') => true)
+    const store = createTestStore()
+    const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>
+    const hook = renderHook(
+      () => useCrewModeSwitch({ currentSlot: plain('a'), defaultAgent: 'default', hasUserMessage, switchAgent, openView: () => {}, autoOpenBoard: false }),
+      { wrapper },
+    )
+    return { hook, switchAgent }
+  }
+
+  it('asks first in a chat that has a user message', async () => {
+    askAppConfirm.mockResolvedValue(true)
+    const { hook, switchAgent } = render(true)
+    await act(async () => { hook.result.current.turnOnCrewMode() })
+    expect(askAppConfirm).toHaveBeenCalledTimes(1)
+    const opts = askAppConfirm.mock.calls[0][0]
+    expect(opts.title).toBe('Turn on conductor mode for this chat?')
+    expect(opts.confirmLabel).toBe('Turn on conductor mode')
+    // The ordinary primary action, not a destructive one.
+    expect(opts).toMatchObject({ primary: true })
+    expect(switchAgent).toHaveBeenCalledWith('kirocrew-conductor', 'template')
+  })
+
+  it('leaves the chat unchanged on Cancel', async () => {
+    askAppConfirm.mockResolvedValue(false)
+    const { hook, switchAgent } = render(true)
+    await act(async () => { hook.result.current.turnOnCrewMode() })
+    expect(askAppConfirm).toHaveBeenCalledTimes(1)
+    expect(switchAgent).not.toHaveBeenCalled()
+    expect(hook.result.current.crewModeSwitching).toBeNull()
+  })
+
+  it('switches at once in a chat with no message yet: it can still be turned off', async () => {
+    const { hook, switchAgent } = render(false)
+    await act(async () => { hook.result.current.turnOnCrewMode() })
+    expect(askAppConfirm).not.toHaveBeenCalled()
+    expect(switchAgent).toHaveBeenCalledWith('kirocrew-conductor', 'template')
   })
 })

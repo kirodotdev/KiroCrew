@@ -128,21 +128,22 @@ describe('goal-board page refill', () => {
 
   it('rebuilds only the cards whose item changed, without a fresh pop-in', () => {
     mount(BASE)
-    const [a, b, c] = all('#items .item')
+    // Open items first, the accepted one last.
+    const [b, c, a] = all('#items .item')
     refill({ ...BASE, items: [BASE.items[0], item({ item_id: 'b', title: 'running', summary: 'half way' }), BASE.items[2]] })
     const after = all('#items .item')
-    expect(after[0]).toBe(a)
-    expect(after[1]).not.toBe(b)
-    expect(after[1].textContent).toContain('half way')
-    expect(after[1].classList.contains('pop')).toBe(false)
-    expect(after[2]).toBe(c)
+    expect(after[0]).not.toBe(b)
+    expect(after[0].textContent).toContain('half way')
+    expect(after[0].classList.contains('pop')).toBe(false)
+    expect(after[1]).toBe(c)
+    expect(after[2]).toBe(a)
     // The band lists only the asking item, which did not move.
     expect(mutations(() => undefined)).toEqual([])
   })
 
   it('handles several items moving at once, a new one, and a removed one', () => {
     mount(BASE)
-    const [a] = all('#items .item')
+    const a = all('#items .item')[2]
     refill({
       ...BASE,
       items: [
@@ -153,9 +154,10 @@ describe('goal-board page refill', () => {
     })
     const after = all('#items .item')
     expect(after).toHaveLength(3)
-    expect(after[0]).toBe(a)
-    expect(after.map((n) => n.querySelector('.t')?.textContent)).toEqual(['first', 'running', 'new work'])
-    expect(after[2].classList.contains('pop')).toBe(true)
+    // Open work first, then the accepted items in ledger order.
+    expect(after.map((n) => n.querySelector('.t')?.textContent)).toEqual(['new work', 'first', 'running'])
+    expect(after[1]).toBe(a)
+    expect(after[0].classList.contains('pop')).toBe(true)
     // The asking item left, so the band is redrawn as calm.
     expect(document.querySelector('#you .calm')).not.toBeNull()
     expect(document.querySelector('[data-dashboard-field="items"]')?.textContent).toBe('3')
@@ -163,9 +165,10 @@ describe('goal-board page refill', () => {
 
   it('keeps stable cards in place when the order changes', () => {
     mount(BASE)
-    const [a, b, c] = all('#items .item')
+    const [b, c, a] = all('#items .item')
     refill({ ...BASE, items: [BASE.items[2], BASE.items[0], BASE.items[1]] })
-    expect(all('#items .item')).toEqual([c, a, b])
+    // The two open items swap; the accepted one stays below them.
+    expect(all('#items .item')).toEqual([c, b, a])
   })
 
   it('shows the empty line when items go away, and drops it when they return', () => {
@@ -402,5 +405,115 @@ describe('goal-board page: a child conductor board nests under its task', () => 
     // again under board-3: the walk stops at the id it already drew.
     mount({ ...fields, workstreams: [own, child, loop, back] })
     expect(all('.nest')).toHaveLength(2)
+  })
+})
+
+describe('goal-board page: abandoned items fold into one row between open and accepted', () => {
+  const titles = (sel: string) => all(sel).map((n) => n.querySelector('.t')?.textContent)
+  const fold = () => document.getElementById('gb-dropped') as HTMLElement
+  const toggle = () => document.getElementById('gb-dropped-tg') as HTMLButtonElement
+  const panel = () => document.getElementById('gb-dropped-list') as HTMLElement
+  const dropped = (id: string, why = 'superseded') => item({ item_id: id, title: id, state: 'abandoned', status: 'progress', decision: why })
+  const accepted = (id: string) => item({ item_id: id, title: id, state: 'accepted', status: 'done' })
+  const open = (id: string) => item({ item_id: id, title: id })
+  /** The order the reader meets: each open card, the fold row, then each accepted card. */
+  const reading = () => Array.from(document.querySelectorAll('#gb-live > .item, #gb-dropped:not([hidden]), #gb-closed > .item'))
+    .map((n) => (n.id === 'gb-dropped' ? `fold:${toggle().textContent}` : n.querySelector('.t')?.textContent))
+
+  it('shows open items first, one collapsed row with the count, then accepted items', () => {
+    mount({ items: [accepted('a1'), dropped('x1'), open('o1'), dropped('x2'), accepted('a2'), open('o2'), dropped('x3')] })
+    expect(reading()).toEqual(['o1', 'o2', 'fold:\u25b83 abandoned', 'a1', 'a2'])
+    expect(fold().hidden).toBe(false)
+    expect(toggle().getAttribute('aria-expanded')).toBe('false')
+    expect(toggle().getAttribute('aria-controls')).toBe('gb-dropped-list')
+    expect(panel().hidden).toBe(true)
+    // The totals still count the abandoned items, as before.
+    expect(document.getElementById('done')?.textContent).toContain('2 of 7 accepted')
+    expect(document.getElementById('tally')?.textContent).toContain('abandoned 3')
+    expect(document.querySelector('[data-dashboard-field="items"]')?.textContent).toBe('7')
+  })
+
+  it('opens on click to each abandoned task and its reason, and keeps the choice across a refill', () => {
+    const fields = { items: [open('o1'), dropped('x1', 'replaced by o1'), dropped('x2', 'out of scope')] }
+    mount(fields)
+    toggle().click()
+    expect(toggle().getAttribute('aria-expanded')).toBe('true')
+    expect(panel().hidden).toBe(false)
+    expect(titles('#gb-dropped-list .item')).toEqual(['x1', 'x2'])
+    expect(panel().textContent).toContain('replaced by o1')
+    expect(panel().textContent).toContain('out of scope')
+    expect(mutations(() => refill(fields))).toEqual([])
+    expect(panel().hidden).toBe(false)
+    toggle().click()
+    expect(toggle().getAttribute('aria-expanded')).toBe('false')
+    expect(panel().hidden).toBe(true)
+  })
+
+  it('is a real button, so Enter and Space reach it from the keyboard', () => {
+    mount({ items: [dropped('x1')] })
+    expect(toggle().tagName).toBe('BUTTON')
+    expect(toggle().type).toBe('button')
+    expect(toggle().querySelector('.caret')?.getAttribute('aria-hidden')).toBe('true')
+  })
+
+  it('draws no row with zero abandoned items, and one for a single item', () => {
+    mount({ items: [open('o1'), accepted('a1')] })
+    expect(fold().hidden).toBe(true)
+    expect(reading()).toEqual(['o1', 'a1'])
+    refill({ items: [open('o1'), dropped('x1'), accepted('a1')] })
+    expect(fold().hidden).toBe(false)
+    expect(toggle().textContent).toBe('\u25b81 abandoned')
+    refill({ items: [open('o1'), accepted('a1')] })
+    expect(fold().hidden).toBe(true)
+    expect(all('#gb-dropped-list .item')).toHaveLength(0)
+  })
+
+  it('keeps an open replacement among the live items while the abandoned one it replaces folds', () => {
+    mount({ items: [dropped('first try', 'replaced by retry'), open('retry')] })
+    expect(titles('#gb-live .item')).toEqual(['retry'])
+    expect(titles('#gb-dropped-list .item')).toEqual(['first try'])
+  })
+
+  it('moves a card into the fold when its open item is abandoned', () => {
+    mount({ items: [open('o1'), open('o2')] })
+    const [, o2] = all('#items .item')
+    refill({ items: [open('o1'), dropped('o2')] })
+    expect(titles('#gb-live .item')).toEqual(['o1'])
+    expect(titles('#gb-dropped-list .item')).toEqual(['o2'])
+    expect(all('#gb-dropped-list .item')[0]).not.toBe(o2)
+  })
+
+  it('names a task that just moved into the closed fold, and clears the note once opened', () => {
+    mount({ items: [open('o1'), open('o2')] })
+    const note = () => document.getElementById('gb-dropped-new') as HTMLElement
+    refill({ items: [open('o1'), dropped('o2')] })
+    expect(note().textContent).toBe('just moved here: o2')
+    expect(note().getAttribute('aria-live')).toBe('polite')
+    expect(fold().classList.contains('pulse')).toBe(true)
+    // An item that was abandoned from the start is no news.
+    mount({ items: [dropped('x1')] })
+    expect(note().textContent).toBe('')
+    expect(fold().classList.contains('pulse')).toBe(false)
+    mount({ items: [open('o1')] })
+    refill({ items: [dropped('o1')] })
+    toggle().click()
+    expect(note().textContent).toBe('')
+    expect(fold().classList.contains('pulse')).toBe(false)
+  })
+
+  it('pops a card in again where it lands when it changes section', () => {
+    mount({ items: [open('o1'), open('o2')] })
+    vi.runOnlyPendingTimers()
+    refill({ items: [open('o1'), accepted('o2')] })
+    const [landed] = all('#gb-closed .item')
+    expect(landed.classList.contains('pop')).toBe(true)
+    refill({ items: [open('o1'), item({ item_id: 'o2', title: 'o2', state: 'accepted', status: 'done', summary: 'merged' })] })
+    expect(all('#gb-closed .item')[0].classList.contains('pop')).toBe(false)
+  })
+
+  it('names the row in the reader language', () => {
+    mount({ items: [dropped('x1'), dropped('x2')] })
+    refill({ items: [dropped('x1'), dropped('x2')] }, 'zh-CN')
+    expect(toggle().textContent).toBe('\u25b8\u5df2\u653e\u5f03 2 \u9879')
   })
 })

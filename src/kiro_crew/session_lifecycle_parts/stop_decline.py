@@ -29,7 +29,7 @@ StopOutcome = Literal["soft", "hard", "idle", "compacting"]
 #: What a channel says for the ``compacting`` outcome. One string, so every
 #: surface that declines the Stop declines it in the same words.
 STOP_DECLINED_COMPACTING_TEXT = (
-    "⏳ Compacting context — nothing was stopped. The compaction finishes on its own; "
+    "Compacting context — nothing was stopped. The compaction finishes on its own; "
     "a message sent now runs once it has. Send stop again within a minute to force it, "
     "which restarts the session (the agent keeps only a recent excerpt of the conversation)."
 )

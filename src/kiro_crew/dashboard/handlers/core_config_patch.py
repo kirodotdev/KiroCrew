@@ -50,13 +50,17 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.core")
 
 
 def _str_list_problem(value: object, spec: dict) -> str:
-    """Why *value* is not a list *spec* (``max_items``, ``max_item_len``) allows, or ""."""
+    """Why *value* is not a list *spec* (``max_items``, ``max_item_len``, ``item_pattern``)
+    allows, or ""."""
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         return "must be a list of strings"
     if len(value) > spec["max_items"]:
         return f"must be at most {spec['max_items']} items"
     if any(len(item) > spec["max_item_len"] for item in value):
         return f"each item must be at most {spec['max_item_len']} characters"
+    item_pattern = spec.get("item_pattern")
+    if item_pattern and any(not re.fullmatch(item_pattern, item) for item in value):
+        return "an item has the wrong shape"
     return ""
 
 
@@ -71,6 +75,20 @@ _MOVED_CONFIG_FIELDS: dict[str, str] = {
         "reports anything it could not stop."
     ),
 }
+
+
+def _acp_backend_sandbox_refusal(stored: str) -> str:
+    """The launch's refusal of the harness *stored* names, or ``""`` (blocking).
+
+    ``tool_gate.sandbox_floor_refusal`` at the configured tier, the predicate a
+    session start runs. Runs in a worker thread: it can probe for a sandbox backend.
+    """
+    from kiro_crew import sandbox
+    from kiro_crew.agent_sdk.backends import backend_from_stored
+    from kiro_crew.agent_sdk.tool_gate import sandbox_floor_refusal
+
+    backend = str(backend_from_stored(stored))
+    return sandbox_floor_refusal(backend, sandbox.configured_sandbox_mode())
 
 
 def _beacon_governance_pinned_off() -> bool:
@@ -320,10 +338,16 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     from kiro_crew.shared_crew.teammate_access import is_admission_config_key
 
     if is_admission_config_key(path_key) and not is_host_owner_dashboard_request(request):
-        # A Shared Crew teammate passes the owner gate above, but which listeners run
-        # and who an allow-list lets in stay the machine owner's to decide.
+        # A Shared Crew teammate passes the owner gate above, but which listeners run,
+        # which tunnels this machine opens to other crews and who an allow-list lets
+        # in stay the machine owner's to decide.
+        message = (
+            "only the Crew owner can manage remote crews"
+            if path_key == "instances" or path_key.startswith("instances.")
+            else "only the Crew owner can change who may reach this Crew"
+        )
         return _deny(
-            "only the Crew owner can change who may reach this Crew",
+            message,
             f"admission key {path_key}",
             status=403,
             code="owner_only",
@@ -485,9 +509,6 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         problem = _str_list_problem(value, spec)
         if problem:
             return _deny(problem, path_key)
-        item_pattern = spec.get("item_pattern")
-        if item_pattern and any(not re.fullmatch(item_pattern, item) for item in value):
-            return _deny(f"an item has the wrong shape for {path_key}", path_key)
     elif spec["type"] == "dict":
         # One-level record written ATOMICALLY as a single value, for settings
         # where multiple scalar fields form one verdict and a partial write is
@@ -579,6 +600,17 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                     "code": "shell_not_executable",
                 },
                 status=400,
+            )
+
+    # A harness every session start refuses on this host (an enforced harness whose
+    # credential mask cannot apply here) is refused with the launch's own sentence,
+    # so a save cannot store a choice that fails only at the next session.
+    if path_key == "agent.acp_backend" and value:
+        refusal = await asyncio.to_thread(_acp_backend_sandbox_refusal, value)
+        if refusal:
+            _log_sel("denied", f"{path_key}={value}")
+            return web.json_response(
+                {"error": refusal, "code": "acp_backend_sandbox_refused"}, status=409
             )
 
     # ── Governance: refuse a write an enterprise ceiling has pinned ──

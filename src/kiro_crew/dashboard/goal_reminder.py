@@ -50,6 +50,8 @@ monitor loop drives the thread (:func:`_monitor_loop_drives`). While a
 milestones card of the crewmate's waits on the user, the wake proposes no new
 milestones (:func:`milestones_card_waiting`). Only the owner's route and an
 applied card write the switch, so the crewmate cannot turn its own heartbeat on.
+A thread or channel linked to the chat gets only a wake's final reply, so a
+quiet wake posts nothing there (``mirror_reply_only``).
 
 A check-in that fires with the thread closed, a turn already running, its switch
 off or no goal left does nothing that time.
@@ -65,6 +67,7 @@ from typing import Any
 
 from kiro_crew import crewmate_prompts, member_goals
 from kiro_crew import members as members_mod
+from kiro_crew import session_directive
 from kiro_crew.dashboard_templates.page_look import PAGE_LOOK
 
 logger = logging.getLogger(__name__)
@@ -640,7 +643,8 @@ def heartbeat_prompt(
         "turn with nothing_to_do and post nothing, which is also how a wake with "
         "nothing to move forward ends. Every word you write in this thread is "
         "shown to the user, so on a quiet end call nothing_to_do with no text "
-        "before it; put any reason in its note.\n\n"
+        "before it and put any reason in its note; after it, write only "
+        f"{session_directive.QUIET_END_TOKEN}, which nobody sees.\n\n"
         "When you need the user's answer, ask about one thing, once, with an "
         "[OPTIONS: ...] line at the end of your message rather than an "
         "ask_question card, and leave it at that rather than asking again in "
@@ -851,7 +855,11 @@ async def fire(state: Any, job: Any) -> str:
     if again is not slot:
         return "skipped: the Bot's thread is not open"
     dispatch_hidden_turn(
-        state, slot, with_language(prompt, language, in_thread=True), human_seen=False
+        state,
+        slot,
+        with_language(prompt, language, in_thread=True),
+        human_seen=False,
+        mirror_reply_only=cadence == member_goals.CADENCE_HEARTBEAT,
     )
     return "started"
 

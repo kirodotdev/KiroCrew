@@ -171,6 +171,12 @@ Round `r` is one proposal step and one critique step.
 | c | each critic | `round-<r>-<aspect>.md`: a short steelman of the proposal, then its objection table or `no_blocking:` |
 | d | you | wait for every critic, rule, run the checkpoint, relay to the proposers |
 
+**Steer every direct follow-up.** Send every relay, ruling, changed role card,
+nudge and finishing instruction with `session_send` and `steer: true`. For a
+broadcast relay use `session_broadcast` with `mode: steer`, and take its
+`targets` from the note's participants list. The initial `work_dispatch` seed
+stays plain (`steer: false`).
+
 **Every relay message** opens with the original question, restated in one or
 two sentences, then `anchor_v`, the rounds left, the ids the recipient must
 answer, and the paths to read. It carries your rulings and your own words
@@ -182,11 +188,18 @@ with `path:line`. Never cite an id from memory or from a report summary. When
 a participant's file and your relay disagree, the file wins; the recipient
 answers the file and names the mismatch.
 
-Check each delivery result. `started: false` means the message is queued:
-read `session_status`, and if the target is sleeping in `wait`, resend with
-`steer=true`, which also ends the wait. For a broadcast, take the
-targets from the note's participants list, read every row of the result, and
-resend the failed ones one by one. Log every resend in the round log.
+Check each delivery result in order: `steered: true` means it entered the
+running turn; otherwise `started: true` means a new turn started.
+`pending_steer: true` means it is held for the target's next tool boundary, so
+do not resend it. Only `steered: false` AND `started: false` without
+`pending_steer` means queued. Never resend a successful steer merely because
+`started` is false. For a queued relay, read
+`session_status`; if the target is sleeping in `wait`, resend with
+`session_send` and `steer: true`, which also ends the wait. For a broadcast,
+read every row of the result using the same distinction and resend refused or
+queued targets individually with `session_send` and `steer: true`. Inspect a
+delivery whose outcome is unknown before resending: it may already have run.
+Log every resend in the round log.
 
 **Ruling** on an objection, one line each, with a reason and an evidence
 pointer:
@@ -274,8 +287,9 @@ Read the message and act on it:
 
 - Map it to the open ids it covers. If it is unclear which objection it rules
   on, or what it wants, pick the likeliest reading, state it, apply it.
-- Send the participants the ruling as you understood it, plus the user's words
-  quoted verbatim for the note keeper to file.
+- Send the participants the ruling as you understood it using `session_send`
+  with `steer: true`, plus the user's words quoted verbatim for the note keeper
+  to file.
 - Then coordinate what it asks for: more rounds, a fix one critic verifies,
   dropping a proposal, accepting a risk, or finishing.
 

@@ -10,7 +10,6 @@ import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from acp_runtime_helpers import _fast_no_report_ceiling  # noqa: F401
 from acp_runtime_helpers import _pinned_kiro_cli_version  # noqa: F401
 from acp_runtime_helpers import _stub_sel_for_permission_tests  # noqa: F401
 from acp_runtime_helpers import (
@@ -23,6 +22,7 @@ from acp_runtime_helpers import (
     _stop_reader,
 )
 
+from kiro_crew.acp import runtime as runtime_mod
 from kiro_crew.acp.kas_start_agent import START_AGENT_ID
 from kiro_crew.acp.runtime import AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import (
@@ -35,7 +35,21 @@ from kiro_crew.acp.types import (
     METHOD_SET_MODE,
 )
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+from kiro_crew.metrics.events import DROPPED_FRAMES
 from kiro_crew.testing.wait import await_until
+
+
+@pytest.fixture(autouse=True)
+def _mcp_free_drain(_floor_monkeypatch):
+    """The fake backend starts no MCP server, so no report can arm ``drain_init``.
+
+    A zero ceiling is what production passes for an MCP-free runtime: the drain ends
+    once the queue goes quiet. Any positive ceiling still waits the drain's full
+    ``duration`` (it holds until ``max(duration, ceiling)``) on every session start.
+    """
+    import kiro_crew.acp.session_handle as sh
+
+    _floor_monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 0.0)
 
 
 def _kas_turn_frame(session_id: str, *, replay: bool) -> dict:
@@ -539,6 +553,45 @@ class TestAcpRuntimeLoadSession:
         assert rt._load_replay_frames == {}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "require_replay",
+        [
+            pytest.param(True, id="kas_resume"),
+            # A load that does not ask keeps no replay count, so the reader cannot
+            # tell its replay from a lost update.
+            pytest.param(False, id="load_without_replay_check"),
+        ],
+    )
+    async def test_a_load_counts_its_replay_apart_only_when_it_asked(
+        self, monkeypatch, require_replay
+    ):
+        """The replay the load asked for is dropped by design, so it is counted
+        ``method_class=replay``, apart from the ``update`` hang signature, and is
+        no frame lost on its way to a session (``unrouted_child_frames``). A live
+        frame, or another session's replay, is still a lost update. A load without
+        ``require_replay`` keeps no replay count, so its replay is one too."""
+        recorded: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            runtime_mod,
+            "emit_counter",
+            lambda name, attrs: recorded.append((name, dict(attrs))),
+        )
+        frames = [
+            _kas_turn_frame("sid-r", replay=True),
+            _kas_turn_frame("sid-r", replay=True),
+            _kas_turn_frame("sid-r", replay=False),
+            _kas_turn_frame("sid-other", replay=True),
+        ]
+        rt, _, _, outcome = await self._load_with_frames(
+            monkeypatch, frames, require_replay=require_replay
+        )
+        assert isinstance(outcome, AcpSessionHandle)
+        replayed = "replay" if require_replay else "update"
+        classes = [attrs["method_class"] for name, attrs in recorded if name == DROPPED_FRAMES]
+        assert classes == [replayed, replayed, "update", "update"]
+        assert rt.unrouted_child_frames() == (2 if require_replay else 4)
+
+    @pytest.mark.asyncio
     async def test_a_load_that_does_not_require_replay_is_unchanged(self, monkeypatch):
         """kiro-cli resumes and the KAS MCP re-injection load do not ask, so a load
         with no replayed turn still stands for them."""
@@ -637,6 +690,9 @@ class TestAcpRuntimeLoadSession:
             "_guard_unresolved_mcp_refs",
             lambda handle, spec, agent, wire, mcp_json=(): reported.append(wire),
         )
+        # The wait for mounted servers is best effort and no frame here mounts one;
+        # this test is about the array the resume sent, so the wait returns at once.
+        monkeypatch.setattr(AcpSessionHandle, "wait_mounted_mcp", AsyncMock(return_value=None))
         rt._acp_backend = ACP_BACKEND_KAS
 
         await rt.load_session("", "sid-hoist", cwd="/work", agent="kirocrew")
@@ -699,6 +755,7 @@ class TestAcpRuntimeLoadSession:
         # test_acp_runtime.py); this one is about what the request carried, so the
         # wait returns at once.
         monkeypatch.setattr(AcpSessionHandle, "wait_mcp_ready", AsyncMock(return_value=None))
+        monkeypatch.setattr(AcpSessionHandle, "wait_mounted_mcp", AsyncMock(return_value=None))
         rt._acp_backend = ACP_BACKEND_KAS
 
         if resume:

@@ -37,6 +37,13 @@ _PUBLISH_LISTS_OFF: Mapping[str, Mapping[str, object]] = {
     "audience": _OFF,
     "accounts": _OFF,
 }
+#: ``capabilities.decisions`` ``providers`` (``decisions.capability.provider_ids``):
+#: every decision model but hosted Jev, plus Clef (``PROVIDER_CLEF``). Spelled here
+#: because this module is data only; ``test_decisions_lts_jev_lock.py`` pins it.
+_DECISION_PROVIDERS: Mapping[str, object] = {
+    "mode": "allow",
+    "allow": ["plumb-4b", "strands-decider-2b", "laya", "sagemaker", "clef"],
+}
 
 BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     # Only ``yolo`` is off; ``normal`` is the catalog floor a rule cannot remove.
@@ -72,7 +79,10 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "capabilities.mobile_connect": _CAPABILITY_OFF,
     "capabilities.social_share": _CAPABILITY_OFF,
     "capabilities.feature_videos_download": _CAPABILITY_OFF,
-    "capabilities.decisions": _CAPABILITY_OFF,
+    # On, with the non-Jev decision models only (RFC D13). Hosted
+    # Jev and hand-written endpoints are refused in code whatever a tier says
+    # (``decisions.capability.edition_refuses``), so a policy cannot widen to them.
+    "capabilities.decisions": {"enabled": True, "scopes": {"providers": _DECISION_PROVIDERS}},
     # Kept off by the owner (D3), with ``app_versions``.
     "capabilities.extension_install": _CAPABILITY_OFF,
     # Kept off by the owner (D3), with ``app_versions``.
@@ -89,6 +99,7 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
 #: account open, because an unnamed inner list permits.
 BASELINE_INNER_LISTS: Dict[str, Mapping[str, Mapping[str, object]]] = {
     "capabilities.publish": _PUBLISH_LISTS_OFF,
+    "capabilities.decisions": {"providers": _DECISION_PROVIDERS},
 }
 
 _OPEN = "open control (RFC D3): "
@@ -98,6 +109,8 @@ BASELINE_UNGATED: Dict[str, str] = {
     "sandbox.min_level": "ordinal; unnamed keeps Crew's sandbox default, and the organisation's "
     "crew_sandbox_min_level can only raise it (RFC D7)",
     "mcp": _OPEN + "MCP servers are meant to be governed by KAS and KGL",
+    "unattended_web_tools": _OPEN
+    + "with no `ask` rule on `web_fetch` or `web_search`, trust approves them as before",
     "tools": _OPEN + "a remote policy that names tools still decides; each call meets its own rows",
     "commands": _OPEN
     + "under the default `normal` mode a command that is not read-only still asks",
@@ -113,7 +126,7 @@ BASELINE_UNGATED: Dict[str, str] = {
     "capabilities.milestones": _OPEN
     + "local UI only; the user still opts in through Feature Preview and settings",
     "capabilities.decisions_local": _OPEN
-    + "a local model; it stays inert while `capabilities.decisions` is off",
+    + "a local model; it only narrows `capabilities.decisions`",
     "external_access.registry_hosts": _OPEN
     + "Discover queries every registry unless a policy names the key",
 }

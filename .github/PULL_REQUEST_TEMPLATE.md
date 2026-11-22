@@ -96,6 +96,20 @@
      (integration paths, UI, external services). State "N/A — unit coverage
      sufficient" only when genuinely true, with a one-line why. -->
 
+## Real-machine verification
+
+<!-- Reviewers treat a PR as passed only when a real machine shows the bug on
+     the base, the fix on the head with the same command, and the machine
+     deleted. Procedure:
+     docs/system-specs/common/testing-conventions.md § Real-machine verification.
+     Never paste a credential here. A diff that runs nothing (docs, comments)
+     writes: N/A -- <what in the diff runs nothing>
+
+       Machine: <EC2 type or your computer>, <OS + version>, <arch>, <vCPU / memory>
+       Before (main <sha12>): `<command>` -> <failing output; a flaky test: the forced condition red, and the repeats>
+       After (head <sha12>): `<command>` -> <passing output; a flaky test: the forced condition green, and the repeats>
+       Cleanup: <instance terminated, security group and key pair deleted, tag search empty | own computer> -->
+
 ## Screenshots / video
 
 <!-- MANDATORY for any user-visible UI change (new/changed panels, components,
@@ -112,7 +126,10 @@
      surface.
 
      - Show each affected surface in its meaningful variants (e.g. desktop vs
-       browser, empty vs populated, light vs dark).
+       browser, empty vs populated, light vs dark). Capture the full application
+       chrome -- nav/sidebar and the whole page or dialog with the surface in
+       context -- not a cropped element shot, which draws a UX "not the real
+       pane" finding.
      - Prefer a short video/GIF when the change involves motion or a multi-step
        flow (animations, transitions, interactions) — a still image cannot
        prove those.
@@ -129,14 +146,24 @@
        Limits: 10 MB per image/GIF, 100 MB per video.
      - WITHOUT write access on this repository (a fork PR), `--attach` is not
        available to you: the upload endpoint answers read permission with a
-       404 (cli/cli#14302). Either drag the file into this box in the web UI,
-       which works with read access, or commit it -- `git add -f
-       temp-screenshots/<topic>/after.png`, forced because that directory is
-       gitignored -- and reference the repository-relative path here. The
-       review lanes read committed media the same way they read an attachment,
-       with ONE limit for a committed file: 10 MB, video included -- a bigger
-       file is skipped, not reviewed. A recording over 10 MB goes into this
-       box via the web UI, where the 100 MB video limit above applies.
+       404 (cli/cli#14302). You can still upload PROGRAMMATICALLY through your
+       own fork, where you are admin: `gh issue create --repo <you>/<fork>
+       --attach <file>` (enable issues first with `gh api -X PATCH
+       repos/<you>/<fork> -f has_issues=true`) mints account-scoped
+       `github.com/user-attachments/assets/<uuid>` URLs that render cross-repo;
+       embed those here and keep that issue as a reusable upload holder (GitHub
+       retains unlinked media only ~30 days and whether deleting the source
+       issue orphans the asset is undocumented, so keep the holder). Dragging
+       the file into this box in the web
+       UI works too, but is not always available -- device, network, or
+       application-managed policy can block a browser upload. Committing is the
+       last resort -- `git add -f temp-screenshots/<topic>/after.png`, forced
+       because that directory is gitignored -- and reference the
+       repository-relative path here. The review lanes read committed media the
+       same way they read an attachment, with ONE limit for a committed file:
+       10 MB, video included -- a bigger file is skipped, not reviewed. A
+       recording over 10 MB goes into this box via the web UI, where the 100 MB
+       video limit above applies.
        Know the cost: a committed file merges into main's history for good;
        the maintainer removes it from the tip afterwards, the blob stays.
      - Non-media evidence is neither attached with --attach nor committed.
@@ -178,15 +205,7 @@
 
 ## Checklist
 
-- [ ] At most two commits (one is the norm), with a Conventional Commits title (`feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert: ...`)
-<!-- If your branch goes stale, REBASE it. Plain-clicking the "Update branch"
-     button on the PR page, or merging the base branch in, adds a merge commit,
-     which counts toward the limit above and will fail PR Hygiene on a PR that
-     was otherwise green. That button's dropdown carries an "Update with rebase"
-     option, which is safe. Pick that, or run:
-
-       git fetch origin && git rebase origin/<base branch>
-       git push --force-with-lease -->
+- [ ] A Conventional Commits title (`feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert: ...`); PR Hygiene does not count commits
 - [ ] Existing tests pass and new tests added for new functionality
 - [ ] Self-review completed; code follows project style guidelines
 - [ ] Documentation updated (if applicable)

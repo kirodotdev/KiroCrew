@@ -92,8 +92,6 @@ WITHHELD_RECORD_FIELDS = frozenset(
         # (the profile card's own read), not here, so the crew editor does not
         # round-trip it.
         "dashboard_card_send",
-        # The Profile tab's "Show in my Sessions list" switch: the same home.
-        "show_sessions_in_list",
         # Shipped on GET /api/members (the profile card's own read), not here:
         # the crew editor echoes this row back, and must not round-trip it.
         "approval_mode",

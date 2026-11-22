@@ -444,6 +444,22 @@ class WebSocketHub:
                 if isinstance(slug, str) and slug:
                     pending.add(slug)
                 return False
+        if msg_type == "notification":
+            # A note on an owner-only channel names the machine owner's own
+            # accounts (the Team Crews their sign-in can open): only a socket that
+            # reads as the machine owner gets it. A teammate's socket is an owner
+            # socket too, so membership alone is not enough.
+            from kiro_crew.dashboard.redaction_audience import socket_reads_as_owner
+            from kiro_crew.dashboard.ws_event_scope import (
+                audit_owner_only_withheld,
+                owner_only_note,
+            )
+
+            if owner_only_note(data) and not socket_reads_as_owner(
+                ws, getattr(self._owner, "_owner_ws_clients", None) or set()
+            ):
+                audit_owner_only_withheld(msg_type)
+                return False
         if ws.get("_is_dashboard_user", False):
             # The per-member event log is the owner's view of the crew, the
             # boundary the ``/api/members`` reads apply. A non-owner dashboard
@@ -711,8 +727,8 @@ class WebSocketHub:
 
         Returns how many sockets it was handed to. Only dashboard-user sockets
         are ever flagged (see ``api_ws``), so no scope gate applies here: the
-        frame carries fields of the dashboard-user slot projection, which those
-        sockets already receive in full.
+        frame carries slot fields that read the same in every audience's
+        projection, which those sockets already receive in full.
         """
         dead: list[web.WebSocketResponse] = []
         sent = 0

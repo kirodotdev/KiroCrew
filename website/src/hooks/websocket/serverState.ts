@@ -20,7 +20,7 @@ import { forgetUnobservedMemberThreads, MEMBERS_ROSTER_QUERY_KEY, MEMBER_PROJECT
 import { memberProjectionStore } from '../../state/memberProjectionStore'
 import { threadLiveStore, type ThreadReplyFrame } from '../../state/threadLiveStore'
 import { threadQueryKey, threadsQueryKey } from '../../api/threads'
-import { applyStatusDelta, parseStatusDelta } from '../../utils/pullRequestStatusDelta'
+import { applyStatusDelta, applyStatusDeltaToLinks, parseStatusDelta } from '../../utils/pullRequestStatusDelta'
 import { GUIDE_PENDING_QUERY_KEY } from '../../api/guide'
 import { CHANGE_CARDS_QUERY_PREFIX } from '../../api/cards'
 import { slotChangeUrls } from '../../utils/pullRequestLinks'
@@ -145,6 +145,18 @@ const NARROW_KINDS: Readonly<Record<string, readonly RefreshTarget[]>> = {
   cron_history: CRON_TARGETS,
 }
 
+/** Invalidate one cache a frame made stale. The crew registry (and the roster under
+ *  it) is marked stale but not read while the tab is hidden: nobody sees it, and the
+ *  focus manager re-reads a stale query the moment the tab is shown again. Every other
+ *  cache re-reads at once, as before. */
+function invalidateTarget(qc: QueryClient, target: RefreshTarget): void {
+  if (target === CREW_TARGET && typeof document !== 'undefined' && document.hidden) {
+    qc.invalidateQueries({ ...target, refetchType: 'none' })
+  } else {
+    qc.invalidateQueries(target)
+  }
+}
+
 const sameTarget = (a: RefreshTarget, b: RefreshTarget) =>
   a.exact === b.exact && a.queryKey.length === b.queryKey.length && a.queryKey.every((k, i) => k === b.queryKey[i])
 
@@ -202,9 +214,25 @@ function scheduleTurnEndCronRefresh(qc: QueryClient, onCronsStale?: () => void):
     turnEndOthersPending = false
     turnEndOthersNotify = undefined
     turnEndOthersAt = Date.now()
-    if (client) for (const target of ALL_TARGETS) if (!CRON_TARGETS.includes(target)) client.invalidateQueries(target)
+    if (client) for (const target of ALL_TARGETS) if (!CRON_TARGETS.includes(target)) invalidateTarget(client, target)
     others?.()
   }, TURN_END_CRON_REFRESH_MS)
+}
+
+/** Kinds whose writers touch no agent and no crewmate: a cron run, a lesson, a task
+ *  runner state, an update notice. Every one is announced by the gateway code that
+ *  wrote it. A frame made only of these leaves the crew registry and the roster
+ *  alone, so neither re-reads for it. The crons are the busy ones: a run pushes a
+ *  frame when it starts and when it ends. */
+const REGISTRY_NEUTRAL_KINDS: readonly string[] = [
+  'crons', 'cron_history', 'lessons', 'taskrunner', 'update_available', 'update_failed', 'updating',
+]
+
+/** Whether a `refresh` frame can have changed an agent, a template or a crewmate.
+ *  True for a frame with no kinds and for a kind this client does not know: only a
+ *  frame made entirely of known neutral kinds is ruled out. */
+export function refreshMayChangeRegistry(kinds?: readonly string[]): boolean {
+  return !kinds?.length || !kinds.every(kind => REGISTRY_NEUTRAL_KINDS.includes(kind))
 }
 
 /** `turn_end` ends a turn; `history` follows a close or a delete. */
@@ -242,20 +270,22 @@ export function invalidateRefreshQueries(
   if (!narrow) {
     const turnEnd = isTurnEndOnly(kinds)
     const held = turnEnd && Date.now() - turnEndOthersAt < TURN_END_CRON_REFRESH_MS
+    const registryUntouched = !refreshMayChangeRegistry(kinds)
     if (held) {
       turnEndOthersPending = true
       turnEndOthersNotify = onOthersStale
     } else {
-      // Everything is re-read below: a re-read owed to an earlier frame is paid.
-      turnEndOthersPending = false
+      // Everything is re-read below, so a re-read owed to an earlier frame is paid,
+      // except the registry's when this frame leaves it alone: that stays owed.
+      if (!registryUntouched) turnEndOthersPending = false
       if (turnEnd) turnEndOthersAt = Date.now()
       onOthersStale?.()
     }
     for (const target of ALL_TARGETS) {
-      if (held || (turnEnd && CRON_TARGETS.includes(target))) {
+      if (held || (turnEnd && CRON_TARGETS.includes(target)) || (registryUntouched && target === CREW_TARGET)) {
         qc.invalidateQueries({ ...target, predicate: query => query.state.status === 'error' })
       } else {
-        qc.invalidateQueries(target)
+        invalidateTarget(qc, target)
       }
     }
     if (turnEnd) scheduleTurnEndCronRefresh(qc, onCronsStale)
@@ -371,6 +401,15 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   // itself on this same reconnect (and must NOT be cleared here — it
   // holds the pane, and the draft typed into it).
   forgetUnobservedMemberThreads(queryClient)
+  // A read that failed while the socket was down (the gateway or the relay's
+  // host was gone) and never held a value shows its panel's error: refetch it,
+  // on every client, so the panels come back with the connection. Only those:
+  // a query that kept its last value may sit under an unsaved draft, which a
+  // refetch would overwrite (the same rule as the auth recovery in
+  // api/client.ts).
+  for (const client of new Set([queryClient, ...recoverableQueryClients()])) {
+    void client.invalidateQueries({ predicate: q => q.state.status === 'error' && q.state.data === undefined })
+  }
 }
 
 /** The owner flipped the credential-redaction switch, possibly in ANOTHER
@@ -595,6 +634,13 @@ export function handleSourceStatus(dispatch: AppDispatch, queryClient: QueryClie
   // stale until an unrelated slots broadcast — the same chip↔panel
   // divergence this feature removes, recreated on the sidebar.
   dispatch(patchSlotSourceLinks({ url: delta.url, state: delta.state, ci: delta.ci, ciPending: delta.ciPending }))
+  // The expanded "+N" list is a react-query read, not part of the slots payload,
+  // so the patch above never reaches those chips either. The gateway reads their
+  // status when the list is fetched, and this delta is how the result lands.
+  queryClient.setQueriesData<NonNullable<ChatSlot['source_links']>>(
+    { queryKey: ['session-source-links'] },
+    links => applyStatusDeltaToLinks(links, delta),
+  )
   // Invalidate the detail payload for EVERY changed delta, regardless
   // of origin. A 'detail'-origin delta is produced by one window's full
   // fetch; only that window received the fresh HTTP payload, so other

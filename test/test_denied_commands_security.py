@@ -51,22 +51,10 @@ def _named(name: str, cmds: list[str]) -> list[object]:
 
 class TestCatalog:
     def test_catalog_ids_are_unique(self):
-        # The one literal pin on the catalog size: every other size assertion in
-        # this file derives from ``len(BUILTIN_DENIED_RULES)``. A row added or
-        # deleted changes this number on purpose, and the commit doing it says why.
-        # Most recently: the local-destructive-dd-of-device row was added (112 -> 113),
-        # matched on argv: dd reads stdin, so an of= raw disk alone wipes it. Before
-        # that: the data-exfil-curl-upload row was deleted (113 -> 112);
-        # its lowercased `-T` match refused `find -type f`, `od -tx1` and spec
-        # hooks, and a case-correct regex form kept leaking. Before that: the
-        # sensitive-file-read category (27 rows matching a
-        # credential-store path in command text) was deleted -- the OS sandbox hides
-        # those stores from the agent process tree and is_sensitive_path fences the
-        # file tools, so a text regex over the command added refusals of read-only
-        # work and no protection. Before that: the four product-name-anywhere
-        # self-management rows and the seven legacy identifier-substring rows.
-        # Then: the sandbox-escape ssh-to-self row was added (111 -> 112).
-        assert len(BUILTIN_DENIED_RULES) == 113
+        # Which rows exist, and each row's pattern, is reviewed through
+        # ``fixtures/denied_commands_golden.json`` (see the golden test below), so a
+        # row added or deleted shows up there by id rather than as a count.
+        assert BUILTIN_DENIED_RULES
         ids = [r.id for r in BUILTIN_DENIED_RULES]
         assert len(set(ids)) == len(BUILTIN_DENIED_RULES)
 
@@ -977,7 +965,7 @@ class TestS3TransferDirection:
         "eval aws s3 cp --recursive s3://b/p ./d",
         "command aws s3 cp --recursive s3://b/p ./d",
         "/usr/bin/aws s3 cp --recursive s3://b/p ./d",
-        "AWS_PROFILE=p aws s3 cp --recursive s3://b/p ./d",
+        "AWS_CONFIG_FILE=./c aws s3 cp --recursive s3://b/p ./d",
         "bash <<EOF\naws s3 cp --recursive s3://b/p ./d\nEOF",
         "echo y | aws s3 cp --recursive s3://b/p ./d",
         "aws s3 cp --recursive s3://b/p ./d > log",

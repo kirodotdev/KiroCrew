@@ -32,6 +32,14 @@ from chat_mirror_helpers import (
 from kiro_crew.discord.client import DiscordClient as _RealDiscordClient
 from kiro_crew.messaging.link import ChannelLink, binding_token
 
+#: The notice a link posts. Spelled out, not imported: the text a person reads
+#: in the channel is what these tests pin.
+TWO_WAY_NOTICE = "Session linked from dashboard — continuing here."
+ONE_WAY_NOTICE = (
+    "Session linked from dashboard. Replies here do not reach the linked chat; "
+    "answer in the dashboard."
+)
+
 #: Channels whose REAL capabilities refuse a proactive send, so the mirror-link
 #: gate must reject them. Pinned as a set so an unlock is a NAMED failure in
 #: ``test_the_proactive_split_matches_the_shipped_caps``. The rejection branch is
@@ -306,6 +314,28 @@ class TestMirrorLink:
         state.sessions.set_mirror_link.assert_called_once()
         link = state.sessions.set_mirror_link.call_args.args[1]
         assert link == ChannelLink("telegram", channel_id="123", thread_id=None)
+
+    @pytest.mark.parametrize(
+        ("session_resume", "notice"),
+        [(False, ONE_WAY_NOTICE), (True, TWO_WAY_NOTICE)],
+        ids=["one-way", "two-way"],
+    )
+    @pytest.mark.asyncio
+    async def test_the_link_notice_says_whether_replies_come_back(
+        self, tmp_path, monkeypatch, session_resume, notice
+    ):
+        """The first message posted names where to answer when replies stay in the channel."""
+        state = _prep(tmp_path, monkeypatch)
+        transport = _fake_transport("discord", session_resume=session_resume)
+        state.register_channel_transport(transport)
+        async with TestClient(TestServer(_make_mirror_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/mirror-link",
+                json={"channel_type": "discord", "target_id": "user:123"},
+            )
+            assert resp.status == 200
+        assert transport.send_message.await_args_list[0].args == ("123", notice)
+        assert state.sessions.mirror_accepts_inbound("dashboard:s1") is session_resume
 
     @pytest.mark.asyncio
     async def test_an_explicit_link_withdraws_the_automatic_mirroring_opt_out(
@@ -1052,10 +1082,60 @@ class TestMirrorReminder:
                 "channel_type": "discord",
             }
 
+        # The planted link is outbound only, so the reminder says where to answer.
         transport.send_message.assert_awaited_once_with(
             "356163505868767244",
-            "🔗 Session linked from dashboard — continuing here.",
+            ONE_WAY_NOTICE,
             thread_id=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_two_way_link_reminder_keeps_continuing_here(self, tmp_path, monkeypatch):
+        """A link that carries replies back keeps the 'continuing here' reminder."""
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance_profiles.governance_permits",
+            lambda *args, **kwargs: SimpleNamespace(permitted=True),
+        )
+        state = _prep(tmp_path, monkeypatch)
+        transport = _fake_transport("discord", session_resume=True)
+        state.register_channel_transport(transport)
+        state.sessions.set_mirror_link(
+            "dashboard:s1",
+            ChannelLink("discord", channel_id="356163505868767244"),
+            accepts_inbound=True,
+        )
+
+        async with TestClient(TestServer(_make_mirror_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/mirror-link")
+            assert resp.status == 200
+
+        transport.send_message.assert_awaited_once_with(
+            "356163505868767244", TWO_WAY_NOTICE, thread_id=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_inbound_flag_reminds_as_one_way(self, tmp_path, monkeypatch):
+        """If the inbound flag cannot be read, the reminder does not promise replies."""
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance_profiles.governance_permits",
+            lambda *args, **kwargs: SimpleNamespace(permitted=True),
+        )
+        state = _prep(tmp_path, monkeypatch)
+        transport = _fake_transport("discord", session_resume=True)
+        state.register_channel_transport(transport)
+        state.sessions.set_mirror_link(
+            "dashboard:s1",
+            ChannelLink("discord", channel_id="356163505868767244"),
+            accepts_inbound=True,
+        )
+        state.sessions.mirror_accepts_inbound = MagicMock(side_effect=RuntimeError("boom"))
+
+        async with TestClient(TestServer(_make_mirror_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/mirror-link")
+            assert resp.status == 200
+
+        transport.send_message.assert_awaited_once_with(
+            "356163505868767244", ONE_WAY_NOTICE, thread_id=None
         )
 
     @pytest.mark.asyncio

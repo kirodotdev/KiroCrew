@@ -47,6 +47,7 @@ from kiro_crew.acp.client_timeouts import (
     _effective_prompt_timeout_async,
 )
 from kiro_crew.acp.command_refused import AcpCommandRefused
+from kiro_crew.acp.end_token import drop_end_token
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.transport_errors import AcpError, AcpProcessDied, AcpTimeoutError
 from kiro_crew.acp.transport_framing import write_notification_best_effort
@@ -84,9 +85,11 @@ from kiro_crew.agent_sdk.backend_cards import LINE_MID_TURN_STEER, card_for
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_LAUNCH,
     ACP_BACKEND_NODE_ADAPTER_PACKAGES,
 )
+from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_USER, steer_params
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.tracing import steps as trace_steps
@@ -197,6 +200,14 @@ PI_ACP_TESTED_RANGE = ((0, 0, 34), (0, 0, 35))
 #: reds that test until this moves with it.
 KIRO_CLI_TESTED_RANGE = ((2, 27, 0), (4, 0, 0))
 
+#: The dsh release the same lane pins (``@deepseek-ai/dsh``), which the install command
+#: (``agent_sdk/backends_launch.py``) installs. Its releases are 0.x, where each minor
+#: line can break, so the range is 0.2.x. Read from dsh's own npm manifest at spawn
+#: (:data:`TESTED_VERSION_READ_AT_SPAWN`), because dsh-acp's handshake reports
+#: ``agentInfo.version`` 0.0.1 on every release.
+DEEPSEEK_DSH_TESTED_VERSION = "0.2.0-rc.2"
+DEEPSEEK_DSH_TESTED_RANGE = ((0, 2, 0), (0, 3, 0))
+
 #: Per backend: the tested range and the command that installs the tested release.
 #: Opt-in by membership, as :data:`_STEER_MIN_VERSIONS`.
 _TESTED_VERSION_RANGES: dict[str, tuple[tuple[tuple[int, int, int], tuple[int, int, int]], str]] = {
@@ -222,7 +233,18 @@ _TESTED_VERSION_RANGES: dict[str, tuple[tuple[tuple[int, int, int], tuple[int, i
     ),
     # kiro-cli installs no chosen release, so an older one is told to update.
     ACP_BACKEND_KIRO: (KIRO_CLI_TESTED_RANGE, "kiro-cli update"),
+    ACP_BACKEND_DEEPSEEK: (
+        DEEPSEEK_DSH_TESTED_RANGE,
+        ACP_BACKEND_LAUNCH[ACP_BACKEND_DEEPSEEK].install_command,
+    ),
 }
+
+#: Backends whose handshake version names no release, so the tested range is read
+#: against the version their spawn read off disk (``harness_installed_version``).
+#: shortcut: only the per-session client records it, so a deepseek chat on the shared
+#: runtime (the chat runtime sharing preview, off by default) gets no notice; carry it
+#: on the session handle if that preview turns on by default.
+TESTED_VERSION_READ_AT_SPAWN: frozenset[str] = frozenset({ACP_BACKEND_DEEPSEEK})
 
 #: What a release above the range is told instead of the install command, for a
 #: harness whose installer cannot go back to a tested release.
@@ -439,7 +461,9 @@ async def stream_command(
             "command": {"command": cmd_name, "args": cmd_args},
         },
     )
-    async for event in self._dispatch_events(req_id, timeout, extract_agent_from_result=True):
+    async for event in drop_end_token(
+        self._dispatch_events(req_id, timeout, extract_agent_from_result=True)
+    ):
         yield event
 
 
@@ -571,7 +595,7 @@ async def _audit_cancelled_approvals(
         logger.warning("SEL audit of cancelled approvals failed", exc_info=True)
 
 
-async def steer(self: AcpClient, message: str) -> bool:
+async def steer(self: AcpClient, message: str, *, origin: str = STEER_ORIGIN_USER) -> bool:
     """Inject a mid-turn steer into the running turn via kiro-cli's
     ``_session/steer`` ext-method. Fire-and-forget: the request is written
     but the response is NOT awaited, because the in-flight turn's read loop
@@ -593,6 +617,9 @@ async def steer(self: AcpClient, message: str) -> bool:
 
     A steer that went out gets a point span in the turn it went into
     (``tracing/steps.py``): its mode, never its text.
+
+    *origin* says who wrote the text (``STEER_ORIGIN_*``); only kiro's
+    ``_session/steer`` carries it, and only when it is not the user's.
     """
     text = (message or "").strip()
     if not text or not self._session_id:
@@ -611,9 +638,7 @@ async def steer(self: AcpClient, message: str) -> bool:
         sent = await self._steer_via_concurrent_prompt(text)
     else:
         wrapped = wrap_user_message(text)
-        await self._send_request(
-            "_session/steer", {"sessionId": self._session_id, "message": wrapped}
-        )
+        await self._send_request("_session/steer", steer_params(self._session_id, wrapped, origin))
         batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
         # See AcpSessionHandle.steer for why the stamp is taken at the write.
         self._last_steer_monotonic = time.monotonic()
@@ -735,7 +760,19 @@ async def _steer_via_steering_request(self: AcpClient, text: str) -> bool:
         self._last_steer_monotonic = time.monotonic()
         self._release_held_steers()
         return True
-    return await self._send_steering_request(aimed_at, text) is True
+    # Registered before the write, as for a held steer: a turn that ends while the
+    # write is in flight finds the text in :attr:`held_steers_possibly_delivered`.
+    possibly_delivered = self._held_steer_writes()
+    possibly_delivered.add(text)
+    try:
+        delivered = await self._send_steering_request(aimed_at, text)
+    except Exception as exc:
+        if getattr(exc, "ambiguous_delivery", False) is not True:
+            possibly_delivered.discard(text)
+        raise
+    if delivered is not None:
+        possibly_delivered.discard(text)
+    return delivered is True
 
 
 def _held_steers(self: AcpClient) -> list[tuple[int, str]]:
@@ -759,6 +796,17 @@ def _held_steer_writes(self: AcpClient) -> set[str]:
         writes = set()
         self._held_steers_unanswered = writes
     return writes
+
+
+def _held_steer_unsent(self: AcpClient) -> set[str]:
+    """The held steers of this turn the adapter never took: dropped from the buffer
+    unwritten, or written and refused (:attr:`held_steers_unsent`). Created on first
+    use so a client built without ``__init__`` (test doubles) has one."""
+    unsent = getattr(self, "_held_steers_unsent", None)
+    if unsent is None:
+        unsent = set()
+        self._held_steers_unsent = unsent
+    return unsent
 
 
 def _release_held_steers(self: AcpClient) -> None:
@@ -789,7 +837,9 @@ async def _send_held_steers(self: AcpClient) -> None:
     consumed, so the caller queues each. A steer whose write is in flight,
     stalled, unanswered, or answered ``injected`` after its turn ended stays in
     :attr:`held_steers_possibly_delivered` until the next turn starts, so the
-    caller queues it as possibly delivered rather than as fresh text.
+    caller queues it as possibly delivered rather than as fresh text. A dropped
+    steer, and one not written or refused, is named in
+    :attr:`held_steers_unsent` instead: it never reached the turn.
     """
     while held := self._held_steers():
         steer = held[0]
@@ -800,6 +850,7 @@ async def _send_held_steers(self: AcpClient) -> None:
             or self._cancelled
             or getattr(self, "_stdin_stalled", False)
         ):
+            self._held_steer_unsent().update(text for _, text in held)
             held.clear()
             return
         if self._active_tool_calls.possibly_open or self._parked_on_permission:
@@ -816,9 +867,13 @@ async def _send_held_steers(self: AcpClient) -> None:
             logger.debug("held steer not sent: %s", type(exc).__name__)
             if getattr(exc, "ambiguous_delivery", False) is not True:
                 possibly_delivered.discard(text)
+                self._held_steer_unsent().add(text)
         else:
             if delivered is not None:
                 possibly_delivered.discard(text)
+            if delivered is False:
+                # Not written, or refused: the adapter runs nothing of it.
+                self._held_steer_unsent().add(text)
         # Read again: a turn that ended during the send started a new list.
         current = self._held_steers()
         if current and current[0] == steer:
@@ -927,10 +982,14 @@ def _release_accepted_steers(self: AcpClient, req_id: int, reason: str, refusal:
     stops taking steers here, before its terminal is yielded, so a steer
     answered after this point is not accepted into a turn that has ended. A
     steer still held here was never sent, so it is dropped and queued the same
-    way.
+    way, and named in :attr:`held_steers_unsent`.
     """
     accepted = getattr(self, "_steers_accepted", None) or []
     self._steers_accepted = []
+    unresolved = self._held_steer_writes()
+    self._held_steer_unsent().update(
+        text for _, text in self._held_steers() if text not in unresolved
+    )
     self._steers_held = []
     if self._steering_turn_req == req_id:
         self._steering_turn_req = None
@@ -1166,7 +1225,7 @@ async def _dispatch_prompt_events(
     self._steer_turn = turn
     pi_steer_turn.open_turn(self, req_id)
     try:
-        async with aclosing(self._dispatch_events(req_id, timeout)) as events:
+        async with aclosing(drop_end_token(self._dispatch_events(req_id, timeout))) as events:
             async for event in events:
                 if (
                     event.kind == EVENT_COMPLETE

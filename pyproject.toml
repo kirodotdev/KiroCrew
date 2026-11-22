@@ -29,7 +29,12 @@ kirocrew = "kiro_crew._bootstrap:main"
 # Pinned dev tool versions for reproducible CI. Bump as needed.
 dev = [
     "pytest==9.0.3",
-    "pytest-xdist==3.5.0",
+    # 3.6 runs every test on the worker's main thread; on 3.5 with execnet 2.1 a
+    # test can land on a side thread, where signal.signal() raises ValueError.
+    "pytest-xdist==3.6.1",
+    # xdist's transport. Pinned with it: scripts/ci_pytest_progress.py reads a
+    # private execnet channel flag, and xdist only declares execnet>=2.1.
+    "execnet==2.1.2",
     "pytest-timeout==2.2.0",
     # 0.21.2: the first release whose async-fixture wrapper runs under
     # pytest >= 8.2 (0.20.3 reads the removed FixtureDef.unittest). Later lines

@@ -17,7 +17,7 @@ once per fact per process: the bell is not refilled on each reload, and a fact t
 stops holding and holds again is told again.
 
 A person whose unpinned Bots left KAS because they now follow the Settings harness
-(Claude Code, Codex) gets one more note, once per install (RFC
+(Claude Code, Codex, Pi) gets one more note, once per install (RFC
 ``rfc-crewmate-harness-follows-settings`` section 6): the first time a Bot of theirs
 starts (:func:`deliver_moved`). It is claimed with an ``O_EXCL`` marker under the
 data home before it goes out, as ``kiro_on_kas_notice`` does, so a restart or a

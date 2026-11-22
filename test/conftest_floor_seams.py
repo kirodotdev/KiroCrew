@@ -20,6 +20,7 @@ import pathlib
 import sys
 
 import pytest
+from conftest_floor_guards import floor_guard
 
 
 @pytest.fixture(scope="session")
@@ -34,13 +35,14 @@ def _xdg_config_root(tmp_path_factory):
     return tmp_path_factory.mktemp("xdg")
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _isolate_xdg_config_home(_xdg_config_root, _floor_monkeypatch):
     """Point ``$XDG_CONFIG_HOME`` at a tmp dir so no test writes a real unit file.
 
     ``dev_fleet._dropin_path()`` resolves the make-live systemd drop-in as
-    ``$XDG_CONFIG_HOME/systemd/user/kirocrew-gateway.service.d/make-live.conf``,
-    falling back to ``~/.config`` when the variable is unset — which is the
+    ``$XDG_CONFIG_HOME/systemd/user/<live unit>.d/make-live.conf``, where the live
+    unit is ``kirocrew.service`` or ``kirocrew-gateway.service``, and falls back to
+    ``~/.config`` when the variable is unset — which is the
     default on most developer machines and in CI. So a test that reaches the
     cutover path without stubbing ``_dropin_path`` writes the operator's real
     drop-in. That is how a test once took the gateway down.
@@ -58,7 +60,7 @@ def _isolate_xdg_config_home(_xdg_config_root, _floor_monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(_xdg_config_root))
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _isolate_kiro_cli_sign_in_store(_xdg_config_root, _floor_monkeypatch):
     """Point the shared sign-in resolver's kiro-cli store at a path that is not there.
 
@@ -73,7 +75,7 @@ def _isolate_kiro_cli_sign_in_store(_xdg_config_root, _floor_monkeypatch):
     )
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _isolate_launchd_paths(_xdg_config_root, _floor_monkeypatch):
     """Pin the launchd install paths, which ``$XDG_CONFIG_HOME`` cannot reach.
 
@@ -175,7 +177,7 @@ def _sandbox_mount_source_root(tmp_path_factory):
     return tmp_path_factory.mktemp("sb-mount-src")
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _isolate_sandbox_mount_source_roots(_sandbox_mount_source_root, _floor_monkeypatch):
     """Point the sandbox mount-source sweep away from the host's real tmpfs.
 
@@ -262,7 +264,7 @@ def _isolate_sandbox_mount_source_roots(_sandbox_mount_source_root, _floor_monke
     monkeypatch.setattr(sandbox_mod, "_bound_source_basenames", _unproven_bound_sources)
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _pin_kill_and_reap_group_probe(_floor_monkeypatch):
     """Stop ``kill_and_reap``'s group-kill skip from reading host process state.
 
@@ -302,7 +304,7 @@ def _pin_kill_and_reap_group_probe(_floor_monkeypatch):
     monkeypatch.setattr(platform_compat, "_shares_own_process_group", lambda _pid: False)
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _no_credential_env_residue():
     """Restore the credential env vars a test may have had INJECTED into it.
 
@@ -335,7 +337,8 @@ def _no_credential_env_residue():
     def _is_credential(key: str) -> bool:
         return key in fixed or _JIRA_TOKEN_RE.match(key) is not None
 
-    before = {key: value for key, value in os.environ.items() if _is_credential(key)}
+    # Keys first: only a credential's value is read, not every variable's.
+    before = {key: os.environ[key] for key in os.environ if _is_credential(key)}
     try:
         yield
     finally:
@@ -347,7 +350,7 @@ def _no_credential_env_residue():
                 os.environ[key] = before[key]
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _no_model_download(_floor_monkeypatch, _isolation_dirs):
     """Never let a test download model weights over the network.
 
@@ -391,7 +394,7 @@ def _no_model_download(_floor_monkeypatch, _isolation_dirs):
     monkeypatch.delenv("KIROCREW_TELEMETRY_DISABLED", raising=False)
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _no_default_builtin_skills_sync(request, _floor_monkeypatch):
     """Stop a bare ``SkillsLoader()`` / ``ContextBuilder()`` from syncing builtins.
 
@@ -440,7 +443,7 @@ def _no_default_builtin_skills_sync(request, _floor_monkeypatch):
     monkeypatch.setattr(SkillsLoader, "__init__", _init_without_builtins_by_default)
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _no_central_policy_fetch(_floor_monkeypatch):
     """Keep every test off the operator's fleet policy endpoint, and stop the poller.
 
@@ -525,7 +528,7 @@ def _reset_platform_context(_floor_monkeypatch):
     _reset_boot_state()
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _isolate_pre_exec_stops(_floor_monkeypatch):
     """Give every test its own registry of pre-exec stops.
 
@@ -539,7 +542,7 @@ def _isolate_pre_exec_stops(_floor_monkeypatch):
     _floor_monkeypatch.setattr(pre_exec_stops, "_stops", {})
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _isolate_agent_state_sidecar(_isolation_dirs, _floor_monkeypatch):
     """Pin the agent_state sidecar to a tmp dir for the whole suite.
 
@@ -571,7 +574,7 @@ def _pin_agent_state_sidecar(monkeypatch, sidecar_root) -> None:
 _MEMBER_EVENTLOG_DRAIN_SECONDS = 30.0
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _reset_member_eventlog_singleton(_isolate_kirocrew_home):
     """Drain the member event-log queue a test filled, and reset the service singleton.
 

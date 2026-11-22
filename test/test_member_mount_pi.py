@@ -155,7 +155,8 @@ def test_the_member_mounts_reach_the_handoff_with_their_identity(agents_dir, tmp
 def test_an_ordinary_pi_session_carries_nothing(agents_dir, tmp_path) -> None:
     """A non-member pi session carries nothing: spec-server delivery is member-only.
 
-    The spec servers reach pi only for a crewmate DM session (``member_context``);
+    The spec servers reach pi only for a crewmate DM session (``member_context``) or
+    a crewmate's worker session (``members.is_crewmate_worker_session``);
     an ordinary pi session composes the empty array it always did, like every other
     mirror-less backend's ordinary session.
     """

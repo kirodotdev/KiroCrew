@@ -25,17 +25,16 @@ Rank weighs harnesses fixed and user impact against size; ties go to the fix tha
 | 3 | R-LAU-12 | claude, codex, opencode, goose, pi, copilot, deepseek | S | reuse `rerun_signs_in_via_kiro_cli` (`dashboard/kiro_readiness.py`) at `dashboard/openai_compat.py` | no | no open PR | the OpenAI-compatible endpoint is refused on non-kiro hosts when kiro-cli is signed out |
 | 4 | R-SPEC-10 | claude, codex, opencode, goose | S | reuse: replace `_on_kas(client)` at `dashboard/chat_turn/turn_dispatch_gates.py` with `CREW_FIRES_SPEC_OBSERVER_HOOKS` | no | no open PR | agentSpawn context is lost after a compaction |
 | 5 | R-ERR-3 | claude, codex, opencode, goose, pi, copilot, deepseek | S code, plus a capture each | reuse the watcher at `undelivered_call_watch.py` with a pattern per harness | yes | no open PR | conductors miss lost reports from non-KAS workers |
-| 6 | R-LAU-3 | deepseek | S | reuse `_TESTED_VERSION_RANGES` (`acp/client_turn_control.py`) | deepseek: yes (version source) | no open PR; #26459 (open) is related for claude | silent upgrades caused #25171 and #36125 |
-| 7 | R-LAU-7 | opencode, pi | S | reuse the deepseek and codex tree kill | no | #35757 (open) | probe process leak |
-| 8 | R-MOD-1, R-MOD-2 | copilot | M | config options | yes | #36118 (open) | no model or effort picker on copilot |
-| 9 | R-STR-3 | copilot | M | | yes | #34088 (open) | copilot turns hang on a background shell |
-| 10 | R-USE-1 | codex, pi, copilot, deepseek | M each | new: capture each usage frame | yes | no open PR | the Usage page is empty for them |
-| 11 | R-SIDE-1 | codex, opencode, pi, copilot | M each | new captures | yes | pi: #21744 (open) | no Side Chat tools |
-| 12 | R-MCP-8 | claude, codex, opencode, goose, copilot, deepseek | S | reuse the notice at `dashboard/chat_turn/turn_spec_hooks.py` for every harness outside `REMOTE_MCP_OAUTH` | no | no open PR | low value: a dropped `oauth` block is silent |
-| 13 | R-MCP-2 | copilot | M | member dispatch mount | yes | no open PR | copilot cannot host member chats |
-| 14 | R-STR-1 | copilot, deepseek | M | new captures | yes | no open PR | no mid-turn steer |
-| 15 | R-LAU-5 | goose, deepseek | S | add `PINNED_FIXTURE_ADAPTERS` rows | lane pin | no open PR | indirect: fixture drift goes unseen |
-| 16 | R-LIFE-5 | claude, codex, opencode, goose, pi, copilot, deepseek | M each | new reader per session store | yes | no open PR | low value; Send session carries the transcript only, by design today |
+| 6 | R-LAU-7 | opencode, pi | S | reuse the deepseek and codex tree kill | no | #35757 (open) | probe process leak |
+| 7 | R-MOD-1, R-MOD-2 | copilot | M | config options | yes | #36118 (open) | no model or effort picker on copilot |
+| 8 | R-STR-3 | copilot | M | | yes | #34088 (open) | copilot turns hang on a background shell |
+| 9 | R-USE-1 | codex, pi, copilot, deepseek | M each | new: capture each usage frame | yes | no open PR | the Usage page is empty for them |
+| 10 | R-SIDE-1 | codex, opencode, pi, copilot | M each | new captures | yes | pi: #21744 (open) | no Side Chat tools |
+| 11 | R-MCP-8 | claude, codex, opencode, goose, copilot, deepseek | S | reuse the notice at `dashboard/chat_turn/turn_spec_hooks.py` for every harness outside `REMOTE_MCP_OAUTH` | no | no open PR | low value: a dropped `oauth` block is silent |
+| 12 | R-MCP-2 | copilot | M | member dispatch mount | yes | no open PR | copilot cannot host member chats |
+| 13 | R-STR-1 | copilot, deepseek | M | new captures | yes | no open PR | no mid-turn steer |
+| 14 | R-LAU-5 | goose, deepseek | S | add `PINNED_FIXTURE_ADAPTERS` rows | lane pin | no open PR | indirect: fixture drift goes unseen |
+| 15 | R-LIFE-5 | claude, codex, opencode, goose, pi, copilot, deepseek | M each | new reader per session store | yes | no open PR | low value; Send session carries the transcript only, by design today |
 
 The largest ❓ clusters, where one install per harness clears many cells at once: R-LAU-8 (9 harnesses, #34147 open), R-MCP-10 (8), R-MCP-14 (8), R-ERR-5 (8), R-LAU-11 (7), R-SPEC-13 (7), R-ROW-1 (7), R-MCP-5 (7), R-MCP-7 (7).
 
@@ -45,14 +44,14 @@ The largest ❓ clusters, where one install per harness clears many cells at onc
 |---|---|---|---|---|---|
 | kiro-cli | 60 | 0 | 6 | 7 | 60/66 (91%) |
 | KAS | 72 | 0 | 1 | 0 | 72/73 (99%) |
-| claude | 44 | 7 | 14 | 8 | 44/65 (68%) |
-| codex | 43 | 8 | 13 | 9 | 43/64 (67%) |
+| claude | 45 | 7 | 13 | 8 | 45/65 (69%) |
+| codex | 44 | 8 | 12 | 9 | 44/64 (69%) |
 | opencode | 32 | 9 | 21 | 11 | 32/62 (52%) |
 | goose | 36 | 8 | 18 | 11 | 36/62 (58%) |
 | pi | 31 | 8 | 21 | 13 | 31/60 (52%) |
 | copilot | 28 | 13 | 18 | 14 | 28/59 (47%) |
-| deepseek | 29 | 10 | 19 | 15 | 29/58 (50%) |
-| all 9 | 375 | 63 | 131 | 88 | 73 rows × 9 = 657 cells |
+| deepseek | 30 | 9 | 19 | 15 | 30/58 (52%) |
+| all 9 | 377 | 62 | 130 | 88 | 73 rows × 9 = 657 cells |
 
 Counts cover the 73 rows shown in the matrix. The 10 rows marked 🔒 are left out of the counts.
 
@@ -64,7 +63,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 |---|---|---|---|---|---|---|---|---|---|---|
 | R-LAU-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | shared degrade path; `test_harness_parity.py::test_unselectable_backend_degrades_to_default` |
 | R-LAU-2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `test_acp_launch_goldens.py` |
-| R-LAU-3 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | range table `acp/client_turn_control.py` (goose 1.50.x, codex-acp 2.x, claude-agent-acp 0.94.x, pi-acp 0.0.34, kiro-cli 2.27.0 to 3.x, held to the kiro and KAS captures by `test_real_adapter_fixture_pins.py`; a KAS relay is read by the kiro-cli it runs under, the bundle is pinned); opencode major `acp/harness/opencode.py`; copilot exact pin `acp/client_copilot.py`, `agent_sdk/backends_launch.py` |
+| R-LAU-3 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | range table `acp/client_turn_control.py` (goose 1.50.x, codex-acp 2.x, claude-agent-acp 0.94.x, pi-acp 0.0.34, dsh 0.2.x read from its npm manifest because dsh-acp reports 0.0.1, kiro-cli 2.27.0 to 3.x, held to the kiro and KAS captures by `test_real_adapter_fixture_pins.py`; a KAS relay is read by the kiro-cli it runs under, the bundle is pinned); opencode major `acp/harness/opencode.py`; copilot exact pin `acp/client_copilot.py`, `agent_sdk/backends_launch.py` |
 | R-LAU-4 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `agent_sdk/backend_install.py` probe per harness |
 | R-LAU-5 | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | `test/test_real_adapter_fixture_pins.py` pins codex, opencode, claude, pi, copilot; kiro/KAS floor tests in the same file |
 | R-LAU-6 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | direct client `acp/client_start.py` (initialize OSError/AcpError with stderr); runtime `acp/runtime_liveness.py` (#30533); doctor (#27562) |
@@ -76,7 +75,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 | R-LAU-12 | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | rerun gates fixed `dashboard/kiro_readiness.py` |
 | R-AUTH-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `agent_sdk/host_auth.py` one declaration each |
 | R-AUTH-2 | ✅ | ✅ | ❓ | ❓ | ✅ | ✅ | ✅ | ✅ | ✅ | `signed_out_signature` `agent_sdk/host_auth.py` for opencode, goose, pi, deepseek and copilot; kiro/KAS `_KIRO_SIGNED_OUT`/`_KAS_SIGNED_OUT`; opencode's hosted fall-back refused at start (`is_opencode_hosted_fallback`, `acp/no_model_provider.py`, raised by `_refuse_opencode_hosted_fallback` in `acp/client_opencode_session.py`); claude, codex declare no phrase |
-| R-AUTH-3 | ✅ | ✅ | ✅ | ✅ | ❓ | ✅ | ✅ | ✅ | ✅ | `ACP_BACKENDS_CREW_OAUTH_BRIDGE` `agent_sdk/backends_mcp.py` (kas, claude, codex, goose, pi, copilot, deepseek); kiro native `REMOTE_MCP_OAUTH`; opencode in neither |
+| R-AUTH-3 | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | `ACP_BACKENDS_CREW_OAUTH_BRIDGE` `agent_sdk/backends_mcp.py` (kas, claude, codex, goose, pi, copilot, deepseek); kiro native `REMOTE_MCP_OAUTH`; opencode in neither: its remote servers stay loaded, and one with no headers of its own that answers Crew's credential-free probe with `401` + `Bearer` is noted in the report's advisory `sign_in_suspected` (never `awaiting_auth` or `not_ready()`) with one "may need a sign-in" chat notice (`acp/mcp_sign_in_probe.py`, `test/test_opencode_mcp_sign_in_probe.py`) |
 | R-AUTH-4 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | only kiro-cli login (cloud `cloud/login.py`) and KAS login are Crew-run |
 | R-AUTH-5 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | Kiro account check only gates kiro-family turns (`dashboard/kiro_readiness.py`) |
 | R-SBX-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `scripts/check_harness_parity.py` sandbox-delegation rule; `ACP_BACKENDS_INTERNAL_SANDBOX` = {kiro} `agent_sdk/backends_launch.py`, `RELAY_INTERNAL_SANDBOX` = {kas} |
@@ -93,7 +92,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 | R-SPEC-3 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | tracked privately |
 | R-SPEC-4 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | tracked privately |
 | R-SPEC-5 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | 🔒 | tracked privately |
-| R-SPEC-6 | ✅ | ✅ | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | `CREW_LOADS_SPEC_STEERING` = {claude, codex} `agent_sdk/backends_routing.py`; kiro/KAS native |
+| R-SPEC-6 | ✅ | ✅ | ✅ | ✅ | ✅ | ❓ | ✅ | ❓ | ❓ | `CREW_LOADS_SPEC_STEERING` = {claude, codex, opencode, pi} `agent_sdk/backends_routing.py`; kiro/KAS native |
 | R-SPEC-7 | ➖ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | KAS reader `acp/kas_prompt.py` |
 | R-SPEC-8 | ➖ | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | claude imports the fixed readers (`acp/spec_tools_allowlists.py`); other mirrors rule `TOOLS_SETTINGS` withheld/no-channel |
 | R-SPEC-9 | ➖ | ✅ | ✅ | ✅ | ✅ | ✅ | ➖ | ➖ | ➖ | shared payload `agent_sdk/spec_hooks.py`; observer set `agent_sdk/backends_routing.py` |
@@ -110,14 +109,14 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 | R-MCP-6 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | card `mcp.per_tool_deny` / `costs_whole_server` declared for every harness |
 | R-MCP-7 | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | `acp/client_mcp_array.py` declares wait servers only on kiro-cli; KAS #30898 |
 | R-MCP-8 | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❓ | ❌ | ❌ | notice KAS-only |
-| R-MCP-9 | ❓ | ✅ | ❓ | ❓ | ➖ | ➖ | ➖ | ➖ | ➖ | KAS #30969; claude/codex read user config layers |
+| R-MCP-9 | ❓ | ✅ | ❓ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | KAS #30969; codex #30601 (probe `toolless_ambient`); claude reads user config layers |
 | R-MCP-10 | ❓ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | KAS order and budget (#26148, #35278, #32602); `acp/client_mcp_array.py` passes the array with no Crew-first order |
 | R-MCP-11 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | admin MCP registry applies to kiro-cli's own registry filter only |
 | R-MCP-12 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | `ACP_BACKENDS_TOOL_SEARCH_OVERLAY` = {kiro} `backends_mcp.py`; KAS via spec; no deferral elsewhere |
 | R-MCP-13 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `acp/client_mcp_array.py` drops disabled servers and tools for every direct client; KAS #36391 |
 | R-MCP-14 | ❓ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | gateway backend and `kas_http_bridge.py` fixed (#34979); servers a harness reads directly not measured |
 | R-STR-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | card `mid_turn_steer` |
-| R-STR-2 | ✅ | ✅ | ❓ | ✅ | ✅ | ❓ | ✅ | ➖ | ➖ | claude and goose steer captures still allowlisted `scripts/check_harness_parity.py` |
+| R-STR-2 | ✅ | ✅ | ✅ | ✅ | ✅ | ❓ | ✅ | ➖ | ➖ | claude capture `claude/steering-live.jsonl`; goose steer capture still allowlisted `scripts/check_harness_parity.py` |
 | R-STR-3 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❓ | ❌ | ❓ | per-fix tests |
 | R-SIDE-1 | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ | card `side_chat_tools`; `SIDE_READONLY` `agent_sdk/backends_routing.py` |
 | R-MOD-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | card `model_switch` |
@@ -125,7 +124,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 | R-MOD-3 | ❓ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | KAS #30003; advertised-selection harnesses `ADVERTISED_MODEL_SELECTION` `backends_models.py` |
 | R-SUB-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | offered only where `SESSION_SHARING` (`agent_sdk/backends_sessions.py`); others get dedicated sessions, so the rule holds |
 | R-SUB-2 | ✅ | ✅ | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | codex #23094, claude #30085, kiro/KAS native |
-| R-SUB-3 | ➖ | ✅ | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | `MATE_WORKER_KIT` = {kas, claude, codex} `agent_sdk/backends_members.py`; others fall back to KAS (H17) |
+| R-SUB-3 | ➖ | ✅ | ✅ | ✅ | ➖ | ➖ | ✅ | ➖ | ➖ | `MATE_WORKER_KIT` = {kas, claude, codex, pi} `agent_sdk/backends_members.py`; others fall back to KAS (H17) |
 | R-LIFE-1 | ✅ | ✅ | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | `SESSION_EVICTION` = {kiro, kas, codex} `backends_sessions.py`; claude `CLIENT_NEW_CONVERSATION` |
 | R-LIFE-2 | ✅ | ✅ | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | KAS deletes (`acp/harness/base.py`); codex rollout delete `acp/harness/codex.py`; claude `acp/client_claude_session.py`; kiro sweep (#31395) |
 | R-LIFE-3 | ✅ | ✅ | ❓ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | `require_replay=self.is_kas_backend` `providers/acp_runtime_start.py`; kiro/codex answer not-found |
@@ -191,7 +190,7 @@ Unknown (❓, not measured): R-LAU-8, R-LAU-11, R-AUTH-2, R-SPEC-13, R-MCP-4, R-
 | R-USE-1 | M | not in `REPORT_USAGE` (`backends_turns.py`) | new: capture the harness's usage frame | yes | Usage page empty for this harness | no open PR |
 | R-ERR-3 | S | `undelivered_call_watch.py` matches only `KAS_TOOL_UNAVAILABLE_RE` (`agent_sdk/kas_tool_names.py`) | reuse the watcher with a per-harness pattern row | yes (capture each harness's 'tool not available' text) | a non-KAS worker's lost `work_report` is never flagged to its conductor | no open PR |
 
-Unknown (❓, not measured): R-LAU-8, R-LAU-11, R-AUTH-2, R-SPEC-13, R-MCP-4, R-MCP-5, R-MCP-7, R-MCP-9, R-MCP-10, R-MCP-14, R-ROW-1, R-ERR-2, R-ERR-5.
+Unknown (❓, not measured): R-LAU-8, R-LAU-11, R-AUTH-2, R-SPEC-13, R-MCP-4, R-MCP-5, R-MCP-7, R-MCP-10, R-MCP-14, R-ROW-1, R-ERR-2, R-ERR-5.
 
 ### opencode
 
@@ -269,11 +268,10 @@ Unknown (❓, not measured): R-LAU-8, R-LAU-11, R-SPEC-6, R-SPEC-13, R-MCP-5, R-
 
 ### deepseek
 
-✅ 29, ❌ 10, ❓ 19, ➖ 15.
+✅ 30, ❌ 9, ❓ 19, ➖ 15.
 
 | Req | Size | Where | Reuse or new design | Install to verify | User impact | Owner |
 |---|---|---|---|---|---|---|
-| R-LAU-3 | S | `acp/harness/deepseek.py` reads no version | reuse range table; needs a version source | yes (find where dsh reports its version) | deepseek upgrades run unmeasured | no open PR |
 | R-LAU-5 | S | absent from `PINNED_FIXTURE_ADAPTERS` | reuse: add a row | yes (lane pin) | indirect | no open PR |
 | R-LAU-9 | S | `acp/launch.py` runs `retrying_spawn_factory` only when set; `acp/client_spawn_env.py` builds `LaunchTools` without it, so `is_windows_spawn_blocked` (`acp/runtime_spawn_launch.py`) never runs on the direct client | reuse KAS fix: pass `retrying_spawn_factory` or classify in `launch.py` | no (Windows host to confirm) | Windows AppLocker/EDR block shown as a transport error | no open PR |
 | R-LAU-12 | S | `dashboard/openai_compat.py` calls `reject_if_kiro_unverified` for every `/v1/chat/completions`, whatever harness the slot runs | reuse `rerun_signs_in_via_kiro_cli` (`kiro_readiness.py`) | no | OpenAI-compatible endpoint refused when kiro-cli is signed out on a host whose default harness is not kiro | no open PR |

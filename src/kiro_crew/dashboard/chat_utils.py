@@ -503,9 +503,7 @@ def _broadcast_compaction_result(
         from kiro_crew.security import redact
 
         summary = redact(event.title)
-        msg_text = (
-            f"✅ Conversation compacted: {summary}" if summary else "✅ Conversation compacted."
-        )
+        msg_text = f"Conversation compacted: {summary}" if summary else "Conversation compacted."
         # Reset the context meter — the provider dropped its stale counts when
         # the completed status arrived (AcpPromptStats.reset_after_compaction),
         # and `reset` tells the frontend to delete its stored token counts too
@@ -527,12 +525,12 @@ def _broadcast_compaction_result(
 
         error = redact(event.title or "unknown error")
         if streak <= _COMPACTION_NOTICE_SHOW_FIRST_N:
-            msg_text = f"❌ Compaction failed: {error}"
+            msg_text = f"Error: Compaction failed: {error}"
         else:
             # Cooldown just elapsed after 1+ suppressed repeats — collapse
             # into one message instead of resuming per-turn spam.
             msg_text = (
-                f"❌ Compaction has failed {streak}x in a row "
+                f"Error: Compaction has failed {streak}x in a row "
                 f"({error}) — this conversation may be too large to "
                 "auto-compact. Consider `/compact` manually or starting a "
                 "new chat if this persists."
@@ -741,6 +739,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         AUTH_REQUIRED_KIND,
         AUTOMATION_NOTICE_KIND,
         AUTOMATION_STEER_META,
+        AUTOMATION_STEER_WIRE_KEY,
         COMPOSER_SEND_META,
         CONTEXT_OVERFLOW_KIND,
         CRON_NOTIFICATION_KIND,
@@ -750,11 +749,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         HEARTBEAT_PROMPT_KIND,
         IMAGE_REPAIR_KIND,
         KIRO_CLI_MISSING_KIND,
+        KIRO_CLI_SIGN_IN_KIND,
         MCP_APP_MESSAGE_KIND,
         MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND,
         MODEL_UNAVAILABLE_KIND,
         MODEL_UNENTITLED_KIND,
         REQUEUED_STEER_ROW_MID_META,
+        RESOURCE_WAKE_KIND,
         SEED_DECLINED_NOTICE_KIND,
         SESSION_START_FAILED_KIND,
         SPEC_HOOKS_NOTICE_KIND,
@@ -783,6 +784,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_system_injection_item,
         payload_for_replay,
         releases_past_subagent_hold,
+        resource_inject_row,
         teardown_hold_active,
     )
     from kiro_crew.dashboard.chat_utils_slack_options import (  # noqa: F401

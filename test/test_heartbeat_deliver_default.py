@@ -60,13 +60,13 @@ class TestDefaultDeliverConfig:
         orch, state = _make_orch("dashboard", monkeypatch)
         slot = _ChatSlot(key="chat-1")
         state.get_or_create_slot.return_value = slot
-        await orch._deliver_result("💓 Heartbeat", "task", "body", "")
+        await orch._deliver_result("Heartbeat", "task", "body", "")
         assert [(m["role"], m["content"], m["cls"]) for m in slot.messages] == [
-            ("assistant", "💓 Heartbeat\n\nbody", "msg msg-a")
+            ("assistant", "Heartbeat\n\nbody", "msg msg-a")
         ]
-        assert slot.title == "💓 task"
+        assert slot.title == "task"
         state.notify.assert_called_once_with(
-            "heartbeat", "💓 Heartbeat", "task\n\nbody", meta={"slot": "chat-1"}
+            "heartbeat", "Heartbeat", "task\n\nbody", meta={"slot": "chat-1"}
         )
         orch.slack.open_dm.assert_not_called()
         orch.slack.post_message.assert_not_called()
@@ -74,17 +74,17 @@ class TestDefaultDeliverConfig:
     @pytest.mark.asyncio()
     async def test_empty_deliver_slack_default_is_slack_plus_dashboard(self, monkeypatch, tmp_path):
         orch, state = _make_orch("slack", monkeypatch, real_dashboard_state(tmp_path))
-        await orch._deliver_result("💓 Heartbeat", "task", "body", "")
+        await orch._deliver_result("Heartbeat", "task", "body", "")
         orch.slack.open_dm.assert_awaited_once_with("U1")
         orch.slack.post_message.assert_awaited_once()
         assert orch.slack.post_message.await_args.args[0] == "D123"
-        assert notes(state) == [("heartbeat", "💓 Heartbeat", "task\n\nbody")]
+        assert notes(state) == [("heartbeat", "Heartbeat", "task\n\nbody")]
         assert list(state._slots) == []
 
     @pytest.mark.asyncio()
     async def test_explicit_slack_tag_overrides_dashboard_default(self, monkeypatch, tmp_path):
         orch, state = _make_orch("dashboard", monkeypatch, real_dashboard_state(tmp_path))
-        await orch._deliver_result("💓 Heartbeat", "task", "body", "slack")
+        await orch._deliver_result("Heartbeat", "task", "body", "slack")
         orch.slack.open_dm.assert_awaited_once_with("U1")
         orch.slack.post_message.assert_awaited_once()
         assert orch.slack.post_message.await_args.args[0] == "D123"
@@ -110,9 +110,9 @@ class TestDashboardNewSlotTitle:
         orch, state = _make_orch("dashboard", monkeypatch)
         slot = state.get_or_create_slot.return_value
         await orch._deliver_result(
-            "💓 Heartbeat", "Checking PR #163 CI status now.", "body", "dashboard"
+            "Heartbeat", "Checking PR #163 CI status now.", "body", "dashboard"
         )
-        assert slot.title == "💓 Checking PR #163 CI status now."
+        assert slot.title == "Checking PR #163 CI status now."
         assert slot._titled is True
         # Title pushed to the sidebar via the dedicated SSE event.
         state.push_slot_title.assert_called_once_with(slot.key, slot.title)
@@ -121,7 +121,7 @@ class TestDashboardNewSlotTitle:
     async def test_new_slot_title_is_persisted(self, monkeypatch):
         orch, state = _make_orch("dashboard", monkeypatch)
         slot = state.get_or_create_slot.return_value
-        await orch._deliver_result("💓 Heartbeat", "task summary", "body", "dashboard")
+        await orch._deliver_result("Heartbeat", "task summary", "body", "dashboard")
         state.conversation_log.set_title.assert_called_once()
         key_arg, title_arg = state.conversation_log.set_title.call_args.args
         assert key_arg == "dashboard:chat-1"  # _history_key_for(slot.key)
@@ -132,15 +132,15 @@ class TestDashboardNewSlotTitle:
         orch, state = _make_orch("dashboard", monkeypatch)
         slot = state.get_or_create_slot.return_value
         # Whitespace-only summary collapses to empty → use the generic title arg.
-        await orch._deliver_result("💓 Heartbeat", "   ", "body", "dashboard")
-        assert slot.title == "💓 Heartbeat"
+        await orch._deliver_result("Heartbeat", "   ", "body", "dashboard")
+        assert slot.title == "Heartbeat"
         assert slot._titled is True
 
     @pytest.mark.asyncio()
     async def test_new_slot_title_capped_at_80_chars(self, monkeypatch):
         orch, state = _make_orch("dashboard", monkeypatch)
         slot = state.get_or_create_slot.return_value
-        await orch._deliver_result("💓 Heartbeat", "x" * 200, "body", "dashboard")
+        await orch._deliver_result("Heartbeat", "x" * 200, "body", "dashboard")
         assert len(slot.title) <= 80
 
     @pytest.mark.asyncio()
@@ -150,10 +150,10 @@ class TestDashboardNewSlotTitle:
         orch, state = _make_orch("dashboard", monkeypatch)
         slot = state.get_or_create_slot.return_value
         state.conversation_log.set_title.side_effect = OSError("disk full")
-        await orch._deliver_result("💓 Heartbeat", "task", "body", "dashboard")
-        assert slot.title == "💓 task"
-        slot.append.assert_called_once_with("assistant", "💓 Heartbeat\n\nbody", "msg msg-a")
+        await orch._deliver_result("Heartbeat", "task", "body", "dashboard")
+        assert slot.title == "task"
+        slot.append.assert_called_once_with("assistant", "Heartbeat\n\nbody", "msg msg-a")
         state.push_slots_update.assert_called_once_with()
         state.notify.assert_called_once_with(
-            "heartbeat", "💓 Heartbeat", "task\n\nbody", meta={"slot": "chat-1"}
+            "heartbeat", "Heartbeat", "task\n\nbody", meta={"slot": "chat-1"}
         )

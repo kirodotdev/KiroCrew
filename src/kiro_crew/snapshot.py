@@ -76,6 +76,7 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     MANIFEST_VERSION,
     MAX_ARCHIVE_GIB_CEILING,
     SKIP_DB_UNPINNED_SOURCE,
+    SKIP_LINKED_TREE_ROOT,
     DatabaseCopyFailed,
     ManifestUnreadable,
     _ArchiveTooLarge,
@@ -113,6 +114,7 @@ from kiro_crew.snapshot_build import (  # noqa: F401 - facade re-exports
     _build_snapshot,
     _estimate_selected_bytes,
     _fsize,
+    _report_named_workspaces_left_out,
 )
 from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     _CONFIG_SETTINGS_DOCUMENTS,
@@ -121,6 +123,7 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     _FLAT_DOCUMENT_VALIDATORS,
     _HOST_LOCAL_PATHS,
     _JSON_OBJECT_LISTS,
+    _LINKABLE_TREE_ROOTS,
     _LOCKED_DOCUMENT_TREES,
     _REPLACE_ONLY_COMPONENTS,
     _TREE_DOCUMENT_VALIDATORS,
@@ -142,6 +145,7 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     UnsafeComponentRoot,
     _facade,
     _is_host_local,
+    _may_hold_host_local,
     _mc_dir,
     _never_ships,
     _tree_roots_replace_clears,
@@ -213,6 +217,7 @@ from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _rmtree_or_raise,
     _save_locked_document_to,
     _trees_absent_from_bundle,
+    host_local_installable,
 )
 
 if TYPE_CHECKING:
@@ -848,6 +853,7 @@ def snapshot_main(
     # The bundle on local disk is not redacted either, so it gets the same notice as
     # the copy that leaves the host: which components carry credential material.
     _report_unresolved_payload(selected, uploading=False)
+    _report_named_workspaces_left_out(mc, selected)
 
     _audit("snapshot_created", f"{outfile} ({human})")
 
@@ -1003,13 +1009,62 @@ def _report_held_back(held: dict[str, list[str]], mc: Path) -> None:
         print("   Check each one, then enable it on the dashboard's Hooks page.")
 
 
+def _is_interactive() -> bool:
+    try:
+        return bool(sys.stdin and sys.stdin.isatty() and sys.stdout.isatty())
+    except (ValueError, AttributeError):
+        return False
+
+
+def _resolve_mode(explicit: str | None) -> str | None:
+    """The restore mode the operator chose, or None after saying why none was.
+
+    Restore has no default mode: Replace overwrites the live settings documents, so the
+    mode is either named with ``--mode`` or typed at a prompt. Off a terminal there is
+    nobody to ask, so the command refuses. Whether a ``memory.db`` exists says nothing
+    about what the operator wants and never selects a mode.
+    """
+    if explicit:
+        return explicit
+    if not _is_interactive():
+        _audit("state_restore_rejected", "reason=mode_not_chosen")
+        print(
+            "❌ No restore mode was chosen and no terminal is available to ask. "
+            "Run again with --mode merge or --mode replace."
+        )
+        return None
+    print(
+        "Choose how to restore:\n"
+        "  merge    keep what this install already has and add what the archive carries\n"
+        "  replace  overwrite this install's state with the archive's (current state is "
+        "backed up first)"
+    )
+    print("Type merge or replace: ", end="", flush=True)
+    try:
+        answer = sys.stdin.readline().strip()
+    except (KeyboardInterrupt, EOFError):
+        answer = ""
+    if answer not in ("merge", "replace"):
+        _audit("state_restore_rejected", "reason=mode_not_chosen")
+        print("\n❌ No restore mode was chosen. Nothing was changed.")
+        return None
+    return answer
+
+
 def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | None = None) -> int:
     if parsed is None:
         p = argparse.ArgumentParser(
             prog="kirocrew-restore", description="Restore KiroCrew state from a snapshot."
         )
         p.add_argument("snapshot", nargs="?")
-        p.add_argument("--mode", choices=("replace", "merge"))
+        p.add_argument(
+            "--mode",
+            choices=("replace", "merge"),
+            help=(
+                "replace = overwrite existing state, merge = keep it and add; "
+                "asked on a terminal when omitted, refused off a terminal"
+            ),
+        )
         p.add_argument("--dry-run", action="store_true")
         p.add_argument(
             "--force", action="store_true", help="Allow restore even if gateway is running"
@@ -1109,7 +1164,9 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             return 1
 
     mc = _mc_dir()
-    mode = args.mode or ("merge" if (mc / "memory.db").is_file() else "replace")
+    mode = _resolve_mode(getattr(args, "mode", None))
+    if mode is None:
+        return 1
 
     # The archive is opened and bounded by its member headers BEFORE the staging root is
     # created, so a refused archive leaves the data home exactly as it was.
@@ -1352,6 +1409,12 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             return 0
 
         mc.mkdir(parents=True, exist_ok=True)
+        # Before either mode installs anything. Extraction screened entry NAMES; this reads
+        # what they became on disk, which no spelling of a name gets past. Read here, not at
+        # module level: the import side owns the walker and imports this facade.
+        from kiro_crew.portability import _strip_host_local_store_state
+
+        _strip_host_local_store_state(snap)
         try:
             # Replace installs everything it carries; merge installs only what the
             # destination is missing. Both are validated for exactly what they will put in

@@ -113,7 +113,7 @@ class TestLinuxServiceScopesOwnership:
         assert rc == 0
         out = capsys.readouterr().out
         assert "system scope: stopped (its unit file " in out
-        assert "✅ kirocrew service stopped and removed." in out
+        assert "kirocrew service stopped and removed." in out
         assert "No kirocrew service was removed" not in out
 
     def test_a_running_system_unit_left_not_found_by_a_daemon_reload_is_refused_not_not_installed(
@@ -143,8 +143,9 @@ class TestLinuxServiceScopesOwnership:
         assert report.unfinished == frozenset({"system"})
         assert not any("stop" in c or "disable" in c or "rm" in c for c in run.calls), run.calls
         assert rc == 1
-        assert "⚠️ system scope: left in place (an active unit whose load state is not-found" in (
-            capsys.readouterr().out
+        assert (
+            "Warning: system scope: left in place (an active unit whose load state is not-found"
+            in (capsys.readouterr().out)
         )
 
     def test_a_runtime_masked_system_unit_with_no_file_is_reported_not_claimed_removed(self):

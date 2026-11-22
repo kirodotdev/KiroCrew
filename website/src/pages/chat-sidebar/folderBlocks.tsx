@@ -23,6 +23,7 @@ import type { ChatFolder } from '../../types'
 import { i18nT } from '../../i18n/t'
 import { PrivateChatRow } from './PrivateChatRow'
 import { MateFolderFace, isMateManaged } from './MateFolderFace'
+import { isEmptyBotSubfolder } from '../../utils/mateFolders'
 import { ParentFolderDropTarget, SortableSubfolderBlock } from './dnd/targets'
 import type { Slot } from './types'
 import { detectFolderConductor } from './folderConductor'
@@ -41,8 +42,8 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
   const { activeDrag, armHold, boardLaneActive, connected, createChatInFolder, deleteFolderWithConfirm,
     disarmHold, dispatch, editName, editScope, editingId, filterHiddenFolders, folderCompare,
     folderConductorPin, countSubfolderContents, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef, folderNameMatchIds,
-    folderReorderable, folderSortMode, folderSubtrees, folders, foldersWithActiveSubtree, heldLane,
-    hiddenByContainer, hideEmptyFolderBody, ime, instantCloseId, isActiveRow, isFolderFilteredOut,
+    folderReorderable, folderSortMode, folderSubtrees, folders, foldersHoldingSessions, foldersWithActiveSubtree, heldLane,
+    hiddenByContainer, hideEmptyFolderBody, hideEmptyFolders, ime, instantCloseId, isActiveRow, isFolderFilteredOut,
     isFolderHidden, listNarrowed, moveFolderTo, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot,
     pinned, pinnedFolderAncestors, pinnedFolderSubtree, renameCommit, renderSessionRow, renderStaleSection, revealFlash, revealedContainers,
     searchRanked, setEditName, setEditScope, setEditingId, setFolderCleanupRoot, setFolderCreateError, setFolderModal, setFolderOfflineNotice, sidebarRows,
@@ -51,6 +52,11 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     conductorExpanded, subagentApprovalCounts } = shell
   /** The signals a folded crew's line reads: the same ones each worker's own row
    *  renders from, so the line and the rows it stands for agree. */
+  /** Whether the person's menu on *folder* is its Delete-only menu: an empty
+   *  folder inside a Bot's home. Any session filed in it counts, not only the
+   *  rows a search draws. */
+  const botSubfolderDeletable = (folder: ChatFolder): boolean =>
+    isEmptyBotSubfolder(folder, folders, foldersHoldingSessions.has(folder.id))
   const crewSignals = crewSignalsFrom({ isRunning: sidebarRows.isRunning, subagentApprovalCounts, unreadSet })
   /**
    * The session CONDUCTING a folder, derived from the folder's own rows.
@@ -254,6 +260,16 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
       : pinnedFolderAncestors.has(folder.id)
         ? i18nT('pages.chatSidebar.holds_pinned_folder', { name: folder.name, pinned: pinnedDescendantOf.get(folder.id)?.name ?? '' })
         : null
+    // A Bot's folder is managed for the person; an empty sub-folder offers
+    // only its delete, which the server allows from the person's browser.
+    if (isMateManaged(folder, folders)) {
+      return (
+        <>
+          <Item className="text-danger focus:text-danger" data-testid={tid('delete')} {...offlineMenuRow(connected, i18nT('utils.offline.delete_folders'), i18nT('pages.chatSidebar.delete_folder'), () => { deleteFolderWithConfirm(folder) })}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</Item>
+          <OfflineMenuReason testId={columnId === undefined ? (ctx ? 'folder-offline-reason-ctx' : 'folder-offline-reason') : (ctx ? 'col-folder-offline-reason-ctx' : 'col-folder-offline-reason')} />
+        </>
+      )
+    }
     const privateChatRows = (
       <>
         {/* Menu create entries take NO open-in-tab gesture (#10575,
@@ -427,6 +443,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     }
     // A mate's folder is managed for the person: open and collapse only.
     const mateManaged = isMateManaged(folder, folders)
+    const botDeletable = mateManaged && botSubfolderDeletable(folder)
     const draggable = !!dragHandleProps && editingId !== folder.id && !mateManaged
     // Valid "Move folder to" destinations: everything outside this folder's
     // own subtree (cycle guard). One O(1) lookup, computed once per row.
@@ -451,7 +468,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
       // browser's own edit menu (cut/paste). A drag opts out too, so a touch
       // hold that lifted the header does not also open the menu 700 ms in.
       <ContextMenu key={`folder-header-${folder.id}`}>
-        <ContextMenuTrigger asChild disabled={dragging || mateManaged || (editingId === folder.id && editScope === 'list')}>
+        <ContextMenuTrigger asChild disabled={dragging || (mateManaged && !botDeletable) || (editingId === folder.id && editScope === 'list')}>
       <div
         // The reveal target for this folder (command palette Folders tab), and the
         // only marker that identifies a folder ROW. Deliberately not the existing
@@ -655,7 +672,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
           *  is what an empty folder usually wants), and an empty folder holds no
           *  sessions, so it resolves no conductor and the third control below is
           *  never emitted on it. */}
-        {!mateManaged && !(editingId === folder.id && editScope === 'list') && (
+        {(!mateManaged || botDeletable) && !(editingId === folder.id && editScope === 'list') && (
         <div className={`transition-all flex items-center gap-0.5 rounded-md group-focus-visible:opacity-100 group-has-[:focus-visible]:opacity-100 has-[[data-state=open]]:opacity-100${emptyRow ? ' shrink-0 -my-1' : ' absolute top-1/2 -translate-y-1/2 right-1.5 p-1 bg-card border border-border shadow-sm opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(hover:none)]:static [@media(hover:none)]:translate-y-0 [@media(hover:none)]:shrink-0 [@media(hover:none)]:-my-1 [@media(hover:none)]:p-0 [@media(hover:none)]:bg-transparent [@media(hover:none)]:border-transparent [@media(hover:none)]:shadow-none'}`}>
           {/* ⋯ menu first, then the primary "new chat" action.  Sibling
            *  <button>s of the collapse toggle (valid ARIA — no nesting). */}
@@ -672,6 +689,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
            *  session as a background TAB; Cmd/Ctrl+Shift-click opens it in a
            *  new active tab. Gated on `onOpenSlotInNewTab` --
            *  embedded hosts have no tab strip, so the modifier is ignored. */}
+          {!mateManaged && (
           <button type="button" data-testid={`folder-new-chat-${folder.id}`} className="cursor-pointer p-[4px] rounded text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none" title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name }))}
             onMouseDownCapture={onOpenSlotInNewTab ? (e => { if (e.button === 1) e.preventDefault() }) : undefined}
             onAuxClick={onOpenSlotInNewTab ? (e => {
@@ -680,7 +698,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
               e.stopPropagation()
               createChatInFolder(folder.id, { inNewTab: 'background' })
             }) : undefined}
-            onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, { inNewTab: onOpenSlotInNewTab ? createTabModeForClick(e) : false }) }}><Plus size={12} /></button>
+            onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, { inNewTab: onOpenSlotInNewTab ? createTabModeForClick(e) : false }) }}><Plus size={12} /></button>)}
           {/* Third control: the conductor's own chat, on the row itself.
            *
            *  This is the one place in the sidebar over the two-controls-per-row
@@ -1029,7 +1047,9 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     // most of the sidebar's height on rows holding nothing. Dropping the body
     // rather than collapsing it is why there is no per-folder expansion state:
     // nothing is hidden, so nothing needs re-reaching.
-    const emptyBody = hideEmptyFolderBody && childNodes.length === 0
+    // The empty folders a session drag brings back come back as one row each,
+    // which halves how far the list moves under the pointer.
+    const emptyBody = (hideEmptyFolderBody || (hideEmptyFolders && activeDrag?.type === 'session')) && childNodes.length === 0
     const wrapped = childNodes.length > 0 ? (
       <div key={`folder-children-${folder.id}`} className={FOLDER_BODY_CLS}>
         <FolderRail name={folder.name} id={folder.id} onToggle={e => toggleListFolderCollapse(folder, e.currentTarget)} />

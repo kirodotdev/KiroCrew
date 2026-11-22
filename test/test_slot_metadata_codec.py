@@ -65,6 +65,7 @@ _POPULATED: dict = {
     "crew_mode_agent": "kirocrew-conductor",
     "app_agent_owner": "pr-bulk-ops/agent-a",
     "project": "/srv/p",
+    "_project_picked": True,
     "executor": "remote",
     "instance_id": "inst-1",
     "remote_slot": "rs-1",
@@ -109,9 +110,9 @@ _APPLIED = {
 }
 
 
-#: The key order each save form writes: the bytes a save puts on disk, as the two
-#: hand-written save sites wrote them before the codec. A change here is a change to
-#: every saved file.
+#: The key order each save form writes for the keys saved files already carry: the
+#: bytes a save puts on disk. Reordering or dropping one of these is a change to every
+#: saved file; a new key needs no entry here.
 _BASE_LINE_ORDER = (
     "_type",
     "created_at",
@@ -138,6 +139,7 @@ _BASE_LINE_ORDER = (
     "crew_mode_agent",
     "app_agent_owner",
     "project",
+    "project_picked",
     "executor",
     "instance_id",
     "remote_slot",
@@ -202,6 +204,7 @@ _BASE_MERGE_ORDER = (
     "crew_mode_agent",
     "app_agent_owner",
     "project",
+    "project_picked",
     "app",
     "origin",
     "created_by",
@@ -450,9 +453,16 @@ def test_both_save_forms_write_every_slot_owned_key(tmp_path, monkeypatch):
         sorted(SLOT_OWNED_META_KEYS - {"_type", "created_at", "last_consolidated"} - set(merge))
         == []
     )
-    assert list(line) == [key for key in _BASE_LINE_ORDER if key in line]
-    assert list(merge) == [key for key in _BASE_MERGE_ORDER if key in merge]
-    assert codec.LINE_ORDER == _BASE_LINE_ORDER and codec.MERGE_ORDER == _BASE_MERGE_ORDER
+    # Each form writes in the codec's declared order...
+    assert list(line) == [key for key in codec.LINE_ORDER if key in line]
+    assert list(merge) == [key for key in codec.MERGE_ORDER if key in merge]
+    # ...and that order keeps every key a saved file already has, in its place
+    # relative to the others. A new key may go anywhere.
+    for order, base in (
+        (codec.LINE_ORDER, _BASE_LINE_ORDER),
+        (codec.MERGE_ORDER, _BASE_MERGE_ORDER),
+    ):
+        assert [key for key in order if key in base] == list(base)
 
 
 def test_the_coverage_check_sees_a_form_that_drops_a_key(tmp_path, monkeypatch):
@@ -489,6 +499,7 @@ def test_the_full_save_clears_by_absence_and_the_merge_by_a_falsy_value(tmp_path
         "agent_kind": "",
         "app_agent_owner": "",
         "project": "",
+        "project_picked": False,
         "turn_in_flight_generation": 0,
         "turn_in_flight_prompt": None,
         "deferred_notes": [],

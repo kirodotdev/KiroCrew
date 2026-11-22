@@ -409,6 +409,22 @@ class ConfigWatch:
         self._stale: dict[int, tuple[Subscription, frozenset[str]]] = {}
         self._cycle_lock: asyncio.Lock | None = None
         self.last_error: str | None = None
+        # Told where a config file does not parse each time a save leaves it torn
+        # (one sentence per file), and told ``()`` once a later read adopts it
+        # whole, with whether the snapshot held is the load the process booted on
+        # a torn file (defaults, not earlier settings). The gateway points it at the
+        # bell note; nothing here imports it.
+        self.tear_reporter: Callable[[tuple[str, ...], bool], Any] | None = None
+        # What the reporter should be told, and what it last accepted. ``None``
+        # sent means not yet told in this process, so the first adopted read
+        # reports even when whole: a note stored by an earlier process is cleared.
+        # A report that raises stays unsent and is retried on every tick.
+        self._tear: tuple[str, ...] = ()
+        self._tear_sent: tuple[str, ...] | None = None
+        self._tear_failed: tuple[str, ...] | None = None
+        # True while the snapshot held is the boot load of a torn file, until a read
+        # adopts the file whole. The note then says defaults run, as the start report's.
+        self._booted_torn = False
         # The ``.env`` fingerprint a credential apply last FAILED on. A failed
         # apply keeps the fingerprint unadvanced so the next tick retries, which
         # means the same bad file re-fails every ~2s; this dedups the WARNING to
@@ -655,6 +671,7 @@ class ConfigWatch:
         """
         self._cfg = cfg
         self._doc = watch_document(cfg)
+        self._booted_torn = DEGRADED_WHOLE_CONFIG in cfg.degraded_sections
         if fingerprint is not None:
             self._fingerprint = fingerprint
 
@@ -840,6 +857,7 @@ class ConfigWatch:
             if not config_changed and not env_changed:
                 if self._stale and self._cfg is not None:
                     await self._retry_stale(self._cfg)
+                await self._report_tear()
                 return None
             # Read the raw ``.env`` map off the loop whenever ``.env`` moved, so
             # the diff and the ``os.environ`` apply below are pure CPU work. The
@@ -893,11 +911,12 @@ class ConfigWatch:
                 await self._dispatch(change)
                 return change
             try:
-                cfg, doc, torn = await asyncio.to_thread(self._load_with_doc)
+                cfg, doc, found = await asyncio.to_thread(self._load_with_doc)
             except Exception as e:  # noqa: BLE001 - keep the previous snapshot
                 self.last_error = f"{type(e).__name__}: {e}"
                 logger.warning("config reload failed; keeping previous snapshot: %s", e)
                 return None
+            torn = bool(found)
             if not torn and DEGRADED_WHOLE_CONFIG in cfg.degraded_sections:
                 # The probe found the file whole, yet the load carries the
                 # whole-config flag. Usually that flag is the loader's memory of an
@@ -909,12 +928,21 @@ class ConfigWatch:
                 # snapshot stays, and the next tick reads the settled file.
                 torn = await asyncio.to_thread(self._current_fingerprint) != fingerprint
             kept = _keep_last_valid(self._cfg, cfg, torn_now=torn)
+            # Where each file fails to parse, from the probe; empty when the read
+            # is held only because the file moved under it.
+            tear: tuple[str, ...] = ()
             if kept is not cfg:
                 # The values in force stay; the diff below is taken against them,
                 # so a repair back to them dispatches nothing and a repair to new
                 # values dispatches the new values.
+                tear = found
+                if tear:
+                    # A new torn save always reaches the reporter, so a note the
+                    # person deleted rings again; the note itself drops a repeat.
+                    self._tear_sent = None
                 logger.warning(
-                    "config.json does not parse; keeping the previous settings until it does"
+                    "config.json does not parse; keeping the previous settings until it does%s",
+                    (": " + " ".join(tear)) if tear else "",
                 )
                 cfg, doc = kept, watch_document(kept)
             if self._hold_depth > 0 or self._hold_gen != hold_gen:
@@ -941,6 +969,14 @@ class ConfigWatch:
             # mid-read leaves it unequal to the file, so the next tick reloads.
             self._cfg, self._doc, self._fingerprint = cfg, doc, fingerprint
             self.last_error = None
+            if tear or not torn:
+                self._tear = tear
+            if not torn:
+                self._booted_torn = False
+                # Every whole read settles the note, whatever the last one said: a
+                # held edit reads as whole here while the file on disk does not parse.
+                self._tear_sent = None
+            await self._report_tear()
             if not changed:
                 if self._stale:
                     await self._retry_stale(cfg)
@@ -953,6 +989,28 @@ class ConfigWatch:
             )
             await self._dispatch(change)
             return change
+
+    async def _report_tear(self) -> None:
+        """Tell :attr:`tear_reporter` the current tear when it was not yet told; never raises."""
+        tear, reporter = self._tear, self.tear_reporter
+        if reporter is None or tear == self._tear_sent:
+            return
+        try:
+            result = reporter(tear, self._booted_torn)
+            if inspect.isawaitable(result):
+                await asyncio.wait_for(result, timeout=APPLIER_TIMEOUT_SECS)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a failed report must not stop the reload
+            # Retried each tick; only the first failure for this tear is a WARNING.
+            logger.log(
+                logging.DEBUG if self._tear_failed == tear else logging.WARNING,
+                "config parse-error report failed; retrying on the next tick",
+                exc_info=True,
+            )
+            self._tear_failed = tear
+            return
+        self._tear_sent, self._tear_failed = tear, None
 
     async def _dispatch(self, change: ConfigChange) -> None:
         for sub in self._live_subscriptions():
@@ -1231,13 +1289,24 @@ class ConfigWatch:
         return KiroCrewConfig.load()
 
     @classmethod
-    def _load_with_doc(cls) -> tuple["KiroCrewConfig", dict[str, Any], bool]:
+    def _load_with_doc(cls) -> tuple["KiroCrewConfig", dict[str, Any], tuple[str, ...]]:
+        """The load, its watch document, and :meth:`_document_tear` read after it."""
         cfg = cls._load()
-        return cfg, watch_document(cfg), cls._document_is_torn()
+        return cfg, watch_document(cfg), cls._document_tear()
 
     @staticmethod
     def _document_is_torn() -> bool:
-        """Whether a config file present on disk fails to parse as a JSON object NOW.
+        """Whether a config file present on disk fails to parse as a JSON object NOW."""
+        return bool(ConfigWatch._document_tear())
+
+    @staticmethod
+    def _document_tear() -> tuple[str, ...]:
+        """Where each config file present on disk fails to parse as a JSON object NOW.
+
+        One sentence per torn file: the path, and for a syntax error the line,
+        column and parser's reason. No text from the file is quoted: the line
+        that fails to parse is the one most likely to hold a value in a shape no
+        masking recognises. Empty when every file present parses.
 
         The loader answers such a file with defaults and a degradation flag that
         stays for the life of the process, so the flag cannot say whether THIS
@@ -1262,6 +1331,7 @@ class ConfigWatch:
 
         torn: set[str] = set()
         unknown: set[str] = set()
+        reasons: list[str] = []
         local = config_local_path()
 
         def _read(path: Any) -> bytes:
@@ -1283,13 +1353,15 @@ class ConfigWatch:
                         unknown.add(str(local))
                     continue
                 data = json.loads(content)
-            except Exception:  # noqa: BLE001 - unreadable or unparseable: torn
+            except Exception as e:  # noqa: BLE001 - unreadable or unparseable: torn
                 torn.add(str(path))
+                reasons.append(_tear_reason(path, e))
                 continue
             if not isinstance(data, dict):
                 torn.add(str(path))
+                reasons.append(f"{path} is not a JSON object.")
         _set_torn_files(torn | unknown)
-        return bool(torn)
+        return tuple(reasons)
 
 
 # ── the last probe's torn files ──────────────────────────────────────
@@ -1301,6 +1373,15 @@ class ConfigWatch:
 #: may still predate an opt-out written during the tear. Read only by the
 #: code-channel dispatch opt-in; the loader's degradation record is untouched.
 _TORN_FILES: frozenset[str] = frozenset()
+
+
+def _tear_reason(path: Any, error: Exception) -> str:
+    if isinstance(error, json.JSONDecodeError):
+        # Imported here: the module costs a start that never reads a torn file.
+        from kiro_crew.config.syntax_report import position_sentence
+
+        return position_sentence(path, error.lineno, error.colno, error.msg)
+    return f"{path} could not be read ({type(error).__name__})."
 
 
 def _set_torn_files(paths: Iterable[str]) -> None:

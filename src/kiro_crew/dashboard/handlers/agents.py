@@ -5,7 +5,7 @@ agents handler through this module. The handler families live in the
 ``agent_admin`` owners -- ``app_mcp_ownership``, ``agent_config``,
 ``default_agent``, ``capabilities``, ``template_lineage``, ``fork_publish``,
 ``agent_detail``, ``roster``, ``installed_agents``, ``crew_records``,
-``crew_update``, ``crew_removal`` and ``avatars`` -- and ``_facade_compose.compose``
+``crew_update``, ``crew_removal``, ``avatars`` and ``catalog_bounds`` -- and ``_facade_compose.compose``
 runs them on this module's globals, so a patch of ``agents.<name>`` reaches them.
 
 This module keeps the imports, constants and seams the owners read (``_err500``,
@@ -42,11 +42,12 @@ from aiohttp import BodyPartReader, web  # noqa: F401
 
 from kiro_crew import agent_state  # noqa: F401
 from kiro_crew import crew_teams as teams_mod  # noqa: F401
-from kiro_crew import model_registry, model_scope
+from kiro_crew import model_registry, model_scope, workload_identity
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import (  # noqa: F401 - selectable_backend_values is a facade name
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_PROMPT_HANDLER_COMMANDS,
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
@@ -153,6 +154,7 @@ from kiro_crew.dashboard.agent_admin import agent_detail as _owner_agent_detail
 from kiro_crew.dashboard.agent_admin import app_mcp_ownership as _owner_app_mcp_ownership
 from kiro_crew.dashboard.agent_admin import avatars as _owner_avatars
 from kiro_crew.dashboard.agent_admin import capabilities as _owner_capabilities
+from kiro_crew.dashboard.agent_admin import catalog_bounds as _owner_catalog_bounds
 from kiro_crew.dashboard.agent_admin import crew_records as _owner_crew_records
 from kiro_crew.dashboard.agent_admin import crew_removal as _owner_crew_removal
 from kiro_crew.dashboard.agent_admin import crew_update as _owner_crew_update
@@ -220,6 +222,7 @@ from kiro_crew.dashboard.agent_admin.capabilities import (  # noqa: F401
     api_capability_skills_list,
     api_capability_skills_uninstall,
 )
+from kiro_crew.dashboard.agent_admin.catalog_bounds import _bounded_catalog  # noqa: F401
 from kiro_crew.dashboard.agent_admin.crew_records import (  # noqa: F401
     _api_kirocrew_agents_create,
     _created_response,
@@ -339,6 +342,7 @@ from kiro_crew.dashboard.handlers.agents_session_commands import (
 from kiro_crew.dashboard.handlers.models_kas_bundle import (
     api_models_kas_bundle,
     api_models_kas_crew_relay,
+    api_models_kas_workload,
 )
 from kiro_crew.dashboard.handlers.source_providers import owner_view_for_request  # noqa: F401
 from kiro_crew.dashboard.kas_local_commands import local_harness_menu
@@ -385,6 +389,7 @@ from kiro_crew.user_json import loads_user_json  # noqa: F401
 from kiro_crew.validation import TEMPLATE_NAME_RE  # noqa: F401
 
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
+_MODEL_LIST_STDERR_HEAD_CHARS = 300  # logged only when the tail cut the start
 # How long one GET /api/models waits for a catalog before answering the degraded
 # 503. Unchanged: a remote hub still budgets its whole cold path against this
 # bound (see api_models), so raising it would move
@@ -1005,75 +1010,6 @@ class _CatalogUnavailable(Exception):
         self.code = code
 
 
-def _bounded_catalog(models: list[dict]) -> list[dict]:
-    """Clamp a parsed catalog to what the cache may safely retain.
-
-    The retention point (:data:`_catalog_cache`) holds the list past the request,
-    so it is bounded here before it is stored, through the SAME admission the
-    window / advertised stores use — ``model_registry.ADVERTISED_MODELS_MAX_IDS``
-    rows, each identifying field (``model_name`` / ``model_id``) at most
-    ``ADVERTISED_MODEL_ID_MAX_CHARS`` — so the cache cannot serve an id those
-    stores refused. An over-long id is REFUSED (its whole row skipped), never
-    truncated, matching :func:`model_registry.admit_catalog_rows`'s own
-    invariant; the picker reads the name, so a sliced name would name a different
-    model or none.
-
-    Each remaining scalar field (str / int / float / bool / None) is kept, with
-    strings clamped to the id-length bound and a row holding at most
-    :data:`_CATALOG_CACHE_MAX_FIELDS_PER_ROW`; a non-scalar field (nested object
-    or array) is dropped — no reader of the cached list consumes one, and it is
-    the unbounded edge the retention bound exists to close. Row ORDER is
-    preserved (readers treat catalog order as meaningful). Rows and fields
-    discarded for any reason are counted and logged once per snapshot.
-    """
-    max_rows = model_registry.ADVERTISED_MODELS_MAX_IDS
-    max_chars = model_registry.ADVERTISED_MODEL_ID_MAX_CHARS
-    bounded: list[dict] = []
-    dropped_rows = 0
-    dropped_fields = 0
-    for row in models:
-        if len(bounded) >= max_rows:
-            dropped_rows += 1
-            continue
-        if not isinstance(row, dict):
-            dropped_rows += 1
-            continue
-        # Refuse (skip) a row whose identifying field is over-long, rather than
-        # slicing it into an id no store retained.
-        ident = row.get("model_name") or row.get("model_id")
-        if isinstance(ident, str) and len(ident) > max_chars:
-            dropped_rows += 1
-            continue
-        kept: dict = {}
-        for key, value in row.items():
-            if len(kept) >= _CATALOG_CACHE_MAX_FIELDS_PER_ROW:
-                dropped_fields += 1
-                continue
-            # The KEY is a retained string too: refuse (skip) an over-long one
-            # rather than cache it, so no retained string is unbounded.
-            if isinstance(key, str) and len(key) > max_chars:
-                dropped_fields += 1
-                continue
-            if isinstance(value, bool) or value is None or isinstance(value, (int, float)):
-                kept[key] = value
-            elif isinstance(value, str):
-                kept[key] = value[:max_chars]
-            else:
-                # Non-scalar (nested dict/list): dropped — unbounded and unread.
-                dropped_fields += 1
-        bounded.append(kept)
-    if dropped_rows or dropped_fields:
-        logger.warning(
-            "api_models: catalog cache dropped %d row(s) and %d field(s) over the "
-            "retention bound (max_rows=%d, max_id_chars=%d)",
-            dropped_rows,
-            dropped_fields,
-            max_rows,
-            max_chars,
-        )
-    return bounded
-
-
 @dataclasses.dataclass
 class _CatalogCache:
     """The last good ``--list-models`` catalog, kept in memory only.
@@ -1232,13 +1168,24 @@ async def _fetch_kiro_catalog() -> list[dict]:
     if proc.returncode != 0:
         from kiro_crew.platform import redact_via_context  # noqa: F811
 
-        stderr_tail = stderr.decode(errors="replace").strip()
-        stderr_tail = redact_via_context(stderr_tail)[-_MODEL_LIST_STDERR_TAIL_CHARS:]
+        stderr_text = redact_via_context(stderr.decode(errors="replace").strip())
+        stderr_tail = stderr_text[-_MODEL_LIST_STDERR_TAIL_CHARS:]
         logger.warning(
             "api_models: --list-models exited %s: %s; returning 503",
             proc.returncode,
             stderr_tail or "<no stderr>",
         )
+        # A long stderr's first error can sit in the start the tail drops. Log only
+        # the part the tail cut, from the same redacted text, so nothing logs twice.
+        cut = len(stderr_text) - len(stderr_tail)
+        if cut:
+            head = stderr_text[: min(cut, _MODEL_LIST_STDERR_HEAD_CHARS)]
+            logger.warning(
+                "api_models: --list-models stderr began (first %d of %d chars cut above): %s",
+                len(head),
+                cut,
+                head,
+            )
         # Classify the ONE non-zero exit that is not a degraded backend blip: an
         # expired / signed-out kiro-cli login. ``--list-models`` fails that way
         # mid-session once the token lapses, and the generic 503 below rendered as
@@ -1447,6 +1394,9 @@ async def api_models(request: web.Request) -> web.Response:
     # backend, which is why it is not a capability-set branch like the one above.
     if bundle_route:
         return await api_models_kas_bundle(request)
+    # No kiro-cli sign-in on a workload-identity host: the engine's own list, as above.
+    if backend == ACP_BACKEND_KAS and workload_identity.active():
+        return await api_models_kas_workload(request)
     # kiro-cli opens a browser login for ANY subcommand run signed out, and the
     # frontend polls here every 8s while degraded, so no spawn below may run unless
     # reject_if_kiro_unverified passes (tight 30 s bound: the only server-side
@@ -1995,5 +1945,6 @@ _facade_compose(
         _owner_crew_update,
         _owner_crew_removal,
         _owner_avatars,
+        _owner_catalog_bounds,
     ),
 )

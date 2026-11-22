@@ -30,6 +30,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 import MessageErrorBoundary from '../../components/MessageErrorBoundary'
 import { Btn, SendBtn } from '../../components/ui'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { useReturnInsertsNewline } from '../../hooks/useComposerSendMode'
 import { ApiError } from '../../api/apiError'
 import { threadQueryKey, threadsApi, threadsQueryKey, type ThreadReply } from '../../api/threads'
 import { fmtMessageTime } from '../chat/messageTime'
@@ -126,6 +127,7 @@ export default function ThreadPanel({ slot, mid, crewmateName, crewmateLabel, on
     threadDrafts.set(slot, mid, text)
   }, [slot, mid])
   const ime = useImeGuard()
+  const returnInsertsNewline = useReturnInsertsNewline()
   const rootRef = useRef<HTMLDivElement>(null)
   const scrollerRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -380,7 +382,7 @@ export default function ThreadPanel({ slot, mid, crewmateName, crewmateLabel, on
             onChange={(e) => setDraft(e.target.value)}
             {...ime.bindComposition()}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) { if (ime.claimEnter(e)) submit() }
+              if (e.key === 'Enter' && !e.shiftKey && !returnInsertsNewline) { if (ime.claimEnter(e)) submit() }
             }}
             className={/* focus-cue-ok: the cue is the composer card's focus-within border-accent, the same cue the main composer shell paints; a second ring on the textarea would double-paint one control. */ 'flex-1 min-w-0 resize-none bg-transparent text-[13px] leading-6 text-card-fg outline-hidden placeholder:text-muted'}
             placeholder={t(unreadable ? 'pages.chat.thread.reply_after_retry' : 'pages.chat.thread.reply_placeholder')}

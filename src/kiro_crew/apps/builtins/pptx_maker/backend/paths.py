@@ -31,7 +31,7 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.manager import app_data_dir
-from kiro_crew.security import is_sensitive_path, redact
+from kiro_crew.security import is_sensitive_path, redact, refuses
 
 logger = logging.getLogger("kirocrew.app.pptx-maker")
 
@@ -225,7 +225,7 @@ def resolve_deck_dir(deck_id: str) -> Path | None:
     """
     if not SEGMENT_RE.match(deck_id or ""):
         return None
-    if redact(deck_id) != deck_id:
+    if refuses(deck_id, redact):
         logger.warning("pptx-maker: refusing a deck id that looks like a credential")
         return None
     root = deck_root()

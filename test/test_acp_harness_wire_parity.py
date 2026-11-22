@@ -87,10 +87,14 @@ def _fast_no_report_ceiling(monkeypatch):
     backend that emits no MCP registration frames; at the production ceiling
     each capture stalls for seconds and buys nothing -- the ceiling is not what
     this module measures.
+
+    A zero ceiling, the value production passes for an MCP-free runtime: any
+    positive one still holds the drain for its full ``duration``, because the
+    drain waits until ``max(duration, ceiling)`` for a first report.
     """
     import kiro_crew.acp.session_handle as sh
 
-    monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 0.05, raising=False)
+    monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 0.0, raising=False)
 
 
 def _runtime(backend: str) -> AcpRuntime:
@@ -393,7 +397,13 @@ def test_handshake_params_come_from_the_shared_constants() -> None:
     assert isinstance(PROTOCOL_VERSION_KAS, int)
     assert KAS_CLIENT_CAPABILITIES == {
         **ACP_CLIENT_CAPABILITIES,
-        "_meta": {"kiro": {"settings": {}, "openExternalUrl": True, "userInput": True}},
+        "_meta": {
+            "kiro": {
+                "settings": {"codeIntelligence": {"enabled": True}},
+                "openExternalUrl": True,
+                "userInput": True,
+            }
+        },
     }
 
 

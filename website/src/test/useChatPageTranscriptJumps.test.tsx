@@ -65,7 +65,7 @@ function harness(over: Partial<Opts> = {}) {
     initialMsgRef: { current: null },
     initialMidRef: { current: null },
     initialSidRef: { current: null },
-    setHighlightTs: vi.fn(),
+    markJump: vi.fn(),
     handleJumpToPinnedMessage: vi.fn(),
     ...over,
   }

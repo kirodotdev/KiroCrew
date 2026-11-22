@@ -10,11 +10,12 @@ writes it into every module holding the name.
 ``test/test_facade_mirror_guards.py`` holds every mirror facade to the shared contract.
 These tests pin what is particular to this one: every name the test trees patch through
 it reaches every module holding it; the owners are exactly the
-``skill_projection_parts`` modules, each importing only the owners before it; the family
-logs through one logger named for the facade; an exception class an owner defines still
-reports the facade's module; every project name the facade imported before its owners
-moved out stays bound on it; and every name it serves from outside the family is visible
-to a type checker through its ``TYPE_CHECKING`` imports.
+``skill_projection_parts`` modules, each importing only the owners before it; no module
+outside the family imports an owner; the family logs through one logger named for the
+facade; an exception class an owner defines still reports the facade's module; every
+project name the facade imported before its owners moved out stays bound on it; and every
+name it serves from outside the family is visible to a type checker through its
+``TYPE_CHECKING`` imports.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from pathlib import Path
 from types import ModuleType
 
 import facade_mirror_scan
+import owner_import_scan
 import pytest
 import source_corpus
 
@@ -150,32 +152,16 @@ def test_a_global_its_owner_rebinds_has_that_owner_as_its_one_holder() -> None:
         assert skill_projection._UNLINK_WARNING_SUPPRESSED == 7
 
 
-#: The owner modules, one per line, so two changes that each add an owner edit
-#: different lines (testing-conventions.md § Merge-safe ratchets and counts).
-_OWNER_MODULES = (
-    "kiro_crew.acp.skill_projection_parts.alias_reclaim",
-    "kiro_crew.acp.skill_projection_parts.inheritance_overlay",
-    "kiro_crew.acp.skill_projection_parts.native_projection",
-    "kiro_crew.acp.skill_projection_parts.preparation",
-    "kiro_crew.acp.skill_projection_parts.side_files",
-    "kiro_crew.acp.skill_projection_parts.view_ownership",
-    "kiro_crew.acp.skill_projection_parts.view_publication",
-    "kiro_crew.acp.skill_projection_parts.view_sources",
-)
-
-
 def test_the_owners_are_the_parts_package_in_layer_order() -> None:
     """``_OWNERS`` names every module of ``skill_projection_parts``, and each owner imports only
     owners listed before it: the order the facade loads them and a read resolves in."""
     owners = list(_index().owners)
+    assert owners, "the facade composes no owner"
     on_disk = {
         f"kiro_crew.acp.skill_projection_parts.{p.stem}": p
         for p in PARTS_DIR.glob("*.py")
         if p.name != "__init__.py"
     }
-    assert sorted(on_disk) == list(
-        _OWNER_MODULES
-    ), f"the owner modules changed; write one line per module in _OWNER_MODULES: {sorted(on_disk)}"
     assert sorted(owners) == sorted(on_disk)
     late: dict[str, list[str]] = {}
     for position, owner in enumerate(owners):
@@ -185,6 +171,24 @@ def test_the_owners_are_the_parts_package_in_layer_order() -> None:
         if later:
             late[owner] = later
     assert late == {}
+
+
+def test_only_the_family_imports_an_owner() -> None:
+    """A module outside the family that imported an owner would hold bindings the
+    facade's mirror never indexes, so a patch through the facade would miss it."""
+    owners = frozenset(_index().owners)
+    family = {
+        f"{name.removeprefix('kiro_crew.').replace('.', '/')}.py" for name in (FACADE, *owners)
+    }
+    sources = source_corpus.iter_candidate_sources(
+        require_any=tuple(name.rpartition(".")[2] for name in owners)
+    )
+    importers = owner_import_scan.owner_importers(
+        sources, source_corpus.src_root(), lambda name: name in owners
+    )
+    # An owner importing a lower owner proves the scan reads real imports.
+    assert "acp/skill_projection_parts/alias_reclaim.py" in importers
+    assert importers - family == set()
 
 
 def test_the_facade_keeps_the_default_read_path_and_forwards_no_table() -> None:

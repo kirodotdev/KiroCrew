@@ -17,6 +17,18 @@ Security rules this module keeps:
   holds, and it is checked to sit under the staging root when it is registered.
 * Confirm installs the already verified folder. It never calls the client, so
   nothing is downloaded or re-verified at that step, and an id is single use.
+* When ``app["market_account"]`` is set, prepare refuses (``409
+  market_account_changed``) when the body's ``account`` (the one the page
+  loaded under) is not the one signed in now, and records that account;
+  confirm refuses and discards the folder when it names another one now, or
+  when either side names none. When that callable raises
+  ``MarketInstallError`` (the store's status cannot be read), both answer
+  ``503`` with its code, and confirm discards the folder.
+* When ``app["market_store"]`` is set, prepare refuses (``409
+  market_registry_changed``) when the body's ``registry`` (the store the page
+  showed the listing from) is not the store installs come from now, and
+  records that store; confirm refuses and discards the folder when installs
+  come from another store now.
 * Pending stagings are bounded in number and in lifetime. Expiry, discard,
   confirm and shutdown all remove the folder; discard is idempotent.
 * The first path segment ``market`` is reserved so an app cannot be named after
@@ -66,6 +78,10 @@ logger = logging.getLogger("kiro_crew.apps.routes")
 
 #: Key under which the injected client factory sits on the aiohttp application.
 MARKET_CLIENT_FACTORY_KEY = "market_client_factory"
+#: Key of an optional async callable naming the store account signed in now.
+MARKET_ACCOUNT_KEY = "market_account"
+#: Key of an optional callable naming the store installs come from now (``""`` when none).
+MARKET_STORE_KEY = "market_store"
 #: Key of this module's staging registry on the aiohttp application.
 MARKET_STAGING_KEY = "market_staging"
 
@@ -104,6 +120,8 @@ class _Entry:
     prepared: PreparedInstall
     expires_at: float
     timer: asyncio.TimerHandle | None = None
+    account: str | None = None
+    store: str | None = None
 
 
 @dataclass
@@ -140,10 +158,16 @@ class MarketStagingRegistry:
     def release(self) -> None:
         self.reserved = max(0, self.reserved - 1)
 
-    def add(self, prepared: PreparedInstall, loop: asyncio.AbstractEventLoop) -> str:
+    def add(
+        self,
+        prepared: PreparedInstall,
+        loop: asyncio.AbstractEventLoop,
+        account: str | None = None,
+        store: str | None = None,
+    ) -> str:
         staging_id = secrets.token_urlsafe(16)
         ttl = STAGING_TTL_SECONDS
-        entry = _Entry(prepared=prepared, expires_at=_now() + ttl)
+        entry = _Entry(prepared=prepared, expires_at=_now() + ttl, account=account, store=store)
         entry.timer = loop.call_later(ttl, self._on_timer, staging_id, loop)
         self.entries[staging_id] = entry
         return staging_id
@@ -155,6 +179,11 @@ class MarketStagingRegistry:
 
     def take(self, staging_id: str) -> PreparedInstall | None:
         """Remove and return a live entry (single use); ``None`` if unknown or expired."""
+        entry = self.take_entry(staging_id)
+        return entry.prepared if entry is not None else None
+
+    def take_entry(self, staging_id: str) -> _Entry | None:
+        """:meth:`take`, with the account prepare recorded."""
         entry = self._pop(staging_id)
         if entry is None:
             return None
@@ -162,7 +191,7 @@ class MarketStagingRegistry:
             # Expired between timer ticks: never hand it out.
             asyncio.get_running_loop().create_task(_discard_off_loop([entry.prepared]))
             return None
-        return entry.prepared
+        return entry
 
     def take_all(self) -> list[PreparedInstall]:
         ids = list(self.entries)
@@ -216,8 +245,9 @@ async def _read_body(request: web.Request) -> dict[str, Any] | web.Response:
 async def handle_market_install_prepare(request: web.Request) -> web.Response:
     """POST /api/apps/market/install — verify and unpack; return the confirm data.
 
-    Body: ``{"ref": "<publisher>/<name>", "version": <int, optional>}``. Installs
-    nothing; the answer carries ``stagingId`` for the confirm route.
+    Body: ``{"ref": "<publisher>/<name>", "version": <int, optional>,
+    "account": <str, optional>, "registry": <str, optional>}``. Installs nothing; the answer carries
+    ``stagingId`` for the confirm route.
     """
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
@@ -235,6 +265,12 @@ async def handle_market_install_prepare(request: web.Request) -> web.Response:
         not isinstance(version, int) or isinstance(version, bool) or version < 1
     ):
         return _error(400, "market_resolve_invalid", "version must be a positive integer")
+    page_account = body.get("account")
+    if page_account is not None and not isinstance(page_account, str):
+        return _error(400, "market_account_invalid", "account must be a string")
+    page_store = body.get("registry")
+    if page_store is not None and not isinstance(page_store, str):
+        return _error(400, "market_registry_invalid", "registry must be a string")
 
     factory = request.app.get(MARKET_CLIENT_FACTORY_KEY)
     if factory is None:
@@ -246,7 +282,38 @@ async def handle_market_install_prepare(request: web.Request) -> web.Response:
         return _error(
             429, "market_install_too_many_pending", "too many installs are waiting for an answer"
         )
+    account_now = request.app.get(MARKET_ACCOUNT_KEY)
+    store_now = request.app.get(MARKET_STORE_KEY)
     try:
+        store = store_now() if store_now is not None else None
+        if store is not None and page_store is not None and page_store != store:
+            sel().log_api_access(
+                caller="dashboard",
+                operation="market_install_prepare",
+                outcome="denied",
+                resources="store changed",
+            )
+            return _error(
+                409,
+                "market_registry_changed",
+                "installs come from another Kiro Space store than this page shows",
+            )
+        try:
+            account = await account_now() if account_now is not None else None
+        except MarketInstallError as exc:
+            return _error(503, exc.code, exc.message)
+        if account is not None and page_account is not None and page_account != account:
+            sel().log_api_access(
+                caller="dashboard",
+                operation="market_install_prepare",
+                outcome="denied",
+                resources="account changed",
+            )
+            return _error(
+                409,
+                "market_account_changed",
+                "the Kiro Space account changed since the page loaded",
+            )
         try:
             client = factory()
         except MarketInstallError as exc:
@@ -276,7 +343,7 @@ async def handle_market_install_prepare(request: web.Request) -> web.Response:
         if not await asyncio.to_thread(_under_staging_root, prepared.staging_dir):
             await _discard_off_loop([prepared])
             return _error(500, "market_staging_invalid", "staging folder is outside its root")
-        staging_id = registry.add(prepared, asyncio.get_running_loop())
+        staging_id = registry.add(prepared, asyncio.get_running_loop(), account, store)
     finally:
         registry.release()
     sel().log_api_access(
@@ -286,6 +353,53 @@ async def handle_market_install_prepare(request: web.Request) -> web.Response:
         resources=f"ref={ref!r} version={prepared.resolved.version}",
     )
     return web.json_response({"ok": True, "stagingId": staging_id, "confirm": prepared.confirm})
+
+
+async def _refuse_if_store_or_account_changed(
+    request: web.Request, entry: _Entry
+) -> web.Response | None:
+    """Discard and refuse when the store or the account differs from prepare."""
+    prepared = entry.prepared
+    store_now = request.app.get(MARKET_STORE_KEY)
+    if entry.store is not None and store_now is not None and store_now() != entry.store:
+        await _discard_off_loop([prepared])
+        sel().log_api_access(
+            caller="dashboard",
+            operation="market_install_confirm",
+            outcome="denied",
+            resources="store changed",
+        )
+        return _error(
+            409, "market_registry_changed", "installs come from another Kiro Space store now"
+        )
+    account_now = request.app.get(MARKET_ACCOUNT_KEY)
+    if entry.account is None or account_now is None:
+        return None
+    try:
+        now_account = await account_now()
+    except MarketInstallError as exc:
+        await _discard_off_loop([prepared])
+        sel().log_api_access(
+            caller="dashboard",
+            operation="market_install_confirm",
+            outcome="failed",
+            resources="store status unknown",
+            error=exc.code,
+        )
+        return _error(503, exc.code, exc.message)
+    # An account nobody can name ("") on either side never passes.
+    if now_account != entry.account or not now_account:
+        await _discard_off_loop([prepared])
+        sel().log_api_access(
+            caller="dashboard",
+            operation="market_install_confirm",
+            outcome="denied",
+            resources="account changed",
+        )
+        return _error(
+            409, "market_account_changed", "the Kiro Space account changed since this install"
+        )
+    return None
 
 
 async def handle_market_install_confirm(request: web.Request) -> web.Response:
@@ -329,15 +443,21 @@ async def handle_market_install_confirm(request: web.Request) -> web.Response:
 
     # The entry leaves the registry here, synchronously, so two confirms cannot
     # both install it. From this point the folder is removed whatever happens.
-    prepared = registry.take(staging_id)
-    if prepared is None:
+    entry = registry.take_entry(staging_id)
+    if entry is None:
         return _error(404, "market_staging_unknown", "no pending install has that id")
+    prepared = entry.prepared
     name = prepared.listing_name
     async with app_lifecycle_lock(name):
         startup_refusal = await _refuse_while_startup_hook_runs(name, action="install")
         if startup_refusal is not None:
             await _discard_off_loop([prepared])
             return startup_refusal
+        # Checked under the lock, right before the install, so a sign-out or a
+        # store switch while this waited for another lifecycle step still counts.
+        changed = await _refuse_if_store_or_account_changed(request, entry)
+        if changed is not None:
+            return changed
         result = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(),
             partial(complete_market_install, prepared, confirmed=True),

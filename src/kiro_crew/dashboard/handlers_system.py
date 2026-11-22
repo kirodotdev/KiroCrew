@@ -267,7 +267,7 @@ async def api_status(request: web.Request) -> web.Response:
     data.update(
         {
             "uptime_secs": int(uptime),
-            "messages_received": state.messages_received,
+            "messages_received": data["messages"],
             "cron": state.crons.status(),
             "stats": Stats().snapshot(),
             "stats_summary": Stats().summary(),

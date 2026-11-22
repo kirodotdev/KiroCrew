@@ -9,7 +9,10 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from closed_peer_helpers import real_peer_connects, refused_peer_connects  # noqa: F401
 from instances_helpers import _FakeTunnel, _patch_port_probe
+
+pytestmark = pytest.mark.usefixtures("refused_peer_connects")
 
 
 class _Body:
@@ -48,6 +51,7 @@ class TestProxyRequest:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             return "SECRET_TOK"
@@ -648,6 +652,7 @@ class TestProxyRequest:
         assert "cd-1" not in mgr._peer_sessions
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("real_peer_connects")
     async def test_exchange_link_keeps_the_session_cookie_the_peer_sets(self):
         from aiohttp import web
 
@@ -695,6 +700,7 @@ class TestProxyRequest:
         ]
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("real_peer_connects")
     async def test_exchange_link_waits_the_proxy_connect_budget_not_the_probe_budget(
         self, monkeypatch
     ):

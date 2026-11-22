@@ -324,13 +324,15 @@ function createHolderDecision({
    * spawn anyway. That stays the answer for every holder except one: a local
    * Kiro Crew gateway for this app's own data folder that keeps failing its
    * health check past the grace window. That one is offered a stop-and-restart.
+   * `holders` receives what the owner probe found when no holder is Kiro
+   * Crew's (an unread command is null), so a spawn that then fails can name it.
    *
    * @returns {Promise<"spawn"|"healthy"|"abort"|{stopFailed:number[]}>}
    */
-  async function resolveUnresponsiveHolder() {
+  async function resolveUnresponsiveHolder({ holders = null } = {}) {
     if (!getRunLocalGateway() || getRemoteHostConfig(store, PORT)?.host) return "spawn";
     if ((await probeGatewayPortBinding(PORT)) !== "bound") return "spawn";
-    const localOwner = await probeGatewayPortOwner(PORT);
+    const localOwner = await probeGatewayPortOwner(PORT, { holders });
     if (localOwner !== "kirocrew" && localOwner !== "service") return "spawn";
     const provenPid = await sameHomeGatewayPid();
     if (!provenPid) return "spawn";

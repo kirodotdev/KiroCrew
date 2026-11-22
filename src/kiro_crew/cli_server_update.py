@@ -571,12 +571,25 @@ def _update(force: bool = False) -> None:
         line for line in status.stdout.strip().splitlines() if not line.startswith("??")
     ]
     if tracked_changes:
-        print("  ⚠️  Local tracked-file changes will be discarded:")
+        count = len(tracked_changes)
+        files = "1 file" if count == 1 else f"{count} files"
+        rerun = "kirocrew update --force" if force else "kirocrew update"
+        print(f"  ⚠️  You have uncommitted changes in {files}. Updating will discard them:")
         for line in tracked_changes[:10]:
             print(f"      {line}")
-        resp = input("  Continue? [y/N] ").strip().lower()
+        if count > 10:
+            print(f"      … and {count - 10} more")
+        # The folder goes on a line of its own, not into a command: no one
+        # quoting keeps every legal path literal in sh, cmd.exe and PowerShell.
+        print("  Answer N to keep them. To keep them and still update, go to the checkout:")
+        print(f"      {proj}")
+        print("  and run there:")
+        print("      git stash")
+        print(f"      {rerun}")
+        print("      git stash pop")
+        resp = input("  Discard these changes and update anyway? [y/N] ").strip().lower()
         if resp != "y":
-            print("  Aborted.")
+            print("  Aborted. Your changes were kept; nothing was updated.")
             sys.exit(0)
 
     # Re-classify immediately before the reset. The verdict above is a
@@ -897,6 +910,8 @@ def _update_wheel(layout) -> None:
     if not feed_url.startswith("https://"):
         print(f"  ❌ Refusing non-HTTPS feed URL: {shown_feed_url}")
         sys.exit(1)
+    from kiro_crew.asset_downloader import network_failure_cause
+
     try:
         req = urllib.request.Request(feed_url, headers={"User-Agent": "kirocrew-update/1"})
         with urllib.request.urlopen(  # nosemgrep: dynamic-urllib-use-detected
@@ -904,7 +919,7 @@ def _update_wheel(layout) -> None:
         ) as resp:
             raw = resp.read(65536 + 1)
     except (urllib.error.URLError, OSError, ValueError) as e:
-        print(f"  ❌ Could not reach release feed: {e}")
+        print(f"  ❌ Could not reach release feed: {network_failure_cause(e) or e}")
         print("\n  To update manually, run:")
         print(f"    {wheel_update_command(channel)}")
         sys.exit(1)
@@ -947,7 +962,7 @@ def _update_wheel(layout) -> None:
     if newer is None:
         print("  ⚠️  Could not compare versions — updating anyway to be safe")
     elif not newer:
-        print("\n✅ Already on the latest version!")
+        _report_already_latest(local_version)
         return
 
     # The managed-venv shape takes the shadow path: the new version is built
@@ -1062,6 +1077,27 @@ def _update_wheel(layout) -> None:
     print("    kirocrew restart")
 
 
+def _report_already_latest(local_version: str) -> None:
+    """The "nothing to install" outcome, checked against the running gateway.
+
+    An update never restarts a running gateway, so the newest version can be on
+    disk while the gateway still serves an older one (the reading ``kirocrew
+    doctor``'s ``running:`` row makes). Then the next step is a restart, and this
+    says so; a gateway that is down, does not name its version, or runs this same
+    version gets the plain "already on the latest" line.
+    """
+    from kiro_crew.dashboard.handlers.updates import _is_newer
+    from kiro_crew.doctor_checks.services import _running_gateway_version
+
+    running = _running_gateway_version(resolve_client_port(None))
+    if running is not None and _is_newer(local_version, running):
+        print(f"\n✅ {local_version} is installed, but the running gateway is still {running}.")
+        print("   Restart the gateway to switch to it:")
+        print("     kirocrew restart")
+        return
+    print("\n✅ Already on the latest version!")
+
+
 def _gateway_holds_update_lock() -> bool:
     """Is the update lock held by this home's running gateway?
 
@@ -1145,10 +1181,13 @@ def _update_managed_venv(
     message = wheel_apply.shown_failure_text(str(failure), limit=None)
     if outcome.status == "busy":
         if _gateway_holds_update_lock():
-            # Not a failure: the gateway restarts onto the update itself once it lands.
-            print("\n  ⏳ The running gateway is already installing an update and restarts onto")
-            print("     it once the install succeeds. If `kirocrew --version` has not changed")
-            print("     when it is done, run `kirocrew update` again.")
+            # Not a failure, but the gateway never restarts onto its own update.
+            print("\n  ⏳ The running gateway is already installing an update. It does not")
+            print("     restart itself: once the install finishes, restart it to switch to")
+            print("     the new version:")
+            print("       kirocrew restart")
+            print("     If `kirocrew --version` has not changed when it is done, run")
+            print("     `kirocrew update` again.")
             return
         print(f"\n  ⏳ {message}")
         print("     Another update (possibly the gateway's own) is in progress. Wait for it")

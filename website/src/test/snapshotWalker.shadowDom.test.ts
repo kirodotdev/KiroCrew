@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { readSource } from './readSource'
+import { setHtml } from './domFixture'
 
 const HARNESS_DIR = join(__dirname, '../../../src/kiro_crew/browser_harness')
 
@@ -213,5 +214,88 @@ describe('the top-document case still works the same', () => {
 
   it('nothing focused reads as no field', () => {
     expect(evalWalker().activeField().focused).toBe(false)
+  })
+})
+
+/**
+ * A web component's button: an inner shadow <button> around a <slot>, labelled by
+ * the host's light-DOM text (Alaska's auro-button). Only the slot carries the
+ * label to the button, so its own textContent is empty.
+ */
+function slottedButton(parent: Element, html: string): HTMLElement {
+  const host = document.createElement('x-button')
+  setHtml(host, html)
+  parent.appendChild(host)
+  const root = host.attachShadow({ mode: 'open' })
+  root.appendChild(document.createElement('button')).appendChild(document.createElement('slot'))
+  return host
+}
+
+type NamedNode = { ref?: string; role: string; name: string }
+const buttonNames = (): string[] =>
+  (evalWalker().snapshot().nodes as NamedNode[]).filter((n) => n.role === 'button').map((n) => n.name)
+
+describe('a web-component button labelled through a <slot>', () => {
+  it('is named by the slotted text, without slotted field, hidden or aria-hidden text', () => {
+    withBoxes()
+    slottedButton(document.body, 'Add to cart')
+    slottedButton(document.body, 'Pay<textarea style="display:none">tok-in-markup</textarea><span style="display:none">note-hidden</span><i aria-hidden="true">icon-glyph</i>')
+    expect(buttonNames()).toEqual(['Add to cart', 'Pay'])
+  })
+
+  it('joins slotted pieces as drawn and takes nothing from a hidden slot', () => {
+    withBoxes()
+    slottedButton(document.body, '$1<span>.99</span>')
+    const host = document.createElement('x-label')
+    setHtml(host, '<span slot="label">Book</span>stray-text')
+    document.body.appendChild(host)
+    const button = host.attachShadow({ mode: 'open' }).appendChild(document.createElement('button'))
+    button.appendChild(document.createElement('slot')).setAttribute('name', 'label')
+    button.appendChild(document.createElement('slot')).setAttribute('style', 'display:none')
+    expect(buttonNames()).toEqual(['$1.99', 'Book'])
+  })
+
+  it('reads a display:contents wrapper, which checkVisibility() calls boxless', () => {
+    withBoxes()
+    // Chromium answers false for an element with no box of its own.
+    ;(Element.prototype as unknown as { checkVisibility: () => boolean }).checkVisibility = function (this: Element) {
+      return window.getComputedStyle(this).display !== 'contents'
+    }
+    try {
+      slottedButton(document.body, 'Continue <span style="display:contents">to seats</span>')
+      expect(buttonNames()).toEqual(['Continue to seats'])
+    } finally {
+      delete (Element.prototype as unknown as Record<string, unknown>).checkVisibility
+    }
+  })
+})
+
+describe('content slotted into a fixed box inside a shadow root', () => {
+  afterEach(() => {
+    delete (Element.prototype as unknown as Record<string, unknown>).checkVisibility
+  })
+
+  it('is walked: offsetParent is null across the shadow boundary, checkVisibility() decides', () => {
+    withBoxes()
+    // What Chromium reports for light-DOM content slotted into a position:fixed
+    // shadow box: no offsetParent, yet drawn.
+    Object.defineProperty(HTMLElement.prototype, 'offsetParent', { configurable: true, get: () => null })
+    ;(Element.prototype as unknown as { checkVisibility: () => boolean }).checkVisibility = function (this: Element) {
+      // Up the composed tree, as the browser's flat-tree check walks it.
+      const up = (n: Element): Element | null => n.parentElement ?? ((n.getRootNode() as ShadowRoot).host ?? null)
+      for (let n: Element | null = up(this); n; n = up(n)) {
+        if (n.hasAttribute('data-gone')) return false
+      }
+      return !this.hasAttribute('data-gone')
+    }
+    const dialog = document.createElement('x-dialog')
+    document.body.appendChild(dialog)
+    dialog.attachShadow({ mode: 'open' }).appendChild(document.createElement('div')).appendChild(document.createElement('slot'))
+    slottedButton(dialog, 'Continue with flights')
+    const gone = document.createElement('div')
+    gone.setAttribute('data-gone', '')
+    document.body.appendChild(gone)
+    slottedButton(gone, 'Hidden away')
+    expect(buttonNames()).toEqual(['Continue with flights'])
   })
 })

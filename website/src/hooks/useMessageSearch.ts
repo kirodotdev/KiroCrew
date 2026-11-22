@@ -5,6 +5,7 @@ import { hasCommandModifier } from '../utils/commandModifier'
 import { isMac } from '../utils/platform'
 import { focusComposer } from '../pages/chat/composerFocus'
 import { isHiddenSupersededSteer } from '../pages/chat/groupDisplayItems'
+import { isHiddenReplyAt } from '../app-sdk/turnPolicyBlock'
 
 export interface SearchMatch {
   /** Index into the messages[] Redux array. */
@@ -14,10 +15,12 @@ export interface SearchMatch {
 }
 
 /**
- * In-session message search hook. Must only be called from ChatPage —
- * the keydown listener is scoped to ChatPage's mount/unmount lifecycle.
+ * In-session message search hook: ChatPage's, and a Bot chat's (`ChatPane`
+ * with `findInChat`). The keydown listener lives as long as the caller is
+ * mounted, so only one caller on a page may pass `enabled`; `enabled: false`
+ * leaves the shortcut to the browser and closes an open bar.
  */
-export function useMessageSearch(messages: ChatMessage[], activeSlot: string | null) {
+export function useMessageSearch(messages: ChatMessage[], activeSlot: string | null, enabled = true) {
   const [isOpen, setIsOpen] = useState(false)
   const [term, setTerm] = useState('')
   const [currentIdx, setCurrentIdx] = useState(0)
@@ -51,6 +54,7 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
         // A superseded steer is not drawn; its successor row carries the same
         // text and is the hit the reader can land on.
         if (isHiddenSupersededSteer(messages, i)) continue
+        if (m.role === 'assistant' && isHiddenReplyAt(m, messages, i)) continue
         // Skip assistant reasoning segments collapsed inside turns
         if (m.role === 'assistant') {
           const next = messages[i + 1]
@@ -86,22 +90,26 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
   }, [activeSlot])
 
   const open = useCallback(() => setIsOpen(true), [])
-  const close = useCallback(() => {
-    // Focus is handed back only when the bar was actually open: ChatPage's
-    // file/folder-open handlers call close() unconditionally to un-gate the
-    // dock, and a close that never dismissed anything must not steal focus.
-    const wasOpen = isOpenRef.current
+  // Clears the bar without touching focus.
+  const reset = useCallback(() => {
     isOpenRef.current = false
     setIsOpen(false)
     setTerm('')
     setMatches([])
     setCurrentIdx(0)
+  }, [])
+  const close = useCallback(() => {
+    // Focus is handed back only when the bar was actually open: ChatPage's
+    // file/folder-open handlers call close() unconditionally to un-gate the
+    // dock, and a close that never dismissed anything must not steal focus.
+    const wasOpen = isOpenRef.current
+    reset()
     // In the close path itself — not the Escape handler — so the bar's own
     // close button hands typing back to the composer identically. focusComposer
     // already defers a frame, skips touch devices, and no-ops when the composer
     // is unmounted or the session switched, so closing never throws.
     if (wasOpen) focusComposer()
-  }, [])
+  }, [reset])
   const next = useCallback(() => {
     setCurrentIdx(prev => (matches.length === 0 ? 0 : (prev + 1) % matches.length))
   }, [matches.length])
@@ -116,8 +124,14 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
   }, [matches.length])
   const toggleCaseSensitive = useCallback(() => setCaseSensitive(p => !p), [])
 
+  // A host that stops offering the find (its chat is covered, or the user moved
+  // into a side panel) clears the bar without close()'s focus hand-back: the
+  // user's focus is already where they want it, not in the composer.
+  useEffect(() => { if (!enabled) reset() }, [enabled, reset])
+
   // Keyboard shortcuts
   useEffect(() => {
+    if (!enabled) return
     const handler = (e: KeyboardEvent) => {
       // `hasCommandModifier` accepts either primary modifier, which is right for
       // every chord except this one on a Mac: Ctrl+F is Cocoa's `forward-char`
@@ -126,8 +140,10 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
       // one character right. On Mac the pane is ⌘F only and bare Ctrl+F falls
       // through unhandled; Windows/Linux keep Ctrl+F, where no such binding
       // exists. (Ctrl+⌘F stays with macOS either way — hasCommandModifier
-      // rejects both-modifiers so Toggle Full Screen survives.)
-      if (hasCommandModifier(e) && (!isMac || e.metaKey) && e.key === 'f') {
+      // rejects both-modifiers so Toggle Full Screen survives.) Shift is ⌘⇧F /
+      // Ctrl+Shift+F, Search all chats; macOS still reports `e.key` as 'f' then,
+      // so the Shift state, not the key's case, keeps the two chords apart.
+      if (hasCommandModifier(e) && (!isMac || e.metaKey) && !e.shiftKey && e.key === 'f') {
         // Yield to a surface that already answered the chord. In an edit
         // session Pierre binds cmdOrCtrl+f on its own content element and calls
         // preventDefault() without stopPropagation(), so this document-level
@@ -152,7 +168,7 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [isOpen, close])
+  }, [isOpen, close, enabled])
 
   const current = matches[currentIdx] as SearchMatch | undefined
   const currentMessageIdx = current?.msgIdx ?? -1

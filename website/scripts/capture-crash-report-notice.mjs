@@ -11,9 +11,9 @@
  * product is installed by electron/preload.js. A browser-based harness has no
  * preload, so the bridge is injected with the same shape and the same two
  * methods. That is not a way around the render condition — it IS the render
- * condition: the component's only input is `get()`'s `newCount`, and what the
- * screenshots have to show is what the user sees for a given count, not how the
- * channel was wired.
+ * condition: the component's only input is what `get()` resolves (`newCount` and
+ * `lastCrashAt`), and what the screenshots have to show is what the user sees for
+ * a given summary, not how the channel was wired.
  *
  * Reaching the condition for real would mean packaging the app, crashing its
  * main process and relaunching, which cannot produce a deterministic frame and
@@ -55,14 +55,20 @@ const slots = [{
 const { srv, base } = await serveDist()
 const browser = await chromium.launch()
 
+/** The newest crash's time the bridge reports unless a scene says otherwise. */
+const LAST_CRASH_AT = '2026-10-28T19:19:55.283Z'
+
 /**
- * One themed page with the bridge installed, reporting `newCount` crashes.
+ * One themed page with the bridge installed, reporting `newCount` crashes, the
+ * newest at `lastCrashAt` (`null` for a summary with no time), in `lang`.
  *
  * A fresh context per scene rather than a reload: dismissal is in-memory and
  * per-session by design, so the dismissed frame has to come from a page that was
  * never reset, while each banner frame must start undismissed.
  */
-async function openScene({ theme, newCount, viewport = { width: 1280, height: 900 }, revealOk = true }) {
+async function openScene({
+  theme, newCount, lastCrashAt = LAST_CRASH_AT, lang, viewport = { width: 1280, height: 900 }, revealOk = true,
+}) {
   const ctx = await browser.newContext({
     viewport,
     deviceScaleFactor: 2,
@@ -73,7 +79,7 @@ async function openScene({ theme, newCount, viewport = { width: 1280, height: 90
   await stubDashboardApi(page, {
     theme,
     slots,
-    localStorageEntries: { 'mc-active-slot': SLOT },
+    localStorageEntries: { 'mc-active-slot': SLOT, ...(lang ? { 'mc-lang': lang } : {}) },
     extra: async (path, route) => {
       // The LIST endpoint is the stub's; only the per-slot detail belongs here.
       if (path.startsWith('/api/chat/slots/')) {
@@ -93,28 +99,26 @@ async function openScene({ theme, newCount, viewport = { width: 1280, height: 90
   // resolves without opening a file manager: the harness has no desktop, and the
   // frame is identical either way — the component discards the result.
   //
-  // `get()` resolves the count and NOTHING else, matching the real summary: the
-  // main process stopped sending `lastCrashAt` and `hasLog` once nothing read
-  // them, and a stub that still offered them would quietly re-legitimise fields
-  // the boundary no longer carries.
+  // `get()` resolves the same shape as the real summary, `{ newCount,
+  // lastCrashAt }`, so a frame never shows a field the boundary does not carry.
   //
   // `reveal` resolves `{ ok: revealOk }`: `true` for the frames where the result
   // is discarded and the frame is identical either way, `false` for the failure
   // scene, where the component surfaces the fallback through ErrorNotice and
   // that IS the delta the frame exists to show.
-  await page.addInitScript(({ count, revealOk }) => {
+  await page.addInitScript(({ count, lastCrashAt, revealOk }) => {
     window.crashReportsAPI = {
-      get: () => Promise.resolve({ newCount: count }),
+      get: () => Promise.resolve({ newCount: count, lastCrashAt }),
       reveal: () => Promise.resolve({ ok: revealOk }),
     }
-  }, { count: newCount, revealOk })
+  }, { count: newCount, lastCrashAt, revealOk })
 
   await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' })
   return { ctx, page }
 }
 
 const banner = page =>
-  page.getByRole('status').filter({ hasText: 'closed unexpectedly' }).first()
+  page.getByRole('status').filter({ hasText: /closed unexpectedly|unerwartet beendet/ }).first()
 
 /** Wait for the banner itself, never a bare timeout, then shoot just that region. */
 async function shootBanner(page, name) {
@@ -127,7 +131,7 @@ async function shootBanner(page, name) {
   return el
 }
 
-// Scene 1 — dark, two crashes. The count is the whole payload the renderer gets.
+// Scene 1 — dark, two crashes: the count, then when the newest one happened.
 {
   const { ctx, page } = await openScene({ theme: 'dark', newCount: 2 })
   await shootBanner(page, 'crash-notice-dark.png')
@@ -213,6 +217,20 @@ for (const width of [390, 320]) {
   await ctx.close()
 }
 
+// Scene 8 — a summary with no time (`lastCrashAt: null`): the line is absent.
+{
+  const { ctx, page } = await openScene({ theme: 'dark', newCount: 2, lastCrashAt: null })
+  await shootBanner(page, 'crash-notice-no-time.png')
+  await ctx.close()
+}
+
+// Scene 9 — German: the date is formatted in the app's language, not the host's.
+{
+  const { ctx, page } = await openScene({ theme: 'dark', newCount: 2, lang: 'de' })
+  await shootBanner(page, 'crash-notice-de.png')
+  await ctx.close()
+}
+
 await browser.close()
 srv.close()
-console.log(`wrote 8 frames to ${OUT}`)
+console.log(`wrote 10 frames to ${OUT}`)

@@ -327,6 +327,7 @@ from kiro_crew.dashboard.chat_api.slot_guards import (  # noqa: F401
     _switch_target_busy,
 )
 from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
+    _RESOURCE_SUBSCRIPTION_RETIRE_SECS,
     _await_guarded_history_write,
     _close_slot,
     _drain_file_changes_flush,
@@ -337,7 +338,9 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _release_closed_execution,
     _restore_original_after_failed_close,
     _restore_slot_nudge_loop,
+    _retire_resource_subscriptions,
     _retire_slot_nudge_loop,
+    _session_still_live,
     _slot_still_ours,
     _timed_close_stage,
     api_chat_slot_delete,
@@ -377,6 +380,7 @@ from kiro_crew.dashboard.chat_api.slot_repair import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.slot_settings import (  # noqa: F401
     _autocompact_txn_lock,
+    _save_dropping_commit_on_cancel,
     _slot_agent_autocompact_fields,
     _slot_harness_managed_backend,
     _slot_next_agent_autocompact_default,
@@ -401,8 +405,13 @@ from kiro_crew.dashboard.chat_api.source_links import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.sse_write import write_sse_or_abort  # noqa: F401
 from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _cancel_cron_run,
+    _cancel_preparing_runner,
     _cancel_target,
     _compaction_in_flight,
+    _decline_compacting_interrupt,
+    _dispatch_run_now_idle,
+    _interrupt_claimed_turn,
+    _log_interrupt,
     _make_stop_resolver,
     _may_cancel_cron_run,
     _open_stop_event_card,
@@ -492,6 +501,8 @@ from kiro_crew.dashboard.chat_summary import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_tags import (  # noqa: F401
     _bump_slot_tags_revision,
+    _persisted_tag_write,
+    _tag_vocabulary,
     tags_write_lock,
     validate_folder_tag_ids,
 )
@@ -637,6 +648,7 @@ from kiro_crew.dashboard.slot_projection import (  # noqa: F401
 from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
     RESTORED_QUEUE_KEY,
     RESTORED_SEND_CHOSEN_KEY,
+    clear_run_now_choice,
     refused_durable_ids,
     warn_if_not_durable,
 )
@@ -1102,7 +1114,7 @@ _SESSION_START_REPEAT_REFUSAL_AT = 2
 #: one above them -- the mirror of ``INJECT_KIND_OPENS_TURN`` in
 #: ``website/src/pages/chat/RecoveryCard.tsx`` (``recovery`` and
 #: ``user_replay`` continue the same turn and are deliberately absent).
-_TURN_OPENING_INJECT_KINDS = frozenset({"cron", "synthesis", "workflow", "heartbeat"})
+_TURN_OPENING_INJECT_KINDS = frozenset({"cron", "synthesis", "workflow", "heartbeat", "resource"})
 
 
 def _has_conversation(slot: _ChatSlot) -> bool:

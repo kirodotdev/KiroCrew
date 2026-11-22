@@ -635,7 +635,7 @@ async def test_a_replacement_armed_during_the_history_write_wait_keeps_its_monit
     if caller == "tab_close":
         closing = handlers.api_chat_slot_delete(_Req(state, NAME))
     elif caller == "idle_sweep":
-        check = _still_idle_check(state, original, NAME, time.time())
+        check = _still_idle_check(state, original, NAME, time.time(), subscribed=set())
         closing = handlers.close_slot(state, original, NAME, pre_pop_check=check, hand_back=False)
     else:
         monkeypatch.setattr(sc, "session_control_enabled", lambda: True)

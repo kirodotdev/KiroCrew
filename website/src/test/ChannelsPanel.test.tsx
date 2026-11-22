@@ -10,7 +10,8 @@
  * happy-dom reports zero layout sizes.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { api } from '../api/client'
+import { render, screen, within, fireEvent, act, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useEffect } from 'react'
@@ -35,6 +36,7 @@ vi.mock('../pages/settings/TeamsPanel', () => ({ TeamsPanel: () => <div data-tes
 vi.mock('../pages/settings/WeixinPanel', () => ({ WeixinPanel: () => <div data-testid="weixin-panel" /> }))
 vi.mock('../pages/settings/IMessagePanel', () => ({ IMessagePanel: () => <div data-testid="imessage-panel" /> }))
 
+const ownerOkMock = vi.fn().mockResolvedValue(true)
 const govChannelsMock = vi.fn().mockResolvedValue({
   slack: true, discord: true, telegram: true, webex: true, wecom: true, teams: true, weixin: true, imessage: true,
 })
@@ -54,6 +56,8 @@ vi.mock('../api/client', () => ({
     // tests are unaffected. Governance-specific tests override it per case.
     getGovernanceChannels: (...a: unknown[]) => govChannelsMock(...a),
     getTeamsConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
+    // The owner check: an owner by default; the teammate case overrides it.
+    viewerOwnerOk: (...a: unknown[]) => ownerOkMock(...a),
   },
 }))
 
@@ -84,6 +88,8 @@ function renderAt(route = '/settings?tab=channels') {
 }
 
 beforeEach(() => {
+  ownerOkMock.mockReset()
+  ownerOkMock.mockResolvedValue(true)
   mockWidth = null
   slackMountCount = 0
   govChannelsMock.mockReset()
@@ -301,5 +307,31 @@ describe('ChannelsPanel — status polling', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('ChannelsPanel — a teammate', () => {
+  it('reads each channel\'s status but edits none: "Not set up" and an owner-only notice', async () => {
+    ownerOkMock.mockResolvedValue(false)
+    mockWidth = 1000
+    renderAt('/settings?tab=channels&channel=telegram')
+    expect(await screen.findByTestId('channel-owner-only')).toHaveTextContent("Only the Crew's owner can connect or change channels.")
+    expect(screen.queryByTestId('telegram-panel')).not.toBeInTheDocument()
+    // Each status comes from its own read, so wait on each one.
+    await waitFor(() => expect(screen.getByRole('option', { name: /Telegram/ })).toHaveTextContent('Not set up'))
+    await waitFor(() => expect(screen.getByRole('option', { name: /Slack/ })).toHaveTextContent('Connected'))
+    expect(screen.queryByText('Needs setup')).not.toBeInTheDocument()
+  })
+
+  it('shows a failed status read as an error with the agent hand-off, beside the owner-only notice', async () => {
+    ownerOkMock.mockResolvedValue(false)
+    vi.mocked(api.getTelegramConfig).mockRejectedValueOnce(new Error('telegram status down'))
+    mockWidth = 1000
+    renderAt('/settings?tab=channels&channel=telegram')
+    const error = await screen.findByTestId('channel-status-error')
+    expect(error).toHaveTextContent('telegram status down')
+    expect(within(error).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
+    expect(screen.getByTestId('channel-owner-only')).toBeInTheDocument()
+    expect(screen.queryByTestId('telegram-panel')).not.toBeInTheDocument()
   })
 })

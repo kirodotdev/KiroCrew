@@ -158,6 +158,29 @@ describe('McpToolsPanel', () => {
     expect(hints[0].textContent).toContain('aws-mcp')
   })
 
+  it('gives no credential hint to a server listed only because its config changed', () => {
+    const report = {
+      configured: [],
+      ready: [],
+      failed: ['slack-mcp'],
+      awaiting_auth: [],
+      failures: { 'slack-mcp': 'spawn ENOENT' },
+      restart_to_load: ['slack-mcp'],
+      reload_pending: ['slack-mcp'],
+    }
+    render(
+      <McpToolsPanel
+        servers={[{ name: 'slack-mcp', enabled: true }]}
+        toolsByServer={{}}
+        loaded={new Set()}
+        toolSearchOn={false}
+        loading={false}
+        sessionReport={report}
+      />,
+    )
+    expect(screen.queryByText(/start a new session to load/)).not.toBeInTheDocument()
+  })
+
   it('shows no restart hint when an older gateway sends no restart list', () => {
     const report = {
       configured: [],

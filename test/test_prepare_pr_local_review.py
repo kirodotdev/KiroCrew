@@ -35,6 +35,7 @@ from pathlib import Path
 
 import pytest
 from git_maintenance_helpers import git_maintenance_off_entries
+from git_repo_templates import copy_repo
 from skill_script_helpers import load_skill_script
 
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
@@ -274,6 +275,7 @@ def _parity_repo_template(tmp_path_factory):
     (root / "changed.py").write_text("VALUE = 1\n", encoding="utf-8")
     _git(root, "add", "-A")
     _git(root, "commit", "-m", "feat(thing): add VALUE\n\nA body line for intent.")
+    _git(root, "reset", "--hard", "HEAD")  # the ORIG_HEAD and reflog line a copy starts with
     return root
 
 
@@ -291,15 +293,11 @@ def parity_repo(tmp_path, _parity_repo_template):
     contract out of the base commit. A workflow present only in the checkout is
     not authority and fails the run closed.
 
-    Each test receives its own ``copytree`` of the session template. The repo
-    has no remote, so nothing recorded in ``.git`` names the template's path;
-    the ``reset --hard`` re-stats the copied files against the index, because a
-    copied checkout otherwise reads as having "unstaged changes" on Windows.
+    Each test receives its own ``copy_repo`` of the session template, which
+    gives the copied index the copied files' stat data: a plain copy of a
+    checkout reads as having "unstaged changes".
     """
-    root = tmp_path / "repo"
-    shutil.copytree(_parity_repo_template, root)
-    _git(root, "reset", "--hard", "HEAD")
-    return root
+    return copy_repo(_parity_repo_template, tmp_path / "repo")
 
 
 # --------------------------------------------------------------------------
@@ -1071,6 +1069,7 @@ def test_default_out_and_stage_dirs_are_unique_per_run(parity_repo, tmp_path, mo
     scratch = tmp_path / "systmp"
     scratch.mkdir()
     monkeypatch.setattr(local_review.tempfile, "tempdir", str(scratch))
+    monkeypatch.delenv("KIROCREW_SCRATCH", raising=False)
     seen = []
     real = local_review.assemble
 
@@ -1091,6 +1090,33 @@ def test_default_out_and_stage_dirs_are_unique_per_run(parity_repo, tmp_path, mo
     for out_dir, stage_dir in seen:
         assert str(scratch) in out_dir
         assert str(scratch) in stage_dir
+
+
+@pytest.mark.parametrize("scratch", ["set", "unset", "missing"])
+def test_default_dirs_follow_kirocrew_scratch(
+    parity_repo, tmp_path, monkeypatch, capsys, no_gh, scratch
+):
+    """Reviewer subagents share ``$KIROCREW_SCRATCH`` but not this process's
+    ``$TMPDIR``, so default briefs land under the scratch dir when it exists,
+    else under ``$TMPDIR`` (re-read because ``tempfile.tempdir`` is cleared)."""
+    process_tmp, shared, missing = tmp_path / "tmpdir", tmp_path / "scratch", tmp_path / "gone"
+    process_tmp.mkdir()
+    shared.mkdir()
+    monkeypatch.setenv("TMPDIR", str(process_tmp))
+    monkeypatch.setattr(local_review.tempfile, "tempdir", None)
+    if scratch == "unset":
+        monkeypatch.delenv("KIROCREW_SCRATCH", raising=False)
+    else:
+        monkeypatch.setenv("KIROCREW_SCRATCH", str(shared if scratch == "set" else missing))
+    capsys.readouterr()
+    assert local_review.main(["--worktree", str(parity_repo), "--base", "main", "--json"]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    paths = [Path(p) for p in summary["tasks"].values()] + [Path(summary["diff"]["path"])]
+    assert len(paths) > 1 and all(p.is_file() for p in paths)
+    expected, other = (shared, process_tmp) if scratch == "set" else (process_tmp, shared)
+    for path in paths:
+        assert path.resolve().is_relative_to(expected.resolve()), path
+    assert list(other.iterdir()) == [] and not missing.exists()
 
 
 def test_malformed_profile_is_an_environment_error_not_a_traceback(

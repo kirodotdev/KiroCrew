@@ -2,7 +2,7 @@
  * Capture page: the conductor mode Board's Status view with work that waits on the person.
  *
  * One ledger item whose worker asked the person (`question`, `needs_human`), with the
- * conductor's offered answers (`asks`), one item running and one tool approval. The
+ * conductor's current ask record (what, why, answers, pick), one item running and one tool approval. The
  * box under the panel stands in for the main chat's composer: a Reply button fills
  * it. `?theme=light` for the light palette. The panel is the real component; only the
  * crew list, the board and the summary reads are fixtures.
@@ -35,7 +35,7 @@ const BOARD = {
   conductor_alive: 'idle',
   take_over_available: false,
   items: [
-    ITEM({ item_id: 'it_tea', title: 'Drinks menu', status: 'question', reason: 'needs_human', awaits_person: true, outstanding: true, summary: 'Which tea leads the menu: oolong or green? Both fit the budget.' }),
+    ITEM({ item_id: 'it_tea', title: 'Drinks menu', status: 'question', reason: 'needs_human', awaits_person: true, outstanding: true, summary: 'Which tea leads the menu: oolong or green? Both fit the budget.', ask: { what: 'Pick the tea that leads the menu', why: 'Only you know what the guests like', options: [{ label: 'Oolong', outcome: 'Menu ships today' }, { label: 'Green', outcome: 'Menu waits one day for stock' }], pick: 'Oolong', pick_why: 'Already in stock', written_at: ago(3) } }),
     ITEM({ item_id: 'it_poster', title: 'Opening poster', alive: 'running', summary: 'Drafting the poster text', created_at: ago(20) }),
     ITEM({ item_id: 'it_price', title: 'Price list', created_at: ago(10), summary: 'Saving the price list file', last_report_at: ago(2) }),
   ],

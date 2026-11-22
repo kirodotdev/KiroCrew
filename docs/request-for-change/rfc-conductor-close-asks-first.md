@@ -3,8 +3,8 @@ title: Closing a conductor with open workers asks first
 status: draft
 author: tim-finnigan, with kirocrew
 created: 2026-11-08
-last-audited: 2026-11-08
-audited-at: 0a53e02b65
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: null
 implementation-prs: [32788]
 tracking-issues: [31629]

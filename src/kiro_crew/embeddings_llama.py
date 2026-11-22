@@ -221,10 +221,23 @@ def _construct_llama(llama_cls: object, kwargs: dict, stamp: "tuple[int, ...] | 
     inference and its Python wrapper off this process's GIL and CPU priority; see
     :mod:`kiro_crew.embeddings_child`. Only the vendored runtime can be rebuilt in
     another interpreter, so any other class (a test fake, a future backend)
-    keeps running here, as does everything when the switch is ``false``.
+    keeps running here, as does everything when the switch is ``false``. A child
+    that cannot start or load is not a lost model: the load falls back to this
+    process and logs why. The child's refusal of a protected path or a changed
+    file is not a start failure, so the parent's own checks run again first and a
+    path or file that fails them is never opened here.
     """
     if embedding_child_process_enabled() and is_vendored_llama_class(llama_cls):
-        return ChildLlama(kwargs, stamp=stamp)
+        try:
+            return ChildLlama(kwargs, stamp=stamp)
+        except Exception:  # noqa: BLE001 - any child failure keeps embeddings in-process
+            path = Path(str(kwargs["model_path"]))
+            if _is_sensitive_model_path(path) or _model_file_stamp_unaliased(path) != stamp:
+                raise
+            logger.warning(
+                "Embedding child could not start; loading the model in this process instead",
+                exc_info=True,
+            )
     return llama_cls(**kwargs)  # type: ignore[operator]
 
 

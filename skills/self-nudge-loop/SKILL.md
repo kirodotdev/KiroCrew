@@ -69,9 +69,11 @@ max_runtime_secs?)` revises it in place without losing its cycle count, and
 `interval_secs` (default 300) is stored as the loop's `idle_secs`; the raw
 REST/dataclass field defaults to 60.
 
-`monitor_start` defaults to 24 delivered cycles and a 14,400-second wall-clock
-budget; use explicit positive finite bounds for unattended work. Raw REST defaults
-both bounds to 0 (unlimited). Reaching either bound is a runaway backstop, not a
+`monitor_start` caps a loop that re-injects every interval (`gate=false`, or
+nothing to observe) at 24 delivered cycles and sets no cycle cap on a gated loop;
+its wall-clock budget defaults to the `monitoring.max_runtime_secs` ceiling (7 days
+as shipped). Use explicit positive finite bounds for unattended work. Raw REST
+defaults both bounds to 0 (unlimited). Reaching either bound is a runaway backstop, not a
 successful finish: check the exit condition every cycle and call `autonudge_stop`
 deliberately.
 
@@ -104,7 +106,7 @@ curl -sf -X POST "http://127.0.0.1:5476/api/autonudge?token=$TOKEN" \
 ```
 
 Common 403 traps (all have the same error body `{"error":"Token required"}`):
-- Forgetting the `?token=…` query param. The `/api/autonudge` arm/list/edit/delete routes do **not** accept `X-Internal-Secret` auth; they require the dashboard owner (`_require_monitor_owner` in `dashboard/handlers/autonudge.py`). Which paths accept the machine secret is defined by `_STRICT_INTERNAL_API_PATHS` / `_MIXED_INTERNAL_API_PATHS` in `dashboard/server.py`.
+- Forgetting the `?token=…` query param. The `/api/autonudge` arm/list/edit/delete routes do **not** accept `X-Internal-Secret` auth; they require the dashboard owner (`_require_monitor_owner` in `dashboard/handlers/autonudge.py`). Which paths accept the machine secret is defined by `_STRICT_INTERNAL_API_PATHS` / `_MIXED_INTERNAL_API_PATHS` in `dashboard/server_internal_paths.py`.
 - Calling `/api/token/local` without `X-Local-Secret` — the endpoint is in `_BYPASS_EXACT` (no token needed) but still validates the machine secret via HMAC compare. Missing/wrong secret → `{"error":"invalid secret"}` 403.
 - Non-loopback source. Token issuance and most internal paths require `is_loopback(request.remote)` regardless of auth material.
 

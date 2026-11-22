@@ -17,6 +17,7 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
+import source_corpus
 from crew_log_core_helpers import _split_into_segments
 
 from kiro_crew import crew_log as lg
@@ -190,6 +191,23 @@ def test_a_walk_from_the_top_of_a_member_log_is_cold_and_a_short_one_is_not(capl
     assert read_budget.snapshot()["cold_over_budget"] == 2
 
 
+def test_a_deep_citation_is_reported(caplog):
+    """A span cited deep in a unit walks every record below it, so it is reported."""
+    _unit("acp-deep-cite", BIG)
+    read_budget.mark_gateway_process()
+    handle = _open("acp-deep-cite")
+    with caplog.at_level(logging.WARNING, logger=read_budget.__name__):
+        outcome = handle.resolve(
+            Ref(unit=lg.KIND_SESSION, id="acp-deep-cite", from_seq=BIG - 10, to_seq=BIG - 5)
+        )
+    handle.release_ownership()
+    assert [entry.seq for entry in outcome.entries] == list(range(BIG - 10, BIG - 4))
+    counts = read_budget.snapshot()
+    assert counts["over_budget"] == 1
+    (line,) = _warnings(caplog)
+    assert "unit=acp-deep-cite" in line
+
+
 def test_resolve_reads_only_up_to_the_cited_span(monkeypatch):
     _unit("acp-cited", BIG)
     read_budget.mark_gateway_process()
@@ -280,16 +298,17 @@ def _whole_unit_read(call: ast.Call) -> bool:
 
 def _whole_unit_callers() -> "Counter[str]":
     found: "Counter[str]" = Counter()
-    for path in sorted(SRC.rglob("*.py")):
-        rel = path.relative_to(SRC).as_posix()
-        if rel == "crew_log/store_handle.py" or "/_vendor/" in f"/{rel}":
-            continue
-        source = path.read_text(encoding="utf-8")
-        if not any(name in source for name in ("page(", "iter_from", ".get(")):
-            continue
-        for node in ast.walk(ast.parse(source)):
-            if isinstance(node, ast.Call) and _whole_unit_read(node):
-                found[rel] += 1
+    with source_corpus.untraced():
+        for path in sorted(SRC.rglob("*.py")):
+            rel = path.relative_to(SRC).as_posix()
+            if rel == "crew_log/store_handle.py" or "/_vendor/" in f"/{rel}":
+                continue
+            source = path.read_text(encoding="utf-8")
+            if not any(name in source for name in ("page(", "iter_from", ".get(")):
+                continue
+            for node in ast.walk(ast.parse(source)):
+                if isinstance(node, ast.Call) and _whole_unit_read(node):
+                    found[rel] += 1
     return found
 
 

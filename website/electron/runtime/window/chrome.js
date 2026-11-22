@@ -104,13 +104,20 @@ function createWindowChrome({
         return;
       }
       nativeTheme.themeSource = resolveThemeSource(pref, mode);
-      if (mode === "dark" || mode === "light") updateWindowsTitleBarOverlay(win, mode);
+      // No mode passed: the caption buttons keep what this window's dashboard
+      // last pushed (setTitlebarMode), which can be a Remote Crew's lent mode.
+      if (mode === "dark" || mode === "light") updateWindowsTitleBarOverlay(win);
     }).catch(() => {});
   }
 
+  // Each window owns its caption mode: the one its dashboard last pushed, stored
+  // on the window, so a zoom or focus repaint keeps it rather than reading the
+  // process-wide native theme, which never holds a lent mode.
   function updateWindowsTitleBarOverlay(win, mode) {
     if (!IS_WINDOWS) return;
-    const resolvedMode = mode || (nativeTheme.shouldUseDarkColors ? "dark" : "light");
+    const resolvedMode = mode
+      || (win && win._mcCaptionMode)
+      || (nativeTheme.shouldUseDarkColors ? "dark" : "light");
     paintTitleBarOverlay(win, resolvedMode, HEADER_CSS_PX);
     pushWinCaptionReserve(win);
   }
@@ -211,17 +218,30 @@ function createWindowChrome({
     focusCursorWatch.watch(win, watching);
   }
 
-  function setThemeMode(pref) {
+  function setThemeMode(pref, sender) {
+    // themeSource is process-wide and a focused dashboard window re-syncs it on
+    // focus, so a background window's push must not re-pin the focused one.
+    const focused = BaseWindow.getFocusedWindow();
+    if (focused && focused._mcView && focused !== windowForWebContents(sender)) return;
     if (pref === "system" || pref === "dark" || pref === "light") {
       nativeTheme.themeSource = resolveThemeSource(pref, "");
     }
   }
 
-  function setTitlebarMode(mode) {
+  function setTitlebarMode(mode, sender) {
     if (!IS_WINDOWS) return;
     const resolvedMode = mode === "dark" || mode === "light"
       ? mode
       : (nativeTheme.shouldUseDarkColors ? "dark" : "light");
+    // The sender's own window only: its dashboard may be painting a Remote Crew's
+    // lent mode, which no other window shares.
+    const own = sender ? windowForWebContents(sender) : null;
+    if (own) {
+      if (own.isDestroyed()) return;
+      own._mcCaptionMode = resolvedMode;
+      paintTitleBarOverlay(own, resolvedMode, HEADER_CSS_PX);
+      return;
+    }
     // Continue past framed modal windows that cannot accept an overlay; the
     // helper catches per-window so one dialog cannot strand siblings.
     paintAllTitleBarOverlays(

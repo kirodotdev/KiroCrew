@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
 import { switchSlot, deleteSlot, openActivityToTab, resumeFromHistory, setAgentSwitchNotice } from '../store/chatSlice'
 import { closeConfirmPrompt } from '../lib/closeConfirmPrompt'
+import { cachedViewerIds } from './sharedCrew/cachedViewer'
 import { askAppConfirm } from '../lib/appConfirm'
 import { forgetClosedSessionRef, hasRecentlyClosedSession, isClosedSessionOpenIn, rememberClosedSession, restoreClosedSession, takeRecentlyClosedSession, trackClosedSessionClose, waitForClosedSession } from '../lib/recentlyClosedSessions'
 import type { ClosedSessionRef } from '../lib/recentlyClosedSessions'
@@ -45,6 +46,7 @@ import { closeShownCrewWindow, crewWindowShown } from '../pages/chat/crew-window
 import { stepTurn } from '../pages/chat/turnStep'
 import { noteEscapeStoppedSpeech } from '../utils/speechStopKey'
 import { requestDictationMuteToggle } from '../lib/dictationMute'
+import { openGlobalChatSearch } from '../components/globalChatSearch/globalChatSearchStore'
 
 /** Shortcuts scoped to the session on screen (see the crew-window guard). */
 const CREW_WINDOW_SCOPED: ReadonlySet<string> = new Set([
@@ -306,6 +308,8 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'toggle-dictation-mute': 'hooks.useKeyboardShortcuts.toggle_dictation_mute',
   // Reused: the chat header button this chord fires.
   'pop-out-session': 'pages.chatPage.pop_out_session_to_its_own_window',
+  // Reused: the dialog's own title.
+  'search-all-chats': 'components.globalChatSearch.title',
   // Reused: the ChatInput control this chord fires.
   'optimize-prompt': 'components.chatInput.optimize_prompt',
   'edit-last-message': 'hooks.useKeyboardShortcuts.edit_last_message',
@@ -313,8 +317,11 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'upload-file': 'components.chatInput.upload_file',
   'list-indent': 'hooks.useKeyboardShortcuts.indent_list_line',
   'list-outdent': 'hooks.useKeyboardShortcuts.outdent_list_line',
+  'stash-prompt': 'components.promptStash.shortcut_label',
   'agent-monitor': 'hooks.useKeyboardShortcuts.open_agent_monitor',
   'stop-speaking': 'hooks.useKeyboardShortcuts.stop_speaking',
+  // Reused: the composer's Stop button, which this key presses.
+  'stop-turn': 'components.chatInput.stop_generation',
   'notification-prev': 'hooks.useKeyboardShortcuts.previous_notification',
   'notification-next': 'hooks.useKeyboardShortcuts.next_notification',
   'instance-1': 'hooks.useKeyboardShortcuts.switch_to_local',
@@ -668,7 +675,7 @@ export function formatShortcut(def: ShortcutDef): string {
   if (def.ctrl) parts.push(mac ? '\u2303' : 'Ctrl')
   if (def.alt) parts.push(mac ? '\u2325' : 'Alt')
   if (def.shift) parts.push(mac ? '\u21e7' : 'Shift')
-  const keyLabel = def.key === 'ArrowLeft' ? '\u2190' : def.key === 'ArrowRight' ? '\u2192' : def.key === 'ArrowUp' ? '\u2191' : def.key === 'ArrowDown' ? '\u2193' : def.key === '`' ? '`' : def.key === 'Enter' ? (mac ? '\u23ce' : 'Enter') : def.key === ',' ? ',' : def.key === 'Escape' ? '\u238b' : def.key === 'Tab' ? (mac ? '\u21e5' : 'Tab') : def.key.toUpperCase()
+  const keyLabel = def.key === 'ArrowLeft' ? '\u2190' : def.key === 'ArrowRight' ? '\u2192' : def.key === 'ArrowUp' ? '\u2191' : def.key === 'ArrowDown' ? '\u2193' : def.key === '`' ? '`' : def.key === 'Enter' ? (mac ? '\u23ce' : 'Enter') : def.key === ',' ? ',' : def.key === 'Escape' ? 'Esc' : def.key === 'Tab' ? (mac ? '\u21e5' : 'Tab') : def.key.toUpperCase()
   parts.push(keyLabel)
   return parts.join(mac ? '' : ' + ')
 }
@@ -919,10 +926,13 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     // Settings — ⌘, on macOS, Alt+, on Windows/Linux, Option/Alt+, a macOS
     // alias (see the registry entry for why). Must stay BEFORE the Alt gate
     // below: off macOS the primary chord now CARRIES Alt, so moving this branch
-    // under that gate would take Alt+, away from Settings. Fires even when
-    // shortcuts are globally disabled, so the user can always reach the toggle
-    // that re-enables them.
-    if (hit === 'open-settings') {
+    // under that gate would take Alt+, away from Settings. The primary chord
+    // fires even when shortcuts are globally disabled, so the user can always
+    // reach the toggle that re-enables them; the macOS Option+, alias then obeys
+    // the toggle, so the character it types reaches the field.
+    const settingsPrimary = bindings['open-settings']?.primary
+    if (hit === 'open-settings'
+        && (enabled || (settingsPrimary && chordMatchesEvent(e, settingsPrimary, shortcutPlatform())))) {
       e.preventDefault()
       navigate('/settings')
       return
@@ -1044,6 +1054,10 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         // ⌘O / Ctrl+O: the chat header's pop-out button, for the active
         // session. A held chord's auto-repeat is not another press.
         'pop-out-session': () => { if (!e.repeat) onPopOutSession?.() },
+        // The shell owns this chord on every page: a page's own window-level
+        // ⌘F listener (File Explorer ships from its own repository and does not
+        // check Shift) must not answer it as well.
+        'search-all-chats': () => { e.stopPropagation(); if (!e.repeat) openGlobalChatSearch() },
         // Focus the pending tool-approval row. Firing while typing is safe HERE
         // ONLY BECAUSE IT MOVES FOCUS AND NOTHING ELSE — the decision still costs
         // a second, deliberate press on a control the user can now see is
@@ -1088,6 +1102,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
           const ask = closeConfirmPrompt(appStore.getState(), activeSlot, {
             settingOn: loadChatConfig().confirmCloseSession,
             checkBusy: modChord,
+            viewerIds: cachedViewerIds(),
           })
           // The slot captured here is the one the chord closed, even if the
           // user switches sessions while the dialog is open.

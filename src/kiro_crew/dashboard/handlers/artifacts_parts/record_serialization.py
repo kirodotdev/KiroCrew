@@ -108,10 +108,16 @@ def _serialize(art: Any, *, include_content: bool = False, state: Any = None) ->
     if isinstance(out.get("tags"), list):
         out["tags"] = [_redact_text(t) if isinstance(t, str) else t for t in out["tags"]]
     if include_content and out.get("content"):
-        cleaned = out["content"]
+        original = out["content"]
+        cleaned = original
         cleaned, _ = redact_exfiltration_urls(cleaned)
         cleaned, _ = redact_credentials(cleaned)
         out["content"] = cleaned
+        # Says the shown content is not the stored content, so an editor that
+        # saves what it shows (a canvas autosaves the whole document) must not
+        # write the placeholders back over what they hide.
+        if cleaned != original:
+            out["content_redacted"] = True
     # Live-resolve the originating session's current title for the Source column.
     # Only set when we can resolve (session present, or gone -> "(deleted
     # session)"); when there's no originating session the key is absent and the

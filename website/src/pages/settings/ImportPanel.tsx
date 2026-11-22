@@ -1,4 +1,4 @@
-import { ArrowRight, Import } from 'lucide-react'
+import { ArrowRight } from 'lucide-react'
 import { SettingsCard, SettingsSection } from '../../components/settings'
 import { Btn } from '../../components/ui'
 import PortabilityTab from '../overview/PortabilityTab'
@@ -10,8 +10,7 @@ export function ImportPanel() {
       <SettingsSection title={i18nT('pages.settings.importPanel.agent_data')}>
         <SettingsCard>
           <div className="flex items-center justify-between gap-4 py-1.5">
-            <div className="flex min-w-0 items-start gap-3">
-              <Import className="lucide-inline mt-0.5 shrink-0 text-muted" />
+            <div className="flex min-w-0">
               <div className="min-w-0">
                 <div className="text-[13px] font-semibold text-text">
                   {i18nT('pages.settings.importPanel.import_from_another_agent')}

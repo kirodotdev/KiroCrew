@@ -15,8 +15,10 @@ holds.
   item keeps its binding and keeps taking its worker's writes, unread until
   someone takes it over or stops it.
 - **`stale`**: never on the strength of silence alone. Its worker also has to
-  be not running, and its last word has to have left the next move with the
-  worker, so a `done` item waiting on you is not flagged.
+  own no proven live or queued work, and its last word has to leave the next
+  move with the worker. An unreadable activity probe suppresses no stall. A
+  background task does not answer a `needs_human` report; only a new model turn
+  does.
 - **`report_undelivered`**: its worker TRIED to report or read its brief and
   the harness never delivered the call. Check that worker's `session_status`
   and its pull request, and tell the user what you find ("couldn't send its

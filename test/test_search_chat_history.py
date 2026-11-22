@@ -8,10 +8,14 @@ These exercise the acceptance criteria EB-1, EB-3, EB-4, EB-5, EB-7b from
 from __future__ import annotations
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import mcp_core
 from kiro_crew.history import ConversationLog
 from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
+
+#: A credential the rule table masks (an AWS key ID is an identifier and stays visible).
+_TOKEN = github_classic(seed=11)
 
 
 @pytest.fixture(autouse=True)
@@ -234,6 +238,170 @@ class TestSearchChatHistoryHandler:
         assert cl.get_metadata("dashboard_chat-legacy") == {}  # no metadata line
         out = mcp_core._call_tool_inner("search_chat_history", {"query": "legacy widget"})
         assert "dashboard_chat-legacy" in out
+
+    def _seed_tool_row(self, tmp_path):
+        import json
+
+        cl = _seed_sessions(tmp_path)
+        cl.append(
+            "dashboard_chat-1",
+            "tool",
+            "\U0001f527 Run the tests",
+            extra_meta={
+                "tool_call_id": "toolu_round1",
+                "input": json.dumps({"command": "pytest -q"}),
+                "output": f"41 passed, 1 failed: test_widget {_TOKEN}",
+            },
+        )
+        return cl
+
+    def test_a_trim_pointer_round_trips_to_its_tool_output(self, tmp_path, monkeypatch):
+        """The id a trimmed seed lists returns that call's stored output, redacted."""
+        from kiro_crew.context import build_tool_pointers
+        from kiro_crew.security import redaction_switch
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            redaction_switch, "_path", lambda: tmp_path / "credential_redaction.json"
+        )
+        monkeypatch.setattr(redaction_switch, "DEFAULT_REDACTION_ENABLED", True)
+        cl = self._seed_tool_row(tmp_path)
+        pointers = build_tool_pointers(cl, "dashboard_chat-1")
+        call_id = pointers.splitlines()[-1].split(" | ")[0]
+
+        out = mcp_core._call_tool_inner(
+            "get_chat_session", {"session_key": "dashboard_chat-1", "tool_call_id": call_id}
+        )
+
+        assert call_id == "toolu_round1"
+        assert "41 passed, 1 failed: test_widget" in out
+        assert _TOKEN not in out
+        assert "redis.timeout" not in out, "only the one call, not the transcript"
+
+    def test_a_rotated_tool_result_is_still_listed_and_fetched(self, tmp_path, monkeypatch):
+        """A tool row a size rotation moved to the archive keeps its pointer and its output."""
+        from kiro_crew.context import build_tool_pointers
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        cl = _seed_sessions(tmp_path)
+        cl.append(
+            "dashboard_chat-1",
+            "tool",
+            "\U0001f527 Old call",
+            extra_meta={"tool_call_id": "toolu_old", "output": "archived output"},
+        )
+        monkeypatch.setattr("kiro_crew.history._SESSION_MAX_BYTES", 400)
+        monkeypatch.setattr("kiro_crew.history._SESSION_KEEP_LINES", 3)
+        for i in range(20):
+            cl.append("dashboard_chat-1", "user", f"later row {i:02d} padded to rotate the file")
+        assert "toolu_old" not in str(cl.read_messages_chained("dashboard_chat-1"))
+
+        assert "toolu_old | Old call" in build_tool_pointers(cl, "dashboard_chat-1")
+        out = mcp_core._call_tool_inner(
+            "get_chat_session", {"session_key": "dashboard_chat-1", "tool_call_id": "toolu_old"}
+        )
+        assert "archived output" in out
+
+    def test_a_private_transcript_lists_no_pointers(self, tmp_path, monkeypatch):
+        from kiro_crew.context import build_tool_pointers
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        cl = _seed_sessions(tmp_path)
+        cl.append(
+            "dashboard_chat-secret",
+            "tool",
+            "\U0001f527 Secret call",
+            extra_meta={"tool_call_id": "toolu_secret", "output": "x"},
+        )
+        assert build_tool_pointers(cl, "dashboard_chat-secret") == ""
+
+    def test_an_approved_call_is_listed_once(self):
+        """The call row and its approval row share one id; the list names it once."""
+        from kiro_crew.context_assembly.replay import TOOL_POINTER_MAX_ROWS, tool_pointer_text
+
+        rows = []
+        for i in range(TOOL_POINTER_MAX_ROWS + 1):
+            meta = {"tool_call_id": f"toolu_{i}", "output": "x"}
+            rows.append({"role": "tool", "content": "\U0001f527 Run", "meta": meta})
+            rows.append({"role": "tool", "content": "\u2705 Run", "meta": dict(meta)})
+        text = tool_pointer_text(rows, "s")
+        listed = [line.split(" | ")[0] for line in text.splitlines()[2:]]
+        assert listed == [f"toolu_{i}" for i in range(1, TOOL_POINTER_MAX_ROWS + 1)]
+        assert "(1 older results not listed.)" in text
+
+    @pytest.mark.parametrize(
+        "content",
+        ["\U0001f527 Run: ls", "Tool: Run: ls", "\u2705 Run: ls", "Approved: Run: ls"],
+    )
+    def test_the_listed_tool_drops_either_lead(self, content):
+        """Saved rows keep the old glyph lead and new rows write the word; both list the bare title."""
+        from kiro_crew.context_assembly.replay import tool_pointer_text
+
+        rows = [{"role": "tool", "content": content, "meta": {"tool_call_id": "toolu_1"}}]
+        (line,) = [
+            ln for ln in tool_pointer_text(rows, "s").splitlines() if ln.startswith("toolu_1")
+        ]
+        assert line.split(" | ")[1] == "Run: ls"
+
+    def test_a_large_tool_output_is_cut_to_the_promised_length(self, tmp_path, monkeypatch):
+        """Storage keeps up to 1M chars; one read returns at most the 8,000 it promises."""
+        from kiro_crew.mcp_tools.sessions import TOOL_CALL_OUTPUT_MAX_CHARS
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        cl = _seed_sessions(tmp_path)
+        cl.append(
+            "dashboard_chat-1",
+            "tool",
+            "\U0001f527 Print a big log",
+            extra_meta={"tool_call_id": "toolu_big", "output": "a" * 20_000 + "TAIL"},
+        )
+        out = mcp_core._call_tool_inner(
+            "get_chat_session", {"session_key": "dashboard_chat-1", "tool_call_id": "toolu_big"}
+        )
+        assert TOOL_CALL_OUTPUT_MAX_CHARS == 8_000
+        assert "a" * 8_000 in out and "a" * 8_001 not in out
+        assert "TAIL" not in out and "12,004 more chars not shown" in out
+
+    def test_a_tool_call_id_outside_the_id_characters_is_refused(self):
+        from kiro_crew.validation import (
+            GET_CHAT_SESSION_SCHEMA,
+            ValidationError,
+            validate_tool_args,
+        )
+
+        ok = validate_tool_args(
+            {"session_key": "s", "tool_call_id": "toolu_A1.b:c-d"}, GET_CHAT_SESSION_SCHEMA
+        )
+        assert ok["tool_call_id"] == "toolu_A1.b:c-d"
+        for bad in ("", "toolu x", "toolu/../x", "toolu\nx", "tóolu"):
+            with pytest.raises(ValidationError):
+                validate_tool_args(
+                    {"session_key": "s", "tool_call_id": bad}, GET_CHAT_SESSION_SCHEMA
+                )
+
+    def test_an_unknown_tool_call_id_says_so(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        self._seed_tool_row(tmp_path)
+        out = mcp_core._call_tool_inner(
+            "get_chat_session", {"session_key": "dashboard_chat-1", "tool_call_id": "toolu_nope"}
+        )
+        assert out == "No tool call with that tool_call_id in that conversation."
+
+    def test_a_call_without_tool_call_id_is_unchanged(self, tmp_path, monkeypatch):
+        """The old call still returns the conversation and still leaves tool rows out."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        self._seed_tool_row(tmp_path)
+        out = mcp_core._call_tool_inner("get_chat_session", {"session_key": "dashboard_chat-1"})
+        assert "redis.timeout" in out and "configure the redis timeout" in out
+        assert "41 passed" not in out and "Run the tests" not in out
+
+    def test_tool_call_id_refuses_an_incognito_session(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        _seed_sessions(tmp_path)
+        out = mcp_core._call_tool_inner(
+            "get_chat_session", {"session_key": "dashboard_chat-secret", "tool_call_id": "toolu_x"}
+        )
+        assert "private" in out.lower() and "hunter2" not in out
 
     def test_get_chat_session_refuses_incognito(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))

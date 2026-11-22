@@ -37,7 +37,7 @@ def _grant_market_trust(home: Path) -> None:
                 "agent": {
                     "apps_allow_third_party": False,
                     "apps_trusted": [APP_NAME],
-                    "apps_trusted_local": [],
+                    "apps_trusted_local": [APP_NAME],
                     "apps_trusted_repositories": {APP_NAME: f"market:{REF}"},
                 }
             }
@@ -119,13 +119,20 @@ def test_failed_uninstall_restores_the_market_repository_binding(app_home, monke
     _install()
     _grant_market_trust(app_home)
 
+    at_delete: list[dict[str, Any]] = []
+
     def _boom(_dest: Path) -> None:
+        at_delete.append(_agent(app_home))
         raise OSError("simulated delete failure")
 
     monkeypatch.setattr(manager_uninstall, "_rmtree_app_dir", _boom)
 
     result = uninstall_app(APP_NAME, keep_data=False)
 
+    # The grant is withdrawn BEFORE the delete runs; the restore below would
+    # otherwise hide a missing first withdrawal.
+    assert len(at_delete) == 1
+    assert APP_NAME not in at_delete[0].get("apps_trusted", [])
     assert not result.ok
     assert get_app(APP_NAME) is not None
     agent = _agent(app_home)

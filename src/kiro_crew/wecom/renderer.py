@@ -1018,7 +1018,7 @@ class WeComRenderer(Renderer):
             # reconstituted right here by the join. Redacting the assembled string
             # at the send boundary closes that, and also covers a credential that
             # was never split. Same placement, and the same reason, as Slack's
-            # ``_maybe_post_thinking``.
+            # ``_thinking_text``.
             #
             # The scrub is render-aware (``redact_for_target``), not the literal
             # byte pair: WeCom renders this ``<think>`` block as markdown, so a key

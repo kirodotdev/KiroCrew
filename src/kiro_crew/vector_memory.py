@@ -129,6 +129,7 @@ from kiro_crew.vector_memory_runtime import embedding_repair as _embedding_repai
 from kiro_crew.vector_memory_runtime import episodic_search as _episodic_search
 from kiro_crew.vector_memory_runtime import episodic_write as _episodic_write
 from kiro_crew.vector_memory_runtime import faiss_index as _faiss_index
+from kiro_crew.vector_memory_runtime import lesson_candidates as _lesson_candidates  # noqa: F401
 from kiro_crew.vector_memory_runtime import lesson_write as _lesson_write
 from kiro_crew.vector_memory_runtime import lessons as _lessons
 from kiro_crew.vector_memory_runtime import migration as _migration
@@ -364,9 +365,6 @@ _BUILTIN_PREFIXES = [
 ]
 
 # ── Schema ──
-
-
-_MAX_BACKFILLS_PER_CALL = 5  # cap lazy embedding backfills to bound latency
 
 
 def _lesson_slug(rule: str) -> str:
@@ -1325,11 +1323,10 @@ class VectorMemoryStore:
         tag_filter: list[str] | None,
         relevance_filter: bool,
         now: datetime,
-        blocked: set[str] | None = None,
     ) -> list[dict]:
         """Score, filter and rank from the resident set; resolve winner bodies."""
         return _episodic_search.rank_from_scoring_set(
-            self, scoring, q, limit, mmr, tag_filter, relevance_filter, now, blocked
+            self, scoring, q, limit, mmr, tag_filter, relevance_filter, now
         )
 
     def _episodic_candidate(self, r: sqlite3.Row, cosine_sim: float, now: datetime) -> dict:

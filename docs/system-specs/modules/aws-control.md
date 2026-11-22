@@ -568,13 +568,12 @@ rather than by a second walk of the source also means it cannot disagree with wh
 actually be sent, and that a redaction switch changes the fingerprint.
 
 **Every read of the finished archive comes from ONE descriptor, and so does the
-upload.** On `main` the archive was staged by name and then re-resolved from that name
-four times -- the entry-set digest, the recorded size, the AWS CLI `--body` open, and
-the body digest -- so a same-UID process that replaced the file between any two of those
-resolutions made the upload carry bytes nothing checked, off-host and unrecallable
-(#13259). The fix opens the finished archive ONCE through a checked descriptor and reads
-the size, both fingerprints and the upload body all from it, so no step re-resolves the
-name.
+upload.** Re-resolving the staged archive by name for each of the entry-set digest,
+the recorded size, the AWS CLI `--body` open and the body digest would let a same-UID
+process that replaced the file between two of those resolutions make the upload carry
+bytes nothing checked, off-host and unrecallable. So the app opens the finished archive
+ONCE through a checked descriptor and reads the size, both fingerprints and the upload
+body all from it, and no step re-resolves the name.
 
 Both kinds build the archive BY NAME in a private staging directory this app cuts and
 PINS (`storage.pinned_staging`: `mkdtemp` 0700 under the masked staging root, then a
@@ -593,17 +592,17 @@ checked descriptor -- and it streams THAT descriptor to the AWS CLI as `--body
 passes the name held by the pinned directory handle and re-verifies the inode against the
 held descriptor afterwards (`_assert_same_file`, a detect-not-prevent backstop). A caller
 with no descriptor of its own (the label sidecar, the library push, the drive spool)
-still passes a bare name exactly as before -- those bodies are not re-hardened by #13259.
+still passes a bare name -- those bodies are not held by a descriptor.
 
-This is the whole fix: the archive bytes that are CHECKED are the bytes that are
+So the archive bytes that are CHECKED are the bytes that are
 UPLOADED, on every platform the backup already ran on -- Linux, macOS, the BSDs, Windows.
 The inode pin fixes WHICH file the descriptor reaches; it does not hold the file's CONTENT
 unrewritable in place against a same-UID writer for the whole (minutes-long) transfer. A
 producer that writes the body into a descriptor it never lets a name reach -- so the
-content is held from creation -- is the larger follow-up tracked in #13550, for both the
-sessions and the snapshot producers. The sessions kind keeps its pre-existing
+content is held from creation -- is not built, for either the sessions or the snapshot
+producer (`backup.py` says so at both call sites). The sessions kind keeps its
 descriptor-pinned-traversal requirement (`run_sessions_backup` refuses where the traversal
-cannot be pinned, as it did on `main`); no NEW capability gate is added, so no platform
+cannot be pinned); no other capability gate is added, so no platform
 loses a backup it had.
 
 Two normalizations are part of the digest's definition, each measured against the real
@@ -705,7 +704,10 @@ that DECODED and then failed to parse, and bytes that are not UTF-8 never reache
 parser. Overwriting them would replace every account's toggles, retention count and run
 history -- including the `upload_versions` records the ownership test reads -- on the
 strength of a document nobody read. The abandoning error stays an `OSError` subclass, so
-`set_nightly`'s existing handler needs no change. Neither reader catches the wider
+`set_nightly`'s existing handler needs no change. A leading UTF-8 byte-order mark (a
+Windows "UTF-8 with BOM" save) is not content, so both readers parse past it
+(`user_json.loads_user_json`): such a file is read whole, the mutation carries every
+account forward, and the sweep applies its configured keep count. Neither reader catches the wider
 `ValueError`,
 so a surprising one stays loud. Neither is ever derived from `nightly` in either
 direction: authorizing unattended uploads is not authorizing permanent deletes, and
@@ -1972,9 +1974,9 @@ the name: the card's label still comes from the slug-keyed join, and the folder
 named in the confirm is built from that same shared slug, so under slug reuse the
 reader can be shown one artifact's name over another's bytes with nothing on
 screen able to separate them. Establishing whose copy it is needs the pushed
-`meta.json` sidecar and is tracked by #6987; the same slug-targeted removal is
-offered from the picker on the current release, so this placement neither
-introduces that gap nor closes it. Removal is therefore not gated on local state
+`meta.json` sidecar, which this card does not read; the same slug-targeted removal
+is offered from the picker, so this placement neither introduces that gap nor
+closes it. Removal is therefore not gated on local state
 at all, which is
 what makes a copy pushed from another machine (`remoteOnly` above) removable
 rather than stranded. It is gated the way folder deletion is: the menu item
@@ -2273,8 +2275,8 @@ fails in a way nothing reports: with `KIRO_HOME` unset the specs resolve to the 
 HOME's `~/.kiro/agents`, which every instance under that `$HOME` shares, and a backend
 on a non-default data home (`KIROCREW_HOME=<data home>`) REFUSES to rewrite a shared
 agents directory -- the specs it writes pin the writer's data home into every managed
-MCP server entry, which breaks strict session identity for a default-home gateway
-(#9690). The refusal is correct and stays. Its consequence in the container was that the
+MCP server entry, which breaks strict session identity for a default-home gateway.
+The refusal is correct and stays. Its consequence in the container was that the
 supervisor's crew spec landed in the shared directory carrying no ownership provenance,
 the backend read it as another home's, declined, and never wrote the default spec at
 all; the boot looked healthy and every turn died at `DerivedSpecStale: the default agent

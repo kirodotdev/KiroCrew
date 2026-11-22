@@ -61,6 +61,7 @@ import json
 import re
 from collections.abc import Iterable
 
+from kiro_crew.acp.claude_mcp_names import claude_mcp_server_rule
 from kiro_crew.acp.kas_permissions import KIRO_TOOL_ALIASES
 from kiro_crew.acp_backends import (
     ACP_BACKEND_ANTIGRAVITY,
@@ -432,6 +433,85 @@ def _opencode_mcp_splits(tool_name: str, mcp_servers: Iterable[str]) -> list[str
         if c == "_" and 0 < i < len(tool_name) - 1
     ]
     return list(dict.fromkeys(splits))
+
+
+def opencode_fused_mcp_tool(title: str, kind: str, server: str) -> str:
+    """The tool half of opencode's fused ``<server>_<tool>`` *title* for *server*, or "".
+
+    Read only off a ``tool_call`` frame's own ``title`` (``AcpEvent.wire_title``), which
+    opencode writes as the tool's id (``kirocrew-core_wait``) while the call has no title
+    of its own. *kind* must be ``other``, the kind opencode gives every tool it has no
+    row for (an MCP tool among them); its built-ins whose later title is model text
+    (``read``, ``task``, ``webfetch``) get another kind. Only the one exact *server* is
+    tried, in opencode's spelling, and only when neither half holds a ``_``: the
+    title's one ``_`` is then the join, so no other server's tool fuses to the same
+    title (``kirocrew-core_x`` + ``wait`` is ``kirocrew-core_x_wait``, and names
+    nothing here). A tool half outside ``[A-Za-z0-9-]`` names nothing.
+    """
+    if kind != "other" or len(title) > MAX_HARNESS_TOOL_NAME_LEN:
+        return ""
+    spelled = _OPENCODE_UNSAFE_NAME_CHARS.sub("_", server)
+    if not spelled or "_" in spelled or title.count("_") != 1:
+        return ""
+    head, _, tool = title.partition("_")
+    return tool if head == spelled and tool and not _OPENCODE_UNSAFE_NAME_CHARS.search(tool) else ""
+
+
+#: The characters pi keeps in a server name it writes into ``mcp__<server>__<tool>``;
+#: any other is ``_`` (the gate extension's ``mcpToolPrefix``).
+_PI_UNSAFE_SERVER_CHARS = re.compile(r"[^A-Za-z0-9_]")
+
+#: A tool half that cannot hold a fused ``__`` join: words of ``[A-Za-z0-9-]``
+#: joined by single ``_``, so the ``__`` before it is the only join in the name.
+_FUSED_TOOL_HALF_RE = re.compile(r"[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*")
+
+
+def _fused_tool_half(name: str, prefix: str) -> str:
+    """The tool half of *name* after *prefix*, or "" (see :data:`_FUSED_TOOL_HALF_RE`)."""
+    if len(name) > MAX_HARNESS_TOOL_NAME_LEN or not name.startswith(prefix):
+        return ""
+    tool = name[len(prefix) :]
+    return tool if _FUSED_TOOL_HALF_RE.fullmatch(tool) else ""
+
+
+def pi_fused_mcp_tool(title: str, kind: str, server: str, servers: Iterable[str]) -> str:
+    """The tool half of pi's ``mcp__<server>__<tool>`` *title* for *server*, or "".
+
+    Read only off a ``tool_call`` frame's own ``title`` (``AcpEvent.wire_title``),
+    which pi writes as the tool's name; *kind* must be ``other``, the kind pi-acp
+    gives an MCP tool (its shell call, titled by its command, is ``execute``). pi
+    writes every server character outside ``[A-Za-z0-9_]`` as ``_``, so another
+    server can spell the same (``kirocrew_core`` for ``kirocrew-core``). *servers*
+    is every server this session handed pi: *server* must be one of them and no
+    other may spell as it does, else the title names nothing. The tool half holds
+    no ``__`` and starts and ends with no ``_``, so a longer server
+    (``kirocrew_core__x``, ``kirocrew_core_``) cannot fuse to a name read here.
+    """
+    if kind != "other":
+        return ""
+    names = [s for s in servers if isinstance(s, str)]
+    if server not in names:
+        return ""
+    spelled = _PI_UNSAFE_SERVER_CHARS.sub("_", server)
+    if any(s != server and _PI_UNSAFE_SERVER_CHARS.sub("_", s) == spelled for s in names):
+        return ""
+    return _fused_tool_half(title, f"mcp__{spelled}__")
+
+
+def claude_fused_mcp_tool(stamp: str, server: str, servers: Iterable[str]) -> str:
+    """The tool half of claude-agent-acp's ``mcp__<server>__<tool>`` *stamp*, or "".
+
+    *stamp* is the adapter's own ``_meta.claudeCode.toolName``
+    (``AcpEvent.claude_mcp_tool_name``), never the title, which claude builds from
+    the call's arguments. *server* must be one of *servers*, the ones Crew placed on
+    this session. Claude Code keeps ``-`` in a server name and writes other unsafe
+    characters as ``_`` (``claude_mcp_names``), so only *server* itself fuses to
+    its prefix (``kirocrew_core`` and ``kirocrew-core-x`` do not), and the tool
+    half's shape rules out a longer server (``kirocrew-core__x``, ``kirocrew-core_``).
+    """
+    if server not in [s for s in servers if isinstance(s, str)]:
+        return ""
+    return _fused_tool_half(stamp, claude_mcp_server_rule(server) + "__")
 
 
 def mimocode_rewrites_name(server: str) -> bool:

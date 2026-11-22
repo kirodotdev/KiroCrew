@@ -33,6 +33,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+import source_corpus
 from stale_package_attribute import package_attribute_replaced
 
 from kiro_crew import agent
@@ -667,16 +668,17 @@ def test_no_test_patches_a_forwarded_name_that_it_may_create() -> None:
     roots = [_REPO / "test", *sorted(_SRC.rglob("tests"))]
     scanned = parsed = 0
     hits: dict[tuple[str, str], list[str]] = {}
-    for root in roots:
-        for path in sorted(root.rglob("*.py")):
-            text = path.read_text(encoding="utf-8")
-            scanned += 1
-            if not _worth_parsing(text):
-                continue
-            parsed += 1
-            relative = path.relative_to(_REPO).as_posix()
-            for line, function, name in _create_patches(ast.parse(text)):
-                hits.setdefault((relative, function), []).append(f"line {line}: {name}")
+    with source_corpus.untraced():
+        for root in roots:
+            for path in sorted(root.rglob("*.py")):
+                text = path.read_text(encoding="utf-8")
+                scanned += 1
+                if not _worth_parsing(text):
+                    continue
+                parsed += 1
+                relative = path.relative_to(_REPO).as_posix()
+                for line, function, name in _create_patches(ast.parse(text)):
+                    hits.setdefault((relative, function), []).append(f"line {line}: {name}")
     assert scanned > 100, f"the scan read only {scanned} test files, so it measured nothing"
     assert parsed > 50, f"the scan parsed only {parsed} files, so its prefilter is too tight"
     assert set(hits) == _ALLOWED, hits

@@ -1,0 +1,149 @@
+name: Test Map
+
+# SHADOW ONLY. Builds, nightly on main, a map from every executed repository
+# file to the test files that ran it, by running the full Linux backend suite
+# with scripts/ci_test_file_map.py (per-test `sys.monitoring` recorder).
+# Nothing reads the map to skip a test: every pull request still runs the whole
+# suite. `scripts/ci_test_map.py select` prints what a diff WOULD run, and
+# `scripts/ci_test_map_shadow.py` measures, on past PRs and red pushes, how much
+# that would save and whether it would have missed a failing test. Only that
+# evidence can move it out of shadow.
+#
+# Not coverage contexts (`--cov-context=test`): coverage writes its SQLite data
+# at every context switch, inside the test, so the tests that patch
+# `sqlite3.connect` break coverage and crash their xdist worker, and the
+# per-test data reached 35 GB. The plugin's docstring has the numbers.
+#
+# Not part of ci.yml on purpose: its result must not depend on which PR pushed
+# last. No push trigger, and the group never cancels, so a landing on main
+# cannot cut a run short; a second dispatch waits for the running one.
+
+on:
+  schedule:
+    - cron: "30 9 * * *" # 09:30 UTC, after nightly.yml's 06:00 build
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-map
+  cancel-in-progress: false
+
+jobs:
+  shard:
+    name: Record (shard ${{ matrix.group }}/8)
+    # Off the CodeBuild fleet, like nightly.yml's version job: a schedule tick's
+    # actor is whoever last edited this file, which the fleet's allowlist can
+    # reject, and the run would then queue forever. The `||` leg keeps a fork on
+    # the hosted image instead of waiting for an org runner it cannot reach.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+    # ci.yml's budget for the same shard on this runner class.
+    timeout-minutes: 70
+    strategy:
+      # Same cap ci.yml keeps on the shared hosted pool.
+      max-parallel: 4
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop,otlp]" --group dev
+
+      - name: Run tests with the recorder
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          GROUP: ${{ matrix.group }}
+        # ci.yml's full-suite shard (same file shards, pins and marker filter),
+        # without coverage, plus the recorder. A red test still leaves a usable
+        # part: exit 1 continues with a warning (main-red-watch.yml reports reds
+        # on main); any other exit means the session did not complete.
+        run: |
+          echo "::remove-matcher owner=python::"
+          mem_mib=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)
+          by_mem=$(( (mem_mib - 2048) / 2048 ))
+          WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
+          [ "$WORKERS" -ge 1 ] || WORKERS=1
+          start=$(date +%s)
+          rc=0
+          python -m pytest -p scripts.ci_file_shards -p scripts.ci_test_file_map \
+            -q -n "$WORKERS" --timeout=120 --no-cov -m "not ipv6_required and not real_venv" \
+            --file-shards 8 --file-shard "$GROUP" \
+            --file-shard-pins scripts/ci_file_shard_pins.txt \
+            --test-map-dir="$RUNNER_TEMP/test-map/$GROUP" || rc=$?
+          echo "shard $GROUP: pytest exit $rc after $(( $(date +%s) - start ))s with $WORKERS workers" | tee -a "$GITHUB_STEP_SUMMARY"
+          case "$rc" in
+            0) ;;
+            1) echo "::warning::shard $GROUP had failing tests; what they ran is still in the map" ;;
+            *) echo "::error::pytest exited $rc before the session completed"; exit 1 ;;
+          esac
+          # A worker that died never wrote its part, so the shard's map would
+          # silently miss tests: the plugin marks it, and the shard fails.
+          if ls "$RUNNER_TEMP/test-map/$GROUP"/crashed-* > /dev/null 2>&1; then
+            echo "::error::shard $GROUP lost an xdist worker; its map would be incomplete"
+            exit 1
+          fi
+          ls "$RUNNER_TEMP/test-map/$GROUP"/part-*.json > /dev/null
+
+      - name: Upload shard parts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-map-shard-${{ matrix.group }}
+          path: ${{ runner.temp }}/test-map/${{ matrix.group }}/part-*.json
+          if-no-files-found: error
+          retention-days: 3
+
+  map:
+    name: Build the map
+    needs: shard
+    # A map missing a shard would link none of that shard's tests to anything,
+    # and a selector reading it would under-select. Every shard must succeed.
+    if: ${{ !cancelled() && needs.shard.result == 'success' }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Download shard parts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: test-map-shard-*
+          path: parts
+
+      # Stdlib only: the builder needs no install.
+      - name: Build the map
+        run: |
+          count=$(find parts -mindepth 1 -maxdepth 1 -type d -name 'test-map-shard-*' | wc -l)
+          [ "$count" -eq 8 ] || { echo "::error::expected 8 shard part sets, found $count"; exit 1; }
+          python scripts/ci_test_map.py build --parts parts --out test-map.json --commit "$GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+          gzip -9 -k test-map.json
+          echo "map gzip: $(stat -c %s test-map.json.gz) bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the map
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-map
+          path: test-map.json.gz
+          if-no-files-found: error
+          retention-days: 30

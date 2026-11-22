@@ -1913,5 +1913,6 @@ module.exports = {
   planIntegration,
   dataHome,
   integrateLinuxDesktop,
+  resolveSystemBinary,
   startLinuxDesktopIntegration,
 };

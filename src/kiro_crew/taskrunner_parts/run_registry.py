@@ -20,7 +20,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.config import paths as _paths
 from kiro_crew.config.loader_locations import _resolve_workspace_root
 from kiro_crew.execution_context import capture_session_execution, execution_from_record
@@ -379,16 +379,29 @@ def _load_runs(self: TaskRunner) -> None:
         # surface the corruption loudly and preserve the bad file as a
         # sidecar for recovery instead of returning an empty registry.
         bak = path.with_suffix(path.suffix + ".corrupt")
+        try:
+            replace_with_retry(path, bak)
+        except OSError:
+            # The rename lost to another handle on the file (Windows sharing
+            # violation). Without the fence the first snapshot would write the
+            # empty registry over the only copy of the corrupt bytes.
+            self._snapshot_recovery_incomplete = True
+            logger.error(
+                "Runs registry %s is corrupt (%s) and could not be moved to %s; "
+                "starting with an empty registry, the file is left in place and "
+                "writes require a restart",
+                path,
+                exc,
+                bak,
+                exc_info=True,
+            )
+            return
         logger.error(
-            "Runs registry %s is corrupt (%s); preserved as %s, starting " "with an empty registry",
+            "Runs registry %s is corrupt (%s); preserved as %s, starting with an empty registry",
             path,
             exc,
             bak,
         )
-        try:
-            path.replace(bak)
-        except OSError:
-            logger.warning("Failed to preserve corrupt runs registry", exc_info=True)
         return
     try:
         from kiro_crew.workflow_memory import read_task_snapshot

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import EllipsisType
 
 from kiro_crew.crew_log.schema import KIND_SESSION
 from kiro_crew.crew_log.store import CrewLog, segment_paths, unit_header_created_at
@@ -61,16 +62,41 @@ def _log_identity(handle: CrewLog) -> tuple[str | None, int | None, int | None]:
     return _unit_log_identity(handle.kind, handle.id, handle.path)
 
 
+def fresh_log_identity(handle: CrewLog) -> tuple[str | None, int | None, int | None]:
+    """:func:`_log_identity` for a handle THIS caller opened a moment ago.
+
+    The one exception to "never the handle's header": a handle opened in the same
+    call read its header from disk just now, so its ``created_at`` is as fresh as a
+    second read would be, and the device and inode are still stat'd from the file.
+    A recreation between the open's header read and that stat mixes the old stamp
+    with the new inode, and the read after the pass (:func:`log_origin`, from disk)
+    then returns the new stamp, so the pass fails its held-still check and is not
+    kept. That same gap already sits between the two reads inside
+    :func:`_unit_log_identity`. A handle passed in by a caller is older than this
+    call and must go through :func:`_log_identity`.
+    """
+    return _unit_log_identity(
+        handle.kind, handle.id, handle.path, created_at=handle.header.created_at
+    )
+
+
 def _unit_log_identity(
-    kind: str, unit_id: str, path: Path | None = None
+    kind: str,
+    unit_id: str,
+    path: Path | None = None,
+    *,
+    created_at: "int | None | EllipsisType" = ...,
 ) -> tuple[str | None, int | None, int | None]:
     """:func:`_log_identity` for a unit named by kind and id, without opening it.
 
     *path* is the segment whose device and inode name the file; it defaults to
     the newest segment. Opening a handle settles a torn tail, which is a write, so
     a reader that only asks "is this still the same log" uses this instead.
+    *created_at*, when given, is a stamp the caller read from disk in this same
+    call (see :func:`fresh_log_identity`); omitted, it is read from the header.
     """
-    created_at = unit_header_created_at(kind, unit_id)
+    if created_at is ...:
+        created_at = unit_header_created_at(kind, unit_id)
     try:
         segments = segment_paths(kind, unit_id)
         if path is None:

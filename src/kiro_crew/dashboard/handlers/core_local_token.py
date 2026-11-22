@@ -137,6 +137,12 @@ async def api_token_local(request: web.Request) -> web.Response:
     epp = request.query.get("embed_parent_port", "")
     if epp.isdigit() and 1 <= int(epp) <= 65535:
         extra["embed_parent_port"] = str(int(epp))
+        # The pane's own forward port on this machine, which binds the app web
+        # origin record to the port the hub minted for (apps/pane_ports.py).
+        # Meaningful only with a parent port, so only minted beside one.
+        efp = request.query.get("embed_forward_port", "")
+        if efp.isdigit() and 1 <= int(efp) <= 65535:
+            extra["embed_forward_port"] = str(int(efp))
     token = generate_token(owner_id or "local-app", ttl_seconds=ttl, extra=owner_mint_extra(extra))
     # The provenance gate knows WHICH app's backend owns the calling process, so
     # the audit row names it: a token minted by an app is attributed to that app,
@@ -152,6 +158,9 @@ async def api_token_local(request: web.Request) -> web.Response:
         operation="token.local",
         outcome="success",
         source="local-bootstrap",
-        resources=f"token-issued app={app_name}" if app_name else "token-issued",
+        # The admitting leg, from a fixed vocabulary with no space or ``=`` in it, so
+        # a mint no host check verified (``basis=win32-unverified``) is visible.
+        resources=(f"token-issued app={app_name}" if app_name else "token-issued")
+        + f" basis={provenance.basis or 'unknown'}",
     )
     return web.json_response({"token": token, "expires_in": ttl})

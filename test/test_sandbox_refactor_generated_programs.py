@@ -346,6 +346,7 @@ _LAUNCHER_PLAN_GOLDEN: dict[str, Any] = {
         "<ROOT>/op/.kirocrew/apps/aws-control",
         "<ROOT>/crew/apps/aws-control",
     ],
+    "mask_parent_pins": [],
     "readonly_dirs": [
         "<ROOT>/crew/policy_cache",
         "<ROOT>/crew/run",

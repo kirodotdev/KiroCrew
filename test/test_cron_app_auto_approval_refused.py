@@ -179,7 +179,13 @@ async def _owner_auto_app_job(svc: CronService) -> str:
 
 
 @pytest.mark.parametrize(
-    "change", [{"message": "rewritten"}, {"channel": "C0AP77JJSN6"}, {"every": 600}]
+    "change",
+    [
+        {"message": "rewritten"},
+        {"channel": "C0AP77JJSN6"},
+        {"every": 600},
+        {"channel_type": "", "target_id": ""},
+    ],
 )
 async def test_app_changing_what_an_auto_job_does_turns_auto_off(
     svc, grant_crons, sel_calls, change

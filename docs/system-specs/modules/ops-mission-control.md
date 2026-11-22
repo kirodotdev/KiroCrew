@@ -5,6 +5,26 @@ An autonomous ops first responder shipped as a **builtin app** (`origin: builtin
 investigates it in a chat session mirrored to Slack, matches it against a
 compounding knowledge ledger, and proposes an action. Read-only by default.
 
+**Adopted onto its own repository.** The wheel pins the app (`apps/adoption-pins.json`,
+[app-kit-platform.md § 33](app-kit-platform.md#33-former-built-in-adoption)) at
+`KiroCrewCaptain/kirocrew-app-ops-mission-control` with `minAppSdkLevel` 10, the level at
+which the agent's file tools fence an installed app's `credentialMasks`
+([app-kit-platform.md § 37](app-kit-platform.md#37-an-apps-credential-files-are-masked-by-its-own-manifest-seam-level-3)),
+so a host whose record is builtin-owned swaps it in place onto that tree at a restart,
+keeping `data/` (the ledger, the incident index and the settings), `.app_secret`, the
+approved grants, the app's crons and `enabled`; the rail keeps `/ops-mission-control` and
+the `Radio` glyph, and the wheel copy's `version` is the pinned one (D12). The adopted tree
+keeps the provider tokens in `<data dir>/secrets/secrets.json` behind its
+`"credentialMasks": ["secrets/"]` directory entry, which the OS sandbox and the agent's
+file tools both mask. On its first read with no store there it copies the data-home root
+`ops_mission_control_secrets.json` in and keeps that root file, rewritten on every save or
+revoke, as the copy a wheel copy reads after a downgrade, so the root file's rows below
+stay while the wheel copy ships. Its `app.json` declares the same `permissions` and the
+same `agentTools` as the wheel copy, plus that mask, which only narrows what an agent
+reaches, so E9 holds nothing back; its crons keep their names, schedules and enabled
+flags, and their prompts name the SOPs at the adopted skill's path. A fix to the app lands in that repository
+first; a change to the wheel copy needs its `App repo:` line.
+
 ## Repository boundary
 
 The whole app is meant to leave this repository intact: the package under
@@ -44,7 +64,9 @@ shrink. Each row is deleted in the change that removes what it names:
   store is `<data home>/ops_mission_control_secrets.json`, at the data-home root. The
   rows leave when the store lives under `apps/ops-mission-control/data/` and the
   manifest declares it there (#32681); the root name then stays masked as a retired leaf, as
-  `browser-cookies.txt` does, because a restored backup can bring it back.
+  `browser-cookies.txt` does, because a restored backup can bring it back. An adopted
+  record already keeps its store under `data/secrets/` (above), but it rewrites the root
+  file as the wheel copy's downgrade copy, so the rows stay until the wheel copy leaves.
 * **The `security_posture*.py` rows** that classify the app's files: the core's audit of
   the app's code.
 * **The packaged skill** `builtin_skills/ops-mission-control/` and its row in the closed
@@ -311,14 +333,16 @@ propose without checking" — showing only those two overstated the ledger's aut
 
 ### 2c. The sync loop, and where it is driven from
 
-The daily `ledger-hygiene` pass (`POST /ledger/hygiene`) is the only caller of the git
-transport and the vector index. Order is load-bearing: **pull → hygiene → index → push**.
+The daily `ledger-hygiene` pass (`POST /ledger/hygiene`) is the only caller that pushes
+the ledger and the only writer of the vector index; `run_cycle` also pulls the shared repo
+before each heartbeat (`_pull_shared_repo_safely`) so every instance refreshes
+`rotation.yaml`, and dispatch reads the index. Order is load-bearing: **pull → hygiene → index → push**.
 Deduping before the merge leaves freshly-arrived duplicates for tomorrow; indexing before
 hygiene embeds rows hygiene is about to prune; pushing before hygiene makes every instance
 re-derive the same dedupe locally so the repo never converges. Pinned by
 `test_stage_order_is_pull_hygiene_index_push`.
 
-When `memory.persistence_enabled` is false, the pass preserves that stage order
+When `memory.persistence_enabled` or `memory.writes_enabled` is false, the pass preserves that stage order
 but the index stage is a no-op decided before `VectorMemoryStore` construction.
 Pull, ledger hygiene, incident pruning, and push still run: they mutate the
 app's own durable state, while only the projection into shared episodic memory
@@ -430,7 +454,8 @@ Config keys (all non-secret, so plain `data/config.json`, same tier as the Slack
 A remote URL is **not** a credential — auth is the operator's own SSH key, credential
 helper or `gh` login — which is what makes it eligible for that file at all. The converse
 constrains the UI: `config.json` is served **unauthenticated**, the write path only
-length-caps the remote, and `redact_tokens` has no pattern for a PAT inside a URL. So the
+length-caps the remote and refuses an http(s) remote carrying userinfo
+(`remote_has_credentials`), and `redact_tokens` has no pattern for a PAT inside a URL. So the
 Settings card asks for an SSH remote, states plainly that there is no credential to enter,
 and strips a `userinfo@` component before *displaying* a remote — which is about not being
 a second place a token is shown, **not** a claim that the stored value was sanitised.
@@ -858,7 +883,8 @@ assert the clamped **value** rather than that the call returned something.
 
 `OpsProviderRegistry.gather_evidence` is the **only** caller of any adapter's
 `gather()`, and it redacts every `Evidence.body` through
-`redact_tokens(security.redact(...))`. That is what lets `Evidence`'s docstring
+`redact_tokens(redact_via_context(...))`, the platform redaction seam rather than
+`security.redact`. That is what lets `Evidence`'s docstring
 promise an adapter "cannot forget" — a second call site would silently bypass it, so
 `test_providers.py::test_redaction_is_the_only_path_out_of_an_adapter` pins the funnel
 by source inspection. This matters because evidence is largely **log content**, and
@@ -943,7 +969,8 @@ Two mechanisms, both in `registry`:
   provider `ok` is positive evidence rather than an inference).
 - **`poll_health()[src]["snapshot"]`** — whether that successful poll was a COMPLETE
   picture, i.e. whether absence from it is evidence at all. `ok` answers "did we look";
-  this answers "did we see everything", and for one source they differ. Read off
+  this answers "did we see everything", and for one source they differ. False too for a
+  poll the adapter returned as `TruncatedSignals` (more than the poll limit). Read off
   `SignalSource.is_snapshot`, defaulting `DEFAULT_IS_SNAPSHOT = True` so every polled
   provider API — and every companion adapter that does not set the flag — keeps its
   correct behaviour, and only a queue-draining source opts out.
@@ -1010,20 +1037,20 @@ which is exactly why the bucket is required: a UI counting `signals` under a col
 "Firing" would render "3 firing" above an empty queue with no explanation. `reconcile.md`
 Pass 1 step 5 states the rule for the agent side.
 
-`gather_evidence` passes every body through `security.redact` **and**
+`gather_evidence` passes every body through `redact_via_context` **and**
 `secrets.redact_tokens` centrally, so an adapter author cannot leak a credential
 into a model prompt by forgetting to redact.
 
-**The evidence TITLE gets the same passes, and did not.** `gather_evidence` redacted each
-`Evidence.body` at this chokepoint but copied `item.title` raw — and an evidence title is
+**The evidence TITLE gets the same passes.** `gather_evidence` redacts each
+`Evidence.title` beside its body at this chokepoint, because an evidence title is
 provider-controlled too (a CloudWatch alarm name, a Datadog monitor title), flowing into
 `ClaimedIncident.to_dict()`, i.e. the dashboard JSON and the model brief. The same title/body
 asymmetry the Slack sink and the brief each had in earlier rounds. Titles are short, so no
 headroom/budget dance — just both redactors.
 
-**The brief's own metadata needed the same floor and did not have it.**
+**The brief's own metadata gets the same floor.**
 `investigation_brief` prints the signal's `title`, `resource` and `url` alongside that
-redacted evidence, and rendered them raw. A signed webhook is accepted from anything able to
+redacted evidence. A signed webhook is accepted from anything able to
 POST JSON and a console link can carry a token in its query string, so provider metadata is
 exactly as untrusted as a fetched log line — and the brief goes into the agent's context, and
 from there into the transcript and any session artifact, so the metadata needs the same floor as
@@ -1212,15 +1239,7 @@ concurrent readers and writers can observe a cross it does not see. It uses no t
 on every platform. The "every writer holds the lock" structural test accepts delegation only
 when the wrapper does no read-modify-write of its own.
 
-Fencing the ceiling left it with **no write path at all**: `policy_store.set_rules` had zero
-callers, `PUT /settings` handled `mode` but not `autonomy_rules`, and `GET /rotation` returned
-only a rule *count*. So the app's headline `act` tier was unreachable — Settings said grants
-came from "patterns you have explicitly allowlisted with a rule", rendered an un-actionable
-empty state, and offered nothing to click; the manual said to edit `data/config.json`, which
-the keystone store does not read at all (and must not — see above). Every act-mode adopter
-silently got Propose behavior, with no error anywhere.
-
-The write path is `rotation.save_rules` → `policy_store.set_rules`, reached from the
+The write path is `rotation.validate_rules` → `policy_store.set_ceiling`, reached from the
 owner-only `PUT /settings` and nowhere else:
 
 - **Validation reuses `AutonomyRule.from_dict`** rather than restating the rules, because that
@@ -1262,7 +1281,7 @@ the authorization decision. The third is *who this instance is on the rotation*,
 | `schedule-file.strict_gating` | the same effect without needing anyone's login. Setting it false restores fail-open gating, so an *indeterminate* schedule reports `on_shift=True` — and an agent that can write `config.json` can also make the schedule indeterminate, since `rotation.yaml` lives in a repo it can edit. "Break the file, then disable strict gating" reproduces the forgery's result |
 
 Both live on the fenced floor. Fencing the READ alone is not enough: `PUT
-/provider/<id>/config` accepts exactly the keys an adapter declares in `config_fields` and
+/providers/<id>/config` accepts exactly the keys an adapter declares in `config_fields` and
 writes them to `config.json`, so `ScheduleFileRotationSource.config_fields` is **empty** —
 otherwise the generic provider route would be a second, non-keystone writer for an authorization
 input. Their sole writer is the owner-only `PUT /settings`
@@ -1275,9 +1294,9 @@ policy?" The off-shift refusal depends on these:
 |---|---|---|
 | 1 | `schedule-file.github_login` | claim to BE the on-call member (above) |
 | 2 | `schedule-file.strict_gating` | disable it and an indeterminate schedule permits |
-| 3 | `config_fields` advertising the login | a second, non-keystone writer via `PUT /provider/<id>/config` |
+| 3 | `config_fields` advertising the login | a second, non-keystone writer via `PUT /providers/<id>/config` |
 | 4 | `providers.<id>.enabled` | a vote that skipped any source where `configured()` is false would read the flag — so one flip would make the source abstain, nothing would answer, and the refusal would stop firing |
-| 5 | `pagerduty.user_id` | the same identity as #1, one adapter over — this app's OTHER rotation source |
+| 5 | `pagerduty.user_id`, `incidentio.user_id` | the same identity as #1, one adapter over — this app's OTHER rotation sources |
 | 6 | a source with no PRIVATE sync core | a vote that probed only `_on_shift_sync`/`resolve_now` — implementation details of the adapters this repo ships — would abstain when neither existed. `async on_shift()` IS the whole public `RotationSource` contract, so a correctly-written companion source reporting off shift would be counted as not answering, and a matching act-rule would execute a real provider write from an off-shift instance |
 | 7 | `pagerduty.schedule_ids` | the LAST agent-writable input this source consults. With `user_id` fenced, an empty schedule list that always reported `unknown` — a non-vote — would let clearing the list in `config.json` make PagerDuty stop answering and the refusal stop firing, with nothing about who is on call having changed |
 | 8 | `incidents/index.json` | not an input to the off-shift vote at all, but to WHICH SIGNAL is being authorized. `/incident/action` hands `incident.signal` (read from this file) to the gate, whose rules key on `source`/`resource`/`labels` — so an agent can pair a resource an operator's rule authorizes with a different provider target and have the gate approve one signal while the sink mutates another |
@@ -1293,7 +1312,8 @@ permits the action — the documented design, so a broken rotation cannot lock a
 but the agent cannot MANUFACTURE indeterminacy: PagerDuty reporting `on_shift=False` refuses
 the write whatever its `enabled` flag says.
 
-\#5 is fenced exactly like #1 (`policy_store.PAGERDUTY_USER_KEY`, dropped from `config_fields`,
+\#5 is fenced exactly like #1 (`policy_store.PAGERDUTY_USER_KEY` and
+`policy_store.INCIDENTIO_USER_KEY`, dropped from `config_fields`,
 written by `PUT /settings`). All three identities are reported back on `GET /rotation` under
 `identities` so Settings can render and edit them — the provider catalog does not carry them,
 and an operator who cannot see which identity is stored cannot tell a wrong one from an unset
@@ -1385,7 +1405,7 @@ that passes against the bug it names is worse than no test.
 
 `expire_stale_proposals` follows the same rule. Reading the index, testing each proposal and
 writing through `update_fields` as separate accesses would let the heartbeat read an expired
-draft, a concurrent `/incident/proposal` request revise or decide it, and the stale write stamp
+draft, a concurrent `/incident/propose` or `/incident/proposal/decide` request revise or decide it, and the stale write stamp
 `expired` over the newer state — reverting an operator's decision, or replacing a re-proposed
 draft with a dead one. The whole sweep therefore runs under one `_IndexLock`, re-reads each
 proposal from the locked index, and mutates in place via `dataclasses.replace` rather than
@@ -1408,7 +1428,7 @@ rather than rewriting the shared ledger from nothing.
 
 ### The keystone has a lock; every egress sink shares one seam
 
-**`policy_store` holds `_PolicyLock`.** All three writers (`set_mode`, `set_rules`, `put`) are
+**`policy_store` holds `_PolicyLock`.** Both writers (`set_ceiling`, which `set_mode` and `set_rules` wrap, and `put`) are
 read-modify-writes, and `atomic_write` REPLACES the file — so without a lock two concurrent
 settings PUTs would each write their own key onto a stale snapshot and the later one would
 silently revert the other. On this file that is a security defect rather than a lost-update
@@ -1537,7 +1557,9 @@ precisely what they asked not to happen.
 
 ### Autonomy gate (`backend/rotation.py`)
 
-`effective = min(app_mode, matching_rule_mode)` over `observe < propose < act`.
+`effective_mode(app_default, rule_mode)` (in `backend/models.py`) is
+`min(app_default, rule_mode)` over `observe < propose < act`, where `rule_mode` is
+the mode of the best matching rule.
 
 - Default `app_mode` is **`observe`** — nothing is written to any provider.
 - `act` requires **both** `app_mode == act` AND a user-authored rule whose
@@ -1559,14 +1581,14 @@ precisely what they asked not to happen.
   `actions: ["resovle"]` would filter down to nothing and the rule would then authorize ack,
   resolve, comment AND silence — one typo turning a narrow grant into the blanket one the bullet
   above refuses to let anyone express. A present-but-malformed `actions` (not a
-  list, empty, or holding any unknown verb) rejects the whole rule, and `save_rules`
+  list, empty, or holding any unknown verb) rejects the whole rule, and `validate_rules`
   surfaces that as a 400 naming the index so the operator fixes the typo instead of unknowingly
   running with more authority than they asked for. Omitting the key entirely still means every
   action — that is a choice made by omission, and is what the manual documents.
 - A rule can only NARROW the app ceiling, so it cannot escalate an instance the
   operator pinned to `observe`.
 - Every authorize decision — allow and deny — is SEL-audited as
-  `ops-mission-control.action_authorize`.
+  operation `action_authorize` (caller `core:ops-mission-control`).
 
 This deliberately diverges from a common shortcut: auto-resolving alert types believed
 to be always benign. A team that built those alerts itself can reason about which are
@@ -1604,9 +1626,9 @@ rather than a comment:
   necessary but not sufficient; the paths also converge on what happens after the write.
 - **The capability probe (`_sink_refuses`) FAILS CLOSED.** `supported_actions()` narrows which
   verbs a sink can perform — GitHub Issues supports only `{resolve, comment}`, so an authorized
-  `ack` there is an undefined `execute` call against a real repo. It first failed OPEN in three
-  ways — a missing method, a raising probe, and an EMPTY set all returned allow — which is that
-  exact undefined call reached three other ways. "Could not confirm support" is not "supported":
+  `ack` there is an undefined `execute` call against a real repo. A missing method, a raising
+  probe, and an EMPTY set all refuse, because allowing any of them would reach that exact
+  undefined call. "Could not confirm support" is not "supported":
   authorization says the operator permits the verb, not that this sink can perform it, so a
   broken probe against a production write refuses. `supported_actions` is part of the
   `ActionSink` protocol, so absence is a broken adapter, not a legacy one, and a raising probe
@@ -1814,9 +1836,8 @@ Two guards, both asserting the class rather than the known sites:
 Ambient credential chain only — profile, role, or instance role. The app never
 accepts, stores, or transmits an AWS access key. `boto3` is an **optional lazy
 import**: the module imports cleanly without it and the adapter reports
-unconfigured. Read-only permissions requested (`cloudwatch:DescribeAlarms`,
-`GetMetricStatistics`, `GetMetricData`, `logs:StartQuery`, `GetQueryResults`,
-`DescribeLogGroups`); no write permission.
+unconfigured. Read-only permissions used (`cloudwatch:DescribeAlarms`,
+`DescribeAlarmHistory`, `logs:StartQuery`, `GetQueryResults`); no write permission.
 
 ### Route gating
 
@@ -1902,7 +1923,7 @@ link", never to "a link somewhere else". Case is normalised first so an operator
 the field — the signal source's and the evidence adapter's via `_evidence_value` — because
 guarding one read leaves the same field open one namespace over.
 
-**A remote URL is refused, not stored, when it embeds a password.** A `ledger_sync_remote` of
+**A remote URL is refused, not stored, when it embeds userinfo.** A `ledger_sync_remote` of
 `https://user:ghp_xxx@github.com/org/repo.git` stored as-is would sit in a file served
 **without session auth**, and `redact_tokens` has no pattern for a PAT inside a URL; the
 frontend's `displayRemote()` strips userinfo for display only. `PUT /settings` rejects it (`remote_has_credentials`, 400) with a message telling the operator
@@ -1910,8 +1931,8 @@ to rotate the token and use a credential helper or SSH.
 
 Refused rather than silently stripped: the pasted token is compromised either way, and a
 remote quietly rewritten to an unauthenticated URL would fail to push later with no hint why.
-`_url_has_userinfo` parses with `urlsplit` and only flags a **password** on an http(s)
-remote, so the two legitimate `@`-bearing shapes keep working — scp-style
+`_url_has_userinfo` parses with `urlsplit` and flags **any** userinfo (a username alone
+included, the position GitHub's token remote puts a PAT in) on an http(s) remote, so the two legitimate `@`-bearing shapes keep working — scp-style
 `git@github.com:org/repo.git` (no `://`, so no userinfo) and `ssh://git@host/...` (a username
 authenticating by key, not a secret).
 
@@ -1971,7 +1992,7 @@ two paths provider text leaves this app sanitize to one standard.
 **The pre-push ledger scan follows the same rule.** `ledger_sync._credential_bearing_lines` is
 the last gate before bytes leave the machine for the team's shared git remote, and the asymmetry
 documented here for the postmortem applies verbatim: the core scan
-(`security.iter_credential_matches`) misses `ddapp_0123…` while `redact_tokens` misses
+(`security.iter_credential_matches`) misses a prefixed Datadog application key (`ddapp_…`) while `redact_tokens` misses
 `AKIAIOSFODNN7EXAMPLE`, so a scan using one of them would commit and push a legacy row (written
 by an older build, or by any path other than `POST /ledger`) carrying a provider token. The scan
 flags a line if EITHER detector does, and a structural test asserts both are called so a private
@@ -2040,8 +2061,8 @@ discard every *other* queued delivery.
 Even the heartbeat cannot safely drain: `run_cycle` claims at most `max_claims` per cycle, so a
 burst larger than the cap would have its remainder destroyed by the very poll that delivered
 it. Tying consumption to "an incident owns this id" is what makes the cap safe.
-`maxlen` still bounds the spool, so a sender that permanently outruns the heartbeat drops
-oldest-first, and a read never triggers that.
+`maxlen` still bounds the spool, so a sender that permanently outruns the heartbeat is
+refused once it is full (see below), and a read never triggers that.
 `webhook.reset_spool()` exists for test isolation only and is named so it cannot be
 mistaken for a consumer.
 
@@ -2077,8 +2098,8 @@ implementations, hook what they share, not what one of them happens to call.
 `candidates`, so they are never claimed — and if only the `claimed` set were acked they would
 never leave the spool either. A sender that redelivers while an investigation is in flight
 (Alertmanager repeats every `group_interval`; a webhook script retries) would accumulate copies
-of a signal already being worked, and on a full 200-entry spool those would evict a NEW unclaimed
-alert. The rule: every place a signal becomes **or
+of a signal already being worked, and those copies would fill the 200-entry spool until a NEW alert
+was refused. The rule: every place a signal becomes **or
 already is** durable has to acknowledge it, not just the place that claims it. Safe by the same
 durability argument — an id in `owned` has an incident on disk, so dropping the spooled copy
 loses nothing, and once that incident goes terminal or stale the id leaves `owned` and the next
@@ -2086,11 +2107,12 @@ genuine delivery is claimable again.
 
 **Both places a claim becomes durable ack.** `dispatch.run_cycle` and `POST /incident/claim` —
 the board's manual claim — both do; otherwise a hand-claimed webhook signal would stay spooled
-forever, and on a full (200-entry) spool the next signed delivery would evict the OLDEST
-unclaimed entry to make room for a duplicate nobody needed, losing a real alert. The ack there is unconditional and needs no source check — `ack` on
+forever, and the duplicates would fill the 200-entry spool until the next signed delivery
+was refused, delaying a real alert behind copies nobody needed. The ack there is unconditional and needs no source check — `ack` on
 an id that is not spooled removes nothing, so a future push provider is covered for free.
 
-**Check order is load-bearing** (`webhook.enqueue`): enabled → secret → size →
+**Check order is load-bearing** (`webhook.enqueue`): governance source refusal
+(`app_source_refusal`) → enabled → secret → size →
 signature → parse. Nothing unauthenticated is ever handed to `json.loads`, and an
 oversized body is refused *before* it is hashed. `test_webhook.py` pins the order by
 asserting an unsigned malformed body is rejected for its **signature**, not its
@@ -2126,8 +2148,9 @@ in the adapter:
   ceiling (`_MAX_ALERT_PAGES`) refuses a cursor walk that never terminates rather than reporting
   a partial estate as complete.
 
-All five return `providers.base.TruncatedSignals` (a `list` subclass) when the source had more
-than a poll can carry, and `poll_all` marks the poll non-authoritative — the same
+Datadog, GitHub Issues, PagerDuty and incident.io return `providers.base.TruncatedSignals` (a
+`list` subclass) when the source had more than a poll can carry, CloudWatch returns its `limit + 1`
+list for the registry's post-slice check, and `poll_all` marks the poll non-authoritative — the same
 `snapshot=False` channel, honoured even when a client-side filter brought the surviving count back
 under the cap.
 
@@ -2201,7 +2224,7 @@ deliberately not made here**. Both are reachable today via any forwarder that ca
 
 **Rejection status codes are differentiated** (`_webhook_reject_status`): 401 for
 trust failures (not enabled / no secret / signature mismatch), 413 for an oversized
-body, 400 for payload faults (malformed JSON / non-object / no title). A single 401 for everything
+body, 400 for payload faults (malformed JSON / non-object / no title), 503 for a full spool. A single 401 for everything
 would tell a sender debugging a bad payload "Unauthorized", so they would re-check credentials
 that were fine, while a real signature failure would look identical to a typo. An *unrecognized* reason deliberately falls
 through to **401**, not 400 — a refusal we cannot classify should not be advertised
@@ -2502,9 +2525,9 @@ heartbeat's cost flat at a 2-minute cadence.
    second occurrence of a failure cheaper than the first; without it the ledger is
    decorative. `record_use` returns the UPDATED entry so a brief cannot report
    "used 0×" for a pattern the same incident just used.
-5b. **`webhook.ack({claimed ids})`** — the ONE place the push spool shrinks, and only for
-   ids that have an incident on disk. Anything the cap deferred, anything already
-   owned, and anything lost to a claim race stays spooled for a later cycle. See § Webhook ingress
+5b. **`webhook.ack({claimed ids} | owned)`** — where the heartbeat shrinks the push spool (the
+   board's manual claim is the other place), and only for ids that have an incident on disk.
+   Anything the cap deferred and anything lost to a claim race stays spooled for a later cycle. See § Webhook ingress
    for why draining on `poll` loses data.
 6. **`verify_pending_actions`** — for every incident whose post-action recheck has come
    due, re-read whether its signal is still firing, using the poll THIS cycle already
@@ -2737,8 +2760,8 @@ a future "just add a token field" regression.
 The consequence is a real dependency rather than a hidden one: with Slack
 unconfigured on Kiro Crew itself, this channel is unavailable, and `status()`
 distinguishes the three cases (off / no channel / no host Slack) because each has a
-different fix. The channel ID **is** stored in plain app config — it is not a
-credential.
+different fix. The channel ID is stored in the operator-only policy store (`policy_store`), not the
+keystone — it is not a credential, but it is an outbound destination.
 
 ### Explicit client, no global
 
@@ -2836,7 +2859,7 @@ deep link: the page selects an incident from React state and reads no query para
 
 **Default off.** `notify_enabled` absent reads as False, so every existing install stays
 silent until an operator flips the toggle. Not a credential, so it lives in plain
-`config.json` alongside the Slack channel id.
+`config.json`.
 
 **Redacted at the producer, both passes**, matching `store.write_log`,
 `registry.gather_evidence`, and `slack_out._safe`. Core `security.redact` leaves `401 from https://api.datadoghq.com?api_key=<hex>`
@@ -2907,8 +2930,8 @@ Invariants:
 - **Headline ordering is load-bearing:** no coverage → work waiting on you → the
   ordinary case. "Nothing is watching" must outrank everything, because a board with no
   configured source looks calm and reporting "all quiet" would be actively misleading.
-- **Unproven patterns are visibly unproven.** `proven` reuses the ledger's own
-  `FAST_PATH_*` constants rather than restating "verified/high" — a digest that
+- **Unproven patterns are visibly unproven.** `proven` asks the ledger's own
+  `entry_unlocks_fast_path` rather than restating "verified/high" — a digest that
   disagreed with the engine about what counts as proven would tell a responder to trust
   the wrong entry.
 - **Escalated is read from the index, not the open set.** It is a terminal status, so
@@ -2977,8 +3000,10 @@ returns to paused after a disable→enable cycle.
 ├── config.json            # NON-SECRET only (served unauthenticated)
 ├── incidents/index.json   # dispatch index — {incident_id: Incident}
 ├── incidents/<id>.md      # postmortem, written when the incident CLOSES (0o600)
-└── ledger.jsonl           # append-only LedgerEntry stream
+├── ledger.jsonl           # append-only LedgerEntry stream
+└── rotation.yaml          # optional team schedule, git-synced with the ledger
 <crew_home>/ops_mission_control_secrets.json   # KEYSTONE (see contract 4)
+<crew_home>/ops_mission_control_policy.json    # operator-only policy store
 ```
 
 All writes go through `atomic_write`. File locking goes through
@@ -3067,6 +3092,13 @@ review time, not to simulate the platform.
 - `.../backend/secrets.py` — keystone token store, `SecretBackend` seam, redaction
 - `.../backend/registry.py` — ADD-only registry, fan-out
 - `.../backend/rotation.py` — autonomy gate, tier arming
+- `.../backend/policy_store.py` — the operator-only policy store (mode, act-rules,
+  outbound destinations, identities)
+- `.../backend/ledger_sync.py`, `.../backend/ledger_index.py` — the ledger's git exchange
+  and its vector index
+- `.../backend/slot_watch.py`, `.../backend/handover.py`, `.../backend/slack_out.py`,
+  `.../backend/companion.py` — derived status, the handover digest, the Slack pin board,
+  companion discovery
 - `.../backend/dispatch.py` — **the cycle**: poll → claim → ledger-match → sweep,
   plus `investigation_brief`
 - `.../backend/notify_out.py` — the local notification bus as an output channel: three

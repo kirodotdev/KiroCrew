@@ -29,6 +29,8 @@ import kiro_crew.dashboard.handlers.sessions as sessions_mod
 from kiro_crew.dashboard import kiro_readiness
 from kiro_crew.testing.wait import async_wait_until, await_until
 
+pytestmark = pytest.mark.usefixtures("no_ambient_kiro_api_key")
+
 
 class TestPollNeverRefreshesInsideTheInterval:
     """The 30s dashboard poll must not be able to trigger a refresh inside the
@@ -149,8 +151,9 @@ class TestAccountSwitchDropsTheReading:
         assert first["usage"]["credits_plan"] == 50.0
         fetch.assert_not_called()
         switched, fetch = await self._get(request, "b" * 64)
-        assert switched["usage"] == {"available": False}
-        assert sessions_mod._usage_cache == {"available": False}
+        # Served as loading, not as "no reading": the new account's is on its way.
+        assert switched["usage"] == {}
+        assert sessions_mod._usage_cache == {}
         fetch.assert_called_once()
         assert switched["account"] and switched["account"] != first["account"]
 
@@ -181,7 +184,7 @@ class TestAccountSwitchDropsTheReading:
         assert body["usage"]["credits_plan"] == 50.0
         fetch.assert_not_called()
         body, fetch = await self._get(request, "b" * 64 + vault)
-        assert body["usage"] == {"available": False}
+        assert body["usage"] == {}
         fetch.assert_called_once()
 
     @pytest.mark.asyncio
@@ -214,7 +217,7 @@ class TestAccountSwitchDropsTheReading:
                 asyncio.gather(*request.app["state"]._background_tasks), what="usage refresh"
             )
         for resp in responses:
-            assert json.loads(resp.body)["usage"] == {"available": False}
+            assert json.loads(resp.body)["usage"] == {}
 
     @pytest.mark.asyncio
     async def test_a_manual_refresh_records_the_account_it_reads(self):
@@ -233,7 +236,7 @@ class TestAccountSwitchDropsTheReading:
             await sessions_mod.api_sessions_usage_refresh(request)
         assert sessions_mod._usage_account_fp == "b" * 64
         # A's reading is gone before the refresh runs, so no concurrent GET serves it.
-        assert sessions_mod._usage_cache == {"available": False}
+        assert sessions_mod._usage_cache == {}
 
     @pytest.mark.asyncio
     async def test_a_refresh_that_straddled_the_switch_is_dropped(self, monkeypatch):
@@ -248,7 +251,7 @@ class TestAccountSwitchDropsTheReading:
         alert = AsyncMock()
         monkeypatch.setattr(sessions_mod, "_alert_on_cached_reading", alert)
         await sessions_mod._fetch_usage_then_alert(SimpleNamespace(), vault_owned=False)
-        assert sessions_mod._usage_cache == {"available": False}
+        assert sessions_mod._usage_cache == {}
         assert sessions_mod._usage_cache_ts == 0.0
         alert.assert_not_called()
 

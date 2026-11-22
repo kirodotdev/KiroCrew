@@ -121,6 +121,26 @@ def _manifest(app: str) -> Any:
     return get_app_manifest(app)
 
 
+def _installed_at(app: str) -> str:
+    """The install's ``installedAt``, minted by Crew at each new install; ``""`` if unread.
+
+    The record sits in the app's own tree, so a value longer than any timestamp reads
+    as no stamp and never reaches the consent record.
+    """
+    try:
+        from kiro_crew.apps.execution import INSTALLED_AT_MAX_CHARS
+        from kiro_crew.apps.manager import _read_installed
+
+        meta = _read_installed(app)
+    except Exception:  # noqa: BLE001 - an unreadable record reads as no stamp
+        logger.debug("install record of %r unreadable", app, exc_info=True)
+        return ""
+    stamp = getattr(meta, "installedAt", "") if meta is not None else ""
+    if not isinstance(stamp, str) or len(stamp) > INSTALLED_AT_MAX_CHARS:
+        return ""
+    return stamp
+
+
 def _enabled(app: str) -> bool:
     from kiro_crew.apps.manager import is_app_enabled
 
@@ -172,14 +192,15 @@ def _configured_mode() -> str:
 
 
 _providers_lock = threading.Lock()
-_providers: dict[tuple[str, str], AppMemoryProvider] = {}
+_providers: dict[tuple[str, str, str], AppMemoryProvider] = {}
 
 
 def provider_for_id(provider_id: str) -> AppMemoryProvider | None:
     """The client for *provider_id*, or ``None`` when no enabled app offers it.
 
-    One client per app version, so a new version's ``connect`` is asked afresh and
-    its latency history starts empty.
+    One client per app version and install, so a new version's ``connect`` is asked
+    afresh, its latency history starts empty, and a reinstall carries its own
+    ``installed_at`` to the consent check.
     """
     parts = split_id(provider_id)
     if parts is None:
@@ -191,7 +212,8 @@ def provider_for_id(provider_id: str) -> AppMemoryProvider | None:
     decl = next((d for d in manifest.contributes.memoryProviders.usable() if d.id == pid), None)
     if decl is None:
         return None
-    key = (provider_id, str(manifest.version))
+    installed_at = _installed_at(app)
+    key = (provider_id, str(manifest.version), installed_at)
     with _providers_lock:
         client = _providers.get(key)
         if client is None or client.route != decl.route:
@@ -201,6 +223,7 @@ def provider_for_id(provider_id: str) -> AppMemoryProvider | None:
                 route=decl.route,
                 display_name=decl.display_name,
                 app_version=str(manifest.version),
+                installed_at=installed_at,
             )
             _providers[key] = client
     return client
@@ -255,7 +278,14 @@ class AppMemoryProvider(BlockingProvider):
     """A provider an app's backend serves. Gateway-only caller."""
 
     def __init__(
-        self, *, app: str, provider: str, route: str, display_name: str, app_version: str
+        self,
+        *,
+        app: str,
+        provider: str,
+        route: str,
+        display_name: str,
+        app_version: str,
+        installed_at: str = "",
     ) -> None:
         self.app = app
         self.provider = provider
@@ -263,6 +293,8 @@ class AppMemoryProvider(BlockingProvider):
         self.provider_id = make_id(app, provider)
         self.display_name = display_name
         self.app_version = app_version
+        #: The install's ``installedAt``; the egress consent names it.
+        self.installed_at = installed_at
         self._lock = threading.Lock()
         self._caps: Capabilities | None = None
         self._caps_at = 0.0
@@ -279,6 +311,7 @@ class AppMemoryProvider(BlockingProvider):
             route=self.route,
             display_name=self.display_name,
             app_version=self.app_version,
+            installed_at=self.installed_at,
         )
         copy.context_timeout = self.context_timeout
         return copy

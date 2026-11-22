@@ -40,7 +40,10 @@ is the same fact as the hidden row above.
 A hidden entry is not a missing feature. If a vendor you want is in the catalogue but
 has no card, you can still add its MCP endpoint by hand as an ordinary remote server
 — you give up the curated scopes, the revoke link and the **Sign in** control, and
-you keep the tools.
+you keep the tools. A vendor that admits clients by allowlist or waitlist (the last
+row above) is the exception on the Kiro Agent harness: until it admits Kiro, a row at
+its url reads **Sign-in unavailable**, unless its `oauth` block names a public client
+of your own.
 
 ## Adding your own MCP server
 
@@ -74,8 +77,8 @@ if a server's tools are missing in chat, check its row here first.
 ### Remote servers that need a sign-in
 
 A remote server usually answers the first request with a `401`, and that is the whole
-trigger — there is no command to run. `kiro-cli` owns the OAuth exchange and runs it
-itself, so **start a session** and watch chat: a banner appears with a lock icon, the
+trigger — there is no command to run. The harness (`kiro-cli`, or the KAS engine)
+runs the OAuth exchange itself, so **start a session** and watch chat: a banner appears with a lock icon, the
 server's name, and an **Authorize** link. The authorization URL is never printed into
 the transcript as text, so a session that mentions nothing is not a silent failure —
 the banner is where it lives.
@@ -88,7 +91,10 @@ which reads exactly like a broken connection.
 Curated catalogue rows get a second route: a per-row **Sign in** control, and the
 provider's own card. Minting is deliberately fenced to catalogue providers, so a
 hand-added row — even one pointing at a vendor that *is* in the catalogue — is sent
-to chat instead. That is accurate routing, not a missing button.
+to chat instead. That is accurate routing, not a missing button. On the Kiro Agent
+harness, a row at the url of a vendor that admits clients by allowlist or waitlist
+reads **Sign-in unavailable** instead, unless its `oauth` block names a public client
+of your own (see [The vendor catalogue](#the-vendor-catalogue)).
 
 Two other ways to authorize a remote server:
 
@@ -96,7 +102,7 @@ Two other ways to authorize a remote server:
   on the entry and no browser flow happens at all. A `${VAR}` reference is resolved
   when the handshake is sent; an unresolved one stays literal, which then reads as a
   server asking for a sign-in.
-- **An operator-registered OAuth app**, for the two vendors that refuse runtime
+- **An operator-registered OAuth app**, for the vendors that refuse runtime
   registration. See [credentials](#credentials-and-what-kiro-crew-can-see) below.
 
 ### The tools appear in the next *cold* session
@@ -241,8 +247,21 @@ messaging-channel session asks only while `agent.approval_mode` is `"interactive
 
 ## Credentials, and what Kiro Crew can see
 
-`kiro-cli` owns the OAuth chain end to end. On a successful sign-in it writes two
-files into its own cache directory, keyed by a hash of the server's URL — one holding
+Who runs the OAuth chain depends on the backend and one preview:
+
+- **kiro-cli** runs it end to end on the Kiro CLI backend, and on KAS for any
+  server Kiro Crew does not sign in itself.
+- **The KAS engine** runs it on the KAS backend, and hands the result to Kiro
+  Crew to keep (below).
+- **The gateway itself** runs it for a Connections card while the **MCP sign-in
+  by Kiro Crew** preview (`dashboard.feature_previews.crew_oauth`, off by default)
+  is on and chats run on KAS: it opens the consent page, swaps the code for
+  tokens, keeps the pair in your Settings → Secrets vault, refreshes it before
+  it expires, and serves the access token to KAS chats. **Disconnect** revokes it
+  upstream and deletes the vault entry.
+
+On the Kiro CLI backend, a successful sign-in writes two
+files into kiro-cli's own cache directory, keyed by a hash of the server's URL — one holding
 the bearer and refresh token, one holding the client registration. Both survive a
 restart.
 
@@ -253,7 +272,8 @@ under `<data home>/kas/mcp-grants/`, apart from your Settings → Secrets vault.
 off, the engine holds the sign-in in memory and loses it when it exits.
 With this setting off, the badge ignores any entries left in the vault.
 
-**Kiro Crew checks whether those files exist and never opens them.** For the KAS
+**For kiro-cli and KAS grants, Kiro Crew checks whether those files exist and never
+opens them.** For the KAS
 vault it checks whether the server's entry name is listed; it opens no key file and
 decrypts nothing. That is what the "Signed in" badge reports: a sign-in happened, not
 that the token is still valid. It also means Kiro Crew can tell you neither the
@@ -265,7 +285,8 @@ grant.** The token files are keyed on the URL, not on the entry, so a later reco
 silently resumes the old grant. Use the card's **Disconnect**, or the vendor's own
 revoke page, when you mean to end access.
 
-For the two vendors needing an operator-registered app, the split is:
+For the vendors needing an operator-registered app (GitHub, Asana, the six Google
+cards and Slack), the split is:
 
 | Half | Where it goes |
 |---|---|
@@ -471,8 +492,12 @@ lets all your chats use one copy of a server instead, which saves memory when ma
 chats are open. A shared copy runs outside each chat's sandbox, with your access, so
 share a server only if you added it yourself and its command is what you expect.
 
-**Share MCP servers across chats** is the switch at the top of the page
-(`mcp_gateway.enabled`). Turning it on asks first and lists every server it will
+**Turn on MCP server sharing** is the switch on the
+**Share MCP servers across chats** card at the top of the page
+(`mcp_gateway.enabled`). The card's diagram
+shows the difference: off, each chat runs its own copy of a server; on, all chats
+use one copy. A link can open the card directly at
+`/capabilities?tab=mcp-servers&view=sharing#mcp-sharing`. Turning it on asks first and lists every server it will
 share: the ones you turned on by hand, plus the shareable ones nobody chose for. It
 never turns on a server you turned off by hand, a server that hands out
 credentials, or one that waits for your OK. **Memory now** and **Memory with
@@ -481,8 +506,9 @@ already open keep their own copies until you reload them: the banner under the
 switch offers to reload them, and skips a chat that is busy.
 
 When servers wait for your OK, a card counts them. **Review and approve** opens
-them in a dialog, each with **Approve** (one copy runs it for all chats, outside
-their sandbox) and **Skip** (it keeps running inside each chat). There is no
+them in a dialog, each with **Share across chats** (one copy runs it for all
+chats, outside their sandbox) and **Don't share** (it keeps running inside
+each chat). There is no
 approve-all.
 
 The **Sharing** view, beside **Servers** under the card, holds the rest. In
@@ -490,15 +516,16 @@ The **Sharing** view, beside **Servers** under the card, holds the rest. In
 the **Share** column, named **Enable MCP sharing** (`mcp_gateway.stub_servers`,
 which [MCP Apps](mcp-apps.md) calls routing). Turning it on reads the command the
 server runs and approves exactly that launch; the row's **Details** shows it, with
-env names only, never their values. A row's state is one of:
+env names only, never a secret value. When a server's PATH changes, Details names
+the folders added and removed. A row's state is one of:
 
 | State | Meaning |
 |---|---|
 | **shared** | All new chats use one copy |
 | **direct** | Each chat starts its own copy. A row with Share on also reads **direct** while the switch at the top is off, when its env names a vault secret, or when it needs a setting each chat keeps |
-| **Can't share** | It has no stdio pipe, it hands out credentials, or its command cannot be approved here |
+| **Can't share** | It has no stdio pipe, it hands out credentials, or its command cannot be approved here, such as when too many agents start it with different settings (the row names the limit and the way back) |
 | **Paused · command changed** | Its command or settings changed since you approved it, so it runs inside each chat until you press **Approve update** |
-| **Paused · not approved yet** | It was added in a config file and never approved here; **Approve** shares it |
+| **Paused · not approved yet** | It was added in a config file and never approved here; **Share across chats** shares it |
 
 A paused row has no switch. It offers its approve button and **Don't share this
 server**, which takes the mark off and approves nothing. A row that cannot share

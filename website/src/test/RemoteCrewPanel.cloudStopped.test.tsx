@@ -97,6 +97,7 @@ describe('a cloud crew stopped from its menu', () => {
 
     const row = (await screen.findByText(NAME)).closest('[data-crew-id]') as HTMLElement
     expect(within(row).getByText('Stopped')).toBeInTheDocument()
+    await u.click(within(row).getByRole('button', { name: `Show details for ${NAME}` }))
     expect(within(row).getByText(/You stopped this crew's cloud machine/)).toBeInTheDocument()
     expect(within(row).queryByText(/TargetNotConnected/)).not.toBeInTheDocument()
     expect(within(row).queryByText('Error')).not.toBeInTheDocument()
@@ -105,8 +106,8 @@ describe('a cloud crew stopped from its menu', () => {
     await u.click(within(row).getByRole('button', { name: `Start ${NAME}` }))
     await waitFor(() => expect(api.cloudStart).toHaveBeenCalledWith('kc-3f9a', expect.anything()))
 
-    await u.click(within(row).getByRole('button', { name: /More actions/i }))
-    expect(screen.queryByRole('menuitem', { name: `Stop ${NAME}` })).not.toBeInTheDocument()
+    // Its details offer no Stop for a machine that is already stopped.
+    expect(screen.queryByRole('button', { name: `Stop ${NAME}` })).not.toBeInTheDocument()
   })
 
   it('still offers Stop on a running cloud crew', async () => {
@@ -117,7 +118,7 @@ describe('a cloud crew stopped from its menu', () => {
 
     const row = (await screen.findByText(NAME)).closest('[data-crew-id]') as HTMLElement
     expect(within(row).queryByText(/You stopped this crew's cloud machine/)).not.toBeInTheDocument()
-    await u.click(within(row).getByRole('button', { name: /More actions/i }))
-    expect(screen.getByRole('menuitem', { name: `Stop ${NAME}` })).toBeInTheDocument()
+    await u.click(within(row).getByRole('button', { name: `Show details for ${NAME}` }))
+    expect(screen.getByRole('button', { name: `Stop ${NAME}` })).toBeInTheDocument()
   })
 })

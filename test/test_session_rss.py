@@ -161,9 +161,8 @@ class TestGetSessionRssMb:
             assert session_pid.get_session_rss_mb(100) == _mib_of_pages(10)
 
     def test_sub_mib_per_pid_not_truncated_away(self) -> None:
-        # Two sibling processes
-        # each just over half a MiB. A per-PID ``// MiB`` truncates each to 0
-        # (the old behaviour reported 0 for the tree); summing pages first and
+        # Two sibling processes, each just over half a MiB. A per-PID ``// MiB``
+        # truncates each to 0, so the tree reads 0; summing pages first and
         # truncating once yields >= 1 MiB.
         pages_per_mib = (1024 * 1024) // session_pid._PAGE_SIZE
         half = pages_per_mib // 2 + 1  # just over 0.5 MiB each

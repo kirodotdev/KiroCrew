@@ -161,6 +161,7 @@ from kiro_crew.jsonl_util import bounded_records
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
+    from kiro_crew.history_vectors import SessionVectorStore
 
 
 SEARCH_MIN_CHARS = 2  # shortest query string that triggers backend search
@@ -356,6 +357,7 @@ class SessionCatalogProjection:
     def __init__(self, log: "ConversationLog") -> None:
         self._log = log
         self._index: "SessionSearchIndex | None" = None
+        self._vectors: "SessionVectorStore | None" = None
         #: ``digest + needle key -> (count, cost)`` over the folded text of a
         #: session the index vouches for, and ``digest + repr(snippet tiers) ->
         #: (snippet, cost)`` for the same sessions; each ``None`` when switched
@@ -385,6 +387,15 @@ class SessionCatalogProjection:
         if self._index is None:
             self._index = SessionSearchIndex(self._log._dir / ".index" / INDEX_FILENAME)
         return self._index
+
+    @property
+    def vector_store(self) -> "SessionVectorStore":
+        """The semantic chunk store beside the index; it opens no file until used."""
+        if self._vectors is None:
+            from kiro_crew.history_vectors_index import vector_store_for
+
+            self._vectors = vector_store_for(self._log._dir)
+        return self._vectors
 
     @staticmethod
     def _canonical_key(key: str) -> str:
@@ -1494,7 +1505,8 @@ class SessionCatalogProjection:
         One definition of "what counts as searchable text in a session file",
         shared by the fold and the snippet so their skip rules cannot drift apart
         as the on-disk format evolves. Yields in file order; skips blank lines,
-        unparseable lines, non-object lines, and the metadata header.
+        unparseable lines, non-object lines, the metadata header and a host-sandbox
+        refusal row.
 
         A generator rather than a list so a caller can stop early — closing it
         closes the file — which is what lets :meth:`_content_snippet` read only as
@@ -1502,6 +1514,10 @@ class SessionCatalogProjection:
         not read" from "no text", and that distinction is load-bearing (a read
         failure must not be cached).
         """
+        # A host-sandbox refusal row is the host owner's runbook, which a search
+        # excerpt would hand any reader without the row's type to redact by.
+        from kiro_crew.dashboard.host_sandbox_refusal import is_refusal_row
+
         path = self._log._path(key)
         with open(path, "rb") as handle:
             for line in bounded_records(handle, path, label="history_search"):
@@ -1513,6 +1529,8 @@ class SessionCatalogProjection:
                 except (ValueError, RecursionError):  # past the nesting limit
                     continue
                 if not isinstance(data, dict) or data.get("_type") == "metadata":
+                    continue
+                if is_refusal_row(data):
                     continue
                 content = data.get("content")
                 if isinstance(content, str) and content:

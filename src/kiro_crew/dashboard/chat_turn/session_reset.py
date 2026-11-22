@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         STOP_REASON_CANCELLED,
         STOP_REASON_END_TURN,
+        SUBAGENT_COMPLETION_KIND,
         DashboardState,
         _ChatSlot,
         effective_session_key,
@@ -28,7 +29,11 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.directives import _report_unclaimed_directives
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
     from kiro_crew.dashboard.chat_turn.queue_cycle import _arm_synthesis_recheck
-    from kiro_crew.dashboard.chat_turn.queue_drain import _start_next_queued_turn
+    from kiro_crew.dashboard.chat_turn.queue_drain import (
+        _REPLAYS_COMPLETION_KEY,
+        _start_next_queued_turn,
+        settle_drained_subagent_notices,
+    )
     from kiro_crew.dashboard.chat_turn.recipient import (
         _retire_mirror_thinking,
         cross_surface_withheld,
@@ -163,6 +168,7 @@ def _arm_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> None
         released_entries = bool(slot._queue)
         slot._pending_discard_conversation_key = None
         slot._pending_discard_from_wake = False
+        slot._pending_discard_drops_plan = False
         logger.warning(
             "Giving up the queue hold on slot %s: the queued conversation discard "
             "was refused or raised on %d attempts with nothing left to wait for",
@@ -267,6 +273,14 @@ def _wake_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> Non
     wake = _pending_reset_wakeups.get(entry[1])
     if wake is not None:
         wake.set()
+
+
+def _a_completion_is_queued(slot: "_ChatSlot") -> bool:
+    """Whether the tab's queue holds a sub-agent completion, or a verbatim requeue of one."""
+    return any(
+        item.get("kind") == SUBAGENT_COMPLETION_KIND or item.get(_REPLAYS_COMPLETION_KEY) is True
+        for item in slot._queue
+    )
 
 
 async def _consume_pending_reset(
@@ -382,7 +396,12 @@ async def _consume_pending_reset(
                     # Again here: a cold start already in flight when the project was
                     # cleared stores the old directory as it registers.
                     state.sessions.retract_cwd(pending_key)
-                reset_ok = await state.sessions.reset(pending_key, skip_if_busy=True)
+                # Shielded: the eager-spawn task awaiting this is cancelled by the
+                # next slot signal, and a cancel after the pop would leak the
+                # process holding the session lock. Cancelled, the flag stays armed.
+                reset_ok = await asyncio.shield(
+                    state.sessions.reset(pending_key, skip_if_busy=True)
+                )
             except Exception:
                 # A teardown that raised leaves the session in a state this
                 # slot cannot vouch for — neither is its withhold verdict, so
@@ -431,6 +450,16 @@ async def _consume_pending_reset(
             # children that are still running, queued, or delivering a result.
             logger.debug(
                 "Deferring queued conversation discard for slot %s: sub-agents attached",
+                slot.key,
+            )
+            _arm_pending_reset_retry(state, slot)
+            return torn_down
+        if own_turn and _a_completion_is_queued(slot):
+            # The hand-off drains it into the conversation it was queued for and that
+            # turn's end lands the discard. The retry does not wait on it: a held queue
+            # cannot start it.
+            logger.debug(
+                "Deferring queued conversation discard for slot %s: a completion is queued",
                 slot.key,
             )
             _arm_pending_reset_retry(state, slot)
@@ -493,6 +522,17 @@ async def _consume_pending_reset(
             # flight -> flag stays armed, session untouched), so dropping before
             # would forget a verdict that is still accurate.
             slot.forget_session_model_state()
+            # Notices for the dropped conversation are settled, not handed to the fresh one.
+            notices = slot._pending_subagent_failures[:]
+            slot._pending_subagent_failures.clear()
+            if notices:
+                settle_drained_subagent_notices(state, slot, notices)
+            if slot._pending_discard_drops_plan:
+                # A /clear's discard: the completion turn it waited on may have re-sent
+                # the old conversation's plan, which goes with it as at a landed /clear.
+                slot._pending_discard_drops_plan = False
+                if slot.set_todo(None):
+                    state.broadcast_ws("todo_update", {"slot": slot.key, "todo": None})
             if slot._pending_discard_conversation_key == discard_key:
                 slot._pending_discard_conversation_key = None
                 slot._pending_discard_from_wake = False

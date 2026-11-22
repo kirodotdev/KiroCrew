@@ -11,7 +11,7 @@ on an instance reaches every caller.
 
 Instance fields written: ``_allocation``.
 
-Instance fields read: ``identity_check_before_acquire``, ``parent_turns``.
+Instance fields read: ``_compaction``, ``identity_check_before_acquire``, ``parent_turns``.
 """
 
 from __future__ import annotations
@@ -277,6 +277,7 @@ async def _reacquire_and_validate(
     *,
     wait_if_busy: bool = True,
     reservation: object | None = None,
+    refuse_looser_tier: bool = True,
 ) -> bool:
     """Acquire outside the registry lock, revalidate identity and meet the key's ending fence again."""
     return await self._allocation_boundary()._reacquire_and_validate(
@@ -284,12 +285,29 @@ async def _reacquire_and_validate(
         sess,
         wait_if_busy=wait_if_busy,
         reservation=reservation,
+        refuse_looser_tier=refuse_looser_tier,
     )
 
 
 async def _evict_stale_session(self: SessionManager, key: str, sess: "_Session") -> None:
     """Evict and close the exact stale session."""
     await self._allocation_boundary()._evict_stale_session(key, sess)
+
+
+async def recycle_if_sandbox_tightened(self: SessionManager, key: str) -> bool:
+    """End *key*'s session if ``agent.sandbox`` is now stricter than its spawn tier.
+
+    Every new claim makes this check itself (``_reacquire_and_validate``). A holder
+    that keeps one claim, and its permit, for its whole life calls this at each turn
+    boundary instead, then re-acquires the key. Returns whether the session was ended.
+    """
+    allocation = self._allocation_boundary()
+    folded = self._fold_key(key)
+    session = allocation._sessions.get(folded)
+    if session is None or not allocation._sandbox_tightened(session.provider):
+        return False
+    await allocation._evict_stale_session(folded, session, held_by_caller=True)
+    return True
 
 
 def _get_session_agent(self: SessionManager, session_key: str) -> str:
@@ -775,11 +793,15 @@ def note_turn_landed(self: SessionManager, key: str) -> None:
 
     Called where each engine already decides it (its stop reason succeeded), so
     the end of this attempt confirms the inline marks it received. An attempt
-    that ends with no note revokes them.
+    that ends with no note revokes them. A landed turn also settles the
+    persisted post-compaction mark the turn consumed.
     """
     ledger = getattr(self, "parent_turns", None)
     if ledger is not None:
         ledger.note_landed(ledger.open_attempt(canonical_key(key), _holding_task(self, key)))
+    compaction = getattr(self, "_compaction", None)
+    if compaction is not None:
+        compaction.note_reinjection_landed(key)
 
 
 async def _safe_cleanup(self: SessionManager, provider: LLMProvider, session_id: str) -> None:

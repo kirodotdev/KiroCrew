@@ -29,6 +29,7 @@ from kiro_crew.tracing import steps as trace_steps
 from kiro_crew.tracing import subagents as trace_subagents
 from kiro_crew.tracing import turns as trace_turns
 from kiro_crew.tracing import work as trace_work
+from kiro_crew.tracing import workers as trace_workers
 from kiro_crew.tracing import workflows as trace_workflows
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,9 @@ async def bind_turn(state: Any, slot: Any, turn_id: str, *, top: bool) -> contex
     While tracing is on, read crew attributes at every depth; only a *top* turn
     consumes completion causes and joins or links to their runs.
     Release with ``tracing.turns.release_turn_root``. Nothing is bound until every
-    read is done, so a cancelled read leaves nothing to release.
+    read is done, so a cancelled read leaves nothing to release. Session-scoped
+    creation and report links are taken last, so a cancelled read leaves them pending
+    for the next worker or patrol turn.
     """
     join, links, attrs, rollup_key = None, (), None, ""
     span_attrs: dict[str, Any] = {}
@@ -108,6 +111,18 @@ async def bind_turn(state: Any, slot: Any, turn_id: str, *, top: bool) -> contex
             # After the crew read, so its failure cannot strip the run id off a joined turn.
             attrs = {**(attrs or {}), **wf_attrs}
         links = tuple(links) + sent_links
+        if top:
+            # Take session-scoped links only after the reads: no await before binding
+            # can cancel the turn and lose its creation or report links.
+            key = str(getattr(slot, "key", "") or "")
+            try:
+                links = (
+                    *links,
+                    *trace_workers.first_turn_link(key),
+                    *trace_work.answered_links(key),
+                )
+            except Exception:
+                logger.debug("trace session links unavailable", exc_info=True)
     caller = trace_inbound.join_for(turn_id)
     if caller is not None:
         # The caller asked (``telemetry.accept_traceparent``): its span parents the turn;

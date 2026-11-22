@@ -19,9 +19,12 @@ does not raise it. Effective parallel sub-agents per tier:
 We default to **arm64 / Graviton** (cheaper per GB; both Kiro Crew and ``kiro-cli``
 ship aarch64 Linux builds), with an x86_64 lane for users who need it.
 
-Prices are illustrative on-demand USD/hour and are surfaced only as "approximate"
-in the CLI — never used for anything but display, and the dashboard shows no
-dollar figure at all (it links the AWS Pricing Calculator instead).
+Prices are us-east-1 Linux on-demand USD/hour, shown only as "approximate" — by
+the CLI and on the dashboard's size cards (``remoteCrewPanelModel.ts`` carries the
+same figure, held equal by ``test_cloud_sizes_ui_parity.py``) — and never used for
+anything but display. There is no per-Region price table, so for any other Region
+both surfaces say the figure is the us-east-1 rate and that other Regions may
+differ, rather than show it as that Region's.
 """
 
 from __future__ import annotations
@@ -44,7 +47,7 @@ class SizeTier:
     vcpu: int
     ram_gb: int
     disk_gb: int  # gp3 root volume size
-    approx_usd_per_hr: float  # illustrative on-demand price
+    approx_usd_per_hr: float  # PRICE_REGION on-demand price (display only)
     recommended: bool = False
 
     def summary(self) -> str:
@@ -128,6 +131,9 @@ _TIERS: tuple[SizeTier, ...] = (
 
 TIERS_BY_KEY: dict[str, SizeTier] = {t.key: t for t in _TIERS}
 
+# The Region every ``approx_usd_per_hr`` above was read for.
+PRICE_REGION = "us-east-1"
+
 DEFAULT_TIER_KEY = "balanced"
 
 # The tiers offered in the interactive picker, in display order (the x86 lane is
@@ -162,3 +168,10 @@ def default_tier() -> SizeTier:
 def monthly_estimate(tier: SizeTier, hours_per_day: float = 24.0) -> float:
     """Approximate USD/month for a tier at the given daily uptime (display only)."""
     return round(tier.approx_usd_per_hr * hours_per_day * 30, 2)
+
+
+def price_basis(region: str) -> str:
+    """How to read a tier's price for a launch in ``region`` (display only)."""
+    if region == PRICE_REGION:
+        return "approx"
+    return f"approx; {PRICE_REGION} on-demand rate, other Regions may differ"

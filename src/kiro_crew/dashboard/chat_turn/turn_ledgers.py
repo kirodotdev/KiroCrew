@@ -7,7 +7,7 @@ import inspect
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.chat_delivery import attachment_meta
+from kiro_crew.dashboard.chat_delivery import MIRROR_REPLY_ONLY_META_KEY, attachment_meta
 from kiro_crew.dashboard.chat_utils import RecoveryPayload
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.dashboard.slot_queue_repository import stamp_source_channels
@@ -172,6 +172,9 @@ def _queue_recovery(
         # The same holds for a BACKGROUND start a bulk Resume asked for: nobody
         # waits on its retry either, so the retry starts BACKGROUND too.
         _recovery_meta[START_BACKGROUND_META_KEY] = True
+    if turn._mirror_reply_only:
+        # A recovery is a second turn of the same Heartbeat wake: it mirrors only its reply too.
+        _recovery_meta[MIRROR_REPLY_ONLY_META_KEY] = True
     if turn._card_origin:
         # A recovery is a second turn of the SAME card reply: it stays untrusted,
         # or a retry would run the page's words with the thread's auto-approval.
@@ -330,7 +333,8 @@ def _record_terminal_directive(turn, kind: str, outcome: DirectiveOutcome, tcid:
     if not turn._terminal_directive_applied:
         turn._terminal_directive_applied = True
         turn._terminal_directive_kind = kind
-        turn._terminal_directive_text = outcome.text
+        # A Bot's Heartbeat wake mirrors only a real reply: no outcome line.
+        turn._terminal_directive_text = "" if turn._mirror_reply_only else outcome.text
 
 
 def _wt_maybe_cadence(turn) -> None:

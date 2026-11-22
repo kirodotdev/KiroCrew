@@ -7,20 +7,18 @@
 > This spec describes internals.
 
 Auto-Improvement is an opt-in (`defaultEnabled: false`) built-in app that runs a
-measurement-first self-improvement loop against a GitHub repository. It calibrates
+measurement-first self-improvement loop against a GitHub or GitLab repository
+(`github.com`, `gitlab.com`, or a self-managed GitLab host listed in
+`dashboard.gitlab_hosts`). It calibrates
 a metric (the "ruler"), **proves** the metric can detect a known win, and only
 then runs keep-or-revert improvement cycles. Candidates that survive a
 deterministic gate and an A/B (or RED/GREEN) measurement are opened as **draft**
-GitHub pull requests for human review.
+GitHub pull requests (draft merge requests on GitLab) for human review.
 
 The load-bearing design property is that every *decision* is deterministic Python
 and every *proposal* is an agent: the agent writes candidate fixes, and the gate,
 measurer, keeper, and PR pipeline decide what survives. The agent never grades its
 own work.
-
-The app's origin as a port of an upstream app, and the design decisions the port
-made, are recorded in
-[`PORT_PLAN.md`](../../../src/kiro_crew/apps/builtins/auto_improvement/docs/PORT_PLAN.md).
 
 ## Routes
 
@@ -134,8 +132,8 @@ and never drive the verdict, or one flaky optional job would nudge forever.
 |---|---|---|
 | Push-disabled clone | `backend/clone_setup.py:_disable_push` + `profiles/github_repo/profile.py:RepoIsolation.push_disabled` | **Every** configured fetch/push URL is replaced with exactly one `DISABLED_NO_PUSH` value; setup and runtime fail closed on extra values. The real remote lives in config (`origin_url`), handed only to trusted publishers |
 | Clone pinned to its project | `backend/clone_setup.py:_clone_identity` + `_record_clone_identity` | A new clone records the SHA-256 of its lower-cased `host/path` as the local git config `kirocrew.cloneidentity`. Reusing an existing clone directory refuses when that value names another project or is ambiguous (more than one value), and records it once on a clone that predates it; setup fails closed when it cannot be written |
-| Draft-only PRs | `profiles/github_repo/pr_recipe.py` | `gh pr create --draft`; never `--web`, merge, ready, or auto-merge |
-| Generated head branch | same | `auto-improvement/<kind>-<fingerprint>`; never a human's branch |
+| Draft-only PRs | `profiles/github_repo/pr_recipe.py`, `profiles/gitlab_repo/mr_recipe.py` | `gh pr create --draft` (GitLab: `glab mr create --draft`); never `--web`, merge, ready, or auto-merge |
+| Generated head branch | `profiles/pr_recipe_base.py:branch_name` | `auto-improvement/<kind>-<fingerprint>`; never a human's branch |
 | Protected-branch denylist | `spine/push_policy.py` | non-overridable; a hand-edited config cannot widen it |
 | Edit allowlist | `spine/gate.py` + profile | ruler/harness/tests/auth are mechanically off-limits |
 | Do-not-pollute gate | `spine/pollute.py` | host state hashed before/after; drift blocks the run |
@@ -154,7 +152,7 @@ and never drive the verdict, or one flaky optional job would nudge forever.
 ### Clone setup and reuse contract
 
 `setup_safe_clone` derives the canonical destination from the validated GitHub
-`owner/repo`; it never treats clone contents as trusted. The improvement agent is
+`owner/repo` or GitLab `group/project`; it never treats clone contents as trusted. The improvement agent is
 expected to edit that checkout, so reuse attests only properties the host can
 enforce: the scratch root/destination and Git metadata contain no links or
 redirections, local Git config has no includes/URL rewrites/worktree override,
@@ -418,7 +416,8 @@ exits — the draft-PR push, the F10 direct push and one-click commit — so wha
 is where a verified change goes. It never returns a stored ``origin_url`` verbatim; every
 caller treats ``""`` as "no push target", so each refusal below fails closed.
 
-1. **Host allowlist.** The network host must match exactly, never by ``endswith`` —
+1. **Host allowlist.** The network host must be ``github.com``, ``gitlab.com`` or a host
+   in ``dashboard.gitlab_hosts`` (``_is_allowed_remote_host``), matched exactly, never by ``endswith`` —
    ``evilgithub.com`` and ``github.com.attacker.net`` both fail. ``http://`` and ``git://``
    are refused because cleartext is never this app's push transport, and the
    ``DISABLED_NO_PUSH`` sentinel is refused because it is a marker rather than a
@@ -427,8 +426,9 @@ caller treats ``""`` as "no push target", so each refusal below fails closed.
    ``git@github.com:owner/repo.git`` whenever ``gh`` prefers ssh.
 2. **Repository identity.** ``github.com`` is itself an allowed host, so the host alone
    would let an edited ``config.json`` keep the host and swap the path. A network
-   ``origin_url`` must therefore name the same ``owner/repo`` as the validated
-   ``target_url``, compared transport-agnostically through ``_remote_slug``. When the two
+   ``origin_url`` must therefore name the same project path and host as the validated
+   ``target_url``, the path compared transport-agnostically through ``_remote_slug`` and
+   the host through ``_remote_host_matches``. When the two
    differ, or ``target_url`` is missing or does not validate, there is no push target.
 3. **Local paths stay allowed.** ``/tmp/x.git`` and ``file://`` have no network host to
    redirect to; they are what the app's own tests push to, and a local bare repo is a
@@ -1078,7 +1078,7 @@ path separators before the key is ever sent, so the two gates agree.
 
 **Pinned invariants.**
 
-- `GET /findings/{fp}` joins evidence by the target's BASENAME slug (`mod_py_sym`, matching `proposer._short`), so a nested target like `src/pkg/sub/mod.py::Sym` shows its `signature`/`hypothesis`. (D-1)
+- `GET /findings/{fp}` joins evidence by the target's BASENAME slug (`mod_py_Sym`, matching `proposer._short`), so a nested target like `src/pkg/sub/mod.py::Sym` shows its `signature`/`hypothesis`. (D-1)
 - The direct-commit queue copy writes `<fp>.pr.md`, the name every reader opens; a structural test pins that no non-test source writes `.cr.md`. (D-24)
 - `results.tsv` cells collapse tab, CR and LF to a space (`_cell`); the unaltered value is kept in `candidates.jsonl`. (D-35)
 - Workspace keys include a digest of the repository identity, so repositories that slug alike (`owner/a-b`, `owner/a_b`) get distinct workspaces, while `origin/main` and `main` still share one. (D-85)
@@ -1131,8 +1131,8 @@ Three tiers, each where it fits:
    member activity pointer. The app feed payload includes the member and session
    key; the current feed UI shows the member, and member activity opens the session.
    Generated assignment prompts, assistant text and assignment error metadata pass
-   through the platform context's credential and exfiltration redactor before
-   storage. Completion activity uses the same sanitized error copy; the actual
+   through the platform context's credential redactor (`redact_via_context`) before
+   storage; a URL with no credential in it stays readable. Completion activity uses the same sanitized error copy; the actual
    assignment prompt and returned `AgentResult` remain intact for the deterministic
    driver. Failed redaction withholds the affected field while session release
    and removal still run.
@@ -1258,7 +1258,11 @@ The engine (`spine/`) consumes a target only through the `TargetProfile` protoco
 trusts it. Adding a target never edits the engine, but it does touch
 `profiles/__init__.py`: `build_profile` always builds `github_repo` today.
 
-`profiles/github_repo/` is the reference profile.
+`profiles/github_repo/` is the reference profile. Its PR recipe (field ⑤) comes from
+`profiles/__init__.py:build_pr_recipe`, which `target_provider` drives from the
+`target_url` host alone: a GitHub host gets `GitHubPRRecipe`, any other host
+`GitLabMRRecipe` (`profiles/gitlab_repo/mr_recipe.py`). The manual draft route calls
+the same function.
 
 **Pinned invariants.**
 

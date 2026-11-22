@@ -189,6 +189,39 @@ async def test_a_drifted_instruction_fires_instead_of_observing(tmp_path, monkey
 
 
 @pytest.mark.asyncio
+async def test_a_slug_respelled_in_another_case_is_still_observed(tmp_path, monkeypatch):
+    """GitHub slugs are case-insensitive, so only a different number is a drift."""
+    import kiro_crew.autonudge as _an
+
+    polled: list[str] = []
+
+    async def on_fire(loop):
+        return True
+
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        lambda i, m, p: (polled.append(m), _an.irq.Verdict(_an.irq.Outcome.QUIET, "q"))[1],
+    )
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor17",
+        slot_key="chat-1-123",
+        message="Watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="Acme/Widgets#42"),
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        assert await service._monitor_tick_is_quiet(loop) is True
+        assert len(polled) == 1, "the bound subject must be observed"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_a_re_owed_claim_survives_the_backoff_re_arm(tmp_path, monkeypatch):
     """A refused fire's re-owed wake claim survives the backoff re-arm.

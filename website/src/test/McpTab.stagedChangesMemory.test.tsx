@@ -169,6 +169,17 @@ describe('McpTab — staged changes survive leaving the page (#25962)', () => {
     expect(screen.queryByRole('button', { name: /Discard/ })).toBeNull()
   })
 
+  it('drops a restored turn-off or uninstall of a built-in server, keeping its other scope change', async () => {
+    mockApi.mcpServers.mockResolvedValue([{ ...server('alpha'), builtin: true }, { ...server('beta'), builtin: true }])
+    sessionStorage.setItem(MCP_STAGED_CHANGES_KEY, JSON.stringify({
+      pending: { alpha: { scopes: { kirocrew: false, kiroGlobal: true } }, beta: { uninstall: true } },
+      pendingTools: {},
+    }))
+    renderTab()
+    await waitFor(() => expect(row('alpha')).toBeInTheDocument())
+    await waitFor(() => expect(JSON.parse(sessionStorage.getItem(MCP_STAGED_CHANGES_KEY) || '{}').pending).toEqual({ alpha: { scopes: { kiroGlobal: true } } }))
+  })
+
   it('opens with nothing staged when the stored value is unreadable', async () => {
     sessionStorage.setItem(MCP_STAGED_CHANGES_KEY, '{not json')
     renderTab()

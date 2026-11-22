@@ -21,6 +21,8 @@ if TYPE_CHECKING:
         COMPACT_ACCOUNT_CHANGED_TEXT,
         SESSIONS_INCLUDE_ENDED_ARGS,
         STOP_DECLINED_COMPACTING_TEXT,
+        ConfigReadError,
+        ConfigWriteRefused,
         ConversationLog,
         CronService,
         KiroCrewConfig,
@@ -50,6 +52,8 @@ if TYPE_CHECKING:
         compact_unsupported_backend,
         compact_unsupported_reply,
         compaction_in_flight,
+        config_local_path,
+        config_path,
         consume_stop_declined,
         cron_command_reply,
         decline_stop,
@@ -60,17 +64,23 @@ if TYPE_CHECKING:
         is_allowed_user,
         is_owner,
         is_sensitive_path,
+        is_shared_listed,
+        is_shared_user,
         is_yolo_mode,
         logger,
         note_user_stop,
+        overlay_pins,
+        read_merged_config_files,
         redact_credentials,
         redact_exfiltration_urls,
         run_config_write,
         safety_override,
         sel,
+        shared_user_refused_for_session,
         slack_title_text,
         spawn_command_reply,
         task_command_reply,
+        update_config_locked,
         yolo_policy_permits,
     )
 
@@ -298,7 +308,15 @@ async def _bang_stop(
 
         await decline_stop(session_key, user_id, _say_declined)
         return ""
-    note_user_stop(sessions, sessions.get_session_for_thread(reply_ts) or session_key)
+    _stop_target = sessions.get_session_for_thread(reply_ts) or session_key
+    if is_shared_listed(user_id):
+        # Rechecked here: an await since the router's check may have relinked the
+        # thread (slack.shared_access); a code channel's session is never stopped.
+        if await shared_user_refused_for_session(user_id, _stop_target, reply_ts, channel):
+            return ""
+        if (sessions.get_session_for_thread(reply_ts) or session_key) != _stop_target:
+            return ""
+    note_user_stop(sessions, _stop_target)
     has_session = sessions.has_session(session_key)
     if not has_session:
         sel().log_tool_invocation(
@@ -417,7 +435,41 @@ async def _bang_voice(
         )
         await slack.post_message(channel, "\U0001f507 Voice OFF.", reply_ts)
     elif arg == "global":
-        _vc.global_enabled = not _vc.global_enabled
+        written: list[bool] = []
+
+        def _apply(data: dict) -> dict:
+            # Toggled from the file's value under the write lock, so two
+            # overlapping commands flip twice rather than write the same value.
+            vr = data.get("voice_reply")
+            if not isinstance(vr, dict):
+                vr = data["voice_reply"] = {}
+            vr["enabled"] = not bool(vr.get("enabled", False))
+            written.append(vr["enabled"])
+            return data
+
+        # Persist FIRST, as the Voice modal and the dashboard's settings PUT do, so
+        # the file stays the one source the live watcher re-reads and a restart
+        # keeps. A failed write leaves the live flag as it was.
+        try:
+            await run_config_write(update_config_locked, config_path(), mutate=_apply)
+        except (ConfigReadError, ConfigWriteRefused, OSError) as exc:
+            logger.warning("Refusing to toggle global voice: %s", exc)
+            await slack.post_message(
+                channel,
+                f"\u274c Voice global unchanged: the config was not saved ({exc}).",
+                reply_ts,
+            )
+            return ""
+        _vc.global_enabled = written[-1]
+        note = ""
+        if overlay_pins("voice_reply", "enabled"):
+            # Saved to config.json, but config.local.json's value is what applies.
+            _vc.global_enabled = bool(
+                read_merged_config_files(config_path(), config_local_path())
+                .get("voice_reply", {})
+                .get("enabled", False)
+            )
+            note = f" (saved {'on' if written[-1] else 'off'} to config.json; config.local.json sets voice_reply.enabled and takes precedence)"
         state = "ON \U0001f50a" if _vc.global_enabled else "OFF \U0001f507"
         sel().log_tool_invocation(
             session_key=session_key,
@@ -427,7 +479,7 @@ async def _bang_voice(
             outcome="voice_global_" + ("on" if _vc.global_enabled else "off"),
             metadata={"user": user_id, "channel": channel},
         )
-        await slack.post_message(channel, f"Voice global: *{state}*", reply_ts)
+        await slack.post_message(channel, f"Voice global: *{state}*{note}", reply_ts)
     elif arg == "engine" and val:
         eng = val.lower()
         if eng not in VALID_ENGINES:
@@ -1439,8 +1491,23 @@ async def _route_bang_command(
     native path or ``handle_message_transport`` on the transport path (no ``!`` prefix,
     or a command the dispatcher did not claim).
     """
+    # A shared user's !compact / !stop / !title acts on this thread's session: never
+    # a code channel's (slack.shared_access). Judged on the key the command acts on
+    # and the thread's owner, and dropped if the owner changes while judging.
+    _word = cmd_text.split()[:1]
+    if is_shared_listed(user_id) and [w.lower() for w in _word] in (
+        ["!compact"],
+        ["!stop"],
+        ["!title"],
+    ):
+        _owner = sessions.get_session_for_thread(reply_ts) if sessions is not None else None
+        for _key in {session_key, str(_owner or "")}:
+            if await shared_user_refused_for_session(user_id, _key, reply_ts, channel):
+                return True
+        if sessions is not None and sessions.get_session_for_thread(reply_ts) != _owner:
+            return True
     if cmd_text.strip().lower() == "!compact":
-        if is_owner(user_id) or is_allowed_user(user_id):
+        if is_owner(user_id) or is_allowed_user(user_id) or is_shared_user(user_id):
             sel().log_api_access(
                 caller=user_id,
                 operation="slack.compact_command",
@@ -1496,10 +1563,13 @@ async def _route_bang_command(
 
     # ── Owner commands: all "!" prefixed messages are reserved for owner ──
     if _is_bang_command(cmd_text):
-        # !dashboard and !stop are available to any allowed user
-        _cmd_word = cmd_text.split()[0]
+        # !stop and !title are available to any allowed user; !dashboard mints a
+        # full-dashboard link, so it stays the owner's.
+        _cmd_word = cmd_text.split()[0].lower()
         if _cmd_word in ("!dashboard", "!stop", "!title"):
-            if is_owner(user_id) or is_allowed_user(user_id):
+            if (is_owner(user_id) or is_allowed_user(user_id) or is_shared_user(user_id)) and not (
+                _cmd_word == "!dashboard" and is_shared_listed(user_id)
+            ):
                 reply = await _handle_slash_command(
                     cmd_text,
                     slack,

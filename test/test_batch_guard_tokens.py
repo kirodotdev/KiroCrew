@@ -592,6 +592,144 @@ def test_a_pr_number_in_a_json_encoded_result_is_seen(update):
     assert window.refusal_for("w", guard.WRITE) is None
 
 
+def _log_lines(count: int, salt: int = 0) -> list[str]:
+    """Build-log lines carrying a sha, a ``"pr"`` field, a time and a job id each."""
+    return [
+        f"2026-11-13T07:{n % 60:02d}:{(n * 7 + salt) % 60:02d}Z commit "
+        f"{((n + salt) * 2654435761) % (1 << 160):040x} "
+        f'{{"pr": {1000 + n + salt}}} job 17{n + salt:09d} built ok\n'
+        for n in range(count)
+    ]
+
+
+def _content_frame(guard, text: str) -> str:
+    """*text* as a transport hands a result over: a JSON-encoded content block."""
+    return guard.update_text(
+        {"content": [{"type": "content", "content": {"type": "text", "text": text}}]}
+    )
+
+
+def _counting_scanner(monkeypatch, guard) -> list[int]:
+    """Count the characters the window hands its token scanner."""
+    counted = [0]
+    real = guard.tokens_of
+
+    def counting(text):
+        counted[0] += len(text) if isinstance(text, str) else 0
+        return real(text)
+
+    monkeypatch.setattr(guard, "tokens_of", counting)
+    return counted
+
+
+def _learned(window) -> frozenset:
+    return window._members[next(iter(window._members))].output
+
+
+def _whole_scan(guard, *texts: str) -> frozenset:
+    window = guard.BatchWindow()
+    window.dispatched("r0", guard.READ, "cat build.log")
+    for text in texts:
+        window.settled("r0", text)
+    return _learned(window)
+
+
+def test_a_cumulative_streamed_result_is_read_once_and_learns_what_a_whole_read_does(
+    monkeypatch,
+):
+    # Each update repeats the result so far. Re-reading all of it every time costs
+    # about K/2 reads of the final text on the event loop; reading only what is
+    # new costs about one, plus the terminal update's whole read. Three times the
+    # final length pins that it does not grow with the number of updates.
+    guard = _guard()
+    lines = _log_lines(1200)
+    updates = [_content_frame(guard, "".join(lines[: 30 * (i + 1)])) for i in range(40)]
+    final = updates[-1]
+    expected = _whole_scan(guard, final)
+    counted = _counting_scanner(monkeypatch, guard)
+    window = _window()
+    window.dispatched("r0", guard.READ, "cat build.log")
+    for update in updates:
+        window.printed("r0", update)
+    # Cheaper, not weaker: before the terminal update it already knows every token.
+    assert _learned(window) == expected
+    window.settled("r0", final)
+    assert _learned(window) == expected
+    assert counted[0] <= 3 * len(final)
+
+
+def test_a_result_streamed_as_deltas_learns_every_delta():
+    # A backend that sends each part on its own: no update continues the one
+    # before it, so each is read whole and nothing is skipped, even when the
+    # terminal update carries no output.
+    guard = _guard()
+    deltas = [_content_frame(guard, "".join(_log_lines(30, salt=31 * i))) for i in range(6)]
+    window = _window()
+    window.dispatched("r0", guard.READ, "cat build.log")
+    for delta in deltas:
+        window.printed("r0", delta)
+    window.settled("r0")
+    assert _learned(window) == _whole_scan(guard, *deltas)
+
+
+def test_a_pr_field_found_only_by_parsing_the_whole_result_is_learned_from_the_stream():
+    # The result is a JSON document whose "pr" sits in a string value that holds
+    # JSON itself, so only a parse of the whole text finds it, and it arrives in
+    # a later update, past what the first one read. The terminal update carries
+    # no output, so the streamed updates are the only place to learn it.
+    guard = _guard()
+    log = "".join(_log_lines(200))
+    result = json.dumps({"log": log, "data": json.dumps({"pr": 1742})})
+    cuts = [len(result) * (i + 1) // 8 for i in range(8)]
+    updates = [_content_frame(guard, result[:cut]) for cut in cuts]
+    assert "1742" not in guard.tokens_of(updates[-1][len(updates[0]) :])
+    window = _window()
+    window.dispatched("r0", guard.READ, "work_ledger_read")
+    for update in updates:
+        window.printed("r0", update)
+    window.settled("r0")
+    assert "1742" in _learned(window)
+    assert _learned(window) == _whole_scan(guard, *updates)
+
+
+def test_a_word_too_long_for_a_token_split_across_updates_yields_no_token():
+    # A 128-character hex run (a sha512) is no token read whole. The first
+    # update ends just past it, so the next one is read from inside its last 64
+    # characters, a hex id on its own, which the result never printed.
+    guard = _guard()
+    sha512 = "".join(f"{(n * 2654435761) % (1 << 32):08x}" for n in range(1, 17))
+    head = "".join(_log_lines(10)) + "digest "
+    updates = [
+        _content_frame(guard, head + sha512 + " ok"),
+        _content_frame(guard, head + sha512 + " ok\ndone\n"),
+    ]
+    window = _window()
+    window.dispatched("r0", guard.READ, "sha512sum build.tar")
+    for update in updates:
+        window.printed("r0", update)
+    window.settled("r0")
+    assert not {token for token in _learned(window) if token in sha512}
+    assert _learned(window) == _whole_scan(guard, updates[-1])
+
+
+@pytest.mark.parametrize("framed", [False, True], ids=["raw", "content_block"])
+def test_a_time_glued_to_a_word_cut_by_an_update_boundary_is_learned(framed):
+    # A time can follow a word with no separator. The first update ends at its
+    # hour, inside the word, so the next one is read from inside that word; the
+    # time is learned all the same, and the terminal update carries no output.
+    guard = _guard()
+    first = "start of log\n" * 5 + "build_step_" + "a" * 60 + "_at_12"
+    texts = [first, first + ":34:56Z done\n"]
+    updates = [_content_frame(guard, text) if framed else text for text in texts]
+    window = _window()
+    window.dispatched("r0", guard.READ, "cat build.log")
+    for update in updates:
+        window.printed("r0", update)
+    window.settled("r0")
+    assert "12:34:56" in _learned(window)
+    assert _learned(window) == _whole_scan(guard, *updates)
+
+
 def test_a_sha_split_across_two_streamed_text_chunks_is_seen():
     guard = _guard()
     window = _window()

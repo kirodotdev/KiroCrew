@@ -148,11 +148,11 @@ describe('WorldsPage', () => {
   })
 
   describe('collapse toggle', () => {
-    it('renders toggle button showing ▲ (expanded) by default', () => {
+    it('renders toggle button showing a chevron-up (expanded) by default', () => {
       renderWithProviders(<WorldsPage />)
       const toggle = screen.getByTitle('Hide controls')
       expect(toggle).toBeInTheDocument()
-      expect(toggle).toHaveTextContent('▲')
+      expect(toggle.querySelector('svg.lucide-chevron-up')).not.toBeNull()
     })
 
     it('collapses panel on click and expands on second click', () => {
@@ -161,11 +161,11 @@ describe('WorldsPage', () => {
       const toggle = screen.getByTitle('Hide controls')
 
       fireEvent.click(toggle)
-      expect(screen.getByTitle('Show controls')).toHaveTextContent('▼')
+      expect(screen.getByTitle('Show controls').querySelector('svg.lucide-chevron-down')).not.toBeNull()
       expect(panel.style.gridTemplateRows).toBe('0fr')
 
       fireEvent.click(screen.getByTitle('Show controls'))
-      expect(screen.getByTitle('Hide controls')).toHaveTextContent('▲')
+      expect(screen.getByTitle('Hide controls').querySelector('svg.lucide-chevron-up')).not.toBeNull()
       expect(panel.style.gridTemplateRows).toBe('1fr')
     })
   })

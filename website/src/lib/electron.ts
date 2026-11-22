@@ -29,6 +29,18 @@ export const isWinElectron = isElectron && mc?.platform === 'win32'
 export const isLinuxFramelessElectron = isElectron && mc?.platform === 'linux' && !!mc?.linuxFrameless
 
 /**
+ * True when the INSTALLED shell serves the in-app application menu on a
+ * frameless Linux window. Separate from `isLinuxFramelessElectron`, which
+ * answers a different question: that flag describes the window (no frame, so
+ * reserve header space), this one describes the shell (its main process
+ * answers the menu's two seams). An older shell reports the first and not the
+ * second, so gating the menu on the window alone paints a trigger whose popups
+ * open empty. Absent on any shell older than the feature — see
+ * electron/preload.js.
+ */
+export const shellServesLinuxAppMenu = isElectron && !!mc?.linuxAppMenu
+
+/**
  * Width reserved on the right of the header for the injected Linux caption
  * controls (three 36px buttons — see #electron-linux-controls in
  * electron/main.js). Mirrors WIN_CAPTION_OVERLAY_WIDTH below; keep in sync
@@ -36,6 +48,12 @@ export const isLinuxFramelessElectron = isElectron && mc?.platform === 'linux' &
  * electron/main.js.
  */
 export const LINUX_CAPTION_CONTROLS_WIDTH = 108
+/**
+ * Header right padding that keeps content clear of those controls: their width
+ * plus a 4px gap. Keep in sync with the `.linux-electron` and
+ * `.embedded-linux-inset` rules in styles/shell-chrome.css.
+ */
+export const LINUX_CAPTION_RESERVE_PX = 112
 
 /**
  * The shell's raw `process.platform` (`'darwin'` / `'win32'` / `'linux'`), or
@@ -225,13 +243,15 @@ export const CAPTION_BAND_HEIGHT_PX = 42
  * viewer's close button next to the window's own.
  *
  * Non-zero on frameless Windows, frameless Linux, and inside an embedded
- * remote pane whose Windows host relays `.embedded-win-inset` on <html>
+ * remote pane whose host relays `.embedded-win-inset` or
+ * `.embedded-linux-inset` on <html>
  * (EmbeddedHostBridge). Read at render time, not module load, because that
  * class toggles at runtime.
  */
 export function overlayCaptionClearancePx(): number {
   if (isWinElectron || isLinuxFramelessElectron) return CAPTION_BAND_HEIGHT_PX
-  if (document.documentElement.classList.contains('embedded-win-inset')) return CAPTION_BAND_HEIGHT_PX
+  const root = document.documentElement.classList
+  if (root.contains('embedded-win-inset') || root.contains('embedded-linux-inset')) return CAPTION_BAND_HEIGHT_PX
   return 0
 }
 

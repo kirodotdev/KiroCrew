@@ -828,8 +828,9 @@ def test_the_tool_is_on_the_panel_server_and_takes_no_target():
 
     tool = next(t for t in mcp_panel._tool_definitions() if t["name"] == "dashboard_save")
     props = tool["inputSchema"]["properties"]
-    assert set(props) == {"model", "view", "theme"}
-    # Theme is optional: an MCP client can drop an empty object before it arrives.
+    assert set(props) == {"model", "view", "theme", "widgets"}
+    # Theme and widgets are optional: an MCP client can drop an empty object before
+    # it arrives, and a save without widgets keeps the stored ones.
     assert sorted(tool["inputSchema"]["required"]) == ["model", "view"]
     assert not (set(props) & {"bound_to", "session", "session_key", "slot", "target", "kind"})
 

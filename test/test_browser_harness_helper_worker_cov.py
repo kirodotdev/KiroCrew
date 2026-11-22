@@ -8,9 +8,13 @@ in-memory stdin/stdout, so each request path is observed by its reply.
 from __future__ import annotations
 
 import base64
+import gzip
+import http.server
 import io
 import json
+import socketserver
 import sys
+import threading
 import types
 from typing import Any
 
@@ -180,7 +184,7 @@ def test_main_answers_each_line_in_order_and_exits_cleanly_at_eof(
             "{not json",
             json.dumps([1, 2, 3]),
             json.dumps({"id": 2, "helper": "goto", "kwargs": {"url": "https://a.test"}}),
-            json.dumps({"id": 3, "helper": "http_get", "kwargs": {"url": "x"}}),
+            json.dumps({"id": 3, "helper": "upload_file", "kwargs": {"path": "x"}}),
         ]
     )
     code, replies = _run_main(monkeypatch, lines + "\n", helpers)
@@ -191,7 +195,7 @@ def test_main_answers_each_line_in_order_and_exits_cleanly_at_eof(
     assert replies[2]["id"] is None and replies[2]["ok"] is False
     assert "helper not allowed" in replies[2]["error"]
     assert replies[3] == {"id": 2, "ok": True, "result": {"url": "https://a.test"}}
-    assert replies[4]["id"] == 3 and "not allowed: http_get" in replies[4]["error"]
+    assert replies[4]["id"] == 3 and "not allowed: upload_file" in replies[4]["error"]
     assert len(replies) == 5, "blank lines get no reply"
 
 
@@ -350,3 +354,69 @@ def test_dialog_refuses_an_action_it_does_not_know() -> None:
     reply = helper_worker._handle(helpers, _dialog_request(action="explode"))
     assert reply["ok"] is False and "action" in reply["error"]
     assert helpers.calls == []
+
+
+# --- http_get ----------------------------------------------------------------
+
+
+class _Site(http.server.BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802 - the stdlib's handler name
+        if self.path == "/hop":
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:1/private")
+            self.end_headers()
+        elif self.path == "/big":
+            body = gzip.compress(b"x" * (helper_worker.HTTP_BODY_CAP_BYTES + 10))
+            self.send_response(200)
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"<title>Example</title>")
+
+    def log_message(self, *_args: Any) -> None:
+        pass
+
+
+class _LoopbackServer(http.server.ThreadingHTTPServer):
+    # The plain bind resolves the host name, which can stall on macOS.
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
+
+
+@pytest.fixture
+def site() -> Any:
+    server = _LoopbackServer(("127.0.0.1", 0), _Site)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=5)
+
+
+def _http_get(url: str) -> dict[str, Any]:
+    request = {"id": 1, "helper": "http_get", "kwargs": {"url": url, "timeout": 5.0}}
+    return helper_worker._handle(object(), request)
+
+
+def test_http_get_answers_a_redirect_instead_of_following_it(site: str) -> None:
+    reply = _http_get(f"{site}/hop")
+    assert reply == {
+        "id": 1,
+        "ok": True,
+        "result": {"status": 302, "location": "http://127.0.0.1:1/private"},
+    }
+
+
+def test_http_get_returns_the_page_text(site: str) -> None:
+    assert _http_get(f"{site}/")["result"] == "<title>Example</title>"
+
+
+def test_http_get_reads_at_most_its_cap_of_a_gzip_body(site: str) -> None:
+    result = _http_get(f"{site}/big")["result"]
+    assert result == "x" * helper_worker.HTTP_BODY_CAP_BYTES

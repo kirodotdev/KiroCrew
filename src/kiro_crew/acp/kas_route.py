@@ -15,6 +15,13 @@ The rule, in order:
    (rule 2) and no ``KIROCREW_KIRO_BIN`` (rule 4): the bundle route
    (:func:`sharing_preview_selects_bundle`). A spawn whose engine cannot be
    installed or started continues with the rules below.
+1b. ``agent.kas_bundle`` unset in a packaged build that prefers the engine
+   (:mod:`kiro_crew.acp.kas_build_default`), the route open to the switch (rules 2
+   and 4) and a usable Kiro Crew sign-in: the bundle route
+   (:func:`build_default_selects_bundle`). kiro-cli's sign-in is never copied, so
+   a host signed in only to kiro-cli keeps the relay until Kiro Crew is signed in.
+   While a failed first switch cools down, a host the engine never ran on keeps
+   the relay too.
 2. The harness choice stored as the Kiro CLI pick (``"kiro"``): the relay. The
    choice is the session's own Bot pin (``agents.<name>.acp_backend``) when it
    has one, else ``agent.acp_backend``. That pick runs on KAS only because
@@ -54,12 +61,16 @@ from kiro_crew.acp_backends import STORED_BACKEND_KIRO
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "REASON_BUILD_DEFAULT",
     "REASON_CONFIGURED",
     "REASON_KIRO_CLI_LAUNCHER",
     "REASON_KIRO_CLI_SIGNED_OUT",
     "REASON_NO_KIRO_CLI",
     "REASON_SHARING_PREVIEW",
     "KasRoute",
+    "build_default_selects_bundle",
+    "bundle_route_lacks_sign_in",
+    "crew_sign_in_moves_to_bundle",
     "crew_sign_in_starts_spawn",
     "kiro_cli_signed_out",
     "last_spawn_route",
@@ -87,10 +98,14 @@ REASON_KIRO_CLI_LAUNCHER = "kiro_cli_launcher"
 #: ``agent.kas_bundle``. A spawn falls back to the default route when the engine
 #: cannot be installed or started (``KasHarness.resolve_spawn``).
 REASON_SHARING_PREVIEW = "chat_runtime_sharing"
+#: ``agent.kas_bundle`` is unset, this packaged build prefers Crew's engine and Kiro
+#: Crew is signed in (rule 1b, :mod:`kiro_crew.acp.kas_build_default`).
+REASON_BUILD_DEFAULT = "build_default"
 
 _REASON_TEXT = {
     REASON_CONFIGURED: "agent.kas_bundle is on",
     REASON_SHARING_PREVIEW: "the ACP runtime sharing preview is on",
+    REASON_BUILD_DEFAULT: "it is this build's default",
     REASON_NO_KIRO_CLI: "kiro-cli is not installed",
     REASON_KIRO_CLI_SIGNED_OUT: "kiro-cli is not signed in",
     REASON_KIRO_CLI_LAUNCHER: "it needs kiro-cli's own sign-in",
@@ -119,6 +134,7 @@ class KasRoute:
             REASON_NO_KIRO_CLI,
             REASON_KIRO_CLI_SIGNED_OUT,
             REASON_SHARING_PREVIEW,
+            REASON_BUILD_DEFAULT,
         )
 
     @property
@@ -186,6 +202,19 @@ def kiro_cli_signed_out(*, environ: Mapping[str, str], home: Path) -> bool:
         logger.debug("could not read kiro-cli's sign-in for the KAS route", exc_info=True)
         return False
     return fingerprint == "" and definitive == [True]
+
+
+def _crew_holds_usable_sign_in() -> bool:
+    """Whether Kiro Crew's own sign-in can serve a spawn. Raises on an unreadable vault.
+
+    A workload-identity host (:mod:`kiro_crew.workload_identity`) answers True
+    without reading the vault: its JWT-SVID is the Crew's sign-in.
+    """
+    from kiro_crew import workload_identity
+
+    if workload_identity.active():
+        return True
+    return sign_in.resolve(policy=sign_in.OSS).source is sign_in.Source.VAULT
 
 
 def relay_unusable_reason(
@@ -274,7 +303,7 @@ def sharing_preview_selects_bundle(
     if not automatic_switch_allowed(pin):
         return False
     try:
-        crew_signed_in = sign_in.resolve(policy=sign_in.OSS).source is sign_in.Source.VAULT
+        crew_signed_in = _crew_holds_usable_sign_in()
     except Exception:  # noqa: BLE001 - an unreadable vault proves no Crew sign-in
         crew_signed_in = False
     if not crew_signed_in:
@@ -294,6 +323,85 @@ _PREVIEW_BUNDLE_FAILED = ""
 _PREVIEW_BUNDLE_FAILED_AT = 0.0
 #: How long one failed preview-selected engine start keeps KAS on its default route.
 PREVIEW_BUNDLE_COOLDOWN_SECS = 600.0
+
+
+def _build_default_open(pin: str, environ: Mapping[str, str], *, cooldown: bool = True) -> bool:
+    """Every condition of rule 1b except Kiro Crew's sign-in, and the first-switch
+    cooldown only with *cooldown*. Blocking; never raises."""
+    from kiro_crew.acp import kas_build_default as build_default
+
+    if (environ.get("KIROCREW_KIRO_BIN") or "").strip():
+        return False
+    try:
+        from kiro_crew.config.loader_document import kas_bundle_declared
+
+        if kas_bundle_declared():
+            return False
+    except Exception:  # noqa: BLE001 - an unreadable config keeps the default route
+        logger.debug("could not read agent.kas_bundle", exc_info=True)
+        return False
+    if not build_default.kas_bundle_preferred_by_build():
+        return False
+    if (
+        cooldown
+        and build_default.first_switch_cooling_down()
+        and not build_default.engine_has_run()
+    ):
+        return False
+    # A preview-chosen start that just failed respawns through here: it keeps the
+    # relay for the preview's cooldown too, so the fallback is not undone.
+    if _preview_bundle_cooling_down():
+        return False
+    return automatic_switch_allowed(pin)
+
+
+def _crew_signed_in() -> bool:
+    try:
+        return _crew_holds_usable_sign_in()
+    except Exception:  # noqa: BLE001 - an unreadable vault proves no Crew sign-in
+        return False
+
+
+def build_default_selects_bundle(
+    *, pin: str = "", environ: Mapping[str, str] | None = None, cooldown: bool = True
+) -> bool:
+    """Rule 1b: whether this packaged build's preference moves this KAS spawn to the bundle.
+
+    True only with ``agent.kas_bundle`` unset (a saved value always wins), a build
+    that prefers the engine, no ``KIROCREW_KIRO_BIN`` (rule 4), a route open to the
+    switch (rule 2: a stored Kiro CLI pick stays on kiro-cli), a usable Kiro Crew
+    sign-in, and no failed first switch cooling down on a host the engine never ran
+    on. A host the engine already ran on keeps it without the sign-in: it is fixed
+    in place, so a lapsed sign-in shows the Kiro sign-in prompt
+    (``bundle_route_lacks_sign_in``) instead of moving chats back to kiro-cli.
+    Blocking (reads config and the vault); never raises, and anything it cannot
+    read answers False, which keeps the rules below.
+    """
+    from kiro_crew.acp import kas_build_default as build_default
+
+    environ = os.environ if environ is None else environ
+    if not _build_default_open(pin, environ, cooldown=cooldown):
+        return False
+    return _crew_signed_in() or build_default.engine_has_run()
+
+
+def crew_sign_in_moves_to_bundle(
+    *, environ: Mapping[str, str] | None = None, home: Path | None = None
+) -> bool:
+    """Whether signing in to Kiro Crew would move the next KAS spawn onto the engine.
+
+    True when rule 1b holds but for the sign-in, and the spawn now keeps kiro-cli's
+    relay: kiro-cli is signed in here and Kiro Crew is not. The dashboard asks the
+    person to sign in once; kiro-cli's own login is never copied. Blocking; never
+    raises.
+    """
+    environ = os.environ if environ is None else environ
+    try:
+        if not _build_default_open("", environ) or _crew_signed_in():
+            return False
+        return not resolve_kas_route(environ=environ, home=home).bundle
+    except Exception:  # noqa: BLE001 - unknown answers False, never a prompt
+        return False
 
 
 def _preview_bundle_cooling_down() -> bool:
@@ -350,6 +458,8 @@ def resolve_kas_route(
         logger.debug("could not read agent.kas_bundle", exc_info=True)
     if sharing_preview_selects_bundle(pin=pin, environ=environ):
         return KasRoute(bundle=True, reason=REASON_SHARING_PREVIEW)
+    if build_default_selects_bundle(pin=pin, environ=environ):
+        return KasRoute(bundle=True, reason=REASON_BUILD_DEFAULT)
     if not automatic_switch_allowed(pin):
         return RELAY
     try:
@@ -378,6 +488,40 @@ def resolve_kas_route(
     return KasRoute(bundle=True, reason=reason) if reason else RELAY
 
 
+def relay_can_run(*, environ: Mapping[str, str] | None = None, home: Path | None = None) -> bool:
+    """Whether kiro-cli's relay could run the next KAS spawn here (rules 3 and 4).
+
+    False with no kiro-cli, or one whose own sign-in is proven absent where Kiro
+    Crew's cannot stand in. The first-switch fallback asks this: a host with no usable
+    relay has nothing to fall back to, so its engine is fixed in place. Blocking;
+    never raises, and a failed check answers True (the relay's own error then names
+    the cause, as everywhere else).
+    """
+    environ = os.environ if environ is None else environ
+    home = Path.home() if home is None else home
+    try:
+        from kiro_crew.acp.client import _resolve_kiro_bin
+
+        kiro_bin = _resolve_kiro_bin(environ=environ, home=home)
+        vault_identity = False
+        skips_launcher = False
+        if kiro_bin:
+            from kiro_crew.auth.bridge import vault_holds_identity
+
+            vault_identity = vault_holds_identity()
+            skips_launcher = crew_entry_skips_launcher(kiro_bin, environ)
+        return not relay_unusable_reason(
+            kiro_bin=kiro_bin,
+            environ=environ,
+            home=home,
+            vault_identity=vault_identity,
+            crew_entry_skips_launcher=skips_launcher,
+        )
+    except Exception:  # noqa: BLE001 - an unknown keeps the relay's own error
+        logger.debug("could not tell whether the KAS relay can run", exc_info=True)
+        return True
+
+
 def relay_runs_on_kiro_cli_sign_in(*, environ: Mapping[str, str], home: Path) -> bool:
     """Would a KAS session with no Kiro Crew sign-in run on kiro-cli's own sign-in?
 
@@ -391,6 +535,12 @@ def relay_runs_on_kiro_cli_sign_in(*, environ: Mapping[str, str], home: Path) ->
 
     try:
         if KiroCrewConfig.load().agent.kas_bundle:
+            return False
+        # Rule 1b keeps the engine with no Kiro Crew sign-in on a host it already ran
+        # on: such a session never runs on kiro-cli's sign-in.
+        from kiro_crew.acp import kas_build_default
+
+        if _build_default_open("", environ) and kas_build_default.engine_has_run():
             return False
         from kiro_crew.acp.client import _resolve_kiro_bin
 
@@ -483,7 +633,7 @@ def crew_sign_in_starts_spawn(
     environ = os.environ if environ is None else environ
     home = Path.home() if home is None else home
     try:
-        if sign_in.resolve(policy=sign_in.OSS).source is not sign_in.Source.VAULT:
+        if not _crew_holds_usable_sign_in():
             return False
         # Local, as in resolve_kas_route: this module loads while acp.client imports.
         from kiro_crew.acp.client import _resolve_kiro_bin
@@ -493,6 +643,29 @@ def crew_sign_in_starts_spawn(
             return True
         return resolve_kas_route(environ=environ, home=home).bundle
     except Exception:  # noqa: BLE001 - no usable Crew sign-in keeps kiro-cli's in play
+        return False
+
+
+def bundle_route_lacks_sign_in(
+    *,
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> bool:
+    """Whether the next KAS spawn takes the bundle route with no usable Crew sign-in.
+
+    That chat cannot start: the bundle runs no kiro-cli, so Kiro Crew's own
+    sign-in is the only one it takes. False whenever that cannot be worked out
+    (an unreadable store, a failed route check), so a guess never asks anyone to
+    sign in. Blocking (vault, kiro-cli store and config reads); never raises.
+    """
+    try:
+        try:
+            if _crew_holds_usable_sign_in():
+                return False
+        except sign_in.SignInError:
+            pass  # no usable sign-in: the route decides
+        return resolve_kas_route(environ=environ, home=home).bundle
+    except Exception:  # noqa: BLE001 - unknown answers False, never a prompt
         return False
 
 

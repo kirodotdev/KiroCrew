@@ -838,6 +838,11 @@ describe('registry install trust gate', () => {
     const list = screen.getByRole('dialog').querySelector('ul')
     expect(list).not.toBeNull()
     expect(switchLine.compareDocumentPosition(list as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The take-back line renders once and precedes the capability list on every
+    // path, so a phone shows it before the reader has to scroll to the footer.
+    const takeBack = dialog.getAllByText(`${K}.revocable`)
+    expect(takeBack).toHaveLength(1)
+    expect(takeBack[0].compareDocumentPosition(list as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
     rerender(
       <TrustAppModal app={target} pending={false} failed={false} granted={false} onCancel={() => {}} onConfirm={() => {}} />,
@@ -846,6 +851,10 @@ describe('registry install trust gate', () => {
     expect(dialog.getByRole('button', { name: `${K}.confirm_update` })).toBeTruthy()
     expect(dialog.queryByRole('button', { name: `${K}.confirm_switch_local_source` })).toBeNull()
     expect(dialog.queryByText(`${K}.local_source_switch`, { exact: false })).toBeNull()
+    const ordinaryTakeBack = dialog.getAllByText(`${K}.revocable`)
+    expect(ordinaryTakeBack).toHaveLength(1)
+    const ordinaryList = screen.getByRole('dialog').querySelector('ul')
+    expect(ordinaryTakeBack[0].compareDocumentPosition(ordinaryList as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('refuses Escape while the grant is pending, like the disabled Cancel', () => {

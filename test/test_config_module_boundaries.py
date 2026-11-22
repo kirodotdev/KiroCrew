@@ -325,7 +325,10 @@ _OWNER_CONFIG_IMPORTS = {
         "kiro_crew.config.fields",
         "kiro_crew.config.sections_defaults",
     },
-    "kiro_crew.config.sections_channels": {"kiro_crew.config.fields"},
+    "kiro_crew.config.sections_channels": {
+        "kiro_crew.config.fields",
+        "kiro_crew.config.sections_defaults",
+    },
     "kiro_crew.config.sections_telegram": {
         "kiro_crew.config.fields",
         "kiro_crew.config.sections_channels",
@@ -389,6 +392,7 @@ _OWNER_CONFIG_IMPORTS = {
         "kiro_crew.config.loader_document",
         "kiro_crew.config.loader_locations",
         "kiro_crew.config.loader_snapshots",
+        "kiro_crew.config.loosening_provenance",
         "kiro_crew.config.migration",
         "kiro_crew.config.paths",
         "kiro_crew.config.superseded_defaults",

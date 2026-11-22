@@ -1280,6 +1280,7 @@ def _strip_regenerable(tree: Path) -> None:
     logged and skipped, and the next sweep tries again.
     """
     stripped = 0
+    failed: list[str] = []
     stack = [tree]
     while stack:
         current = stack.pop()
@@ -1304,10 +1305,15 @@ def _strip_regenerable(tree: Path) -> None:
                 continue
             if not _regenerable(path, top_level=top_level):
                 stack.append(path)
-            elif platform_compat.rmtree_force(path):
+            elif platform_compat.rmtree_force(
+                path, failures=failed, expect=(info.st_dev, info.st_ino)
+            ):
                 stripped += 1
-            else:
-                logger.warning("agent-scratch: could not fully remove %s; will retry", path)
+    if failed:
+        # One line per tree per sweep: a stuck tree can hold thousands of entries.
+        logger.warning(
+            "agent-scratch: could not remove %d entries under %s; will retry", len(failed), tree
+        )
     if not stripped:
         return
     logger.info("agent-scratch: removed %d rebuildable dir(s) from %s", stripped, tree)
@@ -1425,8 +1431,13 @@ def _expire_quarantine(now: float) -> int:
             continue
         if now - _tree_newest_mtime(path, fallback=now) < _UNOWNED_GRACE_SECONDS:
             continue
-        if not platform_compat.rmtree_force(path):
-            logger.warning("agent-scratch: could not fully remove %s; will retry", path)
+        failed: list[str] = []
+        if not platform_compat.rmtree_force(path, failures=failed):
+            logger.warning(
+                "agent-scratch: could not remove %d entries under %s; will retry",
+                len(failed),
+                path,
+            )
             continue
         logger.info("agent-scratch: deleted %s, whose quarantine expired", path)
         expired += 1

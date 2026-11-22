@@ -5,8 +5,9 @@
 `AgentConfig.provider` admits only the ACP provider, and
 `KiroCrewConfig.create_provider_factory()` constructs `AcpProvider`. Harness
 choice is a separate field, `agent.acp_backend`. The public baseline currently
-selects kiro-cli (`ACP_BACKEND_KIRO`, the empty string), Claude, KAS, Codex,
-OpenCode, Pi, goose and DeepSeek -- every id in `ACP_BACKENDS_KNOWN`. DeepSeek is
+selects kiro-cli (`ACP_BACKEND_KIRO`, the empty string), Claude, KAS, Strands,
+Codex, OpenCode, Pi, goose, DeepSeek, Copilot, MiMo Code and Antigravity -- every id
+in `ACP_BACKENDS_KNOWN` (`BASELINE_SELECTABLE_BACKENDS`). DeepSeek is
 selectable because Crew's gate plugin routes its tool calls through the host
 permission gate (`Routing.VERIFIED_GATE_EXTENSION`, `agent_sdk/backends_routing.py`).
 `test_baseline_ships_every_known_backend` pins the baseline as
@@ -43,12 +44,14 @@ Whether a *machine* can run it is answered by `agent_sdk.probe_backend`.
 `acp/harness/claude.py` owns the whole Claude launch, and it is a live path on a
 plain public build:
 
-- `AcpClient._is_claude` recognizes `ACP_BACKEND_CLAUDE`, and `AcpClient._spawn`
+- `ClaudeAcpClient` (`acp/client_claude.py`) serves `ACP_BACKEND_CLAUDE`, and `AcpClient._spawn`
   hands the launch to that host's adapter, `ClaudeLaunch`
   (`acp.harness.process_adapter_for`).
 - `_resolve_claude_acp_bin()` finds the `claude-agent-acp` Node entry script and
   returns `(argv, searched_path)`; the result is memoized process-wide in
-  `_claude_acp_argv_cache`, so the search runs once and the "not found" message
+  `_claude_acp_argv_cache` until an install re-check clears it
+  (`agent_sdk.drivers.acp.forget_cached_resolution`), so the search runs once per
+  install state and the "not found" message
   names exactly the directories that were searched.
 - `_resolve_claude_code_executable()` finds the `claude` CLI and the adapter's
   `apply_spawn_env` exports it as `CLAUDE_CODE_EXECUTABLE` when the caller has not
@@ -196,7 +199,7 @@ the first prompt, on an adapter at or above `CLAUDE_ACP_SETTING_SOURCES_MIN_VERS
 ("A project-owned settings file" below). Crew never seeds `bypassPermissions`:
 `resolve_cc_permission_mode` resolves only `auto` and warns on anything else. That mode
 can only arrive from settings Crew did not write or from a resumed transcript; the
-settings case is the disclosed inherited-settings gap below. The gate half of the `auto` trade (a host check before the call runs) is tracked in #12743.
+settings case is the disclosed inherited-settings gap below. The gate half of the `auto` trade (a host check before the call runs) is not implemented.
 
 This is documented, intended Claude Code behaviour, not a defect introduced by making
 the harness selectable — the harness was already implemented and reachable by any
@@ -314,7 +317,7 @@ and effort selection, the full `session/request_permission` flow) works. So
   agent-spec entry it rewrites. Emitting both would put two elements with one
   `name` in a single array: either the raw entry shadows the stub and the
   session bypasses the broker, or both register and every pooled backend runs
-  twice (#927). The client resolves `injection_server_names` for its overlay and
+  twice. The client resolves `injection_server_names` for its overlay and
   passes the set down; an unreadable overlay degrades to "no stubs", never to a
   session with no servers. The stub ELEMENTS come down the same call
   (`stub_elements`) and the mirror appends them itself -- the client's shared
@@ -452,12 +455,12 @@ the primary spawn (not only on the model-substitution retry) with
 `permissions.defaultMode` when requested, `permissions.deny` rules derived from
 the spec's `disabledTools`, and the `permissions.ask` rules a `toolsSettings` shell
 or write allowlist needs (above). Once the provider-advertised model cache is warm it
-writes a pinned `model`, and it writes `availableModels` only when another settings
+writes `availableModels`, and only when another settings
 source (user `settings.json`, project `.claude/settings.json`, or the managed
 `managed-settings.json` and its `managed-settings.d/*.json` drop-ins) already defines
 one; on a cold cache both keys are omitted, except for the covered names below. Claude Code's rule is that an allowlist
 entry naming a specific id disables that family's alias wildcard, so Crew's own list
-would cap `haiku` at Haiku 4.5 (issue #22995); a `model` key has no such effect. The
+would cap `haiku` at Haiku 4.5. The
 adapter gives each literal `availableModels` entry one picker row, while the CLI also
 allows the newer models that a version prefix covers (`claude-opus-5` allows
 `claude-opus-5-5`). So when Crew writes its list it also names the keys of the user's
@@ -478,16 +481,51 @@ missed: the seed then
 omits Crew's list as it does on a cold cache, so a versioned `[1m]` pick can resolve
 to the 200K window under that policy.
 
-The model-substitution retry is the one case that writes `model` on a cold cache.
+**A session's pinned model is never written as `model`.** Claude Code reads a
+settings `model` as a pin and folds that model's whole family into one alias row: a
+session pinned to Opus 4.8 is offered one `opus` row (Opus 4.8) and no Opus 5 or Opus
+5.5, Crew then caches that short list as what the account is served, and an in-chat
+`/model` to the pinned id does nothing (#37240; measured with
+`@anthropic-ai/claude-agent-sdk` 0.3.312's `supportedModels()`). The pin reaches the
+session over `session/set_config_option` instead (`_apply_startup_model`), which
+narrows nothing, so the seed only has to list it when it carries `availableModels`.
+Pinned by `test/test_acp_session_mcp.py::TestLocalSettingsSeed::test_a_pinned_model_never_reaches_the_settings_file`.
+
+The model-substitution retry is the one case that writes `model`, warm cache or cold.
 When `session/new` returns the policy advisory ("Model X is restricted ... Using Y
-instead") with no session, `_new_session_following_substitution` adopts Y and re-seeds
-with `model` set to Y as the backend spelled it. Without that key the user's own
+instead") with no session, the refused X is the model the seed left to the user's
+settings (their `settings.json` `model`, or the adapter default), not necessarily the
+session's pin. So the retry re-seeds with `model` set to the session's pin when the
+pin, folded onto the advertised spelling, is in the cached advertised list (that
+list already applies the policy allowlist, so the pin is served), and to Y as the
+backend spelled it otherwise: no pin, a pin not advertised, or a cold cache
+(`_substitution_retry_model`). The session runs that model. Without the key the user's own
 `settings.json` still names X, so the retry would be refused the same way. That is
 the state of every install whose pinned model is restricted from its first session,
-because no `session/new` has ever succeeded to warm the cache. The adapter reads
+because no `session/new` has ever succeeded to warm the cache. A pin the seed already
+adopted (in this start or an earlier one, `_adopted_substitute_model`) and the backend
+now refuses is never named again, even when the advertised list still names it: that
+list can be older than the policy, so the retry names Y. Only a refusal of Y itself,
+when the seed already names Y, is not retried, since a retry cannot help; this holds
+when Y equals the pin too, because the pin never reached the refused request. The two
+`test_a_model_adopted_earlier_and_refused_now_falls_back_to_the_offered_one` tests
+(`test/test_acp_client_model_substitution.py`, `test/test_claude_shared_runtime.py`)
+pin this on both paths. When the
+retry named the pin and the backend refuses that too, the start falls back ONCE to
+the model the second advisory offers, as before the pin left the seed: a session on
+the offered model beats one that never starts. So one start sends `session/new` at
+most three times (`_SUBSTITUTION_RESENDS` re-sends on the shared runtime). The retry's
+model also rides the envelope's flag tier (`_meta.claudeCode.options.settings.model`,
+`_claude_session_meta`), since a seed a sibling session shares is not rewritten and
+the flag tier outranks the user's settings the refused default came from. The per-chat
+client (`_retry_after_model_substitution`) and the shared runtime
+(`ClaudeHarness.adopt_substituted_model`) apply the same rule. The adapter reads
 `ANTHROPIC_MODEL` ahead of every settings file, so a restricted id set there is not
 replaced by this re-seed. Pinned by
-`test/test_acp_client_model_substitution.py::TestSubstitutionFollow::test_retry_on_cold_cache_seeds_the_substitute_model`.
+`test/test_acp_client_model_substitution.py::TestSubstitutionFollow::test_retry_on_cold_cache_seeds_the_substitute_model`
+, `test_a_served_pin_survives_a_refused_inherited_default` and
+`test_a_refused_pin_falls_back_once_to_the_offered_model` (in it and in
+`test/test_claude_shared_runtime.py`).
 
 With `agent.model` at `auto` the seed writes no `model` key, so the adapter takes the
 model from the user's own settings (`ANTHROPIC_MODEL`, then `settings.model`). After
@@ -564,11 +602,11 @@ Only the model half (`availableModels`, `model`) may differ from the payload thi
 client would have written (`_share_sibling_settings_seed`). It grants no permission,
 and each session's own model reaches the adapter live: `_apply_startup_model` pushes
 it over `session/set_config_option`, which claude-agent-acp accepts only for an
-`availableModels` entry. So the seed must list this session's `model`, name none
-when this session pins none, or, when neither seed carries `availableModels`, leave
-the adapter on its own advertised list, where the push is accepted. A pinned session
-then runs its own pin, and an unpinned one starts on the adapter's default rather
-than the owner's pin. The seed's bytes are read only when they match the durable
+`availableModels` entry. So the seed must list the model this session runs (its
+adopted substitute, else its pin), name none when this session runs neither, or, when
+neither seed carries `availableModels`, leave the adapter on its own advertised list,
+where the push is accepted. A pinned session then runs its own pin, and an unpinned one
+starts on the adapter's default rather than an owner's substitute. The seed's bytes are read only when they match the durable
 record, through the same bounded, no-follow, non-blocking read the ownership check
 uses (`_settings_path_bytes`), and the share validates exactly those bytes. A seed
 that differs in a permission key — another permission mode, another agent's deny
@@ -763,7 +801,7 @@ inherited"), which this path does not widen. The exclusion is never taken below
 `default`, `auto` or `bypassPermissions`, so neither case reaches the pin. A requested
 `auto` (or `bypassPermissions`) does take it: this path cannot keep that mode, so the
 pin moves the session to `default` like any other approving starting mode, and the
-session keeps Crew's tools in the asking mode instead of losing them all (#33829).
+session keeps Crew's tools in the asking mode instead of losing them all.
 
 With `KIROCREW_CC_PIN_INHERITED_MODE` on (`resolve_cc_pin_inherited_mode`; off by
 default, because it moves sessions out of a mode the user chose), the pin also runs on
@@ -792,9 +830,9 @@ The pin tests replay those answers.
 
 The array stays withheld when the session asked for a permission mode other than
 `default`, `auto` or `bypassPermissions`, since the pin sets only `default` (a request
-for `default` itself is what the pin sets, so it keeps the array, #13143; a request for
+for `default` itself is what the pin sets, so it keeps the array; a request for
 `auto` or `bypassPermissions` is one the pin moves to `default`, so it keeps the array
-and runs in `default`, #33829), when a project file's deny rules cannot be read
+and runs in `default`), when a project file's deny rules cannot be read
 (above), when the adapter is below the `settingSources` floor or reports no version,
 and when the path is a link (below). The floor is decided before the array exists: the
 claude adapter's launch reads the installed version (`_claude_adapter_installed_version`)
@@ -1072,10 +1110,10 @@ chunks of each compaction in flight (`CompactionSummaries`, bounded by
 dropped), and the `completed` `EVENT_COMPACTION_STATUS` carries the update's summary,
 else the chunks, as its `title`, redacted and cut at a word, so a credential the cut
 would split is dropped. A `cancelled` or `failed` end drops the chunks. The dashboard
-writes `✅ Conversation compacted: <summary>`
+writes `Conversation compacted: <summary>`
 (`chat_utils._broadcast_compaction_result`), folded behind the compaction card's
-chevron as kiro-cli's summary is; with no summary the row stays `✅ Conversation
-compacted.`. The messaging channels show no summary. Frames:
+chevron as kiro-cli's summary is; with no summary the row stays `Conversation
+compacted.`. Saved rows that lead with U+2705 still draw the card. The messaging channels show no summary. Frames:
 `test/fixtures/acp_frames/claude/compaction-summary.jsonl`; contract tests:
 `test/test_claude_compaction_summary.py`.
 
@@ -1443,6 +1481,10 @@ keeps verbatim, or a symlinked `projects`, `file-history`, project directory or
 leaf deletes nothing and answers not done, so the prune keeps its retry record and
 `spawn_release` answers `not_disposed`. A persistent session's store is never
 touched, and nothing is sent over the wire to delete the adapter's session.
+Those checks are one private gate (`_session_targets`), which
+`claude_session_paths` also goes through when the Storage report sizes a mapped
+Claude chat's three paths, read only
+([session-storage](session-storage.md#what-claude-code-keeps)).
 
 ### Standing rule
 

@@ -143,6 +143,8 @@ class AcpClient:
     # That turn's frames a claimed reader other than the turn has read, held for
     # the turn until that reader returns (see _claiming_stdout).
     _agent_turn_held: list[JsonRpcMessage] | None = None
+    # Set when that reader has put the held frames back; stream_unsolicited waits on it.
+    _agent_turn_hold_end: asyncio.Event | None = None
     # _install_idle_reader has bound its steps on this client.
     _idle_reader_installed: bool = False
     # Held by stream_unsolicited while it reads; a prompt waits on it (see
@@ -440,6 +442,9 @@ class AcpClient:
         # that minted a resource from a successor that cannot honor it. Fresh
         # per spawn, cleared with the process. See ``process_instance``.
         self._process_instance: str = ""
+        # The scope unit systemd received for this spawn (``kirocrew-cl-<instance>``),
+        # empty when no scope was created. Cleared with the process.
+        self._scope_unit: str = ""
         self._session_id: str | None = None
         self._next_id = 1
         self._buffer: deque[JsonRpcMessage] = deque(maxlen=100)
@@ -1275,6 +1280,11 @@ class AcpClient:
         """
         return self._shared_scratch or self._scratch_dir
 
+    @property
+    def sandbox_mode(self) -> str:
+        """The ``agent.sandbox`` tier this client spawns its process under."""
+        return self._sandbox_mode
+
     def is_process_alive(self) -> bool:
         """True if the underlying process exists and has not exited."""
         return self._is_process_alive()
@@ -1414,6 +1424,7 @@ class AcpClient:
     _stop_idle_reader = _client_transport._stop_idle_reader
     _cancel_idle_reader = _client_transport._cancel_idle_reader
     _agent_turn_pending = _client_transport._agent_turn_pending
+    has_pending_agent_turn = _client_transport.has_pending_agent_turn
     _maybe_start_idle_reader = _client_transport._maybe_start_idle_reader
     _idle_read_loop = _client_transport._idle_read_loop
     _note_advertised_commands = _client_transport._note_advertised_commands
@@ -1427,6 +1438,7 @@ class AcpClient:
 
     # Start an ``AcpClient`` session: spawn the child, run the initialize handshake, and create, load or fork the session: ``kiro_crew.acp.client_start``.
     _spawn = _client_start._spawn
+    _admit_scope = _client_start._admit_scope
     _new_session_following_substitution = _client_start._new_session_following_substitution
     _initialize_params = _client_start._initialize_params
     _initialize_session = _client_start._initialize_session
@@ -1480,6 +1492,7 @@ class AcpClient:
     _held_steers = _client_turn_control._held_steers
     _release_held_steers = _client_turn_control._release_held_steers
     _held_steer_writes = _client_turn_control._held_steer_writes
+    _held_steer_unsent = _client_turn_control._held_steer_unsent
     _send_held_steers = _client_turn_control._send_held_steers
     _send_steering_request = _client_turn_control._send_steering_request
     _await_steering_answer = _client_turn_control._await_steering_answer
@@ -1540,6 +1553,28 @@ class AcpClient:
         turn starts.
         """
         return frozenset(getattr(self, "_held_steers_unanswered", ()))
+
+    # The text of each held steer of the running or last turn that the adapter
+    # never took: dropped from the buffer unwritten, or written and refused,
+    # until the next turn starts.
+    _held_steers_unsent: set[str]
+
+    @property
+    def held_steers_unsent(self) -> frozenset[str]:
+        """Held steer texts that never reached the turn.
+
+        A steer held behind an open tool call answers True without being
+        written. This names each such text still buffered, dropped from the
+        buffer unwritten when its turn stopped, or written and refused, so a
+        caller that marked it delivered queues it instead. A write in flight
+        is not here (see :attr:`held_steers_possibly_delivered`). Reset when
+        the next turn starts.
+        """
+        unresolved = getattr(self, "_held_steers_unanswered", ())
+        buffered = {
+            text for _, text in getattr(self, "_steers_held", None) or () if text not in unresolved
+        }
+        return frozenset(buffered | getattr(self, "_held_steers_unsent", set()))
 
     # Monotonic stamp of the last steer handed to the backend, 0.0 when never
     # steered. Mirrors AcpSessionHandle.last_steer_monotonic — the dashboard's

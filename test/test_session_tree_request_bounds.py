@@ -9,6 +9,7 @@ the projection never saw, a unit that does not exist.
 from __future__ import annotations
 
 import json
+import shutil
 from typing import Any
 
 import pytest
@@ -16,6 +17,7 @@ import pytest
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog, session_tree, session_tree_projection
 from kiro_crew.crew_log.session_tree import CHAIN_END_FIRST, SessionTree
+from kiro_crew.crew_log.store_paths import crew_log_root
 from kiro_crew.session_ledger import _store_name
 
 GATEWAY = "gateway"
@@ -71,12 +73,31 @@ class _TreeMeter:
         self.reads = self.listings = 0
 
 
+@pytest.fixture(scope="module")
+def _lineage_template(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    """Where the module keeps the store after its first test writes it."""
+    return {"tree": tmp_path_factory.mktemp("lineage-store") / "crew-log", "written": False}
+
+
 @pytest.fixture
-def lineage_store() -> None:
+def lineage_store(_lineage_template: dict[str, Any]) -> None:
+    """The lead, its child and ``OTHER_UNITS`` others, in this test's own data home.
+
+    Written once per module: the first test writes the units and keeps a copy of its
+    crew-log tree before any read; every later test copies that tree into its own
+    home. A unit's directory name folds only its id, so the copy opens as the same
+    units, and no test sees another's changes.
+    """
+    tree = crew_log_root(lg.KIND_SESSION).parent
+    if _lineage_template["written"]:
+        shutil.copytree(_lineage_template["tree"], tree)
+        return
     _unit("acp-lead", "chat-lead")
     _unit("acp-child", "chat-child", parent="chat-lead")
     for index in range(OTHER_UNITS):
         _unit(f"acp-other-{index}", f"chat-other-{index}")
+    shutil.copytree(tree, _lineage_template["tree"])
+    _lineage_template["written"] = True
 
 
 def test_a_dispatch_view_for_one_unit_reads_only_the_named_unit_once_the_tree_is_seeded(

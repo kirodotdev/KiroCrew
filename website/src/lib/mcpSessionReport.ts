@@ -38,10 +38,14 @@ export function mcpSessionFailureReason(
 
 /**
  * True when ``name`` failed for want of a credential, so restarting the session
- * once the credential exists loads it.
+ * once the credential exists loads it. A server listed only because a config
+ * write changed it (``reload_pending``) is not a credential failure; the chat's
+ * own notice row already says to start a new chat for it.
  */
 export function mcpSessionNeedsRestart(name: string, report?: McpSessionReport | null): boolean {
-  return Boolean(report?.restart_to_load?.includes(name))
+  return Boolean(
+    report?.restart_to_load?.includes(name) && !report.reload_pending?.includes(name),
+  )
 }
 
 /**

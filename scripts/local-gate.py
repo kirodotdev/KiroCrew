@@ -28,6 +28,11 @@ Contract
   tests that textually reference a changed file, and -- when the OTHER surface
   changed -- the cross-surface set ``ci-surface-tests.py`` computes for CI.
   A surface with nothing related is skipped and says so.
+- The frontend runner starts the lockfile's own vitest
+  (``node ./node_modules/vitest/vitest.mjs`` from ``website/``), so it never fetches a
+  package or runs a global one. With that vitest not installed, a diff that touched no frontend file skips
+  the frontend set with a note (CI still runs it); a frontend diff fails
+  closed: exit 2, run nothing, and say to run ``npm ci``.
 - There is NO automatic path to a full suite. Not for a meta change, not for a
   diff touching both surfaces, not for a large related set (its size is printed
   and it runs). ``--full`` exists for a human who asks for one.
@@ -39,7 +44,7 @@ Contract
   working tree as git sees it (HEAD plus staged, unstaged and untracked edits; ignored
   files are outside it), and a proof is keyed by that tree, the argv, the cwd, a digest
   of the whole command environment and the tools behind the argv: this interpreter and
-  every package installed in it, and for npm and npx also the node they resolve to and
+  every package installed in it, and for node, npm and npx also the node they resolve to and
   the lockfile npm wrote for ``node_modules``. Only a pass is recorded, only when the
   tree did not change while the command ran, and a proof is ignored once it is
   unreadable, mismatched, over an hour old or dated in the future. A command whose tools
@@ -88,12 +93,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 # directly; this driver runs the same selection for both surfaces in one go so
 # an iteration pass has one command to type and one verdict to read.
 sys.path.insert(0, str(_REPO_ROOT / "scripts"))
+import run_scoped_tests  # noqa: E402  (path set immediately above)
 from run_scoped_tests import (  # noqa: E402  (path set immediately above)
     LauncherMissing,
     SelectionUntrustworthy,
     argv_batches,
     backend_argv,
     frontend_argv,
+    VITEST_ENTRY,
     pytest_worker_env,
     related_targets,
 )
@@ -105,7 +112,8 @@ _META_PREFIXES = (".github/", "scripts/")
 # Evidence media ci.yml excludes from EVERY bucket (#8027): temp-screenshots/**
 # is never packaged or imported. A path here sets NO flag.
 _IGNORED_PREFIXES = ("temp-screenshots/",)
-_NODE_LAUNCHERS = frozenset({"npm", "npx"})
+_NODE_LAUNCHERS = frozenset({"node", "npm", "npx"})
+_NO_NODE_MODULES = "website/node_modules has no vitest; run `npm ci` in website/"
 # How long a passing proof stays reusable. Files .gitignore hides that no package list or
 # lockfile names (a built dist, a hand edit under node_modules) are outside the identity,
 # so the bound caps how stale one of those can be behind a reused pass.
@@ -154,40 +162,17 @@ def changed_files(base: str) -> list[str] | None:
     documents, and the same one dorny/paths-filter applies in CI), so renaming
     a real file INTO an ignored evidence path cannot hide the old path's
     bucket from classification.
+
+    The reading is ``run_scoped_tests.changed_files``, the NUL-delimited one:
+    git C-quotes a path with a non-ASCII byte in line output, and a quoted
+    ``"website/...`` misses the frontend prefix.
     """
     try:
-        merge_base = subprocess.run(
-            ["git", "merge-base", "HEAD", base],
-            cwd=_REPO_ROOT, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=30,
-        )
-        if merge_base.returncode != 0:
-            return None
-        committed = subprocess.run(
-            ["git", "diff", "--name-only", "--no-renames",
-             merge_base.stdout.strip(), "HEAD"],
-            cwd=_REPO_ROOT, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=30,
-        )
-        working = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=all", "--no-renames"],
-            cwd=_REPO_ROOT, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=30,
-        )
-        if committed.returncode != 0 or working.returncode != 0:
-            return None
-    except (OSError, subprocess.SubprocessError):
+        # An empty or option-shaped base would reach `git diff` as `...HEAD` or
+        # as a flag; only a ref that resolves to a commit gets that far.
+        return run_scoped_tests.changed_files(run_scoped_tests.resolve_base(base))
+    except (ValueError, SelectionUntrustworthy, OSError, subprocess.SubprocessError):
         return None
-    paths = [line for line in committed.stdout.splitlines() if line.strip()]
-    for line in working.stdout.splitlines():
-        # porcelain: "XY path". Renames cannot appear (--no-renames above), but
-        # parse the "old -> new" arrow defensively and keep BOTH sides -- the
-        # old path's bucket must not vanish just because the file moved.
-        for part in line[3:].split(" -> "):
-            entry = part.strip().strip('"')
-            if entry:
-                paths.append(entry)
-    return paths
 
 
 class Plan:
@@ -229,7 +214,7 @@ def _resolve_command(cmd: list[str]) -> list[str]:
     return [launcher, *cmd[1:]]
 
 
-def _add_related(plan: Plan, surface: str, paths: list[str]) -> None:
+def _add_related(plan: Plan, surface: str, paths: list[str], surface_changed: bool) -> None:
     """Append ``surface``'s related set to the plan, or a note that it is empty.
 
     Raises ``SelectionUntrustworthy`` (via ``related_targets`` /
@@ -246,7 +231,7 @@ def _add_related(plan: Plan, surface: str, paths: list[str]) -> None:
         _add_batches(plan, "backend (related)", argv_batches(backend_argv, targets), _REPO_ROOT)
         return
     try:
-        # `frontend_argv` resolves npx to an absolute launcher itself, so
+        # `frontend_argv` resolves node to an absolute launcher itself, so
         # `_resolve_command` sees a non-launcher argv[0] and leaves it alone.
         batches = argv_batches(frontend_argv, targets)
     except LauncherMissing as exc:
@@ -256,8 +241,26 @@ def _add_related(plan: Plan, surface: str, paths: list[str]) -> None:
         plan.notes.append(f"{surface}: {verdict} -- NOT RUN HERE: {exc}; CI runs them")
         plan.skipped.append(surface)
         return
+    if not frontend_dependencies_installed():
+        # Node is here but the website's vitest is not (a fresh worktree, or a
+        # partial install).
+        # A diff that never touched the frontend still has CI's cross-surface
+        # specs selected; skipping them here loses nothing CI does not run.
+        # A frontend diff left untested locally would be a silent pass.
+        if surface_changed:
+            raise GateCannotSee(
+                f"cannot run the {surface} related set (exit 2): {_NO_NODE_MODULES}"
+            )
+        plan.notes.append(f"{surface}: {verdict} -- NOT RUN HERE: {_NO_NODE_MODULES}; CI runs them")
+        plan.skipped.append(surface)
+        return
     plan.notes.append(f"{surface}: {verdict}")
     _add_batches(plan, "frontend (related)", batches, _REPO_ROOT / "website")
+
+
+def frontend_dependencies_installed() -> bool:
+    """True when ``npm ci`` installed the vitest entry point the frontend runner starts."""
+    return (_REPO_ROOT / "website" / VITEST_ENTRY).is_file()
 
 
 def _add_batches(plan: Plan, label: str, batches: list[list[str]], cwd: Path) -> None:
@@ -353,7 +356,7 @@ def tool_versions(cmd: list[str], cwd: Path, env: dict[str, str]) -> dict[str, s
     """What will run ``cmd``, named: a path alone does not say which version sits behind it.
 
     This interpreter and every package installed in it (pytest and its plugins) always.
-    For npm and npx also the launcher, the node that ``env`` and ``cwd`` resolve to (a version
+    For node, npm and npx also the launcher, the node that ``env`` and ``cwd`` resolve to (a version
     manager's shim picks one per directory) and the lockfile npm wrote for ``node_modules``
     (vitest and the rest). None when any of it cannot be read, and then nothing is reused.
     """
@@ -482,8 +485,8 @@ def build_plan(args: argparse.Namespace) -> Plan:
         f" (frontend={frontend} meta={meta} backend={backend})"
     )
     try:
-        _add_related(plan, "backend", paths)
-        _add_related(plan, "frontend", paths)
+        _add_related(plan, "backend", paths, backend)
+        _add_related(plan, "frontend", paths, frontend)
     except SelectionUntrustworthy as exc:
         raise GateCannotSee(f"cannot select related tests -- running nothing (exit 2): {exc}") from exc
     return plan

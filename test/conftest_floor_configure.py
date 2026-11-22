@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import warnings
+from importlib.metadata import entry_points as _installed_entry_points
 
 import pytest
 from conftest_floor_home import _account_home
@@ -343,7 +344,16 @@ def _hide_the_hosts_companion_plugins() -> None:
     wrapper drops the entry points present at configure time and keeps any a test
     plants later through ``importlib.metadata``. ``bootstrap`` imported the function by
     name, so its binding is replaced too. A child process still sees the companion.
+
+    With no ``kirocrew.plugins`` entry point installed (CI, and most developer venvs)
+    there is nothing to hide, so it returns before importing ``kiro_crew``: those
+    imports reach about a hundred modules every collection would otherwise pay for
+    (test/test_conftest_import_budget.py holds that line). The group name is
+    ``discovery.PLUGIN_GROUP``; the budget test pins the two together.
     """
+    if not _installed_entry_points(group="kirocrew.plugins"):
+        return
+
     from kiro_crew.platform import bootstrap, discovery
 
     real = discovery.plugin_entry_points

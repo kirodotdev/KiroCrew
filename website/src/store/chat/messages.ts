@@ -15,6 +15,7 @@ import { ensureMsgId, finalizeTrailingStreaming, floorForGen, mintMsgId, raiseCh
 import { isOutOfBandRow, isTurnBoundaryUser, mergePreservedThinking, reinsertThinkingOrphans } from './thinking'
 import { retainServerTotal, setPagingCursor, writeSlotPage } from './slotCache'
 import { evictMcpApps } from './mcpApps'
+import { mergePreservedPastes } from '../../utils/pasteTokens'
 import { persistedSendIds, pruneDeliveredAttempts } from './sendAttempts'
 import { isPendingCoordinatorApproval } from './coordinatorApprovals'
 
@@ -521,12 +522,14 @@ export const messageReducers = {
    *  crewmate pane that refetches unbounded is not left on the trimmed window.
    *  No-op for the active slot (its mirror is already live). */
   hydrateSlotMessages(state: ChatState, action: PayloadAction<{ slot: string; messages: ChatMessage[]; queue?: unknown; hasMore?: boolean; bounded?: boolean; total?: number; running?: boolean; nextBefore?: number }>) {
-    const { slot, messages, queue, hasMore, bounded, total, running, nextBefore } = action.payload
+    const { slot, messages: serverPage, queue, hasMore, bounded, total, running, nextBefore } = action.payload
     if (isUnsafeKey(slot)) return
     if (slot === state.activeSlot) return
     // A persisted row carrying a send's id proves that send was delivered.
-    pruneDeliveredAttempts(state, slot, persistedSendIds(messages))
+    pruneDeliveredAttempts(state, slot, persistedSendIds(serverPage))
     const k = safeKey(slot)
+    // The backend never stores `meta.pastes`, so re-collapse the page's sent pastes first.
+    const messages = mergePreservedPastes(state.slotMessages[k] ?? [], serverPage)
     // Only retainer that can seed a BACKGROUND slot -- the others sit behind an
     // activeSlot guard. Accept paths only: a declined page is not evidence.
     if (state.slotHydrated?.[slot]) {

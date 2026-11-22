@@ -361,6 +361,11 @@ def pause_at_current_limit(target: CronJob, run: CronJob) -> None:
     is written onto the record ``run``, so each later apply of the record starts
     from it and audits only a decision that changed. An auth-expiry failure
     (``run.failure_auth_expiry``) never pauses, as in ``CronJob.record_failure``.
+
+    The notice for a pause this decision lands fires at the save that
+    persists it (``store_sync._save``'s rising edge), never here: an apply
+    can be provisional, and the scheduler can run the job on the store's own
+    object, so nothing at this layer is authoritative.
     """
     if not run.failure_recorded or run.auto_paused_at_start or run.schedule.kind == "at":
         return

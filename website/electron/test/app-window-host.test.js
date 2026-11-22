@@ -261,6 +261,24 @@ test("a refused credential is re-resolved once, then left as unknown", async (t)
   assert.ok(mints >= 2);
 });
 
+test("a link token is re-resolved before the gateway's 300 s window refuses it", async (t) => {
+  const clock = { now: 1_000_000 };
+  let mints = 0;
+  const { host, state } = makeHost([appRow("pets", OVERLAY_APP)], {
+    fetchGatewayAuth: async () => ({ value: `tok${++mints}`, viaCookie: false }),
+    now: () => clock.now,
+  });
+  t.after(() => host.stop());
+  await host.start();
+  clock.now += 239_000;
+  await host.reconcileOnce();
+  assert.strictEqual(mints, 1, "reused inside the refresh age");
+  clock.now += 1_000;
+  await host.reconcileOnce();
+  assert.strictEqual(mints, 2, "re-minted at 240 s, before any refusal");
+  assert.match(state.fetches.at(-1).url, /token=tok2$/);
+});
+
 test("a cookie credential loads the page bare and probes with the cookie", async (t) => {
   const { host, fake, state } = await started([appRow("pets", OVERLAY_APP)], {
     fetchGatewayAuth: async () => ({ value: "sess", viaCookie: true }),
@@ -997,4 +1015,202 @@ test("gatewayChoice: a stored crew that does not answer at start opens the windo
   await host.reconcileOnce();
   assert.strictEqual(local.isDestroyed(), true);
   assert.match(ctx.fake.created[1].loaded[0], /^http:\/\/localhost:7778\//);
+});
+
+// ── Off here, served by the crew chosen for it ───────────────────────────────
+
+/** "pets" switched off on this computer's gateway, declaring *declared* and holding *approved* here. */
+function offHere(declared = ["gatewayChoice"], approved = ["gatewayChoice"], desktop = PANEL_APP) {
+  return { ...capRow("pets", declared, approved, desktop), enabled: false };
+}
+
+/** A host over *rows* and one crew, with "pets" pointed at that crew before start. */
+async function choseCrew(t, rows, crew, overrides = {}) {
+  const store = new Map([["appWindowGatewayChoices", { pets: "crew" }]]);
+  const ctx = makeHost(rows);
+  const host = createAppWindowHost({
+    electron: ctx.fake.electron,
+    backendUrl: BACKEND,
+    preloadPath: "/shell/app-window-preload.js",
+    fetchGatewayAuth: async () => ({ value: "tok", viaCookie: false }),
+    fetchImpl: crewNetwork(ctx.state, crew),
+    gatewayStore: { get: (k) => store.get(k), set: (k, v) => store.set(k, v) },
+    log: () => {},
+    platform: "darwin",
+    ...overrides,
+  });
+  await host.start();
+  t.after(() => host.stop());
+  return { host, fake: ctx.fake, state: ctx.state, store };
+}
+
+test("off here: the crew chosen for the app serves its windows while the app is on there", async (t) => {
+  const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true };
+  const { host, fake } = await choseCrew(t, [offHere()], crew);
+  assert.strictEqual(fake.created.length, 1);
+  const [remote] = fake.created;
+  assert.deepStrictEqual(remote.loaded, ["http://localhost:7778/popout/desktop/pets/panel?token=remote-tok"]);
+  // The crew switches it off too: a definite no, so nothing stays and nothing opens here.
+  crew.enabled = false;
+  host._targets.get("pets").at = 0;
+  await host.reconcileOnce();
+  assert.strictEqual(remote.isDestroyed(), true);
+  assert.strictEqual(fake.created.length, 1, "this computer has the app off: no window here");
+});
+
+test("off here: a non-answer keeps an open crew window and never creates one", async (t) => {
+  const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true, remote: new Error("link restarting") };
+  const { host, fake } = await choseCrew(t, [offHere()], crew);
+  assert.strictEqual(fake.created.length, 0, "not knowing never opens a window for an app off here");
+  delete crew.remote;
+  await host.reconcileOnce();
+  const [remote] = fake.created;
+  assert.match(remote.loaded[0], /^http:\/\/localhost:7778\//);
+  crew.remote = new Error("link restarting");
+  host._targets.get("pets").at = 0;
+  await host.reconcileOnce();
+  assert.strictEqual(remote.isDestroyed(), false, "the open window is kept");
+  // Once it is gone, a non-answer does not bring it back.
+  remote.destroy();
+  host._targets.get("pets").at = 0;
+  await host.reconcileOnce();
+  assert.strictEqual(fake.created.length, 1);
+});
+
+test("off here: a non-answer keeps only the windows still open; none is created until the crew answers", async (t) => {
+  const DECLARED = {
+    windows: [
+      { id: "a", entry: "desktop/a.mjs", kind: "panel", openOnEnable: true },
+      { id: "b", entry: "desktop/b.mjs", kind: "panel", openOnEnable: true },
+      { id: "bg", entry: "desktop/bg.mjs", kind: "background" },
+    ],
+    shortcuts: [{ id: "show-b", accelerator: "CommandOrControl+Alt+B", window: "b" }],
+  };
+  const clock = { now: 1_000_000 };
+  const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true, desktop: DECLARED };
+  const { host, fake } = await choseCrew(
+    t, [offHere(["gatewayChoice"], ["gatewayChoice"], DECLARED)], crew, { now: () => clock.now },
+  );
+  const [a, b] = fake.created;
+  assert.strictEqual(fake.created.length, 2);
+  fake.ipc[CHANNELS.open](fromWindow(a), "bg");
+  await Promise.all([...host._pendingLoads]);
+  const bg = fake.created[2];
+  assert.match(bg.loaded[0], /^http:\/\/localhost:7778\/popout\/desktop\/pets\/bg\?/);
+
+  // The crew stops answering while one of the windows is closed.
+  b.destroy();
+  crew.remote = new Error("link restarting");
+  host._targets.get("pets").at = 0;
+  await host.reconcileOnce();
+  assert.strictEqual(fake.created.length, 3, "an openOnEnable window is not reopened");
+  assert.strictEqual(a.isDestroyed(), false, "the open window is kept");
+  fake.registered.get("CommandOrControl+Alt+B")();
+  fake.ipc[CHANNELS.open](fromWindow(a), "b");
+  bg.webContents.events["render-process-gone"]();
+  assert.strictEqual(fake.created.length, 3, "neither a press, open() nor a background reopen creates one");
+
+  // Core's registry does not answer the reused target's check either.
+  host._targets.get("pets").at = clock.now;
+  crew.list = new Error("core busy");
+  await host.reconcileOnce();
+  assert.strictEqual(fake.created.length, 3);
+  assert.strictEqual(a.isDestroyed(), false);
+
+  // The crew answers: what is declared is opened from it again, the background page too.
+  delete crew.list;
+  delete crew.remote;
+  host._targets.get("pets").at = 0;
+  await host.reconcileOnce();
+  const reopened = fake.created.slice(3);
+  assert.deepStrictEqual(reopened.map((w) => w.loaded[0].split("?")[0]).sort(), [
+    "http://localhost:7778/popout/desktop/pets/b",
+    "http://localhost:7778/popout/desktop/pets/bg",
+  ]);
+});
+
+test("off here: a background page that dies while the crew is silent comes back when it answers, and not after a no", async (t) => {
+  const DECLARED = {
+    windows: [
+      { id: "a", entry: "desktop/a.mjs", kind: "panel", openOnEnable: true },
+      { id: "bg", entry: "desktop/bg.mjs", kind: "background" },
+    ],
+  };
+  const reopenedBackground = (fake, from) => fake.created.slice(from)
+    .filter((w) => w.loaded[0].startsWith("http://localhost:7778/popout/desktop/pets/bg?"));
+  for (const answer of ["yes", "no"]) {
+    const clock = { now: 1_000_000 };
+    const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true, desktop: DECLARED };
+    const { host, fake } = await choseCrew(
+      t, [offHere(["gatewayChoice"], ["gatewayChoice"], DECLARED)], crew, { now: () => clock.now },
+    );
+    const [a] = fake.created;
+    fake.ipc[CHANNELS.open](fromWindow(a), "bg");
+    await Promise.all([...host._pendingLoads]);
+    const bg = fake.created[1];
+    // The background page is the app's last window when the crew goes quiet.
+    a.destroy();
+    crew.remote = new Error("link restarting");
+    host._targets.get("pets").at = 0;
+    await host.reconcileOnce();
+    assert.strictEqual(bg.isDestroyed(), false, answer);
+    bg.webContents.events["render-process-gone"]();
+    // A second silent tick, with no window of the app left open.
+    host._targets.get("pets").at = 0;
+    await host.reconcileOnce();
+    assert.strictEqual(fake.created.length, 2, `${answer}: a non-answer opens nothing`);
+
+    delete crew.remote;
+    if (answer === "no") crew.enabled = false;
+    host._targets.get("pets").at = 0;
+    await host.reconcileOnce();
+    if (answer === "yes") {
+      assert.strictEqual(reopenedBackground(fake, 2).length, 1, "the crew answers: the background page is reopened");
+      continue;
+    }
+    assert.strictEqual(fake.created.length, 2, "a definite no reopens nothing");
+    // The no dropped the pending reopen: the crew turning it back on opens only openOnEnable windows.
+    crew.enabled = true;
+    host._targets.get("pets").at = 0;
+    await host.reconcileOnce();
+    assert.strictEqual(reopenedBackground(fake, 2).length, 0, "the dropped reopen does not come back");
+  }
+});
+
+test("off here: switching the app off keeps the windows a crew serves; choosing this computer closes them", async (t) => {
+  const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true };
+  const { host, fake, state, store } = await choseCrew(t, [capRow("pets", ["gatewayChoice"], ["gatewayChoice"])], crew);
+  const [remote] = fake.created;
+  assert.match(remote.loaded[0], /^http:\/\/localhost:7778\//);
+  remote.webContents.url = remote.loaded[0];
+  state.rows = [offHere()];
+  await host.reconcileOnce();
+  assert.strictEqual(remote.isDestroyed(), false, "a local switch-off does not take a crew's windows away");
+  assert.strictEqual(fake.created.length, 1);
+  const back = await fake.ipc[CHANNELS.chooseGateway](fromWindow(remote), "self");
+  assert.deepStrictEqual(back, { ok: true, chosen: "self", showing: "self" });
+  assert.strictEqual(remote.isDestroyed(), true);
+  assert.strictEqual(fake.created.length, 1, "this computer has the app off: nothing opens here");
+  assert.deepStrictEqual(store.get("appWindowGatewayChoices"), {});
+});
+
+test("NEGATIVE: an app off here that does not hold gatewayChoice here is served nothing, whatever crew is stored", async (t) => {
+  for (const [declared, approved] of [[["gatewayChoice"], []], [["gatewayChoice"], null], [["localFiles"], ["localFiles"]]]) {
+    const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true };
+    const { fake, state } = await choseCrew(t, [offHere(declared, approved)], crew);
+    assert.strictEqual(fake.created.length, 0, JSON.stringify([declared, approved]));
+    assert.ok(
+      state.fetches.every((f) => !f.url.includes("/api/instances") && !f.url.startsWith("http://localhost:7778")),
+      "no crew is even asked",
+    );
+  }
+});
+
+test("NEGATIVE: an app off here with no desktop block, or one skipped at boot, is served nothing", async (t) => {
+  const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true };
+  const plain = { name: "pets", enabled: false, manifest: { name: "pets", permissions: { desktopCapabilities: ["gatewayChoice"] } }, desktopCapabilitiesGrant: { approved: ["gatewayChoice"], staged: [] } };
+  for (const row of [plain, { ...offHere(), unavailable: { reason: "OSError: denied" } }]) {
+    const { fake } = await choseCrew(t, [row], crew);
+    assert.strictEqual(fake.created.length, 0);
+  }
 });

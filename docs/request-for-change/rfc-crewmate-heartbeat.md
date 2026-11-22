@@ -3,8 +3,8 @@ title: Crewmate heartbeat -- an opt-in wake that keeps the crewmate working on i
 status: implemented
 author: buluoray
 created: 2026-10-15
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: 20934
 implementation-prs: [21172, 25476, 26401]
 tracking-issues: []

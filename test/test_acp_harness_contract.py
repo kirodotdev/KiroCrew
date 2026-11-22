@@ -442,11 +442,17 @@ def test_kas_capabilities_open_only_settings_external_urls_and_user_input():
 
     Any other ``_meta.kiro`` capability would invite a request with no handler
     (``secretStorage`` would make Crew the MCP token store). ``userInput`` is served
-    by ``acp/elicitation.py``. The settings channel is empty here; the runtime fills
-    it at spawn.
+    by ``acp/elicitation.py``. The settings channel carries only ``codeIntelligence``
+    here; the runtime adds the rest at spawn.
     """
     kas = harness_for(ACP_BACKEND_KAS).client_capabilities
-    assert kas["_meta"] == {"kiro": {"settings": {}, "openExternalUrl": True, "userInput": True}}
+    assert kas["_meta"] == {
+        "kiro": {
+            "settings": {"codeIntelligence": {"enabled": True}},
+            "openExternalUrl": True,
+            "userInput": True,
+        }
+    }
     assert harness_for(ACP_BACKEND_KAS).opens_external_urls is True
     assert harness_for(ACP_BACKEND_KIRO).opens_external_urls is False
     assert {k: v for k, v in kas.items() if k != "_meta"} == ACP_CLIENT_CAPABILITIES
@@ -861,7 +867,11 @@ def test_kiro_keeps_its_legacy_notification_drain():
 
 
 def test_kas_stages_status_and_catalog_and_requires_readiness():
-    from kiro_crew.acp.types import METHOD_KAS_MCP_STATUS, METHOD_KAS_TOOLS_CHANGED
+    from kiro_crew.acp.types import (
+        METHOD_KAS_MCP_GOVERNANCE_DISABLED,
+        METHOD_KAS_MCP_STATUS,
+        METHOD_KAS_TOOLS_CHANGED,
+    )
 
     aliases = harness_for(ACP_BACKEND_KAS).notification_aliases
     assert aliases.session_update == KIRO_FAMILY_ALIASES.session_update
@@ -869,6 +879,10 @@ def test_kas_stages_status_and_catalog_and_requires_readiness():
     assert aliases.mcp_init == KIRO_FAMILY_ALIASES.mcp_init + (
         METHOD_KAS_MCP_STATUS,
         METHOD_KAS_TOOLS_CHANGED,
+        # Staged like the status frames: the host emits it under the session id
+        # during session/new, and the readiness wait reads it to end a
+        # fail-closed start early instead of timing out.
+        METHOD_KAS_MCP_GOVERNANCE_DISABLED,
     )
     assert aliases.mcp_readiness
 

@@ -30,6 +30,7 @@ Every reader here takes ``toolsSettings`` with one key per kiro-cli alias group
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterator
 from typing import Any
 
@@ -39,6 +40,8 @@ from kiro_crew.acp.kas_spec_grants import (
     WRITE_SETTINGS_KEYS,
 )
 from kiro_crew.platform import allowed_commands, allowed_paths
+
+logger = logging.getLogger(__name__)
 
 #: Most unreadable entries one projected allowlist carries for its refusal to name.
 _MAX_CARRIED = 64
@@ -280,7 +283,8 @@ def _uncarried_web_fetch_blocked(tools_settings: Any) -> list[str]:
     applies), in the spec's order, so the notice names the entry and not only the
     key. kiro-cli refuses every URL such an entry matches; on KAS it refuses
     nothing unless :func:`fails_closed_on_uncarried_blocked` is on, when the
-    translation denies every fetch."""
+    translation denies every fetch. An entry Crew's gate refuses itself
+    (``kas_spec_denies.gate_refused_blocked``) is not named."""
     from kiro_crew.acp.kas_permissions import (
         _MAX_PATTERN_LENGTH,
         _patterns,
@@ -288,13 +292,17 @@ def _uncarried_web_fetch_blocked(tools_settings: Any) -> list[str]:
         _url_glob,
     )
 
+    # circular import: kas_spec_denies imports kas_permissions, which imports this.
+    from kiro_crew.acp.kas_spec_denies import gate_refused_blocked
+
     settings = tools_settings.get("web_fetch") if isinstance(tools_settings, dict) else None
     if not isinstance(settings, dict):
         return []
+    refused = {raw.strip() for raw in gate_refused_blocked(tools_settings)}
     out = []
     for raw in _patterns(settings.get("blocked")):
         glob = _url_glob(raw)
-        if glob is not None and len(glob) <= _MAX_PATTERN_LENGTH:
+        if (glob is not None and len(glob) <= _MAX_PATTERN_LENGTH) or raw in refused:
             continue
         if _regex_to_glob(raw) is None:
             reason = "regex syntax KAS cannot express"
@@ -317,16 +325,30 @@ WEB_FETCH_REFUSED_MARK = "; every web fetch is refused until this entry is fixed
 def fails_closed_on_uncarried_blocked() -> bool:
     """Whether ``agent.kas_fail_closed_web_fetch_blocked`` is a JSON ``true``.
 
-    Off by default, and off when the config cannot be loaded, so an entry KAS
-    cannot carry is named and refuses nothing, as before.
+    Off by default and when absent. Read from the gateway's last applied config when
+    there is one, else from disk. On when that read cannot establish the owner's choice
+    (``config.json`` or ``config.local.json`` present but unreadable, or the ``agent``
+    section discarded), so a broken config never drops an opted-in fence.
     """
     try:
         # Call-time: the config loader pulls in the config plane this leaf stays off.
+        from kiro_crew.config import live
         from kiro_crew.config.loader import KiroCrewConfig
 
-        return KiroCrewConfig.load().agent.kas_fail_closed_web_fetch_blocked is True
+        cfg = live.snapshot() or KiroCrewConfig.load()
+        if cfg._base_unreadable or cfg._overlay_unreadable or "agent" in cfg.degraded_sections:
+            logger.warning(
+                "could not establish agent.kas_fail_closed_web_fetch_blocked from degraded "
+                "config; fencing"
+            )
+            return True
+        return cfg.agent.kas_fail_closed_web_fetch_blocked is True
     except Exception:
-        return False
+        # An unreadable config must not drop an opted-in fence.
+        logger.warning(
+            "could not read agent.kas_fail_closed_web_fetch_blocked; fencing", exc_info=True
+        )
+        return True
 
 
 #: What follows ``<key>`` in the one session-start notice item that names the

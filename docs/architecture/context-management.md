@@ -76,14 +76,14 @@ begin on its own line; the assembly newline-terminates the caller's
 | 9 | `[USER PROFILE]` | onboarding answers in config | non-empty, `lessons` group |
 | 10 | `[WORKSPACE IDENTITY]` | `workspace_dir_for` | `kirocrew` agent only |
 | 11 | `[DOCUMENTATION]` | `_build_docs_section`, the packaged docs dir | `kirocrew` agent, `project` group |
-| 12 | `[Steering resources]` | `_load_steering_resources` → `file://*.md` in `~/.kiro/agents/kirocrew.json`, each anchored as kiro-cli anchors it (relative at the session's project, else `$HOME`; `~/` at `$HOME`; absolute at its own prefix), plus kiro-cli's inherited defaults (global steering; the project's steering and `AGENTS.md` when one is bound, except on Codex, which reads `AGENTS.md` from its working directory), front matter stripped; a `manual`/`auto`/`fileMatch` document withheld (`folder_steering.every_session_body`); gated by `context_assembly/inclusion.py` → `steering_resources_part` | **Claude Code and Codex backends** (`ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`), `kirocrew` agent, `project` group, not a member chat; re-sent after a compaction (§2, item 8) |
+| 12 | `[Steering resources]` | `_load_steering_resources` → `file://*.md` in `~/.kiro/agents/kirocrew.json`, each anchored as kiro-cli anchors it (relative at the session's project, else `$HOME`; `~/` at `$HOME`; absolute at its own prefix), plus kiro-cli's inherited defaults (global steering; the project's steering and `AGENTS.md` when one is bound, except on Codex, OpenCode and Pi, which read `AGENTS.md` from their working directory), front matter stripped; a `manual`/`auto`/`fileMatch` document withheld (`folder_steering.every_session_body`); gated by `context_assembly/inclusion.py` → `steering_resources_part` | **Claude Code, Codex, OpenCode and Pi backends** (`ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`), `kirocrew` agent, `project` group, not a member chat; re-sent after a compaction (§2, item 8) |
 | 13 | `[THREAD CONVERSATION HISTORY]` | `build_session_replay` (lossless, newest first), else `_recall_rows` truncation | new, non-resumed session |
 | 14 | `[PREVIOUS TURN WAS CANCELLED …]` | `_build_stop_event_notes` | recent user stop |
 | 15 | `[Memory …]` + `[Memory activity index]` + `[Memory activity]` + `[Memory tools]` | `memory.py` → `get_context`, `activity_index`, `get_activity_context` | not temporary, `memory` group; the activity block also needs `memory.inject_activity` |
 | 16 | `[Skills:]` (pinned bodies, then discovery) | `skill_runtime/delivery.py` → `get_context` | see §4 |
 | 17 | `[Learned corrections …]`, then `[Learned experience …]` | vector `get_lessons_context`, else `lessons.jsonl` | `lessons` group; standing rules in the first block, `on_topic` past findings in the second, which a request overlapping none of them leaves as a notice only |
 | 18 | `## Recent Session Context` | `conversation_log.recent_with_provenance` | `memory` group; left out on the first turn after a conversation reset (`/clear`, Reset conversation), when the dashboard turn passes `conversation_reset=True`, because its snippets would be the forgotten turns |
-| 19 | `[FOLDER STEERING …]` | `context_assembly/inclusion.py` → `_render_folder_steering_section`, bounded by the steering share | every provider; non-member chat, `project` group, not a minimal or slim run (a member's envelope carries it instead) |
+| 19 | `[FOLDER STEERING …]` | `context_assembly/inclusion.py` → `_render_folder_steering_section`, bounded by `_STEERING_CAP` (a fixed allowance, not a share of the base) | every provider; non-member chat, `project` group, not a minimal run; a slim resume re-sends it under the post-compaction gate (a member's envelope carries it instead) |
 | 20 | `[RESPONSE PREFERENCES]` | `_build_response_preferences_section` | reply-style level set |
 | 21 | `[CONVERSATION HISTORY …]` | outer replay, `build_session_replay`; its header names what a text replay omits (tool calls, their results, unwritten reasoning) | compressed history passed |
 
@@ -114,7 +114,7 @@ envelope decides), `harness` where KAS (`native_steering`) or kiro-cli (while th
 workspace inherits default resources, or for a document the agent's own
 `resources` name) loads it, and `no` on a harness with no path (`_project_steering_delivered`).
 Where Crew writes the text it reads the writer itself, not a copy of its rules: on
-Claude Code and Codex (the `kirocrew` template the turn resolves) the rows come from
+Claude Code, Codex, OpenCode and Pi (the `kirocrew` template the turn resolves) the rows come from
 `context_assembly.agent_spec.steering_resource_documents`, the one list
 `_load_steering_resources` joins, so a document the load keeps is `yes`, one it
 withholds is `no`, and one it reads from outside the two trees (`AGENTS.md`, on
@@ -243,15 +243,15 @@ than a byte figure (`docs/system-specs/common/code-style.md` owns this rule).
 | Learned experience (past findings) | 5% | `_LESSON_EXPERIENCE_CAP` |
 | Semantic / episodic | 7.7% each | `_SEMANTIC_MEMORY_CAP`, `_EPISODIC_MEMORY_CAP` |
 | Skills discovery block | 15% | `_SKILLS_CAP` |
-| Steering | 10% | `_STEERING_CAP` |
 | Preamble headroom | 3% | `_PREAMBLE_HEADROOM` |
 
-Five more limits are fixed constants rather than shares of that base, so read each
+Six more limits are fixed constants rather than shares of that base, so read each
 one where it is defined:
 
 | Name | Constant |
 |---|---|
 | Standing-rule block at session start (window-independent) | `_LESSONS_STARTUP_CAP` |
+| `[FOLDER STEERING …]` section (window-independent; every document in it is an every-session rule, and on a harness that does not load `.kiro/steering` itself it is the only path those trees have) | `_STEERING_CAP` |
 | Confined project skill bodies | `PROJECT_SKILL_BODY_CAP` in `skills_body_reads.py` |
 | Episodic block on a new session | `_EPISODIC_INJECT_CAP` |
 | Memory activity index | the `cap` default of `activity_index` in `memory.py` |
@@ -541,7 +541,10 @@ next turn reads it through `consume_reinjection` (owned by
 `rearm_reinjection` it when the turn does not land or its stream reported a
 completed backend compaction, or delegate to `drive_turn` or
 answer through `messaging.dispatch.ChannelTurns`; `test/test_reinjection_gate.py`
-pins that per module. `build_message` then
+pins that per module. The flag is also kept in the session map
+(`session_map.COMPACTED_FLAG`) until a turn lands, so a restart or resume before
+then does not lose it: that resume's slim prompt carries the list below too, and
+a fresh start drops the copy. `build_message` then
 re-adds, once:
 
 1. the memory activity index and the `[Memory tools]` line;

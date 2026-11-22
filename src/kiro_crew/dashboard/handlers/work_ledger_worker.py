@@ -383,7 +383,26 @@ async def api_work_report(request: web.Request) -> web.Response:
                         landed = await asyncio.to_thread(
                             crew_log_emit.on_work_recorded, acting_unit, entry
                         )
-            if landed and parent_unit and own_unit and parent_unit != own_unit:
+            if not landed:
+                return await _refuse_unrecorded(
+                    caller, "work_report", item.item_id, conductor_key, snapshot
+                )
+            # Queue the report link before the mirror can wake a patrol turn.
+            # shortcut: the board copy's eager publication (crew_log/emit_surfaces._note_eager)
+            # can still wake the conductor during this call's thread hop, so a wake turn that
+            # binds inside that window misses the link and the next patrol turn takes it; closing
+            # it needs a post-append, pre-publication hook in emit_surfaces.
+            await trace_work.recorded(
+                own_unit,
+                conductor_key,
+                "report",
+                actor="worker",
+                item=item,
+                header=board,
+                event_id=getattr(result.get("event"), "id", None),
+                root_kind=lambda: trace_binding.root_kind(state, conductor_key),
+            )
+            if parent_unit and own_unit and parent_unit != own_unit:
                 # The worker's own copy, marked as a mirror of the board's. Nothing reads
                 # it to rebuild the board, so a failure here is logged and the report
                 # stands.
@@ -395,25 +414,11 @@ async def api_work_report(request: web.Request) -> web.Response:
                         "work report for %s landed on the board; the worker's copy did not",
                         item.item_id,
                     )
-            if not landed:
-                return await _refuse_unrecorded(
-                    caller, "work_report", item.item_id, conductor_key, snapshot
-                )
             await asyncio.to_thread(_mark_recorded, conductor_key, item.item_id)
             # Counted from the COMMITTED item, after its record landed: a refused
             # report -- an unknown or closed item, a ``done`` with no evidence, a
             # status outside the worker's vocabulary -- returned long before here.
             work_metrics.record_report(item.status, item.reason)
-            await trace_work.recorded(
-                own_unit,
-                conductor_key,
-                "report",
-                actor="worker",
-                item=item,
-                header=board,
-                event_id=getattr(result.get("event"), "id", None),
-                root_kind=lambda: trace_binding.root_kind(state, conductor_key),
-            )
             from kiro_crew.metrics import crew_mode as crew_mode_metrics
 
             if crew_mode_metrics.board_is_crew_mode(state, conductor_key):
@@ -703,12 +708,13 @@ def _waits_on_approval(
     """Whether an item, as it stands, still waits on the person for *worker_key*'s approval.
 
     Open, still bound to *worker_key*, last report with reason ``approval``, and not
-    answered since (``work_ledger_board.awaits_person``). With *report_id*, that last
+    answered since (``work_ledger_board.names_person``: the worker's own claim, so a
+    person's answer is recorded whether or not the conductor relayed it). With *report_id*, that last
     report must also be the one the answer was matched to: asked again under the
     board lock, so a newer report filed in between (an approval ask too) is never
     answered by it.
     """
-    from kiro_crew.dashboard.handlers.work_ledger_board import awaits_person
+    from kiro_crew.dashboard.handlers.work_ledger_board import names_person
 
     def waits(item: work_ledger.WorkItem, events: list[dict[str, Any]]) -> bool:
         return (
@@ -716,7 +722,7 @@ def _waits_on_approval(
             and item.worker_session_key == worker_key
             and item.reason == "approval"
             and (report_id is None or (bool(report_id) and _last_report_id(events) == report_id))
-            and awaits_person(item, events)
+            and names_person(item, events)
         )
 
     return waits

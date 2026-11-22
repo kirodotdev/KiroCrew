@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.acp._dispatch import is_shell_kind
 from kiro_crew.acp.client import AcpError, AcpTimeoutError
-from kiro_crew.agent_sdk.drivers.acp_vocab import continue_timed_out_calls
+from kiro_crew.agent_sdk.drivers.acp_vocab import AcpRuntimeError, continue_timed_out_calls
 from kiro_crew.agent_sdk.host_auth import for_terminal
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
@@ -46,6 +46,7 @@ from kiro_crew.hooks import (
 from kiro_crew.llm_helpers import _steer_host_deny, unfinished_turn_error
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, UnknownMemoryStore
 from kiro_crew.messaging.commands import compact_unsupported_backend
+from kiro_crew.messaging.driver_quoted_markers import QuotedDirectiveFilter
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
@@ -361,7 +362,7 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     # like `gateway` and `run`.
     from kiro_crew.metrics import notice as usage_notice
 
-    usage_notice.print_notice_in_background(cfg, headless=True)
+    usage_notice.print_notice_in_background(cfg)
     if model:
         cfg.agent.model = model
     channel_id = os.environ.get("KIROCREW_CHANNEL_ID") or None
@@ -509,9 +510,13 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
             file=sys.stderr,
         )
         sys.exit(1)
-    except AcpError as exc:
-        # A backend that fails to start, before any turn, prints its message as a
-        # failed turn does in ``_send_and_print``, not as a traceback.
+    except (AcpError, AcpRuntimeError) as exc:
+        # A backend that refuses to start, before any turn or on the REPL's restart
+        # after a compaction, prints its message as a failed turn does in
+        # ``_send_and_print``, not as a traceback. ``AcpRuntimeError`` is outside the
+        # ``AcpError`` hierarchy and is what a KAS engine install that cannot fetch
+        # the engine raises; the stack trace goes to the debug log only.
+        logger.debug("chat backend refused to start", exc_info=True)
         print(f"\n❌ {for_terminal(str(exc))}", file=sys.stderr)
         sys.exit(1)
 
@@ -1422,13 +1427,16 @@ async def _send_and_print(
     # ``o`` replies the backend could not take mid-turn. Sent as the next message
     # once this turn ends, so what the person typed still reaches the agent.
     undelivered: list[str] = []
+    # A quoted directive marker line is protocol: held to its newline, then dropped.
+    quoted = QuotedDirectiveFilter()
     try:
         # A call whose own silence timer ends the prompt is handed back to the
         # model inside this turn, on the same session (``acp.timed_out_continuation``).
         async for event in continue_timed_out_calls(provider.stream, message):
             if event.kind == EVENT_TEXT_CHUNK:
-                print(event.text, end="", flush=True)
+                print(quoted.feed(event.text), end="", flush=True)
             elif event.kind == EVENT_PERMISSION_REQUEST:
+                print(quoted.flush(), end="", flush=True)  # the held text goes above the prompt
                 # The backend holds the turn open until this is answered, so an
                 # unhandled request is not a missed prompt -- it is a turn that
                 # never ends.
@@ -1440,13 +1448,14 @@ async def _send_and_print(
                     undelivered_replies=undelivered,
                 )
             elif event.kind == EVENT_COMPLETE:
+                print(quoted.flush(), end="", flush=True)
                 # The text was printed as it streamed, so the error carries
                 # none: the timeout branch below must not print it twice.
                 unfinished = unfinished_turn_error(event, "")
                 if unfinished is not None:
                     raise unfinished
                 break
-        print()  # final newline
+        print(quoted.flush())  # a stream that ended without a complete event, and the newline
     except AcpTimeoutError as e:
         if e.partial_output:
             print(e.partial_output)

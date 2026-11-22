@@ -72,6 +72,7 @@ from kiro_crew.dashboard.mate_folders import (
     mate_home_id,
     refuses_write_into,
 )
+from kiro_crew.dashboard.mate_subfolder_delete import delete_empty_bot_subfolder, is_person_browser
 from kiro_crew.dashboard.snapshot_commit import (
     VocabularyDeleteCancellations,
     slots_with_a_close_in_flight,
@@ -1262,8 +1263,15 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     if target is None:
         return web.json_response({"error": "not found"}, status=404)
     principal = folder_principal(state, request)
-    if is_mate_home(target) or refuses_write_into(state._folders, fid, principal):
+    if is_mate_home(target):
         return _mate_home_locked()
+    if refuses_write_into(state._folders, fid, principal):
+        # Inside a Bot's home: only the person's browser may delete it, and
+        # only empty. An internal request is an agent tool call, even one
+        # running in the person's own session.
+        if not is_person_browser(principal, request):
+            return _mate_home_locked()
+        return await delete_empty_bot_subfolder(state, request, fid)
     request_app = _effective_request_app(state, request)
     # Answered before a single slot is unfiled, so the common refusal costs no
     # rollback. Sound pre-lock because ``owner_app`` is stamped at create and no

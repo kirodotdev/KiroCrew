@@ -122,6 +122,19 @@ describe('/agent <name> routes through Crew\'s agent selector', () => {
     expect(reason).toBeTruthy()
   })
 
+  const crewModeBlocked = "Switching to fable was blocked because conductor mode can't be turned off for this chat."
+
+  it('names conductor mode when the gateway answers crew_mode_locked', async () => {
+    mockChatSlotAgent.mockRejectedValueOnce(new ApiError(
+      409,
+      'this chat is in conductor mode, which stays on its own agent',
+      JSON.stringify({ error: 'this chat is in conductor mode, which stays on its own agent', code: 'crew_mode_locked' }),
+    ))
+    const store = storeWithSlot()
+    const result = await interceptSlashCommand('/agent fable', SLOT, store.dispatch)
+    expect(result).toEqual({ intercepted: true, failed: true, stage: 'agent', error: crewModeBlocked })
+  })
+
   it('holds the pick for the next slot when the chat has none yet', async () => {
     const store = createTestStore()
     const onPendingAgent = vi.fn()

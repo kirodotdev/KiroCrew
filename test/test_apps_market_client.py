@@ -146,7 +146,8 @@ class FakeServer:
                 self._record(body)
                 op = self.path.rsplit("/", 1)[-1]
                 status, reply = fake.replies.get(op, (404, {"message": "no such op"}))
-                payload = cbor_encode(reply)
+                # A bytes reply is sent as it is, for a body that is not CBOR.
+                payload = reply if isinstance(reply, bytes) else cbor_encode(reply)
                 self.send_response(status)
                 self.send_header("Content-Type", "application/cbor")
                 self.send_header("smithy-protocol", "rpc-v2-cbor")
@@ -297,6 +298,59 @@ def test_api_refusal_names_the_server_code(server: FakeServer) -> None:
     assert err.value.code == "market_api_refused"
     assert "scan_pending" in err.value.message
     assert "409" in err.value.message
+
+
+def test_a_401_is_a_sign_out(server: FakeServer) -> None:
+    server.replies["GetInstallPlan"] = (
+        401,
+        {"__type": "kiro.space#Unauthorized", "code": "Unauthorized"},
+    )
+    with pytest.raises(MarketInstallError) as err:
+        _client(server).resolve_install(REF, None)
+    assert err.value.code == "market_signed_out"
+    assert "answered 401" in err.value.message
+    assert "Unauthorized" in err.value.message
+
+
+def test_a_401_that_is_not_cbor_is_still_a_sign_out(server: FakeServer) -> None:
+    server.replies["GetInstallPlan"] = (401, b"<html>sign in</html>")
+    with pytest.raises(MarketInstallError) as err:
+        _client(server).resolve_install(REF, None)
+    assert err.value.code == "market_signed_out"
+    assert err.value.message == "GetInstallPlan answered 401"
+
+
+def test_a_403_that_is_not_cbor_stays_invalid(server: FakeServer) -> None:
+    server.replies["GetInstallPlan"] = (403, b"<html>no</html>")
+    with pytest.raises(MarketInstallError) as err:
+        _client(server).resolve_install(REF, None)
+    assert err.value.code == "market_api_invalid"
+
+
+def test_a_forbidden_403_is_a_refusal_not_a_sign_out(server: FakeServer) -> None:
+    # The store also answers 403 "Forbidden" for a business rule, so a 403
+    # never means the person is signed out.
+    server.replies["GetInstallPlan"] = (
+        403,
+        {"__type": "kiro.space#Forbidden", "message": "denied", "code": "Forbidden"},
+    )
+    with pytest.raises(MarketInstallError) as err:
+        _client(server).resolve_install(REF, None)
+    assert err.value.code == "market_api_refused"
+    assert "403" in err.value.message
+    assert "Forbidden" in err.value.message
+
+
+def test_a_business_403_is_a_refusal(server: FakeServer) -> None:
+    server.replies["GetInstallPlan"] = (
+        403,
+        {"message": "you do not publish this listing", "code": "not_publisher"},
+    )
+    with pytest.raises(MarketInstallError) as err:
+        _client(server).resolve_install(REF, None)
+    assert err.value.code == "market_api_refused"
+    assert "403" in err.value.message
+    assert "not_publisher" in err.value.message
 
 
 # ---------------------------------------------------------------------------

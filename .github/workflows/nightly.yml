@@ -513,6 +513,11 @@ jobs:
       # below passes the same; release.yml passes none.
       build_channel: nightly
 
+  build-platform-wheels:
+    name: Build Platform Wheels
+    needs: [build-wheel]
+    uses: ./.github/workflows/build-platform-wheels.yml
+
   build-desktop:
     name: Build Desktop
     needs: [version]
@@ -574,7 +579,7 @@ jobs:
   # never blocks the CLI release. See docs/build/release.md.
   publish-cli:
     name: Publish CLI (nightly channel)
-    needs: [version, build-wheel, dependency-vulnerability-gate, platform-tests]
+    needs: [version, build-wheel, build-platform-wheels, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       id-token: write

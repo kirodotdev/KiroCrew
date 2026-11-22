@@ -18,7 +18,14 @@ const { seedRenamedStore } = require("../store-rename");
 const { STORE_FILE_MODE, tightenStoreFileMode } = require("../store-file-mode");
 const { openLocalImage } = require("../app-local-files");
 const { sessionCookieHeader } = require("../mochi-session-token");
-const { parseMochiEnabled, remoteEnabledState, hostDisabledMeansTeardown } = require("./instanceGate");
+const { linkTokenIsStale } = require("../link-token-age");
+const {
+  MOCHI_APP,
+  parseMochiEnabled,
+  remoteEnabledState,
+  hostDisabledMeansTeardown,
+  localMochiState,
+} = require("./instanceGate");
 const {
   SELF_INSTANCE,
   MACHINE_STORE_DEFAULTS,
@@ -109,11 +116,21 @@ function probeLog(outcome) {
 // `value` is the credential fetchGatewayAuth() found (empty when it found
 // none), and `viaCookie` says HOW it must be delivered — see
 // withGatewayAuth().
+//
+// A minted link token is also re-resolved before the gateway's 300 s window
+// would refuse it (../link-token-age.js): that refusal is a `denied` security
+// event, and its 403 would snap the probe back to its base cadence.
 let cachedGatewayAuth = { value: "" };
+let cachedGatewayAuthAt = 0;
 
 async function gatewayToken() {
-  if (cachedGatewayAuth.value) return cachedGatewayAuth;
+  if (cachedGatewayAuth.value && !linkTokenIsStale(cachedGatewayAuth, cachedGatewayAuthAt, Date.now())) {
+    return cachedGatewayAuth;
+  }
+  // Stamped before the mint, so the measured age never undercounts it.
+  const resolvedAt = Date.now();
   cachedGatewayAuth = (await fetchGatewayAuth()) || { value: "" };
+  cachedGatewayAuthAt = resolvedAt;
   return cachedGatewayAuth;
 }
 
@@ -124,7 +141,7 @@ async function gatewayToken() {
  * A local-secret or SSH-fetched credential is a freshly minted LINK token
  * (local-token.js / remote-token.js): the gateway checks its 5-minute `exp`
  * claim when it arrives as `?token=`, which is fine because gatewayToken()
- * re-resolves on every cache miss (roughly every 5 minutes in steady state).
+ * re-resolves a link token before that window closes (../link-token-age.js).
  * A BORROWED session credential (mochi-session-token.js) is the opposite: it
  * is the value already sitting in the main window's `mc_token_<port>`
  * cookie, whose `exp` claim froze at the moment that window's session was
@@ -579,6 +596,11 @@ function mochiInstanceLog(message) {
  *
  * "unknown" now means DO NOTHING: whatever is on screen stays. A genuinely
  * disabled app still tears down, because the gateway answered and said so.
+ *
+ * "hosted" is a fourth, definite answer: this computer's Mochi record declares a
+ * manifest `desktop` block, so the desktop window host serves Mochi here (from
+ * whichever crew it chose) and the built-in pet stands down entirely, a remote's
+ * pet included.
  */
 async function mochiEnabledState() {
   const auth = await gatewayToken();
@@ -605,15 +627,15 @@ async function mochiEnabledState() {
           try {
             const payload = JSON.parse(data);
             const apps = Array.isArray(payload) ? payload : payload.apps || [];
-            const mochi = apps.find((a) => a && a.name === "mochi");
-            if (!mochi) {
-              // The gateway answered and Mochi is not installed — a real answer.
+            const state = localMochiState(apps);
+            if (!apps.some((a) => a && a.name === MOCHI_APP)) {
               probeLog(`mochi not among ${apps.length} installed apps`);
-              resolve("disabled");
-              return;
+            } else if (state === "hosted") {
+              probeLog("mochi served by the desktop window host — the built-in pet stands down");
+            } else {
+              probeLog(state === "enabled" ? "mochi enabled — opening pet" : "mochi installed but disabled");
             }
-            probeLog(mochi.enabled ? "mochi enabled — opening pet" : "mochi installed but disabled");
-            resolve(mochi.enabled ? "enabled" : "disabled");
+            resolve(state);
           } catch (err) {
             probeLog(`/api/apps response unparseable: ${err.message}`);
             resolve("unknown");
@@ -922,7 +944,9 @@ async function reconcileMochi() {
   // `hostDisabledMeansTeardown` handles self.
   const shownStillUsable = target.keep ? isPetWindowOpen() : target.instanceId !== SELF_INSTANCE;
 
-  if (state === "disabled" && hostDisabledMeansTeardown(shownInstanceId, shownStillUsable)) {
+  // "hosted": the window host owns Mochi on this computer, so nothing of the
+  // built-in pet may stay on screen beside it, whatever instance it shows.
+  if (state === "hosted" || (state === "disabled" && hostDisabledMeansTeardown(shownInstanceId, shownStillUsable))) {
     closePetWindow();
     // Nothing is shown now, so say so. Leaving the remote's id here would let a
     // later non-answer read as "keep the remote pet" and open one for a host
@@ -948,10 +972,10 @@ async function reconcileMochi() {
     mochiWindowsHidden = false;
     // Re-arm the first-open chat panel for the next enable.
     mochiPanelAutoOpened = false;
-    // SETTLED: host Mochi is off and no remote pet is being kept alive, so
-    // re-asserting this teardown changes nothing until a human re-enables the
-    // app. This is the ONLY outcome that lets the loop back off — see the
-    // watcher's scheduler.
+    // SETTLED: host Mochi is off (or served by the window host) and no remote
+    // pet is being kept alive, so re-asserting this teardown changes nothing
+    // until a human re-enables the app or its record changes. This is the ONLY
+    // outcome that lets the loop back off — see the watcher's scheduler.
     return RECONCILE_IDLE;
   }
 

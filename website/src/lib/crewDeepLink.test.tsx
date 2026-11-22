@@ -6,6 +6,7 @@ import { connectInstanceInto } from './connectInstance'
 import { isEmbeddedPane } from './embedded'
 import { paneOriginFor } from './paneCache'
 import { readPaneSlot } from './paneLastSlot'
+import { recentCrews } from './crewWarmSet'
 import { i18nT } from '../i18n/t'
 import { removeWarm, setActiveId, setPaneReady, setPendingPaneSlot, setWarm } from '../store/instancesSlice'
 import { chatDeepLinkSlot } from '../utils/navIntent'
@@ -157,6 +158,48 @@ describe('useCrewDeepLink (hub)', () => {
     expect(readPaneSlot('dev-box')).toBeNull()
   })
 
+  it('records the crew as opened only once its connect is admitted, before the warm entry', async () => {
+    localStorage.setItem('mc-auto-connect', '0')
+    listInstances.mockResolvedValue({ instances: [crew('dev-box')] } as never)
+    let firstBeforeWarm: string | undefined
+    connect.mockImplementation(async (_d, _id, _via, opts) => {
+      expect(recentCrews()).toEqual([])
+      opts?.beforeWarm?.()
+      firstBeforeWarm = recentCrews()[0]
+      return { state: 'connected', local_port: 7781, token: 't' } as never
+    })
+    const { open } = hub()
+    open(LINK)
+    await waitFor(() => expect(firstBeforeWarm).toBe('ssh:dev-box'))
+  })
+
+  it('a crew link superseded while it connects records nothing', async () => {
+    localStorage.setItem('mc-auto-connect', '0')
+    listInstances.mockResolvedValue({ instances: [crew('dev-box')] } as never)
+    let admit: () => void = () => {}
+    connect.mockImplementation((_d, _id, _via, opts) => new Promise(r => {
+      admit = () => { opts?.beforeWarm?.(); r({ state: 'connected', local_port: 7781, token: 't' } as never) }
+    }))
+    const { store, open } = hub()
+    open(LINK)
+    await waitFor(() => expect(connect).toHaveBeenCalled())
+    // The person picks another pane before the connect answers.
+    act(() => { store.dispatch(setActiveId('other')) })
+    await act(async () => { admit() })
+    expect(recentCrews()).toEqual([])
+  })
+
+  it('a refused crew link records nothing', async () => {
+    localStorage.setItem('mc-auto-connect', '0')
+    listInstances.mockResolvedValue({ instances: [crew('dev-box')] } as never)
+    connect.mockResolvedValue({ state: 'disconnected' } as never)
+    const { open } = hub()
+    open(LINK)
+    await waitFor(() => expect(connect).toHaveBeenCalled())
+    await act(async () => { await Promise.resolve() })
+    expect(recentCrews()).toEqual([])
+  })
+
   it('a crew list that could not load says so, not a switch', async () => {
     listInstances.mockRejectedValue(new Error('403'))
     const { store, open } = hub()
@@ -182,7 +225,7 @@ describe('useCrewDeepLink (hub)', () => {
       open(LINK)
       await waitFor(() => expect(store.getState().chat.agentSwitchNotice).toEqual(OFFLINE))
       expect(connect).toHaveBeenCalledTimes(1)
-      expect(connect).toHaveBeenCalledWith(expect.anything(), 'dev-box', 'link', { onlyIfConnected: true })
+      expect(connect).toHaveBeenCalledWith(expect.anything(), 'dev-box', 'link', expect.objectContaining({ onlyIfConnected: true }))
       expect(store.getState().instances.activeId).toBeNull()
     })
 

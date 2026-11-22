@@ -21,7 +21,7 @@ from kiro_crew.config.loader import config_dir
 from kiro_crew.hooks import safe_read_file_bytes_nolink
 from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.slugs import slug_hash_fallback
-from kiro_crew.user_json import loads_user_json
+from kiro_crew.user_json import loads_user_json, wide_bom_reason
 
 # ── Custom Themes — validation & parsing core ──
 
@@ -102,6 +102,9 @@ _THEME_CSS_VARS = (
     "--term-fg",
     "--term-cursor",
     "--term-selection",
+    # The lit top/bottom band of the Liquid Glass panes. Optional: omitted keeps
+    # the polarity default from liquid-glass.css.
+    "--glass-band-plain",
 )
 
 
@@ -961,6 +964,24 @@ def _validate_overlay_html(text: str, name: str) -> str | None:
     return None
 
 
+def _read_pack_text(entry: Path, rel: str, *, installing: bool) -> tuple[str, str | None]:
+    """A pack text file as ``(text, error)``; *error* is set only when installing.
+
+    A file saved as UTF-16 or UTF-32 (Windows PowerShell 5.1's ``>`` writes
+    UTF-16LE with a mark) decodes as UTF-8 into text with a NUL after every
+    character, which the content validators then judge on its wording. An
+    install is refused naming the file and the encoding instead. A pack that
+    is already installed keeps loading on read, so the refusal is opt-in like
+    the other install-only rules (see ``_validate_theme_dir``).
+    """
+    raw = entry.read_bytes()
+    reason = wide_bom_reason(raw) if installing else None
+    # ``read_text`` translated CRLF and a lone CR to LF, which the persona length
+    # cap counted; keep that so a pack that fit the cap still does.
+    text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    return text, (f"{rel}: {reason}" if reason is not None else None)
+
+
 def _validate_persona(text: str) -> str | None:
     """Persona-file bounds (§6.5)."""
     if len(text) > _THEME_PERSONA_MAX_CHARS:
@@ -1267,11 +1288,12 @@ def _validate_theme_dir(
     per-value CSS sanitisation match editor-created themes.
 
     ``installing`` marks the install path, where a pack may still be REFUSED
-    for pinning the UI font in ``overrides.css``, or for a ``fonts`` entry
-    declaring an unrecognised ``role``. This function also runs when an
-    already-installed pack is re-read (the theme-detail route), and a pack
-    that predates either rule must keep loading there — so both layers are
-    opt-in rather than applied to every read. See ``_validate_overrides_css``
+    for pinning the UI font in ``overrides.css``, for a ``fonts`` entry
+    declaring an unrecognised ``role``, or for a text file saved as UTF-16 or
+    UTF-32. This function also runs when an already-installed pack is re-read
+    (the theme-detail route), and a pack that predates any of these rules must
+    keep loading there — so each layer is opt-in rather than applied to every
+    read. See ``_validate_overrides_css``
     and ``_theme_asset_descriptor``.
     """
     if not path.is_dir() or is_link_or_junction(path):
@@ -1411,21 +1433,16 @@ def _validate_theme_dir(
             if overlays > _THEME_MAX_OVERLAYS:
                 return None, f"too many overlays (max {_THEME_MAX_OVERLAYS})"
         # Security-sensitive content checks.
-        if category == "overrides":
-            c_err = _validate_overrides_css(
-                entry.read_text(encoding="utf-8", errors="replace"),
-                enforce_font_pins=installing,
-            )
+        if category in ("overrides", "overlay", "topbar", "persona"):
+            text, c_err = _read_pack_text(entry, rel, installing=installing)
             if c_err:
                 return None, c_err
-        elif category in ("overlay", "topbar"):
-            c_err = _validate_overlay_html(
-                entry.read_text(encoding="utf-8", errors="replace"), rel
-            )
-            if c_err:
-                return None, c_err
-        elif category == "persona":
-            c_err = _validate_persona(entry.read_text(encoding="utf-8", errors="replace"))
+            if category == "overrides":
+                c_err = _validate_overrides_css(text, enforce_font_pins=installing)
+            elif category == "persona":
+                c_err = _validate_persona(text)
+            else:
+                c_err = _validate_overlay_html(text, rel)
             if c_err:
                 return None, c_err
         elif category in ("audio", "audio_ambient"):
@@ -1723,9 +1740,11 @@ def _theme_asset_descriptor(
             _pbytes = safe_read_file_bytes_nolink(
                 str(persona_path), within_root=str(theme_dir)
             )
+            # A UTF-16/UTF-32 file never reaches here from an install (refused
+            # by _read_pack_text); one placed on disk by hand is not surfaced.
             _ptext = (
                 _pbytes.decode("utf-8", errors="replace")
-                if _pbytes is not None
+                if _pbytes is not None and wide_bom_reason(_pbytes) is None
                 else None
             )
             if _ptext is not None and _validate_persona(_ptext) is None:

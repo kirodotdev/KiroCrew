@@ -7,6 +7,8 @@ before truncation at ``MAX_READ_CONTENT_CHARS``.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from chat_test_helpers import _make_state
 from session_control_helpers import (  # noqa: F401 -- the autouse fixtures register by import
@@ -135,6 +137,21 @@ def test_read_returns_the_tail_with_a_total_to_poll_from(tmp_path):
     assert [m["content"] for m in out["messages"]] == ["line 3", "line 4"]
     assert [m["index"] for m in out["messages"]] == [3, 4]
     assert out["running"] is False
+
+
+def test_read_reports_a_workflow_owned_by_an_idle_target(tmp_path):
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+    target_key = _key(target)
+    state.workflow_service = SimpleNamespace(
+        registry=SimpleNamespace(has_pending_work_for=lambda key: key == target_key)
+    )
+
+    out = sc.read_messages(state, caller_session_key=_key(caller), target="chat-2")
+
+    assert out["running"] is True
+    assert out["activity"] == ["workflow"]
 
 
 def test_read_since_returns_only_what_arrived_after(tmp_path):

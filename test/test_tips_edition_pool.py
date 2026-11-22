@@ -246,6 +246,24 @@ class TestCacheReplacement:
         assert cache.curated, "public build must still load the bundled curated tips"
         assert cache.catalog, "public build must still load the docs catalog"
         assert cache.state.pool_id == PUBLIC_POOL_ID
+        assert cache.metric_tip_ids == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_metric_tip_ids_keep_only_served_slugs(self, tmp_path: Path) -> None:
+        # Only an id that is a plain slug AND a curated tip this pool serves may
+        # be named by the feedback counter; anything else is dropped, and the
+        # pool itself still loads.
+        pool = TipsPool(
+            pool_id="edition-v1",
+            curated=(dict(_EDITION_TIP),),
+            metric_tip_ids=["edition-only-tip", "not-served", "Edition Only Tip", 7],  # type: ignore[list-item]
+        )
+        assert isinstance(pool.metric_tip_ids, tuple)
+        _install(_PoolProvider(pool))
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            cache = await get_tips_cache(types.SimpleNamespace())
+        assert [t["id"] for t in cache.curated] == ["edition-only-tip"]
+        assert cache.metric_tip_ids == frozenset({"edition-only-tip"})
 
 
 class TestCrossPoolReconciliation:

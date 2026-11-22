@@ -19,7 +19,11 @@ import shutil
 from pathlib import Path
 
 from kiro_crew import platform_compat
-from kiro_crew.apps import agent_readonly_dirs, credential_masks, protected_app_state
+from kiro_crew.apps import (
+    agent_readonly_dirs,
+    credential_masks,
+    protected_app_state,
+)
 from kiro_crew.apps.builtin_fold import carry_folded_switch
 from kiro_crew.apps.host_exec_grants import revoke_host_exec
 from kiro_crew.apps.manager_builtins import (
@@ -86,6 +90,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
     deregistration should be done before calling this.
     Built-in apps stay locked unless explicitly cleaning up an eligible retired builtin.
     """
+    # Imported here, not at module level: the MCP listing imports this module and
+    # its import budget has no room (test_mcp_listing_import_budget).
+    from kiro_crew.apps import protected_app_ui
+
     if not _check_path_safety(name):
         return AppResult(ok=False, name=name, error=f"unsafe app name: {name!r}")
     # Held to the end, rollback included: a disable or enable in another process
@@ -116,6 +124,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
             name=name,
             error=f"app {name!r} cannot be uninstalled (lifecycle=locked) — use disable instead",
         )
+    # The uninstall count's labels, read now while the record still names the
+    # version being removed. A retired-builtin cleanup is Crew's own removal, not
+    # the person's, so it is not counted.
+    counted = None if retired_builtin else _uninstall_labels(name)
     dest = app_dir(name)
     if not dest.is_dir():
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
@@ -152,6 +164,16 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         # The approved set goes first, so a removal that fails leaves the execution
         # grant untouched; the disable stays until the uninstall commits.
         protected_app_state.forget_grants(name)
+        # Durable before anything is deleted, so its scripts stop being served
+        # even if the copy itself cannot be removed later (``protected_app_ui``).
+        # Refuses only while the protected copy is the one served: off, the
+        # default, nothing reads the copy and the uninstall goes ahead as on main.
+        try:
+            protected_app_ui.withdraw(name)
+        except (OSError, ValueError):
+            if protected_app_ui.enabled():
+                raise
+            logger.warning("could not withdraw %r's UI script copy", name, exc_info=True)
         # Recorded BEFORE the withdrawal so a failed delete below can put back
         # exactly what was there — and only when there WAS something. Restoring a
         # grant the app never held would be granting, not restoring.
@@ -170,6 +192,7 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         # The app stays installed: put back the approvals a removal took.
         try:
             protected_app_state.restore_app(name, prior_records)
+            protected_app_ui.unwithdraw(name)
         except (OSError, ValueError):
             logger.warning(
                 "could not restore %r's approvals and disable after a failed removal",
@@ -457,6 +480,7 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         restore_note = ""
         try:
             protected_app_state.restore_app(name, prior_records)
+            protected_app_ui.unwithdraw(name)
         except (OSError, ValueError) as restore_exc:
             logger.warning(
                 "could not restore %r's approvals and disable after a failed uninstall",
@@ -509,6 +533,13 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         remove_granted_bots(name)
     except (OSError, ValueError):
         logger.warning("could not remove an uninstalled app's ticked Bots", exc_info=True)
+    # Its memory egress consent goes too. A grant left by a failure here (the record is
+    # read-only in a sandbox) makes the next install under this name refuse until the
+    # grant is removed, so it never reaches another app.
+    from kiro_crew.memory_provider.consent import revoke_app_soft
+
+    revoke_app_soft(name)
+    protected_app_ui.forget(name)
     refresh_app_config_keys()
     # Deferred: frame_sources stays off an MCP server's pre-list import budget.
     from kiro_crew.apps.frame_sources import refresh_frame_sources  # noqa: PLC0415
@@ -587,7 +618,41 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
     from kiro_crew.apps.hidden_sessions import request_hiding_refresh
 
     request_hiding_refresh()
+    if counted is not None:
+        _count_uninstall(counted, keep_data=keep_data)
     return AppResult(ok=True, name=name, message=f"uninstalled {name}{residual}")
+
+
+def _uninstall_labels(name: str) -> tuple[str, str] | None:
+    """``(app_public_id, app_public_version)`` of *name*; ``None`` when they cannot be read.
+
+    The map is re-read first, while *name*'s install record is still on disk: a CLI
+    process never fills it otherwise, and every app would read ``private``. The
+    re-read scans the install records, so this runs only off the event loop, as
+    ``uninstall_app`` does.
+    """
+    try:
+        from kiro_crew.metrics.feature_usage import (
+            app_public_id,
+            app_public_version,
+            refresh_public_app_ids,
+        )
+
+        ids = refresh_public_app_ids()
+        return app_public_id(name, ids), app_public_version(name, ids)
+    except Exception:  # recording never changes the uninstall's result
+        logger.debug("uninstall labels failed for %s", name, exc_info=True)
+        return None
+
+
+def _count_uninstall(labels: tuple[str, str], *, keep_data: bool) -> None:
+    """Count one committed uninstall; never raises."""
+    try:
+        from kiro_crew.metrics.feature_usage import record_app_uninstalled
+
+        record_app_uninstalled(*labels, keep_data=keep_data)
+    except Exception:  # recording never changes the uninstall's result
+        logger.debug("uninstall count failed for %s", labels[0], exc_info=True)
 
 
 def trust_grant_removal_blocked(name: str) -> str | None:

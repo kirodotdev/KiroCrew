@@ -14,7 +14,7 @@
  *  peer has: the proxied reads, the peer's event feed, and the peer routes
  *  every action posts to (see `crewWindowRenderers.tsx` for the rows a hub
  *  must not draw from its own state). */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { Server, X } from 'lucide-react'
@@ -25,6 +25,7 @@ import { useAppSelector } from '../../../store'
 import { useSelectInstance } from '../../../hooks/useSelectInstance'
 import { Btn } from '../../../components/ui'
 import ErrorNotice from '../../../components/ErrorNotice'
+import { GUIDE_KEEP_CLEAR } from '../../../guide/trustRoot'
 import RemoteBehindBadge from '../../../components/RemoteBehindBadge'
 import Glass from '../../../components/Glass'
 import ChatInput from '../../../components/ChatInput'
@@ -44,16 +45,17 @@ import { capsRetryInterval, closeCrewWindow, crewVersionMismatchText, markCrewWi
 import { coverSiblings } from '../../../utils/coverSiblings'
 import { createCrewWindowRenderers, crewWindowSlot } from './crewWindowRenderers'
 import { authRequiredIsNewest } from '../transcriptRenderers'
+import { useChatSetting } from '../../../hooks/useChatSetting'
 import { useCrewWindowModelPicker, type PeerModelFields } from './crewWindowModelPicker'
 import { useCrewWindowAgentMode, type PeerAgentModeFields } from './crewWindowAgentMode'
 import { mergeRecoveredDraft } from '../../../utils/chatDrafts'
 import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
-import { isHiddenInvisibleAssistantRow, isRetractedSteerRow } from '../../../utils/invisibleText'
+import { isRetractedSteerRow } from '../../../utils/invisibleText'
+import { isHiddenReplyAt } from '../../../app-sdk/turnPolicyBlock'
 import { isSystemNoticeRow } from '../CompactionCard'
 import { useMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
 import { clearDictated, isDictated, markDictated, noteComposerEdit, takeDictated, wantsDictationNote, withDictationNote } from '../../../chat-core/composer/dictationProvenance'
-import { loadChatConfig } from '../ChatSettings'
 
 interface PeerApproval { origin?: string; request_id?: string; request_mid?: string }
 interface PeerSlot extends PeerModelFields, PeerAgentModeFields {
@@ -68,6 +70,8 @@ interface PeerDetail { title?: string; running?: boolean; messages?: ChatMessage
 const REFETCH_THROTTLE_MS = 300
 /** How often an unmatched (or unreachable) crew's version is re-read. */
 const CAPS_RETRY_MS = 5000
+/** How far above the bottom a reader can be and still count as at the bottom. */
+const FOLLOW_BOTTOM_SLACK_PX = 48
 const NO_MESSAGES: ChatMessage[] = []
 const NO_INSTANCES: never[] = []
 
@@ -222,6 +226,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // scroller's scrollbar gutter, which the dock stops short of: the local
   // chat's own measurement.
   const scrollerRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
   const { dockH, dockGutter, dockRef } = useComposerDockMetrics(scrollerRef)
   const settle = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: slotKeyQ })
@@ -311,8 +316,8 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // and not while a refused rewind is held (Send retries that first).
   const continuable = connected && !running && !rewindTs && !slotQ.data?.stopping && !!slotQ.data?.interrupted
   const continuing = action.isPending && action.variables?.path === slotPath + '/continue'
-  // This machine's display choice for the meter; the reading is the peer's.
-  const [chatConfig] = useState(loadChatConfig)
+  // Show Thinking Inline, as the Sessions chat reads it.
+  const collapseAllSteps = useChatSetting('collapseAllSteps')
   const approval = slotQ.data?.pending_approval_info
   // Only a native approval names its transcript row, and the peer's strict
   // check needs that row's id so a stale card cannot decide a newer request.
@@ -339,6 +344,29 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     () => splitPaneMessages(hydrateQueuedBubbles([], normalizeQueueEntries(detailQ.data?.queue))),
     [detailQ.data?.queue],
   )
+  // Open at the newest message and stay on it as rows land or the dock grows,
+  // as the local chat does, unless the reader has scrolled up from the bottom.
+  const followBottom = useRef(true)
+  const noteScroll = useCallback(() => {
+    const el = scrollerRef.current
+    if (el) followBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_BOTTOM_SLACK_PX
+  }, [])
+  useLayoutEffect(() => {
+    const el = scrollerRef.current
+    if (el && followBottom.current) el.scrollTop = el.scrollHeight
+  }, [messages, displayRunning, approval?.request_id, dockH])
+  useLayoutEffect(() => {
+    const el = scrollerRef.current
+    const content = contentRef.current
+    if (!el || !content || typeof ResizeObserver === 'undefined') return
+    // Images and diagrams can grow without a new transcript render. Observe
+    // the content, not the fixed-height viewport; scrolling does not resize it.
+    const ro = new ResizeObserver(() => {
+      if (followBottom.current) el.scrollTop = el.scrollHeight
+    })
+    ro.observe(content)
+    return () => ro.disconnect()
+  }, [])
   const approve = useCallback((approvalId: string, decision: string) => {
     let row: unknown
     try { row = JSON.parse(approvalId) } catch { row = null }
@@ -351,13 +379,14 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     }).finally(settle)
   }, [nativeApproval, instanceId, slotPath, settle, name])
   // The newest turn row the transcript draws as a bubble: a system notice
-  // (compaction, reload) and a say-nothing reply are not one.
-  const lastTurn = [...messages].reverse().find(m =>
+  // (compaction, reload) and a say-nothing reply (`isHiddenReplyAt`) are not one.
+  const lastTurnIdx = messages.findLastIndex((m, i) =>
     !isRetractedSteerRow(m) && (
       m.role === 'user' ||
-      (m.role === 'assistant' && !isSystemNoticeRow(m) && !isHiddenInvisibleAssistantRow(m))
+      (m.role === 'assistant' && !isSystemNoticeRow(m) && !isHiddenReplyAt(m, messages, i))
     ),
   )
+  const lastTurn = lastTurnIdx >= 0 ? messages[lastTurnIdx] : undefined
   // An untitled session shows the shared "Untitled session" label, never the
   // internal slot key. The key still routes every request (crewWindowSlot,
   // slotPath); only the header text changes. The label is used ONLY once a
@@ -479,7 +508,8 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
         </div>
       )}
       <div className="relative flex-1 min-h-0">
-      <div ref={scrollerRef} className="absolute inset-0 overflow-y-auto pt-3 flex flex-col gap-1" aria-live="polite" style={{ paddingBottom: dockH + DOCK_CLEARANCE_PX }}>
+      <div ref={scrollerRef} onScroll={noteScroll} className="absolute inset-0 overflow-y-auto pt-3" aria-live="polite" style={{ paddingBottom: dockH + DOCK_CLEARANCE_PX }}>
+      <div ref={contentRef} className="flex flex-col gap-1">
         <div className="px-4 flex flex-col gap-3">
           {/* No hand-off: the composer below may hold an unsent draft. */}
           {loadError && <ErrorNotice title={i18nT('pages.chat.crewWindow.load_failed', { name })} message={errMessage(loadError)} />}
@@ -497,7 +527,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
         {/* Every code fence here is the peer's: copy only, never Edit or Run
             in THIS machine's terminal. */}
         <ReadOnlyCodeCtx.Provider value={true}>
-          <ChatMessageList messages={messages} running={displayRunning} renderers={renderers} onApprove={approve} onQuoteMessage={messageQuote.quoteMessage} />
+          <ChatMessageList messages={messages} running={displayRunning} renderers={renderers} onApprove={approve} onQuoteMessage={messageQuote.quoteMessage} collapseAllSteps={collapseAllSteps} />
         </ReadOnlyCodeCtx.Provider>
         {/* The footer reads the peer's turn phase from `state` and its stop
             from `stopState`, the same two fields the local chat passes. */}
@@ -508,6 +538,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             <div className="text-muted" data-testid="crew-window-approval-elsewhere">{i18nT('pages.chat.crewWindow.approval_elsewhere', { name })}</div>
           )}
         </div>
+      </div>
       </div>
       {/* The composer dock, in the local page's shape (ComposerDockView): a bare
           box floating over the bottom of the scroller, so the transcript passes
@@ -540,7 +571,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             bare text line there would paint straight onto the rows passing
             under it. */}
         <div className="dock-inert">
-        <div className="px-4 mx-auto w-full flex flex-col gap-2 mb-2 empty:hidden" style={{ maxWidth: 'var(--mc-input-width, 900px)' }} data-testid="crew-window-notices">
+        <div className="px-4 mx-auto w-full flex flex-col gap-2 mb-2 empty:hidden" style={{ maxWidth: 'var(--mc-input-width, 900px)' }} data-testid="crew-window-notices" {...GUIDE_KEEP_CLEAR}>
           {/* No hand-off: the composer below may hold an unsent draft. */}
           {/* An unreachable crew did not say no: its own words, no raw error,
               and a way to the crew's own dashboard (which reconnects it). */}
@@ -620,6 +651,10 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             // Mid-turn the composer offers steer or queue, as locally.
             canSteer={running}
             onSteer={() => send(true)}
+            // The prompt stash keeps a restored draft until the host confirms
+            // delivery. This peer's send reports no receipt, so a delivered
+            // draft would stay stashed and invite a duplicate send.
+            promptStash={false}
             isQueued={!!slotQ.data?.stopping}
             stopState={slotQ.data?.stop_state}
             stopDeclined={!!slotQ.data?.stop_declined}
@@ -632,8 +667,6 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             contextPct={detailQ.data?.context_pct}
             contextUsedTokens={detailQ.data?.context_used_tokens}
             contextWindowTokens={detailQ.data?.context_window_tokens}
-            showContextPct={chatConfig.showContextPct}
-            showContextTokens={chatConfig.showContextTokens}
             // The PEER's folder, as a label: no picker, and nothing on this
             // machine is rooted at it (see `sessionOnPeer`).
             project={slotQ.data?.project || ''}

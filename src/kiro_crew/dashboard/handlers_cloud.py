@@ -37,11 +37,19 @@ from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam
 from kiro_crew.cloud import launch_job as lj
 from kiro_crew.cloud import login as login_mod
+from kiro_crew.cloud import sizes
 from kiro_crew.cloud import source as source_mod
 from kiro_crew.cloud import ssm
-from kiro_crew.cloud.aws import AWSError, CloudActionDenied
+from kiro_crew.cloud.aws import AWSError, CloudActionDenied, service_error_code
 from kiro_crew.cloud.launch_engine import RealLaunchEngine
 from kiro_crew.cloud.login_target import KiroLoginTarget, LoginTargetError, target_from_whoami
+from kiro_crew.dashboard.cloud_launch_controls import (
+    _cancels,
+    _register_cancel,
+    _register_skip,
+    _release_cancel,
+    _release_skip,
+)
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response
 from kiro_crew.dashboard.handlers.sessions import fetch_local_identity
 from kiro_crew.dashboard.handlers.source_providers import (
@@ -308,42 +316,6 @@ def _launch_lock(state: "DashboardState") -> LoopBoundLock:
     return lock
 
 
-def _cancels(state: "DashboardState") -> dict:
-    cancels = getattr(state, "cloud_launch_cancels", None)
-    if cancels is None:
-        cancels = {}
-        state.cloud_launch_cancels = cancels
-    return cancels
-
-
-#: Serialises the register/release pair on ``_cancels``. Registration happens on
-#: the event loop and release on a worker thread, so a compare-then-delete
-#: without it could still read one worker's event and delete the next one's.
-_CANCELS_GUARD = threading.Lock()
-
-
-def _register_cancel(state: "DashboardState", job_id: str, cancel: threading.Event) -> None:
-    with _CANCELS_GUARD:
-        _cancels(state)[job_id] = cancel
-
-
-def _release_cancel(state: "DashboardState", job_id: str, cancel: threading.Event) -> None:
-    """Drop the registered event for *job_id* only if it is still *cancel*.
-
-    A worker releases its event AFTER persisting its terminal result -- and the
-    restart route admits a new retry for the same job as soon as the file reads
-    terminal, registering a new event under the same id. An unconditional pop in
-    the finishing worker's ``finally`` therefore raced that registration and could
-    delete the NEW worker's event: a cancel then found nothing to set, wrote
-    CANCELLED, and the new worker overwrote it with its result -- the cancel was
-    silently ignored. Releasing only our own event closes that.
-    """
-    with _CANCELS_GUARD:
-        cancels = _cancels(state)
-        if cancels.get(job_id) is cancel:
-            del cancels[job_id]
-
-
 def _start_worker(
     state: "DashboardState", job: lj.LaunchJob, engine: Optional[lj.LaunchEngine] = None
 ) -> None:
@@ -356,15 +328,18 @@ def _start_worker(
     if engine is None:
         engine = _engine(state, job.provider_id)
     cancel = threading.Event()
+    skip = lj.SigninSkip()
     _register_cancel(state, job.id, cancel)
+    _register_skip(state, job.id, skip)
     # Claim the job for this process, so a later reap_orphans() does not mistake
     # a launch we are actively driving for one abandoned by a restart.
     store.adopt(job.id)
 
     def _run() -> None:
         try:
-            lj.run_launch(job, store, engine, cancel=cancel)
+            lj.run_launch(job, store, engine, cancel=cancel, skip_signin=skip)
         finally:
+            _release_skip(state, job.id, skip)
             _release_cancel(state, job.id, cancel)
 
     if getattr(state, "cloud_launch_sync", False):
@@ -741,8 +716,10 @@ async def api_cloud_launch_task(request: web.Request) -> web.Response:
 async def api_cloud_launch_create(request: web.Request) -> web.Response:
     """POST /api/cloud/launch — start a launch job.
 
-    Body: ``{provider_id?, profile, region, size_key, subnet_id?, login_target?,
-    confirm_recipient?}``. ``subnet_id`` pins a built-in EC2 launch to that subnet.
+    Body: ``{provider_id?, profile, region, size_key, subnet_id?, instance_type?,
+    login_target?, confirm_recipient?}``. ``subnet_id`` pins a built-in EC2 launch to
+    that subnet; ``instance_type`` launches a type the Region offers instead of the
+    ``size_key`` tier (see ``handlers_cloud_instance_types``).
     ``confirm_recipient`` is the credential recipient the operator confirmed, required by any
     lane whose launch delivers a credential to something its own configuration names (the
     Fargate lane refuses an empty or stale one and names both values); the built-in EC2 lane
@@ -776,6 +753,12 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
     # handler has no way to know what a lane's recipient looks like, and a check that
     # guessed would be a second rule to keep in step with the engine's.
     confirm_recipient = str(body.get("confirm_recipient") or "")
+    # Launch without the Kiro sign-in: a crew on another harness needs none.
+    skip_signin = body.get("skip_signin", False)
+    if not isinstance(skip_signin, bool):
+        return web.json_response(
+            {"error": "skip_signin must be true or false", "code": "invalid_body"}, status=400
+        )
     # The Kiro identity the crew signs in as — validated HERE, at the owner-only
     # HTTP boundary, before anything is persisted or reaches a remote shell.
     # An absent block is the Builder ID default (a pre-seam client body launches
@@ -803,6 +786,11 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
     except ValidationError as e:
         _audit("launch_create", "denied", error=f"invalid subnet: {e}")
         return web.json_response({"error": str(e), "code": "invalid_subnet"}, status=400)
+    from kiro_crew.dashboard.handlers_cloud_instance_types import check_requested_instance_type
+
+    instance_type, refused = await check_requested_instance_type(body, provider_id)
+    if refused is not None:
+        return refused
     provisioner = next((p for p in await _in_executor(_provisioners) if p.id == provider_id), None)
     if provisioner is None:
         _audit("launch_create", "denied", error=f"unknown provisioner {provider_id!r}")
@@ -845,6 +833,37 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    tier = sizes.TIERS_BY_KEY.get(size_key)
+    if subnet_id and (instance_type or tier is not None):
+        # The same check ec2.deploy runs, here so a subnet the launch would refuse is
+        # reported under its field before anything is set up. Outside the launch lock:
+        # these are AWS calls, and holding it would stall cancel and the sign-in retry.
+        # An unknown size skips it; store.create below refuses that request. A custom
+        # type replaces the tier's, so the subnet's zone must offer that one.
+        subnet_type = instance_type or (tier.instance_type if tier else "")
+
+        def _check_subnet() -> None:
+            region = ec2.validate_region(str(body.get("region", "")) or lj._default_region())
+            profile = ec2.validate_profile(str(body.get("profile", "")))
+            ec2.resolve_explicit_subnet(subnet_id, profile, region, subnet_type)
+
+        try:
+            await _in_executor(_check_subnet)
+        except ValidationError as e:
+            _audit("launch_create", "denied", error=str(e))
+            return web.json_response(
+                {"error": str(e), "code": "invalid_cloud_parameter"}, status=400
+            )
+        except AWSError as e:
+            # Only the subnet's own refusals go under its field: the check's own, or AWS
+            # naming the id. A credential, permission or network failure is the account's.
+            if e.stderr and not service_error_code(e.stderr).startswith("InvalidSubnetID"):
+                _audit("launch_create", "failure", error=str(e))
+                return web.json_response({"error": str(e), "code": "aws_call_failed"}, status=502)
+            _audit("launch_create", "denied", error=f"invalid subnet: {e}")
+            return web.json_response({"error": str(e), "code": "invalid_subnet"}, status=400)
+        except SandboxUnavailableError as exc:
+            return _sandbox_unavailable_response("launch_create", exc, "The subnet check")
     # One launch at a time. Without this a double-click or a retried request
     # creates two jobs with two tags and two CloudFormation stacks — two billed
     # instances, and the client cannot undo that after the fact. The check, the
@@ -922,6 +941,8 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
                     step_labels=dict(provisioner.step_labels or ()),
                     login_target=login_target,
                     subnet_id=subnet_id,
+                    skip_signin=skip_signin,
+                    instance_type=instance_type,
                 )
             )
         except KeyError as e:  # unknown size
@@ -979,22 +1000,24 @@ async def api_cloud_launch_cancel(request: web.Request) -> web.Response:
     return web.json_response(updated.to_dict())
 
 
-def _preserved_code_may_be_approved(job: lj.LaunchJob) -> bool:
-    """Is this the one shape where the box can be signed in behind our back?
+def _unsigned_crew_may_be_reprobed(job: lj.LaunchJob) -> bool:
+    """Is this a crew whose recorded "not signed in" may be out of date?
 
-    A sign-in that ran out of time deliberately KEEPS its device code and leaves
-    the remote login polling, so the user can still approve it from the browser
-    tab that is already open. Nothing re-probes the instance after that, so an
-    approval that lands then signs the crew in while the job still reads
-    ``signin_detected=False`` — badged "Needs sign-in" forever, with Connect held.
+    ``signin_detected`` is written once, when the launch (or a retry) ends. The
+    box can be signed in after that by paths this job never sees: a preserved
+    device code approved from the open browser tab, a sign-in on the crew's own
+    dashboard, ``kirocrew kas login`` or ``kiro-cli login`` in a shell on it.
+    Nothing re-probes the instance afterwards, so such a crew read
+    ``signin_detected=False`` -- badged "Needs sign-in" forever while it served
+    chats. The dashboard asks once per unsigned crew row (the route below), so
+    the badge shows only what the box says now.
 
     True only for: terminal (no worker owns it, so nothing else is writing it),
-    registered with an instance to probe, not already signed in, and still
-    holding the surviving prompt that makes the approval possible. Deliberately
-    narrow — this must never become a blanket poll of every job, and never touch
-    a job a worker is driving.
+    registered with an instance to probe, and not already signed in. Never a job
+    a worker is driving, and never a signed-in one: this is one probe per unsigned
+    crew the owner is looking at, not a poll of every job.
     """
-    if not job.terminal or job.signin_detected or not job.instance_id or not job.signin:
+    if not job.terminal or job.signin_detected or not job.instance_id:
         return False
     if lj.target_is_unreadable(job):
         # `from_dict` substituted the DEFAULT identity for one it could not parse,
@@ -1019,10 +1042,11 @@ def _probe_signin_on_box(state: "DashboardState", job: lj.LaunchJob) -> Optional
     :func:`_record_probed_signin` owns the write -- on the loop, under the lock.
     """
     try:
-        return bool(
-            login_mod.is_logged_in(
-                job.instance_id, job.profile, job.region, target=job.login_target
-            )
+        # `signin_state`, not `is_logged_in`: the latter answers False for a box it
+        # could not reach, and the row would then tell the owner a crew it never
+        # asked is signed out.
+        return login_mod.signin_state(
+            job.instance_id, job.profile, job.region, target=job.login_target
         )
     except Exception:  # noqa: BLE001 - a probe failure is not a launch failure
         logger.info("could not re-probe the Kiro sign-in for %s", job.id, exc_info=True)
@@ -1046,7 +1070,7 @@ async def _record_probed_signin(state: "DashboardState", job: lj.LaunchJob) -> b
         fresh = await _in_executor(store.get, job.id)
         if fresh is None:
             return False
-        if not _preserved_code_may_be_approved(fresh):
+        if not _unsigned_crew_may_be_reprobed(fresh):
             logger.info("dropping a stale sign-in probe result for %s: the job moved on", job.id)
             return False
         lj.mark_signed_in(fresh)
@@ -1062,12 +1086,15 @@ async def api_cloud_launch_signin(request: web.Request) -> web.Response:
     The job auto-polls for approval; this returns the URL + code to display (and
     409 when no sign-in is pending), so the UI has a dedicated fetch for it.
 
-    A terminal job that still holds a PRESERVED code is re-probed first: nothing
-    else re-checks the box after the job goes terminal, so a code approved out of
-    band left the crew signed in while the job said it was not. The probe runs
-    only on that narrow shape (see :func:`_preserved_code_may_be_approved`) and
-    answers ``signin_already_complete``, with the corrected job, instead of the
-    bare "no sign-in pending" that hid it.
+    A terminal, registered, unsigned job is re-probed first, with or without a
+    preserved code: nothing else re-checks the box after the job goes terminal,
+    so a crew signed in later (an approved code, a sign-in on the crew itself)
+    stayed "not signed in" here. The probe runs only on that shape (see
+    :func:`_unsigned_crew_may_be_reprobed`). Three answers: signed in ->
+    ``signin_already_complete`` with the corrected job; the box said it is NOT
+    signed in -> ``no_signin_pending``; the box could not be asked ->
+    ``signin_probe_failed`` (502), which the dashboard shows as unknown, never as
+    "Needs sign-in".
     """
     denied = _guard(request, "launch_signin")
     if denied is not None:
@@ -1078,7 +1105,7 @@ async def api_cloud_launch_signin(request: web.Request) -> web.Response:
     if job is None:
         return web.json_response({"error": "not found", "code": "launch_job_not_found"}, status=404)
     if job.status != lj.AWAITING_SIGNIN or not job.signin:
-        if _preserved_code_may_be_approved(job):
+        if _unsigned_crew_may_be_reprobed(job):
             # Query off the loop, write on it under the lock. Both halves must
             # succeed to report the crew signed in: a probe that says yes but whose
             # write is dropped means another writer moved the job on, and the

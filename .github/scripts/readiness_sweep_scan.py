@@ -106,6 +106,31 @@ FAILURE_CONCLUSIONS = frozenset(
     }
 )
 
+# The workflows readiness waits on: pr-readiness.yml's `on.workflow_run`
+# list, whose `in_progress` holds the verdict. A queued or running check-run
+# of any other Actions workflow (`macOS Tests (on demand)`, say) is not a lane
+# the sweep's debounce waits for. test_readiness_sweep_scan.py compares the
+# two lists so they cannot drift apart.
+MONITORED_WORKFLOWS = frozenset(
+    {
+        "CI",
+        "Fast Gate",
+        "Build",
+        "Code Review",
+        "PR Hygiene",
+        "Issue Gate",
+        "Opus 5.5 Review",
+        "GPT 6.1 Review",
+        "Design Review",
+        "UX Review",
+        "First Principles Review",
+        "Security Scope Review",
+        "CodeQL",
+        "Internal Content Scan Gate",
+        "Sensitive Change Review (approval)",
+    }
+)
+
 ATTEMPTS = 3
 # Two waits for three attempts.
 BACKOFF_SECONDS = (2.0, 4.0)
@@ -158,7 +183,10 @@ query($owner: String!, $name: String!, $first: Int!, $cursor: String) {
                   pageInfo { hasNextPage endCursor }
                   nodes {
                     __typename
-                    ... on CheckRun { status conclusion completedAt }
+                    ... on CheckRun {
+                      status conclusion completedAt
+                      checkSuite { workflowRun { workflow { name } } }
+                    }
                   }
                 }
               }
@@ -185,7 +213,10 @@ query($owner: String!, $name: String!, $oid: GitObjectID!, $after: String!) {
             pageInfo { hasNextPage endCursor }
             nodes {
               __typename
-              ... on CheckRun { status conclusion completedAt }
+              ... on CheckRun {
+                status conclusion completedAt
+                checkSuite { workflowRun { workflow { name } } }
+              }
             }
           }
         }
@@ -350,7 +381,11 @@ def _fold_checks(nodes: list[Any], completed: list[str], failed: list[str]) -> i
 
     Returns how many check-runs on the page have not completed yet (queued or
     in progress). The sweep holds a "check completed later" re-fire while any
-    is still running, because the next completion would re-open it.
+    is still running, because the next completion would re-open it. A
+    check-run filed under an Actions workflow outside MONITORED_WORKFLOWS is
+    not counted: readiness does not wait on that workflow, and one can stay
+    queued for hours. One with no workflow run (another app's check) still
+    is. Every completion stays evidence.
 
     Non-CheckRun nodes (the commit statuses the rollup mixes in) carry no
     conclusion and are skipped -- the readiness verdict is read from
@@ -361,7 +396,10 @@ def _fold_checks(nodes: list[Any], completed: list[str], failed: list[str]) -> i
         if not isinstance(node, dict) or node.get("__typename") != "CheckRun":
             continue
         if node.get("status") != "COMPLETED":
-            running += 1
+            run = (node.get("checkSuite") or {}).get("workflowRun") or {}
+            workflow = (run.get("workflow") or {}).get("name")
+            if workflow is None or workflow in MONITORED_WORKFLOWS:
+                running += 1
             continue
         at = node.get("completedAt")
         if not at:

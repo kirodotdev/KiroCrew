@@ -593,10 +593,6 @@ def handshake_matches(d: str, meta: dict) -> bool:
 # (set, fixture dir) -> the capture that is missing. Shrink-only: an entry not on
 # the base ref fails, and an entry whose member now passes fails until removed.
 X_CAPTURE_ALLOWLIST: dict[tuple[str, str], str] = {
-    ("ACP_BACKENDS_STEERING_REQUEST", "claude"): (
-        "live 0.94.0 steer during Bash ends the turn early and starts an unowned turn; "
-        "under investigation"
-    ),
     ("ACP_BACKENDS_STEERING_REQUEST", "goose"): "goose _goose/unstable/session/steer turn",
     ("ACP_BACKENDS_SIDE_READONLY", "goose"): "goose side session read-only turn",
     ("ACP_BACKENDS_MEMBER_CAPABILITIES", "deepseek"): "deepseek saved member spec session",

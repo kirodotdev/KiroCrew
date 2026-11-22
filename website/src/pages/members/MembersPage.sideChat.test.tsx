@@ -206,9 +206,9 @@ describe('MembersPage Side Chat in the side panel (selection Ask)', () => {
     // The collision surfaces as its own notice; no pane, so no Ask …
     await screen.findByTestId('member-thread-collision')
     expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
-    // … and the strip is the slot-free bucket: Dashboard only. Side Chat
+    // … and the strip is the slot-free bucket: Dashboard and Sessions. Side Chat
     // remains dynamic and requires a confirmed member thread.
-    await waitFor(() => expect(tabLabels()).toEqual(['Dashboard']))
+    await waitFor(() => expect(tabLabels()).toEqual(['Dashboard', 'Sessions']))
     expect(screen.queryByTestId('side-chat-stub')).toBeNull()
   })
 })

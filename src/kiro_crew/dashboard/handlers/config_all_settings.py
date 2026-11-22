@@ -79,7 +79,6 @@ READONLY_REASONS: dict[str, str] = {
     # Sign-ins, credentials and governance.
     # The browser spec keeps the live view's password cover on, with no control.
     "browser.live.mask_passwords": WHY_SIGN_IN,
-    "agent.kas_persist_mcp_sign_in": WHY_SIGN_IN,
     "agent.kas_refuse_plain_http_mcp_headers": WHY_SIGN_IN,
     "agent.mcp_registry_mode": WHY_SIGN_IN,
     "dashboard.sso_login_flags": WHY_SIGN_IN,
@@ -114,6 +113,8 @@ READONLY_REASONS: dict[str, str] = {
     "tunnel.enabled": WHY_REACH,
     "tunnel.name_mode": WHY_REACH,
     "tunnel.relay_enabled": WHY_REACH,
+    # Where the Crew's lease credential goes; `kirocrew config set` writes it.
+    "tunnel.relay_lease_region": WHY_REACH,
     "tunnel.relay_viewer_enabled": WHY_REACH,
     "dashboard.tailscale.bind_refresh_chains": WHY_REACH,
     "dashboard.tailscale.pin_scope": WHY_REACH,
@@ -246,12 +247,9 @@ _OWNING_PAGES: dict[str, dict[str, str]] = {
     "memory.repeated_failures_notice": {"tab": "overview"},
     # Settings -> Developer -> Logs: the level picker (POST /api/logs/level).
     "agent.log_level": {"tab": "developer", "sub": "logs"},
+    # Settings -> Agent Harness, the KAS row's engine choice.
+    "agent.kas_bundle": {"tab": "agent", "highlight": "agent.engine"},
     # Settings -> Developer -> Feature Previews.
-    "agent.kas_bundle": {
-        "tab": "developer",
-        "sub": "feature-previews",
-        "highlight": "developer.run-kas-on-kiro-crew-s-own-engine",
-    },
     "dashboard.crewmate_threads": {
         "tab": "developer",
         "sub": "feature-previews",

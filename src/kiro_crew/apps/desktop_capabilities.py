@@ -21,8 +21,11 @@ A built-in stores no approved-grants set, so its packaged declaration is approve
 
 The gateway decides only what is declared and approved; it publishes that on the app
 row as ``desktopCapabilitiesGrant``. The shell is the enforcement point: it serves a
-capability only to a window of an enabled app whose row lists it as approved, and it
-refuses every other call. Nothing here names an app.
+capability only to a window of an app whose row lists it as approved, and to a window
+loaded from another gateway only what that gateway's row approves too, and it refuses
+every other call. An app switched off on this gateway is still served both in the
+windows a gateway the operator chose for it (``gatewayChoice``) serves while the app
+is on there. Nothing here names an app.
 """
 
 from __future__ import annotations

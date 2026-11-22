@@ -54,6 +54,7 @@ from kiro_crew.executors import (
 from kiro_crew.hooks import (
     HOOK_REPLY,
 )
+from kiro_crew.llm_helpers import record_interaction_event
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import turn_ceiling
 from kiro_crew.messaging.dispatch_admission import (
@@ -699,6 +700,12 @@ class ChannelTurns:
         # session is acquired.
         if Drift.NO_GOVERNANCE_BACKSTOP not in drift and not await inbound_permitted(channel):
             return self._outcome(Verdict.DENIED, monitor)
+        from kiro_crew.start_priority import StartPriority  # noqa: F811
+        from kiro_crew.stats import Stats  # in-function: keeps them off the facade
+
+        # Only a message a person sent counts; a loop or monitor wake starts BACKGROUND.
+        if asker.start_priority is StartPriority.FOREGROUND:
+            Stats().inc_message_admitted()
         agent = asker.agent or self._agent()
         if asker.resumed:
             # A resumed session must run as ITSELF: on a cold start ``get_or_create``
@@ -762,6 +769,9 @@ class ChannelTurns:
         # compaction replay fences against the session the replay reacquired, not
         # the first acquisition's entry that an earlier reset already popped.
         _fence_token: Any = None
+        # Built before the wake's own claim, so that claim's resume debt is
+        # recorded too.
+        bracket = TurnBracket(sessions, ctx_builder, session_key)
         if monitor is not None:
             # A wake claims its session WITHOUT waiting, before anything is built: a
             # conversation already in a turn answers BUSY and the wake retries its
@@ -790,6 +800,7 @@ class ChannelTurns:
                 logger.exception("%s monitor session claim failed", channel)
                 return self._outcome(Verdict.FAILED, monitor)
             _acquired = claimed = True
+            bracket.owe_resume(is_new=is_new, resumed=resumed)
             _fence_token = _claim_token
             _turn_provider = provider
             if self._opens_crew_log(asker):
@@ -815,6 +826,7 @@ class ChannelTurns:
                     # A wake owns its claim before the renderer exists, unlike an
                     # inbound turn: fail closed and give the claim back.
                     sessions.release(session_key)
+                    bracket.settle()
                     logger.exception("%s monitor pre-turn setup failed", channel)
                     return self._outcome(Verdict.BUSY, monitor, acquired=True)
                 raise
@@ -823,7 +835,6 @@ class ChannelTurns:
                 getattr(renderer, "capabilities", None),
                 getattr(renderer, "channel_type", "") or channel,
             )
-        bracket = TurnBracket(sessions, ctx_builder, session_key)
         driver: Any = None
         prompt = text
         accumulated = ""
@@ -958,6 +969,9 @@ class ChannelTurns:
                         **extra,
                     )
                     _acquired = True
+                    # The claim consumed a one-shot resume: owe its re-sent
+                    # lessons and steering before any await a Stop can cut.
+                    bracket.owe_resume(is_new=is_new, resumed=resumed)
                     # Hold the provider this attempt obtained, for the failure
                     # handler's attribution question. Captured HERE rather than looked
                     # up when a failure is handled: the recovery paths replace a dead
@@ -1043,6 +1057,7 @@ class ChannelTurns:
                         _fence_token,
                     )
                     provider, is_new, resumed = reprojection.claimed
+                    bracket.owe_resume(is_new=is_new, resumed=resumed)
                     _reprojected = _reprojected or reprojection.reprojected
                     if reprojection.superseded or (
                         reprojection.reprojected
@@ -1334,6 +1349,11 @@ class ChannelTurns:
             # recorded a failure, but the context it carried has already landed,
             # and re-arming would inject it a second time on the next turn.
             landed = bracket.landed(driver)
+            if landed:
+                # Per-interaction telemetry, on the landed verdict alone and
+                # before delivery is judged: a reply the channel failed to carry
+                # was still a model turn. On the provider this turn ran on.
+                record_interaction_event(_turn_provider, session_key, channel)
             stop_reason = (
                 (getattr(driver, "last_stop_reason", "") or "")
                 if getattr(driver, "completion_observed", False)

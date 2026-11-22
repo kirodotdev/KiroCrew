@@ -7,20 +7,28 @@
  * never connect. "Turn off" writes an explicit
  * `false`, so Remote Control stays off across a restart; turning it back on is the
  * terminal command.
+ *
+ * A teammate reads the same status about this Crew but gets no Turn off: turning it
+ * back on takes the host machine, so the switch is the machine owner's. For the same
+ * reason the owner gets no Turn off on a page opened through the Kiro relay
+ * (`relayed`); the server refuses that off too.
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Trans } from 'react-i18next'
 import { api, type RemoteControlState } from '../../api/client'
+import { REMOTE_CONTROL_QUERY_KEY } from '../../api/client/remoteAccess'
 import { ApiError } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SettingsCard, SettingsSection } from '../../components/settings'
 import { CopyCommandButton } from '../../components/settingRef/CopyCommandButton'
+import StatusNotice from '../../components/StatusNotice'
 import { Btn } from '../../components/ui'
+import { useViewerIsNotOwner } from '../../hooks/sharedCrew/useSharedCrew'
 import { i18nT } from '../../i18n/t'
 
-export const REMOTE_CONTROL_QUERY_KEY = ['remote-control'] as const
+export { REMOTE_CONTROL_QUERY_KEY }
 const TURN_ON_COMMAND = 'kirocrew remote-control on'
 
 /** The command, verbatim and never translated, with a copy button, for the catalog's `<command/>` slot. */
@@ -36,6 +44,7 @@ function TurnOnCommand() {
 export function RemoteControlCard() {
   const queryClient = useQueryClient()
   const [turnedOff, setTurnedOff] = useState(false)
+  const { notOwner } = useViewerIsNotOwner()
   const { data, error: loadError } = useQuery<RemoteControlState>({
     queryKey: REMOTE_CONTROL_QUERY_KEY,
     queryFn: () => api.remoteControl(),
@@ -57,7 +66,7 @@ export function RemoteControlCard() {
   // cached: that cached status may be stale, and hiding the error would hide that.
   const readFailed =
     Boolean(loadError) && !(loadError instanceof ApiError && loadError.status === 403)
-  // No hand-off: the Remote Crew panel below this card can hold an unsaved add-crew
+  // No hand-off: the Remote Crew panel above this card can hold an unsaved add-crew
   // form, and opening a chat would unmount it.
   const readError = readFailed ? (
     <ErrorNotice
@@ -67,6 +76,9 @@ export function RemoteControlCard() {
   ) : null
 
   const shown = data?.requested || data?.running
+  // Read-only here: a teammate, or the owner on a page the relay delivered.
+  const relayed = Boolean(data?.relayed)
+  const canTurnOff = !notOwner && !relayed
   if (!data || (!shown && !turnedOff)) {
     if (!readError) return null
     return (
@@ -78,7 +90,7 @@ export function RemoteControlCard() {
   return (
     <SettingsSection title={i18nT('pages.settings.remoteControlCard.title')}>
       <SettingsCard>
-        <div className="space-y-3" data-testid="remote-control-card">
+        <div className="space-y-3" data-testid="remote-control-card" data-setting-id="instances.remote-control">
           {readError}
           {/* This build ignores the setting, so a restart would never connect. */}
           {shown && data.locked && (
@@ -87,13 +99,22 @@ export function RemoteControlCard() {
             </p>
           )}
           {shown && !data.locked && data.running && (
-            <p className="m-0 text-[13px]">{i18nT('pages.settings.remoteControlCard.on')}</p>
-          )}
-          {shown && !data.locked && !data.running && (
-            <p className="m-0 text-[13px]" role="status">
-              {i18nT('pages.settings.remoteControlCard.restart_to_connect')}
+            <p className="m-0 text-[13px]">
+              {notOwner
+                ? i18nT('pages.settings.remoteControlCard.on_teammate')
+                : i18nT('pages.settings.remoteControlCard.on')}
             </p>
           )}
+          {shown && !data.locked && !data.running && !data.problem && (
+            <p className="m-0 text-[13px]" role="status">
+              {data.connecting
+                ? i18nT('pages.settings.remoteControlCard.connecting')
+                : i18nT('pages.settings.remoteControlCard.restart_to_connect')}
+            </p>
+          )}
+          {/* Why config keeps the relay from starting: a restart would not help.
+              No hand-off: same reason as the read failure above. */}
+          {shown && !data.locked && !data.running && <ErrorNotice message={data.problem} />}
           {!shown && (
             <p className="m-0 text-[13px]" role="status">
               {/* Locked: `remote-control on` is refused here, so no turn-on hint. */}
@@ -114,7 +135,21 @@ export function RemoteControlCard() {
               message={off.error instanceof Error ? off.error.message : String(off.error)}
             />
           )}
-          {shown && (
+          {shown && notOwner && (
+            <StatusNotice
+              tone="info"
+              testId="remote-control-owner-only"
+              message={i18nT('pages.settings.remoteControlCard.owner_only')}
+            />
+          )}
+          {shown && !notOwner && relayed && (
+            <StatusNotice
+              tone="info"
+              testId="remote-control-local-only"
+              message={i18nT('pages.settings.remoteControlCard.local_only')}
+            />
+          )}
+          {shown && canTurnOff && (
             <Btn onClick={() => off.mutate()} disabled={off.isPending}>
               {off.isPending
                 ? i18nT('pages.settings.remoteControlCard.turning_off')
@@ -124,7 +159,7 @@ export function RemoteControlCard() {
           {/* Says what the click costs: open relayed connections close, and undoing it
               needs the terminal (guard.stop_after_drain drains, then stops the relay). */}
           {/* Locked: `remote-control on` is refused here, so no turn-on hint. */}
-          {shown && !data.locked && (
+          {shown && !data.locked && canTurnOff && (
             <p className="m-0 text-[12px] text-muted" data-testid="remote-control-off-effect">
               {data.running && (
                 <>{i18nT('pages.settings.remoteControlCard.turn_off_disconnects')} </>

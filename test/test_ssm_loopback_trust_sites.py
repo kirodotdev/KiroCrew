@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
+from source_corpus import untraced
 
 from kiro_crew.dashboard.origin import is_direct_local_request, is_ssm_request
 from kiro_crew.shared_crew.contracts import SSM_GUEST_REQUEST_KEY, SSM_REQUEST_KEY
@@ -92,6 +93,14 @@ PREDICATE_SITES = {
     # set its mark yet and the predicate alone would pass an SSM request. The
     # router refuses by listener first (``SsmGate.owns``, the socket's local port).
     "apps/app_web_origin.py": 1,
+    # The relayed-Crew router (a browser tab's relay Crew) sits beside it and
+    # refuses by listener first the same way.
+    "relay_viewer/browser_origin.py": 1,
+    "dashboard/handlers/relay_viewer.py": 1,
+    # Recording a Remote Crew pane port runs inside token auth, after the SSM gate
+    # has marked what it admits, so the predicate refuses an SSM request here. The
+    # router that serves the recorded port still refuses by listener first.
+    "apps/pane_ports.py": 1,
     "dashboard/file_api/desktop.py": 1,
     "dashboard/handlers/core.py": 2,
     "dashboard/handlers/external_terminal.py": 1,
@@ -101,14 +110,19 @@ PREDICATE_SITES = {
     "dashboard/handlers/webapp_preview.py": 1,
     "dashboard/handlers/whatsapp_setup.py": 5,
     "dashboard/messaging_api/channel_folder_backfill.py": 1,
+    # Local authorization's four routes: token auth admits an SSM request and sets
+    # its mark before the method-scoped bypass these routes pass through.
+    "dashboard/routes/local_authorization.py": 1,
     "dashboard/messaging_api/discord_settings.py": 2,
-    "dashboard/messaging_api/feishu_settings.py": 2,
+    "dashboard/messaging_api/feishu_settings.py": 3,
     "dashboard/messaging_api/imessage_settings.py": 2,
+    "dashboard/messaging_api/slack_owner_claim.py": 1,
     "dashboard/messaging_api/slack_settings.py": 3,
     "dashboard/messaging_api/teams_settings.py": 2,
     "dashboard/messaging_api/telegram_settings.py": 2,
     "dashboard/messaging_api/webex_settings.py": 2,
     "dashboard/messaging_api/wecom_settings.py": 2,
+    "dashboard/slack_shared_access.py": 1,
 }
 
 #: ``is_loopback(request.remote ...)`` call sites per file, and why each is safe.
@@ -141,21 +155,24 @@ RAW_LOOPBACK_SITES = {
 def _call_sites() -> tuple[dict[str, int], dict[str, int]]:
     direct: collections.Counter[str] = collections.Counter()
     raw: collections.Counter[str] = collections.Counter()
-    for path in SRC.rglob("*.py"):
-        rel = path.relative_to(SRC).as_posix()
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-            if name == "is_direct_local_request":
-                direct[rel] += 1
-            elif (
-                name == "is_loopback"
-                and node.args
-                and "request.remote" in ast.unparse(node.args[0])
-            ):
-                raw[rel] += 1
+    # The walk only parses source text and runs no package code, so pausing the
+    # coverage tracer loses no measured line.
+    with untraced():
+        for path in SRC.rglob("*.py"):
+            rel = path.relative_to(SRC).as_posix()
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+                if name == "is_direct_local_request":
+                    direct[rel] += 1
+                elif (
+                    name == "is_loopback"
+                    and node.args
+                    and "request.remote" in ast.unparse(node.args[0])
+                ):
+                    raw[rel] += 1
     return dict(direct), dict(raw)
 
 

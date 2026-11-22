@@ -1,0 +1,2 @@
++34
+PR #38985: thirteen exact words added to `_EXECUTABLE_WORDS` in `security/mcp_body_fields.py` (plural and shell-name spellings of executable arguments, one per line), plus a once-per-process warning when a stored owner row is dropped because its field is now one of those words, so the owner can see why the tool's large bodies are refused again.

@@ -208,7 +208,9 @@ export function useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fu
   //     still opens over the file, which is honest about what is on screen.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!hasCommandModifier(e) || e.key.toLowerCase() !== 'f') return
+      // Shift is ⌘⇧F / Ctrl+Shift+F, Search all chats, and must reach the registry;
+      // with Command held macOS reports `e.key` as 'f', so the case cannot tell them apart.
+      if (!hasCommandModifier(e) || e.shiftKey || e.key.toLowerCase() !== 'f') return
       if (!active || crewHidden) return                     // hidden tab or another Crew showing: never claim the key
       if (!findActiveRef.current) return                    // cursor is in chat → let chat-find handle
       if (editing) {

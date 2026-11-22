@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from types import SimpleNamespace
 from typing import cast
@@ -883,7 +884,7 @@ class TestChatSlotReasoningEffortLiveProvider:
             state.sessions.record_effort_override.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_relaunch_refusal_keeps_the_old_level_and_does_not_reset(self):
+    async def test_a_relaunch_refusal_keeps_the_old_level_and_does_not_reset(self, caplog):
         """A relaunching harness put the prior level back; saving the refused one would
         cold-start on it and fail the same way on every later message."""
         from kiro_crew.providers.acp import AcpProvider
@@ -892,17 +893,26 @@ class TestChatSlotReasoningEffortLiveProvider:
         provider.supports_effort = MagicMock(return_value=True)
         provider.has_active_turn = MagicMock(return_value=False)
         provider.switches_by_relaunch = True
-        provider.change_effort = AsyncMock(side_effect=RuntimeError("cannot run that effort"))
+        provider.change_effort = AsyncMock(
+            side_effect=RuntimeError("cannot run that effort: /home/u/private internal.example.net")
+        )
         slot = _ChatSlot("test")
         slot.reasoning_effort = "low"
         state = _mock_state(slot, provider=provider)
-        async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/test/reasoning-effort",
-                json={"reasoning_effort": "high"},
-            )
-            assert resp.status == 400
-            assert (await resp.json())["code"] == "effort_refused"
+        with caplog.at_level(logging.WARNING):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/reasoning-effort",
+                    json={"reasoning_effort": "high"},
+                )
+                assert resp.status == 400
+                # A fixed sentence: the exception text stays out of the body.
+                assert await resp.json() == {
+                    "error": "The agent did not accept the reasoning effort change.",
+                    "code": "effort_refused",
+                }
+        # The owner's log keeps the detail.
+        assert "/home/u/private" in caplog.text
         assert slot.reasoning_effort == "low"
         state.sessions.reset.assert_not_called()
 

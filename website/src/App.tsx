@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, useSyncExternalStore, createContext, lazy, memo, Suspense, type ReactNode } from 'react'
+import { useEffect, useState, useCallback, useRef, createContext, lazy, memo, Suspense, type ReactNode } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from './store'
 import { setUpdateProgress } from './store/dashboardSlice'
@@ -11,11 +11,12 @@ import { GuideProvider } from './guide/GuideContext'
 import { metricColor } from './utils/metricColor'
 import { railWidthFor } from './hooks/useRailWidth'
 import { FOCUS_INSET } from './hooks/useFocusMode'
-import { OVERLAY_Z_MAX, THEME_DECOR_BEHIND_SLOT_ID, THEME_DECOR_SLOT_ID, registerThemeDecorBehindSlot, registerThemeDecorSlot } from './lib/themeDecorLayer'
+import { OVERLAY_Z_MAX, THEME_DECOR_BEHIND_SLOT_ID, THEME_DECOR_SLOT_ID, registerThemeDecorBehindSlot, registerThemeDecorSlot, useThemeDecorSlot } from './lib/themeDecorLayer'
+import RegisteredThemeOverlays from './shell/RegisteredThemeOverlays'
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api } from './api/client'
 import { MetricsCard } from './shell/topbar/metricsReadout'
-import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, AlertTriangle, Coins, Compass, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
+import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, Circle, AlertTriangle, Compass, KeyRound, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
 import { FirstRunChapters } from './shell/boot/firstRun'
 import ErrorNotice from './components/ErrorNotice'
 import { MobileConnectDialog } from './components/mobileConnect'
@@ -56,7 +57,7 @@ import ArtifactDetailPage from './pages/ArtifactDetailPage'
 import { ChangelogModal, UpdateErrorDialogFrame } from './shell/updates/updateFlow'
 import KiroCrewNavBridge from './components/KiroCrewNavBridge'
 import InstancesViewport from './components/InstancesViewport'
-import { LocalOverlayRoot } from './components/overlayRoot'
+import { LocalOverlayRoot, OffScreenOverlayScope } from './components/overlayRoot'
 import EmbeddedHostBridge from './components/EmbeddedHostBridge'
 import AppConfirmHost from './components/AppConfirmHost'
 import EmbeddedDragRegionReporter from './components/EmbeddedDragRegionReporter'
@@ -77,9 +78,11 @@ import { usePinnedScrollOrigin } from './hooks/usePinnedScrollOrigin'
 import './utils/terminalExitClose'
 import { focusPopout as focusTerminalPopout } from './utils/terminalPopout'
 import { mainStackingClass } from './utils/terminalFullscreen'
-import { REGISTERED_OVERLAYS_PACK, readExperience, subscribeExperience } from './utils/themeConsent'
 import MigrationCheck from './components/MigrationCheck'
 import CrashReportNotice from './components/CrashReportNotice'
+import { relayPaneBridge } from './lib/relayCrewPanes'
+// Only in a desktop shell with the relay pane calls, so its code stays out of the first load elsewhere.
+const RelayCrewPaneHost = lazy(() => import('./components/RelayCrewPaneHost'))
 import RemoteUpdateOffer from './components/RemoteUpdateOffer'
 import KiroSignInNoticeFallback from './components/KiroSignInNoticeFallback'
 import { ImportSessionOutcomeNotice } from './components/ImportSessionItem'
@@ -88,13 +91,16 @@ import BuiltinAppRoute from './apps/BuiltinAppRoute'
 import { MobileNavRailContext, MobileRosterBarContext, type MobileNavRailOptions } from './components/MobileNavRailContext'
 import ShortcutsModal from './components/ShortcutsModal'
 import QuickSearchSurface from './components/QuickSearchSurface'
+import GlobalChatSearchDialog from './components/globalChatSearch/GlobalChatSearchDialog'
 import ReportProblemModal from './components/ReportProblemModal'
 import KiroAccountModal from './components/KiroAccountModal'
+import { AccountAvatar, ACCOUNT_AVATAR_TOUCH_PX } from './components/AccountAvatar'
 
 import { i18nT } from './i18n/t'
+import { KIRO_SIGN_IN_PATH } from './pages/developer/kiroSignInLink'
 import { useLanguageGeneration } from './i18n/useLanguageGeneration'
 import { isAppNavId } from './appNotificationBadges'
-import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect } from './shell/routes'
+import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect, TerminalRoute } from './shell/routes'
 import { NAV_ITEMS } from './shell/nav/navItems'
 import { RailHeaderGlyph } from './shell/nav/railChrome'
 import { AdaptiveMobileRail } from './shell/nav/adaptiveMobileRail'
@@ -144,7 +150,8 @@ const DeveloperPage = lazyPage(() => import('./pages/DeveloperPage'))
 const SchedulePage = lazyPage(() => import('./pages/SchedulePage'))
 const AppPage = lazyPage(() => import('./pages/AppPage'))
 const AppDetailPage = lazyPage(() => import('./pages/AppDetailRoute'))
-const MigrationPage = lazyPage(() => import('./pages/MigrationPage'))
+const MarketListingPage = lazyPage(() => import('./pages/apps/MarketListingPage'))
+const MigrationPage = lazyPage(() => import('./pages/MigrationRoute'))
 const HooksPage = lazyPage(() => import('./pages/HooksPage'))
 
 type LogSubscribeFn = (cb: ((data: { level: string; msg: string }) => void) | null) => void
@@ -251,7 +258,8 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
   }, [dispatch, onCancel])
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise p-safe">
+    // A relay Crew pane hides under it (lib/relayCrewPanes.ts).
+    <div data-relay-pane-overlay="" className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise p-safe">
       <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
         {/* A terminal step is not in progress, so it does not pulse. */}
         <div className={`text-4xl mb-4 ${isFailed ? 'text-danger' : 'animate-pulse'}`} data-testid="update-overlay-step-icon">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
@@ -265,7 +273,7 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
             const active = currentIdx === i && !isFailed
             return (
               <div key={s} className={`flex items-center gap-2.5 text-[13px] transition-colors ${done ? 'text-ok' : active ? 'text-accent font-medium' : 'text-muted/40'}`}>
-                <span className="w-5 text-center">{done ? <Check className="lucide-inline" /> : active ? si.icon : '○'}</span>
+                <span className="w-5 text-center">{done ? <Check className="lucide-inline" /> : active ? si.icon : <Circle className="lucide-inline" />}</span>
                 <span>{i18nT(UPDATE_STEP_LABEL_KEY[s])}</span>
                 {active && <span className="ml-auto text-[11px] text-muted animate-pulse">{elapsedStr}</span>}
               </div>
@@ -372,6 +380,8 @@ const MainRoutes = memo(function MainRoutes() {
       <Route path="/apps/-/updates" element={<Suspense fallback={null}><DiscoverPage /></Suspense>} />
       <Route path="/apps/library" element={<Suspense fallback={null}><LibraryPage /></Suspense>} />
       <Route path="/apps/detail/:name" element={<AppDetailPage />} />
+      {/* One Kiro Space store listing, keyed by store and ref, never by app name. */}
+      <Route path="/apps/-/market/:registry/:namespace/:name" element={<MarketListingPage />} />
       <Route path="/apps/migrate/:name" element={<MigrationPage />} />
       <Route path="/apps/:name" element={<AppPage />} />
       {/* Splat route: SettingsPage parses the trailing segments itself
@@ -394,6 +404,7 @@ const MainRoutes = memo(function MainRoutes() {
           so this one arm serves /aws-control and /aws-control/usage alike —
           an app carries sub-segments for its own path navigation, same
           shape as /settings/<tab>. */}
+      <Route path="/terminal" element={<TerminalRoute />} />
       <Route path="/:builtinApp/*" element={<BuiltinAppRoute />} />
       <Route path="*" element={<ChatRedirect />} />
     </Routes>
@@ -405,18 +416,20 @@ export default function App() {
   const {
     isEmbed, isPopout, initialPopoutPath, appPopoutRoute, updateAvailable, settingsDotLabel, terminalEnabled, terminalPoppedOut,
     bottomTerminalOpen, mobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
-    colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
+    colorTheme, onboarded, markOnboarded, markImportOnboarded, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
     topReservePx, focusActive, topPeek, railPeek, topPeekTrigger, railPeekTrigger, topChromeShown,
-    gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, relayRetrying, focusModeExitMsg, focusChromeInert,
+    gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, offlineCoverKind, focusModeExitMsg, focusChromeInert,
     localHeaderDragGaps, shellEntered, setShellEntered, shellRef, setMembersBar, advertisedNavItems,
     sortedAppGroup, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
-    kiroUsageState, kiroAccountEntry, metrics, subscribeLogs, subscribeSubagents, forceReconnect,
+    kiroUsageState, kiroSignInPrompt, metrics, subscribeLogs, subscribeSubagents, forceReconnect,
     updateFlow, updating, setUpdating, showUpdateModal, setShowUpdateModal, showChangelog, updateError,
     setUpdateError, reportProblemOpen, setReportProblemOpen, effectiveCollapsed, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
   } = shell
+  // A calm offline view covers <main> and the docked terminal (see `offlineCover`).
+  const contentCovered = offlineCoverKind !== null
   // "Run in terminal" from a code block outside every chat, on any route.
   const runInTerminal = useRunInTerminalShellBridge(activeSlotProject, !isPopout && !isEmbed)
   usePinnedScrollOrigin(shellRef)
@@ -426,11 +439,11 @@ export default function App() {
   // no stacking context, so a page-level inline modal (fixed inset-0 z-[100])
   // still paints over the dock as it does elsewhere.
   const terminalFullscreen = useTerminalFullscreen()
-  // Read during render, so turning the part off never mounts an overlay for one frame.
-  const overlaysOn = useSyncExternalStore(
-    useCallback((onChange: () => void) => subscribeExperience(colorTheme, onChange), [colorTheme]),
-    () => readExperience(colorTheme, REGISTERED_OVERLAYS_PACK).overlays,
-  )
+  // A relay Crew tab covers <main> with its pane; <main> stays laid out, so the
+  // pane can take its rect, but hidden and inert under it.
+  const relayActive = useAppSelector(s => s.instances.relayActive ?? null)
+  const [relayPanesOn] = useState(() => relayPaneBridge() !== null)
+  const decorSlot = useThemeDecorSlot()
 
   /**
    * Phone chat page: the main navigation as a 72px icon rail.
@@ -503,8 +516,7 @@ export default function App() {
           data-testid="mobile-nav-rail"
           role="navigation"
           aria-label={i18nT('app.main_navigation')}
-          className="w-[72px] shrink-0 h-full flex flex-col items-center gap-1 pt-1.5 pb-2.5 border-r border-border bg-bg-accent overflow-y-auto overflow-x-hidden overscroll-y-contain scrollbar-none"
-          style={{ scrollbarWidth: 'none' }}
+          className="w-[72px] shrink-0 h-full flex flex-col items-center gap-1 pt-1.5 pb-2.5 border-r border-border bg-bg-accent overflow-hidden"
           top={<>
             <button
               type="button"
@@ -555,9 +567,8 @@ export default function App() {
             />
           </>}
           apps={<>{sortedAppGroup.map(railRow)}<DockMatesTiles onActivate={onActivate} /></>}
-          // Pinned above Settings while the rail has room; folded into the Apps
-          // scroller (behind a divider) on screens where pinning them would leave
-          // the app tiles less than four rows (shell/nav/adaptiveMobileRail.tsx).
+          // After the apps, behind a divider, in the rail's one scroll region;
+          // only `bottom` is pinned (shell/nav/adaptiveMobileRail.tsx).
           secondary={<>
             {terminalEnabled && (
               <NavItem
@@ -573,29 +584,27 @@ export default function App() {
               />
             )}
             {railRow(capabilitiesSurface)}
-            {/* The account modal (balance, sign-in state): the desktop opens it
-                from the readout capsule, which the phone does not render, so the
-                rail carries it -- on exactly the readings the desktop segment
-                shows (`kiroAccountEntry`). Toggles a surface, so `pressed`. */}
-            {kiroAccountEntry && (
+            {/* The capsule's quiet "Sign in to Kiro" segment, for the phone. A
+                plain guarded route with `replace`, like Settings below: closing
+                the drawer first would pop history after this push lands. */}
+            {kiroSignInPrompt && (
               <NavItem
-                navId="account"
-                path="#"
-                label={i18nT('components.kiroAccountModal.kiro_account')}
-                icon={<Coins size={16} />}
-                active={kiroUsageOpen}
-                pressed={kiroUsageOpen}
+                navId="kiro-sign-in"
+                path={KIRO_SIGN_IN_PATH}
+                label={i18nT('components.kasLogin.sign_in_to_kiro')}
+                icon={<KeyRound size={16} />}
+                active={false}
                 collapsed
                 touch
-                onClickOverride={() => { onActivate(); setKiroUsageOpen(true) }}
+                replace
               />
             )}
           </>}
           bottom={<>
             <NavItem
               path={settingsSurface.path}
-              label={surfaceLabel(settingsSurface)}
-              icon={settingsSurface.icon}
+              label={i18nT('nav.account_and_settings')}
+              icon={<AccountAvatar usage={kiroUsageState} size={ACCOUNT_AVATAR_TOUCH_PX} />}
               active={navRowActive(settingsSurface.path)}
               collapsed
               touch
@@ -899,7 +908,7 @@ export default function App() {
           <MobileConnectDialog mobileConnect={mobileConnect} />
           <RemoteUpdateOffer />
 
-          <FirstRunChapters firstRun={firstRun} onboarded={onboarded} privacyAcked={privacyAcked} markOnboarded={markOnboarded} markImportOnboarded={markImportOnboarded} markPrivacyAcked={markPrivacyAcked} />
+          <FirstRunChapters firstRun={firstRun} onboarded={onboarded} markOnboarded={markOnboarded} markImportOnboarded={markImportOnboarded} />
         </>
       )}
 
@@ -927,14 +936,22 @@ export default function App() {
           : { gridArea: 'content' }}
       >
         <div className={`relative flex min-h-0 min-w-0 flex-1 ${terminalPosition === 'right' ? 'flex-row' : 'flex-col'}`}>
-        {relayCrewWindow && <RelayReconnectingView active={relayRetrying} />}
+        {/* Mounted for the page's life in a relay Crew window, so its live
+            region exists before the drop; the host view joins it on a drop. */}
+        {(relayCrewWindow || offlineCoverKind === 'host') && <RelayReconnectingView cover={offlineCoverKind} />}
         {/* `outline-hidden`: main is a programmatic focus target (the skip
             link, and focus mode's hand-off when the chrome hides), not a
             control, so it opts out of the global :focus-visible ring the way
             the tabIndex={-1} page headings do. Inert while the reconnecting
             view covers it, so focus and keystrokes cannot reach a composer
             the user cannot see. */}
-        <main id="main-content" tabIndex={-1} {...hiddenChromeProps(relayRetrying)} className={`outline-hidden ${mainStackingClass({ isTerminalFullscreen: terminalFullscreen, terminalEnabled, terminalPoppedOut, relayRetrying })} flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
+        {/* Exactly <main>'s box, so the relay connecting cover takes its size by CSS alone. */}
+        <div className="relative flex flex-col min-h-0 min-w-0 flex-1">
+        {relayPanesOn && <Suspense fallback={null}><RelayCrewPaneHost /></Suspense>}
+        <main id="main-content" tabIndex={-1} {...hiddenChromeProps(contentCovered || relayActive !== null)} style={relayActive !== null ? { visibility: 'hidden' } : undefined} className={`outline-hidden ${mainStackingClass({ isTerminalFullscreen: terminalFullscreen, terminalEnabled, terminalPoppedOut, relayRetrying: contentCovered })} flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
+          {/* Inert does not reach what main portals out (the guide pill, a
+              link preview, a page's Modal): take those off screen with it. */}
+          <OffScreenOverlayScope offScreen={contentCovered || relayActive !== null}>
           <MigrationCheck />
           {/* Route-independent, unlike MigrationCheck: "you crashed" is true of
               the app, not of the page, and the launch after a crash rarely lands
@@ -981,14 +998,16 @@ export default function App() {
           </GuideProvider>
           </MobileRosterBarContext.Provider>
           </MobileNavRailContext.Provider>
+          </OffScreenOverlayScope>
         </main>
+        </div>
         {/* App-wide docked terminal panel — renders beside <main> (right) or
             below it (bottom). The detached bar (popped-out state) always renders
             below the flex wrapper as a full-width strip regardless of position. */}
         {terminalEnabled && !terminalPoppedOut && (
           // Inert under the reconnecting view like <main>. A maximized panel
           // (z-[51]) paints above that view's z-40, so it is left alone.
-          <div className="contents" {...hiddenChromeProps(relayRetrying && !terminalFullscreen)}>
+          <div className="contents" {...hiddenChromeProps(contentCovered && !terminalFullscreen)}>
             <BottomTerminalPanel />
           </div>
         )}
@@ -1045,17 +1064,11 @@ export default function App() {
       opener={commandPalette.opener}
       openShortcuts={toggleShortcutsModal}
     />
-    {/* Theme decoration: decorative overlays (widgets, transitions)
-        contributed by the active theme's branding. Absent unless a registered
-        theme declares them, and while the user has turned that theme's
-        Overlays part off. Each overlay is isolated in its own
-        ErrorBoundary (fallback=null) so a throwing overlay disables only itself,
-        not the shell or its siblings. */}
-    {overlaysOn && branding?.overlays?.map((Overlay, i) => (
-      <ErrorBoundary key={`${colorTheme}:${i}`} scope={`theme-overlay:${i}`} fallback={null}>
-        <Overlay />
-      </ErrorBoundary>
-    ))}
+    {/* Search all chats (⌘⇧F / Ctrl+Shift+F, the sidebar button). */}
+    <GlobalChatSearchDialog />
+    {/* A registered theme's decorative overlays, and the composer clip on the
+        decor slot (shell/RegisteredThemeOverlays.tsx). */}
+    <RegisteredThemeOverlays colorTheme={colorTheme} overlays={branding?.overlays} slot={decorSlot} />
     {(isPopout || isEmbed) && <Lightbox />}
     </ZoomProvider>
   )

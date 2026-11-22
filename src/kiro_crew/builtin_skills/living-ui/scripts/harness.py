@@ -307,7 +307,7 @@ _PAGE_SCRIPT = r"""(() => {
     `<meta http-equiv="Content-Security-Policy" content="${CONFIG.csp}">` +
     `<style>${CONFIG.baseCss} ${theme}</style>` +
     shims.map((code) => `<script>${code}</` + 'script>').join('') +
-    `</head><body class="${mode}">\n`;
+    `</head><body data-mode="${mode}">\n`;
   // Lines before the widget's first line, to turn a frame line into a file line.
   const offset = head.split('\n').length - 1;
 

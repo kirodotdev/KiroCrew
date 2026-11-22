@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import base64
 import io
+import mimetypes
 import os
 import random
 import string
+import sys
 import urllib.parse
 from unittest.mock import MagicMock, patch
 
@@ -22,6 +24,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from dashboard_owner_helpers import NoConfiguredOwner, as_owner
 
+from conftest import requires_symlinks
 from kiro_crew.dashboard.handlers import api_file_download
 
 
@@ -90,7 +93,11 @@ async def test_content_type_for_known_extensions(tmp_path, mock_sel):
         "doc.docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "report.pdf": "application/pdf",
         "image.png": "image/png",
-        "data.csv": "text/csv",
+        # On Windows the stdlib table merges the registry, where an installed
+        # spreadsheet app can claim .csv (application/vnd.ms-excel).
+        "data.csv": (
+            mimetypes.guess_type("data.csv")[0] if sys.platform == "win32" else "text/csv"
+        ),
     }
     for name, expected in cases.items():
         f = tmp_path / name
@@ -119,7 +126,7 @@ async def test_unknown_extension_falls_back_to_octet_stream(tmp_path, mock_sel):
 @pytest.mark.asyncio
 async def test_text_file_served_when_clean(tmp_path, mock_sel):
     f = tmp_path / "notes.txt"
-    f.write_text("hello world\nno secrets here")
+    f.write_bytes(b"hello world\nno secrets here")
     with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-download?path={f}")
@@ -194,6 +201,7 @@ async def test_missing_file_404(tmp_path, mock_sel):
 
 
 @pytest.mark.asyncio
+@requires_symlinks
 async def test_symlink_rejected(tmp_path, mock_sel):
     """O_NOFOLLOW must reject symlinked paths atomically, like api_file_raw."""
     target = tmp_path / "real.docx"

@@ -216,7 +216,7 @@ def kas_sign_in_entry(slug: str, pinned: dict[str, Any] | None = None) -> dict[s
 def forget_kas_sign_in(mcp_url: str) -> bool | None:
     """Delete the engine's saved sign-in for *mcp_url* from the grant vault. Blocking.
 
-    Removes the ``tokens`` and ``client`` entries, as a kiro-cli Disconnect unlinks
+    Removes the ``tokens`` and client registration entries, as a kiro-cli Disconnect unlinks
     its token and registration pair. ``True``: entries were removed and no
     ``tokens`` entry is left. ``False``: none was stored. ``None``: one may still be
     there, because a vault directory is a link (refused, as the engine's store
@@ -511,7 +511,7 @@ async def mint_on_kas(slug: str, mcp_url: str, token: str, entry: dict[str, Any]
             oauth_url = await asyncio.wait_for(
                 _consent_url(process, alias), timeout=_mint._MINT_READY_TIMEOUT_SECONDS
             )
-            if not await asyncio.to_thread(oauth_url_contains_credential, oauth_url):
+            if not await asyncio.to_thread(oauth_url_contains_credential, oauth_url, alias):
                 break
             # The same refusal the kiro-cli mint applies; the value is never logged.
             logger.warning("OAuth mint for %r produced a URL with a credential pattern", slug)

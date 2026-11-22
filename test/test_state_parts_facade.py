@@ -153,6 +153,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "_dirty": ("property", False, False, "(self) -> 'bool'"),
     "_has_reader": ("property", False, False, "(self) -> 'bool'"),
+    "_project_picked": ("property", False, False, "(self) -> 'bool'"),
     "_trust": ("property", False, False, "(self) -> 'bool'"),
     "_trust_reads": ("property", False, False, "(self) -> 'bool'"),
     "_turn_timeout_hydrated": ("property", False, False, "(self) -> 'bool'"),
@@ -214,6 +215,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self) -> 'tuple[list[dict[str, Any]], int]'",
     ),
+    "durable_source": ("function", False, False, "(self) -> 'list[dict[str, Any]]'"),
     "enqueue_or_run_prompt": (
         "function",
         False,
@@ -222,7 +224,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "_ChatSlot, str], Coroutine[Any, Any, None]]', state: "
         "'DashboardState', *, extra_meta: 'dict[str, Any] | None' = None, "
         "relay_meta: 'dict[str, Any] | None' = None, gateway_prompt_kind: 'str' = "
-        "'') -> 'bool'",
+        "'', at_head: 'bool' = False) -> 'bool'",
     ),
     "flush_deferred_notes": (
         "function",
@@ -438,6 +440,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_carried_ttft_clock": ("value", "None"),
     "_prev_turn_ctx_used": ("value", "0"),
     "_prev_turn_ctx_session": ("value", "''"),
+    "_prev_turn_ended_at": ("value", "0.0"),
     "_channel_folder_filed": ("value", "False"),
     "_channel_runtime_origin": ("value", "False"),
     "_channel_window_mtime": ("value", "0.0"),
@@ -462,6 +465,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_crew_log_previous_sid": ("value", "''"),
     "_crew_log_previous_undecided": ("value", "None"),
     "_cycle_reached_provider": ("value", "False"),
+    "_preparing_turn": ("value", "None"),
     "_dashboard_card_exempt": ("value", "False"),
     "_dashboard_card_identity": ("type", "builtins.str"),
     "_deferred_model_switch_key": ("value", "''"),
@@ -572,6 +576,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_inflight_merge_contexts": ("value", "[]"),
     "_pending_discard_conversation_key": ("value", "None"),
     "_pending_discard_from_wake": ("value", "False"),
+    "_pending_discard_drops_plan": ("value", "False"),
     "_pending_memory_mode": ("value", "None"),
     "_pending_model_pick": ("value", "None"),
     "_pending_release_deferred": ("value", "False"),
@@ -627,6 +632,13 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_source_links_revision": ("value", "0"),
     "_stale_recovery_exhausted_emitted": ("value", "False"),
     "_stale_recovery_retries": ("value", "0"),
+    "_deferred_flush_dirty": ("value", "False"),
+    "_deferred_flush_task": ("value", "None"),
+    "_deferred_steer_delivered": ("value", "{}"),
+    "_deferred_steer_ended_gen": ("value", "-1"),
+    "_deferred_steer_injected": ("value", "{}"),
+    "_deferred_steer_receipts": ("value", "{}"),
+    "_deferred_steers": ("value", "[]"),
     "_steer_act_now": ("value", "set()"),
     "_steer_admissions": ("value", "{}"),
     "_steer_attachment_meta": ("value", "{}"),

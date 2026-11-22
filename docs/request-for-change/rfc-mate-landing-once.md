@@ -3,8 +3,8 @@ title: Mate gets one landing, then the ordinary landing applies
 status: implemented
 author: iamwhatever
 created: 2026-10-10
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 18903
 implementation-prs: [18904]
 tracking-issues: []

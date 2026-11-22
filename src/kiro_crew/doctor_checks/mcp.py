@@ -47,6 +47,7 @@ def _doctor_unresolved_mcp_refs() -> None:
     Crew's own identity-bound servers out on purpose (``mirror_withheld_crew_refs``),
     so those refs get a ⏹ "withholds by design" row, never a dropped ref's ⚠.
     """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_PI
     from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs, mirror_withheld_crew_refs
 
     try:
@@ -85,6 +86,18 @@ def _doctor_unresolved_mcp_refs() -> None:
         # it -- the same reason every other spec-derived value in this report is
         # printed through _safe_display.
         refs = ", ".join(render._safe_display(ref) for ref in unresolved)
+        if backend == ACP_BACKEND_PI:
+            print(f"  mcp tool refs: {label} needs a live session to check: {refs}")
+            render._print_wrapped(
+                "Kiro Crew mounts MCP servers directly from the agent spec only in "
+                "crewmate DMs and crewmate worker sessions on Pi. Other Pi sessions "
+                "can receive pooled broker stubs "
+                "and Crew-owned Connections. A switched-off tool can withhold its entire "
+                "server from Crew's handoff. Pi may load the same name from its own "
+                "mcp.json. This default-spec check cannot tell which servers a live "
+                "session received."
+            )
+            continue
         if not has_mirror:
             print(f"  mcp tool refs: \u23f9 {label} has no mirror; unprojected: {refs}")
             # Same verdict as the runtime line (acp/mcp_ref_guard.py): the harness
@@ -467,6 +480,10 @@ def _doctor_mcp_gateway_daemon(issues: list[str]) -> None:
 _SHARE_REFUSAL_LABELS = {
     "added_outside_dashboard": "not approved yet",
     "changed_needs_reapproval": "command changed since it was approved",
+    "too_many_launches": (
+        "too many agents start it with different settings; take it out of some "
+        "agents, then see its row on MCP Servers"
+    ),
 }
 
 #: A ``changed_needs_reapproval`` refusal that only added a launch: every approved
@@ -577,8 +594,8 @@ def _doctor_mcp_share_refused(cfg: KiroCrewConfig, issues: list[str]) -> None:
     render._print_wrapped(
         "Config asks to share these servers, but the gateway refused their launch "
         "until it is approved on the dashboard. Open MCP Servers, the "
-        "Sharing view (/mcp?view=sharing), approve each one, then run "
-        "`kirocrew restart` so new chats use the shared copy.",
+        "Sharing view (/mcp?view=sharing), approve each one that offers "
+        "Approve, then run `kirocrew restart` so new chats use the shared copy.",
         keep=("`kirocrew restart`",),
     )
     issues.append(f"{len(hits)} MCP server(s) set to share are not shared: launch not approved")

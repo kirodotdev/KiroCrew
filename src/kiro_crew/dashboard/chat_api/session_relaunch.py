@@ -838,6 +838,15 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # would erase it; a per-request identity token can.
         committed_project = _CommitToken(project)
         slot.project = committed_project
+        # A person's pick, the folder the slot already has included: a Bot worker
+        # keeps it instead of being moved to the Bot's worktree on its next turn
+        # (crewmate_worktree_scope). Set before any await, so a write that moves the
+        # folder meanwhile clears it and a rollback restores the flag with the
+        # directory. An app caller's write is not a person's pick and leaves the flag
+        # as it is. A clear hands the choice back.
+        if not request.get("app", "") and slot._project_picked != bool(project):
+            slot._project_picked = bool(project)
+            slot._dirty = True
         logger.info("Slot %s project set to %r", name, project)
         sel().log_api_access(
             caller=request.get("user", "dashboard"),

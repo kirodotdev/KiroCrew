@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import userEvent from '@testing-library/user-event'
 import { defaultScheduler, notifyManager } from '@tanstack/react-query'
 import type { ComponentType } from 'react'
@@ -562,10 +563,11 @@ describe('ArtifactsPage — creating a folder', () => {
     const user = userEvent.setup()
     const m = seed({ artifacts: [], folders: [mkFolder('ops', 'Ops')] })
     renderWithProviders(<ArtifactsPage />, { route: '/artifacts?folder=ops', store: connectedStore() })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Ops' })).toBeDisabled())
     await waitFor(() => expect(screen.getByRole('button', { name: /New folder/i })).toBeInTheDocument())
 
     await user.click(screen.getByRole('button', { name: /New folder/i }))
-    await user.type(screen.getByLabelText('New folder name'), 'Runbooks{Enter}')
+    await user.type(await screen.findByLabelText('New folder name'), 'Runbooks{Enter}')
 
     await waitFor(() =>
       expect(m.createArtifactFolder).toHaveBeenCalledWith({ name: 'Runbooks', parent_id: 'ops' }),
@@ -1087,7 +1089,6 @@ describe('ArtifactsPage — artifact rows', () => {
   it('refuses the row delete offline instead of dead-clicking it', async () => {
     const user = userEvent.setup()
     const m = seed({ artifacts: [mkArtifact('cr-queue')] })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderWithProviders(<ArtifactsPage />)
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
     await user.click(screen.getByLabelText(/Remove from artifacts library.*gateway offline/i))
@@ -1121,11 +1122,11 @@ describe('ArtifactsPage — artifact rows', () => {
   it('deletes from a row once the confirmation is accepted', async () => {
     const user = userEvent.setup()
     const m = seed({ artifacts: [mkArtifact('cr-queue')] })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
 
     await user.click(screen.getByLabelText('Remove from artifacts library'))
+    await confirmAction('Remove from library')
 
     await waitFor(() => expect(m.deleteArtifact).toHaveBeenCalledWith('cr-queue'))
   })

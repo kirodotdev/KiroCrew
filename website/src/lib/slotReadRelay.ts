@@ -22,6 +22,7 @@
  * bubble lit until the next event. The trailing send makes the last read of
  * a burst always reach the wire.
  */
+import type { ChatMessage } from '../types'
 
 const READ_RELAY_QUIET_MS = 1_000
 
@@ -41,6 +42,20 @@ export function noteUnsavedRowTs(slot: string, ts: string | undefined): void {
   const next = newerTs(unsavedRowTs.get(slot), ts)
   if (next !== undefined) unsavedRowTs.set(slot, next)
 }
+
+/** Newest row ts per slot this window counts as read before a saved read covers it: shown here, or relayed from another device. */
+const shownHereTs = new Map<string, string>()
+
+export function noteShownHere(slot: string, ts: string | undefined): void {
+  if (slot && ts) shownHereTs.set(slot, newerTs(shownHereTs.get(slot), ts) as string)
+}
+
+export const shownHere = (slot: string): string | undefined => shownHereTs.get(slot)
+
+let readCoverImpl: (slot: string) => string | undefined = () => undefined
+
+/** Bind the newest row ts that a read of a slot also shows from other slots. */
+export function bindReadCover(impl: (slot: string) => string | undefined): void { readCoverImpl = impl }
 
 /** Bind (or unbind, by passing a no-op) the wire sender. useWebSocket only. */
 export function bindSlotReadSender(impl: (slot: string, readTs?: string) => void): void {
@@ -63,6 +78,10 @@ export const newerTs = (a?: string, b?: string): string | undefined => {
   return pb > pa ? b : a
 }
 
+/** Newest ts among gateway-minted rows (`meta.mid`); a client-made row's time is never a read watermark. */
+export const newestServerRowTs = (rows: readonly ChatMessage[]): string | undefined =>
+  rows.reduce<string | undefined>((n, m) => (typeof m.meta?.mid === 'string' && m.meta.mid ? newerTs(n, m.ts) : n), undefined)
+
 /** Relay "this slot was read here" to every other open dashboard window.
  *
  *  `readTs` is the read WATERMARK: the newest message timestamp this window
@@ -75,7 +94,7 @@ export function emitSlotRead(slot: string, readTs?: string): void {
   if (!slot) return
   // Every caller reads the slot on screen, so it has also seen any unsaved row
   // this window received for it; carry that ts so the read covers it.
-  readTs = newerTs(readTs, unsavedRowTs.get(slot))
+  readTs = newerTs(newerTs(readTs, unsavedRowTs.get(slot)), readCoverImpl(slot))
   const entry = pending.get(slot)
   if (entry) {
     entry.again = true  // coalesce into one trailing send at quiet-window end
@@ -94,6 +113,11 @@ export function emitSlotRead(slot: string, readTs?: string): void {
       if (e?.again) sendSlotReadImpl(slot, e.ts)
     }, READ_RELAY_QUIET_MS),
   })
+}
+
+/** Send a kept read again as kept, adding no unsaved-row ts: a row that arrived after it was kept stays unread. */
+export function resendSlotRead(slot: string, readTs?: string): void {
+  if (slot) sendSlotReadImpl(slot, readTs)
 }
 
 /** Flush a slot's pending trailing relay NOW (every slot when omitted).
@@ -117,5 +141,6 @@ export function _resetSlotReadRelayForTest(): void {
   for (const e of pending.values()) clearTimeout(e.timer)
   pending.clear()
   unsavedRowTs.clear()
+  shownHereTs.clear()
   sendSlotReadImpl = () => {}
 }

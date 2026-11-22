@@ -257,7 +257,8 @@ async def background_wake_absent(state: DashboardState, slot: _ChatSlot) -> bool
     For a caller about to tell the person nothing will wake the session. On top
     of :func:`background_wake_pending` it counts a sub-agent result being
     delivered and any entry waiting in the slot queue, in-memory sub-agent work still
-    owed to this session (a pending follow-up watcher) and an enabled scheduled job this
+    owed to this session (a pending follow-up watcher), an MCP resource subscription
+    this session holds and an enabled scheduled job this
     session created or whose runs land in this session: a cron job is not "continuing" work for the completion
     sound, but it is a wake. A probe that fails answers False, so an unknown
     state never becomes that claim.
@@ -278,6 +279,13 @@ async def background_wake_absent(state: DashboardState, slot: _ChatSlot) -> bool
         if subs is not None and (
             subs.has_in_memory_pending_work_for(effective_session_key(slot)) is not False
         ):
+            return False
+        # An MCP resource subscription wakes this session when its resource
+        # changes; a subscribed set that cannot be read is not a definite "none".
+        from kiro_crew.dashboard.slot_retention import resource_subscribed_slot_keys
+
+        subscribed = await resource_subscribed_slot_keys()
+        if subscribed is None or slot.key in subscribed:
             return False
         crons = getattr(state, "crons", None)
         if crons is None:

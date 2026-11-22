@@ -172,7 +172,10 @@ def _sdk_bundles_native_binary(resolved: object) -> bool:
     spawn that runs first. The SDK ships that binary as an optional dependency,
     ``@anthropic-ai/claude-agent-sdk-<platform>-<arch>[-musl]``, and Node resolves
     it by walking up from the adapter's entry script, so this walks the same way
-    and looks for the ``claude`` file inside. Blocking: it stats files.
+    and looks for the ``claude`` file inside. An npm Windows shim is a text file,
+    not a link to that script, so the walk starts from the script it launches
+    (:func:`~kiro_crew.acp.launch._npm_windows_shim_target`). Blocking: it stats
+    files.
     """
     import platform
     import sys
@@ -186,7 +189,10 @@ def _sdk_bundles_native_binary(resolved: object) -> bool:
         entry = Path(str(part))
         if not entry.is_file():
             continue
-        for directory in Path(os.path.realpath(entry)).parents:
+        shim_target = launch_mod._npm_windows_shim_target(
+            str(entry), CLAUDE_ACP_BIN, _CLAUDE_ACP_PKG_ENTRY
+        )
+        for directory in Path(os.path.realpath(shim_target or entry)).parents:
             scope = directory / "node_modules" / "@anthropic-ai"
             if scope.is_dir() and any(
                 (pkg / name).is_file()
@@ -773,6 +779,20 @@ class ClaudeHarness(MembershipHarness):
         # The same array as the session's own cache: the envelope's forced asks for
         # Crew-owned Connection servers are read from it (``_bridged_server_asks``).
         state._session_mcp_cache = list(mcp_servers)
+        # The held-limit asks for this array: the built-ins ``prepare`` read, plus an
+        # ``mcp__<server>`` ask per server it sends when a held limit covers MCP, as
+        # ``mate_held_rules.claude_ask_rules`` builds them on the per-session client.
+        # Rebuilt from the stored base, so a second start (a retry) does not double it.
+        held_asks = list(getattr(state, "_claude_held_builtin_asks", ()))
+        if getattr(state, "_claude_held_mcp", False):
+            from kiro_crew.agent_sdk.claude_worker_tools import claude_mcp_server_rule
+
+            held_asks.extend(
+                claude_mcp_server_rule(e["name"])
+                for e in mcp_servers
+                if isinstance(e, dict) and isinstance(e.get("name"), str) and e["name"]
+            )
+        state._claude_held_asks = tuple(dict.fromkeys(held_asks))
         meta = state._harness_session_meta(mcp_servers)
         identity = state.session_identity_env(stub_token)
         if identity:
@@ -895,22 +915,31 @@ class ClaudeHarness(MembershipHarness):
 
         The advisory ("Model X is restricted ... Using Y instead.") answers
         ``session/new`` with a ``-32603`` error and no session; the runtime parses
-        *substitute* out of it. The per-chat client pins the substitute and re-seeds
-        ``settings.local.json`` before re-issuing (``_retry_after_model_substitution``);
-        this does the same on the session's own state, so the runtime's one retry
-        starts on the model the gateway serves. A substitute already in use answers
-        False: the gateway refused it again.
+        *substitute* out of it. As the per-chat client does before re-issuing
+        (``_retry_after_model_substitution``), this names the session's pin when the
+        backend serves it, else *substitute* (``_substitution_retry_model``), and
+        re-seeds ``settings.local.json`` with it, so the runtime's one retry starts on
+        a model the gateway serves. When the seed already names the served pin and the
+        gateway refused it, this falls back once to *substitute*; when the seed already
+        names *substitute*, it answers False.
         """
-        if state is None or not substitute or substitute == state._model:
+        if state is None or not substitute:
             return False
+        model = state._substitution_retry_model(substitute)
+        if model == getattr(state, "_adopted_substitute_model", None):
+            if model == substitute:
+                return False
+            # The served pin was refused as well: fall back once to the model the
+            # backend offers, since a session on it beats one that never starts.
+            model = substitute
         # The name comes from the backend's advisory, so the log line does not
         # carry it: the session's own model row shows which model it runs.
         logger.warning(
             "claude shared session: session/new named a substitute model; "
             "adopting it and retrying once"
         )
-        state._model = substitute
-        state._adopted_substitute_model = substitute
+        state._model = model
+        state._adopted_substitute_model = model
         try:
             await asyncio.to_thread(state._write_claude_local_settings)
         except (OSError, ValueError, TypeError):

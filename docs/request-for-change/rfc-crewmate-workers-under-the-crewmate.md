@@ -3,8 +3,8 @@ title: A crewmate's sessions live under the crewmate — out of the sidebar, in 
 status: partial
 author: iamwhatever
 created: 2026-10-31
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: null
 implementation-prs: [26952, 28869, 28931, 30220]
 tracking-issues: []
@@ -194,7 +194,7 @@ Once conductor workers and mate workers both live under their root, no dispatche
 | Folder steps in conductor prompts and the goal, security and pipeline conductor skills | remove; `session_create` without `folder` |
 | Other `chat_folder_*` tools, and `folder=` for callers outside both trees | keep; an ordinary agent can still be asked to file chats |
 | The person's folders, `src/kiro_crew/dashboard/chat_folders.py` and its routes, the sidebar folder UI | keep |
-| Mate home folders that already exist | unchanged: mate-owned and locked, released to the person when the mate is deleted, as today |
+| Mate home folders that already exist | unchanged: mate-owned and locked, released to the person when the mate is deleted, as today; narrowed by `rfc-bot-subfolder-person-delete.md`, which lets the person delete an empty sub-folder inside a home, never the home itself |
 
 [rfc-conductor-folder-scope.md](rfc-conductor-folder-scope.md) (`draft`) bounds where an agent on the person's store may create sessions and folders; crew members were never in its scope. This RFC does not supersede it. After PR 7 its remaining population is ordinary agent tabs, and a conductor outside a Crew Mode tree that still passes `folder=`. That document is not edited here.
 

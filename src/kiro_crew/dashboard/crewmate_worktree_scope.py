@@ -7,7 +7,9 @@ worktree of the repository the turn is about (:mod:`kiro_crew.crewmate_worktree`
 The repository is read from the paths this turn's message names, then from the
 slot's current project; the first one inside a git repository wins. A path in
 the worktree the worker already runs in (or in that repository's own checkout)
-leaves it where it is, so its session is not reset for nothing.
+leaves it where it is, so its session is not reset for nothing. A project a person
+picked for the session (``slot._project_picked``, held on the transcript binding
+and set by ``api_chat_slot_project``) is kept as it is.
 
 Called by turn admission (``chat_turn.turn_admission``) right after the
 crewmate's Profile Permissions are seeded and before the provider is claimed, so
@@ -81,11 +83,15 @@ async def scope_worker_turn(
 ) -> str:
     """Move *slot*'s project to its crewmate's worktree; return the new project or ``""``."""
     name = _worker_crewmate(config, execution)
-    if not name:
+    if not name or getattr(slot, "_project_picked", False):
+        # A project a person picked for this session is kept as it is.
         return ""
     project = getattr(slot, "project", "") or ""
     found = await asyncio.to_thread(resolve_worker_project, config, name, project, message or "")
     if found is None or found.cwd == project:
+        return ""
+    if getattr(slot, "_project_picked", False):
+        # A pick landed during the lookup: it stands.
         return ""
     from kiro_crew.dashboard.chat_utils import effective_session_key
 

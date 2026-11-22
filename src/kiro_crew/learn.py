@@ -21,6 +21,7 @@ from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ALWAYS,
     LESSON_APPLIES_ON_TOPIC,
     LESSON_APPLIES_VALUES,
+    LESSON_RULES_HEADER,
     any_request_overlap,
     contains_volatile_lesson_fact,
     order_by_request_relevance,
@@ -44,6 +45,26 @@ except ImportError:
     _config_dir = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+_LOG_RULE_CHARS = 200
+
+
+def _log_rule(rule: str) -> str:
+    """A lesson rule as it may appear in a log line: redacted, then cut.
+
+    Only the log line changes; the stored rule is untouched. Redact before the
+    cut so a secret across the cut cannot leave a fragment. The log spelling runs
+    the credential pass in full even inside a seam where the owner turned
+    redaction off (the cut would otherwise keep a raw fragment), and withholds the
+    text when a companion failed to compose. Any other redactor failure also
+    withholds the text, and never fails the write.
+    """
+    try:
+        from kiro_crew.platform.context import redact_log_via_context
+
+        return redact_log_via_context(rule)[:_LOG_RULE_CHARS]
+    except Exception:  # noqa: BLE001 - a log line must never fail a lesson write
+        return "<lesson text withheld>"
 
 
 def lesson_contains_injection(rule: object, negative: object = None) -> bool:
@@ -527,7 +548,7 @@ class LessonStore:
                 written_by=lesson.written_by or rows[source].written_by,
             )
             self._write_all(updated)
-        logger.info("Replaced lesson: %s", lesson.rule)
+        logger.info("Replaced lesson: %s", _log_rule(lesson.rule))
         return "replaced"
 
     def _insert_or_enrich(
@@ -671,13 +692,13 @@ class LessonStore:
                             "Refused lesson: the store is at its %d-row cap and every "
                             "retained row outranks this one: %s",
                             _MAX_LESSONS_TOTAL,
-                            lesson.rule,
+                            _log_rule(lesson.rule),
                         )
                         return "refused"
             self._write_all(updated)
         if superseded_out is not None:
             superseded_out.extend(replaced)
-        logger.info("%s lesson: %s", outcome.capitalize(), lesson.rule)
+        logger.info("%s lesson: %s", outcome.capitalize(), _log_rule(lesson.rule))
         return outcome
 
     @named_store_operation
@@ -998,10 +1019,7 @@ class LessonStore:
             ranked_directives,
             directive_room,
             omission_kind=context_omissions.LESSON_RULES,
-            header=(
-                "[Learned corrections — retained rules from past mistakes.\n"
-                "Each binds under CRITICAL RULES but adds no ask case.]"
-            ),
+            header=LESSON_RULES_HEADER + "]",
             footer="[End of learned corrections]",
             omission=(
                 "[Context budget: omitted {count} of {total} retained rules above the "

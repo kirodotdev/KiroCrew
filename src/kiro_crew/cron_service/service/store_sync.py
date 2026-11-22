@@ -11,8 +11,9 @@ patch of the member on the class or on an instance reaches every caller. A name
 tests patch on :mod:`kiro_crew.cron`, or one that module defines, is read through
 it on each call (``seams``).
 
-Instance fields written: ``_jobs``, ``_last_digest``, ``_last_mtime``,
-``_last_mtime_ns``, ``_last_size``, ``_load_failed``.
+Instance fields written: ``_announced_pauses``, ``_auto_pause_alert``, ``_jobs``,
+``_last_digest``, ``_last_mtime``, ``_last_mtime_ns``, ``_last_size``,
+``_load_failed``.
 
 Instance fields read: ``_dir``, ``_held_run_records_guard``, ``_path``, ``_running``.
 """
@@ -20,6 +21,7 @@ Instance fields read: ``_dir``, ``_held_run_records_guard``, ``_path``, ``_runni
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -362,9 +364,17 @@ def _load(self: CronService, _preread: bytes | None = None) -> None:
         # list while this reload runs (the timer's due check on the loop,
         # with the reload on a worker thread) never sees a copy without it.
         # Under the guard, as the hold's lookup and apply are.
+        # The DISK's pause states, read before the held-record applies below
+        # re-land a pause in memory: a pause read from disk is not this
+        # process's transition — it was announced by the save that landed it
+        # (here or in another process), or predates this boot — but a held
+        # pause re-applied over a fresh copy is still unannounced, and the
+        # save that persists it must see the edge. Only a SAVE announces.
+        disk_pauses = {job.id: job.auto_paused for job in document.jobs}
         with self._held_run_records_guard:
             self._apply_held_run_records_to(document.jobs)
             self._jobs = document.jobs
+        self._announced_pauses = disk_pauses
         self._keep_store_document(document)
         if not settled:
             # Saves keep the older version, so a load that can read the config
@@ -508,3 +518,93 @@ def _save(self: CronService, jobs: list[CronJob] | None = None) -> None:
     # Refresh the (mtime_ns, size) fingerprint so _sync recognizes this as
     # our own write and does not reload it back over the in-memory state.
     self._record_fingerprint()
+    self._announce_saved_pause_edges(written, document)
+
+
+def set_auto_pause_alert(self: CronService, cb: Any) -> None:
+    """Set the sync callback ``cb(job, streak, reason)`` for a persisted auto-pause.
+
+    The gateway sets its auto-pause notice here, as it sets the timeout and
+    interrupt alerts. The save that detects the rising edge runs on a worker
+    thread under the store lock, so the callback must be thread-safe, must not
+    block, and hands delivery to the gateway loop itself. ``streak`` and
+    ``reason`` are read from the serialized document the save wrote; ``job``
+    carries the stable routing identity. A one-shot's pause is never handed
+    over — its failure alert is already unconditional. Without one, the pause
+    reaches the audit trail and the Schedule page and no one is told.
+    """
+    self._auto_pause_alert = cb
+
+
+def _announce_saved_pause_edges(self: CronService, written: list[CronJob], document: str) -> None:
+    """Announce each auto-pause this save's *document* newly persisted.
+
+    The auto-pause notice, on the ``_announced_pauses`` snapshot's RISING
+    edge, after the write has published: the one owner for every pause writer
+    (the merge, the terminal reap/cancel, the held-record flush, the
+    loop-stall breaker), all serialized by the store lock the save runs
+    under. It never outruns the disk — a pause a failed save rolled back
+    never reached here — and never doubles: whichever save lands the pause
+    first advances the snapshot, and the next save sees no edge. ``_load``
+    rebuilds the snapshot silently, so a pause read from disk (boot, a reload
+    of another process's write) is never announced by this one. The falling
+    edge only advances the snapshot: a clear has its own delivery. Everything
+    — the edge, the streak, the reason — is read from the DOCUMENT just
+    written, never from the live objects: a concurrent ``record_failure`` on
+    a shared job between serialization and this loop could otherwise announce
+    a pause the disk does not hold (persist-before-you-publish). The live job
+    supplies only routing identity. Best-effort: a failing callback logs.
+    """
+    # Notification bookkeeping must never fail a COMMITTED save: the write and
+    # the fingerprint are already published, so an exception past this point
+    # would report failure for a save that happened, and the caller's rollback
+    # would diverge from disk. Hence the blanket except, and the defensive
+    # reads: ``encode_store`` appends RETAINED MALFORMED records after the
+    # valid jobs, one of which can share a valid job's id and carry fields of
+    # any shape — only the first record per ``written`` id (the valid job,
+    # serialized first) is read, and its fields are type-checked, not cast.
+    cb = self._auto_pause_alert
+    if cb is None:
+        # No gateway registered (CLI, MCP, tests): the snapshot still
+        # advances, so a later registration sees no stale edges.
+        self._announced_pauses = {
+            job.id: job.auto_paused for job in written if isinstance(job.id, str)
+        }
+        return
+    try:
+        by_id = {job.id: job for job in written}
+        snapshot = self._announced_pauses
+        current: dict[str, bool] = {}
+        for rec in json.loads(document).get("jobs", []):
+            if not isinstance(rec, dict):
+                continue
+            jid = rec.get("id")
+            if not isinstance(jid, str) or jid not in by_id or jid in current:
+                continue
+            paused = bool(rec.get("auto_paused"))
+            current[jid] = paused
+            live = by_id[jid]
+            if (
+                paused
+                and not snapshot.get(jid, False)
+                and not live.delete_after_run
+                and live.schedule.kind != "at"
+            ):
+                # The streak is the CAUSE only when it reached the stored
+                # limit; the loop-stall breaker pauses jobs whose incidental
+                # failures sit below it, and a notice blaming those failures
+                # would misattribute the stall (its explanation is the written
+                # last_error). The limit is config, read from the live job:
+                # the written record omits it at its default.
+                raw_cnt = rec.get("consecutive_failures")
+                cnt = raw_cnt if isinstance(raw_cnt, int) else 0
+                raw_reason = rec.get("last_error")
+                reason = raw_reason if isinstance(raw_reason, str) else ""
+                limit = live.auto_pause_limit()
+                try:
+                    cb(live, cnt if (limit is not None and cnt >= limit) else 0, reason)
+                except Exception:
+                    logger.debug("Cron '%s': auto-pause alert failed", live.name, exc_info=True)
+        self._announced_pauses = current
+    except Exception:
+        logger.warning("auto-pause notice bookkeeping failed after a committed save", exc_info=True)

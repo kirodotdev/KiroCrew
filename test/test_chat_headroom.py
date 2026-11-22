@@ -783,12 +783,36 @@ async def test_route_carries_the_tags_and_one_word_per_login(tmp_path, monkeypat
     monkeypatch.setattr(headroom_mod, "remote_dispatch_settings", lambda: settings)
     host.logins = {"gh": "valid", "az": "expired"}
     async with TestClient(TestServer(_app(_make_state(tmp_path)))) as client:
-        body = await (await client.get("/api/chat/headroom")).json()
+        body = await (await client.get("/api/chat/headroom", params={"logins": "1"})).json()
         created = await (await client.post("/api/chat/slots", json={"name": "w"})).json()
     assert body["tags"] == ["gpu"]
     assert body["logins"] == {"gh": "valid", "az": "expired"}
     assert "logins" not in created["headroom"]
     assert created["headroom"]["tags"] == ["gpu"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query, checked",
+    [({"logins": "0"}, False), ({}, True), ({"logins": "1"}, True), ({"logins": ""}, True)],
+)
+async def test_only_the_no_logins_query_skips_the_login_check(
+    tmp_path, monkeypatch, host, query, checked
+):
+    _flag(monkeypatch, True)
+    checks: list[int] = []
+
+    async def peer_logins() -> dict:
+        checks.append(1)
+        return {"gh": "valid"}
+
+    monkeypatch.setattr(headroom_mod, "peer_logins", peer_logins)
+    async with TestClient(TestServer(_app(_make_state(tmp_path)))) as client:
+        resp = await client.get("/api/chat/headroom", params=query)
+        assert resp.status == 200
+        body = await resp.json()
+    assert ("logins" in body) is checked
+    assert checks == ([1] if checked else [])
 
 
 def _git(monkeypatch, states: dict, *, refusal: str = "", delay: dict | None = None):

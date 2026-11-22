@@ -17,6 +17,22 @@ session auth gates the proxy entrance as with all builtin apps.
 The app id is `md-notebook`; the display name is "Notes". `defaultEnabled` is false, so it
 appears in the Apps library ready to be switched on rather than enabling itself.
 
+**Adopted onto its own repository.** The wheel pins the app (`apps/adoption-pins.json`,
+[app-kit-platform.md § 33](app-kit-platform.md#33-former-built-in-adoption)) at
+`KiroCrewCaptain/kirocrew-app-md-notebook` with `minAppSdkLevel` 10, the level at which the
+agent's file tools fence an installed app's `credentialMasks` (its directory entry `state/`
+alone is a level-8 use), so a host whose record is builtin-owned swaps
+it in place onto that tree at a restart, keeping `data/` (`data/state/` with the vault
+registry, the settings and the GitHub token included), `.app_secret`, the approved grants
+and `enabled`; the rail keeps `/md-notebook` and the `NotebookPen` glyph, and the wheel copy's
+`version` is the pinned one (D12). A host still on the previous layout is swapped only once
+the state move into `data/state/` has sealed, whether or not Notes is enabled (State Layout
+below). The repository's `app.json` declares the same `permissions` and the same
+`credentialMasks` as the wheel copy, so E9 holds nothing back, and the tool gate keeps
+fencing `data/state/` after adoption because it reads the shipped wheel copy's declaration.
+A fix to the app lands in that repository first; a change to the wheel copy needs its
+`App repo:` line.
+
 **Where the backend's code lives.** `server.py` is the backend's entry point (`app.json`
 `entryPoint`; the gateway runs it as `__main__`, and `syncer.py` imports it) and a mirror
 facade (`kiro_crew._facade_mirror`): every name stays reachable as `server.<name>`, and a
@@ -71,7 +87,7 @@ crash orphan holding PAT bytes is always covered, and a sandboxed child cannot r
 
 **The previous layout and its move.** The release before this one kept the same three
 files in `<crew-home>/md-notebook-staging/`, a top-level directory core masked and handed
-back to the shipped backend by name (`_APP_BACKEND_OWNED_LEAVES`, now empty). That
+back to the shipped backend by name (`_APP_BACKEND_OWNED_LEAVES`, which is empty). That
 directory stays masked and fenced and is handed back to no spawn.
 `md_notebook_state.move_state_to_app_data` copies it into `data/state/` once, in the
 gateway, after the legacy move below has sealed: each file's bytes there (or its
@@ -91,8 +107,8 @@ does not mask the moved token** below.
 started by the previous build masks `md-notebook-staging/` but not `data/state/`, so it would
 read the token the moment it landed there. The move therefore runs only in the gateway,
 through Notes' row in `apps/legacy_state_moves` (`sealed_default_legacy_state`): at the
-start of the shipped backend or of a record adopted from the wheel's pin, and, once Notes
-is pinned, before adoption swaps the record (whether or not Notes is enabled) and at every
+start of the shipped backend or of a record adopted from the wheel's pin, before adoption
+swaps the record (whether or not Notes is enabled) and at every
 boot for a record adopted under pin trust; and only while
 `older_sandboxes.sandboxes_masking_only` names no live process that masks the old directory
 and not the new one (or cannot read the process table). On Linux that is the kernel's own
@@ -171,7 +187,8 @@ names (masked and fenced) and are not picked up; the user attaches them and ente
 again.
 
 A vault descriptor carries `id`, `name`, `repo`, `localPath`, `branch`, `readOnly`, an
-optional `subfolder` scope, plus `knowledge` and `knowledgeSourceId`. The `external` field
+optional `subfolder` scope, the trusted `remoteUrl` and `gitDir` sync checks against, on an
+attached vault `localOnly`, plus `knowledge` and `knowledgeSourceId`. The `external` field
 returned by `GET /api/vaults` is COMPUTED on read (`localPath` is outside `vaults/`) and
 never persisted.
 
@@ -190,7 +207,7 @@ no carve-out for Notes. `sandbox._CREW_HIDDEN_LEAVES` still masks the previous l
 beneath an independently masked directory is refused rather than carved, because carving it
 would unmask that whole foreign tree.
 
-Two properties keep the mask meaningful now that the backend can create these files:
+Four properties keep the mask meaningful while the backend can create these files:
 
 * **The masks are materialised before launch.** `mount(2)` cannot target an absent path and
   the launcher's hiding loops guard on existence, so an absent leaf would get no mask at
@@ -214,8 +231,8 @@ Two properties keep the mask meaningful now that the backend can create these fi
   `python -m` launch.
 * **Pre-upgrade orphans are swept.** Older writers staged beside the target, so a crash in
   that window could leave a PAT-bearing `*.tmp` at a name no mask covers. Every `*.tmp`
-  direct child of `workspace/md-notebook` is such an orphan by construction — the writers now
-  stage in the top-level state directory, and note temps live beside their note under
+  direct child of `workspace/md-notebook` is such an orphan by construction — the writers
+  stage in `apps/md-notebook/data/state/`, and note temps live beside their note under
   `vaults/<id>/` — so the sweep removes them. Because it DELETES, its guard is stronger
   than the materialiser's: the descent from the crew data home is ANCHORED and
   per-component, each step `open`ed `O_NOFOLLOW | O_DIRECTORY` relative to the descriptor
@@ -266,7 +283,7 @@ secret-write chokepoint, recorded here so it stays a decision:
   is the same private helper made public for exactly this caller class, and tests fail if
   either call site drops it.
 * The cost is real and accepted: a future guard added inside `atomic_write` does not reach
-  this writer. The state now sits in one masked directory, so the target's parent IS the
+  this writer. The state sits in one masked directory, so the target's parent IS the
   staging directory and `atomic_write(restrict_to_owner=True)` could replace the fork; that
   swap is left to its own change so this fix stays small.
 
@@ -315,8 +332,8 @@ Both health routes return a `features` list: `createdAt`, `attach`, `changes`,
 The gateway keeps an app's backend alive across UI reloads, so a process running older
 code than the page can otherwise surface as confusing "no route" errors. The UI compares
 only its `REQUIRED_FEATURES` subset and names missing entries. `settings` and
-`autoSyncLoop` are advertised by the backend but are not yet in that subset, so their
-absence does not currently trigger the stale-backend banner. `trash` is listed even though
+`autoSyncLoop` are advertised by the backend but are not in that subset, so their
+absence does not trigger the stale-backend banner. `trash` is listed even though
 it adds no route,
 because the delete dialog's copy *promises* the note is recoverable — an older backend would
 hard-unlink while the UI said otherwise, so the capability has to be detectable.
@@ -507,7 +524,7 @@ Git runs as the real `git` binary via `asyncio.create_subprocess_exec`, never a 
   list because the user chose that moment.
 * **Unattended notes-only runs truncate at `MAX_STAGED_PATHS` (500); an explicit Sync
   refuses.** The cap keeps a large first sweep from building an argv past the OS limit.
-  The local autosave commits one batch without pushing; backend auto-sync currently commits
+  The local autosave commits one batch without pushing; backend auto-sync commits
   and pushes one batch, and the next cycle picks up the remainder. A user-initiated Sync
   cannot truncate, because `status()` reports a rename as **two** entries (old path deleted,
   new path added) and the sorted cutoff can fall between them. It therefore raises with the

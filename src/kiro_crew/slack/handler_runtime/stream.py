@@ -31,10 +31,12 @@ if TYPE_CHECKING:
         _THINKING_PLACEHOLDER,
         ACTIVATION_REVIEW,
         DELIVERY_DEBT_NOTICE,
+        LINE_BREAKS,
         OPTIONS_RE_LINE,
         SLACK_MSG_LIMIT,
         TRUNCATION_NOTICE,
         LLMEvent,
+        QuotedDirectiveFilter,
         SlackClientOps,
         StreamRedactor,
         _convert_tables,
@@ -42,6 +44,7 @@ if TYPE_CHECKING:
         ends_plain_sentence,
         is_control_tag_tail,
         is_wait_identity,
+        line_start,
         logger,
         redact,
         redact_credentials,
@@ -141,7 +144,7 @@ def _filter_options_brackets(text: str, bracket_hold: str, stream_buffer: str) -
                     stream_buffer += bracket_hold
                 bracket_hold = ""
                 continue
-            elif ch == "\n":
+            elif ch in LINE_BREAKS:
                 # A head still open at its line's end: the line grammar decides it,
                 # dropping a marker it accepts (a lookalike closer) and releasing
                 # every other byte; then the break is judged on its own.
@@ -173,7 +176,7 @@ def _settle_options_head(stream_buffer: str, head: str) -> str:
     cleaned = OPTIONS_RE_LINE.sub("", head)
     if cleaned != head:
         return cleaned
-    line = stream_buffer[stream_buffer.rfind("\n") + 1 :]
+    line = stream_buffer[line_start(stream_buffer, len(stream_buffer)) :]
     if line and OPTIONS_RE_LINE.search(line + head) is not None:
         return ""
     return head
@@ -365,6 +368,9 @@ class _AnswerStream:
         # kiro-cli's [STEERING steer-…] ack is protocol: held across chunks and
         # dropped before it reaches Slack, ahead of redaction as TurnDriver does.
         self.steer_filter = _SteeringMarkerFilter()
+        # A line that only quotes a directive tool's marker is dropped the same way;
+        # ``release_quoted_hold`` hands on the line it holds when the text breaks off.
+        self.quoted_filter = QuotedDirectiveFilter()
         self.had_redaction = False  # True when per-chunk redaction modified a streamed chunk
         self.delivered = False  # True once ANY real-text append is confirmed on the stream
         # Delivery debt: real answer text Slack refused for good — the append failed
@@ -822,22 +828,34 @@ class _AnswerStream:
     async def on_text(self, event: LLMEvent) -> None:
         """Project one answer chunk: redact it, hold back what may be a trailer, and edit
         the message at most once per ``_EDIT_INTERVAL``."""
-        self.take_carried()
-        event.text = "".join(
-            payload for kind, payload in self.steer_filter.feed(event.text) if kind == "text"
+        text = self.quoted_filter.feed(
+            "".join(
+                payload for kind, payload in self.steer_filter.feed(event.text) if kind == "text"
+            )
         )
+        await self._project_text(text)
+
+    async def release_quoted_hold(self) -> None:
+        """Project the line the quoted-marker filter holds, before a tool call, an
+        approval prompt or the turn's end breaks the text off, so it is never lost."""
+        held = self.quoted_filter.flush()
+        if held:
+            await self._project_text(held)
+
+    async def _project_text(self, text: str) -> None:
+        self.take_carried()
         if self.tool_gap and self.accumulated and self.accumulated[-1:] not in ("\n", " "):
-            first = event.text[:1]
+            first = text[:1]
             if first and first not in ("\n", " "):
-                event.text = "\n\n" + event.text
-        event.text, _exfil_w = redact_exfiltration_urls(event.text)
-        event.text, _cred_w = redact_credentials(event.text)
+                text = "\n\n" + text
+        text, _exfil_w = redact_exfiltration_urls(text)
+        text, _cred_w = redact_credentials(text)
         if _exfil_w or _cred_w:
             self.had_redaction = True
 
-        if event.text:
+        if text:
             self.tool_gap = False
-        self.accumulated += event.text
+        self.accumulated += text
 
         if self.status_dirty and self.use_slack_stream:
             # Best-effort: MUST NOT raise. The thread
@@ -858,10 +876,10 @@ class _AnswerStream:
         # On ']', release if not OPTIONS, suppress if it is.
         if self.use_slack_stream:
             self.bracket_hold, self.stream_buffer = _filter_options_brackets(
-                event.text, self.bracket_hold, self.stream_buffer
+                text, self.bracket_hold, self.stream_buffer
             )
         else:
-            self.stream_buffer += event.text
+            self.stream_buffer += text
 
         await self.ensure_started()
 

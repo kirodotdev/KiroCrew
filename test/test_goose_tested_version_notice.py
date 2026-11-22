@@ -62,6 +62,7 @@ def test_a_tested_or_unreadable_version_is_silent_and_does_not_raise(version):
             sdk_backends.ACP_BACKEND_CLAUDE,
             sdk_backends.ACP_BACKEND_PI,
             sdk_backends.ACP_BACKEND_KIRO,
+            sdk_backends.ACP_BACKEND_DEEPSEEK,
         }
     ),
 )

@@ -12,9 +12,30 @@ import json
 
 from kiro_crew.dashboard_templates import catalog
 from kiro_crew.dashboard_templates import instance as _store
-from kiro_crew.dashboard_templates.instance import STATE_EMPTY, Instance, InstanceRefused
+from kiro_crew.dashboard_templates.instance import (
+    STATE_EMPTY,
+    Instance,
+    InstanceError,
+    InstanceRefused,
+)
 
 __all__ = ["adopt_if_empty"]
+
+
+def _holds_something(slug: str) -> bool:
+    """Whether the slug has a record: a record file that does not parse counts as one.
+
+    A record file that is there and readable but is not JSON, is empty, or is not an
+    object holds something and is kept. One that cannot be read at all still raises.
+    """
+    try:
+        return _store.read(slug).state != STATE_EMPTY
+    except InstanceError as exc:
+        try:
+            _store._read_file(slug, _store._RECORD_FILE)
+        except OSError:
+            raise exc from None
+        return True
 
 
 def adopt_if_empty(slug: str, template_id: str, *, session_id: str = "") -> Instance | None:
@@ -34,7 +55,7 @@ def adopt_if_empty(slug: str, template_id: str, *, session_id: str = "") -> Inst
     html = entry.html
     _store._check(manifest, html)
     with _store._locked(_store.instance_dir(slug)):
-        if _store.read(slug).state != STATE_EMPTY:
+        if _holds_something(slug):
             return None
         return _store._commit(
             slug,

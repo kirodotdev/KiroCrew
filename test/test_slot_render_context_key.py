@@ -71,7 +71,9 @@ def test_a_policy_exemption_does_not_hide_a_workspace_allowance(monkeypatch):
 
 def test_oauth_endpoint_revocation_is_checked_on_every_read(monkeypatch):
     approved = {"value": True}
-    monkeypatch.setattr(cu, "oauth_url_contains_credential", lambda _: not approved["value"])
+    monkeypatch.setattr(
+        cu, "oauth_url_contains_credential", lambda _, _server=None: not approved["value"]
+    )
     url = "https://auth.example.com/authorize?state=opaque"
     # A banner child "c" sent, so the endpoint approval is what decides the link.
     mcp_oauth_provenance.record_emitted("c", url)

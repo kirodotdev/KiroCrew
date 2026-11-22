@@ -1,7 +1,4 @@
-import { useSyncExternalStore } from 'react'
-import { loadChatConfig } from '../pages/chat/ChatSettings'
+import { useChatSetting } from './useChatSetting'
 
-const sub = (cb: () => void) => { window.addEventListener('mc-config-changed', cb); return () => window.removeEventListener('mc-config-changed', cb) }
-const get = () => loadChatConfig().simplifiedToolNames
 
-export const useSimplifiedToolNames = () => useSyncExternalStore(sub, get)
+export const useSimplifiedToolNames = () => useChatSetting('simplifiedToolNames')

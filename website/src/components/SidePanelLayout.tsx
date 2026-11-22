@@ -623,7 +623,10 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                 </div>
               )}
               <button
-                className={`flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[13px] text-left font-medium cursor-pointer border-none transition-all ${
+                // `focus-visible:outline-offset-[-2px]` draws the focus ring inside the
+                // row: the list scrolls (`overflow-y-auto` clips the x axis too) and has
+                // no side padding, so a ring outside a full-width row loses its sides.
+                className={`flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[13px] text-left font-medium cursor-pointer border-none transition-all focus-visible:outline-offset-[-2px] ${
                   tab === t.key
                     ? 'bg-accent-subtle text-accent'
                     : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover'

@@ -205,7 +205,7 @@ export type ParkedThinking<M> = { msg: M; anchor: ThinkingAnchor; occ?: number; 
  *
  *  Bursts and anchors are 1:1 under the tool rule: burst k is followed by tool k,
  *  and the final burst by the answer. An auto-approved call emits two tool rows
- *  sharing one id (🔧 pre-approval + ✅ post-approval, see
+ *  sharing one id (Tool: pre-approval + Approved: post-approval, see
  *  `applyToolOutputToMessages`); `used` makes the first win, which is the earlier
  *  row and so the correct side of the pair.
  *
@@ -225,7 +225,7 @@ export function mergePreservedThinking<M extends { role: string; content: string
   // class only — tool id, else server-minted `mid`, else role+ts, else
   // role+trimmed text. Never stacked among those classes: a strong-identity
   // row must not also match on a weaker key, or a duplicate-content sibling
-  // (two `🔧 bash` calls with distinct tool ids) lets an OLDER incoming row
+  // (two `Tool: bash` calls with distinct tool ids) lets an OLDER incoming row
   // text-match a NEWER existing row and falsely extend coverage past a
   // post-snapshot anchor — which would drop live reasoning. (`send:${sendId}`
   // is the one deliberate exception; see below.)

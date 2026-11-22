@@ -165,6 +165,62 @@ def post_compaction_parts(
     # Lessons are session-start context too: the user's standing corrections
     # went with the compaction, and nothing else brings them back (the
     # per-message block only adds new matches, and is off by default).
+    parts.extend(
+        lessons_parts(
+            builder,
+            session_key=session_key,
+            project=project,
+            private_owner=private_owner,
+            blocks_reads=blocks_reads,
+            context_groups=context_groups,
+            workspace=workspace,
+            memory_store=memory_store,
+            model_window=model_window,
+            essentials=_essentials,
+            query_text=query_text,
+        )
+    )
+    if _prefs:
+        parts.append("[REINJECTED AFTER COMPACTION — response preferences]\n" + _prefs)
+    parts.extend(
+        steering_parts(
+            agent=agent,
+            project=project,
+            context_groups=context_groups,
+            model_window=model_window,
+            steering_dirs=steering_dirs,
+            essentials=_essentials,
+            provider_type=provider_type,
+            context_provider=context_provider,
+            native_launch_sources=native_launch_sources,
+            steering_off=steering_off,
+        )
+    )
+    return parts
+
+
+def lessons_parts(
+    builder: ContextBuilder,
+    *,
+    session_key: str | None,
+    project: str | None,
+    private_owner: bool,
+    blocks_reads: bool,
+    context_groups: frozenset[str] | None,
+    workspace: str | None,
+    memory_store: str | None,
+    model_window: int | None,
+    essentials: str,
+    query_text: str,
+) -> list[str]:
+    """The learned-lessons block a turn re-sends when session start may be gone.
+
+    Same store, gates and budgets as session start, ranked against *query_text*.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+
+    parts: list[str] = []
+    _essentials = essentials
     _lessons_ctx = _store_admission.compaction_lessons_block(
         builder,
         private=private_owner,
@@ -189,9 +245,29 @@ def post_compaction_parts(
             + ctx._neutralize_structural_markers(_lessons_ctx)
             + "\n[END REINJECTED]\n\n"
         )
-    if _prefs:
-        parts.append("[REINJECTED AFTER COMPACTION — response preferences]\n" + _prefs)
-    # A harness that reads no agent ``resources`` (Claude Code, Codex) got the
+    return parts
+
+
+def steering_parts(
+    *,
+    agent: str | None,
+    project: str | None,
+    context_groups: frozenset[str] | None,
+    model_window: int | None,
+    steering_dirs: tuple[str, ...],
+    essentials: str,
+    provider_type: str | None,
+    context_provider: Any,
+    native_launch_sources: Collection[str],
+    steering_off: frozenset[str] = frozenset(),
+) -> list[str]:
+    """The steering resources and CURRENT folder steering a turn re-sends when
+    session start may be gone, under the same gates as session start."""
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+
+    parts: list[str] = []
+    _essentials = essentials
+    # A harness that reads no agent ``resources`` (Claude Code, Codex, OpenCode, Pi) got the
     # agent config's steering resources as session-start prompt text, so the
     # compaction dropped them; kiro-cli keeps its natively loaded ``resources``,
     # so the gate is the session-start one.
@@ -218,7 +294,11 @@ def post_compaction_parts(
     # non-fresh turn above, so they need no separate block. The payload
     # is operator-authored files; the renderer scrubs their bodies and
     # labels before minting the genuine frame.
-    if steering_dirs and not _essentials:
+    if (
+        steering_dirs
+        and not _essentials
+        and _inclusion._group_included(context_groups, _inclusion.CONTEXT_GROUP_PROJECT)
+    ):
         _caps_fs = ctx._resolve_caps(model_window)
         _skip_folder_roots, _declared_sources = _inclusion._folder_steering_delivery_snapshot(
             provider_type=provider_type,
@@ -561,7 +641,7 @@ def rail_parts(
             if _rline:
                 parts.append(_rline + "\n\n")
                 logger.info(
-                    "🔍 Injected resource pressure line (posture=%s, avail=%.1fGB)",
+                    "Injected resource pressure line (posture=%s, avail=%.1fGB)",
                     _rstatus.posture,
                     _rstatus.available_gb,
                 )

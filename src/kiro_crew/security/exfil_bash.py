@@ -15,7 +15,10 @@ from __future__ import annotations
 import fnmatch
 import re
 
-from .denied_rules import _INERT_SEARCH_VERBS, _exception_eligible
+from kiro_crew import platform_compat
+
+from .denied_rules import _INERT_SEARCH_VERBS, BUILTIN_DENIED_RULES, _exception_eligible
+from .shell_commands import pipelines as _pipelines
 from .shell_commands import read_commands as _read_commands
 
 # Data-egress / reverse-shell command shapes — the exfiltration-specific subset
@@ -165,16 +168,18 @@ def _inert_line_allows(command: str) -> bool:
     variable, an unquoted substitution, `${ …; }`), a redirection, any other
     separator, or a first word outside `_CARVEOUT_VERBS` and *programs* keeps the
     deny. With no such program on the line, no HTTP client can run."""
-    # A builtin and a filter that execute nothing; never ``printf``, whose ``-v``
-    # writes a variable (``BASH_CMDS[date]`` rebinds a verb).
-    programs = _CARVEOUT_VERBS | {"echo", "cat"}
+    # A builtin and filters that execute nothing; never ``printf``, whose ``-v``
+    # writes a variable (``BASH_CMDS[date]`` rebinds a verb), and never ``sort``,
+    # whose ``--compress-program`` runs one.
+    programs = _CARVEOUT_VERBS | {"echo", "cat", "head", "tail", "wc"}
     # A list or a pipe: a paren, a backtick or a heredoc is refused.
     separators = ("", ";", "&", "&&", "||", "|", "\n")
     # Only the time zone or locale: never ``PATH``, ``LD_PRELOAD`` or another
     # variable that changes which program runs.
     locale_prefix = re.compile(r"(?:TZ|LANG|LC_[A-Z]+)=[A-Za-z0-9_./:+-]*\Z")
-    # The reader can misplace a word end at an escape (``\ #`` reads as a comment).
-    if "\\" in command or "#" in command:
+    # The reader can misplace a word end at an escape (``\ #`` reads as a comment),
+    # so only a backslash that is literal inside quotes passes.
+    if "#" in command or not _backslashes_are_quoted_literals(command):
         return False
     # Bound the reader's work: a real conversion line is short and barely nested.
     if len(command) > 2000 or command.count("$(") > 4:
@@ -187,7 +192,122 @@ def _inert_line_allows(command: str) -> bool:
             return False
         while raws and locale_prefix.match(raws[0]):
             raws.pop(0)
-        if raws and raws[0] not in programs:
+        if raws and raws[0] not in programs and not _is_read_only_gh(raws):
+            return False
+    return True
+
+
+#: ``gh`` subcommands that read GitHub and take no local file as a body. ``gh api``,
+#: ``gh gist``, ``gh release`` and every ``create``/``edit``/``comment`` can send a
+#: file, so they are not here; a flag before the subcommand fails closed too.
+_READ_ONLY_GH = frozenset(
+    (("search",), ("issue", "view"), ("issue", "list"), ("pr", "view"), ("pr", "list"))
+)
+
+
+def _is_read_only_gh(raws: "list[str]") -> bool:
+    """Whether the raw words *raws* are a :data:`_READ_ONLY_GH` call of ``gh``."""
+    return (
+        len(raws) >= 2
+        and raws[0] == "gh"
+        and ((raws[1],) in _READ_ONLY_GH or tuple(raws[1:3]) in _READ_ONLY_GH)
+    )
+
+
+def _backslashes_are_quoted_literals(command: str) -> bool:
+    """Whether every backslash in *command* is a literal character to bash.
+
+    That is a backslash inside single quotes, or inside double quotes before a
+    character it does not escape there (``"a\\|b"`` is the four characters it
+    shows). An unquoted backslash, or one before ``$``, a backtick, ``"``, ``\\`` or
+    a newline inside double quotes, returns False, so the reader's word ends and
+    bash's cannot differ at one. A ``$(`` anywhere with a backslash anywhere also
+    returns False: inside a substitution the quoting starts over.
+    """
+    if "\\" in command and "$(" in command:
+        return False
+    quote = ""
+    for i, char in enumerate(command):
+        if quote == "'":
+            if char == "'":
+                quote = ""
+        elif char == "\\":
+            if quote != '"' or command[i + 1 : i + 2] in ("$", "`", '"', "\\", "\n", ""):
+                return False
+        elif char in "'\"" and quote in ("", char):
+            quote = "" if quote else char
+    return True
+
+
+# The nc redirect row reads the whole line as text, so a `<` that belongs to a
+# LATER command (`nc -z host 22; sort < in.txt`) is refused as if it fed nc. The
+# denial stays on the text, and both tiers (the regex above and the catalog row in
+# the deny gate) relax it only for a line `_nc_redirect_line_allows` reads in full.
+_NC_FILE_REDIRECT_RULE = "data-exfil-nc-file-redirect"
+_NC_FILE_REDIRECT_PATTERN = next(
+    rule.pattern for rule in BUILTIN_DENIED_RULES if rule.id == _NC_FILE_REDIRECT_RULE
+)
+
+
+def _nc_redirect_line_allows(command: str) -> bool:
+    """A line naming nc whose every input redirect feeds a pipeline without nc.
+
+    Reads the shared reader's commands and fails closed: quoting, an escape (a
+    cmd ``^`` too, which the deny gate folds away to find a hidden nc), a
+    comment, a variable or substitution, a glob, a group or subshell, a heredoc or
+    here-string, a compound command, ``exec`` or ``alias`` (which can hand a
+    later redirect to nc), non-ASCII or a control character keeps the deny. A word
+    holding ``nc`` (``/bin/nc``, ``sort=nc``, ``netcat``) may stand only first in
+    its command, or after ``echo`` in a command with no redirect, so nothing on
+    the line can make a later command run nc. Then a pipeline that holds such a
+    word must be one command with no input redirect (any redirect word with ``<``).
+    False on Windows: a script hook runs there under cmd.exe, which does not split
+    on ``;``, so the bash reading this relies on is not the one that runs."""
+    if platform_compat.IS_WINDOWS:
+        return False
+    # shortcut: refuses any quoted or expanded line, upgrade only if a real line needs it.
+    if any(ch in command for ch in "\\#'\"$`^(){}*?[") or "<<" in command:
+        return False
+    if not command.isascii() or any(ch < " " and ch not in "\t\n" for ch in command):
+        return False
+    if len(command) > 2000:
+        return False
+    # A list or a pipe; anything else (a paren) is already refused above.
+    separators = ("", ";", "&", "&&", "||", "|", "\n")
+    # A first word that opens or closes a compound command, or that changes how a
+    # later word runs or where its input comes from.
+    refused_first = frozenset(
+        (
+            *("if", "then", "else", "elif", "fi", "case", "esac", "for", "select"),
+            *("while", "until", "do", "done", "function", "coproc", "time", "!", "[["),
+            *("alias", "hash", "enable", "shopt", "builtin", "command", "eval", "source"),
+            ".",
+        )
+    )
+
+    def names_nc(raw: str) -> bool:
+        low = raw.lower()
+        return "nc" in low or "netcat" in low
+
+    commands = _read_commands(command)
+    for before, cmd in zip([None, *commands], commands):
+        raws = [word.raw for word in cmd.words]
+        if cmd.separator not in separators or "exec" in raws:
+            return False
+        # An empty command after a pipe (`a |` then a newline, or `|&`): bash runs
+        # the pipe on into the next command, which `_pipelines` would cut apart.
+        if not raws and before is not None and before.separator == "|":
+            return False
+        if raws and raws[0] in refused_first:
+            return False
+        inert_args = raws[:1] == ["echo"] and not cmd.redirects
+        if any(names_nc(raw) for raw in raws[1:]) and not inert_args:
+            return False
+    for pipeline in _pipelines(commands):
+        reads_input = any("<" in word.raw for cmd in pipeline for word, _target in cmd.redirects)
+        # Piped on, an echoed `nc` can become a script (`echo nc h 1 | tee run`).
+        joined = reads_input or len(pipeline) > 1
+        if joined and any(names_nc(word.raw) for cmd in pipeline for word in cmd.words):
             return False
     return True
 
@@ -260,6 +380,9 @@ def audit_bash_exfiltration(
         # row while the other is still enforced.
         for m in rx.finditer(command):
             matched_id = _exfil_rule_id_for_match(label, m.group(0), rule_ids)
+            # The redirect belongs to a later command, not to nc: see the reader.
+            if matched_id == _NC_FILE_REDIRECT_RULE and _nc_redirect_line_allows(command):
+                break
             if _on(matched_id):
                 return _exfil_denial(reason, matched_id, command, m.span())
         continue

@@ -16,7 +16,7 @@
  *     class, no inline style) and no ResizeObserver is created
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, act, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, act, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { SettingsSubNav } from '../components/SettingsSubNav'
 
@@ -124,6 +124,17 @@ describe('SettingsSubNav two-pane section list stays in view', () => {
     fireObservers()
     expect(nav.style.maxHeight).toBe('')
     expect(scroller(listbox).classList.contains('overflow-y-auto')).toBe(false)
+  })
+
+  it('draws each row\'s focus ring inside the row, so a capped list that scrolls cannot clip it', () => {
+    const { listbox, scrollArea } = renderWide()
+    setSize(scrollArea, 'clientHeight', 200)
+    setSize(listbox, 'offsetHeight', 400)
+    fireObservers()
+    expect(scroller(listbox).classList.contains('overflow-y-auto')).toBe(true)
+    const rows = within(listbox).getAllByRole('option')
+    expect(rows.map(r => r.textContent)).toEqual(['Transcript', 'Composer'])
+    for (const r of rows) expect(r).toHaveClass('focus-visible:outline-offset-[-2px]')
   })
 
   it('shows a "More below" cue on a capped list while rows remain below and hides it at the end', () => {

@@ -66,6 +66,7 @@ function readPanel(file: string): string {
  * an unlisted file fails, so the choice is always conscious.
  */
 const UNMAPPED_PANELS: Record<string, string> = {
+  'remoteCrewTunnelError.tsx': "a Remote Crew row's connect-failure text (one sentence, the raw error folded under it); zero controls, no setting",
   'BrowserEngineSection.tsx': "the Browser tab's Engine row under More (Harness and Chromium versions) with a Redownload action; status and one action, no setting of its own",
   'BrowserStatusCard.tsx': "the Browser tab's main card (browser, status dot, one state-dependent Install / Retry / Allow / Connect / Disconnect action); it reports the engine and holds no setting",
   'KiroHarnessFallbackNote.tsx': 'informational note ChatPanel mounts above the fallback pickers on a Kiro harness, zero controls',
@@ -84,23 +85,28 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'McpManagementLaunchReview.tsx': "McpManagement.tsx's launch review and refused-row panels, per-server approvals rather than settings, rendered on the MCP Servers page (`/mcp`)",
   'McpManagementCwdQuestion.tsx': "McpManagement.tsx's working-folder question dialog, a per-server answer asked before sharing, rendered on the MCP Servers page (`/mcp`), zero settings",
   'McpManagementHero.tsx': "McpManagement.tsx's hero, reload banner and approval card, rendered on the MCP Servers page (`/mcp`), zero settings",
+  'McpShareDiagram.tsx': "the MCP sharing hero's non-interactive Off/On picture of what sharing does, rendered on the MCP Servers page (`/mcp`); no controls",
   'MobileLoginCard.tsx': 'mint-a-sign-in-link action card; the link it returns is a one-time credential, not a persistent setting',
-  'OptionalSdkCard.tsx': 'read-only install-command card the Feishu, Teams and WhatsApp panels mount when their optional SDK is missing; zero controls, only a copy button',
+  'OptionalSdkCard.tsx': 'read-only install-command card the Feishu, Teams and WhatsApp panels mount when their optional SDK is missing; a copy button and, for Feishu on the desktop app, a one-shot Install action, no setting and no control writes a config path',
   'PeoplePanel.tsx': 'read-only list of who has used this Crew and where access is managed; no setting and no control writes a config path',
-  'PeopleCrew.tsx': 'the People share card, People list and the name-and-picture dialog; display-only edits and one-shot actions with their own routes, no setting and no control writes a config path',
-  'PeopleModes.tsx': 'the per-mode pieces PeoplePanel mounts (invalid state, read-only Team Access, adapter notes); no setting and no control writes a config path',
+  'PeopleCrew.tsx': 'the one People list with source chips and the name-and-picture dialog; display-only edits and one-shot actions with their own routes, no setting and no control writes a config path',
+  'PeopleModes.tsx': 'the pieces PeoplePanel mounts beside the sources (invalid state, a source status badge, the Console link); no setting and no control writes a config path',
+  'PeopleSources.tsx': 'the People connection-source cards: status, people counts, the owner\'s invite buttons and the Crew link to copy; no setting and no control writes a config path',
   'PeopleAdvanced.tsx': 'the owner-only Advanced section of the People tab, which shows only under the Shared Crew preview; its controls write dashboard.shared_crew.* paths, but a search hit would deep-link to a tab that is hidden unless the preview is on, so they stay out of settings search',
   'SecretUsage.tsx': "the Secrets item pane's read-only Used by card and the delete confirmation's in-use line; it lists where an item is used and holds no setting",
-  'SharedAccessSetup.tsx': 'the People empty state shown while no shared-access path is configured; guidance and links to existing guides, no setting and no control writes a config path',
-  'SsmInvite.tsx': 'the SSM tab of the People invite dialog and its row under Invites: a one-time link form with its own create and remove routes; no setting and no control writes a config path',
+  'secretsOwnerOnly.tsx': "the hook and the one notice the Secrets panel shows in place of the vault when it is held (a teammate, or a relay caller); one StatusNotice, no setting and no control writes a config path",
+  'SharedAccessSetup.tsx': 'the dashed People card for a connection source not set up yet; guidance and links to existing guides, no setting and no control writes a config path',
+  'SsmInvite.tsx': 'the SSM tab of the People invite dialog and its row in the People list: a one-time link form with its own create and remove routes; no setting and no control writes a config path',
   'TailscaleInvites.tsx': 'the People invite dialog: a one-time invite form and the Tailscale credential connect field, both actions with their own Connect and Disconnect routes; no setting and no control writes a config path',
   'PostureDisclosure.tsx': "read-only disclosure rows for SecurityPanel's posture section (manual entry security.live-security-posture)",
-  'RemoteControlCard.tsx': "the Remote Crew tab's personal Remote Control status and its one-click Turn off; it writes only an explicit off through its own route, holding no searchable setting",
   'AboutPanelUpdateChanges.tsx': "read-only list of the changes an available update brings, under About > Updates; zero controls",
   'RemoteCrewWindowsNotice.tsx': "the Remote Crew Set-up tab's Windows-gateway notice in place of the AWS checklist; text and a guide link, zero controls",
   'ReportProblemCard.tsx': 'feedback action card, no settings',
   'SettingsSearch.tsx': 'the settings search box itself — indexing it would be self-referential',
+  'SlackSetupWizard.tsx': "the Slack setup wizard: one-time steps that write the same slack.* fields the Slack panel's own form (indexed) holds, so it adds no searchable setting",
+  'SlackWizardDiagram.tsx': "the setup wizard's non-interactive pictures of where to click in Slack; no controls",
   'SlackManifestUpdate.tsx': "the Slack Code section's update-your-Slack-app panel (install status, copy manifest, App Manifest link, Check again); it reports and acts on the installed app and holds no setting",
+  'SlackOwnerClaim.tsx': "the Slack Identity & access card's Claim in Slack block (open window, candidates, This is me, Clear owner); it acts on the owner the Owner Slack member ID setting beside it already indexes, and holds no setting of its own",
   'SttRetentionNote.tsx': "read-only \"Is my audio kept?\" line under SttSettings' provider picker; an info tip and a docs link, zero controls",
   'ThemeDroppedRulesNotice.tsx': 'informational notice, zero controls',
   'TranslucentPanelsPreview.tsx': 'aria-hidden illustration under the Translucent panels switch (registry id display.translucent-panels, on DisplayPanel); it holds no control of its own',
@@ -286,13 +292,20 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     counts: { input: 6, SimpleSelect: 1 },
     reason: 'backup-restore form: the export\'s include-chat-history, include-agent-templates and memory-only boxes, the export zip file picker, the import\'s memory-only box, the import preview\'s per-template install box (one control rendered once per bundled template) and the merge/replace mode for that one import — per-export and per-import arguments, not persistent settings',
   },
-  'RemoteCrewPanel.tsx': {
-    counts: { input: 7 },
+  'RemoteCrewPanelSetupCards.tsx': {
+    counts: { input: 8 },
     reason:
-      'setup-wizard AWS profile/region convenience fields (localStorage) behind a ' +
-      'non-URL sub-tab a deep link cannot mount; plus the launch form\'s identity ' +
+      'the Add Crew modal\'s setup-form AWS profile/region convenience fields (localStorage), ' +
+      'which a deep link cannot open; plus the launch form\'s sign-in-on-launch checkbox, identity ' +
       'choice (2 radios), Identity Center start-URL/region and subnet ID fields — per-launch ' +
       'arguments sent with the launch request, not persistent settings',
+  },
+  'RemoteCrewPanelCustomType.tsx': {
+    counts: { input: 2 },
+    reason:
+      'the launch form\'s custom instance type: the filter box over the runtime-fetched list ' +
+      'and one radio rendered per offered type -- a per-launch argument sent with the launch ' +
+      'request, not a persistent setting',
   },
   'RemoteCrewPanelCrewRow.tsx': {
     counts: { Toggle: 1 },
@@ -301,11 +314,17 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'crew\'s record, not a global setting',
   },
   'PeopleCrew.tsx': {
-    counts: { Input: 2, input: 1 },
+    counts: { Input: 1, input: 1 },
     reason:
-      'the read-only share link field and the name-and-picture dialog (name, picture file) ' +
-      'are a copy target and display-only edits saved by their own route: nothing here ' +
-      'writes a config path, so there is no row for settings search to find',
+      'the name-and-picture dialog (name, picture file) is a display-only edit saved by ' +
+      'its own route: nothing here writes a config path, so there is no row for settings ' +
+      'search to find',
+  },
+  'PeopleSources.tsx': {
+    counts: { Input: 1 },
+    reason:
+      'the read-only Crew link field on the Tailscale source card is a copy target: nothing ' +
+      'here writes a config path, so there is no row for settings search to find',
   },
   'PeopleAdvanced.tsx': {
     counts: { Toggle: 3, Input: 1 },
@@ -319,10 +338,6 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     reason:
       'add/edit form for one vault item (name, value, login fields, a website to add, note text) ' +
       '— transient CRUD, not persistent knobs',
-  },
-  'SecretsPanelLegacy.tsx': {
-    counts: { Input: 2 },
-    reason: 'add-secret name/value form — transient CRUD, not persistent knobs',
   },
   'SecurityPanelDeniedCommands.tsx': {
     counts: { Toggle: 4, Checkbox: 1, Input: 5 },
@@ -344,6 +359,12 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     counts: { input: 1 },
     reason: 'the settings search box itself',
   },
+  'SlackSetupWizard.tsx': {
+    counts: { Input: 4 },
+    reason:
+      'transient: the setup wizard\'s alias, bot token, app-level token and member-ID entries; ' +
+      'each is a one-time step whose stored field the Slack panel form below indexes',
+  },
   'SlackCodeChannelDefaults.tsx': {
     counts: { SimpleSelect: 4 },
     reason:
@@ -354,6 +375,12 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
   'SlackPanel.tsx': {
     counts: { Input: 1 },
     reason: "TagListEditor's internal draft input — part of a composite the extractor indexes whole",
+  },
+  'SlackSharedAccess.tsx': {
+    counts: { Input: 1 },
+    reason:
+      'the member-ID draft input of the People with access list: an input to the Add ' +
+      'action, whose list (slack.shared_access.user_ids) is indexed through the section',
   },
   'SsmInvite.tsx': {
     counts: { Input: 1 },
@@ -491,12 +518,6 @@ const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> 
     reason:
       'the managed pane labels its SecretField with the slot copy (managedLabel), the anchor ' +
       'the settingsManual secrets.* entries highlight; one pane per transient credential slot',
-  },
-  'SecretsPanelLegacy.tsx': {
-    count: 1,
-    reason:
-      'managed SecretField labels are selected from a closed kind-to-copy map and the ' +
-      'rows are transient server-provided credential slots, not persistent settings',
   },
 }
 

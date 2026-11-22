@@ -384,21 +384,26 @@ ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS: FrozenSet[str] = frozenset({ACP_
 #: chat that is not a crew member's. Context assembly asks it by provider label
 #: (``agent_sdk.drivers.acp.crew_loads_spec_steering``).
 #:
-#: claude and codex are the members: each is handed no spec, and Crew's prompt text
-#: reaches each one. kiro-cli is NOT a member and must never become one: it reads
-#: the spec off disk, so membership would send every document twice. KAS is not
-#: either: it reports ``native_steering`` and loads the trees itself. The other
-#: harnesses stay out until their prompt is shown to carry the documents.
+#: claude, codex, opencode and pi are the members: each is handed no spec, reads
+#: no ``.kiro/steering`` tree of its own, and Crew's prompt text reaches each one.
+#: kiro-cli is NOT a member and must never become one: it reads the spec off disk,
+#: so membership would send every document twice. KAS is not either: it reports
+#: ``native_steering`` and loads the trees itself. The other harnesses stay out
+#: until their prompt is shown to carry the documents.
 ACP_BACKENDS_CREW_LOADS_SPEC_STEERING: FrozenSet[str] = frozenset(
-    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
 )
 
 #: Backends that read the project's ``AGENTS.md`` themselves from the session's
 #: working directory, so Crew's steering load leaves that file out
-#: (``agent_sdk.drivers.acp.reads_project_agents_md``). codex is the member: Crew
-#: sends the project as the ACP ``cwd``, and Codex's project-doc discovery reads
-#: ``AGENTS.md`` from it. claude is not: Crew's load is how the file reaches it.
-ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD: FrozenSet[str] = frozenset({ACP_BACKEND_CODEX})
+#: (``agent_sdk.drivers.acp.reads_project_agents_md``). Crew sends the project as
+#: the ACP ``cwd``. codex is a member: its project-doc discovery reads ``AGENTS.md``
+#: from it. opencode and pi are members: each loads ``AGENTS.md`` from its working
+#: directory and the folders above it into its system prompt. claude is not: Crew's
+#: load is how the file reaches it.
+ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
+)
 
 
 # ── How a harness is made to ask ──

@@ -124,6 +124,8 @@ class TestManifestGrantsWhatTheCodeUses:
             assert _bot_scopes(stripped) == _bot_scopes(full), combo
             assert _bot_events(stripped) == _bot_events(full), combo
             assert stripped.get("features") == full.get("features"), combo
+            assert stripped["oauth_config"] == full["oauth_config"], combo
+            assert stripped["settings"] == full["settings"], combo
 
     def test_raw_template_parses_with_every_switch_on(self) -> None:
         # The gates are YAML comments, so the raw file is a valid manifest that
@@ -182,18 +184,77 @@ class TestManifestGrantsNothingMore:
         # user token. The user block exists for a separately configured Slack
         # MCP/search integration (documented in docs/guides/slack-setup.md
         # Step 4); it still widens the OAuth consent screen, so it is pinned
-        # exactly — widening it must be a deliberate, visible edit here.
-        assert sorted(
-            _manifest(frozenset(slack_manifest.FEATURES))["oauth_config"]["scopes"]["user"]
-        ) == [
-            "channels:history",
-            "channels:read",
-            "groups:history",
-            "groups:read",
-            "im:history",
-            "im:read",
-            "mpim:history",
-            "mpim:read",
-            "search:read",
-            "users:read",
-        ]
+        # exactly — widening it must be a deliberate, visible edit here. The
+        # Slack MCP switch (``slack.slack_mcp``) replaces that list with the
+        # read-only set Slack's MCP server needs, pinned the same way.
+        for combo in _COMBOS:
+            scopes = _manifest(combo)["oauth_config"]["scopes"]
+            if slack_manifest.SLACK_MCP not in combo:
+                assert sorted(scopes["user"]) == [
+                    "channels:history",
+                    "channels:read",
+                    "groups:history",
+                    "groups:read",
+                    "im:history",
+                    "im:read",
+                    "mpim:history",
+                    "mpim:read",
+                    "search:read",
+                    "users:read",
+                ], combo
+                continue
+            assert sorted(scopes["user"]) == [
+                "canvases:read",
+                "channels:history",
+                "channels:read",
+                "files:read",
+                "groups:history",
+                "groups:read",
+                "im:history",
+                "im:read",
+                "lists:read",
+                "mpim:history",
+                "mpim:read",
+                "search:read.files",
+                "search:read.im",
+                "search:read.mpim",
+                "search:read.private",
+                "search:read.public",
+                "search:read.users",
+                "users:read",
+            ], combo
+
+
+class TestCodeChannelMessageDelivery:
+    """Docs: https://docs.slack.dev/ai/slack-code/#scopes and #enabling-code-channels."""
+
+    def test_message_session_is_not_added_because_channels_and_groups_already_cover_it(
+        self,
+    ) -> None:
+        # message.channels / message.groups deliver code-channel messages too, and
+        # every other channel feature (tracked channels, mentions, threads) needs
+        # them, so they can never be dropped for message.session: adding it would
+        # widen the subscription list for no message it does not already deliver.
+        for combo in _COMBOS:
+            events = set(_bot_events(_manifest(combo)))
+            assert {"message.channels", "message.groups"} <= events, combo
+            assert "message.session" not in events, combo
+
+    def test_context_bar_click_is_not_a_bot_event_subscription(self) -> None:
+        # Slack's App Manifest editor refuses the whole manifest over it: "Scopes
+        # could not be verified for `code_channel_action` as it is not a valid bot
+        # user event type". Slack's events reference lists no such event.
+        on = [combo for combo in _COMBOS if slack_manifest.CODE_CHANNELS in combo]
+        assert on
+        for combo in on:
+            assert "code_channel_action" not in _bot_events(_manifest(combo)), combo
+
+    def test_no_slash_command_url_because_socket_mode_routes_agent_commands(self) -> None:
+        # Socket Mode delivers runtime-registered agent commands without a URL, and
+        # Kiro Crew runs no HTTP events endpoint to point one at.
+        for combo in _COMBOS:
+            manifest = _manifest(combo)
+            assert manifest["settings"]["socket_mode_enabled"] is True, combo
+            code = (manifest.get("features") or {}).get("code_channels")
+            if code is not None:
+                assert code == {"enabled": True}, combo

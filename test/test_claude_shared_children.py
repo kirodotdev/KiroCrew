@@ -202,6 +202,44 @@ def test_a_childs_frames_on_the_parents_session_go_on_its_card(tmp_path):
     assert not [e for e in events if e.kind == EVENT_TEXT_CHUNK and "child" in (e.text or "")]
 
 
+_JWT = (
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+    "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+)
+
+
+@pytest.mark.parametrize(
+    ("title", "leaked"),
+    [
+        (f"curl -H 'Authorization: Bearer {_JWT}'", _JWT),
+        # A token across offset 4096 of a long title: no cut runs before the redactor.
+        ("x " * 2040 + f"Bearer {_JWT} done", _JWT[:8]),
+        ("Read src/app.py", None),
+        ("搜索代码", None),
+    ],
+)
+def test_a_childs_tool_title_on_the_parents_session_is_redacted(tmp_path, title, leaked):
+    running = _announce({"state": "running"})
+    stamp = {"_meta": {"claudeCode": {"parentToolUseId": AGENT_CALL}}}
+    call = _update(
+        "s-a",
+        {"sessionUpdate": "tool_call", "toolCallId": "toolu_titled", "title": title, **stamp},
+    )
+
+    async def scenario(rt, chat_a, chat_b, stdout):
+        return await _turn(rt, chat_a, stdout, _turn_with(running, _PROMPT, call, _DONE))
+
+    events = _run(tmp_path, scenario)
+    marks = [
+        e for e in events if e.kind == EVENT_SUBAGENT_ACTIVITY and e.tool_call_id == "toolu_titled"
+    ]
+    assert len(marks) == 1
+    if leaked is None:
+        assert marks[0].title == title  # plain titles pass through unchanged
+    else:
+        assert leaked not in marks[0].title
+
+
 def test_a_stop_that_cannot_be_sent_reports_the_child_not_stopped(tmp_path):
     running = _announce({"state": "running"}, capabilities={"cancel": {}})
 

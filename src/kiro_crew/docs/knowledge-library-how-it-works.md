@@ -76,8 +76,9 @@ results were used.
 
 `knowledge.auto_ingest_artifacts` (default `false`) indexes saved artifacts and
 keeps them in sync; `knowledge.auto_add_documents` (default `false`) lets the
-agent add documents it reads. `knowledge.extraction_pool_size` bounds how many chunks are processed at once
-(1–10; idle workers are released after five minutes). The embedding model can be
+agent add documents it reads. `knowledge.extraction_pool_size` sets how many model workers extract entities at
+once (default 3, 1–10; the workers are released after five idle minutes, and a
+new size applies the next time the pool starts from idle). The embedding model can be
 pointed elsewhere with `KIROCREW_EMBED_MODEL_URL` or `KIROCREW_EMBED_MODEL_PATH`.
 
 For how the graph itself is built and stored, see the contributor spec

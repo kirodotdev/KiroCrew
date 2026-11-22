@@ -587,7 +587,7 @@ class CardStore:
         )
         if live >= MAX_LIVE_CARDS_PER_SLOT:
             raise CardError(429, "too_many_cards", "this conversation has too many open cards")
-        same = self._open_duplicate(slot_key, kind, params)
+        same = self.open_duplicate(slot_key, kind, params)
         if same is not None:
             raise CardError(
                 409,
@@ -629,7 +629,7 @@ class CardStore:
         self.sweep()
         return rec
 
-    def _open_duplicate(
+    def open_duplicate(
         self, slot_key: str, kind: str, params: dict[str, Any]
     ) -> dict[str, Any] | None:
         """A card in *slot_key* still waiting on the person that proposes exactly this.
@@ -997,6 +997,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _goal_state,
         _hunk_separator,
         _import_after_is_written,
+        _import_dashboard_state,
         _import_rules_digest,
         _import_state,
         _mcp_detail,

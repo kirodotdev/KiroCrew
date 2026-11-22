@@ -328,7 +328,7 @@ class TestThePlanHidesTheDeclaredLeaves:
             sandbox_plan.BACKEND_NAMESPACE, "standard", extra_visible_dirs=lifted
         )
 
-        pins = set(agent.runtime_ancestor_guards)
+        pins = set(agent.runtime_ancestor_guards) | set(agent.mask_parent_pins)
         for parent in ("apps", "apps/demo", "apps/demo/data", "apps/demo/data/tokens"):
             assert str(home / parent) in pins, f"an agent can rename {parent}"
         tokens = str(home / "apps" / "demo" / "data" / "tokens")
@@ -336,6 +336,100 @@ class TestThePlanHidesTheDeclaredLeaves:
         # The move-aside spelling is not handed back, so it stays pinned there too.
         staged = str(home / "apps" / ".demo-data-tmp" / "tokens")
         assert staged in pins and staged in set(backend.runtime_ancestor_guards)
+
+    @pytest.mark.parametrize("mode", _MODES)
+    def test_namespace_pins_the_app_folder_after_the_masks(self, home, mode):
+        """Only ``apps/<app>`` moves to the after-mask pins; every folder stays pinned.
+
+        An update replaces ``apps/<app>`` and renames ``data/`` into the new one, so a
+        mask or a ``data/`` pin placed through a pin of the old folder would be left
+        behind. The app folder is pinned after the masks instead; the set of pinned
+        folders is the same as with every pin bound before them.
+        """
+        _install(home, "demo", ["tokens/oauth.json"])
+        (home / "apps" / "demo" / "data" / "tokens").mkdir()
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, mode)
+
+        before_masks = set(plan.runtime_ancestor_guards)
+        apps = str(home / "apps")
+        app_dir = str(home / "apps" / "demo")
+        assert app_dir in plan.mask_parent_pins and app_dir not in before_masks
+        for rel in ("apps/demo/data", "apps/demo/data/tokens"):
+            assert str(home / rel) in before_masks and str(home / rel) not in plan.mask_parent_pins
+        assert apps in before_masks and apps not in plan.mask_parent_pins
+        # One level: nothing in the after-mask list sits above another one of it.
+        for pin in plan.mask_parent_pins:
+            assert not any(o.startswith(pin + os.sep) for o in plan.mask_parent_pins)
+        # Only the entries: the declared leaf itself is masked, not pinned.
+        for target in _targets("apps/demo/data/tokens/oauth.json"):
+            assert target not in before_masks and target not in plan.mask_parent_pins
+
+    @_POSIX_ONLY
+    def test_a_linked_spelling_of_the_app_folder_is_pinned_after_the_masks_too(self, home):
+        """A guard is matched by the folder it resolves to, not by its spelling.
+
+        ``~/.kirocrew`` linked to the data home reaches ``apps/demo`` under a second name;
+        pinned before the masks, that spelling would hold the masks on the old folder.
+        Only one spelling per folder is bound, since either one refuses the rename.
+        """
+        _install(home, "demo", ["secrets.json"])
+        (Path.home() / ".kirocrew").symlink_to(home)
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
+
+        app_dir = os.path.realpath(home / "apps" / "demo")
+        before = [g for g in plan.runtime_ancestor_guards if os.path.realpath(g) == app_dir]
+        after = [g for g in plan.mask_parent_pins if os.path.realpath(g) == app_dir]
+        assert before == [], "a spelling of the app folder is still pinned before the masks"
+        assert len(after) == 1, after
+
+    def test_an_app_named_data_has_its_folder_pinned_after_the_masks(self, home):
+        """``apps/data/data/<entry>``: the folder is read from the fixed components."""
+        _install(home, "data", ["secrets.json"])
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
+        app_dir = str(home / "apps" / "data")
+        assert app_dir in plan.mask_parent_pins
+        assert app_dir not in plan.runtime_ancestor_guards
+
+    @_POSIX_ONLY
+    def test_a_link_into_the_app_folder_stays_pinned_before_the_masks(
+        self, home, tmp_path, monkeypatch
+    ):
+        """A link entry is pinned as itself, so it is never folded into the folder's pin.
+
+        Dropped, the link could be retargeted, and the next spawn would seal whatever it
+        then names instead of the operator's directory behind it.
+        """
+        _install(home, "demo", ["secrets.json"])
+        (home / "apps" / "demo" / "trust").mkdir()
+        link = tmp_path / "app-link"
+        link.symlink_to(home / "apps" / "demo")
+        monkeypatch.setattr(
+            sandbox, "configured_readonly_layer", lambda: ((str(link / "trust"),), ())
+        )
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
+        assert str(link) in plan.runtime_ancestor_guards, "the link can be retargeted"
+        assert str(link) not in plan.mask_parent_pins
+        assert str(home / "apps" / "demo") in plan.mask_parent_pins
+
+    def test_namespace_pins_no_app_folder_after_the_masks_without_a_declaration(self, home):
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
+        assert plan.mask_parent_pins == ()
+
+    def test_seatbelt_plan_has_no_after_mask_pins(self, home):
+        _install(home, "demo", ["secrets.json"])
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_SEATBELT, "standard")
+        assert plan.mask_parent_pins == ()
+
+    @_POSIX_ONLY
+    def test_namespace_launcher_payload_carries_the_app_folder_pin(self, home):
+        """The app folder reaches the launcher in its own list, apart from the seal parents."""
+        _install(home, "demo", ["secrets.json"])
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
+        payload = sandbox_plan.namespace_payload(plan)
+        app_dir = str(home / "apps" / "demo")
+        assert app_dir in payload["mask_parent_pins"]
+        assert app_dir not in payload["parent_pins"]
+        assert str(home / "apps" / "demo" / "data") in payload["parent_pins"]
 
     def test_the_lifecycle_staging_spelling_is_masked_too(self, home):
         _install(home, "demo", ["secrets.json"])

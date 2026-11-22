@@ -1,10 +1,13 @@
 /**
- * Settings -> Remote Crew -> Your crews: one switchable crew row with its
- * transport badge, lifecycle actions and inline edit form, and the turn-API URL
- * field a connected fargate crew shows. One of the owners `RemoteCrewPanel.tsx`
+ * Settings -> Remote Crew -> My Crews: one switchable crew row. Collapsed it
+ * shows the name, status, source and any blocking tag, with one main action for
+ * its state; its chevron opens the details (target, port, the on/off switch,
+ * who manages it, why it needs attention) and the other actions, which replace
+ * the old overflow menu. Also the inline edit form and the turn-API URL field a
+ * connected fargate crew shows. One of the owners `RemoteCrewPanel.tsx`
  * composes; the facade re-exports `TurnUrlField`.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
   Server,
   Rocket,
@@ -21,6 +24,7 @@ import {
   Play,
   Cloud,
   KeyRound,
+  ChevronRight,
 } from 'lucide-react'
 import {
   type InstanceView,
@@ -29,6 +33,8 @@ import {
 } from '../../api/client'
 import {
   BUILTIN_PROVISIONER_ID,
+  crewTransportLabel,
+  hasDashboardPane,
   shortenEcsTarget,
   usesSsmTransport,
 } from '../../utils/remoteCrew'
@@ -49,20 +55,14 @@ import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { i18nT } from '../../i18n/t'
 import { guideCaution } from '../../guide/trustRoot'
 import { StatusBadge } from './InstancesPanel'
-import CrewVersionStatus from './CrewVersionStatus'
+import CrewVersionStatus, { useCrewUpdateShown } from './CrewVersionStatus'
 import {
   EditInstanceForm,
   type InstanceDraft,
 } from './InstanceFormFields'
 import type { SigninNotice } from './remoteCrewPanelModel'
 import { SigninPromptBlock } from './RemoteCrewPanelLaunch'
-
-const connectionTypeLabel = (inst: InstanceView): string =>
-  inst.connection_method === 'fargate'
-    ? i18nT('pages.settings.remoteCrewPanel.type_fargate')
-    : inst.connection_method === 'ssm'
-      ? i18nT('pages.settings.remoteCrewPanel.type_ssm')
-      : i18nT('pages.settings.remoteCrewPanel.type_ssh')
+import { TunnelErrorWhy } from './remoteCrewTunnelError'
 
 // The badges compress to acronyms (EC2 / SSM / SSH) a first-time reader may
 // not know; the hover title spells out what each one means.
@@ -212,6 +212,7 @@ export function CrewRow({
   confirmRemove,
   connectBlocked,
   onConnect,
+  onOpen,
   onDisconnect,
   onSetEnabled,
   onDiagnose,
@@ -236,6 +237,7 @@ export function CrewRow({
   onFetchSignin,
   fetchingSignin,
   signinNotice,
+  signinCheckError = null,
 }: {
   inst: InstanceView
   cloudTag: string | null
@@ -249,6 +251,8 @@ export function CrewRow({
    *  banner instead of looking fully clickable. */
   connectBlocked: boolean
   onConnect: (id: string) => void
+  /** Switch the dashboard to this crew's pane, as its switcher entry does. */
+  onOpen: (id: string) => void
   onDisconnect: (id: string) => void
   onSetEnabled: (id: string, enabled: boolean) => void
   onDiagnose: (id: string) => void
@@ -279,6 +283,9 @@ export function CrewRow({
   onFetchSignin: (id: string) => void
   fetchingSignin: boolean
   signinNotice: SigninNotice | null
+  /** Why the gateway could not ask this crew's box whether it is signed in, or
+   *  null. Not a badge: nobody checked that its chats fail. */
+  signinCheckError?: string | null
 }) {
   const connected = inst.status.state === 'connected'
   const isCloud = cloudTag !== null
@@ -327,20 +334,99 @@ export function CrewRow({
   // A tag-correlated row is the core's own EC2 crew, whose lifecycle is above.
   const rowActions = isCloud ? undefined : getCrewRowActions(inst)
   const rowActionsDisabled = !!busy || deleting || transient
+  // The row's state in words. A tunnel error reads Disconnected with a
+  // "Can't connect" tag; its message moves to the details.
+  const failing = !inst.disabled && !cloudStopped && inst.status.state === 'error'
+  const shownStatus = cloudStopped
+    ? { ...inst.status, state: 'stopped' as const, error: undefined }
+    : { ...inst.status, state: failing ? 'disconnected' as const : inst.status.state, error: undefined }
+  const updateShown = useCrewUpdateShown(inst.id, connected && !inst.disabled)
+  // A row that needs sign-in opens with its sign-in block showing: that block
+  // is the only way to finish the crew's setup. The need can be learned after
+  // the first render (the box is asked first).
+  // Until the reader toggles it, the row follows that need in the same render.
+  const [chosen, setExpanded] = useState<boolean | null>(null)
+  const expanded = chosen ?? awaitingSignin
+  // Opening the editor (from the details, or a held draft coming back) shows it.
+  useEffect(() => { if (editing || blocked) setExpanded(true) }, [editing, blocked])
+  const detailsId = `crew-row-details-${inst.id}`
+  const actionsDisabled = !!busy || deleting
+  // One main action for the row's state. Every other action is in the details.
+  const main: 'signin' | 'start' | 'diagnose' | 'update' | 'open' | 'connect' | null = transient
+    ? null
+    : cloudStopped
+      // Before sign-in: a stopped crew must be running to finish signing in.
+      ? 'start'
+      : awaitingSignin
+        ? 'signin'
+        : inst.disabled
+          ? null
+          : failing
+            ? 'diagnose'
+            : connected && updateShown
+              ? 'update'
+              : connected
+                ? (hasDashboardPane(inst) ? 'open' : null)
+                : 'connect'
+  const managedBy = isCloud
+    ? i18nT('pages.settings.remoteCrewPanel.launched_by_kiro_crew')
+    : inst.provisioner_id === BUILTIN_PROVISIONER_ID
+      // An EC2-stamped row wears the EC2 badge, whose hint says it WAS
+      // launched by the EC2 launcher — the caption must agree with the
+      // badge, not hedge about whether AWS resources exist.
+      ? i18nT('pages.settings.remoteCrewPanel.stamped_ec2_note')
+      // A fargate row IS an AWS resource by definition, so it must not
+      // hedge like unverifiedCloud does; it keeps the same Remove confirm
+      // step but says plainly that the task keeps running after Remove.
+      : inst.connection_method === 'fargate'
+      ? i18nT('pages.settings.remoteCrewPanel.fargate_task_note')
+      : unverifiedCloud
+        ? i18nT('pages.settings.remoteCrewPanel.unverified_cloud_note')
+        : `${i18nT('pages.settings.remoteCrewPanel.added_by_you')} · ${i18nT('pages.settings.remoteCrewPanel.doesnt_manage')}`
+  const targetText = inst.connection_method === 'fargate'
+    // Two tasks in one cluster differ only at the far right of the ECS
+    // target; the short form keeps that tail visible and the title carries
+    // the full target.
+    ? <span title={target}>{shortenEcsTarget(target)}</span>
+    : reportedOnly
+      ? (
+        <span title={i18nT('pages.settings.remoteCrewPanel.reported_host_hint')}>
+          {i18nT('pages.settings.remoteCrewPanel.reported_host', { host: target })}
+        </span>
+      )
+      : <>{target}{usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''}</>
+  const detailRow = (label: string, value: ReactNode) => (
+    <div className="contents">
+      <dt className="text-muted">{label}</dt>
+      <dd className="m-0 text-text min-w-0 break-words">{value}</dd>
+    </div>
+  )
   return (
     <div className="py-2.5 border-b border-border last:border-b-0" data-crew-id={inst.id}>
     <div className="flex items-start justify-between gap-3">
-      <div className="flex items-start gap-3 min-w-0">
+      <div className="flex items-start gap-2 min-w-0">
+        <IconButton
+          aria-expanded={expanded}
+          aria-controls={detailsId}
+          aria-label={i18nT(expanded ? 'pages.settings.remoteCrewPanel.details_hide' : 'pages.settings.remoteCrewPanel.details_show', { name: inst.name })}
+          onClick={() => setExpanded(!expanded)}
+          className="mt-1.5 shrink-0"
+        >
+          <ChevronRight size={14} aria-hidden className={`transition-transform ${expanded ? 'rotate-90' : ''}`} />
+        </IconButton>
         <span className={`mt-0.5 w-8 h-8 shrink-0 grid place-items-center rounded-md ${isCloud ? 'bg-accent-subtle text-accent' : 'bg-bg-hover text-muted'}`}>
           {isCloud ? <Rocket size={16} /> : <Server size={16} />}
         </span>
         <div className="min-w-0">
           <div className="text-text-strong text-sm font-medium truncate">{inst.name}</div>
-          <div className="text-[12px] text-muted truncate">
+          <div className="mt-0.5 flex items-center gap-1.5 flex-wrap text-[12px] text-muted">
+            {inst.disabled
+              ? <span>{i18nT('pages.settings.remoteCrewPanel.crew_disabled')}</span>
+              : <StatusBadge status={shownStatus} />}
+            <span aria-hidden>·</span>
             {(inst.provisioner_id === BUILTIN_PROVISIONER_ID || isCloud) && (
               <Badge
                 variant="aim"
-                className="mr-1"
                 title={i18nT('pages.settings.remoteCrewPanel.source_ec2_hint')}
                 aria-label={i18nT('pages.settings.remoteCrewPanel.source_ec2_hint')}
               >
@@ -348,91 +434,57 @@ export function CrewRow({
                 {i18nT('pages.settings.remoteCrewPanel.source_ec2')}
               </Badge>
             )}
-            <Badge variant="muted" className="mr-1" title={connectionTypeHint(inst)} aria-label={connectionTypeHint(inst)}>
-              {connectionTypeLabel(inst)}
+            <Badge variant="muted" title={connectionTypeHint(inst)} aria-label={connectionTypeHint(inst)}>
+              {crewTransportLabel(inst)}
             </Badge>
-            {inst.connection_method === 'fargate'
-              // Two tasks in one cluster differ only at the far right of the
-              // ECS target, which the row's truncation cuts off; the short form
-              // keeps that tail visible and the title carries the full target.
-              ? <span title={target}>{shortenEcsTarget(target)}</span>
-              : reportedOnly
-                ? (
-                  <span title={i18nT('pages.settings.remoteCrewPanel.reported_host_hint')}>
-                    {i18nT('pages.settings.remoteCrewPanel.reported_host', { host: target })}
-                  </span>
-                )
-                : target}
-            {reportedOnly
-              ? ''
-              : `${usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''} ${i18nT('pages.settings.instancesPanel.remote_port_value', { port: inst.remote_port })}`}
-          </div>
-          <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-            {!inst.disabled && (
-              <StatusBadge status={cloudStopped ? { ...inst.status, state: 'stopped', error: undefined } : inst.status} />
-            )}
-            <span className="inline-flex items-center gap-1.5 text-[12px] text-muted">
-              <Toggle checked={!inst.disabled} onChange={on => onSetEnabled(inst.id, on)}
-                disabled={!!busy || deleting} describedBy={CREW_SWITCH_HINT_ID}
-                label={i18nT('pages.settings.remoteCrewPanel.crew_enabled_named', { name: inst.name })} />
-              {inst.disabled
-                ? i18nT('pages.settings.remoteCrewPanel.crew_disabled')
-                : i18nT('pages.settings.remoteCrewPanel.crew_enabled')}
-            </span>
             {awaitingSignin && (
               <Badge variant="warn" title={i18nT('pages.settings.remoteCrewPanel.needs_sign_in_hint')}>
                 <KeyRound className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.needs_sign_in')}
               </Badge>
             )}
-            <CrewVersionStatus instanceId={inst.id} name={inst.name} connected={connected && !inst.disabled} />
-          </div>
-          {cloudStopped && (
-            <div className="text-[12px] text-muted mt-1">
-              {i18nT('pages.settings.remoteCrewPanel.cloud_stopped_note')}
-            </div>
-          )}
-          <div className="text-[11px] text-muted-strong mt-1">
-            {isCloud
-              ? i18nT('pages.settings.remoteCrewPanel.launched_by_kiro_crew')
-              : inst.provisioner_id === BUILTIN_PROVISIONER_ID
-                // An EC2-stamped row wears the EC2 badge, whose hint says it WAS
-                // launched by the EC2 launcher — the caption must agree with the
-                // badge, not hedge about whether AWS resources exist.
-                ? i18nT('pages.settings.remoteCrewPanel.stamped_ec2_note')
-                // A fargate row IS an AWS resource by definition, so it must not
-                // hedge like unverifiedCloud does; it keeps the same Remove confirm
-                // step but says plainly that the task keeps running after Remove.
-                : inst.connection_method === 'fargate'
-                ? i18nT('pages.settings.remoteCrewPanel.fargate_task_note')
-                : unverifiedCloud
-                  ? i18nT('pages.settings.remoteCrewPanel.unverified_cloud_note')
-                  : `${i18nT('pages.settings.remoteCrewPanel.added_by_you')} · ${i18nT('pages.settings.remoteCrewPanel.doesnt_manage')}`}
+            {failing && (
+              <Badge variant="err" title={inst.status.error || undefined}>
+                {i18nT('pages.settings.remoteCrewPanel.cant_connect')}
+              </Badge>
+            )}
+            <CrewVersionStatus instanceId={inst.id} name={inst.name} connected={connected && !inst.disabled} part="badge" />
           </div>
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-        {/* A row shows at most two controls. While a transient state occupies
-            them — an armed confirm plus its Cancel, or a teardown in progress —
-            the primary action stands down; connecting is not what the user is
-            being asked about at that moment. */}
-        {transient ? null : connected ? (
-          <Btn onClick={() => onDisconnect(inst.id)} disabled={!!busy || deleting}>
-            <Unplug className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.disconnect')}
+        {main === 'signin' ? (
+          // The sign-in block is in the details; this opens them on it.
+          <Btn primary onClick={() => setExpanded(true)} aria-label={i18nT('pages.settings.remoteCrewPanel.sign_in_crew', { name: inst.name })}>
+            <KeyRound className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.sign_in')}
           </Btn>
-        ) : cloudStopped ? (
+        ) : main === 'start' && cloudTag !== null ? (
           <Btn
             primary
             onClick={() => onStart(cloudTag, coordsOf(inst))}
-            disabled={!!busy || deleting}
+            disabled={actionsDisabled}
             aria-label={i18nT('pages.settings.remoteCrewPanel.start_crew', { name: inst.name })}
           >
             <Play className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.start')}
           </Btn>
-        ) : inst.disabled ? null : (
+        ) : main === 'diagnose' ? (
+          <Btn primary onClick={() => onDiagnose(inst.id)} disabled={actionsDisabled} aria-label={i18nT('pages.settings.instancesPanel.diagnose_2', { name: inst.name })}>
+            <Stethoscope className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.diagnose')}
+          </Btn>
+        ) : main === 'update' ? (
+          <CrewVersionStatus instanceId={inst.id} name={inst.name} connected part="control" />
+        ) : main === 'open' ? (
+          <>
+            {/* A finished update's outcome, if one is cached; nothing otherwise. */}
+            <CrewVersionStatus instanceId={inst.id} name={inst.name} connected part="control" />
+            <Btn primary onClick={() => onOpen(inst.id)} disabled={actionsDisabled} aria-label={i18nT('pages.settings.remoteCrewPanel.open_crew', { name: inst.name })}>
+              {i18nT('pages.settings.remoteCrewPanel.open')}
+            </Btn>
+          </>
+        ) : main === 'connect' ? (
           <Btn
             primary
             onClick={() => onConnect(inst.id)}
-            disabled={!!busy || deleting || connectBlocked}
+            disabled={actionsDisabled || connectBlocked}
             // A `title` on a disabled button is unreliable: many browsers never
             // show it on hover, and it is not keyboard- or screen-reader-reachable.
             // While connecting is blocked, point the button at the restart banner
@@ -442,19 +494,18 @@ export function CrewRow({
           >
             <Plug className="lucide-inline" /> {busy === `connect:${inst.id}` ? i18nT('pages.settings.instancesPanel.connecting') : i18nT('pages.settings.instancesPanel.connect')}
           </Btn>
-        )}
-        {/* A teardown and a pending confirmation stay OUT of the overflow menu:
-            both are transient states the user must see without reopening a menu —
-            the delete only requested the teardown, and AWS confirms minutes later
-            when the row is dropped. Hiding that read as "nothing happened". */}
+        ) : null}
+        {/* A teardown and a pending confirmation stay on the row itself: both
+            are transient states the user must see without opening anything —
+            the delete only requested the teardown, and AWS confirms minutes
+            later when the row is dropped. Hiding that read as "nothing happened". */}
         {deleting ? (
           <Btn danger disabled aria-label={i18nT('pages.settings.remoteCrewPanel.deleting')}>
             <RefreshCw className="lucide-inline animate-spin" /> {i18nT('pages.settings.remoteCrewPanel.deleting')}
           </Btn>
         ) : lifecycleBusy ? (
-          // The action was chosen from the menu, which then closed. Report its
-          // progress on the row under the SAME accessible name the menu item
-          // carried, so the crew a request belongs to is never ambiguous.
+          // Report the progress on the row under the SAME accessible name the
+          // action carried, so the crew a request belongs to is never ambiguous.
           <Btn
             disabled
             aria-label={
@@ -476,9 +527,8 @@ export function CrewRow({
                   rows does not say WHICH. */}
               <Trash2 className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.delete_crew', { name: inst.name })}
             </Btn>
-            {/* An armed destructive button needs a way out. The overflow menu is
-                hidden while armed, so without this a mis-click leaves the row
-                showing nothing but a button that terminates an EC2 instance. */}
+            {/* An armed destructive button needs a way out, or a mis-click leaves
+                the row showing nothing but a button that terminates an EC2 instance. */}
             <Btn onClick={() => onRequestDelete(null)} disabled={!!busy}>
               {i18nT('pages.settings.remoteCrewPanel.cancel')}
             </Btn>
@@ -493,123 +543,153 @@ export function CrewRow({
             </Btn>
           </>
         ) : null}
-        {/* A row shows at most two controls. Connect/Disconnect is the primary
-            action and everything else lives in this menu; while a transient
-            action occupies the second slot the menu yields, since it is
-            disabled in those states anyway. */}
+      </div>
+    </div>
+    {/* Below the row header, and shown collapsed too: why the gateway could not
+        ask this crew's box whether it is signed in. Not a badge: nobody checked
+        that its chats fail. */}
+    {signinCheckError && (
+      <ErrorNotice variant="inline" impact="minor" className="mt-2" askAgent message={signinCheckError} />
+    )}
+    {expanded && (
+      <div id={detailsId} className="mt-2 ml-[4.25rem] text-[12px]" data-testid="crew-row-details">
+        <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1">
+          {detailRow(
+            usesSsmTransport(inst)
+              ? i18nT('pages.settings.remoteCrewPanel.detail_instance')
+              : i18nT('pages.settings.remoteCrewPanel.detail_host'),
+            targetText,
+          )}
+          {/* A chained row's port is the crew's own gateway port, not what
+              this dashboard forwards to, so it is not shown as a target. */}
+          {!reportedOnly && detailRow(i18nT('pages.settings.remoteCrewPanel.detail_port'), inst.remote_port)}
+          {/* The switch's own text names it ("Connections: On"), so it spans the
+              row rather than repeating the word in a label cell. */}
+          <div className="col-span-2 inline-flex items-center gap-1.5 text-text">
+            <Toggle checked={!inst.disabled} onChange={on => onSetEnabled(inst.id, on)}
+              disabled={actionsDisabled} describedBy={CREW_SWITCH_HINT_ID}
+              label={i18nT('pages.settings.remoteCrewPanel.crew_enabled_named', { name: inst.name })} />
+            {inst.disabled
+              ? i18nT('pages.settings.remoteCrewPanel.crew_disabled')
+              : i18nT('pages.settings.remoteCrewPanel.crew_enabled')}
+          </div>
+          {detailRow(i18nT('pages.settings.remoteCrewPanel.detail_managed_by'), managedBy)}
+          {(failing || cloudStopped || awaitingSignin) && detailRow(
+            i18nT('pages.settings.remoteCrewPanel.detail_why'),
+            failing
+              // The tunnel's own error.
+              ? <TunnelErrorWhy error={inst.status.error || ''} code={inst.status.error_code} />
+              : cloudStopped
+                ? i18nT('pages.settings.remoteCrewPanel.cloud_stopped_note')
+                : i18nT('pages.settings.remoteCrewPanel.needs_sign_in_hint'),
+          )}
+        </dl>
+        {rowActions?.detail && (
+          <ErrorBoundary
+            scope={`crew-row-detail:${rowActions.provisionerId}`}
+            fallback={error => <RowActionsDetailCrash error={error} name={inst.name} />}
+          >
+            <rowActions.detail inst={inst} disabled={rowActionsDisabled} />
+          </ErrorBoundary>
+        )}
+        {turnUrl && <TurnUrlField url={turnUrl} crewName={inst.name} />}
+        {awaitingSignin && signinJob && (
+          <SigninPromptBlock
+            job={signinJob}
+            crewName={inst.name}
+            onRestart={onRestartSignin}
+            restarting={restartingSignin}
+            onFetch={onFetchSignin}
+            fetching={fetchingSignin}
+            notice={signinNotice}
+            compact
+          />
+        )}
+        {/* The row's other actions. While an armed confirm or a teardown holds
+            the row they stand down, as the menu they replace did. */}
         {!transient && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <IconButton
-              aria-label={i18nT('pages.settings.remoteCrewPanel.more_actions', { name: inst.name })}
-              disabled={!!busy || deleting}
-            >
-              <MoreHorizontal className="lucide-inline" />
-            </IconButton>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[200px]">
-            <DropdownMenuItem
-              className="gap-2 text-[13px]"
-              onSelect={() => onDiagnose(inst.id)}
-              aria-label={i18nT('pages.settings.instancesPanel.diagnose_2', { name: inst.name })}
-            >
-              <Stethoscope className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.diagnose')}
-            </DropdownMenuItem>
-            <DropdownMenuItem className="gap-2 text-[13px]" onSelect={() => onEdit(inst.id)}>
+          <div className="mt-2.5 flex items-center gap-2 flex-wrap">
+            {connected ? (
+              <Btn onClick={() => onDisconnect(inst.id)} disabled={actionsDisabled}>
+                <Unplug className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.disconnect')}
+              </Btn>
+            ) : main !== 'connect' && !inst.disabled && !cloudStopped ? (
+              // A crew whose main action is something else (Diagnose, Sign in)
+              // can still be connected from here.
+              <Btn onClick={() => onConnect(inst.id)} disabled={actionsDisabled || connectBlocked}
+                aria-describedby={connectBlocked ? CREW_NEEDS_RESTART_BANNER_ID : undefined}>
+                <Plug className="lucide-inline" /> {busy === `connect:${inst.id}` ? i18nT('pages.settings.instancesPanel.connecting') : i18nT('pages.settings.instancesPanel.connect')}
+              </Btn>
+            ) : null}
+            {main !== 'diagnose' && (
+              <Btn onClick={() => onDiagnose(inst.id)} disabled={actionsDisabled} aria-label={i18nT('pages.settings.instancesPanel.diagnose_2', { name: inst.name })}>
+                <Stethoscope className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.diagnose')}
+              </Btn>
+            )}
+            <Btn onClick={() => onEdit(inst.id)} disabled={actionsDisabled}>
               <Pencil className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.edit_settings')}
-            </DropdownMenuItem>
+            </Btn>
             {rowActions?.menuItems && (
-              <ErrorBoundary
-                scope={`crew-row-actions:${rowActions.provisionerId}`}
-                // A throw costs this crew its extra items, not the menu. Say so in
-                // the menu, where the missing items were expected.
-                fallback={error => <RowActionsMenuCrash error={error} inst={inst} />}
-              >
-                <rowActions.menuItems inst={inst} disabled={rowActionsDisabled} />
-              </ErrorBoundary>
+              // A contribution draws menu items, so it keeps a menu of its own.
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <IconButton
+                    aria-label={i18nT('pages.settings.remoteCrewPanel.more_actions', { name: inst.name })}
+                    disabled={actionsDisabled}
+                  >
+                    <MoreHorizontal className="lucide-inline" />
+                  </IconButton>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-[200px]">
+                  <ErrorBoundary
+                    scope={`crew-row-actions:${rowActions.provisionerId}`}
+                    // A throw costs this crew its extra items, not the menu. Say so in
+                    // the menu, where the missing items were expected.
+                    fallback={error => <RowActionsMenuCrash error={error} inst={inst} />}
+                  >
+                    <rowActions.menuItems inst={inst} disabled={rowActionsDisabled} />
+                  </ErrorBoundary>
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
             {isCloud ? (
               <>
-                <DropdownMenuSeparator />
+                {/* Stop without Start is a one-way door: a stopped crew needs a
+                    path back to running while its EBS volume keeps billing. A
+                    crew stopped from here carries Start as its main action. */}
                 {!cloudStopped && (
-                  <DropdownMenuItem
-                    className="gap-2 text-[13px]"
-                    onSelect={() => onStop(cloudTag, coordsOf(inst))}
-                    aria-label={i18nT('pages.settings.remoteCrewPanel.stop_crew', { name: inst.name })}
-                  >
-                    <Power className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.stop')}
-                  </DropdownMenuItem>
+                  <>
+                    <Btn onClick={() => onStop(cloudTag, coordsOf(inst))} disabled={actionsDisabled}
+                      aria-label={i18nT('pages.settings.remoteCrewPanel.stop_crew', { name: inst.name })}>
+                      <Power className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.stop')}
+                    </Btn>
+                    <Btn onClick={() => onStart(cloudTag, coordsOf(inst))} disabled={actionsDisabled}
+                      aria-label={i18nT('pages.settings.remoteCrewPanel.start_crew', { name: inst.name })}>
+                      <Play className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.start')}
+                    </Btn>
+                  </>
                 )}
-                {/* Stop without Start is a one-way door: the route exists and the client
-                    method existed, but nothing called it — a stopped crew had no path back
-                    to running from the dashboard, while its EBS volume kept billing.
-                    A crew stopped from here carries Start as its row button instead. */}
-                {!cloudStopped && (
-                  <DropdownMenuItem
-                    className="gap-2 text-[13px]"
-                    onSelect={() => onStart(cloudTag, coordsOf(inst))}
-                    aria-label={i18nT('pages.settings.remoteCrewPanel.start_crew', { name: inst.name })}
-                  >
-                    <Play className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.start')}
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  className="gap-2 text-[13px] text-danger"
-                  onSelect={() => onRequestDelete(cloudTag)}
-                  aria-label={i18nT('pages.settings.remoteCrewPanel.delete_crew', { name: inst.name })}
-                >
+                <Btn danger onClick={() => onRequestDelete(cloudTag)} disabled={actionsDisabled}
+                  aria-label={i18nT('pages.settings.remoteCrewPanel.delete_crew', { name: inst.name })}>
                   <Trash2 className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.delete')}
-                </DropdownMenuItem>
+                </Btn>
               </>
             ) : (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  className="gap-2 text-[13px] text-danger"
-                  // Always confirm-gated: the label ends in an ellipsis because a
-                  // second step follows, and the record being removed (host, port,
-                  // TTL, profile) is the one this panel exists to let you correct
-                  // — losing it to a single click has no undo.
-                  onSelect={() => onRequestRemove(inst.id)}
-                  aria-label={i18nT('pages.settings.instancesPanel.remove', { name: inst.name })}
-                >
-                  <Trash2 className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.remove')}
-                </DropdownMenuItem>
-              </>
+              // Always confirm-gated: the label ends in an ellipsis because a
+              // second step follows, and the record being removed (host, port,
+              // TTL, profile) is the one this panel exists to let you correct.
+              <Btn danger onClick={() => onRequestRemove(inst.id)} disabled={actionsDisabled}
+                aria-label={i18nT('pages.settings.instancesPanel.remove', { name: inst.name })}>
+                <Trash2 className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.remove')}
+              </Btn>
             )}
-          </DropdownMenuContent>
-        </DropdownMenu>
+          </div>
         )}
       </div>
-    </div>
-    {rowActions?.detail && (
-      <ErrorBoundary
-        scope={`crew-row-detail:${rowActions.provisionerId}`}
-        fallback={error => <RowActionsDetailCrash error={error} name={inst.name} />}
-      >
-        <rowActions.detail inst={inst} disabled={rowActionsDisabled} />
-      </ErrorBoundary>
-    )}
-    {turnUrl && <TurnUrlField url={turnUrl} crewName={inst.name} />}
-    {/* BELOW the row header, and naming its crew. Rendered above the name it read
-        as a page-level warning banner about the whole panel, and with several rows
-        it attributed the sign-in to whichever crew the reader was looking at. */}
-    {awaitingSignin && signinJob && (
-      <SigninPromptBlock
-        job={signinJob}
-        crewName={inst.name}
-        onRestart={onRestartSignin}
-        restarting={restartingSignin}
-        onFetch={onFetchSignin}
-        fetching={fetchingSignin}
-        notice={signinNotice}
-        compact
-      />
     )}
     {blocked && (
-      // At the row, and assertive: the menu closes on select, so a refusal that
-      // renders anywhere else reads as the click having done nothing at all.
+      // At the row, and assertive: a refusal that renders anywhere else reads
+      // as the click having done nothing at all.
       <p role="alert" className="mt-2 text-[12px] text-warn">
         {i18nT('pages.settings.remoteCrewPanel.finish_open_edit_first')}
       </p>

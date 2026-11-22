@@ -342,6 +342,13 @@ METHOD_MCP_SERVER_INIT_FAILURE = "_kiro.dev/mcp/server_init_failure"
 MCP_ROSTER_COMPLETE_NOTE = "the stall is later in session startup, not in those servers"
 METHOD_KAS_MCP_STATUS = "_kiro/mcp/status"
 METHOD_KAS_TOOLS_CHANGED = "_kiro/tools/didChange"
+#: Engine -> client notification: the host fail-closed this session's MCP on its
+#: governance verdict. ``params`` carries ``sessionId`` and ``reason``;
+#: ``api_failure`` means the governance READ itself failed (transient -- an
+#: undeclared readiness wait ends the start early if the host then names none
+#: of the managed servers), ``admin_disabled`` is a real policy verdict and
+#: keeps the ordinary path.
+METHOD_KAS_MCP_GOVERNANCE_DISABLED = "_kiro/mcp/governance_disabled"
 #: The client-side reset KAS runs an explicit MCP sign-in through. With
 #: ``startOAuth`` true the engine keeps its OAuth callback listener open for the
 #: whole connect attempt; the ``authorizationUrl`` on a failed ``_kiro/mcp/status``
@@ -484,6 +491,13 @@ KIRO_CLI_CLIENT_APPLICATION = "kirocrew"
 # client to service them. The settings channel is opened because that is how a
 # client selects KAS feature flags; ``openExternalUrl`` is covered below.
 #
+# ``codeIntelligence`` is declared on because KAS creates a session's ``code`` tool
+# (and answers ``_kiro/codeIntelligence``) only when the client enables it. The
+# spawn sends kiro-cli's own ``chat.enableCodeIntelligence`` in its place (on
+# unless it is false). Which agent may CALL that tool is still its spec's
+# ``tools`` list, which the engine applies, and Crew's own gate still answers
+# each call.
+#
 # ``hooks`` stays undeclared although ``acp/kas_wire.py`` serves all three of its
 # methods. Kiro Crew's own turn loop already fires every hook event this surface
 # can serve for a KAS session, and its PreToolUse can BLOCK a tool on exit 2;
@@ -507,7 +521,13 @@ KIRO_CLI_CLIENT_APPLICATION = "kirocrew"
 # and every other callback stays undeclared (= false).
 KAS_CLIENT_CAPABILITIES: dict = {
     **ACP_CLIENT_CAPABILITIES,
-    "_meta": {"kiro": {"settings": {}, "openExternalUrl": True, "userInput": True}},
+    "_meta": {
+        "kiro": {
+            "settings": {"codeIntelligence": {"enabled": True}},
+            "openExternalUrl": True,
+            "userInput": True,
+        }
+    },
 }
 
 # ── Claude backend permission modes ──
@@ -1277,6 +1297,11 @@ class AcpEvent:
     #: on a permission event, and only from that engine-written field, never from
     #: the title or the model's arguments. Empty when the frame carries none.
     harness_tool_id: str = ""
+    #: KAS said this request is an organisation's ``ask``: its ``_meta.kiro.consent``
+    #: names a ``matchedRule`` of effect ``ask`` under scope ``organization`` or
+    #: ``administration`` (``permission_requests.kas_managed_ask``). Engine-written,
+    #: like ``harness_tool_id``; False on every other harness.
+    kas_managed_ask: bool = False
     #: The kiro-cli read built-in (``fs_read``, ``web_fetch``, ...) a claude
     #: permission request is for, mapped from the ``_meta.claudeCode.toolName``
     #: claude-agent-acp stamped on the preceding ``tool_call`` frame. Set only on
@@ -1289,6 +1314,11 @@ class AcpEvent:
     #: second ``tool_call`` frame named the same id differently in the turn; empty
     #: on every other backend.
     deepseek_tool_name: str = ""
+    #: claude-agent-acp's own ``_meta.claudeCode.toolName`` on a claude ``tool_call``
+    #: frame, when it names an MCP tool (``mcp__<server>__<tool>``); empty for a
+    #: built-in and on every other backend. Adapter-authored, never the title.
+    #: Read by ``ToolCallState.identity_of`` alone, for Crew's own server.
+    claude_mcp_tool_name: str = ""
     #: Why a DeepSeek Harness READ_ONLY turn refuses this request outright: its
     #: launch did not prove stock dsh registers the read tools. Set only on a
     #: deepseek permission event; empty once proved and on every other backend.

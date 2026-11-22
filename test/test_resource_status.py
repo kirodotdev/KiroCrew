@@ -7,13 +7,17 @@ disable switch, fail-open) and the ``resource_status`` pull tool wired into
 
 from __future__ import annotations
 
+import importlib
+import re
 import shutil
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from kiro_crew import platform_compat
 from kiro_crew import resource_status as rs
+from kiro_crew.testing.wait import await_until
 
 
 def _cfg(pressure: float, critical: float) -> SimpleNamespace:
@@ -1371,10 +1375,41 @@ def test_a_floor_above_the_gate_figure_is_blocked(monkeypatch) -> None:
     reading = rs.spawn_floor_reading(_spawn_cfg(4.0))
     assert reading.blocked
     assert "BLOCKED: new top-level subagents wait in the queue" in reading.summary_line()
-    assert "the gate reads 3.3 GB" in reading.blocked_sentence()
+    assert "the gate reads 3.30 GB" in reading.blocked_sentence()
     # Scoped to top-level starts: a running subagent's shared nested start
     # skips its own start charge, so it can clear a lower bar.
     assert "new top-level subagents cannot start now" in reading.blocked_sentence()
+
+
+@pytest.mark.parametrize("short_by", [0.01, 0.004, 0.0001])
+def test_a_blocked_line_shows_a_gate_figure_below_the_bar(monkeypatch, short_by: float) -> None:
+    """A figure just short of an uneven learned bar must print below that bar."""
+    from kiro_crew.subagent import _shared_start_price_gb
+
+    monkeypatch.setattr(rs, "_read_learned_settled", lambda: {"kirocrew": 0.82})
+    bar = 2.0 + _shared_start_price_gb(0.82)
+    _gate_figure(monkeypatch, bar - short_by)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert reading.blocked
+    for text in (reading.summary_line(), reading.blocked_sentence()):
+        m = re.search(r"gate reads ([0-9.]+) GB.*?at least ([0-9.]+) GB", text)
+        assert m, text
+        assert float(m.group(1)) < float(m.group(2)), text
+
+
+def test_an_unblocked_line_never_shows_a_gate_figure_below_the_bar(monkeypatch) -> None:
+    from kiro_crew.subagent import _shared_start_price_gb
+
+    monkeypatch.setattr(rs, "_read_learned_settled", lambda: {"kirocrew": 0.82})
+    bar = 2.0 + _shared_start_price_gb(0.82)
+    for figure in (bar, bar + 0.004, bar + 0.03):
+        _gate_figure(monkeypatch, figure)
+        reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+        assert not reading.blocked
+        text = reading.summary_line()
+        m = re.search(r"gate reads ([0-9.]+) GB.*?at least ([0-9.]+) GB", text)
+        assert m, text
+        assert float(m.group(1)) >= float(m.group(2)), text
 
 
 def test_a_remote_caller_takes_no_reading_and_is_never_blocked(monkeypatch) -> None:
@@ -1433,3 +1468,70 @@ def test_tool_says_spawning_is_blocked_on_an_ample_posture(monkeypatch) -> None:
     assert "Subagent spawn floor: 4 GB must stay free after a start" in out
     assert "Guidance: new top-level subagents cannot start now" in out
     assert "ample headroom" not in out
+
+
+# ── container limit at or under the critical threshold: start-up notice ─────
+
+
+def _container_limit_notice_module() -> Any:
+    """The start-up notice module; a build without one fails the case, since that is the bug."""
+    try:
+        return importlib.import_module("kiro_crew.resource_status_container_limit")
+    except ImportError:
+        pytest.fail("no start-up notice names a container memory limit at the critical threshold")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("limit_gib", "pressure_gb", "critical_gb", "expect_warning"),
+    [
+        (2, None, None, True),  # defaults: critical 2.0 GB
+        (8, None, None, False),
+        (None, None, None, False),  # no finite limit
+        (2, 1.0, 2.0, True),  # raw critical, not the value clamped to pressure
+        (2, None, 0.0, False),  # critical tier disabled
+    ],
+)
+async def test_container_limit_at_critical_logs_one_startup_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    limit_gib: int | None,
+    pressure_gb: float | None,
+    critical_gb: float | None,
+    expect_warning: bool,
+) -> None:
+    """A 2 GiB limit under the default (or raw) critical threshold logs one warning
+    naming the limit and the three settings; a larger, absent or disabled one logs none."""
+    import logging
+
+    from kiro_crew import subagent
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    notice = _container_limit_notice_module()
+    limit = None if limit_gib is None else limit_gib * 1024**3
+    monkeypatch.setattr(subagent, "_container_cgroup_reading", lambda **_: (limit, 1.5))
+    cfg = KiroCrewConfig()
+    if pressure_gb is not None:
+        cfg.agent.resource_pressure_gb = pressure_gb
+    if critical_gb is not None:
+        cfg.agent.resource_critical_gb = critical_gb
+
+    with caplog.at_level(logging.WARNING, logger=notice.__name__):
+        notice.start_container_limit_notice(cfg)  # sync: returns before the read
+        task = notice._NOTICE_TASK
+        assert task is not None
+        await await_until(task, what="the container-limit notice task")
+
+    warnings = [r.getMessage() for r in caplog.records if r.name == notice.__name__]
+    if not expect_warning:
+        assert warnings == []
+        return
+    assert len(warnings) == 1
+    message = warnings[0]
+    assert "limit (2.0 GB)" in message
+    for setting in (
+        "agent.resource_critical_gb",
+        "agent.resource_pressure_gb",
+        "agent.spawn_min_memory_gb",
+    ):
+        assert setting in message
