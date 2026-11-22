@@ -590,7 +590,9 @@ async def apply_deferred_model_switch(
         model = slot.model or "auto"
         provider = state.sessions.get_provider(session_key)
         try:
-            went_live = await _try_live_model_switch(slot.key, slot, provider, model)
+            # The pick as committed, not ``model``: on KAS ``""`` (Inherited) is no
+            # Auto pick and lands by the reset, as the idle pick does.
+            went_live = await _try_live_model_switch(slot.key, slot, provider, slot.model)
         except AcpModelUnavailable as exc:
             # The reset below cold-starts on the committed pin; the account
             # cannot run it, so the cold start withholds it and the slot's
