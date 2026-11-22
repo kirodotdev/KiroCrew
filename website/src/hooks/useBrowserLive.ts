@@ -424,8 +424,11 @@ class BrowserLiveStore {
     // recreate its record for a late `done` event that the gateway always sends.
     // The mounted BrowserView already called forgetView after close, so it does
     // not need the event; other owner tabs also skip it, keeping their own records
-    // from accumulating.
-    if (this.forgottenViews.has(ev.session_key) && isEnded(ev.state)) return
+    // from accumulating.  Drop ALL events for a forgotten key: a late non-ended
+    // event would otherwise recreate the session record and fill its frame ring,
+    // and the closing done event that would clear the ring is then also dropped,
+    // leaving the JPEG retained until a page reload.
+    if (this.forgottenViews.has(ev.session_key)) return
     const s = this.session(ev.session_key)
     // Register the key as a secondary view on every owner tab so ring eviction
     // works in all tabs, not only the one that called reviveView on open.
@@ -512,6 +515,9 @@ class BrowserLiveStore {
   /** Keep one decoded frame, ack it once, and paint it where a canvas listens. */
   applyFrame(frame: DecodedBrowserFrame): void {
     const key = frame.header.session_key
+    // A forgotten key means the view was closed: drop the late frame so the ring
+    // is never populated after forgetView, and the JPEG is not retained.
+    if (this.forgottenViews.has(key)) return
     const s = this.session(key)
     // A turn no card shows (another slot's browsing, a Slack-driven turn, a new
     // turn whose card the virtualised transcript has not mounted while an older
@@ -633,6 +639,10 @@ class BrowserLiveStore {
    * The gateway hears the OR over the instances showing the CURRENT turn.
    */
   setVisible(sessionKey: string, instanceId: string, visible: boolean, turnId: string): void {
+    // Do not recreate a session for a forgotten secondary view: a cleanup path
+    // may call setVisible after forgetView (e.g. the effect cleanup in BrowserView),
+    // and that would leak the record until the next reload.
+    if (this.forgottenViews.has(sessionKey)) return
     const s = this.session(sessionKey)
     if (visible) s.visibleInstances.set(instanceId, turnId)
     else s.visibleInstances.delete(instanceId)

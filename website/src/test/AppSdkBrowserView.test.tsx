@@ -1018,6 +1018,7 @@ describe('BrowserView second view (tabId)', () => {
   it('a late done event does not recreate a forgotten view session', async () => {
     // After forgetView, a late `done` event from the gateway must not recreate
     // the session for other connected owner tabs, so their frame rings are released.
+    browserLiveStore.reviveView(VIEW)  // clear any tombstone from previous tests
     act(() => { browserLiveStore.applyEvent(ev(VIEW, { turn_id: 'v1' })) })
     expect((browserLiveStore as unknown as { sessions: Map<string, unknown> }).sessions.has(VIEW)).toBe(true)
     browserLiveStore.forgetView(VIEW)
@@ -1026,6 +1027,40 @@ describe('BrowserView second view (tabId)', () => {
     act(() => { browserLiveStore.applyEvent(ev(VIEW, { turn_id: 'v1', state: 'done' })) })
     // The session must NOT be recreated (tombstone prevents it).
     expect((browserLiveStore as unknown as { sessions: Map<string, unknown> }).sessions.has(VIEW)).toBe(false)
+  })
+
+  it('a late live (non-done) event does not recreate a forgotten view session', async () => {
+    // Before this fix, forgetView only blocked done events (&&isEnded check).
+    // A late live event would recreate the session, fill the ring, and the
+    // subsequent done event would be dropped, retaining the JPEG until reload.
+    // One-line change that turns this test red: add back `&& isEnded(ev.state)`
+    // to the forgottenViews guard in applyEvent.
+    browserLiveStore.reviveView(VIEW)  // clear any tombstone from previous tests
+    act(() => { browserLiveStore.applyEvent(ev(VIEW, { turn_id: 'v1' })) })
+    browserLiveStore.forgetView(VIEW)
+    expect((browserLiveStore as unknown as { sessions: Map<string, unknown> }).sessions.has(VIEW)).toBe(false)
+    // A late live event arrives (e.g. delayed by websocket).
+    act(() => { browserLiveStore.applyEvent(ev(VIEW, { turn_id: 'v1', state: 'live' })) })
+    // Session must NOT be recreated.
+    expect((browserLiveStore as unknown as { sessions: Map<string, unknown> }).sessions.has(VIEW)).toBe(false)
+  })
+
+  it('a late frame does not populate the ring of a forgotten view', async () => {
+    // Before this fix, applyFrame had no tombstone check. A late frame would
+    // recreate the session and fill the ring, and no subsequent event could clear it.
+    // One-line change that turns this test red: remove the forgottenViews guard
+    // from the top of applyFrame in useBrowserLive.ts.
+    const VIEW_F = `${OWN}#viewframe99`  // fresh key with no tombstone
+    act(() => { browserLiveStore.applyEvent(ev(VIEW_F, { turn_id: 'v1' })); browserLiveStore.applyFrame(frame(VIEW_F)) })
+    type S = { sessions: Map<string, { turns: Map<string, { ring: { length: number } }> }> }
+    const before = (browserLiveStore as unknown as S).sessions.get(VIEW_F)?.turns.get('v1')?.ring?.length ?? 0
+    expect(before).toBeGreaterThan(0)
+    browserLiveStore.forgetView(VIEW_F)
+    expect((browserLiveStore as unknown as { sessions: Map<string, unknown> }).sessions.has(VIEW_F)).toBe(false)
+    // A late frame arrives.
+    act(() => { browserLiveStore.applyFrame(frame(VIEW_F)) })
+    // Session must NOT be recreated; the ring from the forgotten key is gone.
+    expect((browserLiveStore as unknown as { sessions: Map<string, unknown> }).sessions.has(VIEW_F)).toBe(false)
   })
 })
 
@@ -1148,6 +1183,7 @@ describe('BrowserView second view: parity with primary view', () => {
   it('marks are drawn over the second view picture', async () => {
     // browser-collab annotates comparison pages with marks. The second-view
     // branch must pass them to its PictureBox just like the primary view does.
+    browserLiveStore.reviveView(VIEW6)  // clear any tombstone from previous tests using VIEW6
     vi.spyOn(api, 'browserLiveViewOpen').mockResolvedValue({ view_key: VIEW6, turn_id: 'v6' })
     vi.spyOn(api, 'browserLiveViewClose').mockResolvedValue({ ok: true } as never)
     act(() => { browserLiveStore.applyEvent(ev(VIEW6, { turn_id: 'v6' })); browserLiveStore.applyFrame(frame(VIEW6)) })
