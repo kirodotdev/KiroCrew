@@ -624,7 +624,7 @@ def _handle_app_import(args: argparse.Namespace) -> None:
     print(f"\n✅ wrote {out_dir / 'app.json'}")
 
     if not getattr(args, "install", False):
-        print(f"\n   Run: kirocrew app install {out_dir}")
+        print(f"\n   Run: kirocrew app install {_shell_quoted(str(out_dir))}")
         return
 
     result = install_app(str(out_dir))
@@ -1030,12 +1030,13 @@ def _handle_app(args: argparse.Namespace) -> None:
             sys.exit(1)
         print(f"✅ Scaffolded app: {app_dir}")
         print("   Edit app.json, add agents and skills, then:")
+        # Quoted, so a folder with a space in its path still pastes as one argument.
         if include_ui:
             # One command per line: Windows PowerShell 5.1 rejects `&&`.
-            print(f"   cd {app_dir}/ui")
+            print(f"   cd {_shell_quoted(f'{app_dir}/ui')}")
             print("   npm install")
             print("   npm run build")
-        print(f"   kirocrew app install {app_dir}")
+        print(f"   kirocrew app install {_shell_quoted(str(app_dir))}")
 
     else:
         # No sub-action (the subparser is not `required`, matching every CLI
