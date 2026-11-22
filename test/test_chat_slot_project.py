@@ -176,6 +176,13 @@ class TestChatSlotProject:
             "_voice_runtime_sandbox_paths",
             lambda: (str(runtime),),
         )
+        # The guard is the kiro-cli sandbox's, so judge this slot on that backend.
+        import kiro_crew.dashboard.slot_spawn_backend as fallback_mod
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+
+        monkeypatch.setattr(
+            fallback_mod, "slot_spawn_backend", AsyncMock(return_value=ACP_BACKEND_KIRO)
+        )
         slot = _ChatSlot("test")
         state = _mock_state(slot)
         async with TestClient(TestServer(_make_app(state))) as client:
@@ -193,6 +200,31 @@ class TestChatSlotProject:
             assert repr(str(runtime)) in data["error"]
             assert "Pick a project subdirectory" in data["error"]
             assert slot.project != str(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_data_home_overlap_allowed_on_the_claude_backend(self, tmp_path, monkeypatch):
+        """A Claude chat's launch never runs the voice-runtime guard (it guards
+        kiro-cli's internal sandbox only), so the pre-flight must not refuse the
+        folder either: ``~`` contains the data home, and the launch accepts it."""
+        import kiro_crew.dashboard.slot_spawn_backend as fallback_mod
+        import kiro_crew.sandbox as sandbox_mod
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE
+
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        runtime = tmp_path / "data" / "run" / "voice-runtime"
+        runtime.mkdir(parents=True)
+        monkeypatch.setattr(sandbox_mod, "_voice_runtime_sandbox_paths", lambda: (str(runtime),))
+        monkeypatch.setattr(
+            fallback_mod, "slot_spawn_backend", AsyncMock(return_value=ACP_BACKEND_CLAUDE)
+        )
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/project", json={"project": str(tmp_path)}
+            )
+            assert resp.status == 200
+            assert slot.project == str(tmp_path.resolve())
 
     @pytest.mark.asyncio
     async def test_can_change_mid_session(self, tmp_path):

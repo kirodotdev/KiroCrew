@@ -749,7 +749,12 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # with a spawn-time stack trace. Reject it here, at the moment of
         # choice, with the same actionable message. Off-loop: the check primes
         # the runtime path cache (mkdir/realpath) on first use.
-        conflict = await asyncio.to_thread(voice_runtime_workspace_conflict, project)
+        from kiro_crew.dashboard.slot_spawn_backend import slot_spawn_backend
+
+        spawn_backend = await slot_spawn_backend(slot)
+        conflict = await asyncio.to_thread(
+            voice_runtime_workspace_conflict, project, backend=spawn_backend
+        )
         if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
             return _slot_not_found()
         if conflict is not None:

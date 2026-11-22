@@ -113,7 +113,7 @@ def _no_side_effects(monkeypatch: pytest.MonkeyPatch, eager_spawn: MagicMock) ->
     monkeypatch.setattr(chat_handlers, "_save_recent_project", MagicMock(return_value=None))
     # Project validates the path against the real filesystem before the lock.
     monkeypatch.setattr(chat_handlers.os.path, "isdir", lambda p: True)
-    monkeypatch.setattr(chat_handlers, "voice_runtime_workspace_conflict", lambda p: None)
+    monkeypatch.setattr(chat_handlers, "voice_runtime_workspace_conflict", lambda p, **kw: None)
 
 
 async def _collect(task: asyncio.Task) -> tuple[int, dict]:
@@ -367,7 +367,7 @@ async def test_project_replacement_before_lock(
         await release.wait()
         return result
 
-    def parked_validation(project):
+    def parked_validation(project, **kw):
         loop.call_soon_threadsafe(entered.set)
         assert thread_release.wait(_HANG_GUARD_SECS)
         return "workspace conflict"
