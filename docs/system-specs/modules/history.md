@@ -3799,6 +3799,10 @@ derived `<agent>--readonly` spec; claude, goose and Strands: a `side_read_only`
 session, with the boundary `THREAD_BOUNDARY_PROMPT_NO_SHELL`,
 `THREAD_BOUNDARY_PROMPT_LISTING` and `THREAD_BOUNDARY_PROMPT_FILE_READS`
 respectively); elsewhere `REJECT_ALL` with `THREAD_BOUNDARY_PROMPT_NO_TOOLS`. Actions go through the main chat, and the boundary prompt says so.
+A finished turn's stored reply loses each line that only quotes a directive tool's marker
+(`session_directive.strip_quoted_markers`; the interrupted partial answer keeps it): under
+`REJECT_ALL` the slot's own spec runs,
+and a directive tool it pre-grants runs without a permission request.
 A shell-capable thread turn also gets `THREAD_BOUNDARY_PROMPT_NO_SHELL` while
 `name_grant.environment_refusal()` refuses every program name, since each shell
 read is then declined; the check runs off the loop.
@@ -3817,10 +3821,11 @@ then disk prefix plus window -- so a parent only disk holds is found. The Bot's 
 the Bot's agent spec is). The answer is redacted, clipped, appended to the sidecar as
 an `assistant` reply and broadcast; it goes through the main chat's credential
 pass (`segment_flush._redact_segment_text`, as a Side Chat answer does), so its
-text stays `redact(raw)` byte for byte and the row keeps the `redactions` records
+text stays `redact()` of the marker-stripped answer byte for byte and the row keeps the `redactions` records
 its placeholders need, and the removed values are kept for the owner's reveal
 (`_commit_reveals`, in the chat's slot) only once the sidecar holds the row; the
-interrupted partial answer below is stored the same way. The thread read
+interrupted partial answer below goes through the same credential pass and reveal rule,
+unstripped. The thread read
 (`GET .../threads/{mid}`) carries each Bot reply's records, and the parent's from
 its main chat row's `meta`, bounded, beside `link_blocks`, and the final frame's
 `reply` carries the stored row's. `ThreadPanel` hands them to `MarkdownRenderer`

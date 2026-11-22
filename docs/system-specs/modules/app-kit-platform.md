@@ -7994,7 +7994,9 @@ stream, so `run` streams with `person_only_directive_refuser`
 (`dashboard/session_directive_apply.py`, as a cron turn and a workflow step do): a
 completed `set_project`, `reset_conversation`, `chat_tag` or `suggest_followup`
 call is refused with `refuse_user_origin_directive` (its wording, and a SEL `denied`
-row on the turn's key), and the refusals lead the reply. Nothing is applied.
+row on the turn's key), and the refusals lead the reply. Nothing is applied. The
+reply loses each line that only quotes a directive marker
+(`session_directive.strip_quoted_markers`), which the model read in a tool result.
 
 **Untrusted text** (`apps/untrusted_text_sdk.UntrustedTextSDK`, `ctx.untrusted`).
 Always present, built in `AppContext.__post_init__` from `name`, because it adds no

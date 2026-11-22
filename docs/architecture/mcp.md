@@ -6375,7 +6375,13 @@ that is only such a marker from the saved reply
 (`session_directive.strip_quoted_markers`) and keeps the reply's other lines, and
 the channel `TurnDriver` drops the same lines from the streamed reply, as do the native
 Slack thread turn, the plain monitor-loop wake, a team-channel agent's post and
-`kirocrew chat`.
+`kirocrew chat`. The other turns whose collected text a person reads drop them too: a
+cron run's result, the parent's reply to a sub-agent's report, a workflow step's text,
+a task step's result, a sub-agent's result, a webhook agent turn's result, an app's
+agent turn reply, a side chat or thread reply and the task refine draft. A turn where
+no directive tool can run keeps its text as it is: the heartbeat (its allowlist holds
+none and its spec pre-grants none), and the prompt optimizer and an app's one-shot turn
+(a tool-less agent).
 
 A second, provider-neutral channel covers a backend that emits no
 `_meta.kiro` identity. After encoding, the tool reports the CALL (tool name and
