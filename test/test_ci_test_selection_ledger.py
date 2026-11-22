@@ -16,6 +16,9 @@ Pinned:
   script writes reads back, and no cell of the summary can carry markup.
 * TRUST -- no row of a fork run changes a number the script proposes or how a
   same-repository failure is classified.
+* WINDOWS -- a file failing on Windows and not on Linux in one run is a
+  Windows-only failure, a miss outside `windows.run` under `select`; Windows
+  trials, labels, sources and the auto-off line are reported apart from Linux.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +97,7 @@ class FakeGh:
         self.runs: list[dict[str, Any]] = []
         self.jobs: dict[tuple[int, int], list[dict[str, Any]]] = {}
         self.logs: dict[int, list[str]] = {}
+        self.messages: dict[str, str] = {}
         self.artifacts: dict[int, list[str]] = {}
         self.issues: list[dict[str, Any]] = []
         self.calls: list[str] = []
@@ -141,7 +146,9 @@ class FakeGh:
         url = args[1]
         self.calls.append(url)
         if "/workflows/ci.yml/runs?" in url:
-            return self._page(url, self.runs)
+            event = re.search(r"[?&]event=(\w+)", url)
+            listed = [r for r in self.runs if event and r.get("event", "pull_request") == event[1]]
+            return self._page(url, listed)
         attempt = re.search(r"/runs/(\d+)/attempts/(\d+)/jobs\?", url)
         if attempt:
             key = (int(attempt.group(1)), int(attempt.group(2)))
@@ -169,7 +176,8 @@ class FakeGh:
         if job_id not in self.logs:
             raise subprocess.CalledProcessError(1, argv)
         return "".join(
-            f"2026-11-18T00:00:00.0Z FAILED {name}::test_one - assert 1 == 2\n"
+            f"2026-11-18T00:00:00.0Z FAILED {name}::test_one - "
+            f"{self.messages.get(name, 'assert 1 == 2')}\n"
             for name in self.logs[job_id]
         )
 
@@ -486,7 +494,8 @@ def test_a_run_that_does_not_prove_what_it_ran_is_excluded_and_adds_no_trial(
 
     assert run_main(tmp_path) == 0
 
-    assert [reason in row["reason"] for row in rows(tmp_path)] == [True]
+    assert [reason in row["reason"] for row in rows(tmp_path, "skip")] == [True]
+    assert rows(tmp_path, "run") == rows(tmp_path, "windows_run") == []
     assert rates(tmp_path) == {"schema": 1, "tiers": {}}
     assert "Runs excluded: 1; " in summary(tmp_path) and reason in summary(tmp_path)
 
@@ -536,7 +545,7 @@ def test_a_ledger_with_more_failures_than_trials_still_reports(gh: FakeGh, tmp_p
     gh.add(2, 8, [[job(21, 1)]], verdict={**VERDICT, "tiers": {"B": ["test/test_b.py"]}})
 
     # A pass that appends, then reports over those rows: it ends, and proposes nothing skippable.
-    assert run_main(tmp_path) == 0
+    assert run_main(tmp_path, "--no-windows") == 0
 
     assert len(rows(tmp_path)) == 4
     assert rates(tmp_path)["tiers"]["G"] == {"rate": 1.0, "upper95": 1.0}
@@ -838,7 +847,7 @@ def test_the_ledger_is_replaced_whole_and_an_unfinished_last_line_is_closed(
     path.write_text(json.dumps(SKIP), encoding="utf-8")
     gh.add(2, 8, [[job(21, 1)]])
 
-    assert run_main(tmp_path) == 0
+    assert run_main(tmp_path, "--no-windows") == 0
 
     assert [row["run"] for row in ledger.read_ledger(path)] == [1, 2]
     assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith("ledger")) == [
@@ -874,3 +883,287 @@ def test_no_summary_cell_can_carry_markup(gh: FakeGh, tmp_path: Path) -> None:
 
     line = next(text for text in summary(tmp_path).splitlines() if "test/test_a.py" in text)
     assert line == "| 1:x???b??team?? y | aaaaaaaaaaaa | 1 | test/test_a.py | G |  |"
+
+
+# -- WINDOWS ------------------------------------------------------------------
+
+WIN_SELECT = {**VERDICT, "windows": {"verdict": "select", "run": ["test/test_in.py"]}}
+
+
+def win_job(
+    job_id: int, shard: int, conclusion: str = "success", full: bool = True
+) -> dict[str, Any]:
+    return {**job(job_id, shard, conclusion, full), "name": f"Backend Tests (Windows) ({shard})"}
+
+
+def win_run(
+    gh: FakeGh,
+    run_id: int,
+    pr: int | None,
+    windows: list[str],
+    linux: tuple[str, ...] = (),
+    full: bool = True,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """A full Linux run failing `linux`, beside two Windows shards, the second failing `windows`."""
+    base = run_id * 10
+    jobs = [job(base + 1, 1, "failure" if linux else "success")]
+    red = "failure" if windows else "success"
+    jobs += [win_job(base + 2, 1, full=full), win_job(base + 3, 2, red, full=full)]
+    gh.logs.update({base + 1: list(linux), base + 3: windows})
+    return gh.add(run_id, pr, [jobs], **{"verdict": WIN_SELECT, **kwargs})
+
+
+def test_a_windows_only_failure_outside_windows_run_is_a_windows_miss_and_inside_it_is_not(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    gh.messages.update({"test/test_win.py": "OSError: [WinError 32] in use"})
+    gh.messages["test/test_in.py"] = "Failed: Timeout >120.0s"
+    failing = ["test/test_win.py", "test/test_in.py", "test/test_gate.py"]
+    win_run(gh, 1, 7, failing, ("test/test_gate.py",))
+
+    assert run_main(tmp_path) == 0
+
+    found = {row["file"]: row for row in rows(tmp_path, "windows_failure")}
+    # test_gate.py failed on Linux in the same run: it is not Windows-only.
+    assert sorted(found) == ["test/test_in.py", "test/test_win.py"]
+    assert found["test/test_win.py"]["miss"] and not found["test/test_win.py"]["in_run"]
+    assert found["test/test_in.py"]["in_run"] and not found["test/test_in.py"]["miss"]
+    assert [found[f]["label"] for f in sorted(found)] == ["timing", "os"]
+    assert [r["trial"] for r in rows(tmp_path, "windows_run")] == ["shadow"]
+    assert all(r["os"] == "windows" for r in rows(tmp_path) if r["kind"].startswith("windows_"))
+    text = summary(tmp_path)
+    assert "Windows misses caused by the diff: 1; on fork runs, not counted: 0." in text
+    assert "| #7 | aaaaaaaaaaaa | 1 | test/test_win.py | os |  |  |" in text
+    assert "Windows-only failures: 2; os: 1; timing: 1; unclear: 0." in text
+    # The Linux numbers hold the Linux failure alone.
+    assert "Misses caused by the diff: 0." in text and "| A | 1 | 1 | 0 |" in text
+
+
+def test_a_windows_failure_on_another_branch_or_on_linux_elsewhere_is_not_diff_caused(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    win_run(gh, 1, 7, ["test/test_win.py", "test/test_b.py"])
+    win_run(gh, 2, 8, ["test/test_win.py"], date=LATER)
+    failed_run(gh, 3, 9, ["test/test_b.py"], date=LATER)
+
+    assert run_main(tmp_path) == 0
+
+    marked = ledger.classify_windows(ledger.current(rows(tmp_path), None), 3.0)
+    assert {(r["run"], r["file"], r["shared"], r["diff_caused"]) for r in marked} == {
+        (1, "test/test_win.py", True, False),
+        (1, "test/test_b.py", True, False),
+        (2, "test/test_win.py", True, False),
+    }
+    assert "Windows misses not caused by it: 3;" in summary(tmp_path)
+
+
+def test_a_run_with_a_windows_shard_short_of_the_full_suite_is_excluded(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    win_run(gh, 1, 7, ["test/test_win.py"], full=False)
+    gh.add(2, 8, [[job(21, 1)]], verdict=VERDICT)
+
+    assert run_main(tmp_path) == 0
+
+    assert rows(tmp_path, "windows_run") == rows(tmp_path, "windows_failure") == []
+    assert sorted(r["reason"] for r in rows(tmp_path, "windows_skip")) == [
+        "a backend shard did not run the full suite",
+        ledger.NO_WINDOWS_BLOCK,
+    ]
+    # The Linux trial of run 1 stands: only its Windows half is excluded.
+    assert len(rows(tmp_path, "run")) == 2
+
+
+def test_a_full_windows_run_beside_selected_linux_shards_is_still_a_windows_trial(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    jobs = [job(11, 1, "failure", full=False), job(12, 2, full=False)]
+    jobs += [win_job(13, 1), win_job(14, 2, "failure")]
+    gh.logs.update({11: ["test/test_gate.py"], 14: ["test/test_win.py", "test/test_gate.py"]})
+    gh.add(1, 7, [jobs], verdict=WIN_SELECT)
+
+    assert run_main(tmp_path) == 0
+
+    # The Linux half is excluded; the Windows half is a trial, net of what Linux failed.
+    assert [r["reason"] for r in rows(tmp_path, "skip")] == [
+        "a backend shard did not run the full suite"
+    ]
+    assert [r["trial"] for r in rows(tmp_path, "windows_run")] == ["shadow"]
+    assert [(r["file"], r["miss"]) for r in rows(tmp_path, "windows_failure")] == [
+        ("test/test_win.py", True)
+    ]
+    assert "Windows misses caused by the diff: 1;" in summary(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "message, label",
+    [
+        ("OSError: [WinError 5] Access is denied", "os"),
+        ("PermissionError: [Errno 13] denied", "os"),
+        ("assert 'C:\\\\Users\\\\x' == '/tmp/x'", "os"),
+        ("assert 'a\\\\b\\\\c.py' == 'a/b/c.py'", "os"),
+        ("assert 'x\\r\\n' == 'x\\n'", "os"),
+        ("AttributeError: module 'os' has no attribute 'getuid'", "os"),
+        ("FileNotFoundError: npm.CMD", "os"),
+        ("Failed: Timeout >120.0s", "timing"),
+        ("[gw3] node down: Not properly terminated", "timing"),
+        ("assert 1 == 2", "unclear"),
+    ],
+)
+def test_each_windows_label_is_read_from_the_failure_message(message: str, label: str) -> None:
+    assert ledger.windows_label([message]) == label
+
+
+def test_each_trial_carries_its_source_and_a_push_counts_without_a_verdict(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    for run_id, source in ((1, "sample"), (2, "label")):
+        block = {"verdict": "full", "source": source}
+        win_run(gh, run_id, run_id, [], verdict={**VERDICT, "windows": block})
+    for run_id, branch in ((3, "main"), (4, "release/1.2"), (5, "feature")):
+        win_run(gh, run_id, None, ["test/test_win.py"], verdict=None, branch=branch)["event"] = (
+            "push"
+        )
+
+    assert run_main(tmp_path) == 0
+
+    trials = {r["run"]: r["trial"] for r in rows(tmp_path, "windows_run")}
+    assert trials == {1: "sample", 2: "label", 3: "push", 4: "push"}
+    # A push writes Windows rows only, and selects nothing it could miss.
+    assert {r["run"] for r in rows(tmp_path, "run")} == {1, 2}
+    assert [r["miss"] for r in rows(tmp_path, "windows_failure")] == [False, False]
+    assert "Windows trials: 4; shadow: 0; sample: 1; label: 1; push: 2." in summary(tmp_path)
+
+
+def test_without_windows_no_windows_job_or_push_run_is_read(gh: FakeGh, tmp_path: Path) -> None:
+    win_run(gh, 1, 7, ["test/test_win.py"])
+    win_run(gh, 2, None, [], verdict=None, branch="main")["event"] = "push"
+
+    assert run_main(tmp_path, "--no-windows") == 0
+
+    assert [r["kind"] for r in rows(tmp_path)] == ["run"]
+    assert "## Windows" not in summary(tmp_path)
+    assert not [call for call in gh.calls if "/runs/2/" in call or "event=push" in call]
+
+
+def test_a_linux_only_ledger_gains_its_windows_half_once_and_keeps_its_linux_rows(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    win_run(gh, 1, 7, ["test/test_win.py"])
+    gh.add(2, 8, [[job(21, 1)]], verdict={"schema": 2})
+    assert run_main(tmp_path, "--no-windows") == 0
+    linux = rows(tmp_path)
+    assert [(r["run"], r["kind"]) for r in linux] == [(2, "skip"), (1, "run")]
+
+    assert run_main(tmp_path) == 0
+
+    # Run 1 gains its Windows rows; run 2's verdict was refused, so it has no Windows half.
+    assert rows(tmp_path)[: len(linux)] == linux
+    added = rows(tmp_path)[len(linux) :]
+    assert [(r["run"], r["kind"]) for r in added] == [(1, "windows_run"), (1, "windows_failure")]
+    before = len(gh.calls)
+    assert run_main(tmp_path) == 0
+    assert len(rows(tmp_path)) == len(linux) + 2
+    assert not [call for call in gh.calls[before:] if "/jobs" in call or "logs" in call]
+
+
+def test_an_unreadable_windows_log_keeps_the_linux_rows_and_leaves_windows_for_later(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    win_run(gh, 1, 7, ["test/test_win.py"], ("test/test_a.py",))
+    windows_log = gh.logs.pop(13)
+
+    assert run_main(tmp_path) == 0
+    linux = rows(tmp_path)
+    assert [r["kind"] for r in linux] == ["run", "failure"]
+
+    gh.logs[13] = windows_log
+    assert run_main(tmp_path) == 0
+
+    assert rows(tmp_path)[: len(linux)] == linux
+    added = rows(tmp_path)[len(linux) :]
+    assert [r["kind"] for r in added] == ["windows_run", "windows_failure"]
+
+
+def test_a_linux_rerun_keeps_the_windows_rows_its_unread_windows_half_left() -> None:
+    def row(kind: str, attempt: int) -> dict[str, object]:
+        return {"kind": kind, "run": 1, "attempt": attempt, "date": "2026-11-20T00:00:00Z"}
+
+    held = [row("run", 1), row("windows_run", 1), row("windows_failure", 1), row("run", 2)]
+
+    assert ledger.current(held, None) == held[1:]
+    assert ledger.current([*held, row("windows_run", 2)], None) == [held[3], row("windows_run", 2)]
+
+
+def test_a_pr_backlog_past_the_limit_still_reads_the_newer_push_runs(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    for run_id in range(1, 5):
+        gh.add(run_id, run_id, [[job(run_id * 10, 1)]], date=f"2026-11-1{run_id}T00:00:00Z")
+    push = win_run(gh, 9, None, [], verdict=None, branch="main", date="2026-11-13T12:00:00Z")
+    push["event"] = "push"
+
+    assert run_main(tmp_path, "--limit", "2") == 0
+
+    # Newest first across both events: PR run 4, then the push, which is newer than PR run 3.
+    assert [r["run"] for r in rows(tmp_path) if r["kind"] in ("run", "windows_run")] == [4, 9]
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "select",
+        {"verdict": "skip", "run": []},
+        {"verdict": "select"},
+        {"verdict": "select", "run": ["../x"]},
+        {"verdict": "full", "source": "push"},
+    ],
+)
+def test_a_windows_block_of_the_wrong_shape_refuses_the_verdict(block: object) -> None:
+    assert ledger.parse_verdict(json.dumps({**VERDICT, "windows": block})) is None
+
+
+NOW = datetime(2026, 11, 20, tzinfo=timezone.utc)
+
+
+def _at(days_ago: float, **row: Any) -> dict[str, Any]:
+    stamp = (NOW - timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"fork": False, "date": stamp, **row}
+
+
+@pytest.mark.parametrize(
+    "trials, ago, ok",
+    [
+        (20, [], True),
+        (20, [1, 2], False),
+        (20, [15, 0], True),
+        (19, [], False),
+    ],
+)
+def test_windows_selection_turns_off_on_the_bar_or_too_few_trials(
+    trials: int, ago: list[float], ok: bool
+) -> None:
+    held = [_at(1, kind="windows_run") for _ in range(trials)] + [_at(15, kind="windows_run")]
+    misses = [_at(days, miss=True, diff_caused=True) for days in ago]
+    misses += [_at(0, miss=True, diff_caused=False), _at(0, miss=True, diff_caused=True, fork=True)]
+
+    status = ledger.windows_status(held, misses, NOW)
+
+    assert status == {
+        "windows_selection_ok": ok,
+        "window_days": 14,
+        "diff_caused_windows_misses": len([d for d in ago if d <= 14]),
+        "trials": trials,
+        "bar": 2,
+    }
+
+
+def test_the_status_line_is_in_the_summary_and_its_own_file(gh: FakeGh, tmp_path: Path) -> None:
+    win_run(gh, 1, 7, [])
+
+    assert run_main(tmp_path, "--windows-status-out", str(tmp_path / "status.json")) == 0
+
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert status["windows_selection_ok"] is False and status["bar"] == 2
+    assert summary(tmp_path).rstrip().splitlines()[-1] == json.dumps(status, sort_keys=True)

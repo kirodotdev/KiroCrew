@@ -190,6 +190,12 @@ def red_samples(
 
 def backend_jobs(run_id: int, attempt: int, root: Path) -> list[dict[str, Any]] | None:
     """The Linux `Backend Tests` jobs of one run attempt, None when they cannot all be read."""
+    jobs = run_jobs(run_id, attempt, root)
+    return None if jobs is None else [j for j in jobs if LINUX_BACKEND_JOB.fullmatch(j["name"])]
+
+
+def run_jobs(run_id: int, attempt: int, root: Path) -> list[dict[str, Any]] | None:
+    """Every job of one run attempt, None when they cannot all be read."""
     jobs: list[dict[str, Any]] = []
     page = 1
     while True:
@@ -208,7 +214,7 @@ def backend_jobs(run_id: int, attempt: int, root: Path) -> list[dict[str, Any]] 
         if not doc["jobs"] or len(jobs) >= doc["total_count"]:
             break
         page += 1
-    return [job for job in jobs if LINUX_BACKEND_JOB.fullmatch(job["name"])]
+    return jobs
 
 
 def job_failures(
