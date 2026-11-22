@@ -4008,16 +4008,33 @@ dashboard token auth.
   writer changed, the window re-checks the saved owner and tokens and closes
   when they no longer match what it pinned. Behaviour:
   [slack-gateway § Owner claim](slack-gateway.md).
-- `GET /api/slack/manifest` — public manifest template rendered with
-  `?alias=` (default `kirocrew`, never `$USER`) plus Slack's one-click
-  create deep link and `command`, the slash command that manifest registers
-  (`slack_manifest.slash_command(alias)`). It writes no config: the gateway
-  answers `/kirocrew` and every `/kirocrew-<alias>` as they are, and a caller
-  that passes `?alias=` saves the returned name as `slack.command` (live, no
-  restart) so a later no-alias render keeps it. Settings →
-  Messaging Channels → Slack's own form passes no alias, so its one-click app
-  registers `/kirocrew`; the setup wizard passes the alias the user typed and
-  saves the returned `command`.
+- `GET /api/slack/manifest` — public manifest template plus Slack's one-click
+  create deep link and `app_name`, `bot_name` and `command`, the three names
+  that manifest gives the app (`slack_manifest.AppNames`). With
+  `?app_name=&bot_name=&command=` it renders the names a form holds (empty is
+  `kirocrew`); with the legacy `?alias=` it renders `KiroCrew-<alias>` and
+  `slack_manifest.slash_command(alias)`; with neither, this install's
+  `install_names` (saved `slack.app_name` / `slack.bot_name`, else `kirocrew`
+  on a fresh install and the `KiroCrew-<alias>` name an existing app has).
+  `alias` with a name is a 400, and so is any name Slack would refuse. Never
+  `$USER`. It writes no config: the setup wizard saves the returned three names
+  (`command` live, no restart), and Settings → Messaging Channels → Slack's
+  form renders from the saved ones and offers no manifest while a name edit is
+  unsaved or the manifest was rendered for other names. The form sends a name
+  only when it was edited; every save stores the install's default name in an
+  unset `app_name` / `bot_name`, decided inside the locked write, so a fresh
+  install's first token save keeps `kirocrew` and a name another writer stored
+  is never overwritten. `kirocrew setup --slack` stores the same defaults in
+  its slash-command step's locked write, from whether a bot token was stored
+  before its token step (read as the manifest reads it: environment and vault
+  included), also when the wizard stops at that prompt. It derives the
+  defaults from the command typed there, which its prompt says must match the
+  app, where the dashboard save uses the command the page rendered with. A saved command that predates Slack's rule renders the
+  alias command, as before. `PUT /api/slack/config` takes `app_name` /
+  `bot_name` (empty clears back to that default) and checks a changed
+  `command` against Slack's rule (1-31 of `[a-z0-9_-]`; `kirocrew setup
+  --slack` applies the same rule);
+  `GET /api/slack/config` returns the names the manifest renders.
   The body also carries `org_guide_url`: `slack.setup_guide_url` when it is
   a bounded `https://` URL with no whitespace (the server check), else
   `null`; the dashboard renders it only after its own stricter check (a

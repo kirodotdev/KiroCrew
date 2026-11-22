@@ -376,13 +376,13 @@ def test_manifest_endpoint_renders_alias_and_url(monkeypatch) -> None:
     resp = asyncio.run(mod.api_slack_manifest(req))
     assert resp.status == 200
     body = json.loads(resp.text)
-    assert body["alias"] == "kirocrew"  # $USER must NOT leak as the default
+    assert body["app_name"] == body["bot_name"] == "kirocrew"  # $USER must NOT leak
     assert "hostaccount" not in body["manifest"]
     assert body["create_url"].startswith("https://api.slack.com/apps?new_app=1&manifest_yaml=")
 
     req = make_mocked_request("GET", "/api/slack/manifest?alias=myteam")
     body = json.loads(asyncio.run(mod.api_slack_manifest(req)).text)
-    assert body["alias"] == "myteam"
+    assert body["app_name"] == "KiroCrew-myteam"  # brand-ok: the legacy alias name
     assert "KiroCrew-myteam" in body["manifest"]
 
 

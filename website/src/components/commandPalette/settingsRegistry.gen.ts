@@ -134,6 +134,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "browser.choice"
   },
   {
+    "id": "channels.mention-name-slack",
+    "label": "@ mention name (Slack)",
+    "labelKey": "pages.settings.slackPanel.bot_name",
+    "labelSuffix": "Slack",
+    "description": "What people type after @ to mention the bot, at most 80 characters. Leave empty for the default name (kirocrew on a new install).",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.bot_name"
+  },
+  {
     "id": "channels.agent-sessions-slack",
     "label": "Agent sessions (Slack)",
     "labelKey": "pages.settings.slackPanel.slackCode.agent_sessions",
@@ -331,6 +345,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "channel": "teams"
     },
     "configKey": "teams.app_id"
+  },
+  {
+    "id": "channels.app-name-slack",
+    "label": "App name (Slack)",
+    "labelKey": "pages.settings.slackPanel.app_name",
+    "labelSuffix": "Slack",
+    "description": "The Slack app's name, at most 35 characters. Leave empty for the default name (kirocrew on a new install). An existing app is renamed when you update it in Slack.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.app_name"
   },
   {
     "id": "channels.app-password-client-secret-teams",
@@ -942,6 +970,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "labelKey": "pages.settings.slackPanel.slash_command",
     "labelSuffix": "Slack",
     "description": "Trigger word for the Slack slash command (without the leading /).",
+    "hint": "If someone else in your Slack organization also uses Kiro Crew, pick a different slash command: two apps with the same command collide.",
     "tab": "channels",
     "type": "input",
     "occurrence": 1,

@@ -42,7 +42,9 @@ function makeState(over = {}, stub = {}) {
   return {
     connected: false, connect_error: '', configured: false, read_only: false,
     bot_token_set: false, app_token_set: false, bot_token_preview: '', app_token_preview: '',
-    owner_id: '', command: 'kirocrew', allowed_enterprise_ids: [], reactions_enabled: true,
+    // The names GET /api/slack/config reports for a fresh install.
+    owner_id: '', command: 'kirocrew', app_name: 'kirocrew', bot_name: 'kirocrew',
+    allowed_enterprise_ids: [], reactions_enabled: true,
     show_thinking: false, session_folder: '', auto_link_sessions: false, show_in_session_list: true,
     ...over,
     _stub: { rejectToken: false, reconnect: 'ok', orgGuide: null, ...stub },
@@ -69,6 +71,8 @@ async function load(context, theme, state, { panelShot = true, open = 'wizard' }
       if (body.app_token) { state.app_token_set = true; state.app_token_preview = 'xapp-…abcd'; state.configured = true }
       if (body.owner_id) state.owner_id = body.owner_id
       if (body.command) state.command = body.command
+      if (body.app_name !== undefined) state.app_name = body.app_name
+      if (body.bot_name !== undefined) state.bot_name = body.bot_name
       return json(route, { ok: true, restart_required: false, reconnect_required: !!(body.bot_token || body.app_token || body.owner_id), verify_warning: '' }), true
     }
     if (path === '/api/slack/reconnect') {
@@ -78,17 +82,23 @@ async function load(context, theme, state, { panelShot = true, open = 'wizard' }
       return json(route, { connected: true, connect_error: '' }), true
     }
     if (path === '/api/slack/manifest') {
-      const alias = new URL(route.request().url()).searchParams.get('alias') || 'kirocrew'
+      // Entered names (empty is kirocrew), else the saved ones, as the server does.
+      const q = new URL(route.request().url()).searchParams
+      const entered = q.has('app_name') || q.has('bot_name') || q.has('command')
+      const pick = (k, saved) => (entered ? (q.get(k) || '').trim() : saved) || 'kirocrew'
+      const names = {
+        app_name: pick('app_name', state.app_name), bot_name: pick('bot_name', state.bot_name),
+        command: pick('command', state.command).replace(/^\//, ''),
+      }
       return json(route, {
-        alias, manifest: `display_information:\n  name: KiroCrew-${alias}\n`, // brand-ok: the app name slack-manifest.yaml renders
-        create_url: 'https://api.slack.com/apps?new_app=1&manifest_yaml=x',
-        command: alias === 'kirocrew' ? 'kirocrew' : `kirocrew-${alias.toLowerCase()}`, features: [],
+        ...names, manifest: `display_information:\n  name: ${names.app_name}\n`,
+        create_url: 'https://api.slack.com/apps?new_app=1&manifest_yaml=x', features: [],
         org_guide_url: state._stub.orgGuide,
       }), true
     }
     if (path === '/api/slack/manifest/status') return json(route, state.bot_token_set ? STATUS : { ...STATUS, install: { ...STATUS.install, status: 'not_configured', app_id: '', team_id: '' }, app_basic_info_url: null, app_dm_url: null, app_manifest_url: null }), true
     if (path === '/api/governance/channels') return json(route, { slack: true }), true
-    if (path === '/api/config/schema') return json(route, { entries: [{ path: 'slack.command', type: 'string' }] }), true
+    if (path === '/api/config/schema') return json(route, { entries: ['slack.command', 'slack.app_name', 'slack.bot_name'].map(path => ({ path, type: 'string' })) }), true
     return false
   }
   await stubDashboardApi(page, { theme, extra, localStorageEntries: { 'mc-privacy-notice-v1': '1' } })
@@ -136,14 +146,14 @@ async function shootPanel(page, name) {
 /** The states the happy path never reaches: rejected token saves, an owner
  *  already saved (its Connect button), a failed and an in-progress Reconnect,
  *  a read-only panel without the Setup wizard button, an organization guide
- *  on step 1, an invalid alias on step 2, and a wizard chunk that fails to load. */
+ *  on step 1, a slash command Slack refuses on step 2, and a wizard chunk that fails to load. */
 async function edgeScenes(browser, base, theme) {
   const rejected = /rejected by Slack \(invalid_auth\)/
 
   // Step 3: Slack refuses the bot token; the step stays put with the reason.
   let { context, page } = await openOn(browser, base, theme, makeState({}, { rejectToken: true }))
   await page.getByRole('button', { name: 'I have a workspace' }).click()
-  await page.getByTestId('slack-wizard-alias').fill('jdoe')
+  // Playwright's click waits for the button to enable (the manifest rendered).
   await page.getByRole('button', { name: 'I created the app' }).click()
   await page.waitForFunction(() => document.querySelector('[data-testid="slack-wizard"]')?.getAttribute('data-step') === 'bot_token')
   await page.getByTestId('slack-wizard-bot-token').fill('xoxb-placeholder')
@@ -194,7 +204,7 @@ async function edgeScenes(browser, base, theme) {
   await context.close()
 
   // Step 1 with an organization guide configured (`slack.setup_guide_url`),
-  // then step 2 with an alias the manifest cannot render.
+  // then step 2 with a slash command Slack would refuse.
   ;({ context, page } = await openOn(browser, base, theme,
     makeState({}, { orgGuide: 'https://example.com/slack-setup' })))
   const orgGuide = page.getByTestId('slack-wizard-org-guide')
@@ -203,11 +213,11 @@ async function edgeScenes(browser, base, theme) {
   check('org guide rel', (await orgGuide.getAttribute('rel')) === 'noopener noreferrer')
   await shoot(page, `1b-workspace-org-guide-${theme}.png`)
   await page.getByRole('button', { name: 'I have a workspace' }).click()
-  await page.getByTestId('slack-wizard-alias').fill('bad/alias')
-  await page.getByText('Use 1 to 32 letters, digits, - or _.').waitFor()
-  check('Create stays off for a bad alias',
+  await page.getByTestId('slack-wizard-command').fill('Bad Cmd')
+  await page.getByTestId('slack-wizard-command-error').waitFor()
+  check('Create stays off for a bad command',
     (await page.getByTestId('slack-wizard-create').getAttribute('aria-disabled')) === 'true')
-  await shoot(page, `2b-create-invalid-alias-${theme}.png`)
+  await shoot(page, `2b-create-invalid-command-${theme}.png`)
   await context.close()
 
   // The wizard's chunk fails to load. The first failure makes main.tsx's
@@ -227,6 +237,35 @@ async function edgeScenes(browser, base, theme) {
   await context.close()
 }
 
+/** The panel's own name fields (Behavior) and the manifest card: the defaults,
+ *  then custom names typed but not saved (the card offers no manifest until Save),
+ *  then saved. */
+async function panelNameScenes(browser, base, theme) {
+  const state = makeState({ bot_token_set: true, app_token_set: true, owner_id: 'U0123ABC456', connected: true, configured: true })
+  const { context, page } = await openOn(browser, base, theme, state, { open: 'none' })
+  const appName = page.getByLabel('App name', { exact: true })
+  const behavior = appName.locator('xpath=ancestor::*[contains(@class,"rounded")][1]')
+  const card = page.getByRole('link', { name: 'Create Slack app' }).locator('xpath=ancestor::*[contains(@class,"rounded")][1]')
+  const shootEl = async (loc, name) => { await loc.scrollIntoViewIfNeeded(); await page.mouse.move(2, 2); await loc.screenshot({ path: join(OUT, name) }) }
+  check('panel shows the default app name', (await appName.inputValue()) === 'kirocrew')
+  await shootEl(behavior, `10-panel-names-default-${theme}.png`)
+  await shootEl(card, `10b-panel-card-default-${theme}.png`)
+  await appName.fill('Team Crew')
+  await page.getByLabel('@ mention name', { exact: true }).fill('teamcrew')
+  await page.getByPlaceholder('kirocrew').fill('teamcrew')
+  await page.getByTestId('slack-names-unsaved').waitFor()
+  check('no manifest while names are unsaved',
+    (await page.getByRole('link', { name: 'Create Slack app' }).getAttribute('aria-disabled')) === 'true')
+  await shootEl(behavior, `11-panel-names-custom-${theme}.png`)
+  await shootEl(card, `11b-panel-card-unsaved-${theme}.png`)
+  await page.getByRole('button', { name: 'Save Slack settings' }).click()
+  await page.getByTestId('slack-names-unsaved').waitFor({ state: 'detached' })
+  check('saved the custom names', state.app_name === 'Team Crew' && state.bot_name === 'teamcrew' && state.command === 'teamcrew')
+  await page.getByText(/named Team Crew\)/).waitFor()
+  await shootEl(card, `12-panel-card-saved-${theme}.png`)
+  await context.close()
+}
+
 async function main() {
   const { srv, base } = await serveDist()
   const browser = await chromium.launch()
@@ -241,9 +280,14 @@ async function main() {
       await shoot(page, `1-workspace-${theme}.png`)
 
       await page.getByRole('button', { name: 'I have a workspace' }).click()
-      await page.getByTestId('slack-wizard-alias').fill('jdoe')
-      await page.waitForFunction(() => document.querySelector('[data-testid="slack-wizard-create"]')?.getAttribute('aria-disabled') === 'false')
-      await page.getByText('Slack app name: KiroCrew-jdoe').waitFor() // brand-ok: the rendered app name
+      const createOn = () => page.waitForFunction(() => document.querySelector('[data-testid="slack-wizard-create"]')?.getAttribute('aria-disabled') === 'false')
+      await createOn()
+      check('names start as kirocrew', (await page.getByTestId('slack-wizard-app-name').inputValue()) === 'kirocrew')
+      await shoot(page, `2a-create-default-${theme}.png`)
+      await page.getByTestId('slack-wizard-app-name').fill('Team Crew')
+      await page.getByTestId('slack-wizard-bot-name').fill('teamcrew')
+      await page.getByTestId('slack-wizard-command').fill('teamcrew')
+      await createOn()
       check('create picture', await page.getByTestId('slack-wizard-diagram-create').isVisible())
       await shoot(page, `2-create-${theme}.png`)
       // The link opens Slack in a new tab; close it, nothing leaves this machine.
@@ -273,7 +317,8 @@ async function main() {
       await page.getByRole('button', { name: 'Save and connect' }).click()
       await page.waitForFunction(() => document.querySelector('[data-testid="slack-wizard"]')?.getAttribute('data-step') === 'test')
       await page.waitForFunction(u => document.querySelector('[data-testid="slack-wizard-dm"]')?.getAttribute('href') === u, STATUS.app_dm_url)
-      check('the Create click saved the alias command', state.command === 'kirocrew-jdoe')
+      check('"I created the app" saved the three names',
+        state.command === 'teamcrew' && state.app_name === 'Team Crew' && state.bot_name === 'teamcrew')
       await shoot(page, `6-test-${theme}.png`)
       await page.getByRole('button', { name: 'I got a reply' }).click()
       await page.getByText('Slack is set up.').waitFor()
@@ -287,6 +332,7 @@ async function main() {
       await page.screenshot({ path: join(OUT, `9-panel-wizard-closed-${theme}.png`) })
       await context.close()
       await edgeScenes(browser, base, theme)
+      await panelNameScenes(browser, base, theme)
       console.log(`${theme}: OK`)
     }
     console.log(`\nOK — screenshots in ${OUT}`)

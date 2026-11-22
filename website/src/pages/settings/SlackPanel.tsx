@@ -17,6 +17,7 @@ import InfoTip from '../../components/InfoTip'
 import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredBadge'
 import { SlackCodeSection, slackCodeDraftFrom, slackCodePayload, type SlackCodeDraft } from './SlackCodePanel'
 import { SLACK_CODE_SWITCHES } from './slackCodeSwitches'
+import { APP_NAME_MAX, BOT_NAME_MAX, slackCommandOk, slackNameOk } from './slackNames'
 import { forgetSlackInstallReading } from './SlackManifestUpdate'
 import { lazyRetry } from '../../components/lazyRetry'
 import { useConnectionsUiEnabled } from '../../hooks/useConnectionsUi'
@@ -69,6 +70,9 @@ const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guide
 type Draft = {
   owner_id: string
   command: string
+  /** The manifest's app name and the bot's `@` name (`slack.app_name` / `slack.bot_name`). */
+  app_name: string
+  bot_name: string
   allowed_enterprise_ids: string[]
   reactions_enabled: boolean
   show_thinking: boolean
@@ -88,6 +92,8 @@ function draftFrom(c: SlackConfigData): Draft {
   return {
     owner_id: c.owner_id,
     command: c.command,
+    app_name: c.app_name ?? '',
+    bot_name: c.bot_name ?? '',
     allowed_enterprise_ids: [...c.allowed_enterprise_ids],
     reactions_enabled: c.reactions_enabled,
     show_thinking: c.show_thinking,
@@ -275,7 +281,7 @@ export function TagListEditor({ label, description, hint, values, placeholder, o
 /** Slack channel-integration settings. */
 export function SlackPanel() {
   const qc = useQueryClient()
-  const { data, isLoading, isError } = useQuery<SlackConfigData>({
+  const { data, dataUpdatedAt, isLoading, isError } = useQuery<SlackConfigData>({
     queryKey: ['slack-config'],
     queryFn: api.getSlackConfig,
     retry: false,
@@ -322,7 +328,24 @@ export function SlackPanel() {
   // and not when the switches it was rendered for differ from the saved ones.
   const savedSwitches = SLACK_CODE_SWITCHES.filter(k => !!data?.[k]).sort().join(',')
   const manifestFeatures = manifestQ.data?.features
-  const manifestMatchesSaved = manifestQ.isSuccess && !manifestQ.isFetching && !manifestQ.isError
+  // The same holds for the names: while the form holds an unsaved app name, bot
+  // name or command, the manifest on offer would name the app differently from
+  // what the form shows (and the gateway would not answer a new command yet).
+  const namesDirty = !!draft && !!data && (
+    draft.app_name.trim() !== (data.app_name ?? '')
+    || draft.bot_name.trim() !== (data.bot_name ?? '')
+    || draft.command.trim().replace(/^\//, '') !== data.command.replace(/^\//, '')
+  )
+  // And the manifest must be one rendered for the SAVED names: a fetch that
+  // started before a name save can land after it with the old ones.
+  const m = manifestQ.data
+  const manifestNamesSaved = !!m && !!data
+    && (data.app_name === undefined || m.app_name === data.app_name)
+    && (data.bot_name === undefined || m.bot_name === data.bot_name)
+    // The command the saved config renders (`manifest_command`: the alias
+    // command for a value saved before Slack's rule was checked).
+    && (m.command === undefined || m.command === (data.manifest_command ?? data.command))
+  const manifestMatchesSaved = manifestQ.isSuccess && !manifestQ.isFetching && !manifestQ.isError && !namesDirty && manifestNamesSaved
     && (manifestFeatures === undefined || [...manifestFeatures].sort().join(',') === savedSwitches)
   // Every way out of this page (Copy, Create, the update panel) exports only this.
   const currentManifest = manifestMatchesSaved ? manifestQ.data : undefined
@@ -367,16 +390,25 @@ export function SlackPanel() {
   // sends the owner only when the field was edited, so a save that lands
   // while "Claim in Slack" confirms cannot write the old value back.
   const ownerBaseline = useRef('')
+  // The names the draft was seeded from, for the same reason: a save sends a
+  // name only when it was edited, so a `kirocrew config set slack.app_name`
+  // landing meanwhile is not written back over. (The server stores the names
+  // the page rendered on a save that sends none, where none is stored yet.)
+  const namesBaseline = useRef({ app_name: '', bot_name: '' })
+  // Keyed on `dataUpdatedAt` too: a save whose refetch returns the same config
+  // (a cleared name the server fills back with its default) keeps `data`'s
+  // identity, and the draft must still take the saved values.
   useEffect(() => {
     if (data && syncArmed.current) {
       syncArmed.current = false
       const seeded = draftFrom(data)
       codeBaseline.current = seeded.code
       ownerBaseline.current = seeded.owner_id.trim()
+      namesBaseline.current = { app_name: seeded.app_name.trim(), bot_name: seeded.bot_name.trim() }
       setDraft(seeded)
       setBotToken(''); setAppToken(''); setBotClear(false); setAppClear(false)
     }
-  }, [data])
+  }, [data, dataUpdatedAt])
 
   const saveMut = useMutation({
     mutationFn: (body: Partial<SlackConfigSave>) => api.saveSlackConfig(body),
@@ -463,6 +495,8 @@ export function SlackPanel() {
     const payload: Partial<SlackConfigSave> = {
       ...(owner !== ownerBaseline.current ? { owner_id: owner } : {}),
       command: draft.command.trim(),
+      ...(draft.app_name.trim() !== namesBaseline.current.app_name ? { app_name: draft.app_name.trim() } : {}),
+      ...(draft.bot_name.trim() !== namesBaseline.current.bot_name ? { bot_name: draft.bot_name.trim() } : {}),
       allowed_enterprise_ids: draft.allowed_enterprise_ids,
       reactions_enabled: draft.reactions_enabled,
       show_thinking: draft.show_thinking,
@@ -492,6 +526,11 @@ export function SlackPanel() {
   if (isError || !data || !draft) return <ErrorNotice className="m-4" message={i18nT('pages.settings.slackPanel.cannot_load_slack_config_is_the_gateway_running')} askAgent />
 
   const upd = (patch: Partial<Draft>) => setDraft(d => (d ? { ...d, ...patch } : d))
+  const appNameOk = slackNameOk(draft.app_name, APP_NAME_MAX)
+  const botNameOk = slackNameOk(draft.bot_name, BOT_NAME_MAX)
+  // A command saved before the lowercase rule still saves unchanged (the server
+  // checks only a change), so only an edit is flagged.
+  const commandOk = draft.command.trim().replace(/^\//, '') === data.command.replace(/^\//, '') || slackCommandOk(draft.command)
   const showWizard = wizardOpen
   const ro = data.read_only
   // A click's own outcome (or one in flight) replaces the recorded reading:
@@ -594,6 +633,8 @@ export function SlackPanel() {
           // a stale owner or command back, and unsaved edits elsewhere stay.
           onSaved={saved => {
             if (saved.owner_id !== undefined) ownerBaseline.current = saved.owner_id
+            if (saved.app_name !== undefined) namesBaseline.current.app_name = saved.app_name
+            if (saved.bot_name !== undefined) namesBaseline.current.bot_name = saved.bot_name
             setDraft(d => (d ? { ...d, ...saved } : d))
           }}
           renderOwnerClaim={onClaimed => (
@@ -617,8 +658,13 @@ export function SlackPanel() {
                 user's alias; this card must not name a different app. */}
             {showWizard
               ? i18nT('pages.settings.slackWizard.card_while_open')
-              : i18nT('pages.settings.slackPanel.create_the_slack_app_from_the_manifest', { alias: manifestQ.data?.alias ?? 'you' })}
+              : i18nT('pages.settings.slackPanel.create_the_slack_app_from_the_manifest_named', { name: manifestQ.data?.app_name ?? 'kirocrew' })}
           </p>
+          {namesDirty && (
+            <p className="text-[12px] text-warn mt-1" data-testid="slack-names-unsaved">
+              {i18nT('pages.settings.slackPanel.save_to_use_names')}
+            </p>
+          )}
           <div className="flex items-center gap-2 mt-2 flex-wrap">
             {!showWizard && (
               <a
@@ -731,14 +777,40 @@ export function SlackPanel() {
       {/* ── Behavior ── */}
       <SettingsSection title={i18nT('pages.settings.slackPanel.behavior')}>
         <SettingsCard index={4}>
+          {/* The three names the manifest gives the Slack app. Saving changes the
+              manifest this page offers; Slack renames the app when it is updated
+              from it (Update the Slack app, under Slack Code). */}
+          <SettingsInput
+            label={i18nT('pages.settings.slackPanel.app_name')}
+            description={i18nT('pages.settings.slackPanel.app_name_desc')}
+            value={draft.app_name}
+            onChange={v => upd({ app_name: v })}
+            disabled={ro}
+            configKey="slack.app_name"
+            invalidMessageId={appNameOk ? undefined : 'slack-app-name-invalid'}
+          />
+          {!appNameOk && <p id="slack-app-name-invalid" className="text-[12px] text-warn -mt-1 pb-1">{i18nT('pages.settings.slackWizard.app_name_invalid')}</p>}
+          <SettingsInput
+            label={i18nT('pages.settings.slackPanel.bot_name')}
+            description={i18nT('pages.settings.slackPanel.bot_name_desc')}
+            value={draft.bot_name}
+            onChange={v => upd({ bot_name: v })}
+            disabled={ro}
+            configKey="slack.bot_name"
+            invalidMessageId={botNameOk ? undefined : 'slack-bot-name-invalid'}
+          />
+          {!botNameOk && <p id="slack-bot-name-invalid" className="text-[12px] text-warn -mt-1 pb-1">{i18nT('pages.settings.slackWizard.bot_name_invalid')}</p>}
           <SettingsInput
             label={i18nT('pages.settings.slackPanel.slash_command')}
             description={i18nT('pages.settings.slackPanel.trigger_word_for_the_slack_slash_command_without')}
+            hint={i18nT('pages.settings.slackWizard.command_collision_hint')}
             value={draft.command}
             onChange={v => upd({ command: v })}
             placeholder={i18nT('pages.settings.slackPanel.kirocrew')}
             disabled={ro}
+            invalidMessageId={commandOk ? undefined : 'slack-command-invalid'}
           />
+          {!commandOk && <p id="slack-command-invalid" className="text-[12px] text-warn -mt-1 pb-1">{i18nT('pages.settings.slackWizard.command_invalid')}</p>}
           {/* The one slack.* field that cannot hot-apply: the slash command is
               registered in the Slack app manifest. The badge answers from the
               schema, so it disappears by itself if that ever changes. */}

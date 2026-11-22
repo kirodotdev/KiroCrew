@@ -36,6 +36,13 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
   app_token_preview: string
   owner_id: string
   command: string
+  /** The app name the manifest renders for this install (saved, else its default). */
+  app_name?: string
+  /** The bot's `@` name the manifest renders for this install. */
+  bot_name?: string
+  /** The slash command that manifest registers (differs from `command` only for
+   *  a value saved before Slack's rule was checked). */
+  manifest_command?: string
   allowed_enterprise_ids: string[]
   reactions_enabled: boolean
   show_thinking: boolean
@@ -147,6 +154,24 @@ export interface SlackManifestChange {
 }
 
 /** GET /api/slack/manifest/status: the installed app vs the manifest the switches need. */
+/** The three names a Slack app manifest gives the app (`slack_manifest.AppNames`). */
+export interface SlackAppNames {
+  /** `display_information.name`. */
+  app_name: string
+  /** `features.bot_user.display_name`: what people type after `@`. */
+  bot_name: string
+  /** The slash command, without its `/`. */
+  command: string
+}
+
+/** GET /api/slack/manifest: the rendered manifest and Slack's create-app link. */
+export interface SlackManifest extends SlackAppNames {
+  manifest: string
+  create_url: string
+  features?: string[]
+  org_guide_url?: string | null
+}
+
 export interface SlackManifestStatus {
   features: string[]
   required_scopes: string[]
@@ -201,6 +226,10 @@ export interface SlackConfigSave extends Partial<Record<SlackCodeSwitchKey, bool
   app_token_clear: boolean
   owner_id: string
   command: string
+  /** `slack.app_name`; "" clears it back to the install's default. */
+  app_name?: string
+  /** `slack.bot_name`; "" clears it back to the install's default. */
+  bot_name?: string
   allowed_enterprise_ids: string[]
   reactions_enabled: boolean
   show_thinking: boolean
@@ -601,9 +630,9 @@ export function createMessagingEndpoints({ get, post, put, del, j }: ClientTrans
   const channelConfigs = {
     // Slack integration config
     getSlackConfig: () => get('/api/slack/config').then(j) as Promise<SlackConfigData>,
-    /** With *alias*, the manifest and create link for a NEW app named after it;
-     *  without, the ones for this install (alias read back from `slack.command`). */
-    getSlackManifest: (alias?: string) => get(`/api/slack/manifest${alias ? `?alias=${encodeURIComponent(alias)}` : ''}`).then(j) as Promise<{ alias: string; manifest: string; create_url: string; command?: string; features?: string[]; org_guide_url?: string | null }>,
+    /** With *names*, the manifest and create link for a NEW app with those names
+     *  (an empty one is `kirocrew`); without, the ones for this install. */
+    getSlackManifest: (names?: SlackAppNames) => get(`/api/slack/manifest${names ? `?${new URLSearchParams({ ...names })}` : ''}`).then(j) as Promise<SlackManifest>,
     getSlackManifestStatus: (refresh = false) => get(`/api/slack/manifest/status${refresh ? '?refresh=1' : ''}`).then(j) as Promise<SlackManifestStatus>,
     /** The agents a defaults save accepts with default folder *folder* ('' = the auto folder). */
     getSlackCodeChannelAgents: (folder: string) => get(`/api/slack/code-channel-agents?folder=${encodeURIComponent(folder)}`).then(j) as Promise<{ agents: string[] | null }>,

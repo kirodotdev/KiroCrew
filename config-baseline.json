@@ -7966,6 +7966,8 @@
         "tracking_channels": [],
         "open_channels": [],
         "command": "kirocrew",
+        "app_name": "",
+        "bot_name": "",
         "setup_guide_url": "",
         "forward_to_agent_callback": "",
         "trusted_bot_ids": [],
@@ -8098,6 +8100,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "kirocrew"
+    },
+    {
+      "path": "slack.app_name",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "App Name",
+      "help": "The Slack app's name in the manifest Settings and `kirocrew manifest` render (at most 35 characters). Empty: kirocrew on a new install, and the alias-based name an existing app already has otherwise.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "slack.bot_name",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Bot Name",
+      "help": "The bot user's name in the manifest, what people type after @ (at most 80 characters). Empty: the same default as App Name.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "slack.setup_guide_url",

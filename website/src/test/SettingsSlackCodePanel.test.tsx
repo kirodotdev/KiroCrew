@@ -88,7 +88,7 @@ function config(over: Partial<SlackConfigData> = {}): SlackConfigData {
 
 function seed(cfg: Partial<SlackConfigData> = {}, st: SlackManifestStatus = status(), folders: unknown[] = FOLDERS) {
   vi.spyOn(api, 'getSlackConfig').mockResolvedValue(config(cfg))
-  vi.spyOn(api, 'getSlackManifest').mockResolvedValue({ alias: 'kirocrew', manifest: 'display_information: {}\n', create_url: 'https://example.invalid/new' })
+  vi.spyOn(api, 'getSlackManifest').mockResolvedValue({ app_name: 'kirocrew', bot_name: 'kirocrew', command: 'kirocrew', manifest: 'display_information: {}\n', create_url: 'https://example.invalid/new' })
   const getStatus = vi.spyOn(api, 'getSlackManifestStatus').mockResolvedValue(st)
   vi.spyOn(api, 'chatFolders').mockResolvedValue(folders as never)
   vi.spyOn(api, 'chatTags').mockResolvedValue([] as never)
@@ -626,7 +626,7 @@ describe('Code channels card', () => {
   it('does not offer to copy a manifest from before the saved switches', async () => {
     seed({ code_channels: false }, status({ status: 'needs_update', missing_scopes: ['code_channels:manage'] }))
     const manifest = vi.mocked(api.getSlackManifest)
-    manifest.mockResolvedValue({ alias: 'kirocrew', manifest: 'old: yaml\n', create_url: 'https://example.invalid/new', features: [] })
+    manifest.mockResolvedValue({ app_name: 'kirocrew', bot_name: 'kirocrew', command: 'kirocrew', manifest: 'old: yaml\n', create_url: 'https://example.invalid/new', features: [] })
     await hydrated()
     // The saved config now has the switch on, but the manifest refetch fails:
     // React Query keeps the old YAML, which must not be copyable.
@@ -651,10 +651,10 @@ describe('Code channels card', () => {
     const manifest = vi.mocked(api.getSlackManifest)
     const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
     const copyBtn = () => within(panel).getByRole('button', { name: 'Copy manifest' })
-    manifest.mockResolvedValue({ alias: 'kirocrew', manifest: 'old: yaml\n', create_url: 'https://example.invalid/new', features: [] })
+    manifest.mockResolvedValue({ app_name: 'kirocrew', bot_name: 'kirocrew', command: 'kirocrew', manifest: 'old: yaml\n', create_url: 'https://example.invalid/new', features: [] })
     fireEvent.click(within(panel).getByRole('button', { name: /Check again/ }))
     await waitFor(() => expect(copyBtn()).toBeDisabled())
-    manifest.mockResolvedValue({ alias: 'kirocrew', manifest: 'new: yaml\n', create_url: 'https://example.invalid/new', features: ['code_channels'] })
+    manifest.mockResolvedValue({ app_name: 'kirocrew', bot_name: 'kirocrew', command: 'kirocrew', manifest: 'new: yaml\n', create_url: 'https://example.invalid/new', features: ['code_channels'] })
     fireEvent.click(within(panel).getByRole('button', { name: /Check again/ }))
     await waitFor(() => expect(copyBtn()).toBeEnabled())
   })

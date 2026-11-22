@@ -819,32 +819,52 @@ class TestKiroCrewSlackAppCreateLink:
         from kiro_crew import slack_manifest
         from kiro_crew.security import scan_exfiltration_urls
 
-        # Over ALIAS_MAX — the derived pattern refuses it, so no exemption.
-        secret40 = "wJalrXUtnFEMIK7MDENG" "bPxRfiCYEXAMPLEKEYXY"
-        assert len(secret40) == 40 > slack_manifest.ALIAS_MAX
-        payload = slack_manifest.stripped_template().replace(
-            slack_manifest.ALIAS_PLACEHOLDER, secret40
-        )
-        url = "https://api.slack.com/apps?new_app=1&manifest_yaml=" + quote(payload, safe="")
-        assert scan_exfiltration_urls(url) != []
+        def filled(app: str, bot: str = "x", command: str = "x") -> str:
+            payload = (
+                slack_manifest.stripped_template()
+                .replace(slack_manifest.APP_NAME_PLACEHOLDER, app)
+                .replace(slack_manifest.BOT_NAME_PLACEHOLDER, bot)
+                .replace(slack_manifest.COMMAND_PLACEHOLDER, command)
+            )
+            return "https://api.slack.com/apps?new_app=1&manifest_yaml=" + quote(payload, safe="")
 
-        # Within ALIAS_MAX but a recognised credential shape — caught on the
-        # alias itself, because the alias is what the heuristics still see.
+        # Over Slack's 35-char app name — the rebuild refuses it, so no exemption.
+        secret40 = "wJalrXUtnFEMIK7MDENG" "bPxRfiCYEXAMPLEKEYXY"
+        assert len(secret40) == 40 > slack_manifest.APP_NAME_MAX
+        assert scan_exfiltration_urls(filled(secret40)) != []
+        # The bot name may be 80 chars, so the 40-char run fits it: the names
+        # stay under the heuristics, which catch the run on the name alone.
+        assert len(secret40) <= slack_manifest.BOT_NAME_MAX
+        assert scan_exfiltration_urls(filled("x", bot=secret40)) != []
+
+        # Within the limits but a recognised credential shape — caught on the
+        # names themselves, because the names are what the heuristics still see.
         for hostile in ("AKIAIOSFODNN7EXAMPLE", "xoxb-123456789012-abcdef"):
             assert len(hostile) <= slack_manifest.ALIAS_MAX, hostile
             assert scan_exfiltration_urls(self._link(hostile)) != [], hostile
+            for names in (
+                slack_manifest.AppNames(app_name=hostile),
+                slack_manifest.AppNames(bot_name=hostile),
+            ):
+                assert scan_exfiltration_urls(slack_manifest.deep_link(names)) != [], names
 
-    def test_mismatched_aliases_redacted(self) -> None:
-        """The manifest names the alias twice; they must be the SAME alias."""
+    def test_a_name_spelled_unlike_the_emitter_is_redacted(self) -> None:
+        """The app and bot names may differ now, but each must be written the
+        way ``render`` writes it: the payload is rebuilt byte for byte."""
         from kiro_crew import slack_manifest
         from kiro_crew.security import scan_exfiltration_urls
 
-        tampered = (
-            slack_manifest.stripped_template()
-            .replace(slack_manifest.ALIAS_PLACEHOLDER, "real", 1)
-            .replace(slack_manifest.ALIAS_PLACEHOLDER, "other")
+        exact = slack_manifest.render(
+            slack_manifest.AppNames("real", "other", "cmd"), strip_comments=True
         )
-        assert scan_exfiltration_urls(self._link(payload=tampered)) != []
+        assert scan_exfiltration_urls(self._link(payload=exact)) == []
+        for respelled in (
+            exact.replace("name: real\n", 'name: "real"\n'),
+            exact.replace("name: real\n", "name: 'real'\n"),
+            exact.replace("name: real\n", "name: real # x\n"),
+        ):
+            assert respelled != exact
+            assert scan_exfiltration_urls(self._link(payload=respelled)) != [], respelled
 
     def test_arbitrary_payload_redacted(self) -> None:
         """A long payload that is not the template stays redacted."""

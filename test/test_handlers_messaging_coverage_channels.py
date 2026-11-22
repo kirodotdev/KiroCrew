@@ -1052,12 +1052,13 @@ class TestSlackManifest:
     def test_renders_the_template_and_builds_a_create_url(self) -> None:
         resp = _run(mod.api_slack_manifest, _Req(_state(), query={"alias": "zezhen"}))
         data = _payload(resp)
-        assert data["alias"] == "zezhen"
-        assert "{{ALIAS}}" not in data["manifest"]
+        assert data["app_name"] == "KiroCrew-zezhen"  # brand-ok: the legacy alias name
+        assert "__APP_NAME__" not in data["manifest"]
         assert data["create_url"].startswith("https://api.slack.com/apps?new_app=1&manifest_yaml=")
 
     def test_defaults_to_a_non_identifying_alias(self) -> None:
-        assert _payload(_run(mod.api_slack_manifest, _Req(_state())))["alias"] == "kirocrew"
+        data = _payload(_run(mod.api_slack_manifest, _Req(_state())))
+        assert data["app_name"] == data["bot_name"] == "kirocrew"
 
 
 class TestDeleteMessage:

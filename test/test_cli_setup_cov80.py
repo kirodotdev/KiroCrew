@@ -163,10 +163,19 @@ class TestSetupSlashCommand:
     def test_an_over_long_name_falls_back_to_the_current_name(
         self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        self._answer(monkeypatch, "z" * 33)
+        self._answer(monkeypatch, "z" * 32)  # Slack's 32 counts the leading /
         _setup_slash_command()
         assert self._saved(cfg_file) == "kirocrew"
-        assert "too long" in capsys.readouterr().out
+        assert "1-31 lowercase" in capsys.readouterr().out
+
+    def test_an_uppercase_name_falls_back_to_the_current_name(
+        self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Slack takes only lowercase commands; the dashboard save refuses one too.
+        self._answer(monkeypatch, "Zibble")
+        _setup_slash_command()
+        assert self._saved(cfg_file) == "kirocrew"
+        assert "1-31 lowercase" in capsys.readouterr().out
 
     def test_an_unreadable_config_aborts_the_step_without_writing(
         self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

@@ -9,7 +9,8 @@ import { screen, fireEvent, waitFor } from '@testing-library/react'
 
 import { renderWithProviders } from './helpers'
 import { api, type SlackConfigData, type SlackManifestStatus } from '../api/client'
-import { SlackSetupWizard, firstOpenStep, manifestAppName, safeGuideUrl, WIZARD_STEPS } from '../pages/settings/SlackSetupWizard'
+import { SlackSetupWizard, firstOpenStep, safeGuideUrl, WIZARD_STEPS } from '../pages/settings/SlackSetupWizard'
+import { slackCommandOk, slackNameOk } from '../pages/settings/slackNames'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -53,12 +54,11 @@ function mount(c: SlackConfigData, orgGuideUrl?: string) {
 
 const step = () => screen.getByTestId('slack-wizard').getAttribute('data-step')
 
-const MANIFEST = { alias: 'jdoe', manifest: 'display_information:\n  name: Acme-jdoe\n', create_url: 'https://api.slack.com/apps?new_app=1', command: 'kirocrew-jdoe' }
+const MANIFEST = { app_name: 'Acme', bot_name: 'acmebot', command: 'acme', manifest: 'display_information:\n  name: Acme\n', create_url: 'https://api.slack.com/apps?new_app=1' }
 
 /** From the first step through Create to the bot-token step. */
 async function toBotTokenStep() {
   fireEvent.click(screen.getByRole('button', { name: /I have a workspace/ }))
-  fireEvent.change(screen.getByTestId('slack-wizard-alias'), { target: { value: 'jdoe' } })
   const done = screen.getByRole('button', { name: /I created the app/ })
   await waitFor(() => expect((done as HTMLButtonElement).disabled).toBe(false))
   fireEvent.click(done)
@@ -74,10 +74,18 @@ describe('firstOpenStep', () => {
   })
 })
 
-describe('manifestAppName', () => {
-  it('reads the display name the manifest renders', () => {
-    expect(manifestAppName('display_information:\n  name: Acme-jdoe\n  description: x\n')).toBe('Acme-jdoe')
-    expect(manifestAppName(undefined)).toBe('')
+describe('slackNameOk / slackCommandOk', () => {
+  it('mirrors the server: empty is the default, Slack limits, no invisible characters', () => {
+    expect(slackNameOk('', 35)).toBe(true)
+    expect(slackNameOk('a'.repeat(35), 35)).toBe(true)
+    expect(slackNameOk('a'.repeat(36), 35)).toBe(false)
+    expect(slackNameOk('Équipe 日本🚀', 35)).toBe(true)
+    expect(slackNameOk('bad\u202ename', 35)).toBe(false)
+    expect(slackCommandOk('')).toBe(true)
+    expect(slackCommandOk('/crew')).toBe(true)
+    expect(slackCommandOk('c'.repeat(31))).toBe(true)
+    expect(slackCommandOk('c'.repeat(32))).toBe(false)
+    for (const bad of ['Crew', 'my crew', 'crew🚀']) expect(slackCommandOk(bad)).toBe(false)
   })
 })
 
@@ -112,44 +120,70 @@ describe('SlackSetupWizard', () => {
     expect(screen.getByTestId('slack-wizard-diagram-workspace')).toBeTruthy()
   })
 
-  it('keeps the alias lowercase and within the slash command’s 22 characters', async () => {
+  it('keeps the slash command lowercase as typed, and flags one past Slack’s 31 characters', async () => {
+    // #41310 kept the alias field lowercase and inside the command; the command
+    // field takes that over. Too long is flagged, never cut.
     const manifest = vi.spyOn(api, 'getSlackManifest').mockResolvedValue(MANIFEST)
     mount(config())
     fireEvent.click(screen.getByRole('button', { name: /I have a workspace/ }))
-    const input = screen.getByTestId('slack-wizard-alias') as HTMLInputElement
+    const input = screen.getByTestId('slack-wizard-command') as HTMLInputElement
     fireEvent.change(input, { target: { value: 'Jane-Doe' } })
     expect(input.value).toBe('jane-doe')
-    fireEvent.change(input, { target: { value: 'a'.repeat(30) } })
-    expect(input.value).toBe('a'.repeat(22))
-    await waitFor(() => expect(manifest).toHaveBeenCalledWith('a'.repeat(22)))
-    expect(manifest).not.toHaveBeenCalledWith('a'.repeat(30))
+    await waitFor(() => expect(manifest).toHaveBeenCalledWith({ app_name: 'kirocrew', bot_name: 'kirocrew', command: 'jane-doe' }))
+    fireEvent.change(input, { target: { value: 'a'.repeat(32) } })
+    expect(input.value).toBe('a'.repeat(32))
+    expect(screen.getByTestId('slack-wizard-command-error')).toBeTruthy()
   })
 
-  it('refuses an alias the manifest cannot render, and fetches none', () => {
-    const manifest = vi.spyOn(api, 'getSlackManifest')
+  it('starts the command at the one the manifest renders for a legacy saved command', () => {
+    vi.spyOn(api, 'getSlackManifest').mockResolvedValue(MANIFEST)
+    mount(config({ command: 'OldCmd', manifest_command: 'kirocrew' }))
+    fireEvent.click(screen.getByRole('button', { name: /I have a workspace/ }))
+    expect((screen.getByTestId('slack-wizard-command') as HTMLInputElement).value).toBe('kirocrew')
+    expect(screen.queryByTestId('slack-wizard-command-error')).toBeNull()
+  })
+
+  it('starts every name at the install default and renders it', async () => {
+    const manifest = vi.spyOn(api, 'getSlackManifest').mockResolvedValue(MANIFEST)
+    mount(config({ app_name: 'kirocrew', bot_name: 'kirocrew' }))
+    fireEvent.click(screen.getByRole('button', { name: /I have a workspace/ }))
+    for (const id of ['slack-wizard-app-name', 'slack-wizard-bot-name', 'slack-wizard-command']) {
+      expect((screen.getByTestId(id) as HTMLInputElement).value).toBe('kirocrew')
+    }
+    await waitFor(() => expect(manifest).toHaveBeenCalledWith({ app_name: 'kirocrew', bot_name: 'kirocrew', command: 'kirocrew' }))
+  })
+
+  it('refuses a command Slack would not take, and fetches none for it', () => {
+    const manifest = vi.spyOn(api, 'getSlackManifest').mockResolvedValue(MANIFEST)
     mount(config())
     fireEvent.click(screen.getByRole('button', { name: /I have a workspace/ }))
-    fireEvent.change(screen.getByTestId('slack-wizard-alias'), { target: { value: 'bad/alias' } })
+    manifest.mockClear()
+    fireEvent.change(screen.getByTestId('slack-wizard-command'), { target: { value: 'Bad Cmd' } })
+    expect(screen.getByTestId('slack-wizard-command-error').textContent).toMatch(/lowercase/)
+    expect(screen.queryByTestId('slack-wizard-app-name-error')).toBeNull()
     expect(screen.getByTestId('slack-wizard-create').getAttribute('aria-disabled')).toBe('true')
     expect(manifest).not.toHaveBeenCalled()
   })
 
-  it('saves the alias command on "I created the app", not on the link click, then advances', async () => {
+  it('saves the three names on "I created the app", not on the link click, then advances', async () => {
     vi.spyOn(api, 'getSlackManifest').mockResolvedValue(MANIFEST)
     const save = vi.spyOn(api, 'saveSlackConfig').mockResolvedValue({ ...OK_SAVE, reconnect_required: false })
     const { onSaved } = mount(config())
     fireEvent.click(screen.getByRole('button', { name: /I have a workspace/ }))
-    fireEvent.change(screen.getByTestId('slack-wizard-alias'), { target: { value: 'jdoe' } })
-    await waitFor(() => expect(api.getSlackManifest).toHaveBeenCalledWith('jdoe'))
+    fireEvent.change(screen.getByTestId('slack-wizard-app-name'), { target: { value: ' Acme ' } })
+    fireEvent.change(screen.getByTestId('slack-wizard-bot-name'), { target: { value: 'acmebot' } })
+    fireEvent.change(screen.getByTestId('slack-wizard-command'), { target: { value: '/acme' } })
+    await waitFor(() => expect(api.getSlackManifest).toHaveBeenCalledWith({ app_name: 'Acme', bot_name: 'acmebot', command: '/acme' }))
     const link = await screen.findByTestId('slack-wizard-create')
     await waitFor(() => expect(link.getAttribute('href')).toBe(MANIFEST.create_url))
     fireEvent.click(link)
     expect(save).not.toHaveBeenCalled()
-    expect(await screen.findByText(/Acme-jdoe/)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /I created the app/ }))
-    await waitFor(() => expect(save).toHaveBeenCalledWith({ command: 'kirocrew-jdoe' }))
+    // The names the server rendered are what is stored.
+    const stored = { command: 'acme', app_name: 'Acme', bot_name: 'acmebot' }
+    await waitFor(() => expect(save).toHaveBeenCalledWith(stored))
     await waitFor(() => expect(step()).toBe('bot_token'))
-    expect(onSaved).toHaveBeenCalledWith({ command: 'kirocrew-jdoe' })
+    expect(onSaved).toHaveBeenCalledWith(stored)
   })
 
   it('stays on Create when saving the command fails', async () => {
@@ -157,7 +191,6 @@ describe('SlackSetupWizard', () => {
     vi.spyOn(api, 'saveSlackConfig').mockRejectedValue(new Error(JSON.stringify({ error: 'nope' })))
     mount(config())
     fireEvent.click(screen.getByRole('button', { name: /I have a workspace/ }))
-    fireEvent.change(screen.getByTestId('slack-wizard-alias'), { target: { value: 'jdoe' } })
     const done = screen.getByRole('button', { name: /I created the app/ })
     await waitFor(() => expect((done as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(done)

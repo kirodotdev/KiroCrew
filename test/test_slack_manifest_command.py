@@ -69,14 +69,21 @@ class TestDeepLinkValidator:
         alias = "First-Last_" + "Q" * (slack_manifest.ALIAS_MAX - len("First-Last_"))
         assert scan_exfiltration_urls(slack_manifest.deep_link(alias)) == []
 
-    def test_a_command_that_does_not_match_the_alias_is_redacted(self) -> None:
-        payload = (
-            slack_manifest.stripped_template()
-            .replace(slack_manifest.COMMAND_PLACEHOLDER, "kirocrew-other")
-            .replace(slack_manifest.ALIAS_PLACEHOLDER, "real")
-        )
-        url = "https://api.slack.com/apps?new_app=1&manifest_yaml=" + quote(payload, safe="")
-        assert scan_exfiltration_urls(url) != []
+    def test_a_command_slack_would_refuse_is_redacted(self) -> None:
+        # The command is the user's own now, so it need not match the names,
+        # but it must still be one the emitters render.
+        def link(command: str) -> str:
+            payload = (
+                slack_manifest.stripped_template()
+                .replace(slack_manifest.COMMAND_PLACEHOLDER, command)
+                .replace(slack_manifest.APP_NAME_PLACEHOLDER, "real")
+                .replace(slack_manifest.BOT_NAME_PLACEHOLDER, "real")
+            )
+            return "https://api.slack.com/apps?new_app=1&manifest_yaml=" + quote(payload, safe="")
+
+        assert scan_exfiltration_urls(link("kirocrew-other")) == []
+        for bad in ("Upper", "two words", "x" * 32, ""):
+            assert scan_exfiltration_urls(link(bad)) != [], bad
 
 
 class TestSetupWizardDefault:

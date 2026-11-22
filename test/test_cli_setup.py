@@ -534,7 +534,7 @@ class TestManifest:
         assert "message.groups" in bot_events
 
     def _patch_template(
-        self, content="name: KiroCrew-{{ALIAS}}\ndisplay_name: KiroCrew-{{ALIAS}}\n"  # brand-ok
+        self, content="name: __APP_NAME__\ndisplay_name: __BOT_NAME__\n"  # brand-ok
     ):
         """Patch importlib.resources.files to return a fake template.
 
@@ -552,11 +552,11 @@ class TestManifest:
             _manifest(alias="alice")
         out = capsys.readouterr().out
         assert "KiroCrew-alice" in out  # brand-ok
-        assert "{{ALIAS}}" not in out
+        assert "__APP_NAME__" not in out and "__BOT_NAME__" not in out
 
     def test_writes_to_output_file(self, tmp_path):
         out_file = tmp_path / "sub" / "out.yaml"
-        with self._patch_template("name: KiroCrew-{{ALIAS}}\n"):  # brand-ok
+        with self._patch_template("name: __APP_NAME__\n"):  # brand-ok
             from kiro_crew.cli_setup import _manifest
 
             _manifest(alias="bob", output=str(out_file))
@@ -565,7 +565,7 @@ class TestManifest:
 
     def test_creates_parent_dirs(self, tmp_path):
         out_file = tmp_path / "deep" / "nested" / "out.yaml"
-        with self._patch_template("name: KiroCrew-{{ALIAS}}\n"):  # brand-ok
+        with self._patch_template("name: __APP_NAME__\n"):  # brand-ok
             from kiro_crew.cli_setup import _manifest
 
             _manifest(alias="carol", output=str(out_file))
@@ -576,7 +576,7 @@ class TestManifest:
         (tmp_path / "a-directory").mkdir()
         (tmp_path / "a-file").write_text("", encoding="utf-8")
         out_file = tmp_path / target
-        with self._patch_template("name: KiroCrew-{{ALIAS}}\n"):  # brand-ok
+        with self._patch_template("name: __APP_NAME__\n"):  # brand-ok
             from kiro_crew.cli_setup import _manifest
 
             try:
@@ -612,7 +612,7 @@ class TestManifest:
                 assert e.code == 1
 
     def test_url_flag_prints_creation_link(self, capsys):
-        with self._patch_template("# comment\nname: KiroCrew-{{ALIAS}}\n"):  # brand-ok
+        with self._patch_template("# comment\nname: __APP_NAME__\n"):  # brand-ok
             from kiro_crew.cli_setup import _manifest
 
             _manifest(alias="alice", url=True)
@@ -922,8 +922,18 @@ class TestSetupChannelGating:
         ):
             monkeypatch.setattr(cs, name, lambda *a, **k: None)
         monkeypatch.setattr(cs, "_setup_sandbox_consent", lambda: sandbox_blocks)
-        monkeypatch.setattr(cs, "_setup_slack_tokens", lambda: calls.append("slack_tokens"))
-        monkeypatch.setattr(cs, "_setup_slash_command", lambda: calls.append("slash_command"))
+
+        def _tokens() -> bool:
+            calls.append("slack_tokens")
+            return False
+
+        def _slash(had_app: bool | None = None) -> None:
+            # The token step's answer reaches the step that stores the names.
+            assert had_app is False
+            calls.append("slash_command")
+
+        monkeypatch.setattr(cs, "_setup_slack_tokens", _tokens)
+        monkeypatch.setattr(cs, "_setup_slash_command", _slash)
         monkeypatch.setattr(cs, "_setup_whatsapp", lambda: calls.append("whatsapp"))
         # Conductor-skill step catches Exception and continues.
         monkeypatch.setattr(

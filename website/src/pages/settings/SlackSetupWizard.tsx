@@ -23,21 +23,9 @@ import { i18nT } from '../../i18n/t'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { useSlackManifestStatus, forgetSlackInstallReading, checkFailed } from './SlackManifestUpdate'
 import { SlackWizardDiagram } from './SlackWizardDiagram'
+import { APP_NAME_MAX, BOT_NAME_MAX, DEFAULT_SLACK_NAME, slackCommandOk, slackNameOk } from './slackNames'
 
-/** The app name a rendered manifest gives the Slack app: its first `name:`
- *  line (`display_information.name`), read back rather than rebuilt here so it
- *  is exactly what Slack will show. */
-export function manifestAppName(manifest: string | undefined): string {
-  return /^\s*name:\s*(\S+)\s*$/m.exec(manifest ?? '')?.[1] ?? ''
-}
 
-/** The alias shape the backend accepts (`ALIAS_RE` in `slack_manifest.py`). */
-const ALIAS_RE = /^[A-Za-z0-9_-]{1,32}$/
-/** The alias room in the slash command, which `slash_command` lowercases and
- *  cuts to Slack's 32 characters after `/kirocrew-`. The input keeps the alias
- *  inside it, so the app name a later manifest update reads back from the saved
- *  command is the one the user saw at Create. */
-const ALIAS_ROOM = 22
 /** The scope an app-level token needs for Socket Mode: a Slack identifier, never translated. */
 export const APP_TOKEN_SCOPE = 'connections:write'
 
@@ -124,14 +112,17 @@ export function SlackSetupWizard({ data, onSaved, orgGuideUrl, describeConnectEr
   describeConnectError: (code: string) => string
   /** Called after every wizard save with the non-secret fields it stored, so
    *  the form below can take just those and keep the user's other edits. */
-  onSaved: (saved: { owner_id?: string; command?: string }) => void
+  onSaved: (saved: { owner_id?: string; command?: string; app_name?: string; bot_name?: string }) => void
   /** The optional organization setup guide (`slack.setup_guide_url`). */
   orgGuideUrl?: string | null
 }) {
   const qc = useQueryClient()
   const ro = data.read_only
   const [step, setStep] = useState(() => firstOpenStep(data))
-  const [alias, setAlias] = useState('')
+  // The names the manifest gives the new app, starting from this install's own.
+  const [appName, setAppName] = useState(() => data.app_name ?? DEFAULT_SLACK_NAME)
+  const [botName, setBotName] = useState(() => data.bot_name ?? DEFAULT_SLACK_NAME)
+  const [command, setCommand] = useState(() => data.manifest_command || data.command || DEFAULT_SLACK_NAME)
   const [botToken, setBotToken] = useState('')
   const [appToken, setAppToken] = useState('')
   const [ownerId, setOwnerId] = useState('')
@@ -141,11 +132,15 @@ export function SlackSetupWizard({ data, onSaved, orgGuideUrl, describeConnectEr
   const name: Step = WIZARD_STEPS[step]
   const guide = safeGuideUrl(orgGuideUrl)
 
-  const aliasOk = ALIAS_RE.test(alias)
+  const names = { app_name: appName.trim(), bot_name: botName.trim(), command: command.trim() }
+  const appNameOk = slackNameOk(appName, APP_NAME_MAX)
+  const botNameOk = slackNameOk(botName, BOT_NAME_MAX)
+  const commandOk = slackCommandOk(command)
+  const namesOk = appNameOk && botNameOk && commandOk
   const createQ = useQuery({
-    queryKey: ['slack-manifest', 'wizard', alias],
-    queryFn: () => api.getSlackManifest(alias),
-    enabled: !ro && name === 'create' && aliasOk,
+    queryKey: ['slack-manifest', 'wizard', names.app_name, names.bot_name, names.command],
+    queryFn: () => api.getSlackManifest(names),
+    enabled: !ro && name === 'create' && namesOk,
     staleTime: Infinity,
     retry: false,
   })
@@ -164,6 +159,8 @@ export function SlackSetupWizard({ data, onSaved, orgGuideUrl, describeConnectEr
       onSaved({
         ...(body.owner_id !== undefined ? { owner_id: body.owner_id } : {}),
         ...(body.command !== undefined ? { command: body.command } : {}),
+        ...(body.app_name !== undefined ? { app_name: body.app_name } : {}),
+        ...(body.bot_name !== undefined ? { bot_name: body.bot_name } : {}),
       })
       void qc.invalidateQueries({ queryKey: ['slack-config'] })
       void qc.invalidateQueries({ queryKey: ['slack-manifest'] })
@@ -234,38 +231,56 @@ export function SlackSetupWizard({ data, onSaved, orgGuideUrl, describeConnectEr
       </>
     )
   } else if (name === 'create') {
-    const link = aliasOk ? createQ.data?.create_url : undefined
+    const rendered = namesOk ? createQ.data : undefined
+    const field = (label: string, value: string, set: (v: string) => void, testId: string, error: string, prefix?: string) => (
+      <>
+        <label className="flex items-center gap-2 mt-2">
+          <span className="text-[12px] text-muted w-28 flex-none">{label}</span>
+          {/* A fixed slot, empty for the app name, so the three inputs line up. */}
+          <span className="text-[13px] text-muted font-mono w-3 flex-none text-center" aria-hidden="true">{prefix}</span>
+          <Input value={value} onChange={e => set(e.target.value)} placeholder={DEFAULT_SLACK_NAME}
+            aria-label={label} aria-invalid={error ? true : undefined}
+            aria-describedby={error ? `${testId}-error` : undefined}
+            className="min-w-0 flex-1 font-mono" data-testid={testId} />
+        </label>
+        {error && <p id={`${testId}-error`} className="text-[12px] text-warn mt-1 ml-[8.25rem]" data-testid={`${testId}-error`}>{error}</p>}
+      </>
+    )
     body = (
       <>
-        <p className="text-[13px] text-text m-0">{i18nT('pages.settings.slackWizard.create_body')}</p>
+        <p className="text-[13px] text-text m-0">{i18nT('pages.settings.slackWizard.names_body')}</p>
         {!ro && (
           <>
-            <div className="flex items-center gap-2 mt-2 flex-wrap">
-              <Input value={alias} onChange={e => setAlias(e.target.value.trim().toLowerCase().slice(0, ALIAS_ROOM))}
-                placeholder={i18nT('pages.settings.slackWizard.alias_placeholder')}
-                aria-label={i18nT('pages.settings.slackWizard.alias_label')}
-                className="min-w-0 flex-1 font-mono" data-testid="slack-wizard-alias" />
-              {/* Saving the alias's slash command here keeps the name: the manifest
-                  this page renders later (Update the Slack app) reads the alias
-                  back from `slack.command`. */}
-              <LinkButton href={link} testId="slack-wizard-create">
+            {field(i18nT('pages.settings.slackWizard.app_name_label'), appName, setAppName, 'slack-wizard-app-name',
+              appNameOk ? '' : i18nT('pages.settings.slackWizard.app_name_invalid'))}
+            {field(i18nT('pages.settings.slackWizard.bot_name_label'), botName, setBotName, 'slack-wizard-bot-name',
+              botNameOk ? '' : i18nT('pages.settings.slackWizard.bot_name_invalid'), '@')}
+            {/* Lowercased as typed, as the alias field was (#41310): Slack takes only
+                lowercase commands, so the one saved is the one the user saw. A
+                longer one is flagged rather than cut. */}
+            {field(i18nT('pages.settings.slackWizard.command_label'), command, v => setCommand(v.toLowerCase()), 'slack-wizard-command',
+              commandOk ? '' : i18nT('pages.settings.slackWizard.command_invalid'), '/')}
+            <p className="text-[12px] text-muted mt-1">{i18nT('pages.settings.slackWizard.command_collision_hint')}</p>
+            {/* No hand-off: the typed names and the token and owner inputs of the
+                later steps live in this wizard's local state; the chat hand-off
+                unmounts it and would lose them. */}
+            {namesOk && createQ.isError && <ErrorNotice variant="inline" className="mt-2" message={i18nT('pages.settings.slackWizard.manifest_unavailable')} />}
+            <div className="mt-3">
+              <LinkButton href={rendered?.create_url} testId="slack-wizard-create">
                 {i18nT('pages.settings.slackWizard.create_app')}
               </LinkButton>
             </div>
-            {alias && !aliasOk && <p className="text-[12px] text-warn mt-2">{i18nT('pages.settings.slackWizard.alias_invalid')}</p>}
-            {/* No hand-off: the typed alias and the token and owner inputs of the
-                later steps live in this wizard's local state; the chat hand-off
-                unmounts it and would lose them. */}
-            {aliasOk && createQ.isError && <ErrorNotice variant="inline" className="mt-2" message={i18nT('pages.settings.slackWizard.manifest_unavailable')} />}
-            {aliasOk && manifestAppName(createQ.data?.manifest) && (
-              <p className="text-[12px] text-muted mt-2">{i18nT('pages.settings.slackWizard.app_name_will_be', { name: manifestAppName(createQ.data?.manifest) })}</p>
-            )}
             <p className="text-[12px] text-muted mt-1">{i18nT('pages.settings.slackWizard.pick_workspace')}</p>
             {/* Saved here, not on the link's click: "Open in new tab" and a
-                middle-click never fire onClick. Advances only once it is stored. */}
+                middle-click never fire onClick. Advances only once it is stored.
+                The names saved are the ones the server rendered (an empty field
+                is kirocrew there), so the gateway answers the app's command and
+                later manifest updates keep its names. */}
             <div className="mt-3">
-              <Btn primary disabled={busy || !createQ.data?.command}
-                onClick={() => { if (createQ.data?.command) saveMut.mutate({ command: createQ.data.command }) }}>
+              <Btn primary disabled={busy || !rendered}
+                onClick={() => {
+                  if (rendered) saveMut.mutate({ command: rendered.command, app_name: rendered.app_name, bot_name: rendered.bot_name })
+                }}>
                 {i18nT('pages.settings.slackWizard.app_created')}
               </Btn>
             </div>

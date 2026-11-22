@@ -572,6 +572,8 @@ key-based route: see the `agent.strands_provider`, `agent.strands_model` and
 | `slack.tracking_channels` | Channels to monitor for new members | `[]` |
 | `slack.open_channels` | Ignored for access (Slack is owner-only); an entry is only a record kept in config | `[]` |
 | `slack.command` | Slash-command name | `"kirocrew"` |
+| `slack.app_name` | The Slack app's name in the manifest Settings and `kirocrew manifest` render, at most 35 characters. Empty means `kirocrew` on a new install, and the `KiroCrew-<alias>` name an existing app already has otherwise. Renaming takes effect when you update the Slack app from the new manifest | `""` |
+| `slack.bot_name` | The bot user's name in the manifest, what people type after `@`, at most 80 characters. Empty means the same default as `slack.app_name` | `""` |
 | `slack.setup_guide_url` | Your organization's own Slack setup guide (for example, how to get a workspace you may install apps in). The Settings Slack setup wizard links it on its first step. `https://` only; any other value is ignored. Empty means no link | `""` |
 | `slack.reactions` | Override the status reaction emojis: `queued` (the ack shown while answering where Slack shows no native thread status) and `error`; set a value to `null` to suppress it | `{}` |
 | `slack.reactions_enabled` | Show the status reaction (ack / error) on Slack messages | `true` |

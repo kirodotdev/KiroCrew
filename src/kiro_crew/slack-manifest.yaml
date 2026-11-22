@@ -13,12 +13,13 @@
 ## slack_manifest.FEATURES) is on; "#@a|b" means either one, and "#@!a" means
 ## only while a is off.
 ## `kirocrew manifest` and Settings → Slack render this file for the
-## switches you have on.
+## switches you have on. The app name, the bot's @ name and the slash command
+## are placeholders filled from slack_manifest.AppNames.
 #
 # See docs/guides/slack-setup.md for the full walkthrough.
 
 display_information:
-  name: KiroCrew-{{ALIAS}}
+  name: __APP_NAME__
   description: AI agent management layer with persistent memory, scheduled jobs, and multi-session orchestration
   background_color: "#1a1a2e"
 
@@ -38,7 +39,7 @@ features:
   code_channels:  #@code_channels
     enabled: true  #@code_channels
   bot_user:
-    display_name: KiroCrew-{{ALIAS}}
+    display_name: __BOT_NAME__
     always_online: true
   slash_commands:
     - command: /{{COMMAND}}

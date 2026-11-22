@@ -65,6 +65,16 @@ def _cfg(**slack: object) -> KiroCrewConfig:
     return cfg
 
 
+def _fill(text: str, alias: str) -> str:
+    """*text* (a stripped template) with an alias's legacy names put in by hand."""
+    names = slack_manifest.legacy_names(alias)
+    return (
+        text.replace(slack_manifest.APP_NAME_PLACEHOLDER, names.app_name)
+        .replace(slack_manifest.BOT_NAME_PLACEHOLDER, names.bot_name)
+        .replace(slack_manifest.COMMAND_PLACEHOLDER, names.command)
+    )
+
+
 class TestRendering:
     def test_one_rendering_per_combination(self) -> None:
         assert len(COMBOS) == 2 ** len(slack_manifest.FEATURES)
@@ -130,6 +140,12 @@ class TestRendering:
         # Byte-pinned: the digest of the payload with no switch on. A change here
         # changes every default install's deep link. Last changed deliberately when
         # the bot scopes gained users:read.email (Share Slack access adds by email).
+        # The names were one alias placeholder then; spelled back that way, the
+        # template is the same bytes, so an alias still renders the same link.
+        legacy = "KiroCrew-{{ALIAS}}"  # brand-ok: the pre-names template text
+        text = text.replace(slack_manifest.APP_NAME_PLACEHOLDER, legacy).replace(
+            slack_manifest.BOT_NAME_PLACEHOLDER, legacy
+        )
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         assert digest == "73022fcd365362285d5b60218f25c64a95c8e0cf308d2b4f5c5318e6eb400bce"
 
@@ -268,9 +284,7 @@ class TestExfilExemption:
         # legitimate.
         on = slack_manifest.stripped_template(_CC).splitlines()
         tampered = "\n".join(ln for ln in on if "code_channels:manage" not in ln) + "\n"
-        payload = tampered.replace(slack_manifest.ALIAS_PLACEHOLDER, "someone").replace(
-            slack_manifest.COMMAND_PLACEHOLDER, slack_manifest.slash_command("someone")
-        )
+        payload = _fill(tampered, "someone")
         url = "https://api.slack.com/apps?new_app=1&manifest_yaml=" + quote(payload, safe="")
         assert scan_exfiltration_urls(url) != []
 
@@ -295,9 +309,11 @@ class TestExistingAppKeepsItsCommand:
     def test_alias_for_command(self, command: str, alias: str) -> None:
         assert slack_manifest.alias_for_command(command) == alias
 
-    def test_render_takes_the_saved_command_and_ignores_a_bad_one(self) -> None:
-        assert "/crew\n" in slack_manifest.render("kirocrew", command="crew")
-        assert "/kirocrew\n" in slack_manifest.render("kirocrew", command="Bad Command!")
+    def test_render_takes_the_saved_command_and_refuses_a_bad_one(self) -> None:
+        names = slack_manifest.install_names(command="crew", existing=True)
+        assert "/crew\n" in slack_manifest.render(names)
+        with pytest.raises(ValueError, match="command"):
+            slack_manifest.render(slack_manifest.AppNames(command="Bad Command!"))
 
     @pytest.mark.parametrize(
         "saved,name,slash",
@@ -530,7 +546,9 @@ class TestSlackMcpSwitch:
         assert yaml.safe_load(body["manifest"])["settings"]["is_mcp_enabled"] is True
         assert scan_exfiltration_urls(body["create_url"]) == []
 
-    @pytest.mark.parametrize("alias", ["someone", "kirocrew", "A_b-9", "x", "a" * 32])
+    @pytest.mark.parametrize(
+        "alias", ["someone", "kirocrew", "A_b-9", "x", "a" * slack_manifest.ALIAS_MAX]
+    )
     def test_every_alias_link_is_exempt_with_it_on(self, alias: str) -> None:
         for combo in COMBOS:
             if slack_manifest.SLACK_MCP in combo:
@@ -544,9 +562,7 @@ class TestSlackMcpSwitch:
         # validator must not accept it.
         on = slack_manifest.stripped_template(_MCP).splitlines()
         tampered = "\n".join(ln for ln in on if drop not in ln) + "\n"
-        payload = tampered.replace(slack_manifest.ALIAS_PLACEHOLDER, "someone").replace(
-            slack_manifest.COMMAND_PLACEHOLDER, slack_manifest.slash_command("someone")
-        )
+        payload = _fill(tampered, "someone")
         url = "https://api.slack.com/apps?new_app=1&manifest_yaml=" + quote(payload, safe="")
         assert scan_exfiltration_urls(url) != []
 
