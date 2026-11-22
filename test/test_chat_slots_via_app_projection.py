@@ -38,7 +38,12 @@ ROW = {
     "pending_approval_info": {"tool": "run", "tool_input": SECRET_PATH},
     "model": "m",
     "agent": "default",
+    "welcome_message": "hello from the agent",
+    "ci": "failing",
+    "state": "open",
 }
+#: The keyword arguments each ``serialize_slots`` call received.
+CALLS: list[dict] = []
 
 
 @pytest.fixture
@@ -57,8 +62,9 @@ def slots_app(monkeypatch: pytest.MonkeyPatch) -> web.Application:
         idle_source_link_urls=lambda: set(),
         slot_list_held_keys=lambda: [],
         slot_list_hold_channels=lambda: False,
-        serialize_slots=lambda **_k: [dict(ROW)],
+        serialize_slots=lambda **k: (CALLS.append(k), [dict(ROW)])[1],
     )
+    CALLS.clear()
     app = web.Application()
     app["state"] = state
     return app
@@ -89,6 +95,10 @@ async def test_a_delegated_token_gets_only_key_title_running_and_time(
     ]
     assert SECRET_MESSAGE not in resp.text
     assert SECRET_PATH not in resp.text
+    for field in ("pending_approval_info", "welcome_message", "source_links", "ci", "state"):
+        assert field not in resp.text, field
+    # A delegated token never asks for the owner-only provider check status.
+    assert [call.get("include_check_status") for call in CALLS] == [False]
 
 
 @pytest.mark.asyncio
@@ -97,3 +107,4 @@ async def test_the_person_keeps_the_full_row(slots_app: web.Application) -> None
     row = json.loads(resp.text)[0]
     assert row["last_message"] == SECRET_MESSAGE
     assert row["workspace"] == SECRET_PATH
+    assert [call.get("include_check_status") for call in CALLS] == [True]

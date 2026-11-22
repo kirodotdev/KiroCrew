@@ -195,9 +195,10 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
   The running backend's spawn masks those files again, and the app-scoped path
   exists: an app the owner granted `dashboard_proxy` finds its own derived value
   in each masked file, and `/api/token/local` mints it a `via_app` token that
-  reaches only the routes `dashboard/delegated_route_tags.py` tags `allow`. Keep
-  that mask, and never hand a backend the real secret; a new dashboard route needs
-  its delegated tag, or the walk in `test_delegated_route_tags.py` fails
+  reaches only the routes `dashboard/delegated_scope.py` lists in `READ_ALLOW`. Keep
+  that mask, and never hand a backend the real secret; a new dashboard route is
+  refused for a `via_app` token until it has a row, and the walk in
+  `test_delegated_read_allow.py` pins the set
   ([dashboard-token-auth](docs/system-specs/modules/dashboard-token-auth.md),
   "App backends mint through a delegated value, not the local secret").
 - **Computer use is governed by one on/off row only**: the operator opt-in on the

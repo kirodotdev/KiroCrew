@@ -73,7 +73,9 @@ async def api_chat_slots(request: web.Request) -> web.Response:
     except Exception:
         logger.debug("GitLab allowlist warm-up failed; chips may lag one round", exc_info=True)
 
-    include_check_status = is_owner_dashboard_request(request)
+    # A delegated (``via_app``) token passes the owner gate but never asks for the
+    # owner-only provider check status.
+    include_check_status = is_owner_dashboard_request(request) and not request.get("via_app")
     is_dashboard_user = bool(request.get("is_dashboard_user"))
     # Shared with the connects and GETs of a reconnect storm (see slot_list_pass);
     # the list may be shared, so everything below builds new lists and rows.

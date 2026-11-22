@@ -83,8 +83,8 @@ READ_ALLOW: dict[tuple[str, str], Row] = {
         "Says whether the caller's own token was accepted (useRefreshScheduler.ts); never returns it.",
     ),
     ("GET", "/api/kiro-prerequisite"): Row(
-        "src/kiro_crew/dashboard/handlers/kiro_prerequisite.py:189",
-        "Latched install and sign-in readiness (KiroPrerequisiteGate); a query would force a host probe.",
+        "src/kiro_crew/dashboard/handlers/kiro_prerequisite.py:190",
+        "Latched readiness in the non-owner shape: no platform, path or probe detail (KiroPrerequisiteGate); a query would force a host probe.",
         no_query=True,
     ),
     ("GET", "/api/dashboard/branding"): Row(
