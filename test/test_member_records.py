@@ -414,3 +414,38 @@ def test_a_fresh_home_seals_with_nothing_to_move(home) -> None:
     assert sorted(os.listdir(home / "member-records")) == sorted(
         [member_records.LOCK_NAME, member_records.MIGRATION_MARKER]
     )
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0, reason="a mode-0 directory is readable here"
+)
+def test_a_masked_records_directory_reads_unsealed_and_stays_unreadable(home, monkeypatch) -> None:
+    """A sandboxed child whose entry point dropped the marker hits the mask.
+
+    It must not raise out of every record path, and it must not loosen anything: the
+    move reads unsealed and is not attempted, a kind with old records still refuses,
+    a spawn from there is still refused, and no record becomes readable.
+    """
+    contents = _write_all_three()
+    _as_old_layout(home, contents)
+    # Seal the move again, then mask the directory, so only the mask makes it unsealed.
+    root = home / member_records.MEMBER_RECORDS_LEAF
+    (root / member_records.MIGRATION_MARKER).write_text("1\n")
+    before = sorted(os.listdir(root))
+    monkeypatch.setattr(member_records, "last_failure", "")
+    root.chmod(0)
+    try:
+        assert member_records.ensure_migrated() is False
+        assert "is not readable" in member_records.last_failure
+        with pytest.raises(member_records.RecordsNotMoved):
+            member_records.records_dir("member-rules")
+        assert protected_app_state.owner_disabled("fixture"), "an unreadable disable stands"
+        with pytest.raises(PermissionError):
+            protected_app_state.read_grants_text("fixture")
+        with pytest.raises(sandbox.SandboxCeilingUnsealable, match="is not readable"):
+            sandbox._member_records_move()
+    finally:
+        root.chmod(0o700)
+    assert sorted(os.listdir(root)) == before, "nothing was written under the mask"
+    for kind in contents:
+        assert (home / "trust" / kind / f"{_SLUG}.json").exists(), kind

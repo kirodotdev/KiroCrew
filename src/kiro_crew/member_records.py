@@ -154,7 +154,10 @@ def ensure_migrated() -> bool:
     One ``stat`` once sealed. Never raises: a failed pass is logged, its source files
     stay where they are, and the next call tries again. Does nothing inside a sandbox,
     where the records directory is a masked stand-in and a move would land nowhere.
+    A records directory this process may not read is reported unsealed, untouched:
+    that is the mask in a sandboxed child whose entry point dropped the marker.
     """
+    global last_failure
     if _inside_sandbox():
         return False
     try:
@@ -163,14 +166,20 @@ def ensure_migrated() -> bool:
         logger.debug("could not resolve the data home for the member records move", exc_info=True)
         return False
     root = home / MEMBER_RECORDS_LEAF
-    if (root / MIGRATION_MARKER).is_file():
-        return True
+    try:
+        if (root / MIGRATION_MARKER).is_file():
+            return True
+    except PermissionError as exc:
+        # ``mcp_entry`` and ``cli.main`` drop the marker, so a sandboxed child reaches
+        # here. Unsealed, so a reader of a kind with old records still refuses.
+        last_failure = f"{root} is not readable ({exc.strerror})"
+        logger.debug("the member records directory %s is not readable here", root)
+        return False
     if not home.is_dir():
         return False
     try:
         migrate_from_trust(root, home / LEGACY_PARENT)
     except Exception as exc:  # noqa: BLE001 - logged; the next call retries
-        global last_failure
         last_failure = str(exc) or type(exc).__name__
         logger.warning(
             "the one-time move of member rules, goals and DM bindings into %s did not "
