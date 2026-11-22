@@ -12980,7 +12980,7 @@
       "save_failed": "Error al guardar:",
       "save_overwrite_newer_content": "Guardar: sobrescribir el contenido más reciente",
       "save_overwrite_newer_content_title": "Guardar: el contenido cambió desde que lo cargaste; guardar ahora sobrescribe el contenido más reciente con tu borrador",
-      "save_to_live_cmd_s_updates_the_live_state_withou": "Guardar en la versión en vivo (Cmd+S) — actualiza el estado en vivo sin crear una versión",
+      "save_to_live_cmd_s_updates_the_live_state_withou": "Guardar en la versión en vivo ({{shortcut}}) — actualiza el estado en vivo sin crear una versión",
       "saving": "Guardando…",
       "session_title": "Artefacto: {{name}}",
       "show_comments": "Mostrar los comentarios",

@@ -12698,7 +12698,7 @@
       "save_failed": "Speichern fehlgeschlagen:",
       "save_overwrite_newer_content": "Speichern – neueren Inhalt überschreiben",
       "save_overwrite_newer_content_title": "Speichern – der Inhalt hat sich seit dem Laden geändert; Speichern überschreibt jetzt den neueren Inhalt mit deinem Entwurf",
-      "save_to_live_cmd_s_updates_the_live_state_withou": "In den Live-Zustand speichern (Cmd+S) — aktualisiert den Live-Zustand ohne Versionierung",
+      "save_to_live_cmd_s_updates_the_live_state_withou": "In den Live-Zustand speichern ({{shortcut}}) — aktualisiert den Live-Zustand ohne Versionierung",
       "saving": "Wird gespeichert…",
       "session_title": "Artefakt: {{name}}",
       "show_comments": "Kommentare anzeigen",

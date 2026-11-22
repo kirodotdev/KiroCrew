@@ -414,6 +414,17 @@ describe('ArtifactDetailPage', () => {
     expect(screen.getByRole('button', { description: /Cancel/ })).toBeInTheDocument()
   })
 
+  it('names the save chord the keyboard has in the Save hover', async () => {
+    vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ kind: 'markdown', content: '# Doc' }))
+    vi.mocked(api).artifactVersions = vi.fn().mockResolvedValue({ slug: 'cr-queue', versions: [1, 2] })
+    renderRoute()
+    await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { description: 'Edit content' }))
+    // The test DOM (happy-dom) reports a non-Mac platform, where Ctrl+S is the chord that saves.
+    expect(await screen.findByRole('button', { description: /^Save to Live/ }))
+      .toHaveAccessibleDescription('Save to Live (Ctrl+S) — updates the live state without versioning')
+  })
+
   it('cron-source warning banner shows when editing a cron-generated artifact', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({ kind: 'markdown', source: 'cron', content: '# auto-generated' }),
@@ -624,7 +635,7 @@ describe('ArtifactDetailPage', () => {
     fireEvent.click(screen.getByRole('button', { description: 'Edit content' }))
     await waitFor(() =>
       expect(
-        screen.getByRole('button', { description: /Save to Live \(Cmd\+S\) — updates the live state/i }),
+        screen.getByRole('button', { description: /Save to Live \(Ctrl\+S\) — updates the live state/i }),
       ).toBeInTheDocument(),
     )
     // Snapshot moved into the "More" menu; Save and Cancel stay in the row.

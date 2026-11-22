@@ -12980,7 +12980,7 @@
       "save_failed": "Falha ao salvar:",
       "save_overwrite_newer_content": "Salvar — sobrescrever o conteúdo mais recente",
       "save_overwrite_newer_content_title": "Salvar — o conteúdo mudou desde que você o carregou; salvar agora sobrescreve o conteúdo mais recente com o seu rascunho",
-      "save_to_live_cmd_s_updates_the_live_state_withou": "Salvar no estado ativo (Cmd+S) — atualiza o estado ativo sem criar uma versão",
+      "save_to_live_cmd_s_updates_the_live_state_withou": "Salvar no estado ativo ({{shortcut}}) — atualiza o estado ativo sem criar uma versão",
       "saving": "Salvando…",
       "session_title": "Artefato: {{name}}",
       "show_comments": "Mostrar comentários",
