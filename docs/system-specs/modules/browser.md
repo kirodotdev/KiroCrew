@@ -1807,8 +1807,9 @@ agent browser this stack replaced. They are no longer fields. A `config.json`
 that still carries them loads, logs ONE warning naming each one whose value
 differs from the default older builds wrote into every config they saved
 (`use_builtin_browser: true`, `browser_view_port: 0`; `config/resolution.py`,
-`warn_retired_section_keys`), and drops them on the next save
-(`_SECTION_KEYS_DELIBERATELY_DROPPED`). `PUT /api/dashboard/config`
+`warn_retired_section_keys`), and drops them on the next save or locked write
+to `config.json` (`_SECTION_KEYS_DELIBERATELY_DROPPED`, `update_config_locked`).
+`PUT /api/dashboard/config`
 no longer accepts `use_builtin_browser`, and the change-card catalog no longer
 offers `browser.use-the-built-in-browser`.
 
