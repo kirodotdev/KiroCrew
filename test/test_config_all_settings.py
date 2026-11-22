@@ -755,7 +755,7 @@ async def test_patch_refuses_a_key_another_route_writes(tmp_config, path, value)
 #: ``/api/security/safety-switches`` route, from Settings -> Security -> Safety switches.
 _SAFETY_SWITCH_LINKS = {
     "mcp.protect_kiro_permission_rules": "security.stop-the-agent-from-editing-its-own-permission-rules",
-    "mcp.honour_auto_approve": "security.ask-me-before-running-tools-an-mcp-server-pre-approves",
+    "mcp.honour_auto_approve": "security.ask-me-before-running-tools-set-to-auto-approve-in-a-tool-server-s-settings",
 }
 
 

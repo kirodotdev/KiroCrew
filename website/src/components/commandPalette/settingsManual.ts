@@ -143,7 +143,7 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     configKey: 'mcp.protect_kiro_permission_rules',
   },
   {
-    id: 'security.ask-me-before-running-tools-an-mcp-server-pre-approves',
+    id: 'security.ask-me-before-running-tools-set-to-auto-approve-in-a-tool-server-s-settings',
     labelKey: 'pages.settings.securityPanel.safetySwitches.ask_label',
     descriptionKey: 'pages.settings.securityPanel.safetySwitches.ask_desc',
     tab: 'security',

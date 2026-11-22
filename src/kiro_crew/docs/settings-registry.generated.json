@@ -2087,11 +2087,11 @@
       "description": "Authenticates coding-activity sync when WakaTime is enabled."
     },
     {
-      "id": "security.ask-me-before-running-tools-an-mcp-server-pre-approves",
-      "label": "Ask me before running tools an MCP server pre-approves",
+      "id": "security.ask-me-before-running-tools-set-to-auto-approve-in-a-tool-server-s-settings",
+      "label": "Ask me before running tools set to auto-approve in a tool server's settings",
       "tab": "security",
       "route": "/settings/security/safety?highlight=key%3Amcp.honour_auto_approve",
-      "description": "Tools you set to Always allow still run without asking.",
+      "description": "Tools you set to Always allow, on an approval card or in MCP Servers, still run without asking.",
       "configKey": "mcp.honour_auto_approve"
     },
     {
@@ -2138,7 +2138,7 @@
       "label": "Stop the agent from editing its own permission rules",
       "tab": "security",
       "route": "/settings/security/safety?highlight=key%3Amcp.protect_kiro_permission_rules",
-      "description": "On: the agent's file-editing tools can't change the rules that let tools run without asking you. Off: they can. Commands the agent runs in a terminal can change these rules either way.",
+      "description": "On: the agent's file-editing tools can't change the rules that let tools run without asking you. Off: they can.",
       "configKey": "mcp.protect_kiro_permission_rules"
     },
     {

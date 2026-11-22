@@ -66,8 +66,13 @@ describe('SecurityPanel - safety switches', () => {
     render()
     await screen.findByTestId('safety-switches-rows')
     expect(screen.getByText('Stop the agent from editing its own permission rules')).toBeTruthy()
-    expect(screen.getByText('Ask me before running tools an MCP server pre-approves')).toBeTruthy()
-    expect(screen.getByText('Tools you set to Always allow still run without asking.')).toBeTruthy()
+    expect(screen.getByText("Ask me before running tools set to auto-approve in a tool server's settings")).toBeTruthy()
+    expect(screen.getByText('Tools you set to Always allow, on an approval card or in MCP Servers, still run without asking.')).toBeTruthy()
+    // The protect help leads with what On does; the terminal caveat is its own line.
+    const protectRow = screen.getByTestId('safety-switch-protect')
+    expect(within(protectRow).getByText("On: the agent's file-editing tools can't change the rules that let tools run without asking you. Off: they can.")).toBeTruthy()
+    expect(within(protectRow).getByTestId('safety-switch-terminal-note').textContent)
+      .toBe('This does not cover commands the agent runs in a terminal: they can change these rules whether this is on or off.')
     expect(protectSwitch()).toHaveAttribute('aria-checked', 'true')
     // The ask toggle is the INVERSE of mcp.honour_auto_approve, so on is safer for both.
     expect(honourSwitch()).toHaveAttribute('aria-checked', 'true')
@@ -154,11 +159,13 @@ describe('SecurityPanel - safety switches', () => {
     render()
     await screen.findByTestId('safety-switches-degraded')
     expect(protectSwitch()).toHaveAttribute('aria-checked', 'true')
-    expect(within(screen.getByTestId('safety-switch-protect')).getByText('On right now. Clicking saves Off.')).toBeTruthy()
-    // The section notice names the fix and offers Retry, and does not repeat the row note.
+    expect(within(screen.getByTestId('safety-switch-protect')).getByText(
+      "On for now, because Kiro Crew could not read its settings in full. Clicking won't turn it off before then.",
+    )).toBeTruthy()
+    // The section notice names the manual fix and offers Retry, and does not repeat the row note.
     const notice = screen.getByTestId('safety-switches-degraded')
-    expect(notice.textContent).toMatch(/Ask the agent to fix it/)
-    expect(notice.textContent).not.toMatch(/config\.json/)
+    expect(notice.textContent).toMatch(/Fix the mistake in config\.json or config\.local\.json \(in ~\/\.kiro\/crew by default\), then restart Kiro Crew\./)
+    expect(notice.textContent).not.toMatch(/Ask the agent to fix it/)
     expect(within(notice).queryByText(/saved as/)).toBeNull()
     expect(screen.getByTestId('safety-switches-degraded-retry')).toBeTruthy()
   })
@@ -176,10 +183,24 @@ describe('SecurityPanel - safety switches', () => {
     render()
     await screen.findByTestId('safety-switches-degraded')
     expect(honourSwitch()).toHaveAttribute('aria-checked', 'true')
-    expect(within(screen.getByTestId('safety-switch-honour')).getByText('On right now. Clicking saves Off.')).toBeTruthy()
-    // A click switches the ask toggle off, which saves honour_auto_approve=true.
+    expect(within(screen.getByTestId('safety-switch-honour')).getByText(
+      "On for now, because Kiro Crew could not read its settings in full. Clicking won't turn it off before then.",
+    )).toBeTruthy()
+    // A click saves the ask toggle Off (honour_auto_approve=true).
     fireEvent.click(honourSwitch())
     await waitFor(() => expect(api.setSafetySwitch).toHaveBeenCalledWith('mcp.honour_auto_approve', true))
+  })
+
+  it('a switch off in force while On is saved says so, and what a click saves', async () => {
+    // protect saved on but not in force: only a config change between the two reads shows this.
+    mock(api.safetySwitches).mockResolvedValue(state(true, true, false, false))
+    mock(api.setSafetySwitch).mockResolvedValue(state(true, true))
+    render()
+    await screen.findByTestId('safety-switches-rows')
+    expect(protectSwitch()).toHaveAttribute('aria-checked', 'false')
+    expect(within(screen.getByTestId('safety-switch-protect')).getByText('Off right now, though On is saved. Clicking saves On.')).toBeTruthy()
+    fireEvent.click(protectSwitch())
+    await waitFor(() => expect(api.setSafetySwitch).toHaveBeenCalledWith('mcp.protect_kiro_permission_rules', true))
   })
 
   it('a save refused for a pending outside edit says to review it, under that row', async () => {
