@@ -53,7 +53,11 @@ from kiro_crew.instances.ssh_tunnel_manager_child_text import (
 )
 from kiro_crew.instances.token_mint import (
     PROXY_TOOL_MISSING_SIGNALS,
-    proxy_tool_missing_message,
+    RefusedAws,
+    proxy_tool_missing_cause,
+    refused_aws_message,
+    refused_plugin_folder,
+    refused_plugin_message,
     ssh_spawn_argv_env,
 )
 from kiro_crew.sandbox import without_python_env
@@ -262,6 +266,9 @@ class _SshTunnel:
         # it, so _terminate addresses a survivor through this id.
         self._child_pgid: int | None = None
         self._child_path = ""  # the PATH the last spawned child was given
+        self._refused_plugin = ""  # refused_plugin_message() at the last ssh spawn
+        self._refused_aws = RefusedAws("", "")  # refused_aws_message() at the last ssh spawn
+        self._refused_plugin_dir = RefusedAws("", "")  # refused_plugin_folder() likewise
         self.status = TunnelStatus(
             instance_id=instance_id,
             local_port=local_port,
@@ -296,6 +303,10 @@ class _SshTunnel:
                 self._ssh_host, self._local_port, self._remote_port, compression=self._compression
             )
         )
+        # Read in this worker thread, since _exit_error runs on the event loop.
+        self._refused_plugin = refused_plugin_message()
+        self._refused_aws = refused_aws_message()
+        self._refused_plugin_dir = refused_plugin_folder(self._refused_plugin)
         return argv
 
     async def start(self) -> bool:
@@ -723,13 +734,21 @@ class _SshTunnel:
         # A ProxyCommand that could not find its program. Checked before the
         # transport drops: ssh follows it with "Connection closed by ..." once the
         # proxy exits, which would otherwise read as a network drop, and the
-        # actionable fact is which PATH the program was missing from.
+        # actionable fact is which PATH the program was missing from, or the
+        # refusal that kept a plugin off it.
         # Gated on 255, ssh's own failure status, as the mint's twin is: the
         # wording is shell prose, and only an ssh-level failure is the proxy's.
         hit = _first_hit(low, PROXY_TOOL_MISSING_SIGNALS) if returncode == 255 else None
         if hit is not None:
             detail = _sanitize_banner(tail, anchor=hit)
-            return f"{proxy_tool_missing_message(self._child_path)}: {detail}"
+            cause = proxy_tool_missing_cause(
+                low,
+                self._child_path,
+                self._refused_plugin,
+                self._refused_aws,
+                self._refused_plugin_dir,
+            )
+            return f"{cause}: {detail}"
         # WSSH / transport session drops — not an auth problem. Worded neutrally
         # because this method is also used for the initial-connect failure path,
         # where no self-heal is armed yet (so it must not promise reconnection).
