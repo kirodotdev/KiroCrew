@@ -86,6 +86,27 @@ describe('mate attribution on notifications', () => {
     expect(screen.getByTestId('notification-crewmate-name')).toHaveTextContent('Ada')
   })
 
+  it("heads an expanded stack of a renamed mate's messages with its display label", async () => {
+    roster([{ name: 'Ada', slug: 'ada', display_name: 'Countess' }])
+    // The shape a mate's DM messages arrive in: titled by the display label,
+    // stacked by the thread, attributed to the exact name.
+    const message = { ...fromAda, title: 'Countess', group_key: 'member-ada' }
+    const notes = [message, { ...message, ts: '2026-10-07T10:01:00.000Z' }]
+    renderWithProviders(<NotificationFeed selectedTs={null} onSelect={() => {}} variant="mac" />, { store: feedState(notes) })
+    await screen.findAllByTestId('notification-crewmate-face')
+    fireEvent.click(screen.getByRole('button', { name: /Expand 2 grouped notifications/ }))
+    expect(await screen.findByRole('button', { name: 'Clear Countess' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Clear Ada' })).toBeNull()
+  })
+
+  it("omits the name label on a panel feed row titled with the mate's label", async () => {
+    roster([{ name: 'Ada', slug: 'ada', display_name: 'Countess' }])
+    const message = { ...fromAda, title: 'Countess' }
+    renderWithProviders(<NotificationFeed selectedTs={null} onSelect={() => {}} />, { store: feedState([message]) })
+    expect(await screen.findByTestId('notification-crewmate-face')).toBeInTheDocument()
+    expect(screen.queryByTestId('notification-crewmate-name')).toBeNull()
+  })
+
   it('reads a persisted member only in its exact shape', () => {
     expect(noteMember(fromAda)).toEqual({ slug: 'ada', name: 'Ada' })
     for (const bad of [undefined, 'ada', { slug: 'ada' }, { slug: '', name: 'Ada' }, { slug: 'ada', name: 3 }]) {

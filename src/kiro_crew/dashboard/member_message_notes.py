@@ -13,8 +13,10 @@ member DM slot publishes one note on the bus, for the turn's last reply row:
   (:func:`kiro_crew.members.member_identity_for_session`), never anything the
   model wrote; a slot whose binding is gone publishes nothing, because a
   crewmate's message nobody can attribute is not a crewmate's message;
-- title is the crewmate's name, body the message text (the delivery path
-  redacts it, and the legacy adapter caps it);
+- title is the name the crewmate is shown by everywhere else
+  (:func:`kiro_crew.agent_files.member_label`: its display name, else its
+  default), read from the crew config when the note is published; body is the
+  message text (the delivery path redacts it, and the legacy adapter caps it);
 - ``url`` opens that crewmate's thread on the Members page, ``slot`` names the
   thread so the banner can tell it is already on screen, and ``group_key`` is the
   slot key so a run of messages from one crewmate stacks;
@@ -40,6 +42,8 @@ import logging
 from typing import Any, Iterable
 from urllib.parse import quote, urlencode
 
+from kiro_crew.agent_files import member_label
+from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard.system_notices import is_speech_row
 from kiro_crew.members import member_identity_for_session
 from kiro_crew.notifications.bus import NotificationValidationError, payload_from_legacy
@@ -69,11 +73,24 @@ def _thread_url(name: str) -> str:
     return "/members?" + urlencode({"member": name}, quote_via=quote)
 
 
-def _publish(state: Any, slot_key: str, text: str, member: dict[str, str]) -> None:
+def _resolve(slot_key: str) -> tuple[dict[str, str], str] | None:
+    """The slot's crewmate and the name it is shown by, else ``None``. Blocking IO.
+
+    ``member`` keeps the binding's exact name: the bell matches the roster row,
+    and the deep link opens the thread, by that name, never by the label.
+    """
+    member = member_identity_for_session(slot_key)
+    if member is None:
+        return None
+    name = member["name"]
+    return member, member_label(name, KiroCrewConfig.load().agents.get(name))
+
+
+def _publish(state: Any, slot_key: str, text: str, member: dict[str, str], title: str) -> None:
     try:
         payload = payload_from_legacy(
             "agent",
-            member["name"],
+            title,
             text,
             {"slot": slot_key},
             url=_thread_url(member["name"]),
@@ -89,10 +106,10 @@ def _publish(state: Any, slot_key: str, text: str, member: dict[str, str]) -> No
 
 async def _resolve_and_publish(state: Any, slot_key: str, text: str) -> None:
     try:
-        # Blocking file IO (the slot's dm.json binding): off the event loop.
-        member = await asyncio.to_thread(member_identity_for_session, slot_key)
-        if member is not None:
-            _publish(state, slot_key, text, member)
+        # Blocking file IO (the slot's dm.json binding, the crew config): off the event loop.
+        resolved = await asyncio.to_thread(_resolve, slot_key)
+        if resolved is not None:
+            _publish(state, slot_key, text, *resolved)
     except Exception:  # noqa: BLE001 -- a note must never surface into the turn
         logger.debug("Bot message note failed", exc_info=True)
 
@@ -126,10 +143,10 @@ def post_turn_reply(state: Any, slot: Any, reply_mids: Iterable[str]) -> None:
 def post_member_message(state: Any, slot_key: str, msg: dict[str, Any]) -> None:
     """Publish the note for *msg*, a reply row in member DM slot *slot_key*.
 
-    Called from :func:`post_turn_reply`, on the event loop: the binding
-    read is handed to a worker thread and the note is pushed back on the loop,
-    where delivery fans out to the SSE queues. A caller with no running loop
-    resolves and publishes inline.
+    Called from :func:`post_turn_reply`, on the event loop: the binding and
+    crew config reads are handed to a worker thread and the note is pushed
+    back on the loop, where delivery fans out to the SSE queues. A caller with
+    no running loop resolves and publishes inline.
     """
     if not is_member_message(msg):
         return
@@ -137,9 +154,9 @@ def post_member_message(state: Any, slot_key: str, msg: dict[str, Any]) -> None:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        member = member_identity_for_session(slot_key)
-        if member is not None:
-            _publish(state, slot_key, text, member)
+        resolved = _resolve(slot_key)
+        if resolved is not None:
+            _publish(state, slot_key, text, *resolved)
         return
     task = loop.create_task(_resolve_and_publish(state, slot_key, text))
     _pending.add(task)

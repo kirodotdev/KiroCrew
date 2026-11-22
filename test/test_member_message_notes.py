@@ -117,6 +117,22 @@ class TestMessageNote:
         assert note["url"] == "/members?member=Ada%20Lovelace"
         assert note["member"] == {"slug": "ada-lovelace", "name": "Ada Lovelace"}
 
+    def test_a_renamed_bot_is_titled_by_its_display_name(self, monkeypatch, tmp_path):
+        # The title is what the bell shows; `member` and the deep link keep the
+        # exact name, which the roster row and the Members page are found by.
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents["Ada"] = KiroCrewAgentConfig(kiro_agent="kirocrew", display_name="Countess")
+        cfg.save()
+        state = _make_state(monkeypatch, tmp_path)
+        slot = _bind()
+        _land(state, slot, _row("assistant"))
+        [note] = _member_notes(state)
+        assert note["title"] == "Countess"
+        assert note["member"] == ADA
+        assert note["url"] == "/members?member=Ada"
+
     def test_on_the_event_loop_the_note_is_published_after_the_binding_read(
         self, monkeypatch, tmp_path
     ):
