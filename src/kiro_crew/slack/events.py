@@ -1073,6 +1073,9 @@ async def _route_message(
     # message captured above before transcription and ingestion.
     _spool_text = _gate_text
     _spool_attachments = len(files) if files else 0
+    # Slack's own name for each file, which the restart notice lists so the user
+    # knows what to resend; a file Slack gives no name is still counted.
+    _spool_attachment_names = tuple(f.get("name") or "" for f in files) if files else ()
     # Named by the undelivered notice when a held message is given up on.
     _spool_voice_memos = sum(1 for f in files if is_voice_memo(f)) if files else 0
 
@@ -1580,6 +1583,7 @@ async def _route_message(
             from_trusted_bot=from_trusted_bot,
             spool_text=_spool_text,
             spool_attachments=_spool_attachments,
+            spool_attachment_names=_spool_attachment_names,
             spool_voice_memos=_spool_voice_memos,
             had_voice_input=_had_voice_input,
             **_queue_tags(sender_id, channel, shared=_shared_sender),
@@ -1603,6 +1607,7 @@ async def _route_message(
                         from_trusted_bot=from_trusted_bot,
                         spool_text=_spool_text,
                         spool_attachments=_spool_attachments,
+                        spool_attachment_names=_spool_attachment_names,
                         spool_voice_memos=_spool_voice_memos,
                         had_voice_input=_had_voice_input,
                         **_queue_tags(sender_id, channel, shared=_shared_sender),
@@ -1635,6 +1640,7 @@ async def _route_message(
         from_trusted_bot=from_trusted_bot,
         spool_text=_spool_text,
         spool_attachments=_spool_attachments,
+        spool_attachment_names=_spool_attachment_names,
         spool_voice_memos=_spool_voice_memos,
         had_voice_input=_had_voice_input,
         **_queue_tags(sender_id, channel, shared=_shared_sender),
@@ -1671,6 +1677,7 @@ async def _route_message(
                     from_trusted_bot=from_trusted_bot,
                     spool_text=_spool_text,
                     spool_attachments=_spool_attachments,
+                    spool_attachment_names=_spool_attachment_names,
                     spool_voice_memos=_spool_voice_memos,
                     had_voice_input=_had_voice_input,
                     **_queue_tags(sender_id, channel, shared=_shared_sender),
@@ -1751,6 +1758,7 @@ async def _route_message(
                 start_priority=person_priority(not from_trusted_bot),
                 spool_text=_spool_text,
                 spool_attachments=_spool_attachments,
+                spool_attachment_names=_spool_attachment_names,
                 had_voice_input=_had_voice_input,
             )
         )
@@ -1820,6 +1828,7 @@ async def _route_message(
                 had_voice_input=_had_voice_input,
                 spool_text=_spool_text,
                 spool_attachments=_spool_attachments,
+                spool_attachment_names=_spool_attachment_names,
                 start_priority=person_priority(not from_trusted_bot),
             )
         )

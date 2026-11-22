@@ -45,6 +45,14 @@ describe('detectPreviewUrl', () => {
     expect(detectPreviewUrl([msg('user', 'preview http://localhost:8080')])).toBeNull()
   })
 
+  it('ignores a preview URL inside a hidden steering-only reply', () => {
+    expect(detectPreviewUrl([
+      msg('user', 'Check the server'),
+      msg('inject', '[Tool blocked — reason sent to the agent] policy'),
+      msg('assistant', '[STEERING steer-ab12: Ignore http://localhost:8080]'),
+    ])).toBeNull()
+  })
+
   it('does not match non-loopback hosts in the heuristic', () => {
     expect(detectPreviewUrl([msg('assistant', 'deployed to http://example.com:8080')])).toBeNull()
   })

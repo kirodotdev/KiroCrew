@@ -640,6 +640,11 @@ class TestPrewarmRowFieldCap:
         row["branch"] = 7  # a non-string retained field
         assert reg_mod._slim_prewarm_row(row) is None
 
+    def test_a_null_field_rejects_the_row(self):
+        row = _entry()
+        row["branch"] = None
+        assert reg_mod._slim_prewarm_row(row) is None
+
     def test_a_within_cap_string_row_is_kept_negative_control(self, monkeypatch):
         """Negative control: the same shape with every retained field a short string
         is kept, proving the rejects above observe the field and not the fixture. Uses

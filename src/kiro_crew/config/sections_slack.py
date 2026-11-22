@@ -211,6 +211,16 @@ class SlackConfig:
             # and is the name help text shows; the Slack applier refreshes it.
         ),
     )
+    setup_guide_url: str = field(
+        default="",
+        metadata=_meta(
+            "Setup Guide URL",
+            "Your organization's own Slack setup guide (for example, how to get a "
+            "workspace you may install apps in). The Slack setup wizard links it on "
+            "its first step. https:// only; any other value is ignored. Empty = no link.",
+            tags=["slack"],
+        ),
+    )
     forward_to_agent_callback: str = field(
         default="",
         metadata=_meta(
@@ -341,7 +351,9 @@ class SlackConfig:
         metadata=_meta(
             "Session Folder",
             "Optional sidebar folder for sessions that start on this channel. "
-            "Empty (the default) leaves them unfiled; any other value is the "
+            "Empty (the default) files them in a 'Slack' folder, created on "
+            "first use, while Show Slack Conversations In The Session List is "
+            "on, and leaves them unfiled while it is off; any other value is the "
             "folder name, created when these settings are saved and marked with "
             "the channel's brand mark. A configured folder that no longer exists "
             "leaves conversations unfiled until the next save recreates it.",
@@ -349,19 +361,20 @@ class SlackConfig:
         ),
     )
     show_in_session_list: bool = field(
-        default=True,
+        default=False,
         metadata=_meta(
             "Show Slack Conversations In The Session List",
             "List conversations that start in Slack (threads, DMs, channel "
-            "mentions) in the dashboard's session list. Off removes them from "
-            "the list only: they keep working in Slack, stay in History and "
-            "search, still raise approvals and notifications, and come back "
-            "when this is turned on again; nothing is closed or deleted. The "
-            "conversation open in the dashboard, and one waiting on an approval "
-            "or an answer, keep their rows. Sessions started "
-            "in the dashboard and linked to Slack, and Slack code channel "
-            "sessions with their helper agents, are always listed. On by "
-            "default; no restart.",
+            "mentions) in the dashboard's session list. Off (the default) "
+            "keeps them out of the list only: they keep working in Slack, stay "
+            "in History and search, and still raise approvals and "
+            "notifications; nothing is closed or deleted. The conversation "
+            "open in the dashboard, and one waiting on an approval or an "
+            "answer, keep their rows. On, and with no Session Folder set, new "
+            "ones are filed in a 'Slack' folder, created on first use. "
+            "Sessions started in the dashboard and linked to Slack, and Slack "
+            "code channel sessions with their helper agents, are always listed "
+            "and stay in their own folders. No restart.",
             tags=["slack"],
         ),
     )
@@ -426,6 +439,27 @@ class SlackConfig:
             "manifest; an installed app needs that update and a reinstall, and the "
             "workspace must have Slack code channels enabled. Until both hold, "
             "Slack behaves as before. Off by default; no restart.",
+            tags=["slack"],
+        ),
+    )
+    slack_mcp: bool = field(
+        default=False,
+        metadata=_meta(
+            "Slack Tools For Your Agents",
+            "Let the same Slack app serve Slack's MCP server, so each person can "
+            "connect their agents to Slack as themselves. Adds "
+            "settings.is_mcp_enabled, oauth_config.pkce_enabled and the redirect URL "
+            "http://localhost:48106/callback to the generated app manifest, and "
+            "replaces its user scopes with the read-only ones Slack's MCP server "
+            "needs (search, history, channel and user lists, files, canvases, "
+            "lists); off, the manifest is unchanged. "
+            "PKCE cannot be turned off again in Slack without Slack support, the "
+            "app must stay internal (not publicly distributed), each person still "
+            "connects on the Slack card under Settings > Connections with the "
+            "app's Client ID and Client Secret, and Slack ends those "
+            "sign-ins after 30 days. The settings page shows this switch only "
+            "while Connections offers the Slack card, or while it is on. The "
+            "gateway runs nothing for it. Off by default; no restart.",
             tags=["slack"],
         ),
     )

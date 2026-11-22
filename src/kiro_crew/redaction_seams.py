@@ -202,6 +202,11 @@ ALWAYS_REDACTED_SITES: Mapping[str, str] = MappingProxyType(
             "_gate_upload_file decides whether a file, by its name or its text, may leave "
             "for a channel: a safety decision"
         ),
+        "dashboard/handlers/cron_board.py": (
+            "_jobs_response: a job's last result and error read the display redaction cache "
+            "for speed, whose pass opens the chat seam; they stay redacted like every other "
+            "cron field, which no seam lists"
+        ),
         "dashboard/handlers/updates_streams.py": (
             "_stream_safe: the live log stream and its ring replay reach every dashboard-user "
             "socket, a relayed teammate's and a log-scoped app's among them"
@@ -215,6 +220,10 @@ ALWAYS_REDACTED_SITES: Mapping[str, str] = MappingProxyType(
             "_serialize: a shared slot list pass for any audience whose redaction does not "
             "stand down runs in full, since a trailing pass runs in its first caller's "
             "context and a teammate who joined it reads the same rows"
+        ),
+        "hook_runtime/hook_dispatch.py": (
+            "hook_tool_input builds the PreToolUse payload's tool_input: a hook is a sink "
+            "no seam lists"
         ),
         "platform/context.py": (
             "_scan_verdict: the upload gates' content scans decide whether a file may leave; "

@@ -20,6 +20,7 @@ import pytest
 
 import kiro_crew.dashboard.handlers.kiro_usage_api as api
 import kiro_crew.dashboard.handlers.sessions as sessions_mod
+from kiro_crew.testing.wait import await_until
 
 _FP_A = "fp-a"
 _FP_B = "fp-b"
@@ -164,8 +165,13 @@ class TestRefreshFromVault:
 
     @pytest.mark.asyncio
     async def test_identity_change_discards_reading(self):
+        # A sign-in landing during the refresh: the popup shows the new account
+        # loading (not "no reading"), and the next poll refreshes for it at once
+        # instead of after the ten-minute interval.
+        sessions_mod._usage_cache_ts = 10**12
         await _run(_vault(fps=(_FP_A, _FP_B)))
-        assert sessions_mod._usage_cache == {"available": False}
+        assert sessions_mod._usage_cache == {}
+        assert sessions_mod._usage_cache_ts == 0.0
 
     @pytest.mark.asyncio
     async def test_api_refusing_the_served_credential_is_no_reading_not_no_signin(self):
@@ -228,7 +234,8 @@ class TestRefreshFromVault:
         sessions_mod._usage_cache_vault_fp = _FP_A
         current = AsyncMock(side_effect=RefreshRejected("HTTP 400"))
         await _run(_vault(fps=(_FP_A, _FP_B), current=current))
-        assert sessions_mod._usage_cache == {"available": False}
+        assert sessions_mod._usage_cache == {}
+        assert sessions_mod._usage_cache_ts == 0.0
 
     @pytest.mark.asyncio
     async def test_failure_keeps_same_identity_reading_stale(self):
@@ -486,7 +493,25 @@ class TestUsageGateBypass:
         ):
             resp = await sessions_mod.api_sessions_usage(_request())
             await asyncio.sleep(0)
-        assert json.loads(resp.body) == {"usage": {"available": False}}
+        assert json.loads(resp.body) == {"usage": {}}
+        fetch.assert_awaited_once_with(vault_owned=True)
+
+    @pytest.mark.asyncio
+    async def test_sign_in_change_during_a_refresh_is_refreshed_by_the_next_poll(self):
+        # The refresh read A, then the sign-in to B landed. The next poll must
+        # show B loading and fetch B now, not serve "no reading" for ten minutes.
+        await _run(_vault(fps=(_FP_A, _FP_B)))
+        request = _request()
+        fetch = AsyncMock(return_value=None)
+        with (
+            patch.object(sessions_mod, "_vault_owns_usage", AsyncMock(return_value=True)),
+            patch.object(sessions_mod, "_fetch_usage_bg", fetch),
+        ):
+            resp = await sessions_mod.api_sessions_usage(request)
+            await await_until(
+                asyncio.gather(*request.app["state"]._background_tasks), what="usage refresh"
+            )
+        assert json.loads(resp.body) == {"usage": {}}
         fetch.assert_awaited_once_with(vault_owned=True)
 
     @pytest.mark.asyncio
@@ -516,7 +541,7 @@ class TestUsageGateBypass:
         ):
             resp = await sessions_mod.api_sessions_usage(_request())
             await asyncio.sleep(0)
-        assert json.loads(resp.body) == {"usage": {"available": False}}
+        assert json.loads(resp.body) == {"usage": {}}
         # B's freshly published reading is left in place for the next poll.
         assert sessions_mod._usage_cache == b_reading
         assert sessions_mod._usage_cache_vault_fp == _FP_B
@@ -539,7 +564,7 @@ class TestUsageGateBypass:
         ):
             resp = await sessions_mod.api_sessions_usage(_request())
             await asyncio.sleep(0)
-        assert json.loads(resp.body) == {"usage": {"available": False}}
+        assert json.loads(resp.body) == {"usage": {}}
         fetch.assert_awaited_once_with(vault_owned=True)
         # Decided from the payload's own provenance, with no vault read needed.
         fingerprint.assert_not_called()
@@ -561,10 +586,10 @@ class TestUsageGateBypass:
             resp = await sessions_mod.api_sessions_usage(_request())
             await asyncio.sleep(0)
         gate.assert_awaited_once()
-        assert json.loads(resp.body) == {"usage": {"available": False}}
+        assert json.loads(resp.body) == {"usage": {}}
         fetch.assert_awaited_once_with(vault_owned=False)
         # Dropped, so the kiro-cli path can never preserve it as its own.
-        assert sessions_mod._usage_cache == {"available": False}
+        assert sessions_mod._usage_cache == {}
         assert sessions_mod._usage_cache_vault_fp == ""
 
     @pytest.mark.asyncio

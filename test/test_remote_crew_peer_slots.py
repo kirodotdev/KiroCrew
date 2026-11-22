@@ -132,8 +132,9 @@ def _manager(
     return SimpleNamespace(proxy_request=_proxy_request, calls=calls, params=params)
 
 
-def _state(mgr, slots: dict[str, _ChatSlot] | None = None):
-    return SimpleNamespace(instances_manager=mgr, _slots=slots or {})
+def _state(mgr, slots: dict[str, _ChatSlot] | None = None, registered=("nobita",)):
+    registry = SimpleNamespace(get=lambda i: object() if i in registered else None)
+    return SimpleNamespace(instances_manager=mgr, instances_registry=registry, _slots=slots or {})
 
 
 def _remote_slot(key: str = "chat-1", *, instance_id: str = "nobita", remote: str = "peer-chat-9"):
@@ -834,6 +835,17 @@ class TestCarrierFailures:
 
         assert resp.status == 503
         assert (await _body(resp))["code"] == "instances_manager_unavailable"
+
+    async def test_an_unregistered_crew_is_a_404_and_never_reaches_a_peer(self, monkeypatch):
+        """An id naming no crew is not a crew that is down: 404, no tunnel call."""
+        _enable_instances(monkeypatch)
+        mgr = _manager()
+
+        resp = await hi.api_instances_chat_slots(_request(_state(mgr), instance_id="ghost"))
+
+        assert resp.status == 404
+        assert (await _body(resp))["code"] == "instance_not_found"
+        assert mgr.calls == []
 
 
 @pytest.mark.asyncio

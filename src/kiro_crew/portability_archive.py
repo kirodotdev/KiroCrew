@@ -374,7 +374,12 @@ def _largest_folders(infos: list[zipfile.ZipInfo], count: int = 3) -> str:
     sizes: dict[str, int] = {}
     for info in infos:
         parts = PurePosixPath(info.filename).parts[1:]
-        key = "/".join(parts[:2]) if len(parts) > 2 else (parts[0] if parts else "")
+        if len(parts) > 2:
+            key = "/".join(parts[:2])
+        elif parts:
+            key = parts[0]
+        else:
+            key = ""
         sizes[key] = sizes.get(key, 0) + info.file_size
     top = sorted(sizes.items(), key=lambda kv: kv[1], reverse=True)[:count]
     return ", ".join(f"{name} ({_gb(size)})" for name, size in top if name)

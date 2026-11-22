@@ -416,6 +416,12 @@
     }
 
     // ── wire up gateway status / ready signals from the Electron main process ──
+    // A status fixed in the query (the start-time update install, a window with
+    // no bridge) stands for the page's whole life: no gateway is starting, so
+    // the preview's auto-ready below must not announce "Connected".
+    var fixedStatus = "";
+    try { fixedStatus = new URLSearchParams(location.search).get("status") || ""; } catch (e) {}
+    if (fixedStatus) { latestStatus = fixedStatus; statusText.textContent = fixedStatus; }
     if (window.electronAPI && window.electronAPI.onStatus) {
       window.electronAPI.onStatus(function (msg) {
         if (msg) latestStatus = msg;
@@ -424,7 +430,7 @@
     }
     if (window.electronAPI && window.electronAPI.onBootReady) {
       window.electronAPI.onBootReady(markReady);
-    } else {
+    } else if (!fixedStatus) {
       // Browser preview (no Electron): auto-signal ready so the whole reveal plays.
       // ?ready=<ms> overrides the default. Never runs inside the real app.
       var d = 2500;

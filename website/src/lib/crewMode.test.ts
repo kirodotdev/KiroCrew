@@ -3,7 +3,7 @@ import {
   DEFAULT_CREW_MODE_AGENT, autoOpenRows, crewModeAgent, crewModeView, openingHidesSessionList, isConductorAgent, isDefaultAgentName, runsCrewMode,
   memoryModeAllowsCrewMode, runsConductor, resetCrewModeCatalog, setCrewModeCatalog, withoutConductors, agentCycleTarget,
   gatewayRunsCrewMode, CREW_APPROVAL_SURFACES, crewApprovalDecidableHere, crewModeEnabled, crewModeRoot, crewRootOf,
-  liveMateThreads, busySlotKeys, slackRowHidden,
+  liveMateThreads, busySlotKeys, slackRowHidden, showsAsCrewMode,
 } from './crewMode'
 import { applyLockedControls } from '../utils/editionLocks'
 import { crewMemberKeys } from '../store/dashboard/unread'
@@ -61,6 +61,32 @@ describe('crewMode', () => {
       { name: 'kirocrew', selection_kind: 'template' },
       { name: 'kirocrew-conductor', selection_kind: 'member' },
     ])
+  })
+
+  it('leaves the roster copy of a conductor template out with it, and keeps a crewmate the person created', () => {
+    // `agent.crew_mode_agent` names a custom agent the agents sync copied into
+    // the roster: the copy runs the template of its name, so leaving only the
+    // template out listed the conductor under Bots.
+    setCrewModeCatalog('acme-custom', ['kirocrew-conductor'])
+    const plain = { name: 'kirocrew', selection_kind: 'template', kiro_agent: 'kirocrew' }
+    const bot = { name: 'research', selection_kind: 'member', kiro_agent: 'research', source: 'kirocrew', memory_store: 'research' }
+    const rows = [
+      plain,
+      { name: 'acme-custom', selection_kind: 'template', kiro_agent: 'acme-custom' },
+      { name: 'acme-custom', selection_kind: 'member', kiro_agent: 'acme-custom', source: 'package', memory_store: 'default' },
+      bot,
+    ]
+    expect(withoutConductors(rows)).toEqual([plain, bot])
+    // The default-agent pick's copy (`kirocrew`, the shared store) goes the same way;
+    // a crewmate the person created on the conductor template, under its name, stays.
+    const picked = { name: 'acme-custom', selection_kind: 'member', kiro_agent: 'acme-custom', source: 'kirocrew', memory_store: 'default' }
+    const created = { name: 'acme-custom', selection_kind: 'member', kiro_agent: 'acme-custom', source: 'kirocrew', memory_store: 'acme-custom' }
+    expect(withoutConductors([plain, picked])).toEqual([plain])
+    expect(withoutConductors([plain, created])).toEqual([plain, created])
+    // The chord skips the copy too: from `kirocrew` it lands on the Bot, never the copy.
+    const folded = [plain, rows[2], bot]
+    expect(agentCycleTarget(folded, 'kirocrew', 'template', 1)).toBe('research')
+    expect(agentCycleTarget(folded, 'research', 'member', 1)).toBe('kirocrew')
   })
 
   it('opening a worker the list leaves out hides the sessions list; a root or a plain chat never does', () => {
@@ -176,6 +202,21 @@ describe('runsCrewMode', () => {
     expect(runsCrewMode('old-one', 'template', 'old-one')).toBe(true)
     expect(runsCrewMode('kirocrew', 'template', 'old-one')).toBe(false)
     expect(runsCrewMode('old-one', 'template', '')).toBe(false)
+  })
+})
+
+describe('showsAsCrewMode -- the composer agrees with the gateway (#39260)', () => {
+  it('is a conductor root or a crew member on a conductor, never a chat opened outside any crew', () => {
+    setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
+    const on = { agent: 'kirocrew-conductor', agent_kind: 'template' }
+    // The gateway's own root stamp decides, never the client's reading of the tree.
+    expect(showsAsCrewMode({ ...on, crew_mode_root: true })).toBe(true)
+    expect(showsAsCrewMode({ ...on, crew_mode_root: false, crew_root: 'root-1' })).toBe(true)
+    expect(showsAsCrewMode({ ...on, crew_mode_root: false })).toBe(false)
+    // No stamp yet (a switch's own answer): keeps the conductor's look.
+    expect(showsAsCrewMode(on)).toBe(true)
+    expect(showsAsCrewMode({ agent: 'kirocrew-worker', agent_kind: 'template', crew_mode_root: false, crew_root: 'root-1' })).toBe(false)
+    expect(showsAsCrewMode(undefined)).toBe(false)
   })
 })
 

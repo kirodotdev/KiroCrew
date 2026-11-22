@@ -65,6 +65,7 @@ from typing import Any
 
 from kiro_crew import crewmate_prompts, member_goals
 from kiro_crew import members as members_mod
+from kiro_crew import session_directive
 from kiro_crew.dashboard_templates.page_look import PAGE_LOOK
 
 logger = logging.getLogger(__name__)
@@ -640,7 +641,8 @@ def heartbeat_prompt(
         "turn with nothing_to_do and post nothing, which is also how a wake with "
         "nothing to move forward ends. Every word you write in this thread is "
         "shown to the user, so on a quiet end call nothing_to_do with no text "
-        "before it; put any reason in its note.\n\n"
+        "before it and put any reason in its note; after it, write only "
+        f"{session_directive.QUIET_END_TOKEN}, which nobody sees.\n\n"
         "When you need the user's answer, ask about one thing, once, with an "
         "[OPTIONS: ...] line at the end of your message rather than an "
         "ask_question card, and leave it at that rather than asking again in "

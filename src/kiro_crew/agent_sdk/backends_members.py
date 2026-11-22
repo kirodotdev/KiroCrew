@@ -126,9 +126,9 @@ ACP_BACKENDS_MEMBER_TOOL_LIMITS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS, 
 # (``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`` and
 # ``ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS`` below), so a worker whose crewmate
 # file excludes any other native entry or a wildcard is refused there before spawn
-# (``capability_tool_limits_unsupported``). codex carries the worker kit but not
-# this: its worker capture proves no limit held, so a limited worker is refused
-# there the same way.
+# (``capability_tool_limits_unsupported``). codex and pi carry the worker kit but
+# not this: codex's worker capture proves no limit held, and pi has no per-tool
+# deny channel, so a limited worker is refused on either the same way.
 # KAS is captured live on KAS 0.66.58 (kiro-cli 2.33.1):
 # ``test/fixtures/acp_frames/kas/worker-kit-live.jsonl``. A crewmate file's
 # ``excludedTools [shell]``, carried in the worker's customAgents entry, withheld
@@ -183,8 +183,10 @@ ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS = ACP_BACKENDS_MATE_WORKER_TOOL_LIMI
 # (``mate_worker.worker_session_spec``), never one read off disk by name. KAS takes
 # it over the wire (``_meta.kiro.customAgents``); claude and codex build their
 # ``session/new`` MCP array from ``session_mcp_projection``, which reads it by the
-# session key (each mirror hands the key down). deepseek builds its array the same
-# way but has no live capture of it, so it is not here yet. kiro-cli is a member
+# session key (each mirror hands the key down). pi has no mirror: Crew's own
+# resolver reads the same projection by the key and hands the worker's servers to
+# pi's gate extension (``AcpClient._mirrorless_member_mounts``). deepseek builds its
+# array the same way but has no live capture of it, so it is not here yet. kiro-cli is a member
 # chat backend but is not here: it reads
 # ``--agent`` off disk at spawn from ``~/.kiro/agents/``, where the worker spec is not,
 # and has no per-session channel. A worker allocated anywhere else is refused before
@@ -202,19 +204,32 @@ ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS = ACP_BACKENDS_MATE_WORKER_TOOL_LIMI
 # built by ``codex_projection`` with the worker's session key, carried the server its
 # crewmate's file adds (the bare base carries none), and the worker called it and
 # answered as the crewmate's prompt, carried in its context block, told it to.
+# pi is captured live on pi-acp 0.0.34 spawning pi 1.4.0:
+# ``test/fixtures/acp_frames/pi/worker-kit-live.jsonl``. A worker session's
+# per-session MCP handoff, composed by ``AcpClient(acp_backend="pi")`` for the
+# worker's session key, carried the server its crewmate's file adds (the same
+# resolve with no key carries none), and the worker called it through the gate and
+# answered as the crewmate's prompt, carried in its context block, told it to.
 # strands is NOT here, for the reason it is outside ``ACP_BACKENDS_MEMBER_CAPABILITIES``:
 # the worker's ``kirocrew-core`` would run inside the sandbox with the gateway
 # credential hidden by the enforced mask, so its control plane would be refused. A
 # worker allocated on strands is refused before spawn (``capability_harness_unsupported``).
-ACP_BACKENDS_MATE_WORKER_KIT = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
+ACP_BACKENDS_MATE_WORKER_KIT = frozenset(
+    {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_PI}
+)
 
 # Backends of the set above whose worker gets its prompt only from the
 # ``[AGENT SYSTEM PROMPT]`` context block: their mirrors project no spec prompt
 # (``Concern.PROMPT`` is ``WITHHELD``), so the block carries the worker's own
 # principles and its crewmate's prompt (``context_assembly.agent_spec
-# ._crewmate_worker_prompt``). claude and codex are both here. KAS is not: its wire
-# spec already carries both, so its block stays the base.
-ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
+# ._crewmate_worker_prompt``). claude and codex are both here, and so is pi, which
+# has no mirror and reads no Crew spec prompt at all
+# (``test/fixtures/acp_frames/pi/worker-kit-live.jsonl``: the crewmate's sentence
+# reached the model in the block). KAS is not: its wire spec already carries both,
+# so its block stays the base.
+ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset(
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_PI}
+)
 
 # Backends that can mount a DIFFERENT MCP tool set on one session than the
 # on-disk agent template declares — the capability crew-member dispatch rides
@@ -547,7 +562,7 @@ def crewmate_inherited_backend(main_backend: str) -> tuple[str, bool]:
     which ``mate_worker.worker_kit_backend_refusal`` enforces). A backend outside any
     of them cannot carry one, so the Crew bot runs on KAS instead, with the second
     value ``True`` so the caller logs and shows why (harness-parity H3). The
-    worker-kit check is what keeps an inherited pi or deepseek from refusing
+    worker-kit check is what keeps an inherited deepseek from refusing
     every worker the Crew bot opens. Kiro CLI reads as KAS, as a
     stored ``member_acp_backend`` of ``kiro`` does: KAS is the Kiro backend that
     carries the dispatch tools. That is a remap, not a fallback.

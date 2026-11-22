@@ -3,6 +3,7 @@
 // InstancesViewport.paneLoad.test.tsx; both suites share InstancesViewportTestUtils.tsx.
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { useLocation } from 'react-router-dom'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstancesViewport from '../components/InstancesViewport'
@@ -64,6 +65,7 @@ vi.mock('../api/client', () => ({
     addInstance: vi.fn().mockResolvedValue({ id: 'added-1' }),
     refreshInstanceToken: vi.fn().mockResolvedValue({ state: 'connected', local_port: 7778, token: 'tok' }),
     themes: vi.fn().mockResolvedValue({ themes: [] }), // unmocked, the theme catalog read retries forever
+    relayViewerCrews: vi.fn().mockResolvedValue({ crews: [] }),
   },
 }))
 import { api } from '../api/client'
@@ -701,6 +703,63 @@ describe('InstancesViewport', () => {
     await waitFor(() => expect(post.mock.calls.at(-1)?.[0]).toMatchObject({
       type: 'mc-host-model', tabs: [{ id: 'cd-1', sshHost: 'i-0abc123def4567890' }],
     }))
+  })
+
+  it('relays its Remote Crews to the SSH pane in front and opens a listed one it picks from the top bar (row 72)', async () => {
+    const openPane = vi.fn(async () => ({ ok: true }))
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open: vi.fn(), openPane, closePane: vi.fn(), setPaneInactive: vi.fn(), onPaneEvent: () => () => {} }
+    onTestFinished(() => { delete (window as { relayCrewAPI?: unknown }).relayCrewAPI })
+    vi.mocked(api.relayViewerCrews).mockResolvedValue({
+      crews: [{ endpointId: 'ep-1', name: 'Team Lab', crewType: 'TEAM', presence: 'CONNECTED', relayConnectionStatus: 'CONNECTED', crewUrl: 'https://secret.example/' }],
+    })
+    mockConnectedCd1()
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: { 'cd-1': true } },
+    })
+    const Search = () => <span data-testid="search">{useLocation().search}</span>
+    const { queryClient } = renderWithProviders(<><InstancesViewport /><Search /></>, { store })
+    await waitFor(() => expect(document.querySelector('iframe')).toBeTruthy())
+    const post = vi.fn()
+    Object.defineProperty(document.querySelector('iframe'), 'contentWindow', { get: () => ({ postMessage: post }) })
+    act(() => { store.dispatch(setWarm({ id: 'cd-1', conn: { port: 7778, token: 'tok' } })) })
+    await waitFor(() => expect(post.mock.calls.at(-1)?.[0]).toMatchObject({
+      type: 'mc-host-model', relayCrews: [{ endpointId: 'ep-1', name: 'Team Lab', crewType: 'TEAM', open: false, current: false }],
+    }))
+    // Only what a row shows crosses: never the Crew's URL.
+    expect(JSON.stringify(post.mock.calls.at(-1)?.[0])).not.toContain('secret.example')
+    // A failed re-read keeps the rows the pane had, so the Remote Crews do not vanish.
+    vi.mocked(api.relayViewerCrews).mockRejectedValueOnce(new Error('down'))
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['relay-viewer', 'crews'] }).catch(() => {}) })
+    await waitFor(() => expect(queryClient.getQueryState(['relay-viewer', 'crews'])?.error).toBeTruthy())
+    act(() => { store.dispatch(setWarm({ id: 'cd-1', conn: { port: 7778, token: 'tok' } })) })
+    await act(async () => {})
+    expect(post.mock.calls.at(-1)?.[0]?.relayCrews).toHaveLength(1)
+    expect(post.mock.calls.some(c => c[0]?.type === 'mc-host-model' && c[0]?.relayCrews?.length === 0)).toBe(false)
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['relay-viewer', 'crews'] }) })
+    await waitFor(() => expect(post.mock.calls.at(-1)?.[0]?.relayCrews).toHaveLength(1))
+    const pick = (id: string) => act(() => {
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'mc-switch-instance', id }, origin: 'http://127.0.0.1:7778' }))
+    })
+    pick('relay:ghost')
+    expect(store.getState().instances.activeId).toBe('cd-1')
+    expect(screen.getByTestId('search').textContent).toBe('')
+    // Without the desktop pane calls a pane's pick does nothing (a browser could only pop up a tab).
+    delete (window as { relayCrewAPI?: unknown }).relayCrewAPI
+    pick('relay:ep-1')
+    expect(store.getState().instances.activeId).toBe('cd-1')
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open: vi.fn(), openPane, closePane: vi.fn(), setPaneInactive: vi.fn(), onPaneEvent: () => () => {} }
+    // Nor from a pane that is not in front: only the front one was sent the rows.
+    act(() => { store.dispatch(setActiveId(null)) })
+    pick('relay:ep-1')
+    expect(screen.getByTestId('search').textContent).toBe('')
+    act(() => { store.dispatch(setActiveId('cd-1')) })
+    // A listed one: Local comes forward and the top bar opens it (its cover, its refusal notice).
+    pick('relay:ep-1')
+    expect(store.getState().instances.activeId).toBeNull()
+    expect(screen.getByTestId('search').textContent).toBe('?relay_crew=ep-1')
+    expect(openPane).not.toHaveBeenCalled()
+    // A pane not in front gets no rows: its switcher is not on screen.
+    await waitFor(() => expect(post.mock.calls.at(-1)?.[0]).toMatchObject({ type: 'mc-host-model', relayCrews: [] }))
   })
 
   it('takes chrome visibility from the ACTIVE pane only', async () => {

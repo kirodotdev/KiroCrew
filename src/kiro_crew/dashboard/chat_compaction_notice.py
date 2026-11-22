@@ -44,6 +44,10 @@ from kiro_crew.session_compaction import (
 
 logger = logging.getLogger(__name__)
 
+#: The governance audit name of the compaction notice; a caller delivering another
+#: notice through this module passes its own.
+_COMPACTION_TOOL_NAME = "chat.compaction_notice"
+
 #: Notices are plain text: a channel session may be read on a client with no
 #: markdown rendering, and the dashboard's own notice copy does not transfer
 #: (it references UI affordances the channel user does not have).
@@ -168,7 +172,25 @@ async def deliver_channel_compaction_notice(
     await _deliver_via_transport(state, key, pct, success=success, outcome=outcome)
 
 
-def _channel_egress_permitted(session_key: str, channel_type: str) -> bool:
+async def deliver_channel_text(state: Any, key: str, text: str, *, tool_name: str) -> None:
+    """Post *text*, as is, into the conversation behind *key*, for a session with no tab.
+
+    The same governed legs as the compaction notice; ``tool_name`` is the audit name
+    of the Slack leg's governance record. A silent no-op for a key that is not
+    channel-originated, and for a channel session whose reply target cannot be resolved.
+    """
+    namespace = channel_namespace_of(key)
+    if not namespace:
+        return
+    if namespace == SLACK_NAMESPACE:
+        await _deliver_slack(state, key, text, tool_name)
+        return
+    await _deliver_via_transport(state, key, 0.0, success=True, text=text)
+
+
+def _channel_egress_permitted(
+    session_key: str, channel_type: str, tool_name: str = _COMPACTION_TOOL_NAME
+) -> bool:
     """Vet an outbound notice against the ``channels`` governance scope.
 
     The non-Slack leg inherits this from ``_resolve_channel_target``. Slack is
@@ -186,7 +208,7 @@ def _channel_egress_permitted(session_key: str, channel_type: str) -> bool:
             "channels",
             channel_type,
             session_key=session_key,
-            tool_name="chat.compaction_notice",
+            tool_name=tool_name,
             fail_closed=True,
         )
     except PlatformCompositionError:
@@ -205,7 +227,9 @@ def _channel_egress_permitted(session_key: str, channel_type: str) -> bool:
     return bool(getattr(decision, "permitted", False))
 
 
-async def _deliver_slack(state: Any, key: str, text: str) -> None:
+async def _deliver_slack(
+    state: Any, key: str, text: str, tool_name: str = _COMPACTION_TOOL_NAME
+) -> None:
     """Post into the Slack thread the session is bound to."""
     client = getattr(state, "slack_client", None)
     sessions = getattr(state, "sessions", None)
@@ -220,7 +244,7 @@ async def _deliver_slack(state: Any, key: str, text: str) -> None:
         return
     # Off-loop: the gate walks the profile directory (iterdir + stat, with a
     # possible reload), which is unbounded on slow or networked storage.
-    if not await asyncio.to_thread(_channel_egress_permitted, key, SLACK_NAMESPACE):
+    if not await asyncio.to_thread(_channel_egress_permitted, key, SLACK_NAMESPACE, tool_name):
         return
     try:
         # thread_ts is optional: a session bound to a channel without a thread
@@ -237,8 +261,11 @@ async def _deliver_via_transport(
     *,
     success: bool,
     outcome: str = COMPACT_OUTCOME_COMPACTED,
+    text: str | None = None,
 ) -> None:
     """Send through the governed cross-surface ladder (Discord and friends).
+
+    ``text``, when given, is sent as is in place of the compaction wording.
 
     The notice text is rendered from the RESOLVED channel type rather than the
     key's namespace, so a ``unified:`` DM bucket still quotes the right manual
@@ -276,7 +303,8 @@ async def _deliver_via_transport(
     if target is None:
         return
     resolved, transport = target
-    text = notice_text(resolved.channel_type, pct, success=success, outcome=outcome)
+    if text is None:
+        text = notice_text(resolved.channel_type, pct, success=success, outcome=outcome)
     # Outside the best-effort ``try``: ``redact_via_context`` re-raises an invalid
     # governance ceiling (``PlatformCompositionError``), which this module never
     # degrades, the same as the gate above. Only the send itself is best-effort.

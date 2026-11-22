@@ -72,6 +72,7 @@ from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.platform_compat import pid_exists
 from kiro_crew.providers.cleanup import _is_safe_path
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.startup_deadline import cancel_outcome
 
 if TYPE_CHECKING:
     from kiro_crew.providers.acp import AcpProvider
@@ -292,6 +293,12 @@ async def _start_kiro_runtime(self: AcpProvider) -> None:
             kiro_signin_hold.note_signed_in(backend)
     except AcpAuthRequired:
         outcome = "auth_required"
+        raise
+    except asyncio.CancelledError as exc:
+        # Stop, a closed chat or a reset is "cancelled", a caller's expired
+        # startup_deadline is "timeout", and a cancel raised while a failure is
+        # handled keeps "error".
+        outcome = cancel_outcome(exc) or outcome
         raise
     finally:
         # A remote start's stage ends with the start, so a Stop never leaves one stale.
@@ -903,7 +910,9 @@ async def _start_kiro_runtime_impl(
                 # (it is the value passed as ``acp_backend`` above) — so the
                 # sign-in advice names the harness that actually failed to
                 # authenticate rather than assuming kiro-cli.
-                signed_out = host_auth.signed_out_message(self._client.backend)
+                signed_out = host_auth.signed_out_message(
+                    self._client.backend, route=runtime.kas_spawn_route
+                )
                 # One synchronous table read, so the kiro path compares and stops (H13).
                 if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
                     signed_out = _with_credential_mask_note(runtime, signed_out, exc)
@@ -1169,7 +1178,9 @@ async def _start_kiro_runtime_impl(
                     if kas_refusal is not None:
                         raise kas_refusal from exc
                     if runtime.saw_not_logged_in():
-                        signed_out = host_auth.signed_out_message(self._client.backend)
+                        signed_out = host_auth.signed_out_message(
+                            self._client.backend, route=runtime.kas_spawn_route
+                        )
                         if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
                             signed_out = _with_credential_mask_note(runtime, signed_out, exc)
                         raise AcpAuthRequired(signed_out, backend=self._client.backend) from exc
@@ -1218,7 +1229,9 @@ async def _start_kiro_runtime_impl(
                 if kas_refusal is not None:
                     raise kas_refusal from exc
                 if runtime.saw_not_logged_in():
-                    signed_out = host_auth.signed_out_message(self._client.backend)
+                    signed_out = host_auth.signed_out_message(
+                        self._client.backend, route=runtime.kas_spawn_route
+                    )
                     if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
                         signed_out = _with_credential_mask_note(runtime, signed_out, exc)
                     raise AcpAuthRequired(signed_out, backend=self._client.backend) from exc

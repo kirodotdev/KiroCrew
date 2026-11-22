@@ -1593,4 +1593,8 @@ def _credential_bearing_slugs(urls: dict[str, str]) -> set[str]:
     The warm surface stays slug-only by design -- a screened premint is not a terminal
     failure, and the logger is not a channel for URL-derived text.
     """
-    return {slug for slug, url in urls.items() if url and oauth_url_contains_credential(url)}
+    return {
+        slug
+        for slug, url in urls.items()
+        if url and oauth_url_contains_credential(url, mcp_server_alias(slug))
+    }

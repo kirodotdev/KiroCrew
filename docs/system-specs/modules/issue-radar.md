@@ -34,7 +34,8 @@ removes what it names:
 - **The four tool-less model-call key shapes** in `session_work_dir._DERIVED_SESSION_SHAPES`:
   that table decides which derived work directories the sweep may delete, and an app may
   not declare what the core deletes.
-- **The packaged `docs/issue-radar-pipeline.md` tip** in `tips_allowlist.py`.
+- **The `issue-radar-pipeline.md` name** in `tips.py`, whose state loader drops cached
+  generated tips that cite that doc, which left the tip allowlist.
 - **The `security_posture*.py` rows** that classify the app's files: core's audit of the
   app's code.
 
@@ -346,6 +347,8 @@ private `http_routes` module owns one responsibility:
 | `http_routes/issue_writes.py` | `/labels/apply`, `/issue/state`, `/issue/assignees` |
 | `http_routes/investigation.py` | `/investigation` (GET, PUT) |
 | `http_routes/pr_actions.py` | every `/pull/*` action, `/pull/runs`, `/pulls/bulk`, and the shared `_pr_action_preamble` / `_run_pr_action` |
+| `http_routes/comments.py` | `/comments`, the timeline composer's batch |
+| `http_routes/ci_runs.py` | `/ci-runs`, the CI runs dashboard's read |
 | `http_routes/gitlab_groups.py` | `/gitlab-groups` (GET, POST, DELETE) and `/gitlab-groups/review-requests` |
 
 The facade re-exports every name those modules define, so `routes.<name>` keeps
@@ -376,7 +379,7 @@ per-repo store-scoping rule.
 | GET | `/repos` | Connected repos list. Rows missing a cached `permissions` object (connected before permissions were tracked) are self-healed with a live `verify_repo_access`, run CONCURRENTLY under a bounded semaphore (`_REPO_HEAL_CONCURRENCY`) rather than one-at-a-time, since this gates app open; a single unreadable repo is skipped, not fatal |
 | GET | `/recent-repos` | Repos the authenticated user contributed to recently, for the connect-dialog picker; provider-neutral (`?provider=&host=`), so GitHub, GitLab and Azure DevOps all populate it, not only `gh` |
 | DELETE | `/repos` | Disconnect a repo (drops config + cache) |
-| GET | `/me` | Current `gh` login |
+| GET | `/me` | The signed-in login on the given provider (`?provider=&host=`) |
 | GET/PUT | `/settings` | Per-repo triage settings. The PUT replaces the whole document, so it carries the `revision` it read and is refused with **409** if the stored revision has moved — otherwise a stale tab would erase a label appended meanwhile |
 | POST | `/settings/role` | APPEND one label to a triage-label role, under the config lock. Exists because the PUT replaces the whole document, so a client read-modify-write only serializes itself — two dashboard tabs would each read the same settings and the later full replacement would drop the other's label |
 | GET | `/issue-ai` | AI summary + suggested labels (kirocrew-lite) |
@@ -401,6 +404,7 @@ per-repo store-scoping rule.
 | POST | `/pull/merge` | Merge a PR now. Per-PR only — never bulk. Requires `head_sha`, sent as the provider's `sha` precondition so the merge is pinned to the reviewed commit. Cannot bypass a gate: the provider enforces branch protection on its own endpoint, and a refusal is mapped to a readable `merge_not_allowed` message. On GitHub it goes through the asynchronous merge API and answers only once the merge has landed; a merge still running after the wait is a 409 `merge_pending` |
 | POST | `/pull/auto-merge` | Arm or disarm the PROVIDER's own auto-merge, for a PR that is not mergeable yet. **GitHub and Azure DevOps only** — REFUSED on GitLab, where `merge_when_pipeline_succeeds` is a deferral modifier on the merge endpoint rather than an arm verb (see "GitLab auto-merge is REFUSED outright" below); the UI hides both controls there. Callers must send only rows that are not landable yet — the provider refuses an already-clean or already-merged PR, and the list row carries `mergeable_state` so the bulk bar can tell (see "Merge readiness is on the LIST row") |
 | GET | `/pull/runs` | The CI runs on a PR's head commit, each with its id plus server-computed `cancellable`/`rerunnable`, so the UI never offers an action the provider will refuse |
+| GET | `/ci-runs` | Recent GitHub Actions runs across the connected GitHub repos (at most `CI_RUNS_MAX_REPOS` = 20 per response, `truncated` when more), read only while the CI runs dashboard is open; a repo whose read fails is a row with a fixed `error` code |
 | POST | `/pull/run` | Cancel or re-run one CI run (`failed_only` re-runs just the failed jobs) |
 | POST | `/pulls/bulk` | Apply ONE action to many PRs (`_BULK_PR_ACTIONS`: close, reopen, approve, comment, auto_merge, cancel_auto_merge; max `_BULK_PR_MAX` = 50). `approve` additionally requires a `head_shas` map keyed by PR number, covering EVERY number in the request (see rule 2). Sequential, because the PRs share one provider rate limit. Partial failure is reported per PR rather than failing the batch |
 | GET | `/gitlab-groups` | The followed GitLab groups as `[{host, path}]`. A local config read, no `glab` call — see "GitLab groups" |
@@ -415,6 +419,7 @@ per-repo store-scoping rule.
 | PUT | `/crew/work` | Record one work-item step and its progress event (the write `issue_radar_crew_record` runs in-process) |
 | POST | `/agent-tools` | The app's three agent tools, registered through the route registry: answers only the call `POST /api/app-tools/call` forwards (`internal_auth`), 403 `agent_tool_only` otherwise |
 | POST | `/crew/pause` | Pause or resume a crew |
+| GET | `/pipeline/overview`, `/pipeline/step`, `/pipeline/item/sessions` | The Pipeline tab's three read-only levels (per-step throughput, the items in one step, one item's sessions), each requiring `owner`/`repo`; registered from `pipeline_routes.py`, with no write path |
 
 **`website/src/apps/issue-radar/api.ts` holds the dashboard's calls to these
 routes** (`issueRadarApi`), plus the base path and the AI-language hint that
@@ -559,8 +564,8 @@ callers, which would also risk the forge-write routes (`/labels/apply`,
 
 The tool takes the findings as **flat** args (`verdict`, `root_cause`,
 `suggested_labels`, `next_action`, `summary`) rather than a nested object:
-`FieldSpec` validates scalars and string lists, so a `findings` dict would reach
-the gateway unvalidated. Empty fields are dropped, because the store merges
+each flat field carries its own bound in the tool's declared `inputSchema`, which a
+nested `findings` dict would escape. Empty fields are dropped, because the store merges
 findings **per key** (`store._merge_findings`) and reads an empty value as "leave
 this alone" — so a patch carrying only a `verdict` keeps the `root_cause`,
 `summary` and labels an earlier write stored. An explicit `null` clears the whole
@@ -613,8 +618,11 @@ repos/<owner>/<repo>/
   pull-<N>-ai.json                  # PR AI summary + the fingerprint it was built from
   recommendations-cache.json        # AI label taxonomy
   tagging-cache.json                # Per-issue label proposals for the untagged queue
-  investigation-<N>.json            # Per-issue investigation record
+  investigation-<N>.json            # Per-issue investigation record (`investigation-<kind>-<N>.json` for a non-issue kind)
+  ref-<N>.json                      # Short-TTL referenced-item summary (`/ref`)
+  deps-cache.json                   # Dependency graph (`/deps`)
   watch-state.json                  # Watcher high-water mark
+  ci-watch-state.json               # CI-failure alerts: reported run attempts
 ```
 
 That tree is PUBLIC GITHUB's, and it keeps the original layout so an install that
@@ -671,7 +679,7 @@ its responsibility. The crew store, `crew_store.py`, is a mirror façade over it
 ## Permissions
 
 Write routes (`/labels/apply`, `/labels/apply-bulk`, `/issue/state`,
-`/issue/assignees`, `/issue/comment`, `/labels/create`, and every MUTATING `/pull/*` + `/pulls/bulk` action) are gated on
+`/issue/assignees`, `/issue/comment`, `/comments`, `/labels/create`, and every MUTATING `/pull/*` + `/pulls/bulk` action) are gated on
 confirmed `triage` or `push` access (`_repo_can_write` returns `True` — unknown
 permission is denied, not allowed). Read-only repos degrade to suggest-only. Every PR
 *mutation* goes through one `_pr_action_preamble` helper for the
@@ -693,6 +701,7 @@ writes above and the local-state writes too:
 | `DELETE /repos`, `PUT /settings`, `POST /settings/role` | their handlers in `http_routes/repositories.py` |
 | `PUT /investigation` (dashboard caller) | `http_routes/investigation.py` |
 | `POST /tagging`, `POST /recommendations` | their handlers in `http_routes/tagging.py` and `http_routes/recommendations.py` |
+| `POST /gitlab-groups`, `DELETE /gitlab-groups` | their handlers in `http_routes/gitlab_groups.py` |
 
 The agent tools pass without the owner gate, in-process from the `agent-tools` route:
 the agent leg of `PUT /crew/work` (`issue_radar_crew_record`) and the investigation
@@ -1276,16 +1285,18 @@ the parent RUN and needs its id.
   output is redacted. Issue label suggestions are additionally intersected with the
   repo's real label set, so injected text cannot invent a label; a PR summary is
   prose that nothing downstream acts on.
-- **Output language**: when `dashboard.language` names a shipped catalog, each AI
-  prompt appends a directive (outside the untrusted fence) to write its PROSE —
+- **Output language**: when `dashboard.language` names a shipped catalog (or, with
+  no configured language, the SPA's per-request `lang` hint names a non-English
+  one), each AI prompt appends a directive (outside the untrusted fence) to write its PROSE —
   the summaries, per-label `reason`, and recommendation `rationale` — in that
   language. Label names stay verbatim (the intersection above still matches), and
   a recommendation's `name`/`description` stay in the repo's own language because
   `/labels/create` writes them onto GitHub. With no configured language the
   prompts are byte-identical to before and the model defaults to English.
   Caches follow suit: the PR-summary fingerprint folds the tag in, and the
-  issue-AI cache stores the tag beside the payload and treats a mismatch as a
-  miss, so a language switch regenerates both on next open. The recommendations
+  issue-AI, PR-summary and recommendations caches are each partitioned into one
+  file per tag (`issue-<N>-ai-<tag>.json`; no tag keeps the unsuffixed name), so a
+  language switch reads its own partition and regenerates only when that is empty. The recommendations
   cache is regenerate-only by design — it renders the last explicitly generated
   proposal until the user presses "Recommend labels" again.
 
@@ -1395,12 +1406,18 @@ forge from them would show a same-slug project the wrong repository's rows.
 
 ## Background Watcher
 
-An in-process asyncio loop (`watch.py`) polls opted-in repos every 60s for new
-issues (high-water mark in `watch-state.json`). Sends dashboard bell
+An in-process asyncio loop (`watch.py`) polls opted-in repos every
+`POLL_INTERVAL_SEC` (60s; `KIROCREW_ISSUE_RADAR_POLL_SECS` overrides it, clamped to
+15-300s) for new issues (high-water mark in `watch-state.json`). Sends dashboard bell
 notifications via `state.notify`. Zero-LLM. Guarded by `is_app_enabled` — silent
 when disabled. Lifecycle hooks registered via `app.on_startup`/`on_cleanup`.
 
-The same loop drives the crew sweep, `crew_runtime.sweep_repo`. `crew_runtime.py`
+The same loop drives the crew sweep, `crew_runtime.sweep_repo`, and the CI-failure
+alerts, `ci_watch.poll_ci_failures`: for the GitHub repos whose
+`notify_on_own_pr_ci_failure` setting is on, it reads the Actions runs on the
+signed-in user's own open PRs and raises one notification on the app's `ci-failure`
+channel per newly failed attempt (reported attempts in `ci-watch-state.json`; the
+first read seeds without notifying). No repo opted in means no call. `crew_runtime.py`
 keeps the sweep and its unblock signals, and is a mirror façade
 (`kiro_crew._facade_mirror`) for the rest of the crew runtime:
 `crew_runtime_prompt` (the brief, the nudge and the turn prompt),
@@ -1623,9 +1640,14 @@ detail pane (`IssueDetail` / `PrDetail`) the right column uses. Everything else 
 the list, the filters, the selected item — is untouched.
 
 - **Matching** (`lib/refLinks.ts:parseRepoRef`) is deliberately narrow. Only an
-  absolute `http(s)` URL on `github.com` / `www.github.com` whose path is
-  `/<owner>/<repo>/(issues|pull|pulls)/<positive int>` and whose owner/repo match
-  the ACTIVE repo (case-insensitively) is claimed. Trailing segments (`/files`),
+  absolute `http(s)` URL on the ACTIVE repo's own host and port (`www.github.com`
+  folded onto `github.com` for GitHub alone) whose path is that repo's issue or
+  change-request path, in the provider's grammar, with a positive number is claimed:
+  `/<owner>/<repo>/(issues|pull|pulls)/<n>` on GitHub,
+  `/<namespace>/<project>/-/(issues|merge_requests)/<n>` on GitLab, and
+  `/<org>/<project>/_workitems[/edit]/<n>` or `/<org>/<project>/_git/<repo>/pullrequest/<n>`
+  on Azure DevOps. The namespace is compared case-insensitively as a whole; an Azure
+  repository name is compared exactly. Trailing segments (`/files`),
   query strings and `#issuecomment-…` fragments are ignored — same target. Any
   other link (a different repo, an Enterprise host, `/discussions/`, `/commit/`,
   a relative href) is NOT claimed: it falls through to `MdAnchor`'s own branch
@@ -1638,8 +1660,8 @@ the list, the filters, the selected item — is untouched.
   rejects it and the renderer shows the label as inert text (no anchor); and a
   `mailto:`/`xmpp:`/`irc(s):` href DOES reach the override, so a provider must
   keep its own scheme check.
-  A repo is identified by owner/repo only, so a same-path URL on an
-  Enterprise host is a DIFFERENT repo and is never claimed.
+  The host is part of a repo's identity, so a same-path URL on another host is a
+  DIFFERENT repo and is never claimed.
 - **Interception** happens at the ANCHOR, not on the DOM: `MarkdownRenderer`
   exposes a `LinkOverrideCtx` seam (a predicate-style render override consulted by
   its default anchor), and `components/RefMarkdown.tsx` provides one that returns

@@ -36,6 +36,8 @@ from kiro_crew.cli_server_peer import (
 from kiro_crew.config.loader import read_local_secret
 from kiro_crew.loopback_http import deadline_expired
 from kiro_crew.port_resolution import resolve_client_port
+from kiro_crew.terminal_safe import safe_terminal_line
+from kiro_crew.work_holders import describe as _describe_holders
 
 #: Default ``--max-wait``.
 DEFAULT_MAX_WAIT_SECS = 600.0
@@ -88,6 +90,8 @@ class _Verdict:
     #: The service manager's answer when the marker was missing: ``"service"``,
     #: ``"other"``, ``"unknown"``, or ``None`` (marker present, or an older gateway).
     service_identity: str | None = None
+    #: The work the counts are, as the gateway named it (``""`` from an older one).
+    waiting_on: str = ""
 
 
 class _GateFailed(Exception):
@@ -177,6 +181,7 @@ def _ask_gate(
         background,
         service_managed=body.get("service_managed") is True,
         service_identity=identity if isinstance(identity, str) else None,
+        waiting_on=_describe_holders(body.get("holders"), body.get("holders_more")),
     )
 
 
@@ -264,7 +269,20 @@ def _refuse_as_restart_would(cli_port: int | None, port: int) -> None:
 
 
 def _describe(verdict: _Verdict) -> str:
-    return f"{verdict.turns} chat turn(s) and {verdict.background} background task(s)"
+    counts = f"{verdict.turns} chat turn(s) and {verdict.background} background task(s)"
+    # Names are for the person at this terminal. A captured run (Remote Crew
+    # over SSH or SSM, a script) keeps the counts alone: its output is relayed.
+    if not verdict.waiting_on or not _stdout_is_terminal():
+        return counts
+    # The gateway's answer is text another process chose: one terminal-safe line.
+    return f"{counts} ({safe_terminal_line(verdict.waiting_on)})"
+
+
+def _stdout_is_terminal() -> bool:
+    try:
+        return sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
 
 
 def _restart_when_idle(cli_port: int | None, *, max_wait_secs: float | None = None) -> None:

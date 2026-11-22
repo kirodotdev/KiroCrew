@@ -101,6 +101,7 @@ _LISTING_IMPORTS = (
     "agent_discovery.py",
     "agent_ipc_client.py",
     "agent_sdk/mcp_problems.py",
+    "agent_spec_format.py",
     "apps/__init__.py",
     "apps/app_agent_tools.py",
     "apps/manager.py",

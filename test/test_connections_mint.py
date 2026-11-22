@@ -40,6 +40,8 @@ from dashboard_owner_helpers import as_owner
 
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew import hooks, mcp_grant
+from kiro_crew.acp.mcp_session_report import McpSessionReport
+from kiro_crew.acp.types import METHOD_MCP_SERVER_INITIALIZED, JsonRpcMessage
 from kiro_crew.connections import mint, registry, tool_test
 from kiro_crew.dashboard.handlers import connections
 from kiro_crew.testing.wait import async_wait_until, await_until
@@ -763,12 +765,26 @@ async def test_a_mint_with_no_entry_left_fails_instead_of_reporting_granted(monk
     class _NoChallenge:
         def __init__(self, **kwargs):
             self._pid = 0
+            # The server started and asked for no sign-in, as kiro-cli reports it.
+            self.report = McpSessionReport()
+            self.report.record_frame(
+                JsonRpcMessage(
+                    method=METHOD_MCP_SERVER_INITIALIZED, params={"serverName": "notion"}
+                ),
+                owned=True,
+            )
 
         async def ensure_ready(self):
             return None
 
         def pop_pending_oauth_requests(self):
             return []
+
+        def mcp_session_report(self):
+            return self.report
+
+        async def wait_for_declared_mcp(self, timeout):
+            return ()
 
     async def _fake_dispose(holdings):
         return None

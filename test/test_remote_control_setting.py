@@ -52,8 +52,8 @@ def _stored(path: Path) -> Any:
 class TestTheSetting:
     def test_the_default_is_the_one_named_value(self) -> None:
         assert TunnelConfig().relay_enabled is REMOTE_CONTROL_ON_BY_DEFAULT
-        # Pending a product decision: off until it is made.
-        assert REMOTE_CONTROL_ON_BY_DEFAULT is False
+        # Unset: the Crew's credential decides (remote_control.hosting).
+        assert REMOTE_CONTROL_ON_BY_DEFAULT is None
 
     def test_the_section_builder_reads_the_field_default_for_an_absent_key(
         self, monkeypatch
@@ -63,7 +63,7 @@ class TestTheSetting:
         # Patched through the sections facade, which mirrors the write to every owner.
         from kiro_crew.config import section_builders, sections
 
-        assert section_builders._build_tunnel_config({}).relay_enabled is False
+        assert section_builders._build_tunnel_config({}).relay_enabled is None
         real = sections.field_default
         monkeypatch.setattr(
             sections,
@@ -119,6 +119,12 @@ class _FakeProvider:
 
     async def ensure_available(self, *, install: bool = True) -> str:
         return self.state if self.is_running else "disabled"
+
+    def status_snapshot(self) -> dict | None:
+        """The client's own state; ``starting`` maps to ``reconnecting`` unless named."""
+        if not self.is_running:
+            return None
+        return {"state": getattr(self, "client_state", self.state)}
 
 
 class _FakeManager:
@@ -450,7 +456,11 @@ class TestTheTerminalCommand:
         assert capsys.readouterr().out == f"Remote Control: {text}\n"
         with pytest.raises(SystemExit):
             run(_cli("status", "--json"))
-        assert json.loads(capsys.readouterr().out) == {"requested": stored, "locked": False}
+        assert json.loads(capsys.readouterr().out) == {
+            "requested": stored,
+            "locked": False,
+            "by_default": False,
+        }
 
     def test_a_locked_build_refuses_on_and_status_says_why(
         self, config_file, monkeypatch, capsys
@@ -472,7 +482,11 @@ class TestTheTerminalCommand:
         assert capsys.readouterr().out == f"Remote Control: off\n{LOCKED_NOTICE}\n"
         with pytest.raises(SystemExit):
             run(_cli("status", "--json"))
-        assert json.loads(capsys.readouterr().out) == {"requested": True, "locked": True}
+        assert json.loads(capsys.readouterr().out) == {
+            "requested": True,
+            "locked": True,
+            "by_default": False,
+        }
         # Off still writes: it clears the stored true.
         run(_cli("off"))
         assert _stored(config_file) is False
@@ -514,7 +528,13 @@ class TestTheRoute:
     ) -> None:
         config_file.write_text(json.dumps({"tunnel": {"relay_enabled": True}}), encoding="utf-8")
         body = await (await client.get("/api/remote-control")).json()
-        assert body == {"requested": True, "locked": False, "running": False}
+        assert body == {
+            "requested": True,
+            "locked": False,
+            "running": False,
+            "connecting": False,
+            "relayed": False,
+        }
 
     async def test_get_says_a_locked_build_ignores_the_setting(
         self, client, config_file, monkeypatch
@@ -525,7 +545,39 @@ class TestTheRoute:
         monkeypatch.setattr(edition, "is_lts", lambda: True)
         config_file.write_text(json.dumps({"tunnel": {"relay_enabled": True}}), encoding="utf-8")
         body = await (await client.get("/api/remote-control")).json()
-        assert body == {"requested": True, "locked": True, "running": False}
+        assert body == {
+            "requested": True,
+            "locked": True,
+            "running": False,
+            "connecting": False,
+            "relayed": False,
+        }
+
+    @pytest.mark.parametrize(
+        ("region", "problem"),
+        [("us-east-1", False), ("eu-central-1", False), ("", False), ("xx-test-9", True)],
+    )
+    async def test_get_says_why_a_jwt_svid_crew_with_an_unusable_region_cannot_start(
+        self, client, config_file, monkeypatch, region: str, problem: bool
+    ) -> None:
+        # The card shows this instead of asking for a restart that would not connect.
+        # A Region unlike the profile ARN's is no problem: the setting picks it.
+        monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY", "spiffe")
+        monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY_SVID_FILE", "/run/stand-in/svid")
+        monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY_AUDIENCE", "https://runtime.example.test")
+        monkeypatch.setenv(
+            "KIROCREW_WORKLOAD_IDENTITY_PROFILE_ARN",
+            "arn:aws:codewhisperer:eu-central-1:000000000000:profile/STANDINPROFILE",
+        )
+        tunnel = {"relay_lease_credential": "/run/stand-in/svid", "relay_lease_region": region}
+        config_file.write_text(json.dumps({"tunnel": tunnel}), encoding="utf-8")
+        body = await (await client.get("/api/remote-control")).json()
+        assert body["requested"] is True and body["running"] is False
+        if problem:
+            assert body["problem"].startswith("tunnel.relay_lease_region names no Region")
+            assert "KIROCREW_WORKLOAD_IDENTITY_PROFILE_ARN" not in body["problem"]
+        else:
+            assert "problem" not in body
 
     async def test_the_dashboard_cannot_turn_it_on(self, client, config_file) -> None:
         # Turning on is the terminal command's job.
@@ -547,6 +599,34 @@ class TestTheRoute:
         # ...while the stop decision still sees a client to clean up.
         assert await guard.running() is True
 
+    async def test_a_relay_still_connecting_says_so_instead_of_asking_for_a_restart(
+        self, client, config_file, monkeypatch
+    ) -> None:
+        # Bug Bash row 51: after a restart the card said "Restart to connect" for
+        # the ~200 s the client spent waiting for its first host token.
+        config_file.write_text(json.dumps({"tunnel": {"relay_enabled": True}}), encoding="utf-8")
+        provider = _FakeProvider(state="starting")
+        guard = RemoteControlGuard(_FakeManager(provider), provider)
+        monkeypatch.setattr(guard_mod, "_guard", guard)
+        guard.subscribe()
+        body = await (await client.get("/api/remote-control")).json()
+        assert body["running"] is False
+        assert body["connecting"] is True
+
+    async def test_a_relay_reconnecting_after_a_failure_does_not_promise_to_connect(
+        self, client, config_file, monkeypatch
+    ) -> None:
+        # A lease failure that needs the owner reads "starting" to ensure_available
+        # but the client itself is reconnecting: the card keeps its restart advice.
+        config_file.write_text(json.dumps({"tunnel": {"relay_enabled": True}}), encoding="utf-8")
+        provider = _FakeProvider(state="starting")
+        provider.client_state = "reconnecting"
+        guard = RemoteControlGuard(_FakeManager(provider), provider)
+        monkeypatch.setattr(guard_mod, "_guard", guard)
+        guard.subscribe()
+        body = await (await client.get("/api/remote-control")).json()
+        assert body["connecting"] is False
+
     async def test_put_off_writes_false_and_stops_the_relay(
         self, client, config_file, monkeypatch
     ) -> None:
@@ -564,7 +644,7 @@ class TestTheRoute:
         # once it is done: a raw read racing it failed with EACCES on Windows CI.
         await async_wait_until(lambda: manager.stops == 1)
         assert _stored(config_file) is False
-        assert body == {"requested": False, "locked": False, "running": False}
+        assert body == {"requested": False, "locked": False, "running": False, "relayed": False}
 
     async def test_put_off_answers_before_the_relay_stops(
         self, client, config_file, monkeypatch
@@ -590,7 +670,7 @@ class TestTheRoute:
         )
         assert resp.status == 200
         body = await resp.json()
-        assert body == {"requested": False, "locked": False, "running": False}
+        assert body == {"requested": False, "locked": False, "running": False, "relayed": False}
         assert manager.stops == 0, "the relay must outlive the off request's answer"
         assert guard.stop_pending
         # A poll tick meanwhile sees the setting off but leaves the stop to the drain.

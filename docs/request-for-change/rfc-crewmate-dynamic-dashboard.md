@@ -3,8 +3,8 @@ title: Crewmate dynamic dashboard -- a project report beside every crewmate's ch
 status: partial
 author: chenmingwei23, with kirocrew-lead
 created: 2026-10-03
-last-audited: 2026-10-15
-audited-at: 40139dc512
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 19204
 implementation-prs: [17507, 17998, 18014, 18994]
 tracking-issues: [18642]

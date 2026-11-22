@@ -59,6 +59,8 @@ _CPS_ENDPOINTS = {
     "eu-west-1": "https://management.eu-central-1.kiro.dev/",
 }
 _DEFAULT_CPS_REGION = "us-east-1"
+#: The Regions a Crew may name for the built-in lease service (``tunnel.relay_lease_region``).
+CONTROL_PLANE_REGIONS = tuple(sorted(_CPS_ENDPOINTS))
 
 # A Kiro profile ARN; group 1 is the region.
 _PROFILE_ARN_RE = re.compile(
@@ -92,6 +94,11 @@ class ProfileListing:
 def control_plane_url(region: str) -> str:
     """CPS base URL for ``region``, falling back to us-east-1 like kiro-cli does."""
     return _CPS_ENDPOINTS.get(region) or _CPS_ENDPOINTS[_DEFAULT_CPS_REGION]
+
+
+def known_control_plane_url(region: str) -> str:
+    """CPS base URL for ``region``, or ``""`` when the table has none: never another Region's."""
+    return _CPS_ENDPOINTS.get(region, "")
 
 
 def control_plane_urls(region: str) -> list[str]:

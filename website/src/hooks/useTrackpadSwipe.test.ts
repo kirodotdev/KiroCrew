@@ -5,13 +5,15 @@
  * pinch, a sideways scroller, a direction with nothing to do) are never taken.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import {
   createTrackpadSwipeReader, isClearSwipe, SWIPE_GESTURE_IDLE_MS, swipeTiming, useTrackpadSwipe, canScrollX,
   relayedWheelTime, FRAME_WHEEL_MAX_AGE_MS, FINGER_HOLD_MAX_MS,
   type TrackpadSwipeDir, type WheelSample, type WheelVerdict,
 } from './useTrackpadSwipe'
 import { fingerSign } from '../lib/trackpadGesture'
+import { REVERSE_TRACKPAD_SWIPE_KEY } from '../lib/scrollTouch'
+import { usePersistedBool } from './usePersistedBool'
 
 /** A run of `n` wheel events 16ms apart, starting at `at`. */
 function run(dx: number, dy: number, n: number, at: number, extra: Partial<WheelSample> = {}): WheelSample[] {
@@ -771,6 +773,68 @@ describe('useTrackpadSwipe: macOS Natural scrolling off', () => {
     }
     post(20, false)
     expect(wants).toHaveBeenLastCalledWith('right', true)
+  })
+
+  describe('the "Reverse trackpad swipe" switch', () => {
+    afterEach(() => { localStorage.removeItem(REVERSE_TRACKPAD_SWIPE_KEY) })
+
+    it('reads a wheel with no WebKit flag (Chrome, Firefox) as Natural scrolling off', () => {
+      localStorage.setItem(REVERSE_TRACKPAD_SWIPE_KEY, '1')
+      const { swipe, onDragStart, onDragMove } = mount()
+      swipe(-20, 3)
+      expect(onDragStart).toHaveBeenLastCalledWith('left', undefined)
+      expect(onDragMove.mock.calls.map(([sum]) => sum)).toEqual([20, 40, 60])
+    })
+
+    it("changes nothing where the wheel's flag or the desktop shell says", () => {
+      localStorage.setItem(REVERSE_TRACKPAD_SWIPE_KEY, '1')
+      const { swipe, onDragStart } = mount()
+      swipe(20, 3, true)
+      expect(onDragStart).toHaveBeenLastCalledWith('left', undefined)
+      ;(window as Window & { electronAPI?: unknown }).electronAPI = { getNaturalScrolling: () => true }
+      swipe(20, 3)
+      expect(onDragStart).toHaveBeenLastCalledWith('left', undefined)
+    })
+
+    it('reads a relayed frame wheel with no flag through the switch too', () => {
+      localStorage.setItem(REVERSE_TRACKPAD_SWIPE_KEY, '1')
+      const { root, wants } = mount(() => true)
+      const frame = document.createElement('iframe')
+      Object.defineProperty(frame, 'contentWindow', { value: { postMessage: () => {} } })
+      root.appendChild(frame)
+      const ev = new MessageEvent('message', { data: { type: 'mc-frame-wheel', dx: 20, dy: 0, mode: 0, inv: null } })
+      Object.defineProperty(ev, 'source', { value: frame.contentWindow })
+      window.dispatchEvent(ev)
+      expect(wants).toHaveBeenLastCalledWith('right', true)
+    })
+
+    it('off (the default) keeps reading an unflagged deltaX as Natural scrolling on', () => {
+      localStorage.setItem(REVERSE_TRACKPAD_SWIPE_KEY, '0')
+      const { swipe, onDragStart } = mount()
+      swipe(20, 3)
+      expect(onDragStart).toHaveBeenLastCalledWith('left', undefined)
+    })
+
+    it('re-arms an armed frame with the new value when the switch changes, in this tab or another', () => {
+      const { root } = mount(() => true)
+      const post = vi.fn()
+      const frame = document.createElement('iframe')
+      frame.setAttribute('data-wheel-relay', '')
+      Object.defineProperty(frame, 'contentWindow', { value: { postMessage: post } })
+      root.appendChild(frame)
+      const hello = new MessageEvent('message', { data: { type: 'mc-frame-wheel-hello' } })
+      Object.defineProperty(hello, 'source', { value: frame.contentWindow })
+      window.dispatchEvent(hello)
+      expect(post).toHaveBeenLastCalledWith({ type: 'mc-frame-wheel-armed', on: true, natural: null }, '*')
+      // This tab: the Settings switch writes through usePersistedBool.
+      const { result } = renderHook(() => usePersistedBool(REVERSE_TRACKPAD_SWIPE_KEY, false))
+      act(() => { result.current[1](true) })
+      expect(post).toHaveBeenLastCalledWith({ type: 'mc-frame-wheel-armed', on: true, natural: false }, '*')
+      // Another tab: only the `storage` event arrives here.
+      localStorage.setItem(REVERSE_TRACKPAD_SWIPE_KEY, '0')
+      window.dispatchEvent(new StorageEvent('storage', { key: REVERSE_TRACKPAD_SWIPE_KEY, newValue: '0', storageArea: localStorage }))
+      expect(post).toHaveBeenLastCalledWith({ type: 'mc-frame-wheel-armed', on: true, natural: null }, '*')
+    })
   })
 })
 

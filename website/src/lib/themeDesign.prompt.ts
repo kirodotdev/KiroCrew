@@ -44,6 +44,7 @@ const THEME_PROMPT_GROUPS: { title: string; vars: [string, string][] }[] = [
       ['--border', 'hairlines and card outlines'],
       ['--border-strong', 'dividers and input outlines'],
       ['--border-hover', 'outline of a hovered control'],
+      ['--glass-band-plain', 'lit top/bottom edge of the glass panes: near-white in .light, lighter than --bg; a faint light rgba() in .dark (#ffffff and rgba(255, 255, 255, .22) keep the default)'],
     ],
   },
   {

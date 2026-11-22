@@ -115,7 +115,12 @@ _CRON_CONFIG_FIELDS = (
 
 
 def _cron_job_revision(job: Any) -> str:
-    return _revision_digest({k: getattr(job, k, None) for k in _CRON_CONFIG_FIELDS})
+    fields = {k: getattr(job, k, None) for k in _CRON_CONFIG_FIELDS}
+    # The pin joins only when set, so an unpinned job keeps the digest a card stored before it.
+    for key in ("channel_type", "target_id"):
+        if getattr(job, key, None):
+            fields[key] = getattr(job, key)
+    return _revision_digest(fields)
 
 
 def cron_job_revision(job: Any) -> str:

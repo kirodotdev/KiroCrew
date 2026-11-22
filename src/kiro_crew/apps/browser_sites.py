@@ -37,6 +37,10 @@ from urllib.parse import urlsplit
 
 from kiro_crew.apps.app_hosts import frame_origin_refusal
 
+# The calls the row never approves (each asks the person on the card) follow the
+# rule a person's site grant follows too.
+from kiro_crew.browser_harness.op_classes import card_only
+
 logger = logging.getLogger(__name__)
 
 #: The manifest key under ``permissions``, and the grant family that stores it.
@@ -179,7 +183,7 @@ def browser_call_url(params: Any) -> tuple[bool, str | None]:
     args = params.get("args") or {}
     if not isinstance(op, str) or not isinstance(args, dict):
         return False, None
-    if op == "navigate":
+    if op in ("navigate", "http_get"):
         url = args.get("url")
         return isinstance(url, str), url if isinstance(url, str) else None
     if op == "tabs" and args.get("action") == "new":
@@ -235,7 +239,10 @@ def gate_grants(facts: Any) -> bool:
     * no operator ``confirm_tools`` pattern names it;
     * the app holds approved sites right now (read fresh);
     * a call that names a URL (``navigate``, ``tabs`` ``new``) names one of them; any
-      other URL falls through to the card, and the op route refuses it anyway.
+      other URL falls through to the card, and the op route refuses it anyway;
+    * the call is not :func:`card_only` (``js``, ``cdp``, ``http_get``, ``tabs
+      close``), which always asks, nor ``upload``, which only a person's own site
+      grant covers.
 
     A granted slot is noted (:func:`note_granted_session`) before the approval leaves,
     so the op route holds it to its sites even if they are revoked before the call
@@ -252,7 +259,13 @@ def gate_grants(facts: Any) -> bool:
     ):
         return False
     readable, url = browser_call_url(call.raw_params)
-    if not readable:
+    op_args = call.raw_params.get("args")
+    op = str(call.raw_params.get("op"))
+    if (
+        not readable
+        or op == "upload"
+        or card_only(op, op_args if isinstance(op_args, dict) else {})
+    ):
         return False
     # Call time: the facade imports nothing from here at module level.
     from kiro_crew import hooks  # noqa: PLC0415

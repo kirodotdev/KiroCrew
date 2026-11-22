@@ -19,7 +19,7 @@ Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_refuse_over_ceiling_start``,
 ``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
 ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``, ``can_release``,
-``release_session``.
+``kas_spawn_route``, ``release_session``.
 """
 
 from __future__ import annotations
@@ -54,6 +54,7 @@ from kiro_crew.acp.runtime_session_setup import (
     _drop_withdrawn_stubs,
     _kas_worker_stub_names,
     _pooled_session_servers_and_ref_spec,
+    _with_runtime_ipc_pickups,
 )
 from kiro_crew.acp.session_handle import (
     AcpFrameTooLarge,
@@ -68,6 +69,7 @@ from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.transport_errors import AcpAuthRequired
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
@@ -353,6 +355,11 @@ async def load_session(
             stub_token=stub_token,
             resuming=True,
         )
+    mirror_used = mirrored is not None
+    if mirror_used:
+        # Once, on the array as it will be sent: the member entries above replace
+        # same-name projected ones, so issuing before them left those unserved.
+        mcp_servers = _with_runtime_ipc_pickups(self, mcp_servers, stub_token)
     # Narrowed by the host for the same reason session/new is, and it matters
     # MORE here: session/load re-initializes the session's servers, so a
     # rejected array does not just fail to add tools -- it takes them away from
@@ -656,7 +663,7 @@ async def load_session(
     handle.spec_denied_tools = denied_tools
     handle.spec_zero_tools = zero_tools
     handle.consumed_agent_spec = consumed_spec
-    handle.mirror_used = mirrored is not None
+    handle.mirror_used = mirror_used
     if harness_state is not None:
         # Mirrors create_session: what the host's own setup decided that the
         # handle enforces.
@@ -803,7 +810,11 @@ async def load_session(
         # different (broader) default agent than the one requested.
         _ids, _current, _adv = parse_session_modes(resp)
         await self.terminate_session(resume_sid)
-        cause, remedy = await asyncio.to_thread(unavailable_mode_explanation, mode_agent)
+        cause, remedy = await asyncio.to_thread(
+            unavailable_mode_explanation,
+            mode_agent,
+            kiro_cli_engine=self._harness.backend == ACP_BACKEND_KIRO,
+        )
         raise AcpRuntimeError(
             f"Agent mode {mode_agent!r} is not available for resumed session "
             f"{resume_sid} (advertised modes: {_ids or 'none'}); {cause} Refusing "
@@ -1002,7 +1013,8 @@ async def _wait_managed_mcp(
                 # auth can be checked here; kiro-cli owns a cli-owned relay's.
                 if self._kas_host_auth and await sign_in_refused(self._kas_served_token_digest):
                     raise AcpAuthRequired(
-                        host_auth.signed_out_message(self.acp_backend), backend=self.acp_backend
+                        host_auth.signed_out_message(self.acp_backend, route=self.kas_spawn_route),
+                        backend=self.acp_backend,
                     ) from exc
                 raise
         else:

@@ -149,7 +149,7 @@ the mechanism that decides it.
 
 **Size waves by capacity, then give it back.** Size every wave, reseed waves
 included, by `resource_status` as goal-conductor's "Capacity decides the wave"
-says; that rule owns the per-posture counts. Then give the capacity back:
+and "Keep the host healthy" say. Then give the capacity back:
 `work_ledger_record` `action=close` the item once it is terminal and its result
 is read, and `session_close` the child, so the server's
 `MAX_SLOTS_PER_CREATOR` and `MAX_LIVE_SLOTS` ceiling frees a seat.

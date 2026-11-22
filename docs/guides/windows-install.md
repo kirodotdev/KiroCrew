@@ -154,8 +154,7 @@ Current status:
   controls remain on the right.
 - **Precompiled Windows gateway startup** — packaging traces the real
   `kiro_crew.cli_server` import after pruning and ships hash-based (unchecked) bytecode for
-  that import closure beside its sources, plus the `lark_oapi` closure the Feishu
-  channel imports on the gateway loop. Windows consumes those caches directly,
+  that import closure beside its sources. Windows consumes those caches directly,
   avoiding the thousand-file cache-population burst that otherwise overlaps
   Defender's post-install scanning. Linux redirects bytecode out of its
   read-only app tree, and macOS forbids writing any into its signed one. The Windows caches are **unchecked**-hash,
@@ -765,8 +764,7 @@ Sub-agents that share the chat's own kiro-cli process, the default while
 `agent.session_sharing` is on, are not marked: the chat runs in that process,
 and a process-level hint cannot tell the two apart. Not covered yet: dedicated
 sub-agent processes (session sharing off, `keep`, a remote workspace), the
-`_bg` helper runtime, MCP gateway backends and cron scripts
-([#35537](https://github.com/kirodotdev/KiroCrew/issues/35537)).
+`_bg` helper runtime, MCP gateway backends and cron scripts.
 
 Windows pod teardown does not infer a clean stop from the gateway PID record
 vanishing. Before `/End`, it opens an exact handle to the recorded gateway and
@@ -898,9 +896,7 @@ anything.
 What this does **not** give you is supervision. `kirocrew service install` has
 no Windows backend: it prints that service management is supported only on
 systemd and launchd. A gateway started this way stops when you sign out or close
-its window, does not start at boot, and is not restarted if it exits. Windows
-supervision is a separate piece of work, proposed in
-[#11289](https://github.com/kirodotdev/KiroCrew/pull/11289).
+its window, does not start at boot, and is not restarted if it exits.
 
 ## Troubleshooting
 

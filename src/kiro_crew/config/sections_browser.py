@@ -264,6 +264,46 @@ class BrowserRecordingConfig:
         )
 
 
+#: ``browser.run`` ceilings. 0 is off; the bounds keep a hand-edited value sane.
+RUN_MAX_OPS_CAP = 1_000_000
+RUN_MAX_REPEATS_CAP = 10_000
+
+
+@dataclass
+class BrowserRunConfig:
+    """``browser.run``: a stop for a browser task that runs on or goes round in circles."""
+
+    max_ops: int = field(
+        default=0,
+        metadata=_meta(
+            "Most browser steps per chat",
+            "After this many browser steps in one chat, the next one is not run and "
+            "the agent is told why. Taking over the browser or starting a new chat "
+            "counts again from zero. 0 (the default) sets no limit.",
+        ),
+    )
+    max_repeats: int = field(
+        default=0,
+        metadata=_meta(
+            "Most repeats of one step",
+            "After this many times in a row of the same browser step with the same "
+            "details (the same click on the same element, the same scroll), the next "
+            "one is not run and the agent is told to try something else. Any "
+            "different step starts the count again. 0 (the default) sets no limit.",
+        ),
+    )
+
+    @classmethod
+    def from_raw(cls, section: object) -> "BrowserRunConfig":
+        if not isinstance(section, dict):
+            return cls()
+        reader = SectionReader(cls, section)
+        return cls(
+            max_ops=reader.read("max_ops", _safe_int, 0, RUN_MAX_OPS_CAP),
+            max_repeats=reader.read("max_repeats", _safe_int, 0, RUN_MAX_REPEATS_CAP),
+        )
+
+
 #: Most ``browser.credentials.domains`` entries kept; an allowlist is a handful of
 #: company domains, and the rest of a longer list is dropped with one warning.
 CREDENTIAL_DOMAINS_CAP = 64
@@ -398,6 +438,15 @@ class BrowserConfig:
         ),
     )
 
+    run: BrowserRunConfig = field(
+        default_factory=BrowserRunConfig,
+        metadata=_meta(
+            "Run limits",
+            "An optional stop for a long browser task: a most number of repeats of one "
+            "step. Off by default.",
+        ),
+    )
+
     @classmethod
     def from_raw(cls, section: object) -> "BrowserConfig":
         """Build from a raw ``browser`` dict -- the ONE parse site.
@@ -419,4 +468,5 @@ class BrowserConfig:
             live=BrowserLiveConfig.from_raw(section.get("live")),
             credentials=BrowserCredentialsConfig.from_raw(section.get("credentials")),
             recording=BrowserRecordingConfig.from_raw(section.get("recording")),
+            run=BrowserRunConfig.from_raw(section.get("run")),
         )

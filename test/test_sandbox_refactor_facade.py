@@ -55,6 +55,7 @@ from typing import Callable
 from unittest import mock
 
 import pytest
+import source_corpus
 import test_sandbox_refactor_create_guard as create_guard
 
 from kiro_crew import (
@@ -221,6 +222,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _reconcile_auth_store_staging_links _sweep_legacy_auth_store_temps
         _LEGACY_AUTH_SWEEP_CLEAN _materialize_env_mask_target
         _materialize_refresh_chains_mask_target _create_absent_mask_target
+        _materialize_signing_key_mask_target
         _sweep_one_md_notebook_state_dir _materialize_md_notebook_mask_targets
         """.split()),
     "kiro_crew.sandbox_workspace": tuple("""
@@ -362,6 +364,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _needs_path_search create_subprocess_limited _prepare_limited_spawn run_limited
         _INTERPRETER_ENOENT_DELAYS _is_transient_interpreter_enoent
         _retry_interpreter_enoent popen_limited
+        _FORK_FREE_SPAWN _FORK_ONLY_SPAWN_KWARGS fork_free_spawns _fork_free_spawn_plan
+        _SHIM_SETSID_FLAG _SHIM_CHDIR_FLAG _SHIM_CLOSE_FDS_FLAG
         """.split()),
     "kiro_crew.sandbox_spawn": tuple("""
         corroborate_launcher_refusal credential_mask_applies spawn_delegates_masking
@@ -1076,6 +1080,7 @@ CENSUS_PARTS = 4
 
 
 @functools.lru_cache(maxsize=1)
+@source_corpus.untraced()
 def census_parts() -> tuple[tuple[Path, ...], ...]:
     """The files the census parses, dealt into ``CENSUS_PARTS`` parts of about equal
     source size: each file, largest first, joins the lightest part so far. Only the
@@ -1098,6 +1103,7 @@ def census_parts() -> tuple[tuple[Path, ...], ...]:
 
 
 @functools.lru_cache(maxsize=CENSUS_PARTS)
+@source_corpus.untraced()
 def census_part(index: int) -> tuple[_Patch, ...]:
     """``(file, line, enclosing function, facade, name)`` for every facade patch in the
     files of census part *index*, read once for both facades."""

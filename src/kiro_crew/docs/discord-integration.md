@@ -205,6 +205,7 @@ works, including before the `applications.commands` scope is installed.
 | `!agent [name]` | Show the agent and the ones you can pick; `!agent <name>` switches, `!agent default` goes back |
 | `!status` | Show runtime stats, the active agent, and whether auto-approve is on |
 | `!sessions` / `!session` | In a DM, pick a recent dashboard or same-DM session and continue it here (owner only) |
+| `!bot [name]` / `!bots` | In a DM, talk to one of your Bots here, in its own thread (owner only) |
 | `!link` / `!unlink` | Resume or stop mirroring dashboard replies here (on by default) |
 | `!stop` / `!cancel` | Stop the current reply and clear its queue |
 | `!help` | Show commands |
@@ -245,6 +246,20 @@ session also appear in Discord, so you can hand work back and forth.
 `!session` (singular) is accepted as a typo-safe alias, including with a trailing
 phrase — without it the message reaches the agent as ordinary chat text, which
 reads as "the feature isn't installed" rather than "you typed it wrong".
+
+### Talking to a Bot from Discord
+
+In a DM, `!bot` lists your Bots whose own thread is open in the dashboard; tap one
+to continue that thread here. `!bot <name>` connects the Bot it names at once
+(`/bot` is the same command). It is the same binding as a `!sessions` pick, with
+the same owner-only rule and the same `!unlink` to leave: your messages go to the
+Bot's own thread, and its replies there, including the ones that follow a
+worker's report, come back to this DM. Because the Bot runs in its own thread, it
+keeps its worker. A Bot whose thread is not open is not listed: open it once from
+the Bots page. Cards, guides and the Bot's changes to its own name or face still
+need a message you send in the dashboard. A reply the Bot was already writing
+when you connected is not sent here, because that turn read its work under the
+thread's earlier, unmirrored state; the next reply is.
 
 #### Seeing and releasing it from the dashboard
 

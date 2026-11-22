@@ -72,7 +72,6 @@ class TestResolver:
             # A Crew bot chat could run here, but its workers could not carry their
             # kit (``worker_kit_backend_refusal``), so inheriting it would refuse
             # every worker the Crew bot opens.
-            "pi",
             "deepseek",
         ],
     )
@@ -80,6 +79,12 @@ class TestResolver:
         from kiro_crew.agent_sdk.backends import crewmate_inherited_backend
 
         assert crewmate_inherited_backend(harness) == ("kas", True)
+
+    def test_pi_carries_the_worker_kit_so_it_is_inherited(self):
+        """pi's worker capture landed (RFC 5.4), so a Settings harness of pi runs Bots on pi."""
+        from kiro_crew.agent_sdk.backends import crewmate_inherited_backend
+
+        assert crewmate_inherited_backend(acp_backends.ACP_BACKEND_PI) == ("pi", False)
 
 
 class TestLoadedField:
@@ -980,7 +985,7 @@ class TestUnrunnablePin:
         _floor_monkeypatch.setattr(crewmate_harness_notice, "_announced", set())
         _floor_monkeypatch.setattr(crewmate_harness, "_pin_fallback_logged", set())
 
-    @pytest.mark.parametrize("pinned", ["goose", "opencode", "strands", "pi", "deepseek"])
+    @pytest.mark.parametrize("pinned", ["goose", "opencode", "strands", "deepseek"])
     def test_the_pin_runs_on_kas(self, pinned):
         from kiro_crew.crewmate_harness import crewmate_backend_pin, pinned_backend
 
@@ -989,7 +994,7 @@ class TestUnrunnablePin:
         assert pin is not None and pin.backend == "kas" and pin.harness_fallback
         assert pinned_backend(cfg, "atlas", "claude") == "kas"
 
-    @pytest.mark.parametrize("pinned", ["claude", "codex", "kas"])
+    @pytest.mark.parametrize("pinned", ["claude", "codex", "kas", "pi"])
     def test_a_pin_bots_can_run_on_is_kept(self, pinned):
         from kiro_crew.crewmate_harness import crewmate_backend_pin
 
@@ -1086,8 +1091,8 @@ class TestPinFallbackNeedsKas:
         from kiro_crew import crewmate_harness, crewmate_harness_notice
 
         _floor_monkeypatch.setattr(crewmate_harness_notice, "_announced", set())
-        _floor_monkeypatch.setattr(registry, "_selectable", {"", "claude", "pi"})
-        cfg = _cfg("claude", "claude", pin="pi", inherited=True)
+        _floor_monkeypatch.setattr(registry, "_selectable", {"", "claude", "deepseek"})
+        cfg = _cfg("claude", "claude", pin="deepseek", inherited=True)
         with caplog.at_level(logging.ERROR, logger=crewmate_harness.logger.name):
             pin = crewmate_harness.crewmate_backend_pin(cfg, DM_KEY)
         floor = acp_backends.resolve_selected_backend(acp_backends.ACP_BACKEND_KAS)
@@ -1104,8 +1109,8 @@ class TestPinFallbackNeedsKas:
         from kiro_crew.crewmate_harness import kas_pin_harnesses
 
         listed = kas_pin_harnesses()
-        assert {"goose", "opencode", "pi", "deepseek", "strands"} <= set(listed)
-        assert not {"claude", "codex", "kas", "kiro"} & set(listed)
+        assert {"goose", "opencode", "deepseek", "strands"} <= set(listed)
+        assert not {"claude", "codex", "kas", "kiro", "pi"} & set(listed)
 
 
 class TestUnpinnedModelJudgedOnTheBotsHarness:

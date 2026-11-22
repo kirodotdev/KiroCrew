@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew import session_compaction_mark
 from kiro_crew.agent_sdk import stale_compaction
 from kiro_crew.agent_sdk.capabilities import UNKNOWN_BACKEND_CAPABILITIES, capabilities_of
 from kiro_crew.messaging.commands import compact_unsupported_backend as _compact_unsupported_backend
@@ -645,10 +646,16 @@ class CompactionCoordinator:
         return "cancelled"
 
     def mark_needs_reinjection(self, key: str) -> None:
-        """Flag the live session to restore skill context on its next turn."""
-        session = self._owner._sessions.get(self._owner._fold_key(key))
+        """Flag the live session to restore skill context on its next turn.
+
+        The flag is kept in the session map too (``session_compaction_mark``),
+        so a resume after a restart still restores it.
+        """
+        folded = self._owner._fold_key(key)
+        session = self._owner._sessions.get(folded)
         if session is not None:
             session.needs_context_reinjection = True
+            session_compaction_mark.persist(self._owner._session_map, folded)
 
     def consume_needs_reinjection(self, key: str) -> bool:
         """Consume the one-shot post-compaction reinjection flag.
@@ -657,15 +664,27 @@ class CompactionCoordinator:
         abandoned idle compaction's terminal, and once after a reader dropped
         such a ``completed`` (``take_provider_context_reinjection``). That drop
         reaches no session, so the flag alone would miss a native compaction.
+        And True once per session record when only the session map's copy
+        survived a restart (``session_compaction_mark.take``).
         """
-        session = self._owner._sessions.get(self._owner._fold_key(key))
+        folded = self._owner._fold_key(key)
+        session = self._owner._sessions.get(folded)
         if session is None:
             return False
         owed = stale_compaction.take_provider_context_reinjection(session.provider)
-        if not (session.needs_context_reinjection or owed):
+        persisted = session_compaction_mark.take(session, self._owner._session_map, folded)
+        if not (session.needs_context_reinjection or owed or persisted):
             return False
         session.needs_context_reinjection = False
+        session.compaction_mark_taken = True
         return True
+
+    def note_reinjection_landed(self, key: str) -> None:
+        """Clear the session map's copy of the mark once a turn has landed."""
+        folded = self._owner._fold_key(key)
+        session = self._owner._sessions.get(folded)
+        if session is not None:
+            session_compaction_mark.settle(session, self._owner._session_map, folded)
 
     def set_autocompact_pct(self, key: str, pct: float | None) -> None:
         """Set or clear (``None``) this session's compaction-threshold override.
@@ -1702,6 +1721,7 @@ class CompactionCoordinator:
         # replacement while the old provider is being reaped.
         if success and key not in self._owner._recycling:
             self._owner.mark_needs_reinjection(key)
+            await session_compaction_mark.aflush(self._owner._session_map, key)
         callback = self.state.on_compacted
         if callback is None:
             return

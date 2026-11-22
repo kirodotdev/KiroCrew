@@ -25,17 +25,19 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, Fragment, type CSSProperties, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Home, Loader2, ChevronDown, Pin, Check, X } from 'lucide-react'
+import { Home, Loader2, ChevronDown, Pin, Check, Lock, X } from 'lucide-react'
 import { api, type InstanceView } from '../api/client'
 import { isInstancesDisabledError } from '../utils/instancesDisabled'
 import { useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
 import { useRelayTabs } from '../lib/relayCrewPanes'
+import { embeddedTeamCrewsGroups } from './embeddedTeamCrewsGroups'
 import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
-import { hasDashboardPane } from '../utils/remoteCrew'
+import { crewTransportLabel, hasDashboardPane } from '../utils/remoteCrew'
 import { useSelectInstance } from '../hooks/useSelectInstance'
 import { isRelayHostOffline } from '../utils/relayHostOffline'
+import { useOutageFailure } from '../hooks/useOutageFailure'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { safeSetItem } from '../utils/safeStorage'
@@ -67,9 +69,32 @@ export function visibleInstanceTabs(
   instances: InstanceView[],
   warm: Record<string, WarmConn>,
 ): InstanceView[] {
+  const byId = new Map(instances.map(i => [i.id, i]))
   return instances.filter(
-    i => hasDashboardPane(i) && (i.was_connected || i.status?.state === 'connected' || !!warm[i.id]),
+    i =>
+      hasDashboardPane(i) &&
+      !isTurnedOff(i, byId) &&
+      (i.was_connected || i.status?.state === 'connected' || !!warm[i.id]),
   )
+}
+
+/**
+ * Whether the owner turned this crew Off in Settings -> Remote Crew, or turned off
+ * a crew it is reached through. Off keeps `was_connected`, so the tab rule alone
+ * would keep the row and show the refused connect as a tunnel error. The gateway
+ * refuses to connect such a crew (`instance_disabled`), so it has no pane to
+ * switch to; the Remote Crew panel is where it reads Off and is turned back on.
+ * Visit-guarded, so a registry holding a loop terminates.
+ */
+function isTurnedOff(inst: InstanceView, byId: Map<string, InstanceView>): boolean {
+  const seen = new Set<string>()
+  let cur: InstanceView | undefined = inst
+  while (cur && !seen.has(cur.id)) {
+    if (cur.disabled) return true
+    seen.add(cur.id)
+    cur = cur.via_instance_id ? byId.get(cur.via_instance_id) : undefined
+  }
+  return false
 }
 
 /** One switcher row's place in the chain: how deep, under whom, and whether the
@@ -496,11 +521,19 @@ export interface SwitcherEntry {
   pathParent?: string
   /** A relay Crew tab's close, shown in place of the pin: relay tabs are not pinned. */
   close?: () => void
+  /** Named in the bar when it is in front, but no row of its own in the menu: an
+   *  open relay Crew is reached through its row in the Remote Crews group. */
+  menuHidden?: boolean
+  /** How this dashboard reaches a crew of its own (SSH, SSM, Fargate). Set, the
+   *  row reads Private with a lock and this tag, like a Private relay row. */
+  source?: string
 }
 
 /** More menu groups after the Crews (the Team Crews group). They are not
- *  destinations: no pins, no stable order, no unread. `close` closes the menu. */
-export type SwitcherExtraGroups = (close: () => void) => ReactNode
+ *  destinations: no pins, no stable order, no unread. `close` closes the menu.
+ *  `headed` is true when the menu already drew the "Remote Crews" heading over
+ *  its own crews, so the group continues that one list without a second one. */
+export type SwitcherExtraGroups = (close: () => void, headed?: boolean) => ReactNode
 
 function SwitcherRow({
   entry,
@@ -578,7 +611,14 @@ function SwitcherRow({
           <span className="truncate">{entry.name}</span>
           {/* A crew whose ssh alias IS its name would otherwise render the same
               word twice, which reads as a bug rather than as extra detail. */}
-          {entry.detail && entry.detail !== entry.name ? (
+          {entry.source ? (
+            // Read as a Private relay row reads: a lock, the type, then the tag.
+            <span className="truncate text-[12px] text-muted" data-testid="crew-row-private">
+              <Lock className="lucide-inline mr-1" aria-hidden />
+              {i18nT('components.relayCrews.type_personal')} · {entry.source}
+              {entry.detail && entry.detail !== entry.name ? ` · ${entry.detail}` : ''}
+            </span>
+          ) : entry.detail && entry.detail !== entry.name ? (
             <span className="truncate text-[12px] text-muted">{entry.detail}</span>
           ) : null}
         </span>
@@ -701,6 +741,7 @@ function SwitcherMenu({
     const onScreen = (e.id ?? null) === activeId || (pinned.has(id) && !clippedPinned.has(id))
     return onScreen ? sum : sum + e.unread
   }, 0)
+  const shownEntries = entries.filter(entry => !entry.menuHidden)
   const label =
     elsewhere > 0
       ? i18nT('components.instanceTabBar.switch_crew_unread', { n: elsewhere })
@@ -745,16 +786,17 @@ function SwitcherMenu({
         onCloseAutoFocus={onCloseAutoFocus}
       >
         <DropdownMenuRadioGroup value={activeId ?? LOCAL_VALUE}>
-          {entries.map((entry, i) => (
+          {shownEntries.map((entry, i) => (
             <Fragment key={entry.id ?? LOCAL_VALUE}>
               {/* Local is the user's own machine, not a crew: a rule separates it
                   from the remote list so the two never read as one flat set. */}
               {i === 1 ? <DropdownMenuSeparator /> : null}
               {/* Group names only when another group follows; a menu of Local
-                  and SSH Crews alone stays exactly as it was. */}
+                  and SSH Crews alone stays exactly as it was. The crews here
+                  open the one "Remote Crews" list the extra group continues. */}
               {extraGroups && i < 2 ? (
                 <DropdownMenuLabel>
-                  {i18nT(i === 0 ? 'components.instanceTabBar.group_this_computer' : 'components.instanceTabBar.group_my_crews')}
+                  {i18nT(i === 0 ? 'components.instanceTabBar.group_this_computer' : 'components.relayCrews.group_team_crews')}
                 </DropdownMenuLabel>
               ) : null}
               <SwitcherRow
@@ -767,7 +809,7 @@ function SwitcherMenu({
             </Fragment>
           ))}
         </DropdownMenuRadioGroup>
-        {extraGroups ? extraGroups(() => onOpenChange(false)) : null}
+        {extraGroups ? extraGroups(() => onOpenChange(false), shownEntries.length > 1) : null}
         {/* A row-order preference, not a destination: it sits below the crew list
             behind a separator so it never reads as one more crew to switch to.
             `onSelect`'s preventDefault keeps the menu open — the user sees the
@@ -909,7 +951,12 @@ function SwitcherChip({
           ellipsises from the right, which would eat this crew's own name and leave
           a chip reading as its parent's duplicate; giving the parent segment the
           `min-w-0` and the crew's name `shrink-0` spends the squeeze on the half
-          that is context and keeps the half that identifies the tab. */}
+          that is context and keeps the half that identifies the tab.
+
+          The crew's name is capped too, at the box minus the separator and its two
+          gaps, so a name longer than the whole box ellipsises inside it. Uncapped,
+          a `shrink-0` name overflows the 140px box and paints under the unread
+          badge and past the chip's border; its full text is in `title`. */}
       {entry.pathParent ? (
         <span className="tb-drop-crew-name flex items-center gap-1 max-w-[140px] min-w-0">
           <span className="truncate min-w-0">{entry.pathParent}</span>
@@ -921,7 +968,7 @@ function SwitcherChip({
           <span aria-hidden className="shrink-0 text-muted">
             {'\u203a'}
           </span>
-          <span className="shrink-0">{entry.name}</span>
+          <span className="shrink-0 truncate max-w-[calc(100%-1em-8px)]">{entry.name}</span>
         </span>
       ) : (
         <span className="tb-drop-crew-name truncate max-w-[140px]">
@@ -1132,7 +1179,7 @@ function Switcher({
   entries: SwitcherEntry[]
   activeId: string | null
   onSelect: (id: string | null) => void
-  /** Top-level bar only: an embedded pane never gets one (no Team Crew list leaves this computer). */
+  /** The Remote Crews group: the top bar's own, or in an SSH Crew's pane the rows its window relays. */
   extraGroups?: SwitcherExtraGroups
   /** Top-level bar only: an extra group holds something not seen yet. */
   extraNew?: boolean
@@ -1325,6 +1372,7 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
         // An older host relays only the joined string, so fall back to it: the
         // chip then squeezes as one box, which is what it did before.
         pathParent: t.pathParent,
+        source: t.transport ? crewTransportLabel({ connection_method: t.transport }) : undefined,
       })),
     ]
   }, [host])
@@ -1346,6 +1394,7 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
         stableOrder={hostStableOrder}
         onToggleStableOrder={onToggleStableOrder}
         embedded
+        extraGroups={embeddedTeamCrewsGroups(host.relayCrews)}
       />
     </div>
   )
@@ -1357,6 +1406,7 @@ export default function InstanceTabBar({
   extraGroups,
   extraNew = false,
   extraNotice,
+  listedRelayCrews,
 }: {
   variant?: 'strip' | 'inline'
   style?: CSSProperties
@@ -1367,6 +1417,8 @@ export default function InstanceTabBar({
   /** A notice about those groups, shown where the bar shows its own list failure,
    *  so the top bar sizes it the same way. */
   extraNotice?: ReactNode
+  /** Relay Crews those groups show a row for: an open one gets no second row here; any other keeps its row. */
+  listedRelayCrews?: ReadonlySet<string>
 } = {}) {
   const activeId = useAppSelector(s => s.instances.activeId)
   const warm = useAppSelector(s => s.instances.warm)
@@ -1378,6 +1430,7 @@ export default function InstanceTabBar({
   const embedded = isEmbeddedPane()
   // Shared with InstancesViewport / InstancesPanel via the React Query cache.
   const instancesQuery = useQuery({ queryKey: ['instances'], queryFn: () => api.listInstances(), enabled: !embedded })
+  const listOutage = useOutageFailure(instancesQuery.isError, instancesQuery.errorUpdatedAt, instancesQuery.refetch)
   // Only the gateway's own `instances_disabled` 403 means "feature off"; a
   // non-owner or Slack-origin 403 is a real failure and shows as one.
   const disabled = isInstancesDisabledError(instancesQuery.error)
@@ -1390,6 +1443,7 @@ export default function InstanceTabBar({
   // per-entry visual state, NOT whether the entry exists, so a crew survives a
   // gateway restart or a failed auto-reconnect (rendered with an error dot)
   // instead of vanishing and forcing the user back to Settings → Remote Crew.
+  // A crew the owner turned Off there (or one reached through it) has no entry.
   const tabInstances = useMemo(() => visibleInstanceTabs(instances, warm), [instances, warm])
 
   // Select-and-maybe-reconnect semantics live in the shared useSelectInstance
@@ -1450,15 +1504,16 @@ export default function InstanceTabBar({
             ? i18nT('components.instanceTabBar.chain_via', { via: parentName, name: inst.name })
             : '',
           pathParent: parentName,
+          source: crewTransportLabel(inst),
         }
       }),
       ...relayTabs.map(t => ({
-        id: `${RELAY_PREFIX}${t.id}`, name: t.name, detail: '', title: t.name, unread: 0, close: () => closeRelay(t.id),
+        id: `${RELAY_PREFIX}${t.id}`, name: t.name, detail: '', title: t.name, unread: 0, close: () => closeRelay(t.id), menuHidden: listedRelayCrews?.has(t.id) ?? false,
       })),
     ],
     // `tabInstances` is derived per render; depending on it directly is what
     // keeps the menu in step with a status poll.
-    [tabInstances, instances, unread, connectMutation.isPending, connectMutation.variables, relayTabs, closeRelay],
+    [tabInstances, instances, unread, connectMutation.isPending, connectMutation.variables, relayTabs, closeRelay, listedRelayCrews],
   )
 
   // Embedded panes render the parent-relayed switcher. Hooks above
@@ -1471,7 +1526,9 @@ export default function InstanceTabBar({
   // which case the bar exists to say so (an empty bar and a failed read used to
   // look identical).
   // The relay's host-offline answer is the offline cover's to say, not this bar's.
-  const listFailure = !disabled && instancesQuery.error && !isRelayHostOffline(instancesQuery.error)
+  // So is a lost gateway: the header's own offline status already says it, and
+  // the failed read's text is the browser's raw "Failed to fetch".
+  const listFailure = !disabled && !listOutage && instancesQuery.error && !isRelayHostOffline(instancesQuery.error)
     ? (errMessage(instancesQuery.error) || i18nT('components.instanceTabBar.instances_load_failed'))
     : null
   // Team Crews keep the bar up on their own, even with the instances feature off.

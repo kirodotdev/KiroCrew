@@ -8,13 +8,12 @@ see the import block there. Plain module, never collected.
 
 from __future__ import annotations
 
-import pytest
+from conftest_guards import per_test_guard
 
 from kiro_crew.slack.client import SlackClientOps
-from kiro_crew.slack.handler import _PHASE_EMOJIS, _build_phase_emojis
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_options_control_state():
     """Clear the per-message OPTIONS registries between tests.
 
@@ -40,7 +39,7 @@ def _reset_options_control_state():
     outbound._LOCK_USERS.clear()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _enterprise_bypass(_floor_monkeypatch) -> None:
     """Set a default validated team_id so _route_message doesn't reject messages."""
     _floor_monkeypatch.setattr("kiro_crew.slack.enterprise._validated_team_id", "TTEST")
@@ -48,9 +47,14 @@ def _enterprise_bypass(_floor_monkeypatch) -> None:
     _floor_monkeypatch.setattr("kiro_crew.slack.enterprise._allowed_team_ids", {"TTEST"})
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _clean_emojis():
     """Reset _PHASE_EMOJIS to defaults before each test (suppresses local config)."""
+    # Imported here, not at module level: ``kiro_crew.slack.handler`` reaches
+    # most of the package, and a module-level import made every collection pay
+    # for it (test/test_conftest_import_budget.py holds that line).
+    from kiro_crew.slack.handler import _PHASE_EMOJIS, _build_phase_emojis
+
     original = dict(_PHASE_EMOJIS)
     _PHASE_EMOJIS.clear()
     _PHASE_EMOJIS.update(_build_phase_emojis({})[0])
@@ -59,7 +63,7 @@ def _clean_emojis():
     _PHASE_EMOJIS.update(original)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _clean_slack_thread_state():
     """Reset the ``handler`` module-global thread-state maps between tests.
 
@@ -132,7 +136,7 @@ class MockSlackClient(SlackClientOps):
         )
         return ts
 
-    async def update_message(self, channel, ts, text):
+    async def update_message(self, channel, ts, text="", blocks=None):
         self.actions.append(("update", {"channel": channel, "ts": ts, "text": text}))
 
     async def delete_message(self, channel, ts):

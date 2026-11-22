@@ -21,6 +21,24 @@ target token rather than the body's in-progress colour transition. Before CSS
 supplies a token, the HTML boot colour remains in place. Browsers decide whether
 and where to use this hint; it does not change the page's colours.
 
+## A relay Crew in front
+
+A relay Crew's pane fills the desktop window under the local top bar, so the
+local dashboard around it (the top bar, the rail, anything docked, menus) takes
+that Crew's mode while it is in front, as an SSH Crew's header does by being the
+pane's own. The Windows caption buttons keep the person's own mode (#40254). The shell reads the pane page's `data-mode`
+when the pane shows and again on each theme colour change
+(`did-change-theme-color`; the colour itself, a palette's background, is not
+read as a mode), and tells the dashboard only whether it is dark;
+`RelayCrewPaneHost` sets `hooks/themeModeOverride.ts` once the pane's page has
+drawn (before that its colour is the boot page's), and `useTheme` paints that
+mode over the person's own, and publishes it as the context's `theme`, without
+saving it. The shell only ever sees the person's own mode: the splash accent is
+not reported meanwhile, and a Scheduled preference is handed to the shell as
+the own resolved mode (`data-mode-pref`), since the shell reads `data-mode` for
+that preference. Local, or a pane closing, clears
+it. Only the mode follows, not the palette.
+
 ## Capability Tiers
 
 `theme.json` MUST declare `"formatVersion": 1` (required integer major,
@@ -54,7 +72,7 @@ a pack may ship. Validation is tier-scaled to payload trust.
 
 | Tier | `level` | Surface unlocked |
 |---|---|---|
-| **L0 Color** | 0 | the 60 theme CSS variables (dark + light) only |
+| **L0 Color** | 0 | the 61 theme CSS variables (dark + light) only |
 | **L1 Branded** | 1 | + `branding/` (logo, favicon, wordmark, welcome, splash), `styles/fonts/`, scoped `overrides.css`, `loader/*.png\|webp\|gif\|svg` |
 | **L2 Experience** | 2 | + `overlays/` + `topbar/` sandboxed HTML, `audio/`, `persona.md` |
 
@@ -278,6 +296,16 @@ dashboard load into header-only round trips.
   `pointer-events: none` on it. Routes without the shell (`/popout/`, `/embed/`)
   have no behind slot and skip `behind` overlays, since nothing there would
   cover them.
+- **The composer stays uncovered** — the decor slot carries a `clip-path`
+  with a hole for each box marked `data-guide-keep-clear` (the chat
+  composer and the notice rows each composer host draws beside it), so an `above` overlay, a pack's or a registered theme's, is cut
+  where it meets the composer at every width and looks tucked behind it
+  (`website/src/lib/themeDecorKeepClear.ts`). The clip is on the slot, so an
+  overlay cannot opt out of it. It is measured only while the slot holds a
+  decoration, and only on a window resize, a marked box or one of its
+  containers resizing (how a box that moves at the same size is seen), or a
+  marked box coming or going; a reply streaming into the transcript does not
+  re-measure.
 - **Locked CSP** — overlay/topbar responses carry a fixed
   `Content-Security-Policy` including a `sandbox` directive; asset responses
   carry `X-Content-Type-Options: nosniff` and a content-type allowlist.
@@ -351,7 +379,12 @@ dashboard load into header-only round trips.
   which is never in the picker beside it. Like an overlays-only pack it shows
   them without asking, and the Experience section lists Overlays alone for it;
   turned off, the shell unmounts those overlays (`App.tsx`). Its top-bar
-  elements and its own CSS are not part of it.
+  elements and its own CSS are not part of it. The overlays portal into the
+  shell's decor slot, as a pack's do (the slot is click-through, so a part
+  that must take clicks, such as a close button, sets `pointer-events: auto`
+  on itself), and they also unmount while a remote
+  Crew is shown: they follow this dashboard's theme, and the remote pane
+  draws its own theme's overlays.
 
   **Consent gate (what it actually guarantees — and what it does not).** The
   persona grant is a separate key, `mc-theme-consent-<slug>`, holding

@@ -24,7 +24,6 @@ const themeState = {
   mode: 'dark' as const,
   onboarded: true,
   importOnboarded: true,
-  privacyAcked: true,
   crewmatesOnboarded: true,
   crewmatesFlowSeen: true,
   themeBootReady: true,
@@ -34,7 +33,7 @@ const themeState = {
   allThemes: [],
   markOnboarded: vi.fn(),
   markImportOnboarded: vi.fn(),
-  markPrivacyAcked: vi.fn(),
+
   markCrewmatesOnboarded: vi.fn(),
   setColorTheme: vi.fn(),
   setMode: vi.fn(),
@@ -71,7 +70,6 @@ const CHAIN_WAIT = { timeout: 5000 }
 beforeEach(() => {
   themeState.onboarded = true
   themeState.importOnboarded = true
-  themeState.privacyAcked = true
   themeState.markImportOnboarded.mockClear()
   vi.spyOn(api, 'onboardingImportScan').mockResolvedValue(NOTHING_TO_IMPORT)
   vi.spyOn(api, 'onboardingImportState').mockResolvedValue({ ok: true })

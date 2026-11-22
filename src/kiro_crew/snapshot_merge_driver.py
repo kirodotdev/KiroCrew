@@ -206,6 +206,10 @@ def _do_merge(
                 continue
             if d.is_file() and filecmp.cmp(s, d, shallow=False):
                 continue  # the same bytes: nothing of the bundle's was left behind
+            if f in COMPONENTS["config"].host_local:
+                # This host's own runtime state, never installed, even when missing here.
+                # Not a setting, so not reported as one kept (the old silent skip).
+                continue
             if f == "config.local.json" and not d.is_file():
                 # Never installed by a merge: the overlay outranks config.json at load, so
                 # a bundle's copy dropped in raw would set every key it names -- sandbox,

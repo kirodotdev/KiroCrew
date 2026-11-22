@@ -87,6 +87,15 @@ UNTRUSTED_CRON_RESULT_FENCE_CLOSE = ">>>END_UNTRUSTED_PREVIOUS_RUN_RESULT"
 _CRON_RESULT_FENCE_OPEN_RE = _fence_marker_regex(UNTRUSTED_CRON_RESULT_FENCE_OPEN)
 _CRON_RESULT_FENCE_CLOSE_RE = _fence_marker_regex(UNTRUSTED_CRON_RESULT_FENCE_CLOSE)
 
+# Delimiters that wrap a page's content in the ``browser`` tool's ``read`` result
+# (``mcp_tools.browser``). The page wrote that text, so it sits inside this fence
+# with every untrusted fence neutralized, and the tool's own lines (the header,
+# the hand-back line) stay outside it.
+UNTRUSTED_BROWSER_PAGE_FENCE_OPEN = "<<<UNTRUSTED_BROWSER_PAGE"
+UNTRUSTED_BROWSER_PAGE_FENCE_CLOSE = ">>>END_UNTRUSTED_BROWSER_PAGE"
+_BROWSER_PAGE_FENCE_OPEN_RE = _fence_marker_regex(UNTRUSTED_BROWSER_PAGE_FENCE_OPEN)
+_BROWSER_PAGE_FENCE_CLOSE_RE = _fence_marker_regex(UNTRUSTED_BROWSER_PAGE_FENCE_CLOSE)
+
 # Delimiters that wrap the origin thread's text in a Slack code channel's first
 # turn (``slack.code_channels.routing._seed_context``). Anyone in that thread
 # could have written the text. Matched head-anchored on the normalized view (the
@@ -107,14 +116,16 @@ _UNTRUSTED_FENCE_RES: tuple[re.Pattern[str], ...] = (
     _TODO_FENCE_OPEN_RE,
     _CRON_RESULT_FENCE_CLOSE_RE,
     _CRON_RESULT_FENCE_OPEN_RE,
+    _BROWSER_PAGE_FENCE_CLOSE_RE,
+    _BROWSER_PAGE_FENCE_OPEN_RE,
 )
 
 
 def _neutralize_fence_markers(text: str) -> str:
     """Replace Unicode-normalized variants of every untrusted fence in *text*.
 
-    Covers the Slack code-channel seed, thread-parent, calendar-event, todo-text
-    and previous-run-result fences, open and close. The
+    Covers the Slack code-channel seed, thread-parent, calendar-event, todo-text,
+    previous-run-result and browser-page fences, open and close. The
     shared marker matcher supplies NFKC, default-ignorable removal, and
     original-coordinate spans; the replacement remains fence-specific.
     """

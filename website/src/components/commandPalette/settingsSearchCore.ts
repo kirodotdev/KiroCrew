@@ -38,6 +38,7 @@ import { isStandaloneDisplay } from '../../lib/standaloneLastRoute'
 import { fuzzyMatch } from '../../utils/fuzzyMatch'
 import { PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, previewFlagsLocked, readPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
+import { isMac } from '../../utils/platform'
 import { KIRO_SIGN_IN_SETTING_ID } from './kiroSignInSettingId'
 import { SETTINGS_KEYWORDS } from './settingsKeywords'
 import { settingsTabLabel } from './settingsTabLabel'
@@ -131,6 +132,7 @@ export const PREVIEW_FLAG_SETTING_IDS: ReadonlySet<string> = new Set([
   'developer.mark-out-of-date-dashboard-fields',
   'developer.wake-bots-to-update-out-of-date-fields',
   'developer.agent-harness-for-worker-chats',
+  'developer.visual-refresh',
   'developer.session-environments',
 ])
 
@@ -145,13 +147,21 @@ export const APP_AUTO_DOWNLOAD_SETTING_ID = 'about.install-app-updates-automatic
 /** The config key of Channels' switch, which `ChannelsSetting` draws only while it is on. */
 export const CHANNELS_SWITCH_KEY = 'dashboard.channels_enabled'
 
+/** The config key of the Slack tools switch, which Settings > Slack draws only while
+ *  Connections offers the Slack card or the switch is already on. */
+export const SLACK_TOOLS_SWITCH_KEY = 'slack.slack_mcp'
+
 /** Registry ids of the Instances tab's two rows: RemoteCrewPanel draws the enable
  *  card only while remote crews are off, and the auto-connect switch only while on. */
 export const ENABLE_REMOTE_CREWS_SETTING_ID = 'instances.enable-remote-crew-management'
+/** Settings > Remote Crew's Remote Control card (manual entry in settingsManual.ts). */
+const REMOTE_CONTROL_SETTING_ID = 'instances.remote-control'
 export const AUTO_CONNECT_CREWS_SETTING_ID = 'instances.auto-connect-crews'
 
 /** Registry id of "Reopen where I left off", which DisplayPanel draws only in the installed app. */
 export const REOPEN_LAST_PAGE_SETTING_ID = 'display.reopen-where-i-left-off'
+/** Registry id of the terminal's Ctrl+C / Ctrl+V switch, which DisplayPanel draws only off macOS. */
+export const TERMINAL_CTRL_COPY_PASTE_SETTING_ID = 'display.ctrl-c-and-ctrl-v-copy-and-paste'
 
 /** The governance answers the search needs, as the two surfaces resolve them. */
 export interface SettingsSearchGovernance {
@@ -192,6 +202,19 @@ export interface SettingsSearchGovernance {
    * entry is offered only once the read SUCCEEDED and said `true`.
    */
   channelsOn?: boolean
+  /**
+   * Whether Settings > Slack draws the Slack tools switch, from the `['slack-config']`
+   * read that page itself renders from: the server says Connections offers the Slack
+   * card (`slack_mcp_card`) or the switch is already on. `false` only on a read that
+   * SUCCEEDED and said neither; `undefined` (no answer) keeps the entry.
+   */
+  slackToolsShown?: boolean
+  /**
+   * Whether Remote Crew draws the Remote Control card: the `['remote-control']`
+   * read SUCCEEDED and said the setting is on or the relay is running. The card
+   * is drawn only then, so its entry is offered only then, as `channelsOn` is.
+   */
+  remoteControlShown?: boolean
 }
 
 /**
@@ -222,6 +245,8 @@ export function settingEntryOffered(
   if (entry.configKey === 'dashboard.milestones_enabled') return readPreviewFlag(PREVIEW_EXPLORE)
   // Chat > Sessions draws Start New Chats in conductor mode in every build that offers conductor mode.
   if (entry.configKey === 'dashboard.new_chat_crew_mode') return crewModeEnabled()
+  // Chat > Side panel draws Auto-Open Board in Side Panel in every build that offers conductor mode.
+  if (entry.configKey === 'dashboard.auto_open_conductor_board') return crewModeEnabled()
   // Slack > Code channels draws Always use conductor mode wherever conductor mode is offered.
   if (entry.configKey === 'slack.code_channel_defaults.conductor_mode') return crewModeEnabled()
   // Feature Previews draws the stale-wake switch only while the stale-fields mark is on.
@@ -236,6 +261,9 @@ export function settingEntryOffered(
   if (entry.id === ENABLE_REMOTE_CREWS_SETTING_ID) return governance.remoteCrewsEnabled !== true
   if (entry.id === AUTO_CONNECT_CREWS_SETTING_ID) return governance.remoteCrewsEnabled !== false
   if (entry.configKey === CHANNELS_SWITCH_KEY) return governance.channelsOn === true
+  if (entry.id === REMOTE_CONTROL_SETTING_ID) return governance.remoteControlShown === true
+  if (entry.id === TERMINAL_CTRL_COPY_PASTE_SETTING_ID) return !isMac
+  if (entry.configKey === SLACK_TOOLS_SWITCH_KEY) return governance.slackToolsShown !== false
   if (!DECISIONS_SETTING_IDS.has(entry.id)) return true
   return governance.decisionsEnabled
 }

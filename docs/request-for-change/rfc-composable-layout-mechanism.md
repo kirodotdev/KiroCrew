@@ -3,8 +3,8 @@ title: Composable Layout Mechanism — a reusable pane-layout foundation, first 
 status: partial
 author: gjjnn
 created: 2026-09-24
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
 implementation-prs: [13572, 14062]
 tracking-issues: []

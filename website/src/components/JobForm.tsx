@@ -8,6 +8,7 @@ import { SettingsToggle } from './settings'
 import AgentSelector, { crewDisplayName, type KiroCrewAgent } from './AgentSelector'
 import SegmentedControl from './SegmentedControl'
 import SimpleSelect from './SimpleSelect'
+import TelegramDestinationSelect, { TELEGRAM_CHANNEL } from './TelegramDestinationSelect'
 import type { ChatFolder, CronJob } from '../types'
 import { orderFoldersWithPaths } from '../utils/folderTree'
 import { mateHomeOf } from '../utils/mateFolders'
@@ -92,7 +93,7 @@ export function runLimitMinutes(secs: number): number {
 
 /** Parse a CronJob into initial form state */
 function parseJobDefaults(job?: CronJob) {
-  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, minimalContext: false, chatFolderId: '', jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '', onceAt: '', savedTimeoutSecs: DEFAULT_RUN_LIMIT_SECS, timeLimitMin: runLimitMinutes(DEFAULT_RUN_LIMIT_SECS) }
+  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', telegramTarget: '', savedTelegramTarget: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, minimalContext: false, chatFolderId: '', newChatPerRun: false, jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '', onceAt: '', savedTimeoutSecs: DEFAULT_RUN_LIMIT_SECS, timeLimitMin: runLimitMinutes(DEFAULT_RUN_LIMIT_SECS) }
   const isInterval = !!(job.every_secs || (job.schedule || '').match(/^every\s+\d+/))
   const secs = job.every_secs || (() => { const m = (job.schedule || '').match(/^every\s+(\d+)\s*([smh])/); if (!m) return 3600; return parseInt(m[1]) * (m[2] === 'h' ? 3600 : m[2] === 'm' ? 60 : 1) })()
   // Largest unit that divides `secs` EVENLY, not the largest unit that is merely
@@ -143,7 +144,9 @@ function parseJobDefaults(job?: CronJob) {
     weekDays = expandDow(cronParts[4]).map(d => CRON_DOW_TO_GRID[d] || 1)
     weekTime = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
   }
-  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, minimalContext: job.minimal_context || false, chatFolderId: job.chat_folder_id || '', jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw, onceAt: '', savedTimeoutSecs: job.timeout_secs || DEFAULT_RUN_LIMIT_SECS, timeLimitMin: runLimitMinutes(job.timeout_secs || DEFAULT_RUN_LIMIT_SECS) }
+  // Only a Telegram pin is shown; a pin on another channel is left as it is.
+  const telegramTarget = job.channel_type === TELEGRAM_CHANNEL ? job.target_id || '' : ''
+  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', channel: job.channel || '', telegramTarget, savedTelegramTarget: telegramTarget, approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, minimalContext: job.minimal_context || false, chatFolderId: job.chat_folder_id || '', newChatPerRun: job.new_chat_per_run || false, jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw, onceAt: '', savedTimeoutSecs: job.timeout_secs || DEFAULT_RUN_LIMIT_SECS, timeLimitMin: runLimitMinutes(job.timeout_secs || DEFAULT_RUN_LIMIT_SECS) }
 }
 
 /** Build the API body from form state. Returns null if validation fails (sets error). */
@@ -174,8 +177,17 @@ function buildBody(
     // job takes no agent turn, so sending this would store a flag that can
     // never do anything.
     body.minimal_context = f.minimalContext
+    // Sent as false too, so turning it off persists. Only an agent job opens a
+    // chat tab, which is why a script or command job never carries it.
+    body.new_chat_per_run = f.newChatPerRun
   }
   if (isEdit || f.channel) body.channel = f.channel
+  // Sent only when the pick moved, so an unrelated edit never re-vets a
+  // destination (and never fails because Telegram is offline right now).
+  if (f.telegramTarget !== f.savedTelegramTarget) {
+    body.channel_type = f.telegramTarget ? TELEGRAM_CHANNEL : ''
+    body.target_id = f.telegramTarget
+  }
   body.silent = f.silent
   body.strict_schedule = f.strictSchedule
   body.hide_in_chat = f.hideInChat
@@ -388,12 +400,19 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     },
   })
   const [channel, setChannel] = useState(defaults.channel)
+  const [telegramTarget, setTelegramTarget] = useState(defaults.telegramTarget)
+  // Captured once, like `initialAutoPause`: a refresh must not turn an untouched pick into an edit.
+  const [initialTelegramTarget] = useState(defaults.telegramTarget)
+  // A job has one pinned destination, so filling either field empties the other.
+  const pickChannel = (value: string) => { setChannel(value); if (value) setTelegramTarget('') }
+  const pickTelegram = (targetId: string) => { setTelegramTarget(targetId); if (targetId) setChannel('') }
   const [approvalMode, setApprovalMode] = useState(defaults.approvalMode)
   const [silent, setSilent] = useState(init.silent)
   const [strictSchedule, setStrictSchedule] = useState(defaults.strictSchedule)
   const [hideInChat, setHideInChat] = useState(defaults.hideInChat)
   const [minimalContext, setMinimalContext] = useState(defaults.minimalContext)
   const [chatFolderId, setChatFolderId] = useState(defaults.chatFolderId)
+  const [newChatPerRun, setNewChatPerRun] = useState(defaults.newChatPerRun)
   // Edit-only, and only when the gateway reports the job's limit: without the
   // stored value the field would show a guess, and saving it would write that
   // guess back. Held as the typed text so the input can be emptied mid-edit.
@@ -459,11 +478,12 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   const dirty =
     name !== init.name || msg !== init.message ||
     agent !== defaults.agent || model !== defaults.model ||
-    channel !== defaults.channel || approvalMode !== defaults.approvalMode ||
+    channel !== defaults.channel || telegramTarget !== initialTelegramTarget ||
+    approvalMode !== defaults.approvalMode ||
     silent !== init.silent || strictSchedule !== defaults.strictSchedule ||
     hideInChat !== defaults.hideInChat || schedMode !== init.schedMode ||
     minimalContext !== defaults.minimalContext ||
-    chatFolderId !== defaults.chatFolderId ||
+    chatFolderId !== defaults.chatFolderId || newChatPerRun !== defaults.newChatPerRun ||
     autoPause !== initialAutoPause || alertAfter !== initialAlertAfter || tz !== initialTz ||
     timeLimitMin !== runLimitMinutes(timeLimitBase) ||
     intVal !== init.intVal || intUnit !== init.intUnit ||
@@ -570,16 +590,30 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
    *  ignores it, so suspending the setting costs nothing, and the hint says
    *  "turn off Hide in chat to use this" -- which would be a lie if unchecking
    *  came back to an empty picker. */
-  const chatFolderUnavailable = hideInChat || job?.persistent_session === false
-  /** Which of the two reasons the picker is refusing input. A stateless job
-   *  (`persistent_session=false`, set from the API or CLI -- this form never
+  const chatFolderUnavailable = hideInChat || newChatPerRun || job?.persistent_session === false
+  /** Which of the three reasons the picker is refusing input. A stateless job
+   *  (`persistent_session=false`, chosen when a job is created -- this form never
    *  edits it) has no job-wide tab to file, so the backend refuses the pair at
-   *  save time; saying so here is cheaper than a 400 under Save. */
+   *  save time; saying so here is cheaper than a 400 under Save. A new chat per
+   *  run is such a job, so it files nothing either. */
   const chatFolderHint = hideInChat
     ? i18nT('components.jobForm.chat_folder_hidden_in_chat')
-    : job?.persistent_session === false
-      ? i18nT('components.jobForm.chat_folder_needs_persistent_session')
-      : i18nT('components.jobForm.chat_folder_description')
+    : newChatPerRun
+      ? i18nT('components.jobForm.chat_folder_new_chat_per_run')
+      : job?.persistent_session === false
+        ? i18nT('components.jobForm.chat_folder_needs_persistent_session')
+        : i18nT('components.jobForm.chat_folder_description')
+  /** `new_chat_per_run` needs a fresh session per run. The form picks that only
+   *  when it creates a job (checking the switch makes the new job stateless), so
+   *  an existing job that keeps one session is refused here rather than silently
+   *  turned stateless by a save. Under Hide in chat no run opens a tab at all. */
+  const keepsOneSession = !!job && job.persistent_session !== false
+  const newChatPerRunUnavailable = hideInChat || keepsOneSession
+  const newChatPerRunHint = hideInChat
+    ? i18nT('components.jobForm.new_chat_per_run_hidden_in_chat')
+    : keepsOneSession
+      ? i18nT('components.jobForm.new_chat_per_run_keeps_one_session')
+      : i18nT('components.jobForm.new_chat_per_run_description')
   /** The job's saved folder has been DELETED since it was saved (the list loaded,
    *  and does not offer that id).
    *
@@ -593,7 +627,10 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
    *  missing, and clearing on that would unfile a job for being offline. */
   const savedFolderIsGone =
     !!chatFolderId && chatFoldersLoaded && !folderOptions.values.includes(chatFolderId)
-  const submittedChatFolderId = savedFolderIsGone ? '' : chatFolderId
+  // A run's own tab is never filed, and the store refuses a folder on the
+  // stateless job the switch makes. The picked folder stays in state, so
+  // turning the switch back off shows it again.
+  const submittedChatFolderId = savedFolderIsGone || newChatPerRun ? '' : chatFolderId
 
   /** Model-override rows as the two parallel arrays `SimpleSelect` takes.
    *
@@ -639,7 +676,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
       setSaving(false)
       return
     }
-    const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, chatFolderId: submittedChatFolderId, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr, onceAt, savedTimeoutSecs: timeLimitBase, timeLimitMin }
+    const f = { name, message: msg, agent: locked ?? agent, model, channel, telegramTarget, savedTelegramTarget: initialTelegramTarget, approvalMode, silent, strictSchedule, hideInChat, minimalContext, chatFolderId: submittedChatFolderId, newChatPerRun, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr, onceAt, savedTimeoutSecs: timeLimitBase, timeLimitMin }
     const body = buildBody(f, tz, setError, !!job, job ? undefined : prefill)
     if (!body) { setSaving(false); return }
     // Sent only when changed, so an unrelated edit never rewrites the limit
@@ -695,7 +732,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         setSaving(false)
         return
       }
-      if (!job) { setName(''); setMsg(''); setWeekDays([]); setIntVal(1); setChannel(''); setModel(''); setApprovalMode(''); setSilent(false); setStrictSchedule(false); setHideInChat(false); setMinimalContext(false); setChatFolderId('') }
+      if (!job) { setName(''); setMsg(''); setWeekDays([]); setIntVal(1); setChannel(''); setTelegramTarget(''); setModel(''); setApprovalMode(''); setSilent(false); setStrictSchedule(false); setHideInChat(false); setMinimalContext(false); setChatFolderId(''); setNewChatPerRun(false) }
       // Cleared BEFORE onSaved, so `onSavingChange` is symmetric: it reports
       // false on EVERY outcome, not only on failure. An asymmetric version made
       // the flag a host's problem to unlearn — a host that lifts it out of its
@@ -835,7 +872,8 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
             clearLabel={i18nT('components.jobForm.model_inherit')}
             aria-label={i18nT('components.jobForm.model')}
           />
-          <Input aria-label={i18nT('components.jobForm.channel_id')} placeholder={i18nT('components.jobForm.channel_id_optional')} style={{ flex: '0 0 170px' }} value={channel} onChange={e => setChannel(e.target.value)} />
+          <Input aria-label={i18nT('components.jobForm.channel_id')} placeholder={i18nT('components.jobForm.channel_id_optional')} style={{ flex: '0 0 170px' }} value={channel} onChange={e => pickChannel(e.target.value)} />
+          <TelegramDestinationSelect value={telegramTarget} onChange={pickTelegram} />
           <SimpleSelect
             aria-label={i18nT('components.jobForm.approval')}
             options={['auto']}
@@ -847,6 +885,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           <label htmlFor="jobform-silent" className="flex items-center gap-1.5 text-muted text-[13px] cursor-pointer"><input id="jobform-silent" aria-label={i18nT('components.jobForm.silent')} type="checkbox" checked={silent} onChange={e => setSilent(e.target.checked)} /> {i18nT('components.jobForm.silent')}</label>
           <label htmlFor="jobform-strict-schedule" className="flex items-center gap-1.5 text-muted text-[13px] cursor-pointer"><input id="jobform-strict-schedule" aria-label={i18nT('components.jobForm.strict_schedule')} type="checkbox" checked={strictSchedule} onChange={e => setStrictSchedule(e.target.checked)} /> {i18nT('components.jobForm.strict_schedule')}</label>
           <label htmlFor="jobform-hide-in-chat" className="flex items-center gap-1.5 text-muted text-[13px] cursor-pointer"><input id="jobform-hide-in-chat" aria-label={i18nT('components.jobForm.hide_in_chat')} type="checkbox" checked={hideInChat} onChange={e => setHideInChat(e.target.checked)} /> {i18nT('components.jobForm.hide_in_chat')}</label>
+          <label htmlFor="jobform-new-chat-per-run" title={newChatPerRunHint} className="flex items-center gap-1.5 text-muted text-[13px] cursor-pointer"><input id="jobform-new-chat-per-run" aria-label={i18nT('components.jobForm.new_chat_per_run')} type="checkbox" checked={newChatPerRun} disabled={newChatPerRunUnavailable} onChange={e => setNewChatPerRun(e.target.checked)} /> {i18nT('components.jobForm.new_chat_per_run')}</label>
           <label htmlFor="jobform-minimal-context" className="flex items-center gap-1.5 text-muted text-[13px] cursor-pointer"><input id="jobform-minimal-context" aria-label={i18nT('components.jobForm.minimal_context')} type="checkbox" checked={minimalContext} onChange={e => setMinimalContext(e.target.checked)} /> {i18nT('components.jobForm.minimal_context')}</label>
           {timeLimitInput(70, true)}
           <SimpleSelect
@@ -982,8 +1021,9 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         <div className="flex flex-col gap-1">
           <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.channel_id')}</span>
           <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.slack_channel_to_post_results_to_leave_empty_for')}</span>
-          <Input id="jobform-channel" aria-label={i18nT('components.jobForm.channel_id')} value={channel} onChange={e => setChannel(e.target.value)} placeholder={i18nT('components.jobForm.optional')} />
+          <Input id="jobform-channel" aria-label={i18nT('components.jobForm.channel_id')} value={channel} onChange={e => pickChannel(e.target.value)} placeholder={i18nT('components.jobForm.optional')} />
         </div>
+        <TelegramDestinationSelect value={telegramTarget} onChange={pickTelegram} labelled />
         <div className="flex flex-col gap-1">
           <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.time_limit')}</span>
           <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.time_limit_description')}</span>
@@ -1021,6 +1061,15 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           checked={hideInChat}
           onChange={setHideInChat}
         />
+        {!isLlmless && (
+          <SettingsToggle
+            label={i18nT('components.jobForm.new_chat_per_run')}
+            description={newChatPerRunHint}
+            checked={newChatPerRun}
+            onChange={setNewChatPerRun}
+            disabled={newChatPerRunUnavailable}
+          />
+        )}
         {!isLlmless && (
         <div className="flex flex-col gap-1">
           <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.chat_folder')}</span>

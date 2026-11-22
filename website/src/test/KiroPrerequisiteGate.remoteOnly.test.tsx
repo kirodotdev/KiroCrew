@@ -61,7 +61,7 @@ const FAILURE_SCREENS: {
   {
     name: 'sandbox unavailable',
     overrides: { sandbox_unavailable: true, installed: true, sandbox_failure_kind: 'no_backend' },
-    heading: /installed.*verified/i,
+    heading: /agent sandbox could not be started/i,
   },
   {
     name: 'probe error',

@@ -30,11 +30,16 @@ from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
 # `_send_over_ssm` is imported rather than re-spelled so this rung's SSM dispatch
 # cannot drift from the mint path's on the inner/outer timeout pair -- the same
 # reason `_build_ssh_argv` is shared with the SSH rung rather than rebuilt here.
-from kiro_crew.instances.ssm_token_mint import _send_over_ssm
+from kiro_crew.instances.ssm_token_mint import (
+    NOT_INSTALLED_REASON,
+    USER_UNKNOWN_REASON,
+    _send_over_ssm,
+)
 from kiro_crew.instances.token_mint import (
     REMOTE_BIN_CANDIDATES,
     _build_ssh_argv,
     custom_remote_bin,
+    refused_plugin_message,
     ssh_spawn_argv_env,
 )
 from kiro_crew.instances.validation import (
@@ -49,6 +54,7 @@ from kiro_crew.instances.validation import (
     validate_ssm_target,
 )
 from kiro_crew.platform_compat import kill_and_reap
+from kiro_crew.sandbox import SandboxUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -131,10 +137,8 @@ _SSM_REASONS = {
     SSM_ACCESS_DENIED: "Your AWS profile isn't allowed to run commands on this instance over "
     "SSM (ssm:SendCommand was denied). A crew over SSM needs ssm:StartSession, ssm:SendCommand "
     "and ssm:GetCommandInvocation on this instance: add them to the profile's IAM policy.",
-    SSM_USER_UNKNOWN: "User {user} doesn't exist on this instance. Ubuntu images use ubuntu. "
-    "Set Remote user in Edit settings.",
-    REMOTE_NOT_INSTALLED: "Kiro Crew isn't installed for user {user} on this instance. Run the "
-    "install there as that user, or set Remote kirocrew path in Edit settings.",
+    SSM_USER_UNKNOWN: USER_UNKNOWN_REASON,
+    REMOTE_NOT_INSTALLED: NOT_INSTALLED_REASON,
     REMOTE_WRONG_PORT: "A Kiro Crew gateway is listening on port {found}, not {port}. Set "
     "Remote port to {found} in Edit settings.",
 }
@@ -347,7 +351,15 @@ async def diagnose_instance(
         return DiagnosisResult(SSH_CLIENT_MISSING, _REASONS[SSH_CLIENT_MISSING], probes)
     probes.append({"name": "ssh", "ok": ssh_ok})
     if not ssh_ok:
-        return DiagnosisResult(SSH_UNREACHABLE, _REASONS[SSH_UNREACHABLE], probes)
+        reason = _REASONS[SSH_UNREACHABLE]
+        refused = await asyncio.to_thread(refused_plugin_message)
+        if refused:
+            # This step sees no ssh stderr, so the plugin is only a possible cause.
+            reason += (
+                " If this host's ssh config runs session-manager-plugin in a ProxyCommand,"
+                f" this is the cause: {refused}"
+            )
+        return DiagnosisResult(SSH_UNREACHABLE, reason, probes)
 
     try:
         remote_ok = await _probe_remote_dashboard(ssh_host, remote_port, connect_timeout_secs)
@@ -396,12 +408,18 @@ async def _probe_ssm_managed(ssm_target: str, profile: str = "", region: str = "
     whose agent never registered, or the wrong account/region); or :data:`_NODE_UNREACHABLE` for everything else --
     agent offline, an IAM denial, a timeout -- all of which are "the SSM path
     can't reach the target".
+
+    Raises :class:`~kiro_crew.sandbox.SandboxUnavailableError` when this host's
+    own sandbox refused to start ``aws``: no SSM call ran, so the answer is not
+    "unreachable".
     """
     try:
         status = await asyncio.wait_for(
             asyncio.to_thread(cloud_ssm.managed_node_ping_status, ssm_target, profile, region),
             timeout=_SSM_PING_TIMEOUT_SECS,
         )
+    except SandboxUnavailableError:
+        raise
     except Exception:  # timeout, AWSError, dispatch failure — all "unreachable"
         return _NODE_UNREACHABLE
     if status == "Online":
@@ -559,7 +577,12 @@ async def diagnose_instance_ssm(
 
     probes: list[dict] = []
 
-    node = await _probe_ssm_managed(target, profile, region)
+    try:
+        node = await _probe_ssm_managed(target, profile, region)
+    except SandboxUnavailableError as e:
+        # The local sandbox, not SSM or IAM, is what failed: say so.
+        probes.append({"name": "ssm_managed_node", "ok": False})
+        return DiagnosisResult(UNKNOWN, str(e), probes)
     probes.append({"name": "ssm_managed_node", "ok": node == _NODE_ONLINE})
     if node == _NODE_MISSING:
         return DiagnosisResult(SSM_TARGET_MISSING, _REASONS[SSM_TARGET_MISSING], probes)
@@ -644,7 +667,11 @@ async def diagnose_instance_fargate(
 
     probes: list[dict] = []
 
-    ready, reason = await _probe_task_exec_ready(cluster, task_id, profile, region)
+    try:
+        ready, reason = await _probe_task_exec_ready(cluster, task_id, profile, region)
+    except SandboxUnavailableError as e:
+        probes.append({"name": "task_exec_ready", "ok": False})
+        return DiagnosisResult(UNKNOWN, str(e), probes)
     probes.append({"name": "task_exec_ready", "ok": ready})
     if not ready:
         return DiagnosisResult(SSM_UNREACHABLE, reason, probes)

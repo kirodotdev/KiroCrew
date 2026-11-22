@@ -8,9 +8,9 @@
  *   - The user's quit (managed-lane.js), after the gateway has fully stopped.
  *     The app then EXITS; the next start is the user's.
  *   - The next app start (applyArmedAtStart), for an apply the quit left behind
- *     (interrupted or failed). It runs before the gateway spawns and before any
- *     window opens, then relaunches ONCE into the new bundle. If it fails the
- *     arm is cleared, the old version starts and the error is shown. The
+ *     (interrupted or failed). It runs before the gateway spawns and before the
+ *     main window opens, then relaunches ONCE into the new bundle. If it fails
+ *     the arm is cleared, the old version starts and the error is shown. The
  *     gateway the desktop hosts skips its own boot-time apply, so exactly one
  *     side applies and the two versions cannot split.
  */
@@ -73,9 +73,13 @@ async function runArmedApply({ exec, version, log }) {
  * is handed back for the notice. A probe that cannot answer is treated the same
  * way: an apply that cannot prove the bundle is idle waits for the next start.
  *
+ * `showApplying(version)` is called only once the update command is about to
+ * run (the command can take minutes), and returns the function that takes down
+ * what it showed.
+ *
  * @returns {Promise<{outcome: "none"|"already-installed"|"relaunching"|"failed"|"gateway-running", error?: string, stopCommand?: string}>}
  */
-async function applyArmedAtStart({ arm, exec, currentVersion, relaunch, app, log, probeGateway = null }) {
+async function applyArmedAtStart({ arm, exec, currentVersion, relaunch, app, log, probeGateway = null, showApplying = null }) {
   const rec = arm.read();
   if (!rec) return { outcome: "none" };
   if (rec.version === currentVersion) {
@@ -96,7 +100,10 @@ async function applyArmedAtStart({ arm, exec, currentVersion, relaunch, app, log
   }
   log.info(`[update] armed update ${rec.version} was not applied at the last quit - applying it before the gateway starts`);
   arm.markAttempt();
+  const hideApplying = showApplying ? showApplying(rec.version) : null;
   const result = await runArmedApply({ exec, version: rec.version, log });
+  // The take-down runs before the relaunch or the failed start.
+  if (hideApplying) hideApplying();
   // Cleared either way: a success is done, and a failure must not retry on every
   // launch behind the user. The failure is shown instead.
   arm.clear();

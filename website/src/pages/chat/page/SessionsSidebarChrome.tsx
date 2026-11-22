@@ -156,6 +156,7 @@ export default function SessionsSidebarChrome({
       collapsible={!isMobile}
       staticRows={isMobile}
       onSelectSlot={selectFromSidebar}
+      splitMode={splitMode}
       onOpenSlotInNewTab={ownsSessionTabs ? openSlotInNewTab : undefined}
       onOpenSource={revealSourceLink}
       // Only offer the pane as a drop target when a composer exists to show

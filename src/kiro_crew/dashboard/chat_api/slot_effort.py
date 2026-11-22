@@ -386,8 +386,14 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                         type(exc).__name__,
                         exc,
                     )
+                    # A fixed sentence: the exception text can carry agent-authored
+                    # words, a path or a host. The log line above keeps the detail.
                     return web.json_response(
-                        {"error": str(exc), "code": "effort_refused"}, status=400
+                        {
+                            "error": "The agent did not accept the reasoning effort change.",
+                            "code": "effort_refused",
+                        },
+                        status=400,
                     )
                 logger.warning(
                     "change_effort(%s) failed for slot %s: %s: %s — falling back to reset",

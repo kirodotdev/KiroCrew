@@ -40,6 +40,7 @@ import {
 import { pickBoundSlot, useArtifactDetailPageCompanion } from './useArtifactDetailPageCompanion'
 import { useArtifactDetailPageMenu, ArtifactDetailPageHeader } from './ArtifactDetailPageHeader'
 import { ArtifactDetailPageBody } from './ArtifactDetailPageBody'
+import { artifactCompanionContextPrompt } from '../components/artifactCompanionContext.prompt'
 
 export { isEditableKind }
 
@@ -226,14 +227,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
    *  ("summarize this") with no slug boilerplate in the composer. */
   const buildCompanionContext = useCallback((): string => {
     if (!artifact) return ''
-    return (
-      `Companion chat for artifact \`${artifact.slug}\` ("${artifact.name}", kind=${artifact.kind}, ` +
-      `v${artifact.version}, source_path=${artifact.source_path || 'none'}, ` +
-      `${commentCount} open comment${commentCount === 1 ? '' : 's'}).\n` +
-      `Use artifact_get / artifact_update / artifact_get_comments with this slug. ` +
-      `Anchored comments carry the exact quoted span they refer to — treat each as ` +
-      `an instruction about that span, and triage every one you act on.`
-    )
+    return artifactCompanionContextPrompt(artifact, commentCount)
   }, [artifact, commentCount])
   const companionRead = useArtifactDetailPageCompanion({
     durableComments, panel, setPanel, sidebarUserToggledRef, buildCompanionContext, popout, stateRead, documentRead,

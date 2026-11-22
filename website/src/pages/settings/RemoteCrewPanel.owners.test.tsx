@@ -54,6 +54,7 @@ describe('RemoteCrewPanel owners', () => {
   it('are the files the panel is made of', () => {
     expect(OWNERS).toEqual([
       'RemoteCrewPanelCrewRow.tsx',
+      'RemoteCrewPanelCustomType.tsx',
       'RemoteCrewPanelLaunch.tsx',
       'RemoteCrewPanelRestartBanner.tsx',
       'RemoteCrewPanelSections.tsx',

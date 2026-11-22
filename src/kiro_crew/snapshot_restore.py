@@ -24,6 +24,7 @@ import os
 import shutil
 import stat as _stat
 from contextlib import ExitStack, closing
+from contextvars import ContextVar
 from datetime import timezone
 from pathlib import Path, PurePosixPath
 from typing import Callable, cast
@@ -49,6 +50,7 @@ from kiro_crew.snapshot_components import (
     _DERIVED_INDEXES,
     _FLAT_DOCUMENT_VALIDATORS,
     _JSON_OBJECT_LISTS,
+    _LINKABLE_TREE_ROOTS,
     _LOCKED_DOCUMENT_TREES,
     _TREE_DOCUMENT_VALIDATORS,
     _WHOLE_TREE_COMPONENTS,
@@ -65,6 +67,10 @@ from kiro_crew.snapshot_components import (
     safe_tree_root,
 )
 from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting
+
+host_local_installable: ContextVar[frozenset[str]] = ContextVar(
+    "host_local_installable", default=frozenset()
+)
 
 
 def _save_locked_document_to(backup: Path, rel: str) -> Callable[[Path], None]:
@@ -388,13 +394,27 @@ def _backup_and_copy(
     ``O_EXCL``, not by name through ``shutil.copy2``: a by-name write follows a data-home
     component swapped for a link, or a symlink left at the core file's name. A name still
     occupied after the backup move is refused instead of written through.
+
+    A component's ``host_local`` files are neither moved nor installed unless this
+    caller explicitly marks one installable for its checked import. The others name
+    paths on the machine that made the archive, so this install's copy stays.
     """
     # Read before any file moves: the keep rule for the overlay depends on it.
     config_was_live = os.path.lexists(mc / "config.json")
+    installable = host_local_installable.get()
+    host_local = frozenset(f for f in COMPONENTS[component].host_local if f not in installable)
+    for f in host_local:
+        if os.path.lexists(snap / f):
+            kept = "; this install's copy is kept" if os.path.lexists(mc / f) else ""
+            print(
+                f"  ↩  {f}: not restored (the backup's copy points at the machine "
+                f"that made it){kept}."
+            )
+    files = [f for f in CORE_FILES.get(component, ()) if f not in host_local]
     if not _facade()._staging_is_pinned(
         allow_unpinned=allow_unpinned, what=f"restore of {component!r}"
     ):
-        for f in CORE_FILES.get(component, ()):
+        for f in files:
             # Validated before the live file is touched, and a symlink at the live name is
             # MOVED aside rather than skipped -- the same two properties the pinned branch
             # has. Skipping would skip both the backup AND the replacement, so the archive's
@@ -446,7 +466,7 @@ def _backup_and_copy(
                 backup, what=f"pre-restore backup for {component!r}"
             )
             try:
-                for f in CORE_FILES.get(component, ()):
+                for f in files:
                     live = mc / f
                     # Checked BEFORE the live file is touched: the archive is untrusted, and
                     # finding a FIFO or directory only after the move would leave nothing
@@ -675,6 +695,8 @@ def _refuse_corrupt_source_databases(
         if not _want(components, component):
             continue
         for name in files:
+            if name in COMPONENTS[component].host_local:
+                continue  # never installed, so its bundle copy cannot refuse the restore
             src = snap / name
             if not src.exists() and not platform_compat.is_link_or_junction(src):
                 continue  # absent from a selective bundle; nothing to validate
@@ -930,6 +952,21 @@ def _do_replace(
     set known to be complete. The core-file swap must not run before phase one finishes.
     """
     facade = _facade()
+    # A tree whose root may be a supported link (`_LINKABLE_TREE_ROOTS`) and that this
+    # bundle does not carry is not restored by this run, so it is not this run's to vet or
+    # touch: a linked `members/` must not refuse a replace of everything else.
+    uncarried = [
+        c
+        for c in COMPONENTS
+        if _want(components, c)
+        and COMPONENTS[c].trees
+        and all(t in _LINKABLE_TREE_ROOTS for t in COMPONENTS[c].trees)
+        and not any((snap / t).is_dir() for t in COMPONENTS[c].trees)
+    ]
+    if uncarried:
+        components = [c for c in COMPONENTS if _want(components, c) and c not in uncarried]
+        for c in uncarried:
+            print(f"  {c}: not in this bundle, so the live folder is left as it is")
     # Before anything is created or copied: a destination tree root that does not resolve
     # inside the data home would have the restore write outside it.
     facade._refuse_unsafe_destination_roots(mc, components)

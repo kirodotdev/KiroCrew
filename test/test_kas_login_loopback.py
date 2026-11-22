@@ -31,7 +31,7 @@ from kiro_crew.auth.service import (
 )
 from kiro_crew.auth.shape import Transport
 from kiro_crew.auth.store import TokenStore
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 class _FakeResp:
@@ -229,9 +229,105 @@ async def test_loopback_near_miss_callback_path_fails_fast(tmp_path, loopback_sh
             assert "Sign-in could not finish" in await resp.text()
     result = await _poll_until_terminal(service, begin["login_id"])
     assert result["status"] == "error"
-    assert result["code"] == "loopback_failed"
+    assert result["code"] == "loopback_wrong_address"
     assert "not a callback address" in result["error"]
     assert session.calls == []
+    assert TokenStore(tmp_path).resolve() is None
+
+
+class _RaisingResp:
+    """A token request that fails before the auth service answers."""
+
+    def __init__(self, err: BaseException):
+        self._err = err
+
+    async def __aenter__(self):
+        raise self._err
+
+    async def __aexit__(self, *a):
+        return False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response, error",
+    [
+        (_FakeResp(500, "boom"), "token exchange failed: HTTP 500 boom"),
+        (_RaisingResp(aiohttp.ClientConnectionError("connection refused")), "connection refused"),
+        (_RaisingResp(asyncio.TimeoutError()), ""),
+    ],
+)
+async def test_loopback_failed_code_exchange_is_its_own_code(
+    tmp_path, loopback_shape, response, error
+):
+    """The browser came back with a good code; the exchange, not the return, failed."""
+    service, _ = _service(tmp_path, responses=[response])
+    begin = await service.begin_loopback("google")
+    page = await _hit_callback(
+        begin["port"],
+        {"login_option": "google", "code": "c", "state": _state_from(begin["auth_url"])},
+    )
+    # The tab is answered after the exchange, so it names the failure, in fixed
+    # words that leave the auth service's response body off the page.
+    assert "Login complete" not in page
+    assert "Sign-in could not finish" in page
+    assert "boom" not in page
+    result = await _poll_until_terminal(service, begin["login_id"])
+    assert result == {"status": "error", "code": "loopback_exchange_failed", "error": error}
+    assert TokenStore(tmp_path).resolve() is None
+
+
+class _GatedResp(_FakeResp):
+    """A token answer held back until the test releases it."""
+
+    def __init__(self, status: int, payload):
+        super().__init__(status, payload)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __aenter__(self):
+        self.entered.set()
+        await self.release.wait()
+        return self
+
+
+@pytest.mark.asyncio
+async def test_loopback_tab_says_login_complete_only_after_the_exchange(tmp_path, loopback_shape):
+    ok = {"accessToken": "a", "expiresIn": 3600, "profileArn": "arn:p"}
+    gated = _GatedResp(200, ok)
+    service, _ = _service(tmp_path, responses=[gated])
+    begin = await service.begin_loopback("google")
+    page = asyncio.create_task(
+        _hit_callback(
+            begin["port"],
+            {"login_option": "google", "code": "c", "state": _state_from(begin["auth_url"])},
+        )
+    )
+    await await_until(gated.entered, what="the token request")
+    # The exchange is in flight: the tab has no answer yet.
+    assert not page.done()
+    gated.release.set()
+    assert "Login complete" in await await_until(page, what="the tab's page")
+    result = await _poll_until_terminal(service, begin["login_id"])
+    assert result == {"status": "authorized", "provider": "Google"}
+
+
+@pytest.mark.asyncio
+async def test_loopback_cancelled_mid_exchange_tells_the_tab(tmp_path, loopback_shape):
+    gated = _GatedResp(200, {"accessToken": "a", "expiresIn": 3600, "profileArn": "arn:p"})
+    service, _ = _service(tmp_path, responses=[gated])
+    begin = await service.begin_loopback("google")
+    page = asyncio.create_task(
+        _hit_callback(
+            begin["port"],
+            {"login_option": "google", "code": "c", "state": _state_from(begin["auth_url"])},
+        )
+    )
+    await await_until(gated.entered, what="the token request")
+    await service.cancel(begin["login_id"])
+    text = await await_until(page, what="the tab's page")
+    assert "Login complete" not in text
+    assert "Sign-in could not finish" in text
     assert TokenStore(tmp_path).resolve() is None
 
 
@@ -257,15 +353,33 @@ async def test_loopback_stray_hits_without_our_state_change_nothing(tmp_path, lo
 
 
 @pytest.mark.asyncio
-async def test_loopback_portal_error_is_error(tmp_path, loopback_shape):
+@pytest.mark.parametrize(
+    "error, page_says",
+    [
+        ("access_denied", "Login failed: the sign-in was cancelled or not approved. You can"),
+        ("server_error", "Login failed: the sign-in service ran into a problem. You can"),
+        (
+            "temporarily_unavailable",
+            "Login failed: the sign-in service is temporarily unavailable.",
+        ),
+        ("invalid_scope", "Login failed: the sign-in service did not accept the request. You"),
+        ("not_an_rfc_code", "Login failed. You can close this window"),
+    ],
+)
+async def test_loopback_portal_error_is_error(tmp_path, loopback_shape, error, page_says):
+    """The tab names an RFC 6749 error code's reason in fixed words, never the provider's text."""
     service, _ = _service(tmp_path)
     begin = await service.begin_loopback("google")
-    await _hit_callback(begin["port"], {"error": "access_denied"})
+    page = await _hit_callback(
+        begin["port"], {"error": error, "error_description": "<b>provider text</b>"}
+    )
+    assert page_says in page
+    assert "provider text" not in page
     result = await _poll_until_terminal(service, begin["login_id"])
     assert result == {
         "status": "error",
         "code": "loopback_failed",
-        "error": "portal returned error: access_denied",
+        "error": f"portal returned error: {error}",
     }
 
 
@@ -288,8 +402,7 @@ async def test_cancel_releases_the_port_for_reuse(tmp_path, loopback_shape):
     first = await service.begin_loopback("google")
     assert not _port_is_closed(first["port"])
     await service.cancel(first["login_id"])
-    # Let the cancelled listener task unwind and close its socket.
-    await asyncio.sleep(0.05)
+    # cancel() returns only once the listener has closed its socket.
     assert _port_is_closed(first["port"])
     with pytest.raises(UnknownLoginError):
         await service.poll_device(first["login_id"])
@@ -308,8 +421,7 @@ async def test_close_releases_pending_loopback_logins(tmp_path, loopback_shape):
     service, _ = _service(tmp_path)
     begin = await service.begin_loopback("google")
     await service.close()
-    await asyncio.sleep(0.05)
-    # The listener is gone, and a fresh service can bind again.
+    # The listener is gone as soon as close() returns, and a fresh service can bind again.
     assert _port_is_closed(begin["port"])
     other, _ = _service(tmp_path)
     again = await other.begin_loopback("google")
@@ -317,6 +429,27 @@ async def test_close_releases_pending_loopback_logins(tmp_path, loopback_shape):
         assert not _port_is_closed(again["port"])
     finally:
         await other.cancel(again["login_id"])
+
+
+@pytest.mark.asyncio
+async def test_a_listener_cancelled_before_its_first_step_closes_its_socket(
+    tmp_path, loopback_shape, monkeypatch
+):
+    # Hold every bound socket, as a reference cycle under load can, so the port
+    # is released by the service and not by the garbage collector.
+    held: list[socket.socket] = []
+
+    def _bind_and_hold():
+        sock, port = _bind_ephemeral()
+        held.append(sock)
+        return sock, port
+
+    monkeypatch.setattr(portal, "bind_allowed_port", _bind_and_hold)
+    service, _ = _service(tmp_path)
+    begin = await service.begin_loopback("google")
+    await service.close()
+    assert held[0].fileno() == -1
+    assert _port_is_closed(begin["port"])
 
 
 @pytest.mark.asyncio

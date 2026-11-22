@@ -552,6 +552,17 @@ custom-rules:
           ordering of the checks, or a table whose rows each carry their
           expected rule at that rule's bound, is fine (testing-conventions §
           Refusal tests).
+      17. A probe of a crew log's kernel lock (`file_lock(..., wait=False)` on
+          a unit's `.lease`, or a helper that wraps one) made after
+          `assert_drained()` / `emit.flush()` alone, with no `eager.drain()`
+          before it. The eager folder writes savepoints under this process's
+          share of the same lease on its own thread, and the seal a
+          `session/closed` triggers is one of them, so the probe can read
+          "still owned" while the emitter has already let go: macOS reds
+          about once a day (#39402). Probe through `_owned_elsewhere` /
+          `_can_take_ownership` in `test/crew_log_emit_helpers.py`, which
+          drain the folder first, or drain it yourself (testing-conventions §
+          Filesystem tests).
 
       Allowed (do NOT flag):
       - a sleep inside a stub that simulates slow work while the test waits
@@ -714,7 +725,7 @@ custom-rules:
         session it returns None and changes nothing, so it is not an H13 change
         to the kiro construction path.
         A pin this gateway CAN start but that cannot run a full crewmate (no
-        crewmate chat or no worker kit: goose, opencode, strands, pi, deepseek, copilot)
+        crewmate chat or no worker kit: goose, opencode, strands, deepseek, copilot)
         is the other half of H17 (rfc-crewmate-harness-follows-settings.md
         5.8): it is not refused, and that crewmate's DM chat and workers run on
         KAS, with an error log line and an error bell note naming the crewmate,
@@ -1214,6 +1225,91 @@ custom-rules:
       (37053522199/1/110993309643) with `could not acquire exclusive file lock:
       still held after waiting 0.00s (one attempt)` until #16102 and #16465.
       Allowed (do NOT flag): a test that asserts the on-loop refusal itself.
+
+  - id: a-module-level-cache-ships-its-per-test-reset
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/**/*.py"
+    rule: |
+      A module-level mutable value that production code fills at runtime is
+      process state. Under xdist every later test on the same worker inherits
+      what an earlier test left in it, so the leak reds an unrelated test on
+      later PRs while the PR that added the value passes its own CI.
+
+      `test/test_process_cache_floor_ratchet.py` enforces the common shape, but
+      only in a CI run whose checkout already contains it (a PR whose last green
+      run is older than the ratchet merges without meeting it), and only for an
+      empty container whose name contains `cache`, `stores` or `memo`. This
+      rule is the review-time check for every shape, read from the base commit.
+
+      FLAG a name the diff ADDS at MODULE scope in `src/kiro_crew/` (outside
+      `tests/` and `*_tests/` trees) only when ALL three hold:
+      - it is bound to a mutable container (`{}`, `[]`, `set()`, `dict()`,
+        `OrderedDict()`, `defaultdict(...)`, a `Weak*Dictionary`, a `deque`),
+        a function decorated with `functools.lru_cache` / `functools.cache`, a
+        scalar flag or snapshot that a function rebinds with `global`, or an
+        instance of a class that keeps state in its attributes (a cache
+        object whose `.cache` / `.pending` a function fills);
+      - a function body writes it AFTER import, on a path a test drives
+        (item assignment or `del`, `.add`/`.append`/`.update`/`.setdefault`/
+        `.pop`/`.clear`, a `global` rebind, an assignment to the instance's
+        attribute, or a call to the cached function);
+      - what it holds after that write depends on per-test state that is NOT
+        part of the lookup key: a path under the data home or `tmp_path`, an
+        env var, config, the clock, a file's content or stat read inside the
+        function, or simply whether an earlier test reached the writer at all
+        (a warn-once / done-once flag). A later test can then read a value an
+        earlier test left. For a cached function, its arguments ARE the key:
+        a value that arrives as an argument does not meet this condition.
+
+      Such a name needs, in the SAME PR, a `@per_test_guard` function in
+      `test/conftest_resets.py` that puts it back to its cold value before and
+      after every test, re-bound in `test/conftest.py`'s `from conftest_resets
+      import (...)` block. Follow `_reset_subagent_not_due_memo`: look the module
+      up with `sys.modules.get(...)` so the floor does not import it, clear the
+      container (or `cache_clear()` the function, or `_floor_monkeypatch.setattr`
+      the flag to its initial value), yield, clear again. A reset only in the
+      new value's own test file does not count: the next file is the one that
+      inherits it.
+
+      Does NOT count (do NOT flag any of these):
+      - a CONSTANT: a dict, list or set literal with content, a `frozenset`,
+        `tuple`, `MappingProxyType`, enum or compiled regex that no function
+        writes after import, whatever its name or case;
+      - a REGISTRY filled only at import time (decorator registration, a loop
+        at module scope, `register(...)` calls in module bodies) from code,
+        never from per-test input;
+      - a memo with no side effect whose answer is fully determined by its
+        arguments, whatever those arguments are and wherever a test got them
+        (a regex built from a `home` string passed in, a parse of the text
+        passed in), or that reads only a packaged resource by package-relative
+        path. A cached function used for its SIDE effect (an `lru_cache` that
+        logs a warning once per key) is a warn-once flag and IS flagged;
+      - a value an existing per-test floor already resets: its name and its
+        module both appear in `conftest.py` or `test/conftest*.py`, the files
+        the ratchet reads. Check them at the PR head before flagging. A reset
+        only in `test/integration/conftest.py` does not count: it runs per
+        gateway boot, for integration tests only;
+      - a line carrying `# process-cache-ok: <reason>` whose reason is true of
+        the code (the marker is how the ratchet's excuse is spelled; a safe
+        value from the bullets above does not need it);
+      - a monotonic generation counter that caches key on: putting an older
+        number back can match an entry built under other settings, so it is
+        left unpinned on purpose;
+      - locks, `threading.Event`, loggers, `ContextVar`s (governed by their own
+        reset rules), `__all__`, and type aliases;
+      - a name the diff MOVES or RENAMES whose reset moves with it in the same
+        PR, and a name the diff only reads or deletes. A moved name listed in
+        `test/process_cache_floor_baseline.txt` with no reset IS flagged: the
+        ratchet keys its baseline on `path::name`, so the move needs the reset;
+      - code under `if __name__ == "__main__":` or a CLI entry that no test
+        imports and calls.
+      When unsure whether a value is per-test, say why in an advisory finding
+      instead of blocking.
+
+      Name the value, the line, and the writer in the finding. See
+      docs/system-specs/common/testing-conventions.md § Order dependence and
+      shared state, and D11.
 
   - id: persist-before-you-publish
     blocking: true
@@ -1765,3 +1861,33 @@ custom-rules:
       Allowed (do NOT flag): rows whose text is the model's or a tool's own
       output, rows a dedicated card draws from structured meta, and assistant
       rows carrying the compaction card's own notice markers.
+
+  - id: a-wheel-install-job-pins-its-python
+    blocking: false
+    file-patterns:
+      - ".github/workflows/**"
+    rule: |
+      A workflow job that installs this project (`pip install` of the built
+      wheel, of `.`, or of `-e .`) resolves the wheel's pins against whatever
+      interpreter runs pip. The runner image's own `python3` moves with the
+      image: on ubuntu 26.04 it is 3.14, where the only `pysqlite3-binary`
+      wheel is a version `setup.cfg` excludes, so the nightly platform-wheel
+      gate #39770 added failed on its first scheduled run (#40371). PR CI
+      never ran it, because `publish-cli.yml` runs only on the nightly and
+      release path. See "A job that installs the project's wheel pins its
+      Python" in docs/ci/ci-and-reviews.md.
+
+      - FLAG a new or edited step that runs `pip install` of this project, or
+        creates the venv such an install goes into, when the job has no
+        earlier SHA-pinned `actions/setup-python` step with an explicit
+        `python-version`, or when the step calls bare `python3` / `python`
+        instead of that step's interpreter.
+      - FLAG a PR that adds or changes a job in a workflow only the nightly
+        schedule, a release or a manual dispatch reaches (`nightly.yml`,
+        `publish-cli.yml`, `release.yml`, `release-lts.yml`, or a reusable
+        workflow only they call) when its description does not say how the
+        changed job was exercised or that it could not be.
+
+      Allowed (do NOT flag): stdlib-only steps that install nothing from this
+      project; installs of unrelated tools (`pip install zizmor`); comment-only
+      edits.

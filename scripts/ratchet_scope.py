@@ -199,15 +199,17 @@ def changed_paths() -> tuple[set[str] | None, str]:
     code, out = _git("rev-list", "--parents", "-n", "1", "HEAD")
     is_merge = code == 0 and len(out.split()) >= 3
     attempts: list[tuple[str, list[str]]] = []
+    # `-z` prints each path verbatim; line output C-quotes a non-ASCII name, and
+    # the quoted spelling matches no file a gate then reads.
     if is_merge and _first_parent_is_base():
-        attempts.append(("merge HEAD^1..HEAD", ["diff", "--name-only", "HEAD^1", "HEAD"]))
-        attempts.append(("merge parents", ["diff", "--name-only", "HEAD^1", "HEAD^2"]))
+        attempts.append(("merge HEAD^1..HEAD", ["diff", "--name-only", "-z", "HEAD^1", "HEAD"]))
+        attempts.append(("merge parents", ["diff", "--name-only", "-z", "HEAD^1", "HEAD^2"]))
     for base in _base_branch_refs():
-        attempts.append((f"{base}...HEAD", ["diff", "--name-only", f"{base}...HEAD"]))
+        attempts.append((f"{base}...HEAD", ["diff", "--name-only", "-z", f"{base}...HEAD"]))
     for label, args in attempts:
         code, out = _git(*args)
         if code == 0:
-            return {line.strip() for line in out.splitlines() if line.strip()}, label
+            return {path for path in out.split("\0") if path.strip()}, label
     return None, "undeterminable (judging the whole tree)"
 
 

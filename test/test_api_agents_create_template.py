@@ -29,6 +29,7 @@ The contract these tests pin:
 from __future__ import annotations
 
 import logging
+import re
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -386,6 +387,23 @@ class TestFirstGreetingOwed:
         assert status == 200
         assert data["member_id"]
         assert marked == [("scout", WELCOME_KIND_GOAL, data["member_id"])]
+
+    @pytest.mark.asyncio
+    async def test_a_crewmate_named_after_a_windows_device_owes_its_welcome_elsewhere(self):
+        """``members/nul`` is the NUL device on Windows, so the welcome record a
+        crewmate named ``Nul`` owes must land in a directory of another name."""
+        from kiro_crew.members import WELCOME_OWED_FILENAME, members_root
+
+        status, data = await _post(
+            {"name": "Nul", "kiro_agent": "kirocrew", "first_greeting": True},
+            _fake_config(),
+            installed=("kirocrew",),
+        )
+
+        assert status == 200
+        assert re.fullmatch(r"nul-[0-9a-f]{12}", data["member_id"])
+        assert (members_root() / data["member_id"] / WELCOME_OWED_FILENAME).is_file()
+        assert "nul" not in {entry.name for entry in members_root().iterdir()}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("flag", [None, False, "true", 1])

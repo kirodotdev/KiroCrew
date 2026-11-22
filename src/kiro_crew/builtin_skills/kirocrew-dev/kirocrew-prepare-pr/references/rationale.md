@@ -311,12 +311,48 @@ consecutive main runs read `cancelled` — so there is no per-commit verdict on
 Two obvious server-side fixes were rejected by the constraint that matters here:
 merge velocity. The median merge gap is about 1.4 minutes and CI takes about 19,
 so a merge queue or strict up-to-date protection would serialise the repository
-behind its own CI. That held until the repository adopted a merge queue (#15200):
-CI, Fast Gate and Build now run on `merge_group`, described in
-`docs/ci/ci-and-reviews.md`. `green_age.py` is the soft version of the same idea. It runs
-client-side during the review wait, and it costs a rebase only on a PR whose
+behind its own CI. The repository later made every test workflow run on
+`merge_group` (#15200), but the queue itself is off on `main`
+(`docs/ci/ci-and-reviews.md`), so nothing re-tests a green PR against the base it
+merges into. `green_age.py` is the soft version of the same idea. It runs
+client-side during the review wait, and it costs a local rebase only on a PR whose
 files actually collide with what the base gained — not on every PR, and not at
 merge time.
+
+### Why a clean re-check stays local
+
+Exit 30 asks whether the green still holds on today's base. A local rebase plus
+Phase 2's gates and the related tests answers that. Pushing the clean result
+adds nothing a merge needs, and it costs three things:
+
+| What a push does here | Why it buys nothing or costs something |
+|---|---|
+| Makes the head current with `main` | `strict_required_status_checks_policy` is `false`, so being behind never blocks a merge |
+| Re-runs CI | about two dozen workflow runs per push, on a patch that did not change |
+| Resets review | `dismiss_stale_reviews_on_push` and `require_last_push_approval` are on, so the next approval has to come from a person again |
+
+So a push goes out only when the re-check finds something: a rebase conflict, a
+red gate or a red related test that this PR causes. A red that is also red on
+`origin/<base>` is main's, and follows *When main is red* with no push here.
+After a green re-check, move the loop's branch to the rebased commit and report
+it; after a red or conflicting one, leave the branch where it is. That push carries the fix and its
+`Rebased: main moved in` comment. The re-check
+runs in a throwaway worktree. Only a green one moves the loop's branch, so the
+next `green_age.py` reading, which measures from the local `HEAD`, stays fresh
+until the base moves in these files again. A red or conflicting one leaves the
+branch on the published head, so every cycle reads 30 until the fix is pushed:
+a red waiting on in-flight runs cannot read as fresh and slip into Phase 4.
+`pr_status.py` still measures the PR's published head, so a merger keeps
+seeing that the CI green predates the base. A clean re-check costs local test
+time only, at most one per loop turn, and pushes nothing.
+
+What this gives up: CI's full suite on the rebased tree. A tree-wide test
+the related set does not select (a ratchet over every test file, a count pin) is
+seen only by CI. Such a break still turns `main` red after the merge, where
+`main-red-watch.yml` reports it. That safety net is the same one a PR merged
+inside the quiet floor already relies on, because a loop notices a moved base only
+when a turn runs, which on a quiet PR is the quiet-floor turn about every 100
+minutes.
 
 That is also why the exit code is consumed by the skill and by nothing else.
 `pr_status.py` prints the line and carries the summary in `advisory.green_age`,
@@ -348,8 +384,8 @@ The same observed incident has a writer-side half, and it is the half that actua
 broke. The PR that waited ten hours TIGHTENED a contract: it made a ledger entry's
 `data` validate against a registry, so a payload that main accepted before now
 raises. That is a `Breaking:` change, and the writers it broke are exactly the ones
-the two PRs merging in between added -- `test/test_ledger_kinds.py`,
-`test/test_ledger_retention.py` and `test/test_remove_slot_for_history_key.py` all
+the two PRs merging in between added -- `test/test_crew_log_kinds.py`,
+`test/test_crew_log_retention.py` (then `test_ledger_*`) and `test/test_remove_slot_for_history_key.py` all
 hand-write payloads without the new required fields. A writer sweep taken when that
 PR opened would have found none of them, because none of them existed yet. So the
 rule is not symmetry with the tests-side check: it is the same expiry, on the same
@@ -531,7 +567,10 @@ The other condition stands on its own, and does not depend on the order. When th
 regenerated body is byte-identical there is nothing to publish, so the call is skipped.
 Publishing it anyway wastes a request for certain, and a whole fan-out if GitHub raises
 `edited` for a PATCH that changes nothing. Which of those it is has not been measured
-here, so skip the call but do not quote a saving for it.
+here, so skip the call but do not quote a saving for it. Compare against
+`gh pr view <n> --json body --template '{{.body}}'`: `--jq .body` appends a newline
+of its own, so a raw comparison with it reports a difference every round and the
+condition skips nothing.
 
 Which lanes sit in which group is a property of the workflows and changes with them,
 so read it from the `on:` blocks in `.github/workflows/` and the reviewer table in
@@ -564,11 +603,14 @@ gate accepts them as visual evidence. Dragging a file into the description in th
 UI produces an identical URL, so a human reviewer and the lanes see one convention.
 
 **The one scoped exception: a contributor with no write access on the repository.**
-`gh --attach` uploads through an endpoint that answers read permission with a 404
-(cli/cli#14302), so a fork contributor has no CLI path to an attachment at all; the
-web-UI drag is their only one. For them, and only them, committing the media under
+`gh --attach` on the *upstream* PR uploads through an endpoint that answers read
+permission with a 404 (cli/cli#14302), so a fork contributor cannot attach there. They
+still have off-PR upload paths that keep binaries out of the diff: `--attach` on an
+issue in their OWN fork (where they are admin) mints cross-repo `user-attachments`
+URLs, and the web-UI drag mints the same. Committing the media under
 `temp-screenshots/<topic>/` (`git add -f`, past the ignore rule) and referencing the
-repository-relative path from the body is admissible evidence:
+repository-relative path from the body is admissible evidence too, but only as the last
+resort when neither upload path is available:
 `.github/scripts/pr-committed-evidence.sh` reads the blobs out of the object store for
 the fork lanes, and the screenshot-evidence gate accepts a still-linked committed
 path. The exception does not weaken the rule for anyone who CAN attach: every reason

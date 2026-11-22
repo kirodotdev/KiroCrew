@@ -60,6 +60,23 @@ declares more than the free space where it extracts.
 | security | `telemetry_salt` |
 | artifacts | `artifacts/` directory — `--mode replace` only (folder assignments not captured yet) |
 | uploads | `uploads/` directory — `--mode replace` only |
+| members | `members/` directory: each Bot's `briefing.md` and Dashboard tab — `--mode replace` only |
+| *(not included)* | named workspace folders (`workspace-<name>/`, or wherever a workspace's `dir` points) — copy by hand, see below |
+
+**Named workspace folders do not ride.** A workspace made with `kirocrew workspace
+create <name>` keeps its files in `workspace-<name>/` under the data home, or wherever
+its `dir` points. No component carries those folders: their location is read from
+`config.json`, and they can be large enough to push a bundle past the 4 GiB limit.
+`kirocrew snapshot` names each one it leaves out, with its path. The workspace entry
+itself rides in `config`. To move one, copy the folder to the same place on the new
+machine, for example:
+
+```bash
+rsync -a ~/.kiro/crew/workspace-myproject/ newhost:.kiro/crew/workspace-myproject/
+```
+
+A workspace whose folder sits inside a tree this snapshot carries (the default
+`workspace/`, unless `--components` leaves it out) is in the bundle and is not named.
 
 No component carries chat history (`sessions/*.jsonl`, the dashboard's chats).
 Restoring `config` prints a warning that chats from the source machine will not
@@ -102,6 +119,34 @@ and keeps your previous one in the pre-restore backup directory.
 So `kirocrew restore --mode merge` says these two were skipped and imports the rest, and
 refuses outright if they are all you asked for. Merging a library artifact by artifact
 needs a rule for when two artifacts are the same artifact; that is follow-up work.
+
+`members` carries each Bot's own folder, `members/<id>/`: its `briefing.md`, its
+Dashboard tab under `dashboard/`, and whatever else the Bot keeps there, such as
+`drafts/`. A Bot that works in its own folder can make it large, and all of it counts
+toward the bundle's 4 GiB limit. The Bot itself rides in `config`, its memory in
+`memory` and its team in `crew-teams`. **Some Bot state does not ride:** its permanent
+rules and DM binding (`member-records/`) and its activity history (`crew-log/`) are in
+no component, and the folder's legacy `activity.jsonl` files are left out on purpose. A
+restored Bot keeps its briefing, dashboard, memory and team, and starts with no rules,
+no DM thread and an empty activity history. `members` is `--mode replace` only for the
+same reason as the library: a folder is named by the Bot's slug, two machines can give
+one slug to different Bots, and the files in a folder describe each other.
+
+Two consequences of a replace that carries `members`:
+
+- It swaps this machine's `members/` for the bundle's, so a legacy `activity.jsonl` this
+  machine had not yet folded into its activity history is gone from the live folder. Only
+  the pre-restore backup directory still holds it.
+- A Bot that still owed its first welcome on the source machine carries
+  `welcome_owed.json`, so it greets you on the restored machine as if it were new there.
+
+**A `members/` that is a link is not followed.** Kiro Crew supports keeping the Bot
+folders in a folder outside the data home through a link at `members/`; a link that
+leads to the data home, a folder above it or a folder inside it is refused. A snapshot records that link as skipped in
+its `MANIFEST.json` and still writes the rest of the bundle; copy the folder the link names
+by hand. The bundle counts as incomplete: `--strict` exits 3, and `--keep` keeps the last
+bundle that still holds the Bot folders. A restore whose bundle carries no `members/` leaves the link alone, and a replace
+that does carry one refuses before changing anything, rather than write through the link.
 
 `workspace/hygiene_data/` and `workspace/insert_facts*.py` are excluded: they are
 large and regenerable.
@@ -227,7 +272,7 @@ live state is this module's job, and it needs the gateway stopped (below).
 
 | Mode | Behavior |
 |------|----------|
-| `replace` | Overwrite the target with the snapshot, backing up any existing state first |
+| `replace` | Overwrite the target with the snapshot, backing up any existing state first, except `session_map.json` and `workspace_dir`: they name folders on the machine that made the snapshot, so this install's copy stays (see below) |
 | `merge` | Import new data without overwriting what is already there |
 
 There is no default mode. Name one with `--mode replace` or `--mode merge`.
@@ -274,7 +319,12 @@ result.
   way is named (`↩️  config.json: kept the existing file; the bundle's copy was
   NOT merged into it ...`) and `✅ config` is printed only when no setting was
   left behind. Host state in the same component (`session_map.json`,
-  `project_dir`, `workspace_dir`) keeps this machine's copy silently. A bundle
+  `workspace_dir`) keeps this machine's copy silently in a merge. Neither mode
+  installs `session_map.json` or `workspace_dir` from the bundle, even where this
+  install has none, so a restore on the same machine does not bring back the
+  bundle's session resume bindings; a restore also never installs the archive's
+  `project_dir`. A replace says `↩  <file>: not restored` and keeps this install's
+  copy of each. A bundle
   `ui-prefs.json` or `notification_settings.json` that its own store would read
   as empty, or refuse, stops the restore before anything is installed. A replace
   always checks it; a merge checks it only where the destination lacks that file,
@@ -312,7 +362,11 @@ replaces `config.json` and `hooks.json`, and import again. Replace always restor
 and `hooks.json` replace this install's files only with the box ticked (the dialog
 says so and, when ticked, warns that the archive may not come from this install), and
 the files it replaces are saved to `pre-restore-<timestamp>/` first. A file that does
-not exist yet is installed either way. A settings file in the archive that is not
+not exist yet is installed either way. Replace also leaves `session_map.json` alone,
+and installs the archive's `workspace_dir` only when it is a plain folder under
+this home (not the home itself, the data home or a folder holding it, or a
+protected folder); otherwise this install's copy stays and the result names it.
+A settings file in the archive that is not
 usable is named in the result and never installed, in either mode.
 Memory, crons, workspace files and skills follow the never-overwrite rules
 above in both tools.

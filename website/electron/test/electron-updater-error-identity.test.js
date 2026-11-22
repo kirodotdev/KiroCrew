@@ -34,17 +34,20 @@ function readAppUpdaterSource() {
 }
 
 /**
- * The source of the class method `name() { ... }`: from its declaration to the
- * next declaration at the same indentation. Bounded by layout rather than by
- * counting braces, so a brace inside a string or regex literal in the method
- * cannot stretch the slice into a neighbouring method and let THAT method's
- * emit/throw pairing satisfy the canary. Null when the method is not found.
+ * The source of the class method `[async] name(params) { ... }`: from its
+ * declaration to the next declaration at the same indentation. Bounded by layout
+ * rather than by counting braces, so a brace inside a string or regex literal in
+ * the method cannot stretch the slice into a neighbouring method and let THAT
+ * method's code satisfy a canary. Null when the method is not found.
  */
 function methodBody(src, name) {
-  const decl = new RegExp(`\\n( +)${name}\\(\\)\\s*\\{`).exec(src);
+  // A parameter list with at most one level of nested parens, enough for a
+  // default value such as `token = new CancellationToken()`.
+  const params = String.raw`\((?:[^()]|\([^()]*\))*\)`;
+  const decl = new RegExp(`\\n( +)(?:async\\s+)?${name}${params}\\s*\\{`).exec(src);
   if (!decl) return null;
   const indent = decl[1];
-  const next = new RegExp(`\\n${indent}(?:async\\s+)?[A-Za-z_$][\\w$]*\\s*\\([^)]*\\)\\s*\\{`, "g");
+  const next = new RegExp(`\\n${indent}(?:async\\s+)?[A-Za-z_$][\\w$]*\\s*${params}\\s*\\{`, "g");
   next.lastIndex = decl.index + decl[0].length;
   const end = next.exec(src);
   return src.slice(decl.index, end ? end.index : src.length);
@@ -96,5 +99,49 @@ test("electron-updater emits and rejects checkForUpdates with the SAME error obj
       "node_modules/electron-updater/out/AppUpdater.js BEFORE shipping: a rewrapped error\n" +
       "makes a check's own failure report as an install failure, and the host's gateway\n" +
       "recovery then fires while a dispatch is still stopping the gateway.",
+  );
+});
+
+test("electron-updater arms downloadUpdate() only from the event-emitting check", (t) => {
+  const src = readAppUpdaterSource();
+  if (src === null) {
+    // Same contract as the identity canary above: fail in CI, skip visibly elsewhere.
+    assert.ok(!process.env.CI, "electron-updater is not installed, so the download-arming canary cannot run");
+    t.skip("electron-updater not installed here; nothing to check");
+    return;
+  }
+
+  // feed-lane.js's pre-download freshness gate runs a real checkForUpdates() and then
+  // calls downloadUpdate(), which fetches only what that check stored.
+  const reread = "re-read downloadUpdate(), doCheckForUpdates() and getUpdateInfoAndProvider() in\n" +
+    "node_modules/electron-updater/out/AppUpdater.js BEFORE shipping";
+
+  const download = methodBody(src, "downloadUpdate");
+  assert.ok(download, `AppUpdater.downloadUpdate() not found -- ${reread}`);
+  assert.ok(
+    /this\.updateInfoAndProvider\b/.test(download) &&
+      /new Error\(\s*["'`]Please check update first["'`]\s*\)/.test(download),
+    "AppUpdater.downloadUpdate() no longer downloads from `this.updateInfoAndProvider`, or no longer\n" +
+      "refuses with `Please check update first` when it is unset. The desktop Download click in\n" +
+      "website/electron/runtime/update/feed-lane.js relies on the gate's check being what the\n" +
+      `download fetches; ${reread}, or the click may download a build the gate ruled stale.`,
+  );
+
+  const check = methodBody(src, "doCheckForUpdates");
+  assert.ok(check, `AppUpdater.doCheckForUpdates() not found -- ${reread}`);
+  assert.ok(
+    /this\.updateInfoAndProvider\s*=(?!=)(?!\s*null\b)/.test(check),
+    "AppUpdater.doCheckForUpdates() no longer stores the update it found in\n" +
+      "`this.updateInfoAndProvider`. The freshness gate's checkForUpdates() would then arm nothing,\n" +
+      `and every desktop Download click rejects with \`Please check update first\`; ${reread}.`,
+  );
+
+  const read = methodBody(src, "getUpdateInfoAndProvider");
+  assert.ok(read, `AppUpdater.getUpdateInfoAndProvider() not found -- ${reread}`);
+  assert.ok(
+    !/this\.updateInfoAndProvider\s*=(?!=)/.test(read),
+    "AppUpdater.getUpdateInfoAndProvider(), the read that emits no update events, assigns\n" +
+      "`this.updateInfoAndProvider`. A download could then be armed by a feed read the freshness\n" +
+      `gate never judged; ${reread}.`,
   );
 });

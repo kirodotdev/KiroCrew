@@ -96,6 +96,8 @@ class Facts:
     #: pull-request tabs (``(PR number, view id)``, newest first): linked from
     #: the wrap-up with ``rich_text`` ``channel`` elements.
     code_tab: bool = False
+    #: The Plan canvas tab's view id ("" when the channel has none).
+    plan_tab: str = ""
     pr_tabs: tuple[tuple[int, str], ...] = ()
 
 
@@ -114,6 +116,7 @@ def _gather_facts_sync(binding: Binding) -> Facts:
         pr_ci=record.pr_ci,
         worktree=record.worktree,
         code_tab=bool(record.view_id and record.diff_hash),
+        plan_tab=_plan_tab(binding.channel_id),
         pr_tabs=_pr_tabs(binding.channel_id, _open_prs(binding, record)),
     )
     tree = record.worktree
@@ -198,6 +201,17 @@ def _pr_tabs(channel_id: str, open_prs: set[int]) -> tuple[tuple[int, str], ...]
     return tuple(sorted(((views.pr_number(v), str(v["view_id"])) for v in held), reverse=True))
 
 
+def _plan_tab(channel_id: str) -> str:
+    """The Plan canvas tab's view id this gateway recorded ("" when none; blocking)."""
+    from kiro_crew.slack.code_channels.surface_store import store as surface_store
+
+    try:
+        record = surface_store().get(channel_id)
+    except Exception:
+        return ""
+    return str(record.plan_view_id or "") if record else ""
+
+
 def _is_slack_id(value: str) -> bool:
     """A Slack id put into a ``channel`` element (a channel id or a view id):
     1 to 64 ASCII letters and digits."""
@@ -217,9 +231,11 @@ def _tab_block(facts: Facts, channel_id: str) -> dict[str, Any] | None:
     """
     if not _is_slack_id(channel_id or ""):
         return None
-    ids = ([_CODE_TAB_ID] if facts.code_tab else []) + [
-        view_id for _n, view_id in facts.pr_tabs if _is_slack_id(view_id)
-    ]
+    ids = (
+        ([facts.plan_tab] if _is_slack_id(facts.plan_tab) else [])
+        + ([_CODE_TAB_ID] if facts.code_tab else [])
+        + [view_id for _n, view_id in facts.pr_tabs if _is_slack_id(view_id)]
+    )
     if not ids:
         return None
     elements: list[dict[str, Any]] = [{"type": "text", "text": "Tabs: "}]

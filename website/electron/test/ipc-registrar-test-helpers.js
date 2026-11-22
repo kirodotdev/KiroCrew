@@ -528,10 +528,12 @@ const SHELL_HANDLES = [
   "relay-crew:close-all",
   "relay-crew:open",
   "relay-crew:open-pane",
+  "relay-crew:open-requests",
   "relay-crew:pane-bounds",
   "relay-crew:pane-close",
   "relay-crew:pane-inactive",
   "relay-crew:pane-overlay",
+  "relay-crew:prewarm-pane",
   "remote-crew:forward-pane-ports",
   "tray-icon:get",
   "tray-icon:set",
@@ -556,6 +558,7 @@ const SHELL_LISTENERS = [
 ].sort();
 
 const UPDATE_HANDLES = [
+  "update:can-relaunch",
   "update:check",
   "update:download",
   "update:get-info",

@@ -177,7 +177,7 @@ def test_owner_bootstrap_provenance_names_the_spawned_backend_that_owns_the_call
     monkeypatch.setattr(auth, "_verified_host_process", lambda pid: False)
     monkeypatch.setattr(auth, "_gateway_spawned_app_backend", lambda pid: "demo-app")
     assert auth.local_owner_bootstrap_provenance(SimpleNamespace()) == auth.LocalOwnerProvenance(
-        app="demo-app"
+        app="demo-app", basis="spawned-app"
     )
 
 
@@ -204,7 +204,7 @@ def test_owner_bootstrap_provenance_leaves_a_host_process_unattributed(monkeypat
     monkeypatch.setattr(auth, "_verified_host_process", lambda pid: True)
     monkeypatch.setattr(auth, "_gateway_spawned_app_backend", lambda pid: None)
     assert auth.local_owner_bootstrap_provenance(SimpleNamespace()) == auth.LocalOwnerProvenance(
-        app=None
+        app=None, basis=auth._host_process_basis()
     )
 
 
@@ -235,7 +235,7 @@ def test_owner_bootstrap_provenance_lets_the_host_leg_decide_when_the_registry_r
     monkeypatch.setattr(auth, "_gateway_spawned_app_backend", _boom)
     provenance = auth.local_owner_bootstrap_provenance(SimpleNamespace())
     if host:
-        assert provenance == auth.LocalOwnerProvenance(app=None)
+        assert provenance == auth.LocalOwnerProvenance(app=None, basis=auth._host_process_basis())
     else:
         assert provenance is None
     assert auth.local_owner_bootstrap_allowed(SimpleNamespace()) is host
@@ -439,3 +439,22 @@ def test_verified_unix_peer_can_authenticate_without_token(monkeypatch):
     )
     monkeypatch.setattr(auth, "read_session_execution", Mock(return_value=object()))
     assert auth.memory_request_identity(req) == ("dashboard:alice", True)
+
+
+@pytest.mark.parametrize(
+    ("platform", "basis"),
+    [
+        ("linux", "linux-namespace-match"),
+        ("darwin", "darwin-unsandboxed"),
+        ("win32", "win32-unverified"),
+    ],
+)
+def test_owner_bootstrap_provenance_names_the_host_leg_that_admitted(monkeypatch, platform, basis):
+    """The mint's success row can tell a verified host leg from the Windows one."""
+    monkeypatch.setattr(auth, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(auth, "_request_peer_pid", lambda req: 123)
+    monkeypatch.setattr(auth.platform_compat, "get_process_start_id", lambda pid: "start-id")
+    monkeypatch.setattr(auth, "_verified_host_process", lambda pid: True)
+    monkeypatch.setattr(auth, "_gateway_spawned_app_backend", lambda pid: None)
+    provenance = auth.local_owner_bootstrap_provenance(SimpleNamespace())
+    assert provenance == auth.LocalOwnerProvenance(app=None, basis=basis)

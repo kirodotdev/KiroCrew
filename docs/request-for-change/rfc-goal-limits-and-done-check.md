@@ -3,9 +3,9 @@ title: A Bot's goal gets count-based drift signals, owner-set limits and a done 
 status: draft
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-15
-last-audited: 2026-11-15
-audited-at: 2041e8681c
-doc-pr: null
+last-audited: 2026-11-19
+audited-at: fc89562d69
+doc-pr: 37649
 implementation-prs: []
 tracking-issues: [37361, 37538]
 supersedes: []

@@ -326,8 +326,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   }
 
   const dashDisabled = !dashQ.isSuccess
-  // The conductor mode default is shown wherever conductor mode is: in an LTS build
-  // no chat offers it, so the setting would change nothing.
+  // The conductor mode settings are shown wherever conductor mode is: in an LTS
+  // build no chat offers it, so they would change nothing.
   const crewModeOffered = useCrewMode()
 
   // Second-level rail groups. Order = rail order; the first item (Transcript)
@@ -1061,6 +1061,9 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.auto_open_git_panel')} hint={i18nT('pages.settings.chatPanel.expand_the_side_panel_to_the_git_tab_each_time_yo')} checked={dashCfg.auto_open_git_panel} onChange={v => setDash({ auto_open_git_panel: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_always_open')} hint={i18nT('pages.settings.chatPanel.side_panel_always_open_hint')} configKey="dashboard.side_panel_always_open" checked={dashCfg.side_panel_always_open ?? false} onChange={v => setDash({ side_panel_always_open: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_pin_summary')} description={pinSummaryNeedsSummaries ? i18nT('pages.settings.chatPanel.side_panel_pin_summary_needs_session_summaries') : undefined} hint={i18nT('pages.settings.chatPanel.side_panel_pin_summary_hint')} configKey="dashboard.side_panel_pin_summary" checked={dashCfg.side_panel_pin_summary ?? false} onChange={v => setDash({ side_panel_pin_summary: v })} disabled={dashDisabled} />
+          {crewModeOffered && (
+            <SettingsToggle label={i18nT('pages.settings.chatPanel.auto_open_conductor_board')} hint={i18nT('pages.settings.chatPanel.auto_open_conductor_board_hint')} configKey="dashboard.auto_open_conductor_board" checked={dashCfg.auto_open_conductor_board ?? true} onChange={v => setDash({ auto_open_conductor_board: v })} disabled={dashDisabled} />
+          )}
         </SettingsCard>
           )
 

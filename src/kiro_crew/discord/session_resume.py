@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from kiro_crew.messaging.driver import sanitize_channel_replay_text
 from kiro_crew.messaging.link import ChannelLink
@@ -12,6 +12,7 @@ from kiro_crew.messaging.renderer import _default_redactor
 from kiro_crew.messaging.session_resume import ResumeReleaseError  # noqa: F401  (re-export)
 from kiro_crew.messaging.session_resume import (
     PICKER_LIMIT,
+    TITLE_LIMIT,
     InboundResolution,
     ResumeCopy,
     RoutingDecision,
@@ -24,6 +25,7 @@ from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
+    from kiro_crew.dashboard.state import DashboardState
     from kiro_crew.discord.client import DiscordClient, DiscordInteraction
     from kiro_crew.history import ConversationLog
     from kiro_crew.session import SessionManager
@@ -231,6 +233,28 @@ class _DiscordResumeSurface:
         await self.client.send_message(self.channel_id, text)
 
 
+class _DiscordBotSurface(_DiscordResumeSurface):
+    """The ``!bot`` listing: the same picker and bind, worded for Bots."""
+
+    owner_refusal = "🔒 `!bot` requires exactly one configured " "`discord.allowed_user_ids` entry."
+
+    def no_choices(self, query: str) -> str:
+        normalized = " ".join(query.split())
+        if normalized:
+            label = _safe_discord_text(normalized, 100).replace("`", "ˋ")
+            return (
+                f"No Bot named `{label}` has an open thread with a message in it. "
+                "Run `!bot` to see your Bots."
+            )
+        return (
+            "No Bot has its thread open with a message in it. Open the Bot from the "
+            "dashboard's Bots page and send it a message, then run `!bot` again."
+        )
+
+    def picker_heading(self, query: str, total: int) -> str:
+        return f"🤖 **Your Bots** ({total})\nReplies from its own thread come back here."
+
+
 class DiscordSessionResume:
     """Lists dashboard + same-DM native sessions and binds one to Discord."""
 
@@ -328,6 +352,75 @@ class DiscordSessionResume:
             native_key=native_key,
         )
 
+    async def show_bot_picker(
+        self,
+        client: "DiscordClient",
+        user_id: str,
+        channel_id: str,
+        query: str = "",
+        native_key: str = "",
+    ) -> None:
+        """``!bot``: offer the Bots' own threads, or connect the one *query* names.
+
+        A pick binds exactly as a ``!sessions`` pick does (same owner gate, same
+        signed mirror row, same replay). A query naming one Bot binds it at once.
+        """
+        is_owner = self.is_owner(user_id)
+        choices = self._bot_choices(query) if is_owner else ()
+        if choices and self.conv_log is not None:
+            # A thread opened but never written to has no transcript, and the
+            # commit refuses a pick with none, so it is not offered either.
+            has_log = self.conv_log.has_log
+            kept = [c for c in choices if await asyncio.to_thread(has_log, c.key)]
+            choices = tuple(kept)
+        posted = await self._controller.show_picker(
+            _DiscordBotSurface(client, channel_id),
+            caller=user_id,
+            picker_owner=_picker_owner(user_id, channel_id),
+            is_owner=is_owner,
+            query=query,
+            choices=choices,
+        )
+        if posted is None or not query.strip() or len(choices) != 1:
+            return
+        nonce, message_id = posted
+        await self._commit(
+            client,
+            user_id=user_id,
+            channel_id=channel_id,
+            message_id=message_id,
+            nonce=nonce,
+            index=0,
+            native_key=native_key,
+        )
+
+    def _bot_choices(self, query: str) -> tuple[SessionChoice, ...]:
+        """Each Bot's own thread open on the dashboard, filtered by *query*.
+
+        Only a LIVE thread is offered. The Bots page is the one route that mints
+        or reopens a Bot's thread, re-checking its binding as it does, and a Bot's
+        session-control and ledger calls resolve through that live slot, so a
+        dormant thread is left for that page to open rather than revived here.
+        """
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+        from kiro_crew.dashboard.slot_ownership import is_member_thread
+
+        state = self.dashboard_state
+        if state is None:
+            return ()
+        wanted = " ".join(query.casefold().split())
+        found: list[SessionChoice] = []
+        for slot in list(cast("DashboardState", state)._slots.values()):
+            if not is_member_thread(slot):
+                continue
+            label = " ".join(str(slot.display_title or slot.agent or "").split())
+            if wanted and wanted not in f"{label} {slot.agent}".casefold():
+                continue
+            found.append(
+                SessionChoice(slot_history_key(slot), _safe_discord_text(label, TITLE_LIMIT))
+            )
+        return tuple(sorted(found, key=lambda choice: choice.title.casefold()))
+
     async def choose(
         self,
         client: "DiscordClient",
@@ -336,6 +429,28 @@ class DiscordSessionResume:
         native_key: str = "",
     ) -> None:
         nonce, index = self._parse_choice(custom_id)
+        await self._commit(
+            client,
+            user_id=interaction.user_id,
+            channel_id=interaction.channel_id,
+            message_id=interaction.message_id,
+            nonce=nonce,
+            index=index,
+            native_key=native_key,
+        )
+
+    async def _commit(
+        self,
+        client: "DiscordClient",
+        *,
+        user_id: str,
+        channel_id: str,
+        message_id: str,
+        nonce: str,
+        index: int,
+        native_key: str,
+    ) -> None:
+        """Bind the choice *index* of picker *nonce* posted as *message_id*, and replay."""
         # The binding this press creates records the presser as the peer the DM
         # was admitted for. A picker press is only honoured in a DM, and the
         # controller refuses everyone but the single configured owner before it
@@ -350,22 +465,22 @@ class DiscordSessionResume:
         # occupancy and rollback comparisons the controller makes are unchanged.
         link = ChannelLink(
             channel_type="discord",
-            channel_id=interaction.channel_id,
-            principal=interaction.user_id or None,
+            channel_id=channel_id,
+            principal=user_id or None,
         )
         choice = await self._controller.choose(
-            _DiscordResumeSurface(client, interaction.channel_id),
-            caller=interaction.user_id,
-            picker_owner=_picker_owner(interaction.user_id, interaction.channel_id),
-            is_owner=self.is_owner(interaction.user_id),
-            message_id=interaction.message_id,
+            _DiscordResumeSurface(client, channel_id),
+            caller=user_id,
+            picker_owner=_picker_owner(user_id, channel_id),
+            is_owner=self.is_owner(user_id),
+            message_id=message_id,
             nonce=nonce,
             index=index,
             link=link,
             replace_outbound_keys=same_bucket_origin_keys(self.sessions, link, native_key),
         )
         if choice is not None:
-            await self._replay(client, interaction.channel_id, choice.key)
+            await self._replay(client, channel_id, choice.key)
 
     @staticmethod
     def _parse_choice(custom_id: str) -> tuple[str, int]:

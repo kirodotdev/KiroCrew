@@ -3,8 +3,8 @@ title: KAS runs Kiro Crew's own engine when the kiro-cli relay cannot run
 status: implemented
 author: zezhexu
 created: 2026-10-31
-last-audited: 2026-11-03
-audited-at: 1555bae5fa
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 26682
 implementation-prs: [26393]
 tracking-issues: [26385]

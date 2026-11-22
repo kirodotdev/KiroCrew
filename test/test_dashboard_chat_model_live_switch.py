@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -514,24 +515,34 @@ class TestSlotModelLiveSwitch:
         assert state._slots["a"].model == "gpt-5.6-sol"
 
     @pytest.mark.asyncio
-    async def test_a_relaunch_refusal_is_4xx_and_keeps_the_model(self, tmp_path):
+    async def test_a_relaunch_refusal_is_4xx_and_keeps_the_model(self, tmp_path, caplog):
         """A relaunching harness (Strands) put the prior model back on the same chat.
         A reset would cold-start on the refused model and fail the same way."""
         state = _make_state(tmp_path)
         state.sessions.reset = AsyncMock()
         provider = self._provider()
         provider.switches_by_relaunch = True
-        provider.client.set_model = AsyncMock(side_effect=RuntimeError("cannot run that model"))
+        provider.client.set_model = AsyncMock(
+            side_effect=RuntimeError("cannot run that model: /home/u/private internal.example.net")
+        )
         state.sessions.get_provider = MagicMock(return_value=provider)
         state.get_or_create_slot("a", model="gpt-5.6-sol")
         state.push_slots_update = MagicMock()
 
-        async with TestClient(TestServer(self._app(state))) as client:
-            resp = await client.post("/api/chat/slots/a/model", json={"model": "claude-opus-4.8"})
-            body = await resp.json()
+        with caplog.at_level(logging.WARNING):
+            async with TestClient(TestServer(self._app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/a/model", json={"model": "claude-opus-4.8"}
+                )
+                body = await resp.json()
 
         assert resp.status == 400
-        assert body["code"] == "model_switch_refused"
+        # A fixed sentence: the exception text stays out of the body, the log keeps it.
+        assert body == {
+            "error": "The agent did not accept the model change.",
+            "code": "model_switch_refused",
+        }
+        assert "/home/u/private" in caplog.text
         state.sessions.reset.assert_not_awaited()
         assert state._slots["a"].model == "gpt-5.6-sol"
 

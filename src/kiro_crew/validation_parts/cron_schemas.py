@@ -14,7 +14,7 @@ from kiro_crew.constants import MAX_SHORT_STRING
 # Per-job auto-pause cap: ``cron_service.model`` owns it. Import-safe: the model
 # module pulls in only ``cron_service.schedule`` and ``platform_compat``, neither
 # of which imports validation at module load, so no cycle back into validation.
-from kiro_crew.cron_service.model import _AUTO_PAUSE_MAX
+from kiro_crew.cron_service.model import _AUTO_PAUSE_MAX, ON_TAB_CLOSE_VALUES
 from kiro_crew.validation_parts.field_engine import FieldSpec, ToolSchema, ValidationError
 from kiro_crew.validation_parts.input_bounds import (
     _JOB_ID_RE,
@@ -66,6 +66,7 @@ CRON_ADD_SCHEMA = ToolSchema(
         FieldSpec("minimal_context", bool),
         FieldSpec("hide_in_chat", bool),
         FieldSpec("new_chat_per_run", bool),
+        FieldSpec("on_tab_close", str, allowed=frozenset(ON_TAB_CLOSE_VALUES)),
         FieldSpec("strict_schedule", bool),
         # SECURITY NOTE: the patterns below are input-SHAPE checks, NOT security
         # sanitizers. The "command" regex only rejects control bytes and the
@@ -196,6 +197,7 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("minimal_context", bool),
             FieldSpec("hide_in_chat", bool),
             FieldSpec("new_chat_per_run", bool),
+            FieldSpec("on_tab_close", str, allowed=frozenset(ON_TAB_CLOSE_VALUES)),
             FieldSpec("timeout", int, min_val=0, max_val=3600),
             FieldSpec("timeout_secs", int, min_val=1, max_val=86400),
             FieldSpec("auto_pause_after_failures", int, min_val=0, max_val=_AUTO_PAUSE_MAX),

@@ -132,6 +132,7 @@ from kiro_crew.sandbox import (
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.team_ids import apply_slack_team_env
+from kiro_crew.startup_deadline import cancel_outcome
 
 if TYPE_CHECKING:
     from kiro_crew.acp.client import AcpClient
@@ -698,9 +699,9 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
     the first attempt creates nothing. ``_wait_for_response`` records the
     substitute model in ``self._last_substitution_model``, and a backend whose
     client class retries (``_retry_after_model_substitution``: the claude
-    client pins ``self._model`` to it, re-seeds ``settings.local.json`` and
-    re-issues) gets ONE retry -- if the gateway substitutes again to the
-    same/another restricted id it stops rather than loop. Returns the
+    client names its served pin or the substitute in ``settings.local.json``
+    and re-issues) gets ONE retry -- if the gateway refuses the model the seed
+    already names, it stops rather than loop. Returns the
     session/new response dict (possibly still without a sessionId, which the
     caller treats as a hard failure). kiro-cli never emits this advisory.
     """
@@ -761,8 +762,11 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
     # Substitution path: the gateway named a model it WILL serve. A backend whose
     # client class adopts it re-issues once (``_retry_after_model_substitution``);
     # on this class the response stands.
+    # The substitute may equal ``self._model``: a pin pushed live after session/new
+    # never reached the refused request, so the client class decides whether a
+    # retry can help.
     substitute = self._last_substitution_model
-    if substitute and substitute != self._model:
+    if substitute:
         session_resp = await self._retry_after_model_substitution(
             new_params, session_resp, substitute
         )
@@ -1169,7 +1173,10 @@ async def _initialize_session(self: AcpClient) -> None:
             )
             logger.info("ACP agent activated: %s", self._agent)
         else:
-            cause, remedy = await asyncio.to_thread(unavailable_mode_explanation, self._agent)
+            # Inside ``self._is_kiro``: this client drives kiro-cli's v2 engine.
+            cause, remedy = await asyncio.to_thread(
+                unavailable_mode_explanation, self._agent, kiro_cli_engine=True
+            )
             raise AcpError(
                 f"Agent mode {self._agent!r} is not available on this session "
                 f"(advertised modes: {self._available_mode_ids or 'none'}); {cause} "
@@ -1281,8 +1288,8 @@ async def ensure_ready(self: AcpClient) -> None:
 
     # Telemetry (kirocrew.session.startup.duration): time the cold-start work
     # below (spawn + session init) and emit in the finally so every exit path
-    # — success, auth-required, error — is measured. The warm fast-path above
-    # is intentionally NOT measured (no startup work). Best-effort: a
+    # — success, auth-required, error, cancel — is measured. The warm fast-path
+    # above is intentionally NOT measured (no startup work). Best-effort: a
     # telemetry failure must never affect session startup.
     _startup_t0 = time.monotonic()
     _startup_spawned = False
@@ -1432,6 +1439,13 @@ async def ensure_ready(self: AcpClient) -> None:
                             "ACP session startup failed", _throttled
                         ) from exc
                     raise
+    except asyncio.CancelledError as exc:
+        # Stop, a closed chat or a reset is "cancelled", a caller's expired
+        # startup_deadline is "timeout", and a cancel raised while a failure is
+        # handled (its cleanup, its classification, the retry backoff) keeps
+        # the failure's label.
+        _startup_outcome = cancel_outcome(exc) or _startup_outcome
+        raise
     finally:
         try:
             # circular import: importing get_recorder at module top would

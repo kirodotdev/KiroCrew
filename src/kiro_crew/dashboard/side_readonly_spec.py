@@ -177,8 +177,12 @@ def readonly_base_name(name: str) -> str | None:
     return match.group("base") if match else None
 
 
-def unavailable_mode_explanation(agent: str) -> tuple[str, str]:
+def unavailable_mode_explanation(agent: str, *, kiro_cli_engine: bool = False) -> tuple[str, str]:
     """``(cause, remedy)`` for kiro-cli not advertising *agent* as a mode.
+
+    *kiro_cli_engine* says the refusing session runs on the Kiro CLI harness, the
+    one launch that drives kiro-cli's v2 engine: only there can the present-file
+    answer name the v3 agent format (:func:`_ordinary_mode_explanation`).
 
     Completes the "Agent mode ... is not available" refusal the ACP layer raises,
     which puts the cause before its "Refusing to run the backend default mode"
@@ -203,7 +207,7 @@ def unavailable_mode_explanation(agent: str) -> tuple[str, str]:
     """
     base = readonly_base_name(agent)
     if base is None or not _is_published_readonly_spec(agent):
-        return _ordinary_mode_explanation(agent)
+        return _ordinary_mode_explanation(agent, kiro_cli_engine=kiro_cli_engine)
     return (
         f"{agent!r} is the read-only spec Kiro Crew derives from {base!r} for side "
         "replies: a side turn writes it, `kirocrew setup` does not, and kiro-cli lists "
@@ -217,6 +221,24 @@ def unavailable_mode_explanation(agent: str) -> tuple[str, str]:
 #: so a file that sets both is a duplicate field to its strict parser and the
 #: whole agent is dropped, while Python's ``json`` (last key wins) reads it fine.
 _ALIASED_SPEC_KEYS = (("includeMcpJson", "useLegacyMcpJson"),)
+
+#: Fields of the agent format kiro-cli's v3 engine reads, and the two of the older
+#: format. A file that sets one of the first and neither of the second is one
+#: kiro-cli may list as "(v3 format)"; the check only decides when the refusal
+#: points at that listing, never states kiro-cli's rule as the cause.
+_V3_FORMAT_FIELDS = ("permissions", "excludedTools", "includePowers")
+_V2_FORMAT_FIELDS = ("allowedTools", "toolsSettings")
+
+
+def _kas_offered() -> bool:
+    """Whether a spawn naming backend ``kas`` would be admitted here now. Wording only."""
+    from kiro_crew.kiro_on_kas_notice import kas_backend_offered
+
+    try:
+        return kas_backend_offered()
+    except Exception:  # noqa: BLE001 -- wording only; the refusal is raised regardless
+        logger.debug("could not tell whether backend kas is offered", exc_info=True)
+        return False
 
 
 def _shell_quoted(path: Path) -> str:
@@ -235,7 +257,7 @@ def _home_relative(path: Path) -> str:
         return str(path)
 
 
-def _ordinary_mode_explanation(agent: str) -> tuple[str, str]:
+def _ordinary_mode_explanation(agent: str, *, kiro_cli_engine: bool = False) -> tuple[str, str]:
     """``(cause, remedy)`` for an agent that is not a published read-only spec.
 
     A missing ``~/.kiro/agents/<agent>.json`` keeps the "likely missing" answer,
@@ -245,7 +267,11 @@ def _ordinary_mode_explanation(agent: str) -> tuple[str, str]:
     it or started before it was written, so the answer says that and points at
     ``kiro-cli agent validate``, the one check that reports kiro-cli's own parse
     error. A file that sets a key and its alias together names both
-    keys, since that is a parse failure Python's ``json`` cannot see.
+    keys, since that is a parse failure Python's ``json`` cannot see. On the Kiro
+    CLI harness (*kiro_cli_engine*), a file shaped like the v3 agent format
+    (:data:`_V3_FORMAT_FIELDS`, none of :data:`_V2_FORMAT_FIELDS`) is pointed at
+    kiro-cli's own ``agent list``, which marks such a file, and at backend ``kas``,
+    which serves it; ``validate`` passes such a file, so it is not the remedy there.
     """
     from kiro_crew.agent import kiro_agents_dir_path
     from kiro_crew.agent_discovery import _read_agent_spec
@@ -287,6 +313,21 @@ def _ordinary_mode_explanation(agent: str) -> tuple[str, str]:
                     f"Remove {alias!r} and keep {key!r}, then start a new session. "
                     f"{validate} shows kiro-cli's own verdict.",
                 )
+        if (
+            kiro_cli_engine
+            and any(data.get(k) for k in _V3_FORMAT_FIELDS)
+            and not any(k in data for k in _V2_FORMAT_FIELDS)
+        ):
+            return (
+                f"its {display} is present, but kiro-cli did not list it. If `kiro-cli "
+                "agent list` marks it (v3 format), it is an agent for kiro-cli's v3 "
+                "engine, and Kiro Crew's Kiro CLI backend runs kiro-cli's v2 engine.",
+                (
+                    "Spawn it with backend 'kas', which runs kiro-cli's v3 engine."
+                    if _kas_offered()
+                    else "No backend offered on this host runs kiro-cli's v3 engine."
+                ),
+            )
     return (
         f"its {display} is present, but kiro-cli did not list it: kiro-cli's own "
         "parser rejected the file, or kiro-cli started before the file was written.",

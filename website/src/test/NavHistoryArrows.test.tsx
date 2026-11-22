@@ -105,8 +105,9 @@ describe('NavHistoryArrows', () => {
     // jsdom reports a non-Mac platform, so the meta chord renders as Control.
     expect(backBtn()).toHaveAttribute('aria-keyshortcuts', 'Control+ArrowLeft')
     expect(forwardBtn()).toHaveAttribute('aria-keyshortcuts', 'Control+ArrowRight')
-    // The tooltip carries the display chord, so sighted users can discover it.
-    expect(backBtn()).toHaveAttribute('title', 'Back \u00b7 Ctrl+\u2190')
+    // The hint carries the display chord, so sighted users can discover it.
+    expect(backBtn()).not.toHaveAttribute('title')
+    expect(backBtn()).toHaveAccessibleDescription('Back \u00b7 Ctrl+\u2190')
   })
 
   it('advertises no chord while shortcuts are globally disabled', () => {
@@ -116,7 +117,7 @@ describe('NavHistoryArrows', () => {
     renderShell()
     expect(backBtn()).not.toHaveAttribute('aria-keyshortcuts')
     expect(forwardBtn()).not.toHaveAttribute('aria-keyshortcuts')
-    expect(backBtn()).toHaveAttribute('title', 'Back')
+    expect(backBtn()).toHaveAccessibleDescription('Back')
     localStorage.removeItem('mc-keyboard-shortcuts')
   })
 
@@ -132,9 +133,9 @@ describe('NavHistoryArrows', () => {
     try {
       renderShell()
       expect(backBtn()).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+B')
-      expect(backBtn()).toHaveAttribute('title', 'Back')
+      expect(backBtn()).toHaveAccessibleDescription('Back')
       expect(forwardBtn()).not.toHaveAttribute('aria-keyshortcuts')
-      expect(forwardBtn()).toHaveAttribute('title', 'Forward')
+      expect(forwardBtn()).toHaveAccessibleDescription('Forward')
     } finally {
       localStorage.removeItem('mc-shortcut-overrides')
     }

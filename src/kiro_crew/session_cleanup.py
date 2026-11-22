@@ -771,6 +771,11 @@ class SessionCleanup:
                     "Runtime reconcile: could not notify %s", key, exc_info=True
                 )
 
+    def session_runtime_pids(self) -> list[tuple[str, int, SessionEntry]]:
+        """(key, runtime pid, session) per live session, under owner._lock; RSS tick + memory guard."""
+        pairs = ((k, self._owner.get_pid(k), s) for k, s in self._owner._sessions.items())
+        return [(k, pid, s) for k, pid, s in pairs if pid is not None]
+
     async def _rss_threshold_check(self) -> None:
         if not self.state.rss_max_mb:
             return
@@ -784,12 +789,10 @@ class SessionCleanup:
         persistent_keys = self._deps.get_persistent_keys()
         channel_prefix = self._deps.get_channel_prefix()
         async with self._owner._lock:
-            for key, session in self._owner._sessions.items():
+            for key, pid, session in self.session_runtime_pids():
                 if key in persistent_keys or key.startswith(channel_prefix):
                     continue
-                pid = self._owner.get_pid(key)
-                if pid is not None:
-                    (busy if session.semaphore.locked() else candidates).append((key, pid, session))
+                (busy if session.semaphore.locked() else candidates).append((key, pid, session))
         prune_rss_records(self.state, now, {pid for _key, pid, _session in candidates + busy})
 
         # The warm-pool spare is owned by no session, so its own pass
@@ -941,6 +944,7 @@ class SessionCleanup:
                 self._deps.logger.exception("RSS recycle failed for session %s", key)
 
         await _leftovers.report_busy_sessions(self, busy, measure, rss_by_pid, loop)
+        _spare.note_tick_sizes(candidates + busy, rss_by_pid)  # the conductor's growth wake
         # The warm-pool spare(s): same ceiling and discard action, on a runtime no session owns.
         if spare_providers and measure is not None:
             await _spare.recycle_over_ceiling_spares(self, spare_providers, measure, loop)

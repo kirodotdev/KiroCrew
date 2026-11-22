@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from redaction_structured_cases import github_classic
 
@@ -19,6 +21,7 @@ from kiro_crew.platform import (
     build_default_context,
     resolve_profile,
 )
+from kiro_crew.platform.bootstrap import LazyRelayTunnelProvider
 from kiro_crew.platform.context import PlatformContext
 
 
@@ -49,7 +52,11 @@ class TestDefaultContext:
         assert set(ctx.agent_runtime.managed_mcp_servers()) == set(agent._MANAGED_MCP_SERVERS)
         assert ctx.agent_executable.resolve_executable("/usr/bin/kiro-cli") == "/usr/bin/kiro-cli"
         assert ctx.registry.public_git_hosts() == registry._PUBLIC_GIT_HOSTS
-        assert ctx.tunnel.enabled() is False
+        # An unset relay_enabled hosts a personal sign-in, so the default composes the
+        # lazy relay provider; a stored off is the no-op tunnel of the legacy default.
+        assert isinstance(ctx.tunnel, LazyRelayTunnelProvider)
+        off = dataclasses.replace(cfg, tunnel=dataclasses.replace(cfg.tunnel, relay_enabled=False))
+        assert build_default_context(off).tunnel.enabled() is False
         assert ctx.telemetry.frontend_rum_config() is None
         assert ctx.feature_apps == ()
 

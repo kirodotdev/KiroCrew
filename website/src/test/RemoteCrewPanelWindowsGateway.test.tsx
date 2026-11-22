@@ -30,6 +30,8 @@ vi.mock('../api/client', () => {
     ApiError,
     isAuthExpiredError: () => false,
     api: {
+      // The relay viewer is off here (its route 404s), so its list stays hidden.
+      relayViewerCrews: vi.fn(async () => { throw new ApiError(404, 'off', JSON.stringify({ code: 'RELAY_VIEWER_OFF' })) }),
       listInstances: vi.fn(),
       addInstance: vi.fn(),
       connectInstance: vi.fn(),

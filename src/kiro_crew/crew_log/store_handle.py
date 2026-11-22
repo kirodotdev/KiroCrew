@@ -96,6 +96,7 @@ from kiro_crew.jsonl_util import bounded_raw_records
 
 if TYPE_CHECKING:
     from kiro_crew.crew_log.read_budget import Tally
+    from kiro_crew.crew_log.store_segment_reads import ConsumedSpan
 
 
 class CrewLog:
@@ -1006,7 +1007,11 @@ class CrewLog:
         # owed a decode: it may seek (see ``_iter_segments_located``).
         seek = seq if not strict_seq and usable is None else None
         located = self._iter_segments_located(
-            resume=usable, cuts=cuts, contains=contains, seek=seek
+            resume=usable,
+            cuts=cuts,
+            contains=contains,
+            seek=seek,
+            span=cursor.span if cursor is not None else None,
         )
         for entry, segment, at in located:
             if tally is not None:
@@ -1130,6 +1135,7 @@ class CrewLog:
         cuts: int | None = None,
         contains: bytes | None = None,
         seek: int | None = None,
+        span: "ConsumedSpan | None" = None,
     ) -> "Iterator[tuple[Entry, str, int]]":
         """Every entry of every segment with its segment name and byte offset.
 
@@ -1213,7 +1219,9 @@ class CrewLog:
             at_boundary = bool(index) and expected > 0
             end = newest_end if index == len(paths) - 1 else None
             begin = from_offset if index == from_index else 0
-            for entry, at in _iter_entries_located(path, end, start=begin, contains=contains):
+            for entry, at in _iter_entries_located(
+                path, end, start=begin, contains=contains, span=span
+            ):
                 if at_boundary and entry.seq != expected:
                     raise CrewLogError(
                         f"segment {path.name} starts at seq {entry.seq}, but the "

@@ -44,6 +44,7 @@ from typing import Any
 
 import facade_mirror_scan
 import pytest
+import source_corpus
 
 import kiro_crew.cron as cron
 from kiro_crew.cron import CronService
@@ -74,7 +75,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_audit_refused_removal": ("function", False, "a8d0fc85119c", "job_removal"),
     "_audit_requested_batch_removal": ("function", False, "cececffc99d5", "job_removal"),
     "_audit_requested_removal": ("function", False, "e0a80251bf41", "cron"),
-    "_build_job": ("staticmethod", False, "d58f9661c43d", "cron_service.fields"),
+    "_build_job": ("staticmethod", False, "05ad58145b2f", "cron_service.fields"),
     "_bump_grant_epochs_for": ("function", False, "0ae10d347b25", "job_removal"),
     "_chat_folder_ids_locked": ("function", False, "67a56d539800", "job_ownership"),
     "_claim_run": ("function", False, "abf4e5d80aab", "run_registry"),
@@ -128,6 +129,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_run_job_isolated": ("function", True, "3e2c7932e9d5", "run_execution"),
     "_run_session_keys": ("function", False, "abecf674945c", "run_registry"),
     "_save": ("function", False, "ce13e6013574", "store_sync"),
+    # The save's rising-edge auto-pause announcer, split out so the seam
+    # import opens its reader.
+    "_announce_saved_pause_edges": ("function", False, "a45ea0daa81c", "store_sync"),
     "_save_held_run_records_locked": ("function", False, "b60c5fea256e", "run_merge"),
     "_saved_job_state": ("function", False, "7d3f7de35812", "run_merge"),
     "_session_process_handles": ("function", False, "21bf19694843", "run_kill"),
@@ -151,8 +155,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "ack_job": ("function", False, "1dcd84422c4a", "job_writes"),
     "ack_job_async": ("function", True, "1dcd84422c4a", "job_writes"),
     "active_session_keys": ("function", False, "602c14087aa8", "run_registry"),
-    "add_job": ("function", False, "887f725aa171", "job_writes"),
-    "add_job_async": ("function", True, "d46a2f8a751a", "job_writes"),
+    "add_job": ("function", False, "80987f9f0320", "job_writes"),
+    "add_job_async": ("function", True, "465805844cfc", "job_writes"),
     "add_job_if_absent": ("function", False, "43f1e87b70b1", "job_writes"),
     "add_job_if_absent_async": ("function", True, "43f1e87b70b1", "job_writes"),
     "add_managed_job": ("function", False, "f55b6bbe148d", "job_writes"),
@@ -190,9 +194,13 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "retire_finished_session_key": ("function", False, "6525c2a94d9c", "run_registry"),
     "run_job": ("function", False, "965a55e3568d", "run_registry"),
     "running_since": ("function", False, "987a386c5e2e", "run_registry"),
+    "run_trigger": ("function", False, "7d3f7de35812", "run_registry"),
     "set_interrupt_alert": ("function", False, "7a2c52d9ea93", "run_registry"),
     "set_refresh_callback": ("function", False, "7a2c52d9ea93", "run_registry"),
     "set_timeout_alert": ("function", False, "7a2c52d9ea93", "run_registry"),
+    # The save's rising-edge auto-pause notice callback, per-service like the
+    # timeout and interrupt alerts.
+    "set_auto_pause_alert": ("function", False, "7a2c52d9ea93", "store_sync"),
     "start": ("function", True, "b60c5fea256e", "service_lifecycle"),
     "start_reaper": ("function", False, "bbb4b664cf76", "run_teardown"),
     "status": ("function", False, "16d9fe32838b", "store_sync"),
@@ -478,6 +486,7 @@ def test_the_patch_scan_reads_every_spelling_and_resolves_a_literal_loop() -> No
 
 
 @functools.lru_cache(maxsize=1)
+@source_corpus.untraced()
 def _corpus() -> tuple[set[str], list[str]]:
     """Every name the test trees patch on ``kiro_crew.cron``, read once per process on first
     use (never at import, so collecting this file costs nothing)."""

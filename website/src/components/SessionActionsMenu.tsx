@@ -63,9 +63,10 @@ export interface SessionActionsMenuProps {
    */
   onOpenInNewTab?: () => void
   /**
-   * Fork this chat (labelled "Fork chat"). Passed only by the sidebar row's
-   * single-menu form, where the menu replaces the hover cluster that otherwise
-   * hosts the fork button.
+   * Fork this chat (labelled "Fork chat"). Passed by every sidebar row menu --
+   * the phone's single menu, the desktop ⋯ menu and the right-click menu -- so
+   * the action is where people look for it, not only on the hover glyph. The
+   * chat header menu does not pass it.
    */
   onDuplicate?: () => void
   /**

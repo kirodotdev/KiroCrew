@@ -712,7 +712,7 @@ class TestAnnotation:
 
         for fn in (
             mcp_mod.api_mcp_servers,
-            mcp_mod.api_mcp_probe,
+            mcp_mod._probed_rows,
             mcp_mod.api_mcp_probe_cached,
             mcp_mod._run_mcp_probe,
         ):
@@ -721,6 +721,9 @@ class TestAnnotation:
             assert (
                 "to_thread(_annotate_quarantine" in src
             ), f"{fn.__name__} annotates on the event loop"
+        # Both probe endpoints build their rows through _probed_rows, so it is the call site.
+        for fn in (mcp_mod.api_mcp_probe, mcp_mod.api_mcp_probe_one):
+            assert "_probed_rows(" in inspect.getsource(fn), f"{fn.__name__} skips _probed_rows"
 
     def test_recording_is_offloaded_whole(self):
         """Both halves of the record step must be inside ONE ``to_thread``."""
@@ -728,7 +731,7 @@ class TestAnnotation:
 
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
-        for fn in (mcp_mod.api_mcp_probe, mcp_mod._run_mcp_probe):
+        for fn in (mcp_mod._probed_rows, mcp_mod._run_mcp_probe):
             src = inspect.getsource(fn)
             assert "to_thread(_record_probe_verdicts, result)" in src
 

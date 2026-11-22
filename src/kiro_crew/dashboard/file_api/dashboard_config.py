@@ -97,6 +97,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "auto_open_git_panel",
             "side_panel_always_open",
             "side_panel_pin_summary",
+            "auto_open_conductor_board",
             "folder_suggestions_enabled",
             "folder_suggestions_auto_apply",
             "project_tags_enabled",
@@ -505,6 +506,20 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             updates["side_panel_pin_summary"] = val
+        if "auto_open_conductor_board" in body:
+            val = body["auto_open_conductor_board"]
+            if not isinstance(val, bool):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": "auto_open_conductor_board must be a boolean",
+                        "code": "invalid_auto_open_conductor_board",
+                    },
+                    status=400,
+                )
+            updates["auto_open_conductor_board"] = val
         if "session_card_source_links" in body:
             val = body["session_card_source_links"]
             if not isinstance(val, bool):
@@ -788,6 +803,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "auto_open_git_panel": cfg.dashboard.auto_open_git_panel,
             "side_panel_always_open": cfg.dashboard.side_panel_always_open,
             "side_panel_pin_summary": cfg.dashboard.side_panel_pin_summary,
+            "auto_open_conductor_board": cfg.dashboard.auto_open_conductor_board,
             "session_card_source_links": cfg.dashboard.session_card_source_links,
             "session_folder_root": cfg.dashboard.session_folder_root,
             "default_session_folder": cfg.dashboard.default_session_folder,

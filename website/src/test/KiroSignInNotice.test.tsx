@@ -62,6 +62,8 @@ const REFUSED: KasLoginStatus = { ...HEALTHY, refresh_rejected: true }
  * reads true, because a refresh token is stored.
  */
 const REFUSED_EXPIRED: KasLoginStatus = { ...REFUSED, expires_at: '2000-01-01T00:00:00Z', expired: true }
+/** The one body every expired shape shows, whatever the cause or audience. */
+const EXPIRED_BODY = 'Sign in again to resume sessions and agent work.'
 const SIGNED_OUT: KasLoginStatus = { ...HEALTHY, authenticated: false, provider: '', identity: '', expires_at: null, has_refresh_token: false, usable: false }
 
 const notice = () => screen.queryByTestId('kiro-sign-in-notice')
@@ -111,8 +113,8 @@ describe('KiroSignInNotice', () => {
     const el = await findNotice()
     // The agents cannot run: not a quieter warning beside a red refusal.
     expect(el).toHaveAttribute('role', 'alert')
-    expect(el).toHaveTextContent(/^Kiro sign-in expired/)
-    expect(el).toHaveTextContent('Agents cannot run until you sign in again')
+    expect(el).toHaveTextContent(/^Sign-in expired\./)
+    expect(el).toHaveTextContent(EXPIRED_BODY)
     // The agent the hand-off would open runs as this same lapsed sign-in.
     expect(within(el).queryByRole('button', { name: /Ask the agent/i })).not.toBeInTheDocument()
     expect(within(el).getByTestId('kiro-sign-in-notice-open')).toBeInTheDocument()
@@ -127,7 +129,7 @@ describe('KiroSignInNotice', () => {
     expect(el).toHaveAttribute('role', 'alert')
     // Not "expired": the sign-in still works until its access token runs out.
     expect(el).toHaveTextContent(/^Kiro refused to renew your sign-in/)
-    expect(el).not.toHaveTextContent('Kiro sign-in expired')
+    expect(el).not.toHaveTextContent('Sign-in expired.')
     expect(el).toHaveTextContent('Agents will stop when this sign-in expires')
     expect(within(el).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
     fireEvent.click(within(el).getByTestId('kiro-sign-in-notice-open'))
@@ -136,14 +138,15 @@ describe('KiroSignInNotice', () => {
     expect(notice()).not.toBeInTheDocument()
   })
 
-  it('says the agents cannot run once a refused sign-in has also expired, not that they will stop', async () => {
+  it('says only "Sign-in expired." once a refused sign-in has also expired, not that agents will stop', async () => {
     backend('kas')
     kasLoginStatus.mockResolvedValue(REFUSED_EXPIRED)
     renderWithProviders(<KiroSignInNotice />)
     const el = await findRefused()
     expect(el).toHaveAttribute('role', 'alert')
-    expect(el).toHaveTextContent(/^Kiro refused to renew your sign-in/)
-    expect(el).toHaveTextContent('Agents cannot run until you sign in again. This sign-in has already expired.')
+    expect(el).toHaveTextContent(/^Sign-in expired\./)
+    expect(el).toHaveTextContent(EXPIRED_BODY)
+    expect(el).not.toHaveTextContent('refused')
     expect(el).not.toHaveTextContent('Agents will stop')
     expect(within(el).queryByRole('button', { name: /Ask the agent/i })).not.toBeInTheDocument()
     expect(within(el).getByTestId('kiro-sign-in-notice-open')).toBeInTheDocument()
@@ -158,7 +161,7 @@ describe('KiroSignInNotice', () => {
 
     kasLoginStatus.mockResolvedValue(REFUSED_EXPIRED)
     await act(async () => { await queryClient.invalidateQueries({ queryKey: ['kas-login'] }) })
-    expect(await findRefused()).toHaveTextContent('This sign-in has already expired.')
+    expect(await findRefused()).toHaveTextContent(EXPIRED_BODY)
   })
 
   it('opens the shared sign-in dialog in place, with the choices, never starting a sign-in itself', async () => {
@@ -421,8 +424,9 @@ describe('KiroSignInNotice', () => {
     kasLoginStatus.mockResolvedValue(EXPIRED)
     renderWithProviders(<KiroSignInNotice />)
     const el = await findNotice()
-    expect(el).toHaveTextContent('Bots cannot run until you sign in again')
-    expect(el).not.toHaveTextContent('Agents cannot run')
+    // Expired says the same two lines whoever runs as the sign-in.
+    expect(el).toHaveTextContent(/^Sign-in expired\./)
+    expect(el).toHaveTextContent(EXPIRED_BODY)
     // The main agent runs on another credential, so its hand-off still works.
     expect(within(el).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
     expect(within(el).getByTestId('kiro-sign-in-notice-open')).toBeInTheDocument()
@@ -430,8 +434,8 @@ describe('KiroSignInNotice', () => {
 
   it.each([
     [REFUSED, 'Bots will stop when this sign-in expires'],
-    [REFUSED_EXPIRED, 'Bots cannot run until you sign in again. This sign-in has already expired.'],
-  ])('names the Bots in a refused renewal where only Bots run on KAS', async (status, text) => {
+    [REFUSED_EXPIRED, EXPIRED_BODY],
+  ])('a refused renewal where only Bots run on KAS: Bots while it works, the expired copy once it lapses', async (status, text) => {
     kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'kiro' }, kas_in_use: true } as Awaited<ReturnType<typeof api.kirocrewConfig>>)
     kasLoginStatus.mockResolvedValue(status)
     renderWithProviders(<KiroSignInNotice />)
@@ -446,8 +450,10 @@ describe('KiroSignInNotice', () => {
     kasLoginStatus.mockResolvedValue(EXPIRED)
     renderWithProviders(<KiroSignInNotice />)
     const el = await findNotice()
-    expect(el).toHaveTextContent('Features that use your Kiro account cannot work until you sign in again')
-    expect(el).not.toHaveTextContent(/Agents|Bots/)
+    expect(el).toHaveTextContent(/^Sign-in expired\./)
+    // The agents keep running on another credential: only account features stop.
+    expect(el).toHaveTextContent('Sign in again to use features that need your Kiro account.')
+    expect(el).not.toHaveTextContent(/sessions|agent work/i)
     // The main agent runs on another credential, so its hand-off still works.
     expect(within(el).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
   })

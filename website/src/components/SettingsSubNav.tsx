@@ -337,7 +337,9 @@ export function SettingsSubNav<K extends string>({
         // as an untranslated-attribute site on the i18n render gate.
         // min-h-11 under a coarse pointer = Apple HIG's 44pt touch minimum;
         // desktop pointer density is unchanged.
-        className={`flex items-center gap-2.5 w-full px-2.5 py-2 ${COARSE_TOUCH_TARGET} rounded-md text-left cursor-pointer border-none transition-colors ${
+        // The focus ring is drawn inside the row (`focus-visible:outline-offset-[-2px]`),
+        // because the capped two-pane list scrolls and its scroller clips the x axis.
+        className={`flex items-center gap-2.5 w-full px-2.5 py-2 ${COARSE_TOUCH_TARGET} rounded-md text-left cursor-pointer border-none transition-colors focus-visible:outline-offset-[-2px] ${
           active ? 'bg-accent-subtle text-accent' : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover'
         } ${item.dimmed ? 'opacity-60' : ''}`}
       >
@@ -378,8 +380,7 @@ export function SettingsSubNav<K extends string>({
     // scroller and the "More below" strip under it, a flex sibling outside the
     // scrolling box so it stays on the visible bottom edge while the rows
     // scroll. The scroller is a child of the nav in both layouts so a width
-    // change never remounts the list. Overflow is set only while capped because
-    // it would clip the rows' outset focus ring.
+    // change never remounts the list. Overflow is set only while capped.
     <nav
       ref={twoPane ? navRef : undefined}
       className={twoPane ? 'shrink-0 -ml-2.5 sticky flex flex-col' : 'w-full'}

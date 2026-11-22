@@ -148,8 +148,8 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
             print(f"  bundle:      ❌ {exc}")
             issues.append(f"Kiro Crew's KAS engine cannot run on this host: {exc}")
             return
-        # Not a failure on its own: the gateway installs the pinned engine at the
-        # first chat. Still a ⚠, because an offline host fails then.
+        # A failure (, engine guarantee): the gateway installs the pinned
+        # engine when it starts, so a missing one means that install failed.
         # Another version on disk is not "nothing installed": name what is there
         # and what this release needs, which is what a release whose pin moved
         # leaves behind when its engine refresh did not finish.
@@ -165,8 +165,7 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
             issues.append(f"the KAS engine directory cannot be read: {exc}")
             _report_kas_bundle_spec_permissions(None, issues)
             return
-        # On the automatic route, where a fresh install with no kiro-cli starts,
-        # a pin the gateway can download here is a warning, not an issue.
+        # Whether the gateway can download the pin here, which decides the remedy.
         downloads = automatic and backend_install._engine_installable_here()
         if needed in on_disk:
             # A directory at the pin's name that does not read back as an engine:
@@ -176,35 +175,39 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
             issues.append(f"the KAS engine directory for {needed} is incomplete")
         elif on_disk:
             print(
-                f"  bundle:      ⚠  KAS {', '.join(on_disk)} installed, but this release "
+                f"  bundle:      ❌ KAS {', '.join(on_disk)} installed, but this release "
                 f"needs KAS {needed}"
             )
-            if not downloads:
-                issues.append(
-                    f"Kiro Crew's KAS engine {needed} is not installed and the gateway will "
-                    f"not install it on this host; on disk: {', '.join(on_disk)}"
-                    if automatic
-                    else f"agent.kas_bundle is on but the KAS engine this release needs "
-                    f"({needed}) is not installed; on disk: {', '.join(on_disk)}"
-                )
+            # Engine guarantee: a missing engine is always an issue.
+            issues.append(
+                f"Kiro Crew's KAS engine {needed} is not installed and the gateway will "
+                f"not install it on this host; on disk: {', '.join(on_disk)}"
+                if automatic and not downloads
+                else f"the KAS engine this release needs ({needed}) is not installed; "
+                f"on disk: {', '.join(on_disk)}"
+            )
         else:
-            print(f"  bundle:      ⚠  not installed yet under {kas_bundle.kas_engines_root()}")  # type: ignore[misc]
-            if not downloads:
-                issues.append(
-                    "Kiro Crew's KAS engine is not installed and the gateway will not "
-                    "install it on this host"
-                    if automatic
-                    else "agent.kas_bundle is on but no KAS engine bundle is installed"
-                )
+            print(f"  bundle:      ❌ not installed under {kas_bundle.kas_engines_root()}")  # type: ignore[misc]
+            issues.append(
+                "Kiro Crew's KAS engine is not installed and the gateway will not "
+                "install it on this host"
+                if automatic and not downloads
+                else "the KAS engine this release needs is not installed"
+            )
         if needed not in on_disk:
             if automatic and not downloads:
                 print("               The gateway will not install it on this host. To try now:")
             else:
-                print("               The gateway downloads it at the first chat. To do it now:")
+                print("               The gateway installs it when it starts. To do it now:")
             print("               kirocrew kas install")
         _report_kas_bundle_spec_permissions(None, issues)
         return
-    where = " (built into the app)" if installed.bundled else ""
+    if installed.packaged:
+        where = " (built into the wheel)"
+    elif installed.bundled:
+        where = " (built into the app)"
+    else:
+        where = ""
     print(f"  bundle:      ✅ KAS {installed.version}, Node {installed.node_version or '?'}{where}")
     _report_kas_bundle_pin(installed.version)
     # The two entry points ``install.json`` records, each on its own row: the

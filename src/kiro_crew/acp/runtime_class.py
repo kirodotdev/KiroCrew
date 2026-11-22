@@ -775,6 +775,9 @@ class AcpRuntime:
         # also the safe default for the classifier, since a spawn that never
         # reached the wrap cannot have been refused by it.
         self._sandbox_wrapped_by_crew = False
+        # Whether the harness said its tools run under its sole engine child
+        # (``SpawnPlan.engine_is_child``), recorded per spawn by the launch.
+        self._engine_is_child = False
         # The mask set this spawn asked for, so a trusted corroboration run can
         # exercise the same mounts rather than a weaker profile.
         self._sandbox_hidden_dirs: tuple[str, ...] = ()
@@ -1030,6 +1033,18 @@ class AcpRuntime:
         return harness
 
     @property
+    def kas_spawn_route(self) -> Any:
+        """The KAS route THIS runtime's process was spawned on, or ``None``.
+
+        ``None`` before a spawn and on every other harness. The sign-in messages
+        for a failure of this runtime name it (``host_auth.signed_out_message``'s
+        ``route``), not the process-wide last spawn, which a second chat's spawn
+        can move between this one's spawn and its error. Reads the cached harness
+        only: asking for a route never resolves one.
+        """
+        return getattr(getattr(self, "_harness_resolved", None), "spawn_route", None)
+
+    @property
     def uses_kiro_identity_store(self) -> bool:
         """True when this runtime's process signs in from kiro-cli's own store.
 
@@ -1153,6 +1168,15 @@ class AcpRuntime:
         harness's wording while the layer the operator must change is Crew's.
         """
         return self._sandbox_wrapped_by_crew
+
+    @property
+    def engine_is_child(self) -> bool:
+        """Whether this runtime's harness relays to a sole engine child that runs the tools.
+
+        Read off the last spawn's plan; the stalled-shell cleanup pins that engine as
+        the shell's parent.
+        """
+        return self._engine_is_child
 
     @property
     def sandbox_mode(self) -> str:

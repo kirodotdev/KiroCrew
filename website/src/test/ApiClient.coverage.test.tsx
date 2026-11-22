@@ -40,6 +40,7 @@ import {
   SEARCH_MIN_CHARS,
 } from '../api/client'
 import { queryClient } from '../api/queryClient'
+import { noteSignInCommand } from '../api/signInCommand'
 import { recentErrors, reportForError, findReport, recordError, __resetErrorJournalForTests, TRANSPORT_REJECTION_COOLDOWN_MS, TRANSPORT_REJECTION_WINDOW_CAP } from '../utils/errorReport'
 import { buildErrorPrompt } from '../utils/errorReport.prompt'
 import { copyToClipboard } from '../utils/clipboard'
@@ -601,6 +602,14 @@ describe('artifact write tracking', () => {
 
 /* ─────────────────────── auth-banner recovery lifecycle ─────────────────────── */
 
+/** Every catalog sentence that names `reauth_command` and goes through `signInSentence`. */
+const SIGN_IN_SENTENCES = [
+  'run_kirocrew_token_then_paste_sign_in_url',
+  'session_expired_sign_in_again',
+  'stale_owner_session_sign_in_again',
+  'token_not_accepted',
+] as const
+
 describe('session-expired banner', () => {
   const banner = () => document.getElementById('mc-session-expired')
 
@@ -874,12 +883,27 @@ describe('session-expired banner', () => {
       expect(banner()!.textContent).toContain('press Enter')
     })
 
-    it('every catalog keeps the command its instruction is split on', async () => {
-      // The chip rests on a relationship between two catalog values that this
-      // module does not own: each locale's instruction must contain that same
-      // locale's `reauth_command` verbatim. Pin the RELATIONSHIP, so a
-      // translation that breaks it fails here instead of silently costing the
-      // chip.
+    it("names a container gateway's own command, in the chip and the sentence", async () => {
+      // A container's host has no `kirocrew token`, so the gateway sends the
+      // command run through `docker exec` and the banner names that instead.
+      noteSignInCommand('docker exec kirocrew kirocrew token')
+      try {
+        fetchMock.mockResolvedValue(res(401, 'revoked'))
+        checkSessionExpired(res(403, '', { headers: { 'X-Auth-Required': 'true' } }))
+        await vi.waitFor(() => expect(banner()).not.toBeNull())
+        expect(banner()!.querySelector('code')?.textContent).toBe('docker exec kirocrew kirocrew token')
+        expect(banner()!.textContent).toContain('Run docker exec kirocrew kirocrew token in a terminal')
+      } finally {
+        noteSignInCommand(undefined)
+      }
+    })
+
+    it('every catalog keeps the command its sign-in sentences are split on', async () => {
+      // The chip, and a container gateway's command, rest on a relationship
+      // between catalog values that this module does not own: each locale's
+      // sign-in sentences must contain that same locale's `reauth_command`
+      // verbatim. Pin the RELATIONSHIP, so a translation that breaks it fails
+      // here instead of silently costing the chip or the container's command.
       const catalogs = import.meta.glob<Record<string, unknown>>(
         '../i18n/locales/*.json',
         { eager: true },
@@ -897,7 +921,9 @@ describe('session-expired banner', () => {
         const instruction = client?.run_kirocrew_token_then_paste_sign_in_url
         if (command === undefined || instruction === undefined) continue
         checked += 1
-        if (!instruction.includes(command)) broken.push(path)
+        for (const key of SIGN_IN_SENTENCES) {
+          if (!client?.[key]?.includes(command)) broken.push(`${path} ${key}`)
+        }
       }
       // A vacuous pass is the failure mode here: zero catalogs checked would
       // assert nothing at all.

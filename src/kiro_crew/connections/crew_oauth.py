@@ -30,6 +30,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import re
 import secrets
 import time
 import urllib.parse
@@ -55,6 +56,8 @@ _GOOGLE: dict[str, Any] = {
     # the account, so two cards share a grant only on the same account.
     "extra_scopes": ("openid",),
     "grant_group": "google",
+    # https://accounts.google.com/.well-known/openid-configuration
+    "issuer": "https://accounts.google.com",
     # Google revokes across every client of one Cloud project, so sharing is
     # judged by the project number that leads each client id.
     "grant_by_project": True,
@@ -67,7 +70,12 @@ DCR_SLUGS = frozenset({"atlassian", "notion", "linear", "stripe", "vercel", "git
 #: token, else the access token); without it the revoke is GitHub's token-scoped
 #: DELETE. ``authorize_params`` are added to the consent URL. Slugs with the same
 #: ``grant_group``, client id and account share one upstream grant.
-#: ``extra_scopes`` are appended to the registry's scopes.
+#: ``extra_scopes`` are appended to the registry's scopes. ``issuer`` is the vendor's
+#: published ``issuer`` (RFC 9207), set only where the vendor's public metadata also says its
+#: authorization response carries ``iss`` (Google: its metadata's
+#: ``authorization_response_iss_parameter_supported``): a callback whose ``iss`` names any
+#: other server, or is missing, is refused. An entry without one (GitHub,
+#: Asana, Slack: no documented ``iss`` in the response) is not checked.
 _ENDPOINTS: dict[str, dict[str, Any]] = {
     "github": {
         "authorize": "https://github.com/login/oauth/authorize",
@@ -158,6 +166,20 @@ class CrewOAuthError(Exception):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+_NOT_CODE_CHARS = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def safe_error_code(value: Any, default: str) -> str:
+    """The vendor's ``error`` as a coarse code: ``[A-Za-z0-9_.-]``, at most 64 chars.
+
+    The vendor writes ``error``, so control characters, newlines and free text must
+    not reach a log line, an audit field, a mint row or the harness. Anything else
+    is dropped; *default* answers when nothing is left.
+    """
+    code = _NOT_CODE_CHARS.sub("", value)[:64] if isinstance(value, str) else ""
+    return code or default
 
 
 def enabled() -> bool:
@@ -560,7 +582,7 @@ def tokens_from_response(doc: dict[str, Any], now: float) -> Tokens:
     """A token-endpoint answer as :class:`Tokens`, or ``exchange_failed``."""
     access = doc.get("access_token")
     if not isinstance(access, str) or not access or doc.get("error"):
-        raise CrewOAuthError(str(doc.get("error") or "exchange_failed")[:64])
+        raise CrewOAuthError(safe_error_code(doc.get("error"), "exchange_failed"))
     expires_in = doc.get("expires_in")
     refresh = doc.get("refresh_token")
     return Tokens(
@@ -673,7 +695,7 @@ async def _post_token(slug: str, form: dict[str, str]) -> dict[str, Any]:
                         body = None
                     error = body.get("error") if isinstance(body, dict) else None
                     if isinstance(error, str) and error:
-                        raise CrewOAuthError(error[:64])
+                        raise CrewOAuthError(safe_error_code(error, f"token_http_{resp.status}"))
                     raise CrewOAuthError(f"token_http_{resp.status}")
                 try:
                     doc = await resp.json(content_type=None)
@@ -817,6 +839,26 @@ class SignIn:
             raise CrewOAuthError("callback_port_busy") from None
         self.bound_port = int(self._runner.addresses[0][1])
 
+    def _iss_trusted(self, iss: str | None) -> bool:
+        """RFC 9207: does the callback's ``iss`` fit this sign-in's authorization server?"""
+        if self._dcr is not None:
+            from kiro_crew.connections.crew_oauth_dcr import iss_ok
+
+            return iss_ok(self._dcr.client, iss)
+        issuer = _ENDPOINTS.get(self.slug, {}).get("issuer")
+        if not issuer:
+            return True
+        if not iss:
+            # The vendor says its response carries iss, so an answer without it is refused.
+            return False
+        from kiro_crew.connections.l0_probe import same_issuer
+
+        try:
+            return same_issuer(iss, issuer)
+        except ValueError:
+            # Vendor text that urlsplit refuses is a mismatch, never a logged traceback.
+            return False
+
     async def _callback(self, request: Any) -> Any:
         from aiohttp import web
 
@@ -825,13 +867,10 @@ class SignIn:
         # Bytes: compare_digest raises on a non-ASCII str, which would answer 500.
         if self._done.done() or not secrets.compare_digest(state.encode(), self._state.encode()):
             return web.Response(status=400, text="This sign-in link is not the current one.")
-        if self._dcr is not None:
-            from kiro_crew.connections.crew_oauth_dcr import iss_ok
-
-            if not iss_ok(self._dcr.client, request.query.get("iss")):
-                # RFC 9207 mix-up defence: the answer came from another server.
-                self._done.set_exception(CrewOAuthError("issuer_mismatch"))
-                return web.Response(status=400, text="This sign-in answer is not trusted.")
+        if not self._iss_trusted(request.query.get("iss")):
+            # RFC 9207 mix-up defence: the answer came from another server.
+            self._done.set_exception(CrewOAuthError("issuer_mismatch"))
+            return web.Response(status=400, text="This sign-in answer is not trusted.")
         if not code or "error" in request.query:
             # An error response is a refusal even beside a code. access_denied
             # is either the user declining or an organization policy blocking the
@@ -1164,8 +1203,35 @@ async def disconnect(slug: str, store: TokenStore | None = None) -> dict[str, bo
     return {"removed": removed, "revoked": revoked}
 
 
+async def forget_owner_grants(servers: dict[str, str]) -> None:
+    """Revoke and delete what Crew holds for owner-added servers left without a use for it.
+
+    *servers* maps each name to the url its grant is keyed on (:func:`custom_key`):
+    a server the owner removed, re-pointed or turned local, or one a card took
+    over. Its pair goes as a Disconnect does (:func:`disconnect`), then its
+    client. Never raises: the config change that ended the entry has landed.
+    """
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.connections.crew_oauth_dcr import ClientStore, client_entry_name
+    from kiro_crew.secrets import SecretVault
+
+    for name, url in servers.items():
+        key = custom_key(name, url)
+        try:
+            vault = SecretVault(data_home())
+            held = await asyncio.to_thread(vault.list_names)
+            # The revoke reads the client, so the client goes last.
+            if token_entry_name(key) in held:
+                await disconnect(key, TokenStore(vault))
+            if client_entry_name(key) in held:
+                await asyncio.to_thread(ClientStore(vault).delete, key)
+        except Exception:  # noqa: BLE001 -- the config change already landed
+            logger.warning("could not forget the grant of owner MCP server %r", name, exc_info=True)
+
+
 def _audit(operation: str, outcome: str, slug: str, detail: str = "") -> None:
     """One SEL record and one gateway.log line; a provider and a coarse code, never a value."""
+    detail = safe_error_code(detail, "")
     logger.info(
         "Crew OAuth %s for %s: %s%s", operation, slug, outcome, f" ({detail})" if detail else ""
     )
@@ -1270,8 +1336,11 @@ async def _start_mint_row(
             parts.path,
             # The query-free url discovery used, never the configured one.
             mcp_url=sign_in._dcr.client.resource,
+            server_name=row,
         )
-    if await asyncio.to_thread(oauth_url_contains_credential, _vetted_link(vetted, sign_in._dcr)):
+    if await asyncio.to_thread(
+        oauth_url_contains_credential, _vetted_link(vetted, sign_in._dcr), row
+    ):
         await sign_in.shutdown()
         await _set_row(row, token, {"state": "failed", "reason": "mint_url_rejected"})
         return token

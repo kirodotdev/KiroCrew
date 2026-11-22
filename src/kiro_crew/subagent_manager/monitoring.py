@@ -1465,24 +1465,31 @@ class OrphanStallMonitor(ManagerComponent):
                 logger.debug("Reaper: tombstone pruning failed", exc_info=True)
 
     def _refusal_tombstone_unsettled(self, agent_id: str, tombstone: dict) -> bool:
-        """True for a refusal or queued-stop tombstone whose task row is not (known to be) terminal.
+        """True for a refusal, queued-stop or parent-end tombstone whose task row is not terminal.
 
         The pruner's ``keep``: any other cause answers False. A store that is
         REQUIRED but not open -- still initializing on this boot, or a failed
         open the reaper will retry -- keeps it, since the reopen's reconcile is
         what reads it; so does a store that raises, since the row may still owe
-        the ending the tombstone stands in for. Only with the task queue
+        the ending the tombstone stands in for. A parent-end tombstone is also
+        what keeps a retained claim from starting once the teardown mark ages
+        out, so it is held for the same reason. Only with the task queue
         deliberately off (no store will ever read it), or with no row behind
         it, does the tombstone decide nothing and go on its window. Runs on the
         maintenance executor; the store's reads take its lock.
         """
         from kiro_crew import taskq as _taskq
         from kiro_crew.subagent_manager.admission.types import (
+            PARENT_END_TOMBSTONE_CAUSE,
             QUEUED_STOP_TOMBSTONE_CAUSE,
             REFUSAL_TOMBSTONE_CAUSE,
         )
 
-        if tombstone.get("cause") not in (REFUSAL_TOMBSTONE_CAUSE, QUEUED_STOP_TOMBSTONE_CAUSE):
+        if tombstone.get("cause") not in (
+            REFUSAL_TOMBSTONE_CAUSE,
+            QUEUED_STOP_TOMBSTONE_CAUSE,
+            PARENT_END_TOMBSTONE_CAUSE,
+        ):
             return False
         admission = self._manager._admission
         store = admission.taskq_store()

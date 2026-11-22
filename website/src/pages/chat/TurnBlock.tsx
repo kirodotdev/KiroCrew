@@ -5,6 +5,8 @@ import type { DisplayItem, TurnItem } from './types'
 import { uniqueRowKeys } from '../../chat-core/transcript/rowKeys'
 import { useStableMessageKey } from '../../chat-core/transcript/useStableMessageKey'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { isJumpTarget, useJumpReveal } from '../../hooks/JumpRevealContext'
+import { attachUserScrollIntent } from '../../utils/searchScroll'
 import { useSearchHighlight } from '../../hooks/SearchHighlightContext'
 import { ExpandStepsContext } from '../../hooks/useToolCallsStartExpanded'
 import { isWorkflowRunTool } from './WorkflowRunCard'
@@ -18,6 +20,7 @@ import { parseRecoveryMessage } from './RecoveryCard'
 import { isDiffToolMessage } from './toolDiff'
 import { isAskAnsweredToolMessage } from '../../utils/askQuestionAnswers'
 import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/optionMarker'
+import { extractSteeringAcks } from '../../app-sdk/protocol/steering'
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { i18nT } from '../../i18n/t'
 import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from './BrowserLiveCard'
@@ -286,9 +289,12 @@ const hadMcpApp = (it: TurnItem) => it.kind === 'single' && it.msg.meta?.mcp_app
  *  value when the slot has no app renders (avoids useless re-renders). */
 const EMPTY_ID_SET: ReadonlySet<string> = new Set()
 
-/** Strip OPTIONS/markdown formatting and return plain text content length */
+/** Strip steering notes, OPTIONS/markdown formatting, and format chars; return visible text length. */
 function substantiveLength(text: string): number {
-  return stripOptionMarkers(text).replace(/[#*_`>\-|]/g, '').trim().length
+  return stripOptionMarkers(extractSteeringAcks(text).cleaned)
+    .replace(/\p{Cf}/gu, '')
+    .replace(/[#*_`>\-|]/g, '')
+    .trim().length
 }
 
 /**
@@ -639,10 +645,46 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
     }
     return false
   }, [items, term, currentMessageIdx, fold.rows])
+  // The message a jump just highlighted opens the fold the same way, so the
+  // reader lands on a row they can see.
+  const { ts: revealTs, mid: revealMid, seq: revealSeq, claimScroll, scrollerEl } = useJumpReveal()
+  const jumpInFold = useMemo(() => {
+    if (!revealTs) return false
+    for (const i of fold.rows) {
+      const it = items[i]
+      if (it.kind === 'single' ? isJumpTarget(it.msg, revealTs, revealMid) : it.kind === 'group' && it.msgs.some(m => isJumpTarget(m, revealTs, revealMid))) return true
+    }
+    return false
+  }, [items, revealTs, revealMid, fold.rows])
+  const jumpInTurn = useMemo(
+    () => !!revealTs && items.some(it => it.kind === 'single' ? isJumpTarget(it.msg, revealTs, revealMid) : it.msgs.some(m => isJumpTarget(m, revealTs, revealMid))),
+    [items, revealTs, revealMid],
+  )
   // Held in a ref so an inline parent callback cannot re-fire this effect.
   const setOpenRef = useRef(setOpen)
   setOpenRef.current = setOpen
-  useEffect(() => { if (matchInFold) setOpenRef.current(true) }, [matchInFold])
+  useEffect(() => { if (matchInFold || jumpInFold) setOpenRef.current(true) }, [matchInFold, jumpInFold, revealSeq])
+  // The jump scrolls to this whole turn, which can be taller than the viewport;
+  // bring the highlighted row itself into view, once any fold hiding it has
+  // opened.
+  // shortcut: waits out the 200 ms fold transition on a timer; move to the row's
+  // transitionend if the fold's timing ever changes.
+  useEffect(() => {
+    if (!jumpInTurn || !revealTs) return
+    const t = setTimeout(() => {
+      // The transcript's own row, not the measuring farm's off-screen copy.
+      const rows = document.querySelectorAll<HTMLElement>('[data-jump-target]')
+      const row = Array.from(rows).find(el => el.dataset.jumpTarget === revealTs && !el.closest('[data-farm-index]'))
+      if (!row) return
+      // The jump's settle poll centres the whole turn each frame; end it first.
+      claimScroll()
+      row.scrollIntoView({ block: 'center' })
+    }, 250)
+    // A reader who scrolls while the fold opens has taken over: the row scroll
+    // must not pull them back, as the jump's own settle poll does not.
+    const detach = attachUserScrollIntent(scrollerEl() ?? undefined, () => clearTimeout(t))
+    return () => { clearTimeout(t); detach() }
+  }, [jumpInTurn, revealTs, revealSeq, claimScroll, scrollerEl])
 
   const candidateSet = useMemo(() => new Set(candidates), [candidates])
   const count = fold.rows.size

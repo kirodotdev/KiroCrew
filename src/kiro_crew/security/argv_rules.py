@@ -83,6 +83,67 @@ _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
 #: ``find`` options whose following words, up to ``;`` or ``+``, are a command.
 _FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
+#: ``git`` subcommands whose operands are a file list (``git add s* notes.txt``).
+#: ``git`` is not in :data:`shell_normalizer._DATA_CONSUMER_PROGRAMS` -- it runs
+#: subcommands, some of which execute (``git -c alias.x='!cmd' x``) -- so the
+#: path-taking subcommands are named one by one. Only ``add`` is listed: each
+#: entry here turns off a DNS check, so a new one needs its own allow and
+#: refuse rows first.
+_GIT_FILE_SUBCOMMANDS = frozenset({"add"})
+
+#: The only program words read as git: the bare name and the system install
+#: paths. Any other path could be a link to another program (``/tmp/x/git``
+#: pointing at ssh), so it keeps the normal check. The paths are compared as
+#: command text, not opened, so the same set holds on every platform.
+_PLAIN_GIT_PROGRAMS = frozenset(
+    {"git"} | {f"/{d}/git" for d in ("usr/bin", "bin", "usr/local/bin", "opt/homebrew/bin")}
+)
+
+
+#: Characters that end, join, group, redirect or expand a shell command. A line
+#: holding any of them is not one simple command, so it gets no git exemption.
+_NOT_ONE_SIMPLE_COMMAND_CHARS = frozenset(";|&(){}`$<>\n\r")
+
+
+#: The only ``VAR=`` prefixes a plain ``git add`` line may carry. Each names
+#: where git reads its repository data; none chooses what program runs.
+#: ``PATH``, ``GIT_EXEC_PATH``, ``LD_*`` and every other name do, so a line
+#: with any of them keeps the normal check.
+_GIT_ADD_SAFE_ASSIGNMENTS = frozenset({"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"})
+
+
+def is_one_plain_git_add_line(line: str) -> bool:
+    """True when the submitted *line* is exactly one simple ``git add`` command.
+
+    The git file-operand exemption is granted only to such a line. Any line
+    that holds a separator, a group, a function body, a substitution, an
+    expansion, a redirect or a second line keeps the normal DNS check, so no
+    earlier word on the line (``git(){ …; }``, ``function git``, ``alias
+    git=…``) can change what ``git`` runs. Only the assignments in
+    :data:`_GIT_ADD_SAFE_ASSIGNMENTS` may come before the program word, which
+    must be one of :data:`_PLAIN_GIT_PROGRAMS`.
+    """
+    if any(ch in _NOT_ONE_SIMPLE_COMMAND_CHARS for ch in line):
+        return False
+    words = line.split()
+    start = 0
+    while start < len(words) and ENV_ASSIGNMENT_RE.match(words[start]):
+        if words[start].split("=", 1)[0] not in _GIT_ADD_SAFE_ASSIGNMENTS:
+            return False
+        start += 1
+    return start + 1 < len(words) and _is_plain_git(words[start]) and words[start + 1] == "add"
+
+
+def _is_plain_git(word: str) -> bool:
+    """True when *word* is exactly one of :data:`_PLAIN_GIT_PROGRAMS`.
+
+    Not :func:`_shell._program_basename`: that helper peels ``$(`` and backticks
+    to widen deny matches, so it would read ``$(git`` -- the start of a
+    substitution that bash expands to nothing -- as the program ``git``.
+    """
+    return word in _PLAIN_GIT_PROGRAMS
+
+
 _SEPARATORS = frozenset({";", "|", "||", "&", "&&", "{", "}"})
 
 #: Reserved words after which the next word is still in command position.
@@ -228,6 +289,73 @@ def _executed_program_indices(tokens: "list[str]", cased: "list[str] | None" = N
                 continue
             executed.add(origin)
     return executed
+
+
+def _file_operand_indices(tokens: "list[str]", cased: "list[str] | None" = None) -> "set[int]":
+    """Indices in *tokens* that are a plain operand of ``git`` running a file subcommand.
+
+    ``git add`` (the one subcommand in :data:`_GIT_FILE_SUBCOMMANDS`) takes
+    file paths, so a wildcard among its
+    operands is a file name and the ssh-to-self walk skips the DNS lookup on the
+    words after it.  Programs whose every argument is already a path (``cp``,
+    ``ls``, ``cat`` …) need nothing here -- the data-consumer exemption
+    (:func:`_data_consumer_exempt`) already reads them -- and ``tar`` is left
+    out of both on purpose, because ``tar -I <prog>`` / ``--rsh-command`` runs
+    its argument.
+
+    The floor calls this only for a submitted line that
+    :func:`is_one_plain_git_add_line` accepts, so the checks below are a
+    second layer inside one simple command.
+
+    Fail-closed and sure: ``git`` must be the command's OWN program word,
+    written as bare ``git`` or a system install path (only a ``VAR=`` assignment
+    may precede it, never a wrapper or a substitution), so a wrapper that
+    misreads an option and lands on ``git`` cannot reach here, and the operands
+    are read only AFTER a recognised file subcommand, so no option value is
+    marked.  Any command this does not recognise keeps the DNS check.  The
+    literal loopback and own-name checks still run (``git add s* localhost``
+    stays refused); only the DNS lookup is skipped.  *cased* carries the
+    original case so a mixed-case alias (``ADD``) is not read as the built-in.
+    """
+    operands: set[int] = set()
+    for command in _split_commands_indexed(tokens):
+        words = [word for _, word in command]
+        start = 0
+        while start < len(words) and ENV_ASSIGNMENT_RE.match(words[start]):
+            start += 1
+        # The program word is read in its ORIGINAL case and must be a plain
+        # ``git``: ``$(git add y) /usr/bin/s?h <self alias>`` starts with the
+        # word ``$(git``, which bash expands to nothing before it runs the ssh.
+        if start >= len(words) or cased is None or not _is_plain_git(cased[command[start][0]]):
+            continue
+        # The subcommand must be the word IMMEDIATELY after ``git``.  A global
+        # option or its value between them (``git -C x add``, ``git --namespace
+        # add``, ``git -c k=v add``) is not a subcommand, so the command is left
+        # unmarked and keeps its DNS check.  The name is matched lowercase in
+        # the ORIGINAL case (via ``cased``), so a mixed-case shell alias
+        # (``ADD``) is not taken for the built-in ``add``.  When ``cased`` is
+        # absent -- a substitution body is re-read from lowered text only -- no
+        # exemption is granted, so the git reading is top-level only and a
+        # ``$(git ADD …)`` alias keeps the DNS check.
+        sub = start + 1
+        if sub >= len(words) or words[sub] not in _GIT_FILE_SUBCOMMANDS:
+            continue
+        if cased is None or cased[command[sub][0]] != words[sub]:
+            continue
+        for k in range(sub + 1, len(words)):
+            # A separator glued inside a word (``x;s?h``, ``x&&s?h``) keeps the
+            # whole word in this command's argv, but bash runs what follows the
+            # separator as its OWN command. Stop the scan there and mark nothing
+            # past it, so the floor still reads that command's ssh verb with its
+            # DNS check (``git add x;s?h <self alias>`` stays refused). The same
+            # holds for a ``)`` or backtick that closes a substitution the git
+            # command sits in (``$(cd /tmp; git add x) /usr/bin/s?h …``): what
+            # follows it is the outer command, not a git operand.
+            if any(sep in words[k] for sep in ";|&()`"):
+                break
+            if not words[k].startswith("-"):
+                operands.add(command[k][0])
+    return operands
 
 
 def _case_arm_pattern_indices(tokens: "list[str]") -> "tuple[set[int], set[int]]":

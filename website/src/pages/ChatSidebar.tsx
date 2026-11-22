@@ -104,6 +104,7 @@ import { renderBulkModelPanel, useBulkModelSwitch } from './chat-sidebar/bulkMod
 import BroadcastPanel from './chat-sidebar/BroadcastPanel'
 import { makeKindOf, type KindSections } from './chat-sidebar/kindSections'
 import type { Slot } from './chat-sidebar/types'
+import { foldersForSessionList } from '../utils/mateFolders'
 import type { MemorySourceRow } from '../lib/agentMemorySource'
 import { useResumeAll } from './chat-sidebar/resumeAll'
 
@@ -112,6 +113,8 @@ const NO_CREW_GROUPS: CrewGroup[] = []
 /** Stable empty picker rows for a host that passes none, so `rowShell` keeps
  *  its identity across renders. */
 const NO_MEMORY_ROWS: MemorySourceRow[] = []
+/** Stable empty folder list while the folders read is pending. */
+const NO_FOLDERS: ChatFolder[] = []
 
 import { SIDEBAR_MIN } from './chat/sidebarWidth'
 import { askAppConfirm } from '../lib/appConfirm'
@@ -143,7 +146,7 @@ function ChatSidebar({
   // only the binding is scoped, which forces every call site inside this file
   // to say which collection it means.
   slots: slotsProp, activeSlot, unreadSlots, history, historyHasMore,
-  defaultAgent, installedAgents, rowAgents, rowChoices, mode, onWidthChange, onDragChange, fillsHost, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession, collapsible,
+  defaultAgent, installedAgents, rowAgents, rowChoices, mode, onWidthChange, onDragChange, fillsHost, onSelectSlot, splitMode = false, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession, collapsible,
   chatDropTarget, onDropSessionRef, canStageSessionRef, staticRows,
 }: ChatSidebarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
@@ -306,6 +309,7 @@ function ChatSidebar({
     commitRecentAmount, changeRecentUnit, runningSet, recentSet,
   } = useSessionStatusFilters({ unreadSlots, activeFilters, pausedFilters, enableFilter, localSlots, disableFilter })
   const creatingSlot = useAppSelector(s => s.chat.creatingSlot)
+  const openFailed = useAppSelector(s => s.chat.slotOpenFailed != null && s.chat.slotOpenFailed === activeSlot)
   const connected = useConnected()
   // Shared Crew "Started by" filter: a client-side filter dimension like the
   // model one (`./chat-sidebar/creators`). The selection is remembered per Crew;
@@ -383,7 +387,10 @@ function ChatSidebar({
   // real data lands — hydration is not user movement. isSuccess (not
   // isFetched, which is also true after a FAILED first fetch) stays false
   // through an error window until the websocket seed or a retry backfills.
-  const { data: folders = [], isSuccess: foldersLoaded, isError: foldersFailed, isFetching: foldersFetching, error: foldersError, refetch: refetchFolders } = useQuery<ChatFolder[]>({ queryKey: ['chat-folders'], queryFn: () => api.chatFolders() })
+  const { data: allFolders = NO_FOLDERS, isSuccess: foldersLoaded, isError: foldersFailed, isFetching: foldersFetching, error: foldersError, refetch: refetchFolders } = useQuery<ChatFolder[]>({ queryKey: ['chat-folders'], queryFn: () => api.chatFolders() })
+  // A Bot's home leaves this list while none of its sessions is listed here,
+  // so a Bot whose sessions moved to its own page leaves no empty row behind.
+  const folders = useMemo(() => foldersForSessionList(allFolders, localSlots), [allFolders, localSlots])
   // A folder-path open waits on this before it decides a folder is gone. Only
   // an answered fetch can show that: a failed one says nothing about the
   // folder, and a retry or the websocket seed can still list it.
@@ -767,7 +774,7 @@ function ChatSidebar({
 
   const {
     revealFlash,
-  } = useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors: expandRevealAncestors, folders, foldersSettled, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView, hideEmptyFolders })
+  } = useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors: expandRevealAncestors, folders: allFolders, drawnFolders: folders, foldersSettled, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView, hideEmptyFolders })
   const renameCommit = useCallback((id: string, name: string): boolean => {
     // Re-checked here, not only where the editor opens: the gateway can drop
     // while an editor is open. Keep the editor and its draft, and say why,
@@ -902,7 +909,7 @@ function ChatSidebar({
   // Through the conductor mode read (`crewMode` above re-renders on the edition lock).
   const crewParent = (crewMode && activeSlot && crewRootOf(slotsProp.find(s => s.key === activeSlot))) || null
   const rowScene: RowScene = {
-    activeSlot, crewWindow, crewParent, shell: rowShell,
+    activeSlot, crewWindow, crewParent, splitMode, openFailed, shell: rowShell,
     local: {
       recentRank, subagentCounts, subagentApprovalCounts, poppedOut,
       digits: digitModifierHeld ? shortcutDigitByKey : null,
@@ -1001,7 +1008,7 @@ function ChatSidebar({
     filterSortOpen, filtersPaused, pausedFilters, flatLaneActive, flatSlots, flatView, folderActionError, folderCleanupOpen, folderOfflineNotice,
     folderCompare, folderConductorPin, countSubfolderContents, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef,
     folderFilterRows, folderModeCompare, folderNameMatchIds, folderReorderable, folderReorderHint, folderReorderHintRef,
-    folderRowsDrawn, folders, foldersError, foldersFailed, folderSortMode, folderSortMut, folderSortRead,
+    folderRowsDrawn, folders, allFolders, foldersError, foldersFailed, folderSortMode, folderSortMut, folderSortRead,
     foldersShelved, foldersUnreadFirst, groupByKind, kindSections, toggleGroupByKind, folderSubtrees, foldersHoldingSessions, foldersWithActiveSubtree, pinnedFolderSubtree, pinnedFolderAncestors, handleSidebarDragCancel, handleSidebarDragEnd,
     handleSidebarDragOver, handleSidebarDragStart, hasRemoteExecutedRow, heldDisplacedRef, heldLane,
     hiddenByContainer, hiddenFilters, hiddenFolderCount, hideEmptyFolderBody, hideEmptyFolders, history, historyDragging,
@@ -1103,8 +1110,9 @@ function ChatSidebar({
        *  and the header's "in split" badge is the way back into a live split. */}
 
       {/* Clean Up dialog */}
-      {folderCleanupOpen && <FolderCleanupPanel folders={folders} onClose={() => setFolderCleanupOpen(false)} />}
-      {folderCleanupRoot && <FolderCleanupPanel key={folderCleanupRoot.id} folders={folders} root={folderCleanupRoot} slots={localSlots} onClose={() => setFolderCleanupRoot(null)} />}
+      {/* The full list: the server names folders this list may not draw, such as an empty folder inside a hidden Bot home. */}
+      {folderCleanupOpen && <FolderCleanupPanel folders={allFolders} onClose={() => setFolderCleanupOpen(false)} />}
+      {folderCleanupRoot && <FolderCleanupPanel key={folderCleanupRoot.id} folders={allFolders} root={folderCleanupRoot} slots={localSlots} onClose={() => setFolderCleanupRoot(null)} />}
       {cleanupOpen && renderSessionCleanupPanel(scope)}
 
       {/* Switch-all-to-model dialog — mirrors the Clean Up panel. Picking a

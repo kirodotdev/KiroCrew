@@ -93,6 +93,14 @@ PREDICATE_SITES = {
     # set its mark yet and the predicate alone would pass an SSM request. The
     # router refuses by listener first (``SsmGate.owns``, the socket's local port).
     "apps/app_web_origin.py": 1,
+    # The relayed-Crew router (a browser tab's relay Crew) sits beside it and
+    # refuses by listener first the same way.
+    "relay_viewer/browser_origin.py": 1,
+    "dashboard/handlers/relay_viewer.py": 1,
+    # Recording a Remote Crew pane port runs inside token auth, after the SSM gate
+    # has marked what it admits, so the predicate refuses an SSM request here. The
+    # router that serves the recorded port still refuses by listener first.
+    "apps/pane_ports.py": 1,
     "dashboard/file_api/desktop.py": 1,
     "dashboard/handlers/core.py": 2,
     "dashboard/handlers/external_terminal.py": 1,
@@ -102,9 +110,13 @@ PREDICATE_SITES = {
     "dashboard/handlers/webapp_preview.py": 1,
     "dashboard/handlers/whatsapp_setup.py": 5,
     "dashboard/messaging_api/channel_folder_backfill.py": 1,
+    # Local authorization's four routes: token auth admits an SSM request and sets
+    # its mark before the method-scoped bypass these routes pass through.
+    "dashboard/routes/local_authorization.py": 1,
     "dashboard/messaging_api/discord_settings.py": 2,
-    "dashboard/messaging_api/feishu_settings.py": 2,
+    "dashboard/messaging_api/feishu_settings.py": 3,
     "dashboard/messaging_api/imessage_settings.py": 2,
+    "dashboard/messaging_api/slack_owner_claim.py": 1,
     "dashboard/messaging_api/slack_settings.py": 3,
     "dashboard/messaging_api/teams_settings.py": 2,
     "dashboard/messaging_api/telegram_settings.py": 2,

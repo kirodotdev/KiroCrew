@@ -246,6 +246,45 @@ class TestRecheckOverHttp:
         finally:
             await client.close()
 
+    async def test_opencode_from_its_own_installer_is_found_on_recheck(
+        self, tmp_path, monkeypatch, owner_middleware
+    ):
+        """OpenCode's installer writes ``~/.opencode/bin`` and puts it on PATH for new
+        shells only, so the gateway's PATH never has it. Check again finds it.
+
+        The augmented PATH and mise are pinned to an empty directory and to nothing:
+        either could find the host's own opencode, and the first verdict would then not
+        be a real miss.
+        """
+        from kiro_crew.acp import client as acp_client
+        from kiro_crew.agent_sdk.backends import launch_for
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        monkeypatch.delenv(launch_for(ACP_BACKEND_OPENCODE).bin_env_var, raising=False)
+        monkeypatch.setattr(acp_client, "_mise_which", lambda _tool: None)
+        monkeypatch.setattr(acp_client, "augmented_path", lambda _path: str(_bin_dir(tmp_path)))
+
+        client = await _client(owner_middleware)
+        try:
+            assert (await _row(client, ACP_BACKEND_OPENCODE))["installed"] == MISSING
+
+            install_dir = tmp_path / ".opencode" / "bin"
+            install_dir.mkdir(parents=True)
+            _install(install_dir, launch_for(ACP_BACKEND_OPENCODE).binary)
+
+            resp = await client.post(
+                "/api/acp-backends/recheck",
+                data=json.dumps({"backend": ACP_BACKEND_OPENCODE}),
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 200
+            rechecked = (await resp.json())["backend"]
+            assert rechecked["installed"] == INSTALLED
+            assert rechecked["restart_required"] is False
+        finally:
+            await client.close()
+
     async def test_an_unknown_backend_is_refused_over_http(self, monkeypatch, owner_middleware):
         """The id validation, through the router rather than the handler alone."""
         client = await _client(owner_middleware)

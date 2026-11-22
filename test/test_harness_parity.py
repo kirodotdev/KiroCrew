@@ -328,21 +328,23 @@ def test_the_mate_worker_takes_the_member_rule() -> None:
         source = inspect.getsource(provider.mate_worker_kit_supported.fget)
         assert "in ACP_BACKENDS_MATE_WORKER_KIT" in source
     assert ACP_BACKENDS_MATE_WORKER_KIT == frozenset(
-        {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
+        {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_PI}
     )
     assert ACP_BACKENDS_MATE_WORKER_KIT <= ACP_BACKENDS_MEMBER_CAPABILITIES
     assert ACP_BACKEND_KIRO not in ACP_BACKENDS_MATE_WORKER_KIT
-    # The worker's prompt rides the context block exactly where the host's mirror
-    # projects no spec prompt; KAS's wire spec carries it.
+    # The worker's prompt rides the context block exactly where the host reads no
+    # spec prompt of Crew's: a mirror that withholds it, or a BROKER_ONLY host (pi),
+    # which has no mirror at all. KAS's wire spec carries it.
     from kiro_crew.providers.mirrors.base import Concern, Disposition
-    from kiro_crew.providers.mirrors.registry import mirror_for
+    from kiro_crew.providers.mirrors.registry import ProjectionKind, mirror_for, projection_for
 
     assert ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT <= ACP_BACKENDS_MATE_WORKER_KIT
     for backend in ACP_BACKENDS_MATE_WORKER_KIT:
         mirror = mirror_for(backend)
         withheld = (
-            mirror is not None
-            and mirror.rulings()[Concern.PROMPT].disposition is Disposition.WITHHELD
+            mirror.rulings()[Concern.PROMPT].disposition is Disposition.WITHHELD
+            if mirror is not None
+            else projection_for(backend).kind is ProjectionKind.BROKER_ONLY
         )
         assert withheld is (backend in ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT), backend
     allocation = inspect.getsource(get_or_create)
@@ -1398,6 +1400,14 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "native; kiro-cli's launch record already carries it, a Kiro Cloud sandbox "
     "registers no agent, and no other harness reads that tree",
     (
+        "src/kiro_crew/acp/runtime_session_create.py",
+        "_finish_create_session",
+    ): "wording only: the Kiro CLI harness is the one launch that runs kiro-cli's v2 "
+    "engine, which leaves out of its modes a file kiro-cli lists as the v3 agent "
+    "format, so only its mode refusal may name that format "
+    "(``side_readonly_spec.unavailable_mode_explanation``); the refusal itself is "
+    "raised for every harness alike, and no capability table holds an engine version",
+    (
         "src/kiro_crew/acp/runtime_spawn_entry.py",
         "spawn",
     ): "moving kiro-cli's broken KAS extract aside and retrying is a repair for the "
@@ -1497,7 +1507,9 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
         "load_session",
     ): "KAS alone must have its custom agents re-attached on resume, and no harness "
     "property means 'this host needs its agent re-sent'. Adding one would cost the "
-    "kiro path an awaited step it does not need (H13).",
+    "kiro path an awaited step it does not need (H13). Its mode refusal also asks "
+    "whether the harness is Kiro CLI's, as ``_finish_create_session`` does, for the "
+    "wording alone.",
     (
         "src/kiro_crew/acp/session_handle_turn.py",
         "command_is_native",

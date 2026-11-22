@@ -782,8 +782,14 @@ async def switch_slot_model(
             # slot keeps it too (same answer as an unavailable model).
             _rollback_pick()
             logger.warning("Slot %s model switch refused: %s", name, exc)
+            # A fixed sentence: the exception text can carry agent-authored words,
+            # a path or a host. The log line above keeps the detail.
             return web.json_response(
-                {"error": str(exc), "code": "model_switch_refused"}, status=400
+                {
+                    "error": "The agent did not accept the model change.",
+                    "code": "model_switch_refused",
+                },
+                status=400,
             )
         if effective_session_key(slot) != session_key:
             # The slot was bound to a different session while the live switch

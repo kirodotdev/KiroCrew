@@ -53,6 +53,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Version, update channel, check for updates, and license"
   },
   {
+    "id": "agent.engine",
+    "label": "Engine",
+    "labelKey": "pages.developer.kasBundleCard.engine_label",
+    "description": "Kiro Agent runs on one of these.",
+    "tab": "agent",
+    "type": "buttonGroup",
+    "occurrence": 1,
+    "configKey": "agent.kas_bundle",
+    "settingId": "agent.engine"
+  },
+  {
     "id": "agent.kiro-memory",
     "label": "Kiro Memory",
     "labelKey": "pages.developer.agentBackendTab.orchestrator_memory_label",
@@ -463,6 +474,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "The App Secret shown next to the App ID on the same Credentials page."
   },
   {
+    "id": "channels.file-sessions-in-a-different-folder-slack",
+    "label": "File sessions in a different folder (Slack)",
+    "labelKey": "pages.settings.slackPanel.session_folder_custom",
+    "labelSuffix": "Slack",
+    "hint": "While Slack conversations are listed, new ones go into a “Slack” folder. Turn this on to file them in a folder you name instead.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
+  },
+  {
     "id": "channels.file-sessions-in-a-folder-discord",
     "label": "File sessions in a folder (Discord)",
     "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
@@ -496,18 +520,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "channel": "imessage"
-    }
-  },
-  {
-    "id": "channels.file-sessions-in-a-folder-slack",
-    "label": "File sessions in a folder (Slack)",
-    "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
-    "labelSuffix": "Slack",
-    "tab": "channels",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "channel": "slack"
     }
   },
   {
@@ -862,7 +874,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "labelKey": "pages.settings.slackPanel.show_in_session_list",
     "labelSuffix": "Slack",
     "description": "Lists conversations that start in Slack with your other sessions.",
-    "hint": "Turn this off to leave conversations that start in Slack out of the session list. They keep working in Slack, stay in History and search, and come back when you turn this on again. The conversation you have open, and one waiting on your approval or answer, stay listed. Sessions you start in the dashboard and connect to Slack, and Slack code channel sessions with their helper agents, are always listed.",
+    "hint": "Off by default, so conversations that start in Slack stay out of the session list; they keep working in Slack and stay in History and search. Turn this on to list them: new ones go into a “Slack” folder unless you pick a different folder below. Slack code channels and sessions you start in the dashboard are always listed.",
     "tab": "channels",
     "type": "toggle",
     "occurrence": 1,
@@ -909,6 +921,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "channel": "slack"
     }
+  },
+  {
+    "id": "channels.slack-tools-for-your-agents-slack",
+    "label": "Slack tools for your agents (Slack)",
+    "labelKey": "pages.settings.slackPanel.slackCode.slack_mcp",
+    "labelSuffix": "Slack",
+    "description": "Lets your agents search and read Slack, read-only, for each person who connects their own Slack account. Each person can disconnect on the Slack card at any time, which stops their agents reading Slack.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.slack_mcp"
   },
   {
     "id": "channels.slash-command-slack",
@@ -1121,6 +1147,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "advanced"
     },
     "configKey": "session.autocompact_pct"
+  },
+  {
+    "id": "chat.auto-open-board-in-side-panel",
+    "label": "Auto-Open Board in Side Panel",
+    "labelKey": "pages.settings.chatPanel.auto_open_conductor_board",
+    "hint": "Opens the side panel on the Board the first time you open a conductor mode chat. When this is off, the chat opens like any other chat, with its panel closed unless Keep Side Panel Open is on. Turning on conductor mode in a chat still opens the Board. This setting does not apply on a phone.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sidepanel"
+    },
+    "configKey": "dashboard.auto_open_conductor_board"
   },
   {
     "id": "chat.auto-open-git-in-side-panel",
@@ -2265,6 +2304,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "One Google OAuth client for Gmail, Drive, Calendar, Sheets, Docs and Slides"
   },
   {
+    "id": "connections.remember-mcp-sign-ins-across-sessions",
+    "label": "Remember MCP sign-ins across sessions",
+    "labelKey": "pages.settings.connectionsPanel.remember_sign_ins",
+    "hint": "When on, new chats on the Kiro Agent backend reuse the MCP server sign-ins you already made. When off, each new chat asks you to sign in again; sign-ins already saved are not erased, only left unused, and new chats can use them again if you turn this back on. A saved sign-in works in every chat on this Kiro Crew, including those of people you share it with. Takes effect after Kiro Crew restarts; your chats and their history are kept.",
+    "tab": "connections",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "agent.kas_persist_mcp_sign_in",
+    "settingId": "connections.remember-mcp-sign-ins-across-sessions"
+  },
+  {
     "id": "developer.acp-runtime-sharing",
     "label": "ACP runtime sharing",
     "labelKey": "pages.developer.featurePreviewsTab.chat_runtime_sharing",
@@ -2338,6 +2388,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "label": "Also send tool-call arguments so the decision model can flag risky calls",
     "description": "In a session that approves its own tool calls, this also sends the name and arguments of each call to the decision model, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
+  },
+  {
+    "id": "developer.app-browser-access",
+    "label": "App browser access",
+    "labelKey": "pages.developer.featurePreviewsTab.app_browser_sdk",
+    "description": "Apps can show, read and use the browser tabs of their own chats once you approve it.",
+    "hint": "An app that asks for browser access can show the live browser of its own chats on its page, read those pages, and click and type there. Each part waits for your approval on the app's page. While this is off, no app gets any of it, even one you approved.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.artifact-deploy",
@@ -2508,6 +2571,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.phone-widgets",
+    "label": "Phone widgets",
+    "labelKey": "pages.developer.featurePreviewsTab.widgets",
+    "description": "Lets your Bots prepare home-screen widgets for the Kiro Mobile app. Nothing reaches your phone yet.",
+    "hint": "Your Bots learn to save home-screen widgets with their Dashboard. The Kiro Mobile app can't show them yet: this Crew doesn't serve widgets to a phone. While this is off, Bots aren't told about widgets and can't save them.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.quick-worker-check-before-a-hard-choice",
     "label": "Quick worker check before a hard choice",
     "labelKey": "pages.developer.featurePreviewsTab.worker_grill",
@@ -2560,23 +2636,11 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "developer.run-kas-on-kiro-crew-s-own-engine",
-    "label": "Run KAS on Kiro Crew's own engine",
-    "labelKey": "pages.developer.kasBundleCard.toggle_label",
-    "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Kiro account. Takes effect when Kiro Crew restarts.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
     "id": "developer.send-pending-approvals-to-chat-apps",
     "label": "Send pending approvals to chat apps",
     "labelKey": "pages.developer.featurePreviewsTab.bridge_approvals",
     "description": "Tells a connected chat app when a tool needs approval.",
-    "hint": "When a tool approval opens, Kiro Crew sends a note about it to the chat apps the notification bridge delivers to. The dashboard bell does not ring for it, and the note has no buttons yet, so answer the approval in the dashboard.",
+    "hint": "When a tool approval opens or an agent asks you a question, Kiro Crew sends a note about it to the chat apps the notification bridge delivers to. The dashboard bell does not ring for it. On Slack, answer with the note's buttons. On Telegram, Discord or Webex, reply to the note: approve or deny an approval, or send the number of an answer the note lists. Answer anything else in the dashboard.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -2602,6 +2666,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Shared Crew",
     "labelKey": "sharedCrew.preview_title",
     "description": "People tab, invites and shared sessions",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
+    "id": "developer.visual-refresh",
+    "label": "Visual refresh",
+    "labelKey": "pages.developer.featurePreviewsTab.visual_refresh",
+    "description": "A new look for the dashboard. Nothing changes yet.",
+    "hint": "Turns on the in-progress restyle of the dashboard. Nothing is restyled yet: pieces appear as they land, and may look unfinished or change between updates. Turn it off to go back to the current look.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -2663,6 +2740,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Copy on select",
     "labelKey": "pages.settings.displayPanel.terminal_copy_on_select",
     "hint": "Copy text to the clipboard as soon as you select it in the terminal with the mouse. The selection toolbar still opens.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "terminal"
+    }
+  },
+  {
+    "id": "display.ctrl-c-and-ctrl-v-copy-and-paste",
+    "label": "Ctrl+C and Ctrl+V copy and paste",
+    "labelKey": "pages.settings.displayPanel.terminal_ctrl_copy_paste",
+    "hint": "Ctrl+C copies the selected text; with nothing selected, it still stops the running command. Ctrl+V pastes instead of reaching the shell.",
     "tab": "display",
     "type": "toggle",
     "occurrence": 1,
@@ -2749,7 +2838,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "display.editor",
     "label": "Editor",
     "labelKey": "pages.settings.displayPanel.remote_editor_editor",
-    "description": "Adds “Open in VS Code” to the ⋯ menu of a file open in the side panel. Needs VS Code with Remote-SSH on the computer you’re using. The file opens there, connected to the SSH host below.",
+    "description": "Adds a row to the ⋯ menu of a file open in the side panel that opens the file in this editor. Needs this editor with Remote-SSH on the computer you’re using. The file opens there, connected to the SSH host below.",
     "tab": "display",
     "type": "select",
     "occurrence": 1,
@@ -2991,6 +3080,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.terminal.reuse_current"
   },
   {
+    "id": "display.reverse-trackpad-swipe",
+    "label": "Reverse trackpad swipe",
+    "labelKey": "pages.settings.displayPanel.reverse_trackpad_swipe",
+    "hint": "Turn this on if a two-finger swipe moves the side panel the opposite way to your fingers. This happens in Chrome and Firefox when macOS Natural scrolling is off, because those browsers do not tell the page how it is set. Safari and the desktop app detect it on their own, so there this switch changes nothing.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    }
+  },
+  {
     "id": "display.show-channels",
     "label": "Show Channels",
     "labelKey": "pages.settings.displayPanel.channels",
@@ -3142,6 +3243,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "configKey": "instances.enabled",
     "label": "Enable remote crew management"
+  },
+  {
+    "id": "instances.remote-control",
+    "labelKey": "pages.settings.remoteControlCard.title",
+    "tab": "instances",
+    "type": "toggle",
+    "occurrence": 1,
+    "settingId": "instances.remote-control",
+    "label": "Remote Control"
   },
   {
     "id": "kiro-account.kiro-sign-in",
@@ -3404,7 +3514,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "privacy.send-anonymous-usage-heartbeat",
     "label": "Send anonymous usage heartbeat",
     "labelKey": "privacyDisclosure.toggleLabel",
-    "description": "Saved for future launches.",
+    "description": "One anonymous ping a day, plus a receipt when you install an official app. Off stops both.",
     "tab": "privacy",
     "type": "toggle",
     "occurrence": 1,
@@ -3793,6 +3903,24 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "type": "input",
     "occurrence": 1,
     "configKey": "stt.custom_model_sha256"
+  },
+  {
+    "id": "voice.hold-the-message-box-to-talk",
+    "label": "Hold the message box to talk",
+    "labelKey": "pages.settings.sttSettings.pointer_enabled",
+    "hint": "Turn this off and a press on the message box only places the cursor.",
+    "tab": "voice",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "voice.hold-time",
+    "label": "Hold time",
+    "labelKey": "pages.settings.sttSettings.pointer_hold_time",
+    "hint": "How long the button stays down before dictation starts. Shorter starts sooner; longer keeps a slow click from starting it.",
+    "tab": "voice",
+    "type": "stepper",
+    "occurrence": 1
   },
   {
     "id": "voice.how-the-key-works",

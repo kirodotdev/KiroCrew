@@ -36,6 +36,7 @@ from admission_gate_helpers import (  # noqa: F401 -- the autouse fixture regist
 )
 from overload_fakes import wait_taskq_open
 
+from kiro_crew import platform_compat
 from kiro_crew import resource_status as rs
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS
@@ -438,7 +439,7 @@ class TestSpawnAdmissionGate(_TestSpawnAdmissionGateHarness):
         ],
     )
     def test_the_pending_start_is_priced_at_its_dedicated_projection(
-        self, configured, expected_min_gb
+        self, monkeypatch, configured, expected_min_gb
     ) -> None:
         """A start costs what a runtime settles at, not what a run grew to.
 
@@ -452,6 +453,8 @@ class TestSpawnAdmissionGate(_TestSpawnAdmissionGateHarness):
         """
         from kiro_crew.subagent import SubagentInfo
 
+        # Off macOS: there a settled row keeps owing its price (start_pricing._owes_price_once_settled).
+        monkeypatch.setattr(platform_compat, "IS_MACOS", False)
         mgr = self._mgr()
         mgr._agents["heavy"] = SubagentInfo(
             id="heavy", task="w", peak_rss_gb=7.5, last_rss_gb=1.0, _rss_samples=2, _pid=4242
@@ -497,8 +500,8 @@ class TestSpawnAdmissionGate(_TestSpawnAdmissionGateHarness):
         assert call_kwargs["metadata"]["min_gb"] == pytest.approx(5.0)
         deferred = [e for e in mgr._taskq.events(info.id) if e.kind == "deferred"]
         reason = str(deferred[-1].data.get("reason")) if deferred else ""
-        assert "3.0 GB available" in reason
-        assert "(1.00 GB for this start)" in reason
+        assert "3.0 GB free, needs 5.0 GB" in reason
+        assert reason.endswith("; close other apps to free some")
 
     # ── the deferral reason reaches the UI event and the caller ──────────────
     #
@@ -513,7 +516,7 @@ class TestSpawnAdmissionGate(_TestSpawnAdmissionGateHarness):
         info, events, _sel = self._spawn_capturing_queued(mgr, memory=(False, 3.2))
         assert info is not None and info.queued is True and info.done is False
         assert info.queued_reason == "low_memory"
-        assert "3.2 GB available" in info.queued_reason_detail
+        assert "3.2 GB free" in info.queued_reason_detail
         assert events, "the deferral must still emit the advisory queued count"
         last = events[-1]
         assert last["queued"] == 1
@@ -531,7 +534,7 @@ class TestSpawnAdmissionGate(_TestSpawnAdmissionGateHarness):
         info, events, _sel = self._spawn_capturing_queued(mgr, memory=(False, 3.2))
         assert info is not None and info.queued is True and info.done is False
         assert info.queued_reason == "low_memory"
-        assert "3.2 GB available" in info.queued_reason_detail
+        assert "3.2 GB free" in info.queued_reason_detail
         assert events and events[-1]["reason"] == "low_memory"
         assert events[-1]["available_gb"] == pytest.approx(3.2)
         assert events[-1]["required_gb"] == pytest.approx(5.0)

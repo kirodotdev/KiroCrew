@@ -24,6 +24,16 @@ contextBridge.exposeInMainWorld("kirocrew", {
   // via webPreferences.additionalArguments). The SPA reserves header space
   // for the injected caption controls only when this is set.
   linuxFrameless: process.argv.includes("--kc-linux-frameless"),
+  // This shell serves the in-app application menu on a frameless Linux window:
+  // `menuItems` and `executeMenu` in window-lifecycle.js answer for that
+  // surface, not Windows alone. The SPA and the shell install separately, so an
+  // older shell can serve a newer SPA; `linuxFrameless` cannot tell them apart,
+  // because a frameless window is what that shell always was. Without this
+  // flag the SPA would mount the trigger there and every popup would open
+  // empty, the old guard returning [] with nothing on screen saying why. A
+  // literal, not a runtime probe: the flag ships in the same bundle as the two
+  // functions it promises, so an older shell omits it by not having this line.
+  linuxAppMenu: true,
   // Absolute filesystem path for a File the OS handed the renderer (drag-drop,
   // file input). Browsers deliberately hide real paths, and Electron removed
   // File.path, so webUtils in the preload is the only remaining bridge. Returns
@@ -374,25 +384,47 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("fileOpenAPI", {
 // The pane calls show a Crew in this window instead, below the local top bar:
 // they carry the endpoint ID, the pane's rect with this page's viewport size,
 // or whether a local overlay covers the pane or another tab is in front of it.
-// `onPaneEvent(cb)` hears a pane's switch chord or its close, as `{ type,
-// endpointId, index }` and nothing more, and returns its unsubscribe. Nothing
-// calls them yet.
+// `onPaneEvent(cb)` hears a pane's switch chord, whether its theme is dark, or
+// its close, as `{ type, endpointId, index, dark }` and nothing more, and
+// returns its unsubscribe. An
+// `openPane` from another dashboard window is handed to the main window's
+// dashboard, which hears it through `onOpenRequest(cb)` (the endpoint ID only)
+// while it is subscribed; one subscriber at a time, the newest.
+let openRequestHandler = null;
+let openRequestSeq = 0;
 if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("relayCrewAPI", {
   open: (endpointId) => ipcRenderer.invoke("relay-crew:open", String(endpointId || "")),
   closeAll: () => ipcRenderer.invoke("relay-crew:close-all"),
   openPane: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:open-pane", String(endpointId || ""), rect, viewport),
+  prewarmPane: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:prewarm-pane", String(endpointId || ""), rect, viewport),
   setPaneBounds: (endpointId, rect, viewport) => ipcRenderer.invoke("relay-crew:pane-bounds", String(endpointId || ""), rect, viewport),
   setPaneOverlay: (endpointId, active) => ipcRenderer.invoke("relay-crew:pane-overlay", String(endpointId || ""), !!active),
   setPaneInactive: (endpointId, inactive) => ipcRenderer.invoke("relay-crew:pane-inactive", String(endpointId || ""), !!inactive),
   closePane: (endpointId) => ipcRenderer.invoke("relay-crew:pane-close", String(endpointId || "")),
+  // This shell sends a pane's `loaded` event, so the dashboard may wait for it.
+  paneLoadEvents: true,
   onPaneEvent: (cb) => {
     const handler = (_e, m) => cb({
       type: String(m?.type || ""),
       endpointId: String(m?.endpointId || ""),
       index: Number.isInteger(m?.index) ? m.index : -1,
+      dark: typeof m?.dark === "boolean" ? m.dark : null,
     });
     ipcRenderer.on("relay-crew:pane-event", handler);
     return () => ipcRenderer.removeListener("relay-crew:pane-event", handler);
+  },
+  onOpenRequest: (cb) => {
+    const handler = (_e, endpointId) => { if (typeof endpointId === "string") cb(endpointId); };
+    if (openRequestHandler) ipcRenderer.removeListener("relay-crew:open-request", openRequestHandler);
+    openRequestHandler = handler;
+    ipcRenderer.on("relay-crew:open-request", handler);
+    void ipcRenderer.invoke("relay-crew:open-requests", true, ++openRequestSeq).catch(() => {});
+    return () => {
+      if (openRequestHandler !== handler) return;
+      openRequestHandler = null;
+      ipcRenderer.removeListener("relay-crew:open-request", handler);
+      void ipcRenderer.invoke("relay-crew:open-requests", false, ++openRequestSeq).catch(() => {});
+    };
   },
 });
 
@@ -501,6 +533,9 @@ contextBridge.exposeInMainWorld("updateAPI", {
   // A plain quit and relaunch with no update command of its own. An armed
   // update is applied by the quit it triggers.
   relaunch: () => ipcRenderer.invoke("update:relaunch"),
+  // Whether this window's relaunch would be accepted; false on a window the
+  // relaunch gate refuses, so the dashboard does not offer Restart now there.
+  canRelaunch: () => ipcRenderer.invoke("update:can-relaunch"),
   getInfo: () => ipcRenderer.invoke("update:get-info"),
   // Channel switcher (Settings > About): "" follows the build stamp,
   // "insider"|"stable" opts the production app onto that lane.

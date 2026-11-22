@@ -34,7 +34,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'
 import { Trans } from 'react-i18next'
-import { api, type InstanceView } from '../api/client'
+import { api, type InstanceView, type RelayCrewEntry } from '../api/client'
 import {
   CHAINED_CREW_MESSAGE,
   CHAINED_CREW_REFUSED_MESSAGE,
@@ -46,7 +46,7 @@ import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
 import { WARM_SET_CAP_AUTO_CEILING, usesSsmTransport } from '../utils/remoteCrew'
 import { SettingsLink } from './SettingsLink'
 import { useAppDispatch, useAppSelector, useAppStore } from '../store'
-import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm, type WarmConn } from '../store/instancesSlice'
+import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm, type RelayTab, type WarmConn } from '../store/instancesSlice'
 import InstanceTabBar, { visibleInstanceTabs, chainRows, useCrewPins, toggleCrewPin, useCrewSwitcherStableOrder, setStableOrder } from './InstanceTabBar'
 import { isEmbeddableLoopbackOrigin, parseLoopbackOriginPort, resolveTunnelOrigin } from '../lib/tunnelOrigin'
 import {
@@ -78,6 +78,10 @@ import { connectInstanceInto, type ConnectVia } from '../lib/connectInstance'
 import { paneCredentialFor } from '../lib/paneCredential'
 import { useDeliverPendingPaneSlot } from '../lib/crewDeepLink'
 import { recallActivePane, rememberActivePane } from '../lib/activePaneMemory'
+import { useSearchParams } from 'react-router-dom'
+import { useRelayViewerCrews } from '../hooks/useRelayViewerCrews'
+import { OPEN_RELAY_CREW_PARAM, paneRelayCrews, pickRelayFromPane } from '../lib/paneRelayCrews'
+import { relayPaneBridge } from '../lib/relayCrewPanes'
 import { LINUX_CAPTION_CONTROLS_WIDTH, LINUX_CAPTION_RESERVE_PX, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
 import { PANE_ACTIVE_SLOT_TYPE, PANE_SLOT_HINT_PARAM, readPaneSlot, rememberPaneSlot } from '../lib/paneLastSlot'
@@ -90,6 +94,7 @@ import { isElectron, isLinuxFramelessElectron, isWinElectron } from '../lib/elec
 import type { DragGap } from '../lib/dragGaps'
 import { useFocusMode, useFocusChromeVisible, setFocusModeEnabled, setFocusChromeVisible } from '../hooks/useFocusMode'
 import { useChatCompleteNotify } from '../hooks/chatCompleteNotify'
+import { useCrewWarmSet } from '../hooks/useCrewWarmSet'
 
 import { i18nT } from '../i18n/t'
 // Refresh the embedded token once elapsed reaches this fraction of its TTL
@@ -143,6 +148,9 @@ const AUTO_WARM_STAGGER_MS = 1_500
 // every reload, so resetting there would clear the count once per re-mint and
 // leave the very loop this cap exists to bound running unbounded.
 const MAX_REACTIVE_REMINTS = 3
+
+const NO_RELAY_CREWS: RelayCrewEntry[] = []
+const NO_RELAY_TABS: RelayTab[] = []
 
 
 /**
@@ -246,6 +254,30 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     enabled: !embedded,
   })
   const warmCap = instancesQuery.data?.warm_set_cap || WARM_SET_CAP_AUTO_CEILING
+  // The Remote Crews rows an SSH pane's own switcher lists, as the top bar's group does.
+  const relayViewer = useRelayViewerCrews(!embedded)
+  // One identity while there is nothing to list. A failed re-read keeps the rows it
+  // had, as the top bar's group does: a pick still opens from the top bar, whose
+  // refusal notice says when the Crew cannot be reached.
+  const relayCrews = relayViewer.hidden || relayViewer.crews.length === 0 ? NO_RELAY_CREWS : relayViewer.crews
+  const relayTabs = useAppSelector(s => s.instances.relayTabs ?? NO_RELAY_TABS)
+  const relayActive = useAppSelector(s => s.instances.relayActive ?? null)
+  // A Remote Crew the SSH pane in front picks opens as the top bar's note Open does:
+  // Local comes forward and the top bar opens it, with its cover and its refusal notice.
+  const [, setSearchParams] = useSearchParams()
+  const openFromTopBar = useCallback((endpointId: string) => {
+    dispatch(setActiveId(null))
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.set(OPEN_RELAY_CREW_PARAM, endpointId)
+      return next
+    }, { replace: true })
+  }, [dispatch, setSearchParams])
+  const openFromTopBarRef = useRef(openFromTopBar)
+  openFromTopBarRef.current = openFromTopBar
+  const relayRef = useRef({ crews: relayCrews, tabs: relayTabs })
+  relayRef.current = { crews: relayCrews, tabs: relayTabs }
+  const warmSet = useCrewWarmSet()
 
   // Current warm map in a ref so the refresh callback (used by the long-lived
   // postMessage listener) always sees the latest ports without re-subscribing.
@@ -668,6 +700,10 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // warm tunnel above); validate the TARGET is Local (null) or a known
         // instance before honoring it.
         const target = (data as { id?: unknown }).id
+        // A Remote Crews row: only a Crew this window lists or has open.
+        // Only from the pane in front: the only one sent the rows.
+        if (relayPaneBridge() && id === activeIdRef.current && pickRelayFromPane(target, relayRef.current.crews, relayRef.current.tabs, dispatch,
+          endpointId => openFromTopBarRef.current(endpointId))) return
         if (target === null) {
           dispatch(setActiveId(null))
         } else if (
@@ -1284,12 +1320,14 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const didAutoWarmRef = useRef(false)
   useEffect(() => {
     const data = instancesQuery.data
-    if (!data || didAutoWarmRef.current) return
+    if (!data || !warmSet || didAutoWarmRef.current) return
     didAutoWarmRef.current = true
     const room = Math.max(0, warmCap - Object.keys(warmRef.current).length)
     if (room <= 0) return
+    // Only crews in the warm set: one outside it would be dropped again at once (useCrewWarmKeeper).
     const candidates = data.instances
       .filter(i => i.status?.state === 'connected' && !warmRef.current[i.id] && i.id !== restoredIdRef.current)
+      .filter(i => warmSet.ssh.includes(i.id))
       .slice(0, room)
     // Timers live in a ref and are cleared only on unmount: this effect re-runs
     // on every instances poll (its deps include the query data), and a cleanup
@@ -1320,7 +1358,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         void autoWarm(inst.id)
       }, i * AUTO_WARM_STAGGER_MS),
     )
-  }, [instancesQuery.data, warmCap, autoWarm])
+  }, [instancesQuery.data, warmSet, warmCap, autoWarm])
 
   const warmIds = useMemo(() => Object.keys(warm), [warm])
   // The src a pane was LOADED with, per id. The last-chat hint is read once per
@@ -1377,6 +1415,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
             : '',
           pathParent: parentName,
           brokenAt,
+          transport: i.connection_method === 'fargate' ? 'fargate' as const : usesSsmTransport(i) ? 'ssm' as const : 'ssh' as const,
         }),
       )
       const selfInst = insts.find(i => i.id === id)
@@ -1394,6 +1433,10 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // Array, not the Set itself: structured clone rejects a Set across this
         // boundary in some engines and the receiver validates element-wise anyway.
         pinnedCrews,
+        // Desktop only: a browser could open the pick only as a pop-up, which a
+        // message from the pane is not allowed to start.
+        // Only to the pane in front, the one whose switcher is on screen.
+        relayCrews: relayPaneBridge() && id === activeId ? paneRelayCrews(relayCrews, relayTabs, relayActive) : [],
         stableOrder,
         chatCompleteNotify,
         // This host performs image copies for the pane (mc-clipboard-image).
@@ -1401,7 +1444,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         clipboardRelay: PANE_CLIPBOARD_VERSION,
       }
     },
-    [instancesQuery.data, warm, unread, activeId, macInset, winInset, linuxInset, winCaptionReserve, focusMode, pinnedCrews, stableOrder, chatCompleteNotify],
+    [instancesQuery.data, warm, unread, activeId, macInset, winInset, linuxInset, winCaptionReserve, focusMode, pinnedCrews, relayCrews, relayTabs, relayActive, stableOrder, chatCompleteNotify],
   )
 
   // Post the model into one embedded pane, addressed to its exact loopback

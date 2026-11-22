@@ -373,6 +373,11 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
             # save changes nothing (see _write_env_or_roll_back).
             rollback = functools.partial(_cfg_write.rollback, "Slack") if staged else None
             await _write_env_or_roll_back(env_updates, rollback)
+            # A Slack credential write that changes what an open owner-claim
+            # window pinned closes it: a new token may name another workspace.
+            _claim = getattr(request.app.get("state"), "slack_owner_claim", None)
+            if _claim is not None:
+                _claim.recheck_soon("credential_write")
 
     # Create the configured session folder now, on this user-initiated save,
     # so the reconcile path never has to write the folder store. Best-effort:

@@ -110,7 +110,14 @@ def test_worker_debate_distinguishes_steered_started_and_queued_receipts():
         "Check each delivery result in order: `steered: true` means it entered the "
         "running turn; otherwise `started: true` means a new turn started." in section
     )
-    assert "Only `steered: false` AND `started: false` means queued." in section
+    assert (
+        "`pending_steer: true` means it is held for the target's next tool boundary, so "
+        "do not resend it." in section
+    )
+    assert (
+        "Only `steered: false` AND `started: false` without `pending_steer` means queued."
+        in section
+    )
     assert "Never resend a successful steer merely because `started` is false." in section
     assert "`started: false` means the message is queued" not in section
     assert "resend with `session_send` and `steer: true`" in section
@@ -124,15 +131,18 @@ def test_default_patrol_steers_next_steps_and_question_or_blocked_answers():
 
 
 @pytest.mark.parametrize(
-    "steered,started,expected,absent",
+    "steered,started,pending,expected,absent",
     [
-        pytest.param(True, False, "Steered", "Queued", id="running-turn-steered"),
-        pytest.param(False, True, "started a turn", "Queued", id="idle-turn-started"),
-        pytest.param(False, False, "Queued", "Steered", id="steer-fell-back-to-queue"),
-        pytest.param(True, True, "Steered", "started a turn", id="steered-takes-precedence"),
+        pytest.param(True, False, False, "Steered", "Queued", id="running-turn-steered"),
+        pytest.param(False, True, False, "started a turn", "Queued", id="idle-turn-started"),
+        pytest.param(False, False, True, "pending-steer", "Queued", id="steer-held-for-boundary"),
+        pytest.param(False, False, False, "Queued", "Steered", id="steer-fell-back-to-queue"),
+        pytest.param(True, True, False, "Steered", "started a turn", id="steered-takes-precedence"),
     ],
 )
-def test_debate_receipt_guidance_matches_session_send_tool(steered, started, expected, absent):
+def test_debate_receipt_guidance_matches_session_send_tool(
+    steered, started, pending, expected, absent
+):
     client = InMemoryDashboardClient(
         {
             "POST /api/session-control/send": {
@@ -140,6 +150,7 @@ def test_debate_receipt_guidance_matches_session_send_tool(steered, started, exp
                 "target": "chat-debate-worker",
                 "steered": steered,
                 "started": started,
+                **({"pending_steer": True, "steer_id": "abc"} if pending else {}),
             }
         }
     )
@@ -152,5 +163,5 @@ def test_debate_receipt_guidance_matches_session_send_tool(steered, started, exp
     assert absent not in result
     (request,) = client.requests
     assert request.body["steer"] is True
-    if not steered and not started:
+    if not steered and not started and not pending:
         assert "Your steer could not go into the running turn" in result

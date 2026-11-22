@@ -404,11 +404,12 @@ function ChatInput({
   // Style Markdown While Typing setting also opts this user into the Lexical
   // composer. With the setting off (the default) the textarea path is unchanged.
   const lexicalComposer = lexicalComposerProp || inlineMarkdown
-  // Same for the send-key mode: the stored preference is the fallback, not a
-  // hardcoded 'enter'. A host omitting the prop (session-grid pane, side panel)
-  // would otherwise send on plain Enter for a user who chose Ctrl/Cmd+Enter.
-  const storedSendMode = useComposerSendMode()
-  const sendOnEnter = sendOnEnterProp ?? storedSendMode
+  // Same for the send-key mode: the stored preference, with Return as a new
+  // line on a phone, is the fallback, not a hardcoded 'enter'. A host omitting
+  // the prop (session-grid pane, side panel, a mate's chat) would otherwise
+  // send on plain Enter for a user who chose Ctrl/Cmd+Enter, or on any phone.
+  const defaultSendMode = useComposerSendMode()
+  const sendOnEnter = sendOnEnterProp ?? defaultSendMode
   // And for Show Pasted Text in Full and the context readout.
   const { showFullPastes, showContextPct, showContextTokens } = useComposerSettings({
     showFullPastes: showFullPastesProp, showContextPct: showContextPctProp, showContextTokens: showContextTokensProp,
@@ -467,7 +468,7 @@ function ChatInput({
   const pickerSource = usePickerSource()
   const pickers = useComposerPickers({ source: pickerSource, project, onFileSelect, typedCommandMenus, hiddenCommands, terminalCommands, value, onChange, composerControl, queryClient, slotId, agentName })
   const { anyPickerOpenRef, closePickers, openPickersForText, prefetchSkills } = pickers
-  const { publishLexicalSelection, recordCaret, showDictation, cancelVoiceDrain } = useDictationControls({
+  const { publishLexicalSelection, recordCaret, holdCaret, showDictation, cancelVoiceDrain } = useDictationControls({
     composerControl, value, autoFocusKey, anyPickerOpenRef, voiceCaretRef, voicePendingCaretRef, voiceDictationPanel,
     voiceRecording, voiceDrainCancellable, voiceError, voiceSampleRef, voiceTranscribing, onVoiceCancel, onVoiceToggle,
   })
@@ -768,6 +769,8 @@ function ChatInput({
     if (target?.tagName === 'TEXTAREA') return 'pass'
     return stopTurnOnEscape(e, { native: e, composing: e.isComposing || e.keyCode === 229 }) ? 'take' : 'yield'
   }, ESCAPE_PRIORITY.composer)
+  // A rich editor that is not editable drops every key, so Escape stops nothing there.
+  const richDropsKeys = lexicalComposer && !lexicalLoadFailed && (typingLocked || disabled)
   const lockedKeyDown = useTypingLockKeys({
     lockedRich: typingLocked && lexicalComposer && !lexicalLoadFailed,
     isRunning, sendOnEnter, connected, fireComposer, wrapperRef, ownsFocusRef, optimizingRef, stopTurnOnEscape, ime,
@@ -810,10 +813,10 @@ function ChatInput({
   const {
     transcribeInFlight, transcribingIsHonest, micHeldElsewhere, micBlocked, micOwnerTitle, micHeldElsewhereLabel,
     setHoldTarget, touchPtt, voiceHoldMode, micIsModeSwitch, voiceSettling, textareaParked, toggleVoiceMode, micLabel, micKeyShortcuts, holdBarLabel,
-    voiceModePlaceholder, sendZone,
+    voiceModePlaceholder, sendZone, setPointerHoldTarget,
   } = useHoldToTalk({
     onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease, voiceSlideToSend, voicePttBinding,
-    voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, optimizing, placeholder, showDictation, voiceSendSteers: steerActive && !steerAuto && !terminal.active,
+    voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, typingLocked, optimizing, placeholder, showDictation, holdCaret, voiceSendSteers: steerActive && !steerAuto && !terminal.active,
   })
   // The name in the status row is the way there: one click switches to the
   // chat that holds the mic, where the user can end the capture.
@@ -1436,6 +1439,9 @@ function ChatInput({
             the shape flip slides (`shapeAnimating`); a wrapped line inside the
             two-row shape moves the column at once, like the box around it. */}
         <motion.div
+          // The pointer hold-to-talk gesture binds here, the text column, so one
+          // binding covers both editors (see `useHoldToTalk`).
+          ref={setPointerHoldTarget}
           onKeyDown={promptStashEnabled ? promptStash.onKeyDown : undefined}
           layout={inlineToolbarWhileFits && !reduceMotion && manualHeight === null ? 'position' : false}
           transition={shapeAnimating ? COMPOSER_ROW_SPRING : { duration: 0 }}
@@ -1714,14 +1720,14 @@ function ChatInput({
                   Steer and queue wait out an in-flight optimize, like the idle
                   Send: the draft is being rewritten under them. Enter already
                   waits (the keydown checks `optimizingRef`). Stop is not gated. */}
-              <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={isQueued && !terminal.active} composerHasDraft={composerHasDraft && !terminal.active} canSteer={canSteer} onSteer={onSteer} steerOnly={steerOnly} fireComposer={fireComposer} disabled={disabled || optimizing} holdSend={holdSend} holdSendReason={holdSendReason} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} onBusyModePicked={focusComposerAfterPick} sendOnEnter={sendOnEnter} jevAutoAvailable={jevAutoAvailable} onStop={onStop} terminalActive={terminal.active} stopDeclinedArmed={stopDeclinedArmed} />
+              <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={isQueued && !terminal.active} composerHasDraft={composerHasDraft && !terminal.active} canSteer={canSteer} onSteer={onSteer} steerOnly={steerOnly} fireComposer={fireComposer} disabled={disabled || optimizing} holdSend={holdSend} holdSendReason={holdSendReason} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} onBusyModePicked={focusComposerAfterPick} sendOnEnter={sendOnEnter} jevAutoAvailable={jevAutoAvailable} onStop={onStop} terminalActive={terminal.active} stopDeclinedArmed={stopDeclinedArmed} escapeStops={!richDropsKeys} />
             </>) : busyMode === 'responsive' && onStop && ((isRunning && !composerHasDraft) || stopState === 'soft_pending' || stopState === 'killing') ? (
               // Responsive (crewmate) mode keeps the Stop control: an empty
               // composer mid-turn is Stop, and a stop in progress keeps its
               // escalation states. Once the person types, the plain Send below
               // returns -- never the steer/queue split -- and the gateway
               // decides how that send reaches the running turn.
-              <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={false} composerHasDraft={false} canSteer={false} steerOnly={false} fireComposer={fireComposer} disabled={disabled} holdSend={holdSend} holdSendReason={holdSendReason} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} sendOnEnter={sendOnEnter} jevAutoAvailable={false} onStop={onStop} terminalActive={terminal.active} stopDeclinedArmed={stopDeclinedArmed} />
+              <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={false} composerHasDraft={false} canSteer={false} steerOnly={false} fireComposer={fireComposer} disabled={disabled} holdSend={holdSend} holdSendReason={holdSendReason} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} sendOnEnter={sendOnEnter} jevAutoAvailable={false} onStop={onStop} terminalActive={terminal.active} stopDeclinedArmed={stopDeclinedArmed} escapeStops={!richDropsKeys} />
             ) : !terminal.active && !typingLocked && (<>
               {optimizeButton}
               {/* 'primary' is a stable theming hook (button.primary) — see website/docs/theming-contract.md */}

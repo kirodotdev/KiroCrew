@@ -3,8 +3,8 @@ title: A conductor accepts an item on its delivered behaviour, checked by an ind
 status: draft
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-14
-last-audited: 2026-11-14
-audited-at: ed9d0b0161
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 36987
 implementation-prs: []
 tracking-issues: [36985]

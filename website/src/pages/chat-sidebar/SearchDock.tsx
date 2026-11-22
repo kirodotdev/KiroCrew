@@ -8,7 +8,7 @@
  *  writes and order, create, rename, title, peer sessions). */
 import { Fragment, useLayoutEffect, useRef } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { X, ArrowUpDown, EyeOff, ZapOff, ChevronRight, Clock, Check, List, ListTree, Pin, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
+import { X, ArrowUpDown, TextSearch, EyeOff, ZapOff, ChevronRight, Clock, Check, List, ListTree, Pin, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import FolderGlyph from '../../components/FolderGlyph'
 import { useQuery } from '@tanstack/react-query'
@@ -29,6 +29,7 @@ import { type RecentUnit, RECENT_WINDOW_PRESETS, formatRecentWindow } from '../r
 import { STALE_COLLAPSE_PRESETS_MS } from '../staleCollapse'
 import { SORT_LABEL_KEY, type SortKey } from '../chat/sessionOrder'
 import { i18nT } from '../../i18n/t'
+import { openGlobalChatSearch } from '../../components/globalChatSearch/globalChatSearchStore'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { fmtList } from '../../i18n/format'
 import type { SessionFilterKey } from './types'
@@ -301,6 +302,12 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     window presets' number formatting among them) were part of the
                     longest task of opening the chat page. */}
                 <RenderWhenOpen render={() => (<>
+                {/* Search all chats: every matching message across chats (⌘⇧F). */}
+                <DropdownMenuItem onSelect={openGlobalChatSearch} data-testid="search-all-chats">
+                  <TextSearch size={14} className="shrink-0" aria-hidden="true" />
+                  <span className="flex-1 truncate">{i18nT('components.globalChatSearch.title')}</span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
                 <FilterMenuLabel>{i18nT('pages.chatSidebar.filter')}</FilterMenuLabel>
                 {SESSION_FILTERS.map(filterDef => {
                   const active = activeFilters.has(filterDef.key)

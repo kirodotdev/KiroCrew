@@ -2,14 +2,16 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, CheckCircle2, Eye, EyeOff, KeyRound, Loader2, LogOut, RefreshCw } from 'lucide-react'
 import { api, type KasLoginStatus } from '../../api/client'
+import { kasInUse, type AcpBackendConfig } from '../../api/acpBackend'
 import { KasLoginEmbedded } from '../../components/KasLoginGate'
-import { KiroSignInDialog } from '../../components/KiroSignInDialog'
+import { KiroSignInDialog, KiroSignInFlow } from '../../components/KiroSignInDialog'
 import { useKasLoginStatus } from '../../hooks/useKasLogin'
 import { providerLabelFromWire } from '../../components/kasProviderLabel'
 import { KIRO_ACCOUNT_EMAIL_HIDDEN_KEY } from '../../components/KiroAccountModal'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { useSignedInAccount } from './kiroSignedInAccount'
 import ErrorNotice from '../../components/ErrorNotice'
+import { reportForError } from '../../utils/errorReport'
 import { Btn, Card, CardTitle } from '../../components/ui'
 import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
 import { fmtDateTime, fmtRelative } from '../../i18n/format'
@@ -89,15 +91,25 @@ function SignedInSummary({
   const lapsed = signInLapsed(status)
   const provider = providerLabelFromWire(status.provider)
   const account = useSignedInAccount()
-  // What renews the session, in words the user can act on: an access token the
-  // engine refreshes itself, one that has already lapsed, or one the issuer
-  // refused to renew. Never the token, never its length.
-  const expiryLine = status.refresh_rejected
-    ? i18nT('pages.developer.kiroSignInCard.refresh_rejected')
+  // Same config read (and cache key) as the app-level notice: when nothing runs
+  // on KAS the agents keep running, so a lapse stops only the account features.
+  // Until it answers, a lapsed card says only its title: a guessed body could
+  // name the wrong thing as stopped.
+  const cfgQuery = useQuery<AcpBackendConfig>({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() })
+  const cfg = cfgQuery.data
+  const lapsedBody = !lapsed || cfg === undefined
+    ? null
+    : i18nT(kasInUse(cfg)
+      ? 'pages.developer.kiroSignInCard.sign_in_expired_body'
+      : 'pages.developer.kiroSignInCard.sign_in_expired_body_account')
+  // What renews a working session: an access token the engine refreshes
+  // itself, or one that lapsed and renews on next use. A lapsed sign-in shows
+  // no reason line: whatever the cause, signing in again is the one fix.
+  // Never the token, never its length.
+  const expiryLine = lapsed
+    ? ''
     : status.expired
-      ? status.has_refresh_token
-        ? i18nT('pages.developer.kiroSignInCard.expired_renews_on_next_use')
-        : i18nT('pages.developer.kiroSignInCard.expired_no_refresh')
+      ? i18nT('pages.developer.kiroSignInCard.expired_renews_on_next_use')
       : status.expires_at
         ? i18nT('pages.developer.kiroSignInCard.access_token_expires', {
             when: fmtRelative(status.expires_at),
@@ -116,21 +128,36 @@ function SignedInSummary({
           {lapsed ? <AlertTriangle className="lucide-inline" /> : <CheckCircle2 className="lucide-inline" />}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-text-strong" data-testid="kiro-sign-in-state">
+          <p className={`text-sm text-text-strong ${lapsed ? 'font-semibold' : 'font-medium'}`} data-testid="kiro-sign-in-state">
             {lapsed
               ? i18nT('pages.developer.kiroSignInCard.sign_in_expired')
               : i18nT('pages.developer.kiroSignInCard.signed_in_with', { provider })}
             {!lapsed ? <AccountName {...account} withToggle testId="kiro-sign-in-account" /> : null}
           </p>
-          <p className="mt-0.5 text-[13px] leading-relaxed text-muted">
-            {lapsed
-              ? i18nT('pages.developer.kiroSignInCard.sign_in_expired_body', { provider })
-              : status.has_refresh_token
-                ? i18nT('pages.developer.kiroSignInCard.signed_in_body')
-                : // A live token with nothing to renew it: say so instead of
-                  // promising an automatic renewal that will not happen.
-                  i18nT('pages.developer.kiroSignInCard.signed_in_body_no_refresh')}
-          </p>
+          {!lapsed || lapsedBody ? (
+            <p className="mt-0.5 text-[13px] leading-relaxed text-muted">
+              {lapsed
+                ? lapsedBody
+                : status.has_refresh_token
+                  ? i18nT('pages.developer.kiroSignInCard.signed_in_body')
+                  : // A live token with nothing to renew it: say so instead of
+                    // promising an automatic renewal that will not happen.
+                    i18nT('pages.developer.kiroSignInCard.signed_in_body_no_refresh')}
+            </p>
+          ) : null}
+          {/* The config read failed with nothing cached: say so, as the app-level
+              notice would (it is hidden on this tab). askAgent on: this card
+              holds no draft. */}
+          {lapsed && cfg === undefined && cfgQuery.isError ? (
+            <ErrorNotice
+              className="mt-2"
+              askAgent
+              title={i18nT('components.kiroSignInNotice.config_unavailable')}
+              message={i18nT('components.kiroSignInNotice.config_unavailable_detail')}
+              report={reportForError(cfgQuery.error)}
+              testId="kiro-sign-in-config-error"
+            />
+          ) : null}
           {expiryLine ? (
             <p className="mt-1 text-[12px] text-muted" data-testid="kiro-sign-in-expiry">
               {expiryLine}
@@ -180,10 +207,11 @@ function SignedInSummary({
 }
 
 /**
- * The card's body: a signed-in view, or one Sign in button. Signing in,
- * switching account and signing in again all open the shared sign-in dialog
- * (`KiroSignInDialog`), the same one the chat opens; closing it backs out. A
- * failed status read shows the shared flow's own error and Check again.
+ * The card's body: a signed-in view, or the shared sign-in choices in place
+ * (`KiroSignInFlow`, the same content the chat's dialog wraps). Switching account
+ * and signing in again open the shared sign-in dialog (`KiroSignInDialog`);
+ * closing it backs out. A failed status read shows the shared flow's own error
+ * and Check again.
  */
 function SignInBody({
   renderSignedIn,
@@ -192,7 +220,7 @@ function SignInBody({
 }) {
   // This card is what keeps the shared status fresh while Settings is open.
   const statusQuery = useKasLoginStatus({ poll: 30_000 })
-  const [dialog, setDialog] = useState<null | 'sign_in' | 'reauth'>(null)
+  const [reauthOpen, setReauthOpen] = useState(false)
   const status = statusQuery.data
   let content: ReactNode
   if (statusQuery.isPending) {
@@ -204,23 +232,21 @@ function SignInBody({
     )
   } else if (!status) {
     content = <KasLoginEmbedded renderAuthenticated={() => null} />
-  } else if (status.authenticated) {
-    content = renderSignedIn(status, () => setDialog('reauth'))
   } else {
+    // One flow for both states: it stays mounted when a sign-in lands, so the
+    // landed result settles (caches dropped) before the summary replaces the
+    // choices. The choices keep the dialog's width on a wide card.
+    const signedOut = !status.authenticated
     content = (
-      <Btn type="button" primary onClick={() => setDialog('sign_in')} data-testid="kiro-sign-in-open">
-        {i18nT('components.kiroSignInPrompt.sign_in')}
-      </Btn>
+      <div className={signedOut ? 'max-w-md' : undefined} data-testid={signedOut ? 'kiro-sign-in-inline' : undefined}>
+        <KiroSignInFlow renderSignedIn={signedIn => renderSignedIn(signedIn, () => setReauthOpen(true))} />
+      </div>
     )
   }
   return (
     <>
       {content}
-      <KiroSignInDialog
-        open={dialog !== null}
-        onOpenChange={o => { if (!o) setDialog(null) }}
-        reauth={dialog === 'reauth'}
-      />
+      <KiroSignInDialog open={reauthOpen} onOpenChange={setReauthOpen} reauth />
     </>
   )
 }

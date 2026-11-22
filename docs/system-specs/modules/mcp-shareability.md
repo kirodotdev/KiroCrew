@@ -130,7 +130,7 @@ Path: `<records dir>/observed-hazards.json`, a sibling of `hot-keys.json`. Write
 Codes are a closed vocabulary; an unknown code is refused on write and dropped on read, because a typo that silently became a permanent hazard would disqualify a server for ever with no way to read why:
 
 - `unroutable_server_request` — a server-initiated request arrived with no `relatedRequestId` while more than one stub shared the backend. Unroutable without a cross-tenant leak, so the backend is recycled.
-- `unattributable_notification` — a request-scoped notification could not be attributed to a pending call, so it was dropped rather than broadcast.
+- `unattributable_notification` — a request-scoped notification could not be attributed to a pending call, so it was dropped rather than broadcast. A request-scoped frame on a 2026-07-28 `subscriptions/listen` stream (its acknowledgement, a list change) is attributed by the listen id its `_meta` carries (`io.modelcontextprotocol/subscriptionId`): the server saw the gateway's forward id, so the frame goes only to the stub whose pending listen that is, tagged back with the stub's own id (`backend_routing._listen_stream_frame`). A `notifications/resources/updated` on such a stream is still routed by URI only, so it is dropped unless a `resources/subscribe` named that URI.
 
 Both are recorded ONLY for a shared backend (`exclusive_token` empty). A 1:1 backend legitimately owns its single client, so the same frame there proves nothing, and recording it would disqualify servers for behaviour that is correct when unshared.
 
@@ -284,7 +284,8 @@ a new one, which starts unadopted.
 
 `*.listChanged` is deliberately absent from all of the above: those notifications
 are global broadcasts (`backend._GLOBAL_BROADCAST_NOTIFICATIONS`) and are safe to
-fan out to every attached stub.
+fan out to every attached stub. One that arrives on a `subscriptions/listen`
+stream carries that stream's listen id and goes to its listener only.
 
 Degradation detection is by PRESENCE of the capability key: in MCP an empty
 object is the standard way to advertise a capability that takes no sub-options,

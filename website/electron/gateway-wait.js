@@ -149,7 +149,7 @@ function describeGatewayFailure(failure) {
   // this message names the host to check first, because reaching the crew is
   // what the user asked for.
   // `localStartBlocked` joins this family rather than overloading `disabled`:
-  // the setting is ON in that state and nothing was launched anyway, because
+  // the setting is ON in that state and no gateway runs anyway, because
   // the port this launch targets is not one a new gateway may bind.
   if (failure.disabled || failure.localStartBlocked) {
     if (failure.remoteHost) {
@@ -278,10 +278,10 @@ function describeGatewayFailure(failure) {
         + "KIROCREW_PORT set to a port number that has no remote host configured.";
     }
     if (failure.localStartBlocked === "foreign-holder") {
-      // Something answers there and this app can attribute it neither to itself
-      // nor to a crew recorded on that port. Adopting it would post this
-      // machine's local secret to it, because the mint only requires a literal
-      // loopback origin and a tunnel's local end is one.
+      // Something holds the port, answering or not, and this app can attribute
+      // it neither to itself nor to a crew recorded on that port. Adopting it
+      // would post this machine's local secret to it, because the mint only
+      // requires a literal loopback origin and a tunnel's local end is one.
       //
       // Worded as what this app knows rather than as what the holder is: it may
       // well BE a Kiro Crew gateway, reached over a tunnel from another machine.

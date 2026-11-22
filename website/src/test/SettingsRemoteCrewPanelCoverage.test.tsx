@@ -19,7 +19,7 @@ import type {
   LaunchJob,
 } from '../api/client'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
-import { recentErrors, __resetErrorJournalForTests } from '../utils/errorReport'
+import { consumeChatHandoff, recentErrors, __resetErrorJournalForTests } from '../utils/errorReport'
 import { __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
 
 vi.mock('../api/client', () => {
@@ -42,6 +42,8 @@ vi.mock('../api/client', () => {
     isAuthExpiredError: (e: unknown) =>
       e instanceof ApiError && (e as { authRequired?: boolean }).authRequired === true,
     api: {
+      // The relay viewer is off here (its route 404s), so its list stays hidden.
+      relayViewerCrews: vi.fn(async () => { throw new ApiError(404, 'off', JSON.stringify({ code: 'RELAY_VIEWER_OFF' })) }),
       listInstances: vi.fn(),
       addInstance: vi.fn(),
       connectInstance: vi.fn(),
@@ -77,6 +79,7 @@ vi.mock('../utils/clipboard', () => ({
 
 import { api, ApiError } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
+import { WARM_SET_CAP_AUTO_CEILING } from '../utils/remoteCrew'
 
 const CLOUD_INSTANCE: InstanceView = {
   id: 'kc1',
@@ -570,7 +573,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     // An absent cap falls back to the default rather than advertising "up to 0".
-    expect(await screen.findByText(/Up to 10 stay warm at once/i)).toBeInTheDocument()
+    expect(await screen.findByText(new RegExp(`Up to ${WARM_SET_CAP_AUTO_CEILING} stay warm at once`, 'i'))).toBeInTheDocument()
 
     await openRowMenu(u)
     await u.click(await screen.findByRole('button', { name: /^Delete Kiro Crew Cloud/ }))
@@ -668,9 +671,32 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await openSetupTab(u)
 
+    // The CloudFormation call ran and was denied: an error, with its hand-off, in that row.
+    const missing = await screen.findByText(/needs permission for this service/)
+    expect(missing.closest('[role="alert"]')).not.toBeNull()
+    expect(within(missing.closest('li') as HTMLElement).getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
+
     await u.click(await screen.findByRole('button', { name: /Copy policy JSON/ }))
     await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('{"Version":"2012-10-17"}'))
     expect(await screen.findByRole('button', { name: /Copied/ })).toBeInTheDocument()
+  })
+
+  it('hands the agent the failed service check, profile and Region', async () => {
+    // The three service rows share one sentence, so the hand-off must say which call failed.
+    vi.mocked(api.listInstances).mockResolvedValue(list([]))
+    vi.mocked(api.cloudPreflight).mockResolvedValue({ ...PREFLIGHT_OK, cloudformation_reachable: false })
+    const u = setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await openSetupTab(u)
+
+    const row = (await screen.findByText(/needs permission for this service/)).closest('li') as HTMLElement
+    await u.click(within(row).getByRole('button', { name: /Ask the agent/ }))
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('"cloudformation_reachable":false')
+    expect(prompt).toContain('"region":"us-east-1"')
+    expect(prompt).toContain('"profile":""')
+    expect(prompt).not.toContain('ec2_reachable')
+    expect(prompt).not.toContain('ssm_reachable')
   })
 
   it('names the second policy when the edition attaches host policies', async () => {
@@ -757,8 +783,26 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
 
     expect(await screen.findByText('Credentials for this profile have expired.')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Launch' })).toBeDisabled())
-    // Every row fails; the hint names the first one in checklist order.
+    // The hint names the first failing row in checklist order: the credentials.
     expect(screen.getByText('Fix “AWS credentials” above to enable this.')).toBeInTheDocument()
+    // The EC2, CloudFormation and SSM checks run with those credentials, so none
+    // of them ran: no row blames a permission, marks a failure, or offers a policy to copy.
+    const notChecked = screen.getAllByText('Not checked yet — needs working AWS credentials first.')
+    expect(notChecked).toHaveLength(3)
+    for (const el of notChecked) {
+      expect(el.closest('li')?.querySelector('.lucide-x')).toBeNull()
+      expect(el.closest('li')?.querySelector('.lucide-check')).toBeNull()
+    }
+    expect(screen.queryByText(/needs permission for this service/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /Copy policy JSON/ })).toBeNull()
+    // Typing another profile greys every verdict, but a row that was never
+    // checked has none to grey: it keeps its hollow ring.
+    await u.type(screen.getByRole('textbox', { name: 'AWS profile' }), 'Admin')
+    for (const el of notChecked) {
+      const mark = el.closest('li')?.querySelector(':scope > span')
+      expect(mark).toHaveClass('border-border-strong')
+      expect(mark).not.toHaveClass('bg-border-strong')
+    }
   })
 
   it('offers a re-check when the preflight request itself fails', async () => {
@@ -805,7 +849,8 @@ describe('RemoteCrewPanel — launching', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await openSetupTab(u)
 
-    await u.click(await screen.findByRole('button', { name: /Show the sign-in code/ }))
+    // The setup card's button: the My Crews row behind the modal offers it too.
+    await u.click(await within(await screen.findByRole('dialog')).findByRole('button', { name: /Show the sign-in code/ }))
     await waitFor(() => expect(api.cloudLaunchSignin).toHaveBeenCalledWith('j-run'))
   })
 
@@ -819,8 +864,9 @@ describe('RemoteCrewPanel — launching', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await openSetupTab(u)
 
-    await u.click(await screen.findByRole('button', { name: /Show the sign-in code/ }))
-    expect(await screen.findByText(/no pending sign-in/, undefined, { timeout: 5_000 })).toBeInTheDocument()
+    // The setup card's button: the My Crews row behind the modal offers it too.
+    await u.click(await within(await screen.findByRole('dialog')).findByRole('button', { name: /Show the sign-in code/ }))
+    expect(await within(screen.getByRole('dialog')).findByText(/no pending sign-in/, undefined, { timeout: 5_000 })).toBeInTheDocument()
   })
 
   it('shows a failed launch with its step detail and no dead Cancel', async () => {

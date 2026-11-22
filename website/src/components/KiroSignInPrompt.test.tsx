@@ -30,9 +30,9 @@ const CHAIN_TIMEOUT_MS = 5_000
 
 const SIGNED_OUT = { authenticated: false, provider: null, identity: null, transport: 'device' }
 
-function setup({ backend = 'kas', needs = true, signedIn = false } = {}) {
+function setup({ backend = 'kas', needs = true, moves = false, signedIn = false } = {}) {
   kirocrewConfig.mockResolvedValue({ agent: { acp_backend: backend } } as never)
-  kasBundleStatus.mockResolvedValue({ chat_needs_sign_in: needs } as never)
+  kasBundleStatus.mockResolvedValue({ chat_needs_sign_in: needs, sign_in_moves_to_engine: moves } as never)
   kasLoginStatus.mockResolvedValue(
     (signedIn ? { ...SIGNED_OUT, authenticated: true, provider: 'Google', identity: 'social' } : SIGNED_OUT) as never,
   )
@@ -50,13 +50,23 @@ describe('KiroSignInPrompt', () => {
     renderWithProviders(<KiroSignInPrompt />)
     // Config -> engine status: the prompt's frame.
     expect(await screen.findByTestId('kiro-sign-in-prompt', {}, { timeout: CHAIN_TIMEOUT_MS })).toBeInTheDocument()
-    expect(screen.getByTestId('kiro-sign-in-prompt')).toHaveTextContent('Sign in to Kiro to start chatting')
+    expect(screen.getByTestId('kiro-sign-in-prompt')).toHaveTextContent('Sign in to Kiro Crew once')
     // One button; the four choices live in the shared dialog it opens.
     expect(screen.queryByText('Continue with Google')).toBeNull()
     fireEvent.click(screen.getByTestId('kiro-sign-in-open'))
     // Sign-in status (the dialog's flow) answers signed out: the choices show.
     expect(await screen.findByText('Continue with Google', {}, { timeout: CHAIN_TIMEOUT_MS })).toBeInTheDocument()
     expect(screen.getByTestId('kiro-sign-in-dialog')).toBeInTheDocument()
+  })
+
+  it('asks for one sign-in when kiro-cli runs the chat until Kiro Crew is signed in', async () => {
+    // kiro-cli is signed in and Kiro Crew is not: the chat works on kiro-cli, and
+    // one sign-in moves new chats to the built-in engine. Nothing is copied.
+    setup({ needs: false, moves: true })
+    renderWithProviders(<KiroSignInPrompt />)
+    const prompt = await screen.findByTestId('kiro-sign-in-prompt', {}, { timeout: CHAIN_TIMEOUT_MS })
+    expect(prompt).toHaveTextContent('Sign in to Kiro Crew once')
+    expect(screen.getByTestId('kiro-sign-in-open')).toBeInTheDocument()
   })
 
   it.each([

@@ -92,9 +92,9 @@ curl --fail -o ui/src/kirocrew-app-sdk.d.ts http://localhost:5476/vendor/kirocre
 ```
 
 Use your dashboard's address if it is not the default, and fetch the file again
-after you upgrade Kiro Crew. It names some libraries the host uses: keep
-`skipLibCheck: true` in your `tsconfig.json`, as the Vite template does, or
-install their types.
+after you upgrade Kiro Crew. It names some libraries the host uses: set
+`skipLibCheck: true` in the `tsconfig.json` you type-check with (the scaffold
+writes none), or install their types.
 
 ```tsx
 import { useAppApi, useAppEvents } from '@kirocrew/app-sdk'

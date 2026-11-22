@@ -3,29 +3,35 @@ import { useQuery } from '@tanstack/react-query'
 import { Clock, AppWindow } from 'lucide-react'
 import type { MessageQuoteRole, MessageQuote } from '../../../chat-core/composer/messageQuote'
 import type { ChatMessage, ChatSlot } from '../../../types'
-import type { CapabilityFix, FreshSessionState, RepairImagesState } from '../ErrorCard'
+import { isAuthRequired, type CapabilityFix, type FreshSessionState, type RepairImagesState } from '../ErrorCard'
+import { isKasSignedOut } from '../gatewayNotice'
+import { signedInNow } from '../../developer/kiroSignInState'
+import { KIRO_SIGN_IN_NOTICE_POLL_MS } from '../../../components/KiroSignInNotice'
+import { useOutageFailure } from '../../../hooks/useOutageFailure'
+import { appPathname } from '../../../lib/basePath'
 import { isHiddenInvisibleAssistantRow } from '../../../utils/invisibleText'
 import { type MessageRenderer, mergeRenderers, type MessageRenderContext, resolveRenderer, threadMidOf } from '../../../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from '../transcriptRenderers'
+import { authRequiredIsNewest } from '../transcriptRenderers'
 import { useStableCallbackProps } from '../useStableCallbackProps'
 import { api, type PlanStepInput } from '../../../api/client'
 import type { FileChangeEntry } from '../../../components/FileChangeChips'
 import CollapsibleToolGroup from '../CollapsibleToolGroup'
 import { isSystemNoticeRow } from '../CompactionCard'
-import { replyShowsFooter } from '../replyFooter'
+import { replyShowsFooter, replyTurnStats } from '../replyFooter'
 import { decisionStripFieldOf } from '../decisionRecord'
 import type { TurnItem, DisplayItem } from '../types'
 import { canForkAtWindow } from '../pagination'
 import { messageRowKey, turnLeadKey, msgIdentityKey } from '../ChatPageMessageContent'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import { MessageSearchScope } from '../../../hooks/SearchHighlightContext'
+import { isJumpTarget } from '../../../hooks/JumpRevealContext'
 import { UserMessage, AssistantMessage } from '..'
-import type { TurnStats } from '../AssistantMessage'
 import { warmBriefBodyOf } from '../../../components/chat/WarmBriefCard'
 import { grillRowId } from '../../../components/chat/GrillCard'
 import { grillKeysSentAfter } from '../../../app-sdk/protocol/grillMarker'
 import { prevUserTextFor } from '../share/shareSupport'
-import { turnHadPolicyBlock } from '../../../app-sdk/turnPolicyBlock'
+import { isHiddenReplyAt, turnHadPolicyBlock } from '../../../app-sdk/turnPolicyBlock'
 import MarkdownRenderer from '../../../components/MarkdownRenderer'
 import MessageErrorBoundary from '../../../components/MessageErrorBoundary'
 import { stripAppEnvelope, REASONING_ROLES } from '../groupDisplayItems'
@@ -107,6 +113,10 @@ interface TranscriptRenderingOptions {
   handleFork: (visibleIndex: number, messageId?: string, explicitDirection?: 'head') => Promise<boolean>
   forkDirectionChoice?: boolean
   highlightTs: string | null
+  /** The row a `link` jump landed on; it wears the landing highlight. */
+  landedTs: string | null
+  /** The marked message's own id; only it, among rows sharing the marked `ts`, is marked. */
+  jumpMid: string | null
   selectSessionTab: (key: string) => void
   linkPreviewsOn: boolean
   socialShareOn: boolean
@@ -179,7 +189,7 @@ const restartGatewayFromError = (): Promise<unknown> => api.restartGateway()
 export function useTranscriptRendering({
   embedded, mode, popout, filteredSlots, connected, activeSlot, voiceRecoverySlot, appToolCallIds, mcpAppPanel, messages, messagesRef, slotRunning, toolDisclosure, setToolDisclosureFor, slotState,
   activityOpen, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, chatConfig, activeSlotRemoteBound, automationId, setAutomationOpen, handleArtifactOpen, handleFileOpen,
-  handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress, handleOpenCrewTab,
+  handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, landedTs, jumpMid, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress, handleOpenCrewTab,
   decideRow, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
   openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
   handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,
@@ -215,6 +225,28 @@ export function useTranscriptRendering({
     enabled: !!activeSlot,
     staleTime: 15_000,
   })
+  // Whether Kiro's own sign-in works now, read only while the chat's latest
+  // turn ended on a row whose fix is that sign-in: the row offers Resume once
+  // it does. Keyed by the row, so a read from before it (which can predate the
+  // sign-out) never counts; under the sign-in card's key, so a sign-in there
+  // re-reads it; re-read every minute, for a frame signed in from another
+  // window; and a failed later read withdraws Resume instead of trusting the
+  // kept data. Popout and embed frames (by path) show a failed read on the row
+  // unless it came from a gateway outage; the dashboard window, a chat
+  // embedded in one of its pages included, leaves it to the app-level notice.
+  const newestError = messages.findLast(m => m.role === 'error')
+  const signedOutRow = interrupted && newestError !== undefined && isAuthRequired(newestError) && isKasSignedOut(newestError) && authRequiredIsNewest(messages) ? newestError : undefined
+  const { data: kasStatus, error: kasStatusError, isError: kasStatusFailed, errorUpdatedAt: kasStatusErrorAt, refetch: refetchKasStatus } = useQuery({
+    queryKey: ['kas-login', signedOutRow?.meta?.mid ?? signedOutRow?.ts],
+    queryFn: api.kasLoginStatus,
+    enabled: signedOutRow !== undefined,
+    staleTime: 0,
+    refetchInterval: KIRO_SIGN_IN_NOTICE_POLL_MS,
+  })
+  const kasStatusOutage = useOutageFailure(kasStatusFailed, kasStatusErrorAt, () => refetchKasStatus({ cancelRefetch: false }))
+  const path = appPathname()
+  const framed = path.startsWith('/popout/') || path.startsWith('/embed/')
+  const kiroSignedIn = kasStatus !== undefined && kasStatusError === null && signedInNow(kasStatus)
   // Copy on select is device-only, so it is not in chatConfig (which syncs to
   // other browsers); Settings → Chat writes the same key.
   const [copyOnSelect] = usePersistedBool('mc-chat-copy-on-select', false)
@@ -264,7 +296,7 @@ export function useTranscriptRendering({
     return messages.findIndex((m, idx) => idx > lastReplaced
       && (m.role === 'assistant' || m.role === 'streaming')
       && !isSystemNoticeRow(m)
-      && !isHiddenInvisibleAssistantRow(m))
+      && !isHiddenReplyAt(m, messages, idx))
   }, [messages, replacingMids])
   const newReplyStarted = firstNewReplyIdx >= 0
   const slotStateRef2 = useRef(slotState); slotStateRef2.current = slotState
@@ -316,9 +348,8 @@ export function useTranscriptRendering({
   // they replace, plus a few page-only shape entries. Order inside this array
   // is the page's precedence order, unchanged from the if-chain it replaces:
   // the shared dashboard set (sub-agent completion, launch cards, tool,
-  // thinking, file, nudge, recovery inject, workflow completion, error), then
-  // permission, undrawn, hidden invisible assistant, and the conversational
-  // bubble. Roles none of these claim fall to the registry defaults (`undrawn`
+  // thinking, file, nudge, workflow completion, error), then permission,
+  // undrawn, hidden invisible assistant, and the conversational bubble. Roles none of these claim fall to the registry defaults (`undrawn`
   // for queued/system/done and the reasoning roles; `tool_lifecycle` for raw
   // wire shapes the store normalizes away; the stop-event card, the notice
   // card and the MCP OAuth banner -- P5-c deleted the page's copies of those
@@ -338,6 +369,10 @@ export function useTranscriptRendering({
       render: (m, ctx) => {
         const i = ctx.index
         const key = ctx.key
+    // A reply that is only a steering note, in a turn whose Steered chip is
+    // dropped, has nothing to draw: no empty bubble and no footer of its own
+    // (`replyShowsFooter` hands that to the reply above it).
+    if (m.role === 'assistant' && isHiddenReplyAt(m, ctx.messages, i)) return null
     const isUser = m.role === 'user'
     const isStreaming = m.role === 'streaming'
     const isInject = m.role === 'inject'
@@ -357,7 +392,7 @@ export function useTranscriptRendering({
     const msgTimeFull = fmtMessageTimeFull(m.ts)
     return (
       <MessageSearchScope key={key} messageIdx={i}>
-      <div className={`group flex flex-col min-w-0 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''} ${m.ts && m.ts === highlightTs ? 'animate-msg-highlight rounded-lg' : ''}`}>
+      <div data-jump-target={isJumpTarget(m, landedTs, jumpMid) || isJumpTarget(m, highlightTs, jumpMid) ? m.ts : undefined} className={`group flex flex-col min-w-0 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''} ${isJumpTarget(m, landedTs, jumpMid) ? 'animate-msg-landed rounded-lg' : isJumpTarget(m, highlightTs, jumpMid) ? 'animate-msg-highlight rounded-lg' : ''}`}>
         <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}`}>
           {isUser ? (
             <UserMessage
@@ -424,7 +459,7 @@ export function useTranscriptRendering({
             <div className={`flex flex-col gap-0${beingReplaced ? ' opacity-60' : ''}`} data-testid={beingReplaced ? 'regenerate-previous-reply' : undefined}>
               {beingReplaced && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1">{i18nT(newReplyStarted ? 'pages.chatPage.regenerate_previous_reply_kept_as_version' : 'pages.chatPage.regenerate_previous_reply')}</span>}
               {startsNewReply && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1 border-t border-border pt-2" data-testid="regenerate-new-reply">{i18nT('pages.chatPage.regenerate_new_reply')}</span>}
-              <AssistantMessage body={warmBriefBodyOf(m, activeSlot || undefined)} grillRowId={grillRowId(m)} grillMid={threadMidOf(m)} grillSent={grillKeysSentAfter(messagesRef.current, i)} revealActions={!!activeSlot && voiceRecoverySlot === activeSlot} suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} copyOnSelect={copyOnSelect} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files} blockedLinks={(m.meta as Record<string, unknown> | undefined)?.link_blocks} redactions={(m.meta as Record<string, unknown> | undefined)?.redactions} showRedactionCoach={!!m.ts && m.ts === redactionCoachTs} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} decisionsStrip={decisionStripFieldOf(m)} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? rowHandlersFor(m, 'assistant').togglePin : undefined} onQuoteMessage={activeSlot && !activeSlotRemoteBound && !isStreaming ? rowHandlersFor(m, 'assistant').quote : undefined} showFooter={replyShowsFooter(m, messagesRef.current, i, slotRunning)} onSpeak={handleSpeak} onRegenerate={i === lastTextIdxRef.current && !slotRunning && !regenerating && activeSlot && !activeSlotRemoteBound ? stableRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdxRef.current && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
+              <AssistantMessage body={warmBriefBodyOf(m, activeSlot || undefined)} grillRowId={grillRowId(m)} grillMid={threadMidOf(m)} grillSent={grillKeysSentAfter(messagesRef.current, i)} revealActions={!!activeSlot && voiceRecoverySlot === activeSlot} suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} copyOnSelect={copyOnSelect} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files} blockedLinks={(m.meta as Record<string, unknown> | undefined)?.link_blocks} redactions={(m.meta as Record<string, unknown> | undefined)?.redactions} showRedactionCoach={!!m.ts && m.ts === redactionCoachTs} turnStats={chatConfig.showTurnStats ? replyTurnStats(m, messagesRef.current, i) : undefined} decisionsStrip={decisionStripFieldOf(m)} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? rowHandlersFor(m, 'assistant').togglePin : undefined} onQuoteMessage={activeSlot && !activeSlotRemoteBound && !isStreaming ? rowHandlersFor(m, 'assistant').quote : undefined} showFooter={replyShowsFooter(m, messagesRef.current, i, slotRunning)} onSpeak={handleSpeak} onRegenerate={i === lastTextIdxRef.current && !slotRunning && !regenerating && activeSlot && !activeSlotRemoteBound ? stableRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdxRef.current && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
                 showRefusedPress('switch_variant', e)
               }) } : undefined} onFork={embedded && !popout ? undefined : handleFork} onForkWithModel={embedded && !popout ? undefined : handleForkWithModel} forkDirectionChoice={forkDirectionChoice} forkHasLaterMessages={forkHasLaterMessages} forkIndex={forkIndex} forkMessageId={canResolveOnServer ? messageId : undefined} onLoadEarlier={cursorIsForActiveSlot ? handleLoadEarlier : undefined} loadingOlder={loadingOlder} earlierRemaining={slotOldestIndex} onApplyPlan={handleApplyPlan} />
             </div>
@@ -436,8 +471,8 @@ export function useTranscriptRendering({
       },
     }
     // The dashboard's shared row set (pages/chat/transcriptRenderers.tsx --
-    // tool lines and launch cards, thinking block, nudge, recovery inject, the
-    // two completion cards, the error card with Continue), wired with this
+    // tool lines and launch cards, thinking block, nudge, the two completion
+    // cards, the error card with Continue), wired with this
     // page's behaviours through its options; ChatPane calls the same factory
     // with fewer. Only rows that are genuinely page-specific follow it. The
     // stop-event card, the notice card and the MCP OAuth banner are NOT among
@@ -473,6 +508,8 @@ export function useTranscriptRendering({
       onPickModel: openModelPickerFromError,
       onOpenDefaultModel: embedded || popout ? undefined : openDefaultModelSetting,
       onOpenSignIn: embedded || popout ? undefined : openKiroSignIn,
+      kiroSignedIn,
+      kiroSignInCheckError: framed && !kasStatusOutage ? kasStatusError : null,
       onOpenTurnLimit: embedded || popout ? undefined : openTurnLimitSetting,
       // The repeat-start remedy (#13791). The restart itself is owner-gated on
       // the server; a refusal comes back as an ApiError the card shows.
@@ -519,7 +556,7 @@ export function useTranscriptRendering({
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleForkWithModel, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleForkWithModel, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, landedTs, jumpMid, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, kiroSignedIn, kasStatusError, kasStatusOutage, framed, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role
@@ -531,6 +568,7 @@ export function useTranscriptRendering({
       running: slotRunning,
       key,
       onFileOpen: handleFileOpen,
+      onArtifactOpen: handleArtifactOpen,
       hideCardOwnedOAuth: connectionsUiOn,
       autoDeniedIds: NO_AUTO_DENIED,
       // The shared row set returns `ctx.row(...)`; the row must be a KEYED
@@ -547,7 +585,7 @@ export function useTranscriptRendering({
     // By reference: the merged list's tail is an SDK default, not the bubble.
     return (entry ?? bubbleRenderer).render(m, ctx)
   // eslint-disable-next-line react-hooks/exhaustive-deps -- messagesRef is a useRef (stable for the page's lifetime) that the rule cannot see across the owner boundary; listing it would also put the flush-volatile `messages` name the dep-hygiene ratchet (TurnBlock.rowMemo.test.tsx) bans back in this array
-  }, [chatPageRenderers, bubbleRenderer, slotRunning, handleFileOpen, connectionsUiOn])
+  }, [chatPageRenderers, bubbleRenderer, slotRunning, handleFileOpen, handleArtifactOpen, connectionsUiOn])
 
   // Hoisted out of the row map so every TurnBlock receives the SAME function
   // identity per render — an inline closure there re-created it per row per

@@ -18,13 +18,14 @@
 #
 # Options:
 #   --voice   Install optional voice extras (pip install -e .[voice])
-#   --no-kas  Skip downloading the KAS engine this release pins. By default
+#   --no-kas  Use Kiro CLI only: saves agent.kas_bundle off and skips
+#             downloading the KAS engine this release pins. By default
 #             the installer runs `kirocrew kas install` after installing, so
 #             the built-in engine route can be turned on with no download; a
 #             failed download only warns and prints the command to retry.
-#             The switch (agent.kas_bundle) is NOT turned on: the route is in
-#             shadow testing on every platform, so the default stays kiro-cli
-#             until you flip it yourself. (--kas, the former opt-in, is still
+#             The switch (agent.kas_bundle) is NOT turned on: a source
+#             checkout defaults to kiro-cli until you choose the engine
+#             yourself. (--kas, the former opt-in, is still
 #             accepted and changes nothing.)
 #   --mise    Use mise (https://mise.jdx.dev) for Python and Node.js
 #             instead of system package managers. Does not modify your
@@ -66,6 +67,9 @@ done
 KIROCREW_APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Data home: honor KIROCREW_HOME, else the current default ~/.kiro/crew (NOT the
 # pre-move ~/.kirocrew, which is not the data home).
+# The app expands a leading ~ in KIROCREW_HOME, and a quoted value reaches this
+# script unexpanded, so expand it once here for every read and child below.
+case "${KIROCREW_HOME:-}" in "~" | "~/"*) KIROCREW_HOME="$HOME${KIROCREW_HOME#?}" ;; esac
 KIROCREW_DATA_DIR="${KIROCREW_HOME:-$HOME/.kiro/crew}"
 NODE_VERSION="24"
 # Minimum Node version (major.minor.patch) Kiro Crew supports -- the same
@@ -893,6 +897,14 @@ elif [ "$WITH_KAS" -eq 1 ]; then
     warn "kirocrew not in PATH — the built-in KAS engine was not downloaded."
     detail "After reloading your shell, run: kirocrew kas install"
 fi
+# --no-kas means "Kiro CLI only", never "on with no engine": the choice is saved off.
+if [ "$WITH_KAS" -eq 0 ] && [ -n "$_kirocrew" ]; then
+    if "$_kirocrew" config set agent.kas_bundle false >/dev/null 2>&1; then
+        ok "KAS will use Kiro CLI (--no-kas). Change it in Settings → Agent Harness."
+    else
+        warn "Could not save the Kiro CLI choice. Run: kirocrew config set agent.kas_bundle false"
+    fi
+fi
 
 ok "Run ${CYAN}kirocrew setup${RESET} to configure agent, workspace, and integrations"
 
@@ -914,6 +926,14 @@ echo ""
 echo "  ${BOLD}Next steps:${RESET}"
 echo ""
 echo "    ${CYAN}1.${RESET} Reload your shell:"
+if [ -n "${KIROCREW_HOME:-}" ]; then
+# Absolute: a relative value would resolve against whatever directory a later command runs from.
+# CDPATH is cleared because a hit through it makes `cd` echo the directory too.
+KIROCREW_DATA_ABS="$(CDPATH=''; cd "$KIROCREW_DATA_DIR" && pwd -P)"
+echo "       This install used the data home ${CYAN}${KIROCREW_DATA_ABS}${RESET} (from KIROCREW_HOME)."
+echo "       Every kirocrew command needs it set too, or it uses ~/.kiro/crew; add this to your shell profile:"
+echo "       ${GREEN}export KIROCREW_HOME=\"${KIROCREW_DATA_ABS}\"${RESET}"
+fi
 case "$(basename "${SHELL:-}")" in
     fish) echo "       ${GREEN}source ~/.config/fish/config.fish${RESET}" ;;
     bash|zsh) echo "       ${GREEN}source ~/.$(basename "${SHELL}")rc${RESET}" ;;

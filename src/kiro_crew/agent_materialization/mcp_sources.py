@@ -256,6 +256,10 @@ def _declares_server(spec: dict) -> bool:
 # program" comparison, not string equality.
 _COMMAND_UNIT_KEYS = ("args", "env")
 
+#: What an edition server's entry takes from the edition only. Its ``env`` is merged
+#: key by key instead (see the store loop in :func:`merge_mcp_sources`).
+_EDITION_INVOCATION_KEYS = ("command", "args")
+
 
 def _merge_command_unit(existing: dict, spec: dict) -> dict | None:
     """Project *spec*'s ``command``/``args``/``env`` onto *existing* as one unit.
@@ -510,9 +514,20 @@ def merge_mcp_sources(config: dict) -> McpSources:
                     mcps[name].pop(key, None)
                 mcps[name].update(_replaced.pop(name))
             if name in mcps and isinstance(mcps[name], dict):
+                # An edition-supplied name keeps the edition's invocation, as it
+                # does against a scope global (_merge_source_owned): a store copy
+                # of the user's own entry (often `"args": []`) would otherwise
+                # drop the args that pick its tool surface, e.g. the tool tags
+                # some of its tools need, while the dashboard's probe, which runs
+                # the edition's args, still lists them.
+                own = (
+                    {k: v for k, v in spec.items() if k not in _EDITION_INVOCATION_KEYS}
+                    if name in edition_names
+                    else spec
+                )
                 # mcps[name] is a private copy (globals were copied in above),
                 # so update() does not mutate any source dict.
-                mcps[name].update(spec)
+                mcps[name].update(own)
                 # An edition-supplied name keeps the env keys the edition ships:
                 # the store's own env keys win, but a same-named store entry
                 # must not drop the keys the server needs to run as shipped.
@@ -565,6 +580,40 @@ def reconcile_raw_key_tool_overrides(config: dict, sources: McpSources) -> None:
             alias_entry["disabledTools"] = list(value) if isinstance(value, list) else value
         else:
             alias_entry.pop("disabledTools", None)
+
+
+def seed_edition_servers(mcp: dict) -> None:
+    """Add each edition server *mcp* does not name yet, with the store's env for it.
+
+    Every spec ``build_agent_config`` builds is seeded here, so one derived from it
+    (a Bot's worker, research, the team lead) runs an edition server with the env
+    the user set on it in ``~/.kiro/crew/mcp.json``, by the rule the default spec's
+    store merge applies above: the store's keys win, and a shipped key the store
+    leaves out is kept. That env is emitted as :func:`resolve_mcp_servers` emits
+    the default spec's.
+
+    A store key holding a ``secret://`` reference is left out, so the shipped
+    value for it, if any, stands. The reference resolves only where the
+    MCP gateway starts the server for a session, and a spec several agents'
+    sessions run cannot know that: some are handed no gateway stub and would start
+    the server with the literal reference. The default spec's rebuild decides it
+    for that spec from its own routing.
+    """
+    pending = {n: s for n, s in agent_mod._extra_mcp_servers().items() if n not in mcp}
+    if not pending:
+        return
+    store = user_json.load_mcp_servers(agent_mod._user_dir() / "mcp.json")
+    for name, shipped in pending.items():
+        entry = dict(shipped)
+        own = store.get(name)
+        store_env = own.get("env") if isinstance(own, dict) else None
+        if isinstance(store_env, dict):
+            vaulted = secret_reference_keys(store_env)
+            user_env = {k: v for k, v in store_env.items() if k not in vaulted}
+            shipped_env = shipped.get("env")
+            merged = {**(shipped_env if isinstance(shipped_env, dict) else {}), **user_env}
+            entry["env"] = emit_env(_expand_env_values(merged, server=name))
+        mcp[name] = entry
 
 
 def _mute_withheld(entry: dict) -> dict:

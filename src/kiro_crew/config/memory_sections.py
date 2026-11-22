@@ -26,7 +26,8 @@ STARTUP_RECALL_TIMEOUT_MAX_SECS = 10.0
 HISTORY_IDLE_HOURS_MIN = 0.5
 
 #: ``memory.kind_routing`` values; :mod:`kiro_crew.memory_kind_routing` says what each does.
-KIND_ROUTING_MODES = ("off", "shadow", "enforce")
+#: Any other stored value, ``shadow`` included, reads as the default (``kind_routing_mode_from``).
+KIND_ROUTING_MODES = ("off", "enforce")
 
 #: Longest ``memory.extraction_instructions`` kept on load; the rest is dropped so one
 #: pasted page cannot crowd the transcript out of the consolidation prompt.
@@ -34,14 +35,16 @@ EXTRACTION_INSTRUCTIONS_MAX_CHARS = 2000
 
 #: ``memory.lesson_origin_gate`` values; :mod:`kiro_crew.memory_origin_gate` says what each does.
 LESSON_ORIGIN_GATE_MODES = ("off", "shadow", "enforce")
+#: ``memory.fact_origin_gate`` values; :mod:`kiro_crew.memory_fact_origin_gate` says what each does.
+FACT_ORIGIN_GATE_MODES = ("off", "shadow", "enforce")
 
 #: ``memory.lesson_tier_policy`` values; :mod:`kiro_crew.memory_tier_policy` says what each does.
 LESSON_TIER_POLICY_MODES = ("off", "shadow", "enforce")
 #: ``memory.lesson_fold`` values; :mod:`kiro_crew.memory_lesson_fold` says what each does.
-LESSON_FOLD_MODES = ("off", "shadow", "enforce")
+LESSON_FOLD_MODES = ("off", "enforce")
 
 #: ``memory.rule_authority_order`` values; :mod:`kiro_crew.memory_rule_authority` says what each does.
-RULE_AUTHORITY_ORDER_MODES = ("off", "shadow", "enforce")
+RULE_AUTHORITY_ORDER_MODES = ("off", "enforce")
 #: ``memory.relevance_rule`` values; :mod:`kiro_crew.memory_relevance_rule` says what each does.
 RELEVANCE_RULE_MODES = ("off", "shadow", "enforce")
 
@@ -511,17 +514,16 @@ class MemoryConfig:
         ),
     )
     kind_routing: str = field(
-        default="off",
+        default="enforce",
         metadata=_meta(
             "Consolidation Kind Routing",
             "Whether consolidation tags each project.* fact with a kind (fact, event "
-            "or state) and what it does with it. 'off' (default) keeps today's "
-            "prompt and writes. 'shadow' writes every fact as before and only "
-            "logs, within fixed size caps, what routing would do. 'enforce' skips a "
-            "state item (the status of tracked work, such as a code change under "
-            "review, a ticket, a CI run or a branch, or a next step, a count or a "
-            "worktree path) and writes facts and events as before. Stored "
-            "facts are never changed.",
+            "or state) in one small extra model call and what it does with it. "
+            "'enforce' (default) skips a state item (the status of tracked work, "
+            "such as a code change under review, a ticket, a CI run or a branch, or "
+            "a next step, a count or a worktree path) and writes facts and events "
+            "as before. 'off' makes no extra call and writes every fact. A stored "
+            "'shadow' reads as 'enforce'. Stored facts are never changed.",
             enum=list(KIND_ROUTING_MODES),
         ),
     )
@@ -552,6 +554,21 @@ class MemoryConfig:
             enum=list(LESSON_ORIGIN_GATE_MODES),
         ),
     )
+    fact_origin_gate: str = field(
+        default="off",
+        metadata=_meta(
+            "Fact Origin Gate",
+            "Whether facts about you (pref.* and user.* keys, and the preferences "
+            "file) may be learned from turns no person sent (another session's "
+            "message, an auto-nudge, a cron or heartbeat run). 'off' (default) keeps "
+            "today's prompt and writes. 'shadow' writes every fact as before and only "
+            "counts, within fixed size caps, what the gate would hold back. 'enforce' "
+            "does not write or delete those facts, or change the preferences file, "
+            "from such turns. Project facts, episodes and stored facts are never "
+            "changed.",
+            enum=list(FACT_ORIGIN_GATE_MODES),
+        ),
+    )
     lesson_tier_policy: str = field(
         default="off",
         metadata=_meta(
@@ -568,30 +585,28 @@ class MemoryConfig:
         ),
     )
     lesson_fold: str = field(
-        default="off",
+        default="enforce",
         metadata=_meta(
             "Lesson Fold",
             "Whether the session-start rule block leaves out near-duplicate rules "
             "(same scope and tier, and the same text or stored vectors at cosine "
-            "0.95 or more). 'off' (default) keeps today's block. 'shadow' keeps "
-            "today's block and only records, in the injection receipt and within "
-            "fixed size caps, which rule ids would fold into which. 'enforce' keeps "
-            "the first copy of each rule (yours first, then newest) and says how many "
-            "were folded; learn_list still shows all. Rules you taught are never "
-            "folded and no stored lesson is changed.",
+            "0.95 or more). 'enforce' (default) keeps the first copy of each rule "
+            "(yours first, then newest) and says how many were folded; learn_list "
+            "still shows all. 'off' keeps every copy. A stored 'shadow' reads as "
+            "'enforce'. Rules you taught are never folded and no stored lesson is "
+            "changed.",
             enum=list(LESSON_FOLD_MODES),
         ),
     )
     rule_authority_order: str = field(
-        default="off",
+        default="enforce",
         metadata=_meta(
             "Rule Authority Order",
-            "How the session-start rule block orders its rules. 'off' (default) "
-            "keeps today's block. 'shadow' keeps today's block and only records, in "
-            "the injection receipt and within fixed size caps, which rule ids the "
-            "new order would add or drop. 'enforce' lists rules saved as yours "
-            "(learn_add, dashboard, CLI) first, then rules inferred from sessions; "
-            "inside each group the current order holds. Keep memory.lesson_origin_gate at 'enforce' "
+            "How the session-start rule block orders its rules. 'enforce' (default) "
+            "lists rules saved as yours (learn_add, dashboard, CLI) first, then rules "
+            "inferred from sessions; inside each group the relevance order holds. "
+            "'off' keeps the relevance order. A stored 'shadow' reads as 'enforce'. "
+            "Set memory.lesson_origin_gate to 'enforce' "
             "too, or a learn_add an agent made on its own counts as yours. The rule "
             "budget is unchanged and no stored lesson is changed.",
             enum=list(RULE_AUTHORITY_ORDER_MODES),
@@ -733,7 +748,11 @@ def memory_writes_off_key(memory: object) -> str | None:
 
 
 def kind_routing_mode_from(raw: object) -> str:
-    """A stored ``memory.kind_routing``, or the field default for anything unknown."""
+    """A stored ``memory.kind_routing``, or the field default for anything unknown.
+
+    ``shadow`` is not one of :data:`KIND_ROUTING_MODES`, so a stored one reads as
+    the default rather than turning the stage off.
+    """
     if isinstance(raw, str) and raw in KIND_ROUTING_MODES:
         return raw
     return str(field_default(MemoryConfig, "kind_routing"))
@@ -759,6 +778,13 @@ def lesson_origin_gate_mode_from(raw: object) -> str:
     return str(field_default(MemoryConfig, "lesson_origin_gate"))
 
 
+def fact_origin_gate_mode_from(raw: object) -> str:
+    """A stored ``memory.fact_origin_gate``, or the field default for anything unknown."""
+    if isinstance(raw, str) and raw in FACT_ORIGIN_GATE_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "fact_origin_gate"))
+
+
 def lesson_tier_policy_mode_from(raw: object) -> str:
     """A stored ``memory.lesson_tier_policy``, or the field default for anything unknown."""
     if isinstance(raw, str) and raw in LESSON_TIER_POLICY_MODES:
@@ -767,14 +793,20 @@ def lesson_tier_policy_mode_from(raw: object) -> str:
 
 
 def lesson_fold_mode_from(raw: object) -> str:
-    """A stored ``memory.lesson_fold``, or the field default for anything unknown."""
+    """A stored ``memory.lesson_fold``, or the field default for anything unknown.
+
+    ``shadow`` is not one of its modes, so a stored one reads as the default.
+    """
     if isinstance(raw, str) and raw in LESSON_FOLD_MODES:
         return raw
     return str(field_default(MemoryConfig, "lesson_fold"))
 
 
 def rule_authority_order_mode_from(raw: object) -> str:
-    """A stored ``memory.rule_authority_order``, or the field default for anything unknown."""
+    """A stored ``memory.rule_authority_order``, or the field default for anything unknown.
+
+    ``shadow`` is not one of its modes, so a stored one reads as the default.
+    """
     if isinstance(raw, str) and raw in RULE_AUTHORITY_ORDER_MODES:
         return raw
     return str(field_default(MemoryConfig, "rule_authority_order"))
@@ -1056,6 +1088,13 @@ class MemoryStoreConfig:
     owner_member: str = field(
         default="",
         metadata=_meta("Owner Member", "Display label of the Bot owning this memory store."),
+    )
+    former_owner: str = field(
+        default="",
+        metadata=_meta(
+            "Former Owner",
+            "The name the deleted bot that left this kept member store showed; display only.",
+        ),
     )
     memory_version: int = field(
         default=1,

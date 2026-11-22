@@ -75,6 +75,8 @@ describe("classifyNavigation", () => {
       "vscode://file/c:/Users/me/repo/a.ts:10",
       "vscode://file/D:/work/x.py:3:2",
       "vscode-insiders://file/C:/Users/me/a.ts",
+      "kiro://vscode-remote/ssh-remote+dev-box/home/me/a.ts:1",
+      "kiro://file/Users/me/repo/a.ts",
     ]) {
       assert.equal(classifyNavigation(url, ORIGIN), "confirm", url);
     }
@@ -82,6 +84,8 @@ describe("classifyNavigation", () => {
 
   it("blocks editor links that are not a plain file path", () => {
     for (const url of [
+      "kiro://some.extension/run",
+      "kiro://vscode-remote/ssh-remote+-oProxyCommand=x/a.ts",
       "vscode://ms-vscode.some-extension/run",
       "vscode://vscode-remote/wsl+Ubuntu/home/me/a.ts",
       "vscode://vscode-remote/ssh-remote+-oProxyCommand=x/a.ts",
@@ -374,6 +378,32 @@ describe("createWindowOpenHandler", () => {
       await settle();
       assert.equal(asked.length, 1);
       assert.deepEqual(opened, ["vscode://file/Users/me/a.ts", "vscode://file/C:/Users/me/b.ts:4"]);
+    });
+
+    it("asks for a link to another machine's share, even after a remembered local choice", async () => {
+      const asked = [];
+      const { handler, opened } = harness({
+        confirmOpen: async (url) => {
+          asked.push(url);
+          return { open: true, remember: true };
+        },
+        rememberedEditorTargets: new Set(),
+      });
+      const links = [
+        "vscode://file/C:/Users/me/a.ts",
+        // A drive letter keeps a doubled slash local, so the local choice covers it.
+        "vscode://file/C://files.example.test/share/a.ts",
+        "vscode://file//files.example.test/share/a.ts",
+        "vscode://file//files.example.test/share/a.ts:4",
+        // Decoded, this is another path on the same share, so it asks again.
+        "vscode://file/%2Ffiles.example.test/share/b.ts",
+      ];
+      for (const url of links) {
+        handler({ url });
+        await settle();
+      }
+      assert.deepEqual(asked, [links[0], links[2], links[4]]);
+      assert.deepEqual(opened, links);
     });
 
     it("does not remember a Cancel, even with the box checked", async () => {

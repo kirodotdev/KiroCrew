@@ -154,6 +154,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // the hand-written `security.config-pending` entry stays anchored to its source.
   'SecurityPanelConfigPending.tsx': 'security',
   'OAuthAppPanel.tsx': 'connections',
+  // The MCP sign-ins switch SettingsPage mounts under the Connections page.
+  'McpSignInsSection.tsx': 'connections',
   'SecretsPanel.tsx': 'secrets',
   'NotificationsPanel.tsx': 'notifications',
   'ShortcutsPanel.tsx': 'shortcuts',
@@ -259,6 +261,7 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ReleasesPanel.tsx': 'about',
   'DesktopGatewayRestartRow.tsx': 'about',
   'SttSettings.tsx': 'voice',
+  'SttPointerHoldSettings.tsx': 'voice',
   // The `instances` tab mounts RemoteCrewPanel (SettingsPage.tsx), which also
   // renders InstancesPanel.tsx's AddInstanceForm — both files map to the same
   // tab so a primitive added to either lands on the right deep link.
@@ -269,16 +272,21 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'RemoteCrewPanelLaunch.tsx': 'instances',
   'RemoteCrewPanelCrewRow.tsx': 'instances',
   'RemoteCrewPanelSetupCards.tsx': 'instances',
+  'RemoteCrewPanelCustomType.tsx': 'instances',
   'RemoteCrewPanelSections.tsx': 'instances',
   'RemoteCrewPanelRestartBanner.tsx': 'instances',
+  // Mounted below RemoteCrewPanel (SettingsPage.tsx); its on/off state is the
+  // manual instances.remote-control entry.
+  'RemoteControlCard.tsx': 'instances',
   // Mounted from outside pages/settings, so each is also a root in panelRoots:
   // ImportPanel mounts PortabilityTab, FeaturePreviewsSection the gateway-wide
   // automatic-cards switch.
   'PortabilityTab.tsx': 'imports',
   'AutomaticCardSetting.tsx': DEVELOPER_PREVIEWS,
-  // The built-in KAS engine card, which FeaturePreviewsSection mounts from
-  // pages/developer: its `agent.kas_bundle` switch is a Developer-tab row.
-  'KasBundleCard.tsx': DEVELOPER_PREVIEWS,
+  // The KAS engine choice, which the Agent tab's KAS row mounts from
+  // pages/developer beside OrchestratorMemoryToggle: its `agent.kas_bundle`
+  // choice is an Agent-tab row.
+  'KasBundleCard.tsx': 'agent',
   // The Kiro sign-in card, which the Kiro account tab mounts from pages/developer.
   // It has no extractable primitive; mapped so its hand-written search entry
   // (`kiro-account.kiro-sign-in` in settingsManual.ts) stays anchored to its source.

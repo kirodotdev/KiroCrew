@@ -306,6 +306,8 @@ def _clean_id_list(raw: object, is_valid: Callable[[str], bool], label: str) -> 
 async def _write_env_or_roll_back(
     env_updates: dict[str, str | None],
     rollback: Callable[[], Awaitable[None]] | None,
+    *,
+    check: Callable[[str], None] | None = None,
 ) -> None:
     """Write a channel save's ``.env`` half, undoing its config half on failure.
 
@@ -326,7 +328,14 @@ async def _write_env_or_roll_back(
     otherwise keep reading as installed until restart, and spawned children
     would inherit the stale value.
     """
-    write = asyncio.ensure_future(_write_env_off_loop(env_updates))
+    # *check*, when given, runs on the ``.env`` text under the cross-process
+    # ``.env`` lock right before the write, and raises to refuse it: a
+    # compare-then-write that a CLI writer cannot slip between.
+    write = asyncio.ensure_future(
+        _write_env_off_loop(env_updates)
+        if check is None
+        else _write_env_off_loop(env_updates, check=check)
+    )
     try:
         await asyncio.shield(write)
     except asyncio.CancelledError:
@@ -375,8 +384,13 @@ def _wide_env_refusal(exc: _loader.EnvFileWideEncodingError) -> web.HTTPConflict
     )
 
 
-def _write_env_updates(updates: dict[str, str | None]) -> None:
+def _write_env_updates(
+    updates: dict[str, str | None], check: Callable[[str], None] | None = None
+) -> None:
     """Update select keys in config_dir/.env, preserving comments and order.
+
+    *check*, when given, receives the file's current text under the ``.env``
+    lock before anything is staged, and refuses the write by raising.
 
     A value of ``None`` deletes the key; new keys are appended. A new channel
     secret (:data:`~kiro_crew.config.loader.VAULT_CHANNEL_CREDENTIAL_KEYS`) is
@@ -429,6 +443,8 @@ def _write_env_updates(updates: dict[str, str | None]) -> None:
             "the other operation finishes."
         )
     try:
+        if check is not None:
+            check(_loader.read_env_text(ep, encoding="utf-8") if ep.exists() else "")
         # A new channel token goes to the vault and its .env line becomes the
         # secret:// reference; a failed .env write puts the vault back.
         store = ChannelSecretStore(ep)

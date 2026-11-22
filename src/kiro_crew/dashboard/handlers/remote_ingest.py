@@ -43,6 +43,7 @@ from aiohttp import web
 
 from kiro_crew import _facade_mirror, platform_compat, work_ledger
 from kiro_crew.crew_log import emit as crew_log_emit
+from kiro_crew.dashboard.handlers import remote_batch_pull
 from kiro_crew.dashboard.handlers import remote_ingest_peer as peer_ingest
 from kiro_crew.dashboard.handlers.remote_ingest_report import (
     _ingest_report_locked,
@@ -213,7 +214,8 @@ async def close_remote_item(
        still name the slot (``holds_retired_slot``), and the row counts it in
        ``close_pending``.
     2. ``PATCH trust: false`` at once, to the pair the item held, whether or not
-       the retire landed.
+       the retire landed. When it did not and the peer did not take the PATCH,
+       :func:`_resend_revoke` sends it again with the close backoff.
     3. Start its close now (:func:`_schedule_closes`). A close in a turn the owner
        sent (*owner_turn*, :data:`CLOSE_BY_OWNER`) DELETEs the slot once its crew
        reads connected. Any other turn (:data:`CLOSE_BY_WAKE`) never DELETEs a live
@@ -248,12 +250,18 @@ async def close_remote_item(
         logger.warning("pending close not recorded for %s", item_id, exc_info=True)
     mgr = getattr(state, "instances_manager", None)
     if mgr is not None:
+        took = False
         try:
             # Bounded like a decide forward, so a stalled peer cannot outlast the
             # caller's request and turn a committed close into a reported failure.
-            await asyncio.wait_for(revoke_peer_trust(mgr, crew, slot), DECIDE_DEADLINE_SECS)
-        except Exception:  # noqa: BLE001 - the sweep's close sends it again
+            took = await asyncio.wait_for(revoke_peer_trust(mgr, crew, slot), DECIDE_DEADLINE_SECS)
+        except Exception:  # noqa: BLE001 - the sweep's close or the resend sends it again
             logger.warning("remote trust revoke failed for %s", item_id, exc_info=True)
+        if retired is None and not took:
+            # No ``retired`` entry, so no sweep sends it again: resend it here.
+            task = asyncio.ensure_future(_resend_revoke(mgr, crew, slot))
+            _CLOSE_TASKS.add(task)
+            task.add_done_callback(_CLOSE_TASKS.discard)
     if retired is not None:
         _schedule_closes(state, board, [retired])
 
@@ -362,6 +370,10 @@ async def create_bound(
         await _close_peer_slot(mgr, instance_id, slot)
         code = _response_code(resp) or "bind_failed"
         raise err(409 if resp.status < 500 else 503, code, "the bind did not record; closed")
+    if isinstance(payload, dict):
+        # The bind armed (or tried to arm) the conductor's default patrol, which is
+        # what pulls this worker's reports; the create reply carries its outcome.
+        payload = {**payload, **_patrol_fields(resp)}
     # A decide recorded while the create was in flight found the item unbound and
     # forwarded nothing, so the peer may hold an older decision than the hub. The
     # comparison runs on the SETTLED item, inside the forward's own locks.
@@ -370,6 +382,21 @@ async def create_bound(
     if not outcome.get("ok") and isinstance(payload, dict):
         payload = {**payload, "decision_error": str(outcome.get("code") or "")}
     return slot, payload, bound or item
+
+
+def _patrol_fields(resp: web.Response) -> dict[str, str]:
+    """The ``patrol``, ``patrol_reason`` and ``patrol_note`` a bind reply answered."""
+    try:
+        body = json.loads(resp.text or "{}")
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(body, dict):
+        return {}
+    return {
+        k: body[k]
+        for k in ("patrol", "patrol_reason", "patrol_note")
+        if isinstance(body.get(k), str)
+    }
 
 
 async def open_unbound_item(board: str, item_id: str) -> work_ledger.WorkItem:
@@ -534,7 +561,9 @@ async def ingest_board(state: "DashboardState", board: str) -> None:
     """Pull every open remote item on *board* and file what is new. Never raises.
 
     Called by ``work_ledger_read`` with the switch on, before the read takes its
-    board lock. Each crew's slot list is read once; each item's peer copy once.
+    board lock. Each crew is read once, in one batch call (``remote_batch_pull``);
+    a crew without that route has its slot list read once and each item's peer
+    copy once.
     """
     # The roster is read SETTLED, as every value that drives a peer call is: a
     # bind still being recorded must not start a pull.
@@ -580,20 +609,31 @@ async def ingest_board(state: "DashboardState", board: str) -> None:
 
 
 async def _pull_all(
-    state: "DashboardState", board: str, remote: list[work_ledger.WorkItem]
+    state: "DashboardState",
+    board: str,
+    remote: list[work_ledger.WorkItem],
 ) -> None:
     mgr = getattr(state, "instances_manager", None)
     slot_lists: dict[str, dict[str, dict[str, bool]] | None] = {}
     loop = asyncio.get_running_loop()
     deadline = loop.time() + READ_DEADLINE_SECS
-    for item in remote:
+    rows = await remote_batch_pull.pull_batches(state, mgr, board, remote, deadline)
+    # Rows a crew already answered need no peer call: filed first, so a stalled
+    # crew's per-item fallback never spends the deadline they were fetched within.
+    for item in sorted(remote, key=lambda i: i.item_id not in rows):
         left = deadline - loop.time()
         if left <= 0:
             # Out of time for this read: these items keep their last state.
             break
+        row = rows.get(item.item_id)
         try:
             await asyncio.wait_for(
-                _ingest_item(state, mgr, board, item, slot_lists), min(PULL_TIMEOUT_SECS, left)
+                (
+                    _ingest_item(state, mgr, board, item, slot_lists)
+                    if row is None
+                    else remote_batch_pull.ingest_batched(state, mgr, board, item, row)
+                ),
+                min(PULL_TIMEOUT_SECS, left),
             )
         except asyncio.TimeoutError:
             # Slow, not shown down: the crew's state stays what it was.
@@ -691,6 +731,40 @@ async def _ingest_item(
         else:
             await _mark_error(board, item.item_id, exc.code)
         return
+    await _apply_pull(
+        state,
+        mgr,
+        board,
+        item,
+        unit,
+        status=status,
+        payload=payload,
+        limit=limit,
+        listed=listed,
+        trust_active=payload.get("trust_active") if isinstance(payload, dict) else None,
+    )
+
+
+async def _apply_pull(
+    state: "DashboardState",
+    mgr: Any,
+    board: str,
+    item: work_ledger.WorkItem,
+    unit: str,
+    *,
+    status: int,
+    payload: Any,
+    limit: int,
+    listed: dict[str, dict[str, bool]] | None,
+    trust_active: Any,
+) -> None:
+    """Store what one read of *item*'s peer copy said and file its news.
+
+    *payload* ``remote_batch_pull.UNCHANGED`` is a batch row with no news: the answers are
+    stored fresh and nothing is filed.
+    """
+    crew = str(item.worker_instance_id)
+    slot = str(item.worker_session_key)
     observed: dict[str, bool] = {}
     if listed is not None:
         row = listed.get(slot)
@@ -724,6 +798,8 @@ async def _ingest_item(
             record.error = "crew_work_item_not_found"
         elif not 200 <= status < 300 or not isinstance(payload, dict):
             record.error = "crew_peer_refused"
+        elif payload is remote_batch_pull.UNCHANGED:
+            record.error = None
         elif _unrecorded_hold(record, payload):
             # This snapshot's filing failed to reach the crew log moments ago: keep the
             # error and wait out the window rather than audit the same failure again.
@@ -753,12 +829,7 @@ async def _ingest_item(
         await asyncio.to_thread(_store, board, item.item_id, record)
     # A conductor that left Trust ends the grant its worker still holds (RFC §4).
     # Asked only when the peer says it holds one, so an older peer gets no new field.
-    if (
-        status == 200
-        and isinstance(payload, dict)
-        and payload.get("trust_active") is True
-        and not conductor_trusts(state, board)
-    ):
+    if status == 200 and trust_active is True and not conductor_trusts(state, board):
         await revoke_peer_trust(mgr, crew, slot)
 
 
@@ -1206,6 +1277,30 @@ async def _close_retired_slot(
             failures = _CLOSE_RETRY.get(key, (0, 0.0))[0] + 1
             delay = min(CLOSE_RETRY_SECS * 2 ** min(failures - 1, 16), CLOSE_RETRY_MAX_SECS)
             _CLOSE_RETRY[key] = (failures, _monotonic() + delay)
+
+
+#: How long :func:`_resend_revoke` keeps trying: the hard ceiling on any grant's
+#: lifetime, past which no grant it could end is still live.
+REVOKE_RESEND_SECS = 24 * 60 * 60
+
+
+async def _resend_revoke(mgr: Any, crew: str, slot: str) -> None:
+    """Resend ``trust: false`` to *slot* with the close backoff until the peer takes it.
+
+    For a close whose ``retire`` did not record, so no sweep retries it. Never raises.
+    shortcut: in memory only, like :data:`_CLOSE_RETRY`; a hub restart drops it and
+    the grant ends at its TTL. Persist a marker if that gap matters.
+    """
+    deadline, failures = _monotonic() + REVOKE_RESEND_SECS, 0
+    while _monotonic() < deadline:
+        # The same backoff as a failed close (_close_retired_slot).
+        await asyncio.sleep(min(CLOSE_RETRY_SECS * 2 ** min(failures, 16), CLOSE_RETRY_MAX_SECS))
+        failures += 1
+        try:
+            if await asyncio.wait_for(revoke_peer_trust(mgr, crew, slot), PULL_TIMEOUT_SECS):
+                return
+        except Exception:  # noqa: BLE001 - the next try sends it again
+            logger.info("trust revoke for %s on %s failed again", slot, crew, exc_info=True)
 
 
 async def _slot_idle_and_done(state: "DashboardState", mgr: Any, crew: str, slot: str) -> bool:

@@ -16,25 +16,28 @@ For installation and the first run, see
 
 Three layers sit beneath Kiro Crew, and the distinction matters:
 
-1. **An ACP harness** is an agent *runtime*, not an agent. `kiro-cli` is the
-   default and baseline harness; it owns the LLM connection, tool execution
+1. **An ACP harness** is an agent *runtime*, not an agent. The default is KAS,
+   kiro-cli's v3 engine (`kiro-cli acp --agent-engine v3`), and the Kiro CLI
+   harness is the selectable floor. A harness owns the LLM connection, tool execution
    (bash, file read/write, grep, glob), MCP server management, session
    persistence, context compaction, and **ACP** (the Agent Client Protocol): a
    JSON-RPC 2.0 stdio interface any orchestrator can drive. Other selectable
    harnesses implement that same transport with capability-gated differences.
 2. **Agent configs** (JSON under `~/.kiro/agents/`, or a project's own
    `<project>/.kiro/agents/`) tell the default harness *how* to behave: system
-   prompt, enabled tools, MCP servers. With the default backend Kiro Crew runs
-   `kiro-cli acp --agent <name>` and generates its own `kirocrew.json` there
-   (`agent_parts/spec_rebuild.py`); other harnesses receive the equivalent projection through the
-   ACP provider seam.
+   prompt, enabled tools, MCP servers. Kiro Crew generates its own `kirocrew.json`
+   there (`agent_parts/spec_rebuild.py`). The Kiro CLI harness runs
+   `kiro-cli acp --agent <name>`; KAS and the other harnesses receive the
+   equivalent projection through the ACP provider seam.
 3. **Kiro Crew** is the gateway: a single asyncio process that multiplexes
    surfaces onto the selected harness and adds everything a runtime deliberately
    has no opinion about.
 
 Kiro Crew is **ACP-provider-only**: `agent.provider` is fixed to `acp`.
-`agent.acp_backend` selects the harness, with `kiro-cli` as the required baseline
-and default. The authoritative backend inventory and capability matrix are in
+`agent.acp_backend` selects the harness. Absent or `""` it holds no choice and
+runs KAS (`DEFAULT_ACP_BACKEND` = `kas` in `agent_sdk/backends.py`); a stored
+`"kiro"` picks the Kiro CLI harness, which is the floor in an open-source build
+(harness-parity H1). The authoritative backend inventory and capability matrix are in
 [`../system-specs/modules/providers.md`](../system-specs/modules/providers.md).
 
 | Capability | kiro-cli alone | With Kiro Crew |
@@ -93,7 +96,7 @@ graph TB
     end
 
     subgraph "Agent Backend"
-        KC[ACP harness<br/><i>kiro-cli by default</i>]
+        KC[ACP harness<br/><i>KAS by default</i>]
         LLM[LLM Provider<br/><i>via harness auth</i>]
         MCP[MCP Servers<br/><i>tools</i>]
     end
@@ -121,7 +124,7 @@ sequenceDiagram
     participant Hooks as HookManager
     participant Session as SessionManager
     participant Context as ContextBuilder
-    participant ACP as ACP harness (kiro-cli default)
+    participant ACP as ACP harness (KAS default)
     participant LLM as LLM
 
     User->>Surface: sends message
@@ -143,7 +146,7 @@ sequenceDiagram
 ```
 
 Tool calls do **not** simply pass through: every one is evaluated at Kiro Crew's
-own PreToolUse gate before kiro-cli is allowed to run it. See
+own PreToolUse gate before the harness is allowed to run it. See
 [Security layers](#security-layers).
 
 ## Repository layout
@@ -264,9 +267,9 @@ graph TB
     end
 
     subgraph "ACP Harness Processes"
-        P1[default: kiro-cli acp --agent kirocrew]
-        P2[default: kiro-cli acp --agent reviewer]
-        P3[alternative ACP harness]
+        P1[default: KAS, agent kirocrew]
+        P2[default: KAS, agent reviewer]
+        P3[Kiro CLI or another ACP harness]
     end
 
     S1 --> ACTIVE
@@ -430,7 +433,7 @@ graph TB
         AUDIT[SEL<br/><i>hash-chained audit</i>]
     end
 
-    subgraph "kiro-cli"
+    subgraph "ACP harness"
         TOOLS[Tool Execution]
     end
 
@@ -553,8 +556,9 @@ becomes a way to decline a feature while appearing to accept it. Three gaps are
 open against that standard today:
 
 - Apps add, and cannot intervene. `backend.hooks` (`routes`, `on_startup`,
-  `on_shutdown`) and `setup.onEnable` / `onDisable` are the in-gateway entry
-  points, and none of them lets an app take a position in a flow the core owns.
+  `on_shutdown`, and the `on_browser_media_ended` notice) and
+  `setup.onEnable` / `onDisable` are the in-gateway entry points, and none of
+  them lets an app take a position in a flow the core owns.
   `HookManager` is built only from `config.json`'s `hooks` section
   (`hooks.HookManager.__init__`) and exposes no registration path.
 - The platform states no version for its own app-facing surface.
@@ -621,7 +625,7 @@ graph LR
     end
 
     subgraph "Required"
-        KIRO[kiro-cli<br/><i>baseline/default ACP harness</i>]
+        KIRO[kiro-cli<br/><i>KAS default, Kiro CLI floor</i>]
         LLM2[LLM Provider<br/><i>via selected harness auth</i>]
     end
 
@@ -644,7 +648,7 @@ graph LR
 
 | Dependency | Required | Purpose |
 |---|---|---|
-| **kiro-cli** | Yes | Baseline and default ACP harness; also serves the KAS backend |
+| **kiro-cli** | Yes | Serves the default KAS backend (its v3 engine) and the Kiro CLI floor harness |
 | **LLM provider** | Yes | Reached through the selected ACP harness's authenticated connection |
 | **Alternative ACP harness** | No | Optional runtime selected by `agent.acp_backend`; see the provider spec |
 | **Messaging APIs** | No | Slack, Discord, Telegram, Webex, WeCom, Teams, Weixin gateways (the dashboard works without any) |
@@ -702,7 +706,7 @@ detail; this table is only an index.
 
 | Subsystem | Owning source | Spec |
 |---|---|---|
-| ACP client (JSON-RPC transport to kiro-cli) | `src/kiro_crew/acp/` | [acp-client.md](../system-specs/modules/acp-client.md) |
+| ACP client (JSON-RPC transport to the harness) | `src/kiro_crew/acp/` | [acp-client.md](../system-specs/modules/acp-client.md) |
 | App Kit platform contracts | `src/kiro_crew/apps/` | [app-kit-platform.md](../system-specs/modules/app-kit-platform.md) |
 | Artifacts (persisted generated UI) | `src/kiro_crew/artifacts.py` (and its `artifacts_*` owner modules), `artifact_store/` | [artifacts.md](../system-specs/modules/artifacts.md) |
 | Browser automation (Browser Harness driver, live card) | `src/kiro_crew/browser_harness/` | [browser.md](../system-specs/modules/browser.md) |
@@ -771,7 +775,7 @@ graph TB
         SECURITY[Security Layers]
     end
 
-    subgraph "Agent (kiro-cli)"
+    subgraph "Agent (ACP harness)"
         AGENT[Agent Process]
         TOOL_EXEC[Tool Execution]
         MCP_TOOLS[MCP Tools]

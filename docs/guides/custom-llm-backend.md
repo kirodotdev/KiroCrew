@@ -1,6 +1,7 @@
 # Running the agent on an Anthropic-compatible LLM endpoint
 
-Kiro Crew's model requests normally follow your kiro-cli account. If you have
+Kiro Crew's model requests normally go to your Kiro account (the default
+harness is KAS; `kiro` selects kiro-cli). If you have
 your own endpoint that speaks the Anthropic API — DeepSeek, a self-hosted
 gateway, or another provider's Anthropic-compatible surface — you can point the
 agent at it by selecting the `claude` harness. The harness is
@@ -12,12 +13,12 @@ With this backend selected, your chat and worker model turns go to **your**
 endpoint with **your** credentials. The dashboard keeps its own token
 authentication, messaging channels keep their own bot or channel credentials,
 and the kiro-cli sign-in remains for kiro-cli-specific features. Some
-agent-internal and background paths still run on the kiro-cli sign-in —
-crew-member DM threads follow a stored `agent.member_acp_backend` rather than
-`acp_backend` (with the field unset they follow `acp_backend`, so `claude`
-carries them too), and other internal pools may too; anything pinned to the
-kiro harness always does. If `agent.member_acp_backend` holds a value, set it
-to `"claude"` as well if members should use your endpoint.
+agent-internal and background paths still run on the Kiro account — Bot DM
+threads follow a stored `agent.member_acp_backend` rather than `acp_backend`
+(with the field unset or `""` they follow `acp_backend`, so `claude` carries
+them too), and other internal pools may too; anything pinned to a Kiro harness
+always does. If `agent.member_acp_backend` holds a value, set it to `"claude"`
+as well if Bots should use your endpoint.
 
 The contract this guide describes is
 [claude-code-provider.md](../system-specs/modules/claude-code-provider.md);
@@ -40,8 +41,8 @@ In `~/.kiro/crew/config.json`, under `agent`:
 
 `acp_backend` selects the harness *inside* the ACP provider — `agent.provider`
 stays `"acp"`. An unrecognized or unselectable value logs a warning at config
-load and degrades to the Kiro CLI floor (`"kiro"`), so a typo cannot brick the
-gateway.
+load and degrades to the build's floor backend (`"kiro"`, or `"kas"` in an LTS
+build), so a typo cannot brick the gateway.
 
 New chat sessions spawn `claude-agent-acp` as their subprocess. Background
 workers (title generation, suggestions, memory consolidation) follow the same

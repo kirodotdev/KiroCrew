@@ -1,10 +1,12 @@
 """``slack.show_in_session_list``: Slack-born rows stamped for the person's list filter.
 
-On (the default, and what a missing or malformed value reads as), every slot-list
-row is what it was before the setting existed. Off, only a row whose conversation
-started in Slack carries ``slack_list_hidden``; a dashboard session, a code
-channel's session and another channel's conversation never do. Turning it back on
-drops the stamp, and neither direction closes, removes or writes anything.
+Off (the default, and what a missing or malformed value reads as), only a row whose
+conversation started in Slack carries ``slack_list_hidden``; a dashboard session
+(linked to Slack or not), a code channel's session, its helper agents and another
+channel's conversation never do. On, no row carries it. Neither direction closes,
+removes or writes anything. On, with ``slack.session_folder`` empty, a newly
+surfaced Slack conversation is filed into a top-level "Slack" folder made on
+first use (``TestAutoFolder``).
 """
 
 from __future__ import annotations
@@ -45,45 +47,54 @@ def _no_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestConfigField:
-    def test_default_is_on(self) -> None:
-        assert _build_slack_config({}).show_in_session_list is True
+    def test_default_is_off(self) -> None:
+        assert _build_slack_config({}).show_in_session_list is False
 
-    @pytest.mark.parametrize("raw", ["false", "no", 0, None, [], {}])
-    def test_a_malformed_value_reads_on(self, raw: Any) -> None:
-        assert _build_slack_config({"show_in_session_list": raw}).show_in_session_list is True
+    @pytest.mark.parametrize("raw", ["true", "yes", 1, None, [], {}])
+    def test_a_malformed_value_reads_off(self, raw: Any) -> None:
+        assert _build_slack_config({"show_in_session_list": raw}).show_in_session_list is False
+
+    def test_a_real_true_is_on(self) -> None:
+        assert _build_slack_config({"show_in_session_list": True}).show_in_session_list is True
 
     def test_a_real_false_is_off(self) -> None:
         assert _build_slack_config({"show_in_session_list": False}).show_in_session_list is False
 
+    def test_a_degraded_slack_section_reads_off(self) -> None:
+        """A section the loader cannot read holds the field defaults."""
+        from kiro_crew.config.sections_slack import SlackConfig
+
+        assert SlackConfig().show_in_session_list is False
+
 
 class TestSettingRead:
-    def test_no_watcher_snapshot_reads_listed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_watcher_snapshot_reads_unlisted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _no_snapshot(monkeypatch)
-        assert slack_rows_listed() is True
-
-    def test_off_reads_unlisted(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _set_listed(monkeypatch, False)
         assert slack_rows_listed() is False
 
-    @pytest.mark.parametrize("value", [True, None, "false", 0])
-    def test_anything_but_a_real_false_reads_listed(
+    def test_on_reads_listed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _set_listed(monkeypatch, True)
+        assert slack_rows_listed() is True
+
+    @pytest.mark.parametrize("value", [False, None, "true", 1])
+    def test_anything_but_a_real_true_reads_unlisted(
         self, monkeypatch: pytest.MonkeyPatch, value: Any
     ) -> None:
         _set_listed(monkeypatch, value)
-        assert slack_rows_listed() is True
+        assert slack_rows_listed() is False
 
-    def test_a_snapshot_without_a_slack_section_reads_listed(
+    def test_a_snapshot_without_a_slack_section_reads_unlisted(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(live, "snapshot", lambda: SimpleNamespace())
-        assert slack_rows_listed() is True
+        assert slack_rows_listed() is False
 
-    def test_a_failing_read_reads_listed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_a_failing_read_reads_unlisted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom() -> None:
             raise RuntimeError("watcher gone")
 
         monkeypatch.setattr(live, "snapshot", _boom)
-        assert slack_rows_listed() is True
+        assert slack_rows_listed() is False
 
 
 class TestSlackBorn:
@@ -127,8 +138,14 @@ def rows_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, di
             name="discord_123456", linked_session_key="discord:123456", channel_origin=True
         ),
         "dashboard": state.get_or_create_slot(None),
+        "slack_linked": state.get_or_create_slot(None),
         "code_channel": state.get_or_create_slot(None),
+        "helper": state.get_or_create_slot(None),
     }
+    # A dashboard session connected to a Slack thread.
+    slots["slack_linked"]._slack_linked = True
+    slots["slack_linked"]._slack_channel = "D0DM00001"
+    slots["slack_linked"]._slack_thread_ts = "1785370200.000100"
     store = CodeChannelStore(tmp_path / "slack-code-channels.json")
     set_store(store)
     store.put_binding(
@@ -140,6 +157,7 @@ def rows_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, di
             channel_name="fix-login",
         )
     )
+    store.record_worker(slots["helper"].key, slots["code_channel"].key)
     store.load()
     yield state, slots
     set_store(None)
@@ -163,31 +181,45 @@ def _tree(root: Path) -> dict[str, tuple[int, int]]:
 
 
 class TestSerializedRows:
-    def test_on_by_default_no_row_carries_the_stamp(
+    def test_unset_stamps_only_slack_born_rows_in_every_view(
         self, rows_state: tuple[Any, dict[str, Any]], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        state, _slots = rows_state
+        """The key unset: no Slack-born row is listed; nothing else is touched."""
+        state, slots = rows_state
         _no_snapshot(monkeypatch)
+        want = {slots["thread"].key, slots["dm"].key}
         for rows in _all_views(state):
-            assert all(SLACK_LIST_HIDDEN_KEY not in r for r in rows)
+            assert _stamped(rows) == want
 
-    def test_explicit_on_matches_the_default(
+    def test_explicit_off_matches_the_default(
         self, rows_state: tuple[Any, dict[str, Any]], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         state, _slots = rows_state
         _no_snapshot(monkeypatch)
         default = state.serialize_slots()
-        _set_listed(monkeypatch, True)
+        _set_listed(monkeypatch, False)
         assert state.serialize_slots() == default
 
-    def test_off_stamps_only_slack_born_rows_in_every_view(
+    def test_explicit_on_stamps_no_row(
         self, rows_state: tuple[Any, dict[str, Any]], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        state, slots = rows_state
-        _set_listed(monkeypatch, False)
-        want = {slots["thread"].key, slots["dm"].key}
+        state, _slots = rows_state
+        _set_listed(monkeypatch, True)
         for rows in _all_views(state):
-            assert _stamped(rows) == want
+            assert all(SLACK_LIST_HIDDEN_KEY not in r for r in rows)
+
+    @pytest.mark.parametrize("kind", ["dashboard", "slack_linked", "code_channel", "helper"])
+    def test_dashboard_born_rows_are_never_stamped(
+        self,
+        rows_state: tuple[Any, dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch,
+        kind: str,
+    ) -> None:
+        state, slots = rows_state
+        _no_snapshot(monkeypatch)
+        for rows in _all_views(state):
+            row = next(r for r in rows if r["key"] == slots[kind].key)
+            assert SLACK_LIST_HIDDEN_KEY not in row
 
     def test_a_code_channel_session_keeps_its_row_and_its_badge(
         self, rows_state: tuple[Any, dict[str, Any]], monkeypatch: pytest.MonkeyPatch
@@ -199,7 +231,7 @@ class TestSerializedRows:
         assert row["code_channel"]["channel_name"] == "fix-login"
         assert SLACK_LIST_HIDDEN_KEY not in row
 
-    def test_turning_it_back_on_drops_the_stamp(
+    def test_turning_it_on_drops_the_stamp(
         self, rows_state: tuple[Any, dict[str, Any]], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         state, _slots = rows_state
@@ -272,7 +304,7 @@ def _put(mod: Any, payload: dict[str, Any], state: Any = None) -> tuple[int, dic
 
 
 class TestSettingsEndpoint:
-    def test_get_reports_on_by_default(
+    def test_get_reports_off_by_default(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         mod, _cfg = _config_app(tmp_path, monkeypatch)
@@ -285,7 +317,7 @@ class TestSettingsEndpoint:
                 resp = await client.get("/api/slack/config")
                 return await resp.json()
 
-        assert asyncio.run(_get())["show_in_session_list"] is True
+        assert asyncio.run(_get())["show_in_session_list"] is False
 
     def test_save_round_trips_live_and_pushes_the_slot_list(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -329,7 +361,10 @@ def test_the_module_reads_no_disk(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(KiroCrewConfig, "load", _no_load)
     _no_snapshot(monkeypatch)
+    assert slack_session_list.slack_rows_listed() is False
+    _set_listed(monkeypatch, True)
     assert slack_session_list.slack_rows_listed() is True
+    assert slack_session_list.auto_folder_applies() is True
 
 
 def test_a_peer_row_keeps_only_a_real_hidden_stamp() -> None:

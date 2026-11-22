@@ -9,6 +9,8 @@ the limited ``create_subprocess`` / ``run`` / ``Popen`` wrappers. One of the own
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import errno
 import logging
 import os
@@ -28,7 +30,7 @@ except ImportError:  # non-POSIX (Windows)
     _resource_mod = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
     from typing import Any
 
 # Logged under the sandbox's name, which operator log filters, level settings
@@ -334,6 +336,9 @@ _PROFILE_OOM_BIAS = {
 _SHIM_ARGV_SEPARATOR = "--"
 _SHIM_CHDIR_FD_FLAG = "--chdir-fd="
 _SHIM_CTTY_FD_FLAG = "--ctty-fd="
+_SHIM_SETSID_FLAG = "--setsid"
+_SHIM_CHDIR_FLAG = "--chdir="
+_SHIM_CLOSE_FDS_FLAG = "--close-fds"
 
 _SHIM_ARGV_CACHE: dict[str, tuple[str, ...]] = {}
 _SHIM_UNAVAILABLE_LOGGED = False
@@ -621,6 +626,60 @@ def _pinned_spawn_path(
     return source
 
 
+#: Set inside :func:`fork_free_spawns`: shim-prefixed spawns in that context start
+#: with ``posix_spawn`` instead of ``fork``. CPython holds the GIL for the whole
+#: ``fork()``, and on macOS that fork copies the gateway's memory map, so even a
+#: fork on a worker thread stops the event loop for as long as it takes;
+#: ``posix_spawn`` copies nothing.
+_FORK_FREE_SPAWN: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "kirocrew_fork_free_spawn", default=False
+)
+
+# Popen options its posix_spawn start cannot carry and the shim does not take over:
+# a spawn that sets one keeps the fork start.
+_FORK_ONLY_SPAWN_KWARGS = ("pass_fds", "user", "group", "extra_groups")
+
+
+@contextlib.contextmanager
+def fork_free_spawns() -> "Iterator[None]":
+    """Start the children :func:`create_subprocess_limited` makes here without ``fork``.
+
+    Scoped to the calling task: ``contextvars`` gives each task its own copy, so a
+    sibling task's spawns keep the fork start.
+    """
+    token = _FORK_FREE_SPAWN.set(True)
+    try:
+        yield
+    finally:
+        _FORK_FREE_SPAWN.reset(token)
+
+
+def _fork_free_spawn_plan(prefix: "tuple[str, ...]", kwargs: "dict[str, Any]") -> "tuple[str, ...]":
+    """Rewrite a shim spawn so ``Popen`` can start it with ``posix_spawn``.
+
+    ``Popen`` takes ``posix_spawn`` only with ``close_fds``, ``cwd`` and
+    ``start_new_session`` all off, so the shim does those three after it starts:
+    ``--setsid``, ``--chdir=`` and ``--close-fds``. *kwargs* is edited in place.
+    A spawn that needs an option the shim cannot take over keeps the fork start.
+    """
+    if any(kwargs.get(name) for name in _FORK_ONLY_SPAWN_KWARGS):
+        return prefix
+    if kwargs.get("process_group", -1) not in (-1, None) or kwargs.get("umask", -1) >= 0:
+        return prefix
+    flags = []
+    if kwargs.pop("start_new_session", False):
+        flags.append(_SHIM_SETSID_FLAG)
+    cwd = kwargs.pop("cwd", None)
+    if cwd is not None:
+        flags.append(f"{_SHIM_CHDIR_FLAG}{os.fsdecode(cwd)}")
+    # A caller that asked for close_fds=False meant to hand its inheritable
+    # descriptors on, so the shim leaves them open too.
+    if kwargs.get("close_fds", True):
+        flags.append(_SHIM_CLOSE_FDS_FLAG)
+    kwargs["close_fds"] = False
+    return (*prefix[:-1], *flags, prefix[-1])
+
+
 def _needs_path_search(argv: "Sequence[str]") -> bool:
     """Whether ``argv[0]`` is a bare name, i.e. whether resolution touches disk."""
     name = argv[0]
@@ -772,6 +831,8 @@ async def create_subprocess_limited(
         # A PATH search stats every entry, so it runs off the loop. One stalled
         # NFS/autofs entry would otherwise freeze the gateway.
         resolved = await asyncio.to_thread(_resolve_spawn_target, argv, search_env, search_cwd)
+    if chdir_fd is None and _FORK_FREE_SPAWN.get():
+        prefix = _fork_free_spawn_plan(prefix, kwargs)
     for delay in _INTERPRETER_ENOENT_DELAYS:
         try:
             return await asyncio.create_subprocess_exec(

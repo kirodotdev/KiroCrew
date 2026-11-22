@@ -96,9 +96,19 @@ _FEATURES = frozenset(
         "kirocrew.memory.recalled",
         "kirocrew.lesson.injected",
         "kirocrew.skill.lazy_load.count",
-        "kirocrew.app.task.completed",
-        # Entity is app_public_id: a built-in or store name, else `private`.
+        # Entity is app_public_id: a built-in or store name, else `private`;
+        # entity_version is app_public_version.
         "kirocrew.app.installed",
+        "kirocrew.app.updated",
+        "kirocrew.app.uninstalled",
+        # Entity / entity_version as above; kind is the session_kind.
+        "kirocrew.app.session_started",
+        # Adds a turn's seconds; duration is app_duration_bucket.
+        "kirocrew.app.run_time",
+        "kirocrew.app.present",
+        # Owner views only: sent through the owner-gated /api/telemetry/app-view.
+        "kirocrew.app.opened",
+        "kirocrew.app.foreground_time",
         "kirocrew.channel.message.received",
         "kirocrew.ui.control.clicked",
     }

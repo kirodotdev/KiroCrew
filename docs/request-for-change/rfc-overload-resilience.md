@@ -4,8 +4,8 @@ status: partial
 revision: v7
 author: bolichen
 created: 2026-09-12
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr:
 implementation-prs: [10521, 15876, 16347, 16355, 17017, 17030]
 tracking-issues: ["#15244"]
@@ -838,7 +838,9 @@ Question text is kept as asked; the decision below it is final for this PR.
   is a tighter sum behind `host_available_mib`, which the floor does not read.
   (Since #21574 the floor does read it on macOS; the recorder figures below
   were taken through the looser sum, so on the same host the floor now sees
-  less memory than they show. The posture still reads the looser sum.)
+  less memory than they show. The posture still reads the looser sum. Since
+  the fix for macOS hosts with green pressure being read as full, the floor and
+  the posture both read the kernel's figure, free + active + inactive pages.)
   Through that probe a 16 GB Apple silicon host in ordinary desktop use read a
   median of 4.84 GB over one day of recorder samples (n = 3010; p25 4.48, p75
   5.26, min 2.55, max 8.28; 26 % of samples below 4.5 GB and 59 % below 5.0 GB)

@@ -326,7 +326,6 @@ describe('useInstanceShortcuts — embedded pane (relay)', () => {
 describe('useInstanceShortcuts — relay Crew tabs', () => {
   let chord: ((e: { type: string; endpointId: string; index: number }) => void) | null = null
   beforeEach(() => {
-    localStorage.setItem('mc-relay-crew-pane', '1')
     chord = null
     ;(window as unknown as { relayCrewAPI?: unknown }).relayCrewAPI = {
       openPane: vi.fn(async () => ({ ok: true })),

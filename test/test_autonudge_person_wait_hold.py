@@ -76,6 +76,8 @@ def ledger(monkeypatch):
         return True
 
     monkeypatch.setattr(firing, "_ledger_person_wait_fp", lambda _key, *_a: state["fp"])
+    state["asked"] = True
+    monkeypatch.setattr(firing, "_ledger_person_wait_asked", lambda _key: state["asked"])
     monkeypatch.setattr(firing, "_ledger_has_open_items", _open)
     monkeypatch.setattr(AutoNudgeService, "_observes_work_ledger", lambda self, loop: True)
     return state
@@ -460,6 +462,12 @@ def _item(title: str) -> str:
     return created["item"].item_id
 
 
+def _asked(*item_ids: str) -> None:
+    """The conductor relays each item's question: only then does the person own it."""
+    for item_id in item_ids:
+        wl.apply_ask_record(CONDUCTOR, item_id, what="answer the worker")
+
+
 def test_the_fingerprint_needs_every_open_item_waiting_on_a_person():
     first, second = _item("a"), _item("b")
     wl.apply_worker_report(CONDUCTOR, first, status="blocked", summary="x", reason="approval")
@@ -491,6 +499,7 @@ def test_conductor_writes_leave_the_fingerprint_alone_and_reports_move_it(monkey
     # A conductor that writes every turn must still be able to stay held.
     wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="ask the user")
     wl.apply_conductor_action(CONDUCTOR, "goal", goal="ship it again", round_number=2)
+    _asked(item_id)
     assert probe.person_wait_fingerprint(CONDUCTOR) == first
     # The same blocked report again is news: its report stamp moves.
     wl.apply_worker_report(CONDUCTOR, item_id, status="blocked", summary="x", reason="approval")
@@ -528,6 +537,38 @@ def test_an_item_whose_worker_is_gone_is_not_a_person_wait():
     assert (
         probe.person_wait_fingerprint(CONDUCTOR, worker_closed=lambda k: k == "chat-9-999") is None
     )
+
+
+def test_a_person_reason_item_with_no_current_ask_does_not_hold_the_patrol():
+    """The Board lists a person wait only with a current ask record, so the hold
+    does too: a question the conductor never relayed with ``work_ask_record``, or one
+    a newer report superseded, is still the conductor's, and its patrol must run. The
+    ask write itself leaves the fingerprint alone, so the hold engages on the next
+    tick after the relay turn rather than one turn later."""
+    item_id = _item("a")
+    wl.apply_worker_report(
+        CONDUCTOR, item_id, status="question", summary="which?", reason="needs_human"
+    )
+    fp = probe.person_wait_fingerprint(CONDUCTOR)
+    assert fp and probe.person_wait_asked(CONDUCTOR) is False, "never relayed"
+    _asked(item_id)
+    assert probe.person_wait_fingerprint(CONDUCTOR) == fp, "the ask write moves nothing"
+    assert probe.person_wait_asked(CONDUCTOR) is True, "relayed: the person owns it"
+    wl.apply_worker_report(
+        CONDUCTOR, item_id, status="question", summary="and now?", reason="needs_human"
+    )
+    assert probe.person_wait_asked(CONDUCTOR) is False, "a newer report supersedes it"
+
+
+@pytest.mark.asyncio
+async def test_the_timer_does_not_hold_a_person_wait_nobody_relayed(svc, _nosleep, ledger):
+    ledger["fp"], ledger["asked"] = "fp-a", False
+    fired: list = []
+    loop = await _armed(svc, fired)
+    await _tick(svc, loop)
+    assert len(fired) == 2, "no current ask: the conductor's patrol keeps running"
+    assert svc._loops[loop.id].waiting_on_person is False
+    await _drain(svc)
 
 
 def test_the_fingerprint_is_none_without_a_ledger_or_open_items():

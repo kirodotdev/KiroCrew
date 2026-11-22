@@ -222,8 +222,12 @@ def read_endorsed_config_text(path: Path) -> str:
     return strip_utf8_bom(content.decode("utf-8"))
 
 
-def read_merged_config_files(*paths: Path) -> dict:
-    """The config documents at *paths*, each merged over the one before. Never raises.
+def read_merged_config_files(*paths: Path, strict: bool = False) -> dict:
+    """The config documents at *paths*, each merged over the one before.
+
+    Never raises unless *strict*: then an absent file still contributes nothing,
+    but one that cannot be read or parsed raises, for a caller that must not
+    mistake a half-written file for an empty one.
 
     The raw counterpart of the loader's overlay for a reader that must stay off the
     config dataclass graph: callers pass ``config.json`` then ``config.local.json``
@@ -240,7 +244,11 @@ def read_merged_config_files(*paths: Path) -> dict:
     for path in paths:
         try:
             document = json.loads(read_endorsed_config_text(path))
+        except FileNotFoundError:
+            continue
         except (OSError, ValueError, RecursionError):
+            if strict:
+                raise
             continue
         if isinstance(document, dict):
             merged = _deep_merge(merged, document)

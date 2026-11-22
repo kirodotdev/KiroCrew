@@ -6,6 +6,7 @@ import { fileReadUrl } from '../utils/fileReadUrl'
 import { filePopoutSlot } from '../utils/filePopout'
 import { i18nT } from '../i18n/t'
 import { pathBasename } from '../utils/pathBasename'
+import { apiTransport } from '../api/apiTransport'
 
 /**
  * The open file's place in the two libraries, for `MarkdownPanel`: whether it
@@ -74,7 +75,7 @@ export function useFileKnowledgeState(filePath: string, onError: ReportError) {
       // imported bundle and is otherwise only validated as a non-empty string,
       // so an id like `../../../sessions` would otherwise resolve to a
       // different route and land an irreversible DELETE on it.
-      const res = await fetch(`/api/knowledge/sources/${encodeURIComponent(sourceId)}`, { method: 'DELETE' })
+      const res = await apiTransport.request(`/api/knowledge/sources/${encodeURIComponent(sourceId)}`, { method: 'DELETE' })
       // 404 just means the source is already gone — removing an absent thing
       // is success, so the panel falls back to the Add affordance instead of
       // reporting a failure dressed as an error.
@@ -99,7 +100,7 @@ export function useFileKnowledgeState(filePath: string, onError: ReportError) {
   const { mutate: add, isPending: adding, isSuccess: added, data: addResult, reset } = useMutation({
     mutationFn: async () => {
       const name = pathBasename(filePath) || filePath
-      const res = await fetch('/api/knowledge/sources', {
+      const res = await apiTransport.request('/api/knowledge/sources', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, source_type: 'local_file', uri: filePath }),

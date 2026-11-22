@@ -271,7 +271,7 @@ class TestSlackRenderer:
             r._ensure_stream = _no_surface  # type: ignore[method-assign]
             r._accumulated = f"Report\n{DELIVER}"
             await r.on_done()
-            posted = [kw["text"] for name, kw in rec.calls if name == "post_message"]
+            posted = [kw["text"] for name, kw in rec.calls if name == "post_blocks"]
             assert posted and all("deliver:" not in t for t in posted)
             assert any("Report" in t for t in posted)
 

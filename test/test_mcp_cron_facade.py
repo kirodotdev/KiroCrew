@@ -9,9 +9,10 @@ reaches that code only because the mirror writes it into every module holding th
 ``test/test_facade_mirror_guards.py`` holds every mirrored facade to the shared rules.
 These tests pin what is particular to this facade: every name the test trees patch
 through it reaches every module holding it; the owners are exactly the top-level
-``mcp_cron_*.py`` siblings, loaded lowest layer first; the server itself stays bound on
-the facade; every name it serves from outside the family stays visible to type checkers;
-the family logs under the facade's name; and the facade still runs as ``python -m``.
+``mcp_cron_*.py`` siblings, loaded lowest layer first; no module outside the family
+imports an owner; the server itself stays bound on the facade; every name it serves from
+outside the family stays visible to type checkers; the family logs under the facade's
+name; and the facade still runs as ``python -m``.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from pathlib import Path
 from types import ModuleType
 
 import facade_mirror_scan
+import owner_import_scan
 import pytest
 import source_corpus
 
@@ -173,6 +175,24 @@ def test_the_owners_are_every_mcp_cron_sibling_in_layer_order() -> None:
         if later:
             late[owner] = later
     assert late == {}
+
+
+def test_only_the_family_imports_an_owner() -> None:
+    """A module outside the family that imported an owner would hold bindings the
+    facade's mirror never indexes, so a patch through the facade would miss it."""
+    owners = frozenset(_index().owners)
+    family = {
+        f"{name.removeprefix('kiro_crew.').replace('.', '/')}.py" for name in (FACADE, *owners)
+    }
+    sources = source_corpus.iter_candidate_sources(
+        require_any=tuple(name.rpartition(".")[2] for name in owners)
+    )
+    importers = owner_import_scan.owner_importers(
+        sources, source_corpus.src_root(), lambda name: name in owners
+    )
+    # An owner importing a lower owner proves the scan reads real imports.
+    assert "mcp_cron_vet.py" in importers
+    assert importers - family == set()
 
 
 def test_the_facade_keeps_the_default_read_path_and_forwards_no_table() -> None:

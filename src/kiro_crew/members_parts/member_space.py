@@ -517,6 +517,10 @@ def member_dir(slug: str) -> Path:
     """Absolute path to one member's directory, containment-checked.
 
     Does NOT create the directory; :func:`record_activity` creates it on demand.
+
+    Read-only site: the link at ``members`` is resolved by name here and nothing is
+    written. Code that writes under ``members`` opens
+    :func:`kiro_crew.member_folder.open_member_folder` and keeps to the held folder.
     """
     validate_slug(slug)
     root = members_root().resolve()

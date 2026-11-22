@@ -10,12 +10,8 @@ wording.
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import sys
-import threading
-import time
-from collections.abc import Callable
 from pathlib import Path
 
 from kiro_crew.agent_sdk import kas_bundle
@@ -76,11 +72,9 @@ def add_kas_parser(parser: argparse.ArgumentParser) -> None:
         "--if-in-use",
         action="store_true",
         help=(
-            "Install only when this install runs Kiro Crew's own engine "
-            "(agent.kas_bundle is on, or KAS takes that route on its own with an "
-            "engine on disk), or refresh one already on disk (a failure then only "
-            "prints the retry); otherwise do nothing. Every update runs this from "
-            "the new release"
+            "Install as part of an update: every update runs this from the new "
+            "release, and any failure fails the update so no release switches "
+            "without its engine. A host the engine cannot run on exits 0"
         ),
     )
 
@@ -114,8 +108,10 @@ def _progress_printer():
 def _already_installed(version: str, force: bool) -> kas_bundle.InstalledKasBundle | None:
     """The data home's working copy of *version*, unless ``--force`` asked to replace it.
 
-    Only ``engines/kas`` is asked, never the desktop app's staged copy: that one is
-    not where this command writes, so it does not make an install here redundant.
+    Only ``engines/kas`` and the engine a platform wheel carries inside the package
+    are asked, never the desktop app's staged copy: that one is not where this
+    command writes, so it does not make an install here redundant. The packaged copy
+    ships with this exact code and is replaced only by the next update, so it does.
     A directory at the version's name that does not read back as an engine is not
     an answer either; ``install_bundle`` then refuses it and names ``--force``.
     An answer skips ``install_bundle``, so the stale staging sweep it would have
@@ -123,6 +119,10 @@ def _already_installed(version: str, force: bool) -> kas_bundle.InstalledKasBund
     """
     if force:
         return None
+    packaged = kas_bundle.installed_bundle(version=version)
+    if packaged is not None and packaged.packaged:
+        # A platform wheel carries this exact version inside the package.
+        return packaged
     root = kas_bundle.kas_engines_root()
     present = kas_bundle.installed_bundle(root=root, version=version)
     if present is not None:
@@ -130,82 +130,40 @@ def _already_installed(version: str, force: bool) -> kas_bundle.InstalledKasBund
     return present
 
 
-#: ``install --if-in-use`` needs the engine: the bundle route runs it.
-ENGINE_REQUIRED = "required"
-#: ``install --if-in-use`` only refreshes an engine already on disk; a failure
-#: must not stop an update (the relay route runs kiro-cli, not the engine).
-ENGINE_OPTIONAL = "optional"
-
-
-def _bundle_switch_on() -> bool:
-    """Whether ``agent.kas_bundle`` is on, so any KAS session runs Crew's own engine.
-
-    Deliberately not ``kas_bundle_route()``, which also asks that the DEFAULT
-    backend be KAS: with the switch on, a member route (``agent.member_acp_backend``),
-    a mate's own harness pin or a spawn that asks for KAS runs the engine too, so
-    an update must not switch to a release whose engine is missing for them. An
-    unreadable config reads as off, the answer every bundle-route reader gives.
-    """
-    from kiro_crew.config.loader import KiroCrewConfig
-
-    try:
-        return bool(KiroCrewConfig.load().agent.kas_bundle)
-    except Exception:  # noqa: BLE001 - unreadable config is the relay route
-        return False
-
-
-def _automatic_bundle_route() -> bool:
-    """Whether a KAS spawn here takes the bundle route although the switch is off.
-
-    ``kas_bundle.kas_route()`` (``acp.kas_route.resolve_kas_route``) is the rule
-    the spawn itself applies: with no kiro-cli, or one that cannot run a session,
-    a KAS spawn runs Crew's own engine. A failed probe reads as the relay, as the
-    route's own readers do.
-    """
-    try:
-        return bool(kas_bundle.kas_route().bundle)
-    except Exception:  # noqa: BLE001 - an unanswerable probe is the relay route
-        return False
-
-
-def _engine_need() -> str | None:
-    """How much this install needs the pinned engine, for ``install --if-in-use``.
-
-    :data:`ENGINE_REQUIRED` when ``agent.kas_bundle`` is on (:func:`_bundle_switch_on`):
-    every KAS session, the default's or a member's or a mate's, runs the engine,
-    so an update without it is refused. Also required when an engine version is
-    on disk and a KAS spawn here takes the bundle route on its own
-    (:func:`_automatic_bundle_route`): KAS already runs on that engine, so a
-    release whose pin it lacks would stop sessions that worked.
-    :data:`ENGINE_OPTIONAL` when an engine is only on disk and the spawn runs
-    kiro-cli's relay (the installers lay one down on every default install): the
-    update tries to bring the new pin along, and any failure only prints the
-    retry. ``None`` otherwise, which includes the automatic route with nothing on
-    disk: KAS there never worked before this update either, and the gateway
-    installs the engine at the first spawn. An engines directory that cannot be
-    listed counts as no engine.
-    """
-    if _bundle_switch_on():
-        return ENGINE_REQUIRED
-    try:
-        on_disk = bool(kas_bundle.installed_versions())
-    except OSError:
-        on_disk = False
-    if not on_disk:
-        return None
-    return ENGINE_REQUIRED if _automatic_bundle_route() else ENGINE_OPTIONAL
-
-
 def _install(args: argparse.Namespace) -> int:
+    """``kirocrew kas install``; with ``--if-in-use``, the step every update runs.
+
+    The update step installs the pinned engine whatever ``agent.kas_bundle`` says,
+    and any failure fails the update (the engine guarantee): no release is
+    switched to without its engine. A platform wheel carries it, so the step finds
+    it and downloads nothing. A host the engine cannot run on at all is the one
+    exception: no retry can install it there, so the step says so and exits 0. That
+    holds whether the local probe sees it or the pinned manifest does (a platform it
+    publishes no build for, such as Windows on ARM): both are ``HOST_UNSUPPORTED_EXIT``.
+    """
     if not getattr(args, "if_in_use", False):
         return _install_now(args)
-    need = _engine_need()
-    if need is None:
-        print("The KAS engine bundle is not in use on this install; nothing to install.")
+    unsupported = _host_unsupported_reason()
+    if unsupported:
+        print(f"{unsupported} Nothing was installed; the KAS engine is unavailable here.")
         return 0
-    if need == ENGINE_REQUIRED:
-        return _install_now(args)
-    return _install_optional(args)
+    rc = _install_now(args)
+    if rc == HOST_UNSUPPORTED_EXIT:
+        print("Nothing was installed; the KAS engine is unavailable on this host (see above).")
+        return 0
+    return rc
+
+
+def _host_unsupported_reason() -> str:
+    """``kas_bundle.host_unsupported_reason()``, or ``''`` when the probe itself fails.
+
+    A probe that fails is not a reason to skip: the install then runs and reports
+    whatever stops it.
+    """
+    try:
+        return kas_bundle.host_unsupported_reason()
+    except Exception:  # noqa: BLE001 - an unanswerable probe leaves the install to decide
+        return ""
 
 
 #: ``kirocrew kas install``'s exit code when this host cannot run the engine at
@@ -213,99 +171,12 @@ def _install(args: argparse.Namespace) -> int:
 #: their "retry when online" advice; every other failure exits 1.
 HOST_UNSUPPORTED_EXIT = 3
 
-#: The line an optional refresh ends with when it did not install the engine.
-_OPTIONAL_RETRY_LINE = (
-    "⚠  The KAS engine for this release was not installed; agent.kas_bundle is off, "
-    "so the update goes on. Retry with: kirocrew kas install"
-)
 
-#: The line an optional refresh ends with when this host cannot run the engine.
-_OPTIONAL_UNSUPPORTED_LINE = (
-    "⚠  This host cannot run the KAS engine (see above); agent.kas_bundle is off, "
-    "so the update goes on."
-)
-
-
-class _RefreshDeadlinePassed(kas_bundle.KasBundleError):
-    """An optional refresh ran past its own deadline and stopped between chunks."""
-
-
-def _exit_now(code: int) -> None:
-    """End this process at once with *code*; the hard stop's exit, a seam for tests."""
-    os._exit(code)
-
-
-def _install_optional(args: argparse.Namespace) -> int:
-    """Refresh an engine only on disk; every way it does not finish exits the optional code.
-
-    The switch is off, so nothing runs the engine: a refused fetch, a full or
-    unwritable disk, a slow or stalled download are all reported with the retry,
-    never an update failure. The refresh bounds itself below the update's own kill
-    of this child (``release_apply.ENGINE_INSTALL_TIMEOUT_SECS``), because that
-    kill reads as a failed install: a download still going at
-    ``ENGINE_OPTIONAL_DEADLINE_SECS`` stops at its next chunk (the install removes
-    its staging directory), and a stall that never reaches a chunk is ended at
-    ``ENGINE_OPTIONAL_HARD_STOP_SECS`` by a timer that exits the process. The first
-    stdout line, ``ENGINE_OPTIONAL_MARKER``, lets the update read a child that
-    still ended some other way (killed by a signal) as this optional case.
-    """
-    from kiro_crew.platform import release_apply
-
-    print(release_apply.ENGINE_OPTIONAL_MARKER, flush=True)
-
-    def _hard_stop() -> None:
-        print(
-            f"❌ the engine refresh did not finish within "
-            f"{release_apply.ENGINE_OPTIONAL_HARD_STOP_SECS:.0f}s",
-            file=sys.stderr,
-        )
-        print(_OPTIONAL_RETRY_LINE, file=sys.stderr, flush=True)
-        _exit_now(release_apply.ENGINE_OPTIONAL_FAILED_EXIT)
-
-    timer = threading.Timer(release_apply.ENGINE_OPTIONAL_HARD_STOP_SECS, _hard_stop)
-    timer.daemon = True
-    timer.start()
-    try:
-        rc = _install_now(
-            args, deadline=time.monotonic() + release_apply.ENGINE_OPTIONAL_DEADLINE_SECS
-        )
-    except Exception as exc:  # noqa: BLE001 - an optional refresh never fails the update
-        print(f"❌ {exc}", file=sys.stderr)
-        rc = 1
-    finally:
-        timer.cancel()
-    if rc == 0:
-        return 0
-    if rc == HOST_UNSUPPORTED_EXIT:
-        print(_OPTIONAL_UNSUPPORTED_LINE, file=sys.stderr)
-    else:
-        print(_OPTIONAL_RETRY_LINE, file=sys.stderr)
-    return release_apply.ENGINE_OPTIONAL_FAILED_EXIT
-
-
-def _bounded_progress(
-    printer: Callable[[str, int, int], None], deadline: float
-) -> Callable[[str, int, int], None]:
-    """*printer*, raising :class:`_RefreshDeadlinePassed` on the first chunk past *deadline*."""
-    from kiro_crew.platform.release_apply import ENGINE_OPTIONAL_DEADLINE_SECS
-
-    def _on_progress(label: str, done: int, total: int) -> None:
-        if time.monotonic() >= deadline:
-            raise _RefreshDeadlinePassed(
-                f"the engine refresh did not finish within {ENGINE_OPTIONAL_DEADLINE_SECS:.0f}s"
-            )
-        printer(label, done, total)
-
-    return _on_progress
-
-
-def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> int:
-    """Install the engine *args* name; with *deadline*, stop the download past it."""
+def _install_now(args: argparse.Namespace) -> int:
+    """Install the engine *args* name."""
     from kiro_crew.config.loader import KiroCrewConfig
 
     on_progress = _progress_printer()
-    if deadline is not None:
-        on_progress = _bounded_progress(on_progress, deadline)
 
     try:
         # Before any "Fetching"/"Installing" line, so a host that cannot run the
@@ -382,6 +253,13 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
         installed = kas_bundle.install_bundle(
             manifest, source=source, force=args.force, on_progress=on_progress
         )
+        if args.force and installed.version == KAS_PIN_VERSION:
+            runs = kas_bundle.installed_bundle(version=installed.version)
+            if runs is not None and runs.packaged:
+                print(
+                    f"⚠  This install carries KAS {installed.version} inside the package "
+                    f"({runs.root}); that copy runs, not the one just written."
+                )
     except kas_bundle.KasHostUnsupported as exc:
         print(f"❌ {exc}", file=sys.stderr)
         return HOST_UNSUPPORTED_EXIT
@@ -392,7 +270,9 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
 
 
 def _report_installed(installed: kas_bundle.InstalledKasBundle, *, already: bool) -> int:
-    if already:
+    if already and installed.packaged:
+        print(f"✅ KAS {installed.version} is built into this install at {installed.root}")
+    elif already:
         print(
             f"✅ KAS {installed.version} is already installed at {installed.root} "
             "(use --force to replace it)"
@@ -456,8 +336,14 @@ def _status(_args: argparse.Namespace) -> int:
         print(f"also on disk:  {', '.join(others)}  (`kirocrew kas remove --version V`)")
     if installed is None:
         print(f"installed:     KAS {runs} is not installed  (run `kirocrew kas install`)")
-        return 0 if not cfg.kas_bundle else 1
-    where = "  (built into the app)" if installed.bundled else ""
+        # Engine guarantee: a missing engine is a failure on any host that
+        # can run one, whatever agent.kas_bundle says.
+        return 0 if _host_unsupported_reason() else 1
+    where = (
+        "  (built into the wheel)"
+        if installed.packaged
+        else "  (built into the app)" if installed.bundled else ""
+    )
     print(f"installed:     KAS {installed.version}, Node {installed.node_version or '?'}{where}")
     print(f"  engine: {installed.acp_server}")
     print(f"  node:   {installed.node_bin}")

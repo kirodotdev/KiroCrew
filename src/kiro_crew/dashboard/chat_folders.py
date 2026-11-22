@@ -52,6 +52,7 @@ from kiro_crew.dashboard.slot_ownership import (
     deny_app_slot_access,
     slot_not_found,
 )
+from kiro_crew.dashboard.slot_read_state import load_read_state_after_listen
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import (
     KNOWN_INTERNAL_CALLERS,
@@ -283,7 +284,9 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
             # into the folder it already sits in changes nothing.
             claim_for_person=folder_id != previous and _audit_origin(request)[0] == "dashboard",
         ):
-            slot.folder_id = previous
+            # `previous` was captured before the await, and a delete of that folder
+            # can land inside it: put the slot back only into a folder that exists.
+            slot.folder_id = previous if any(f["id"] == previous for f in state._folders) else ""
             slot._folder_changed = previous_changed
             return web.json_response(
                 {"error": "folder not found", "code": "folder_not_found"}, status=400
@@ -297,7 +300,10 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
             # have committed a newer placement that an unconditional restore
             # would erase (the same guard _restore_unfiled applies).
             if slot.folder_id == folder_id:
-                slot.folder_id = previous
+                # Only into a folder that still exists, as the refusal above.
+                slot.folder_id = (
+                    previous if any(f["id"] == previous for f in state._folders) else ""
+                )
                 slot._folder_changed = previous_changed
             # The UNPINNED periodic flush may have persisted the provisional
             # value while this save awaited: mark dirty so the
@@ -837,13 +843,18 @@ async def load_pinned_order_after_listen(state: DashboardState) -> None:
     Kept off the boot path (``no-new-work-on-gateway-boot-path``): until it
     lands, slot rows carry no ``pin_rank`` and pinned sessions show in the
     sidebar's own sort for a moment. The manual order, kept in the same store,
-    is read next, on its own terms (``chat_manual_order``).
+    is read next, on its own terms (``chat_manual_order``), then the read times
+    kept in the same directory (``slot_read_state``).
     """
     try:
         await ensure_pinned_order_loaded(state)
     except Exception:  # noqa: BLE001 -- a display preference must not crash startup
         logger.warning("could not load the pinned session order", exc_info=True)
     await load_manual_order_after_listen(state)
+    try:
+        await load_read_state_after_listen(state)
+    except Exception:  # noqa: BLE001 -- read times must not crash startup
+        logger.warning("could not load the session read times", exc_info=True)
 
 
 async def _write_pinned_order(

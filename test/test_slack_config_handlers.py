@@ -6,7 +6,9 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from unittest.mock import MagicMock
 
+import pytest
 from aiohttp.test_utils import make_mocked_request
 
 import kiro_crew.config.loader as loader
@@ -48,6 +50,30 @@ def test_write_env_updates_adds_and_preserves(tmp_path: Path, monkeypatch) -> No
     assert _vault_value(env, "SLACK_APP_TOKEN") == "xapp-new"
     # Credential file hardened to owner-only perms.
     assert (env.stat().st_mode & 0o077) == 0
+
+
+def test_write_env_updates_runs_the_check_on_the_file_under_its_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A refusing check leaves .env untouched; a passing one sees the file text first."""
+    env = tmp_path / ".env"
+    env.write_bytes(b"KIROCREW_OWNER_ID=U0SAVEDNOW\n")
+    monkeypatch.setattr(loader, "env_path", lambda: env)
+    seen: list[str] = []
+
+    def _refuse(text: str) -> None:
+        seen.append(text)
+        raise RuntimeError("owner_set")
+
+    try:
+        _write_env_updates({"KIROCREW_OWNER_ID": "U0CLAIMED1"}, _refuse)
+    except RuntimeError:
+        pass
+    assert [s.replace("\r\n", "\n") for s in seen] == ["KIROCREW_OWNER_ID=U0SAVEDNOW\n"]
+    assert env.read_bytes() == b"KIROCREW_OWNER_ID=U0SAVEDNOW\n"
+
+    _write_env_updates({"KIROCREW_OWNER_ID": "U0CLAIMED1"}, seen.append)
+    assert "KIROCREW_OWNER_ID=U0CLAIMED1" in env.read_text(encoding="utf-8")
 
 
 def test_write_env_updates_deletes_on_none(tmp_path: Path, monkeypatch) -> None:
@@ -279,7 +305,7 @@ def test_save_syncs_process_environ(tmp_path: Path, monkeypatch) -> None:
     assert loader.KiroCrewConfig().load_credentials()["SLACK_BOT_TOKEN"] == "xoxb-NEW"
 
 
-def _client_put(mod, monkeypatch, tmp_path, body, *, gateway_owner=""):
+def _client_put(mod, monkeypatch, tmp_path, body, *, gateway_owner="", claim=None):
     """Run a save over a real TestClient with paths isolated to tmp_path.
 
     *gateway_owner* is the owner the running gateway authorizes
@@ -299,8 +325,8 @@ def _client_put(mod, monkeypatch, tmp_path, body, *, gateway_owner=""):
 
     async def _run():
         app = web.Application()
-        if gateway_owner:
-            app["state"] = SimpleNamespace(owner_id=gateway_owner)
+        if gateway_owner or claim is not None:
+            app["state"] = SimpleNamespace(owner_id=gateway_owner, slack_owner_claim=claim)
         app.router.add_put("/api/slack/config", mod.api_slack_config_save)
         async with TestClient(TestServer(app)) as client:
             resp = await client.put("/api/slack/config", json=body)
@@ -443,6 +469,43 @@ def test_a_token_change_asks_for_a_reconnect_not_a_restart(tmp_path, monkeypatch
     assert status == 200
     assert body["reconnect_required"] is True
     assert body["restart_required"] is False
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"bot_token": "xoxb-placeholder-token"},
+        {"app_token": "xapp-placeholder-token"},
+        {"owner_id": "U0123ABC456"},
+    ],
+    ids=["bot", "app", "owner"],
+)
+def test_a_slack_credential_write_closes_the_owner_claim_window(
+    tmp_path, monkeypatch, body
+) -> None:
+    """A new token may name another workspace than the one the window pinned."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    async def _accepted(key, token):
+        return None
+
+    monkeypatch.setattr(mod, "_validate_slack_token", _accepted)
+    monkeypatch.delenv("KIROCREW_OWNER_ID", raising=False)
+    claim = MagicMock()
+    (status, _body), _env = _client_put(mod, monkeypatch, tmp_path, body, claim=claim)
+    assert status == 200
+    claim.recheck_soon.assert_called_once_with("credential_write")
+
+
+def test_a_config_only_save_leaves_the_owner_claim_window_open(tmp_path, monkeypatch) -> None:
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    claim = MagicMock()
+    (status, _body), _env = _client_put(
+        mod, monkeypatch, tmp_path, {"reactions_enabled": False}, claim=claim
+    )
+    assert status == 200
+    claim.recheck_soon.assert_not_called()
 
 
 def test_an_owner_change_asks_for_a_restart_not_a_reconnect(tmp_path, monkeypatch) -> None:

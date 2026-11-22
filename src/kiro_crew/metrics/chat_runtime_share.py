@@ -172,7 +172,7 @@ BOOL_VALUES: tuple[str, ...] = ("true", "false")
 #: ``kirocrew.turn.completed`` uses, so the two series split turns the same way.
 
 INSTALL_OUTCOMES: tuple[str, ...] = ("installed", "failed", "host_unsupported")
-INSTALL_CALLERS: tuple[str, ...] = ("spawn", "dashboard")
+INSTALL_CALLERS: tuple[str, ...] = ("spawn", "dashboard", "startup")
 
 # ---------------------------------------------------------------------------
 # Bucketing (total: every input lands inside its own tuple)

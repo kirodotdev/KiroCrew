@@ -494,6 +494,45 @@ class TestDashboardOverrideCard:
         assert slot._deny_waivers == set()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["normal", "yolo"])
+    async def test_an_unanswered_card_names_the_rule_not_yolo(self, tmp_path, monkeypatch, mode):
+        """The override card is left unanswered past a 0.05 s window, with and without
+        YOLO on; its timeout card names the matched rule and does not advise YOLO mode,
+        since only the owner's click approves an override card."""
+        _no_pins(monkeypatch)
+        state, client = _make_state(tmp_path, context_builder=_scripted_gate([_RM_ROOT]))
+        state.approval_timeout_for = MagicMock(return_value=0.05)
+        slot = _make_slot()
+        if mode == "yolo":
+            state.enable_yolo()
+        _set_stream(client, _stream())
+
+        with _patch_stats():
+            await finished(
+                _run_chat(
+                    state,
+                    slot,
+                    "hello",
+                    _directive_user_origin=True,
+                    _directive_owner_origin=True,
+                ),
+                "the chat turn completing",
+            )
+
+        assert _permission_rows(slot), f"{mode}: no override card was shown"
+        client.approve_tool.assert_not_called()
+        [card] = [
+            m["content"]
+            for m in slot.messages
+            if m.get("role") == "error" and "nothing came back within" in m["content"]
+        ]
+        assert "turn on YOLO mode" not in card
+        assert (
+            f"YOLO mode does not cover this call: it matched the security rule "
+            f"{deny_key_note_label(_RM_ROOT)}, which only you can allow." in card
+        )
+
+    @pytest.mark.asyncio
     async def test_an_override_card_gets_no_chat_app_buttons(self, tmp_path, monkeypatch):
         # A plain Approve from a chat app refuses an override card's call, so the
         # bridged note must not offer one: the dashboard alone answers it.
@@ -633,6 +672,130 @@ class TestDashboardOverrideCard:
         assert pre_inputs == [{"command": "touch notes.txt"}, {"command": "rm -rf /"}]
         assert client.approve_tool.call_count == 2
         client.reject_tool.assert_not_called()
+
+
+class TestPlainPromptTimeoutUnderYolo:
+    @pytest.mark.asyncio
+    async def test_a_prompt_yolo_does_not_reach_is_not_told_to_turn_yolo_on(
+        self, tmp_path, monkeypatch
+    ):
+        """A ``gateway --approval yolo`` grant is active but the slot is linked to a
+        Slack thread, so the grant does not reach it: a plain prompt left unanswered
+        past a 0.05 s window gets a card saying YOLO mode does not cover the call,
+        not advice to turn YOLO mode on."""
+        from kiro_crew.safety_override_grant import SafetyOverride
+
+        _no_pins(monkeypatch)
+        monkeypatch.setattr(SafetyOverride, "is_cli_launch", property(lambda _self: True))
+        cb = MagicMock()
+        cb.hooks.on_tool_call.return_value = ToolHookResult.allow()
+        cb.build_message.return_value = ("hello", None)
+        state, client = _make_state(tmp_path, context_builder=cb)
+        state.approval_timeout_for = MagicMock(return_value=0.05)
+        state.enable_yolo()
+        slot = _make_slot()
+        slot.linked_session_key = "slack:1793.1"
+        assert state.is_yolo_active() and not state.yolo_reaches(slot)
+        _set_stream(
+            client,
+            _stream(_shell_event(title="Running: ls", tool_input=json.dumps({"command": "ls"}))),
+        )
+
+        with _patch_stats():
+            await finished(_run_chat(state, slot, "hello"), "the chat turn completing")
+
+        assert _permission_rows(slot), "the prompt never reached the card"
+        client.approve_tool.assert_not_called()
+        [card] = [
+            m["content"]
+            for m in slot.messages
+            if m.get("role") == "error" and "nothing came back within" in m["content"]
+        ]
+        assert "turn on YOLO mode" not in card
+        assert card.endswith(
+            "approve the prompt when it appears. YOLO mode does not cover this call."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_prompt_under_a_policy_without_yolo_is_not_told_to_turn_yolo_on(
+        self, tmp_path, monkeypatch
+    ):
+        """Policy does not permit YOLO mode, so a plain prompt left unanswered past a
+        0.05 s window gets a card saying YOLO mode does not cover the call."""
+        from kiro_crew import safety_override_grant
+
+        _no_pins(monkeypatch)
+        monkeypatch.setattr(safety_override_grant, "_yolo_policy_resolved", True)
+        monkeypatch.setattr(safety_override_grant, "_yolo_policy_permitted", False)
+        cb = MagicMock()
+        cb.hooks.on_tool_call.return_value = ToolHookResult.allow()
+        cb.build_message.return_value = ("hello", None)
+        state, client = _make_state(tmp_path, context_builder=cb)
+        state.approval_timeout_for = MagicMock(return_value=0.05)
+        slot = _make_slot()
+        assert not state.is_yolo_active()
+        _set_stream(
+            client,
+            _stream(_shell_event(title="Running: ls", tool_input=json.dumps({"command": "ls"}))),
+        )
+
+        with _patch_stats():
+            await finished(_run_chat(state, slot, "hello"), "the chat turn completing")
+
+        assert _permission_rows(slot), "the prompt never reached the card"
+        client.approve_tool.assert_not_called()
+        [card] = [
+            m["content"]
+            for m in slot.messages
+            if m.get("role") == "error" and "nothing came back within" in m["content"]
+        ]
+        assert "turn on YOLO mode" not in card
+        assert card.endswith(
+            "approve the prompt when it appears. YOLO mode does not cover this call."
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["held_bot_limit", "org_web_ask"])
+    async def test_a_prompt_no_auto_approve_answers_is_not_told_to_turn_yolo_on(
+        self, tmp_path, monkeypatch, source
+    ):
+        """YOLO mode is off, but the call falls under a held Bot limit or an
+        organisation's web ``ask``, which YOLO never answers: a plain prompt left
+        unanswered past a 0.05 s window gets a card saying YOLO mode does not cover
+        the call."""
+        from kiro_crew import mate_held_rules, web_ask_rule
+
+        _no_pins(monkeypatch)
+        if source == "held_bot_limit":
+            monkeypatch.setattr(mate_held_rules, "held_for", lambda *_a, **_k: ["no shell"])
+        else:
+            monkeypatch.setattr(web_ask_rule, "needs_person", lambda _event: "web_fetch")
+        cb = MagicMock()
+        cb.hooks.on_tool_call.return_value = ToolHookResult.allow()
+        cb.build_message.return_value = ("hello", None)
+        state, client = _make_state(tmp_path, context_builder=cb)
+        state.approval_timeout_for = MagicMock(return_value=0.05)
+        slot = _make_slot()
+        assert not state.is_yolo_active()
+        _set_stream(
+            client,
+            _stream(_shell_event(title="Running: ls", tool_input=json.dumps({"command": "ls"}))),
+        )
+
+        with _patch_stats():
+            await finished(_run_chat(state, slot, "hello"), "the chat turn completing")
+
+        assert _permission_rows(slot), f"{source}: the prompt never reached the card"
+        client.approve_tool.assert_not_called()
+        [card] = [
+            m["content"]
+            for m in slot.messages
+            if m.get("role") == "error" and "nothing came back within" in m["content"]
+        ]
+        assert "turn on YOLO mode" not in card
+        assert card.endswith(
+            "approve the prompt when it appears. YOLO mode does not cover this call."
+        )
 
 
 class TestDenyKeyFamily:

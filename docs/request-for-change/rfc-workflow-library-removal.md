@@ -1,12 +1,12 @@
 ---
 title: Remove a saved workflow -- a tombstone takes it out of every list and run path, and its revisions, lineage and slug stay
-status: in-progress
+status: implemented
 author: jeeshofone, with kirocrew-worker
 created: 2026-10-23
-last-audited: 2026-10-28
-audited-at: 33590d6f58
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: 23393
-implementation-prs: [19040]
+implementation-prs: [27528]
 tracking-issues: [18998]
 supersedes: []
 superseded-by: []
@@ -14,9 +14,13 @@ superseded-by: []
 
 # RFC: Remove a saved workflow from the library
 
-- Status: in-progress. Nothing of it is on main. The implementation is
-  [#19040](https://github.com/kirodotdev/KiroCrew/pull/19040), open, for
-  [#18998](https://github.com/kirodotdev/KiroCrew/issues/18998). This document
+- Status: implemented. [#19040](https://github.com/kirodotdev/KiroCrew/pull/19040)
+  moved to [#27528](https://github.com/kirodotdev/KiroCrew/pull/27528), which
+  maintainer bolichen97 approved and which merged on 2026-11-09 for
+  [#18998](https://github.com/kirodotdev/KiroCrew/issues/18998): removal is a
+  tombstone in `WorkflowDefinitionLibrary.remove` (`workflows/library.py`),
+  served as `DELETE /api/workflows/definitions/{workflow_ref}`
+  (`api_workflow_definition_remove`). Checked at `cdb601611f`. This document
   lands on its own first, because #19040 adds a capability that the implemented
   [rfc-global-workflow-library.md](rfc-global-workflow-library.md) lists as a
   non-goal, and the First Principles lane reads that decision off the base

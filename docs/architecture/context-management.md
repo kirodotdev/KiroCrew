@@ -83,7 +83,7 @@ begin on its own line; the assembly newline-terminates the caller's
 | 16 | `[Skills:]` (pinned bodies, then discovery) | `skill_runtime/delivery.py` → `get_context` | see §4 |
 | 17 | `[Learned corrections …]`, then `[Learned experience …]` | vector `get_lessons_context`, else `lessons.jsonl` | `lessons` group; standing rules in the first block, `on_topic` past findings in the second, which a request overlapping none of them leaves as a notice only |
 | 18 | `## Recent Session Context` | `conversation_log.recent_with_provenance` | `memory` group; left out on the first turn after a conversation reset (`/clear`, Reset conversation), when the dashboard turn passes `conversation_reset=True`, because its snippets would be the forgotten turns |
-| 19 | `[FOLDER STEERING …]` | `context_assembly/inclusion.py` → `_render_folder_steering_section`, bounded by `_STEERING_CAP` (a fixed allowance, not a share of the base) | every provider; non-member chat, `project` group, not a minimal or slim run (a member's envelope carries it instead) |
+| 19 | `[FOLDER STEERING …]` | `context_assembly/inclusion.py` → `_render_folder_steering_section`, bounded by `_STEERING_CAP` (a fixed allowance, not a share of the base) | every provider; non-member chat, `project` group, not a minimal run; a slim resume re-sends it under the post-compaction gate (a member's envelope carries it instead) |
 | 20 | `[RESPONSE PREFERENCES]` | `_build_response_preferences_section` | reply-style level set |
 | 21 | `[CONVERSATION HISTORY …]` | outer replay, `build_session_replay`; its header names what a text replay omits (tool calls, their results, unwritten reasoning) | compressed history passed |
 
@@ -541,7 +541,10 @@ next turn reads it through `consume_reinjection` (owned by
 `rearm_reinjection` it when the turn does not land or its stream reported a
 completed backend compaction, or delegate to `drive_turn` or
 answer through `messaging.dispatch.ChannelTurns`; `test/test_reinjection_gate.py`
-pins that per module. `build_message` then
+pins that per module. The flag is also kept in the session map
+(`session_map.COMPACTED_FLAG`) until a turn lands, so a restart or resume before
+then does not lose it: that resume's slim prompt carries the list below too, and
+a fresh start drops the copy. `build_message` then
 re-adds, once:
 
 1. the memory activity index and the `[Memory tools]` line;

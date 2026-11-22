@@ -206,13 +206,22 @@ async def api_kas_login_begin_device(request: web.Request) -> web.Response:
             status=400,
         )
     except InvalidStartUrlError as err:
-        return web.json_response({"error": str(err), "code": "invalid_start_url"}, status=400)
+        # `reason` names the broken rule so the form can say it in the user's language.
+        return web.json_response(
+            {"error": str(err), "code": "invalid_start_url", "reason": err.reason}, status=400
+        )
     except StartUrlRejectedError as err:
         # AWS refused what the user typed (the URL or the region): a 400 the form
         # can fix, not an auth-service failure. A bare answer names neither field.
         await _audit(request, "kas_login_begin_device", "failed", error=str(err))
-        code = "invalid_start_url" if err.names_start_url else "start_url_or_region_rejected"
-        return web.json_response({"error": str(err), "code": code}, status=400)
+        if err.names_start_url:
+            return web.json_response(
+                {"error": str(err), "code": "invalid_start_url", "reason": "aws_rejected"},
+                status=400,
+            )
+        return web.json_response(
+            {"error": str(err), "code": "start_url_or_region_rejected"}, status=400
+        )
     except (DeviceAuthError, BuilderIdAuthError) as err:
         await _audit(request, "kas_login_begin_device", "failed", error=str(err))
         return web.json_response(
@@ -275,7 +284,21 @@ async def api_kas_login_poll(request: web.Request) -> web.Response:
     # change worth an audit line; a pending tick is just a read.
     if result.get("status") == "authorized":
         await _audit(request, "kas_login_authorized", "success")
+        _close_browser_relay_crews()
     return web.json_response(result)
+
+
+def _close_browser_relay_crews() -> None:
+    """End every relay Crew open in a browser tab: they ran as the account that just left.
+
+    Loaded only if an open was ever made, so a gateway that never relayed one in a
+    browser imports nothing here.
+    """
+    import sys
+
+    module = sys.modules.get("kiro_crew.relay_viewer.browser_origin")
+    if module is not None:
+        module.close_all()
 
 
 async def api_kas_login_logout(request: web.Request) -> web.Response:
@@ -303,6 +326,7 @@ async def api_kas_login_logout(request: web.Request) -> web.Response:
             status=500,
         )
     await _audit(request, "kas_login_logout", "success")
+    _close_browser_relay_crews()
     await _retire_runtimes_after_sign_out(request)
     return web.json_response({"ok": True})
 

@@ -31,8 +31,10 @@
 import { useSyncExternalStore } from 'react'
 
 import { api } from '../api/client'
+import { sendTurn } from '../chat-core/transport/sendTurn'
+import { keepInComposer } from '../utils/composerRestore'
 import { i18nT } from '../i18n/t'
-import { BROWSER_HANDBACK_CHAT_EVENT, type BrowserHandbackSaid } from '../api/client/browserLive'
+import type { BrowserHandbackSaid } from '../api/client/browserLive'
 import type { BrowserInputEvent } from './useBrowserLive.input'
 import { FrameRing, decodeBrowserFrame, type DecodedBrowserFrame } from './useBrowserLive.frame'
 import { readQuickAsk, type QuickAsk, type QuickAskAction, type QuickAskAnswer, type QuickAskValues, type QuickAskVaultChoice } from '../pages/chat/quickAsk/types'
@@ -345,6 +347,15 @@ class BrowserLiveStore {
     reopen: (k: string, turnId: string) => api.browserLiveReopen(k, turnId) as Promise<unknown>,
     close: (k: string) => api.browserLiveClose(k) as Promise<unknown>,
     answer: (body: Parameters<typeof api.browserAskAnswer>[0]) => api.browserAskAnswer(body) as Promise<unknown>,
+    /**
+     * A hand-back note no agent op took, sent as the person's message to the slot.
+     * Same flags as the composer it replaces (`useChatPaneSend`): `responsive`, so a
+     * note to a Bot's DM reaches it now instead of queueing behind its turn; the
+     * gateway ignores the flag on any slot that is not a Bot DM
+     * (`responsive_chat.eligible`). No steer, as ChatPage's own send of this note
+     * had none.
+     */
+    chat: (k: string, text: string) => sendTurn({ message: text, slot: k, responsive: true }) as Promise<unknown>,
   }
 
   private session(key: string): SessionRecord {
@@ -703,10 +714,11 @@ class BrowserLiveStore {
       const answer = await (body ? this.writes.release(sessionKey, body) : this.writes.release(sessionKey))
       if (body && (answer as { delivered?: unknown } | null)?.delivered === 'chat') {
         // No agent op is parked to read it (the turn is over, or the agent is
-        // between ops): it becomes the person's next chat message, exactly as if
-        // typed in the composer.
-        const text = [choice, note].filter(Boolean).join(': ')
-        window.dispatchEvent(new CustomEvent(BROWSER_HANDBACK_CHAT_EVENT, { detail: { slotKey: sessionKey, text } }))
+        // between ops): it becomes the person's next chat message in this slot.
+        // The store sends it, on every surface (the chat card, a crewmate pane,
+        // an app's `BrowserView`), so it goes out once, as text alone, with a
+        // receipt that decides whether it is kept as a draft (`sendNote`).
+        void this.sendNote(sessionKey, [choice, note].filter(Boolean).join(': '))
       }
       this.handBackDrafts.delete(sessionKey)
       return true
@@ -715,6 +727,39 @@ class BrowserLiveStore {
       if (s.current?.turnId === before.turnId) this.setState(sessionKey, 'in_control', errorText(e))
       return false
     }
+  }
+
+  /**
+   * Send a hand-back note no agent op took as the slot's next message. Unless
+   * the gateway confirmed it (dispatched or queued), the note is kept in the slot's
+   * composer draft and the record says so: "not sent" for a refusal, "not confirmed"
+   * for one that may have run (a transport error, `unknown`, a late answer), which
+   * is kept for the person to check, never sent again by itself.
+   */
+  private async sendNote(sessionKey: string, text: string): Promise<void> {
+    let status = 'unknown'
+    let reason = ''
+    try {
+      const receipt = (await this.writes.chat(sessionKey, text)) as { status?: unknown; reason?: unknown } | null
+      status = typeof receipt?.status === 'string' ? receipt.status : 'unknown'
+      reason = typeof receipt?.reason === 'string' ? receipt.reason : ''
+    } catch (e) {
+      reason = errorText(e)
+    }
+    if (status === 'dispatched' || status === 'queued') return
+    // Kept where the person will find it: the composer on screen for this slot,
+    // else a mounted composer's drafts, else the stored drafts (a direct write to
+    // storage under a mounted chat page would be overwritten by its own copy).
+    const saved = keepInComposer(sessionKey, text) !== 'lost'
+    // Only a refusal proves nothing ran: a transport error can follow a request the
+    // gateway already took (the connection reset before the answer came back).
+    // A draft the browser would not store (storage full) leaves the notice as the
+    // one place the note survives, so it carries the note itself.
+    const failed = status === 'refused'
+    const message = !saved
+      ? i18nT(failed ? 'appSdk.browserView.note_not_sent_not_saved' : 'appSdk.browserView.note_not_saved', { note: text })
+      : i18nT(failed ? 'appSdk.browserView.note_not_sent' : 'appSdk.browserView.note_unconfirmed')
+    this.failControl(sessionKey, new Error(reason ? `${message} ${reason}` : message))
   }
 
   /** What the person said in a hand-back that failed to send, for the bar to restore. */

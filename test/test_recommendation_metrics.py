@@ -539,6 +539,27 @@ def test_every_shipped_curated_id_is_kept_as_the_feature():
     for tip_id in ids:
         assert fu.tip_feature_label(tip_id) == tip_id
     assert fu.tip_feature_label("edition-only-tip") == "other"
+    assert (
+        fu.tip_feature_label("edition-only-tip", frozenset({"edition-only-tip"}))
+        == "edition-only-tip"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_edition_listed_tip_is_named_by_its_id(rec) -> None:
+    # The edition pool lists its own curated id in TipsPool.metric_tip_ids, so a
+    # click on it is counted by name rather than by its doc.
+    from kiro_crew.tips import api_tips_feedback
+
+    cache = _tips_cache()
+    cache.metric_tip_ids = frozenset({"edition-only-tip"})
+    state = types.SimpleNamespace(_tips_cache=cache)
+    resp = await api_tips_feedback(
+        _feedback_request(state, {"id": "edition-only-tip", "action": "ack"})
+    )
+    assert resp.status == 200
+    [point] = [c for c in rec.counters if c["name"] == fu.TIPS_FEEDBACK]
+    assert point["attrs"] == {"action": "ack", "source": "curated", "feature": "edition-only-tip"}
 
 
 @pytest.mark.asyncio

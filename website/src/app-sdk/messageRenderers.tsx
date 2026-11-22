@@ -39,7 +39,7 @@ import NoticeCard from '../pages/chat/NoticeCard'
 import { isProjectHooksNotice } from '../pages/chat/projectHooksNoticeMatch'
 import SpecHooksRunNowhereNotice, { isSpecHooksRunNowhereNotice, specHooksRunNowhereDismissed } from '../pages/chat/SpecHooksNotice'
 import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
-import { replyShowsFooter } from '../pages/chat/replyFooter'
+import { replyShowsFooter, replyTurnStats } from '../pages/chat/replyFooter'
 import { toolRailColor } from '../utils/toolRailColor'
 import SkillLoadCard, { isSkillLoadRow } from '../pages/chat/SkillLoadCard'
 import { ErrorCard } from '../pages/chat/ErrorCard'
@@ -47,6 +47,7 @@ import { decisionStripFieldOf } from '../pages/chat/decisionRecord'
 import { agentNoToolsAgent, resolveGatewayNotice } from '../pages/chat/gatewayNotice'
 import AgentNoToolsNotice from '../pages/chat/AgentNoToolsNotice'
 import StopEventCard from '../pages/chat/StopEventCard'
+import RecoveryCard, { resolveInjectCard } from '../pages/chat/RecoveryCard'
 import { warmBriefBodyOf } from '../components/chat/WarmBriefCard'
 import { grillRowId } from '../components/chat/GrillCard'
 import { grillKeysSentAfter } from './protocol/grillMarker'
@@ -536,6 +537,10 @@ export interface AssistantBubbleOptions {
    *  crewmate's chat: its notes, scripts and page writes) sets it. Off
    *  (default) the chips draw as on every other surface. */
   hideFileChanges?: boolean
+  /** The stats this surface resolved for the row. Omitted, the renderer reads
+   *  them from `ctx.messages`; a host whose drawn transcript omits hidden rows
+   *  can resolve them against its unfiltered transcript instead. */
+  turnStats?: TurnStats
   /** Session routing for the reply's markdown: open a session chip, plus the
    *  roster and the active key the chip resolver needs. All three or none — the
    *  renderer gates on (`onSessionOpen` AND `sessions`), so a half-wired host
@@ -610,8 +615,12 @@ export function renderAssistantBubble(
 ): React.ReactNode {
   // A quiet monitor-loop cycle replies with a bare zero-width space
   // (U+200B): invisible-only content would draw as an empty bubble.
-  // Same skip as ChatPage's inline chain — see utils/invisibleText.
+  // Same skip as ChatPage's inline chain — see utils/invisibleText. A row
+  // whose only content is chips or a steering note this bubble does not draw
+  // is just as empty here.
   if (isHiddenInvisibleAssistantRow(m)) return null
+  const suppressSteerAck = opts.suppressSteerAck || turnHadPolicyBlock(ctx.messages, ctx.index)
+  if (isHiddenInvisibleAssistantRow(m, { fileChips: !opts.hideFileChanges, steerChip: !suppressSteerAck })) return null
   const isStreaming = m.role === 'streaming'
   // The footer belongs to a FINISHED reply, by the rule every surface shares
   // (`replyShowsFooter`); a host that groups rows into runs claims it at the
@@ -639,7 +648,7 @@ export function renderAssistantBubble(
       messageTs={opts.messageTs}
       variants={m.variants}
       variantIdx={m.variant_idx}
-      turnStats={(m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined}
+      turnStats={'turnStats' in opts ? opts.turnStats : replyTurnStats(m, ctx.messages, ctx.index)}
       decisionsStrip={decisionStripFieldOf(m)}
       fileChanges={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
       fileChangesOmittedFiles={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files}
@@ -654,7 +663,7 @@ export function renderAssistantBubble(
       // it. Only the card's Allow needs a local slot (`redactionSlot`).
       blockedLinks={(m.meta as Record<string, unknown> | undefined)?.link_blocks}
       redactionSlot={opts.redactionSlot}
-      suppressSteerAck={opts.suppressSteerAck || turnHadPolicyBlock(ctx.messages, ctx.index)}
+      suppressSteerAck={suppressSteerAck}
       bubbleClassName={bubbleClassName}
       onReplyInThread={isStreaming ? undefined : replyInThreadFor(m, ctx)}
       onQuoteMessage={quoteMessageFor(m, ctx, 'assistant')}
@@ -683,7 +692,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     roles: ['system'],
     match: isSkillLoadRow,
     render: (m, ctx) => ctx.row(
-      <SkillLoadCard message={m} disclosureKey={ctx.key} />,
+      <SkillLoadCard message={m} disclosureKey={ctx.key} onArtifactOpen={ctx.onArtifactOpen} />,
     ),
   },
   {
@@ -710,6 +719,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
         message={m}
         onFileOpen={ctx.onFileOpen}
         onFolderOpen={ctx.onFolderOpen}
+        onArtifactOpen={ctx.onArtifactOpen}
         disclosureKey={ctx.key}
       />,
       true,
@@ -783,6 +793,26 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     id: 'tool_lifecycle',
     roles: ['tool_call', 'tool_result'],
     render: (m, ctx) => toolRow(m, ctx),
+  },
+  {
+    // Shape-matched (`'*'` plus a role check) so a host's role-keyed `inject`
+    // row, such as ChatPage's bubble, cannot outrank the card.
+    id: 'recovery_inject',
+    roles: ['*'],
+    match: m => m.role === 'inject' && resolveInjectCard(m) !== null,
+    render: (m, ctx) => {
+      const parsed = resolveInjectCard(m)
+      if (!parsed) return null
+      return ctx.row(<RecoveryCard parsed={parsed} disclosureKey={ctx.key} />)
+    },
+  },
+  {
+    // Model-only: the refusal's own `notice` row already shows the person.
+    // Shape-matched for the same reason as `recovery_inject`.
+    id: 'automation_notice_inject',
+    roles: ['*'],
+    match: m => m.role === 'inject' && (m.meta as { injectKind?: unknown } | undefined)?.injectKind === 'automation_notice',
+    render: () => null,
   },
   {
     id: 'inject',

@@ -3,8 +3,8 @@ title: Work fold forgets closed items — bound a board by what is open, not by 
 status: implemented
 author: kirocrew agent session
 created: 2026-10-10
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 18982
 implementation-prs: [19068]
 tracking-issues: [18583]

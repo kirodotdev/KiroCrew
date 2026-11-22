@@ -13,7 +13,9 @@ const item = (over: Partial<WorkBoardItem>): WorkBoardItem => ({
   schema: 1, item_id: 'it_1', title: 'Menu', acceptance: { kind: 'human_approval' }, state: 'open', verdict: null,
   decision: '', round: 1, fails: 0, status: null, summary: '', artifacts: {}, pr: null, last_report_at: null,
   created_at: '2026-10-30T00:00:00Z', closed_at: null, decided_at: null, orphaned: false, stale: false,
-  acceptance_concrete: true, outstanding: false, terminal: false, alive: 'idle', events: [], ...over,
+  acceptance_concrete: true, outstanding: false, terminal: false, alive: 'idle', events: [],
+  // The conductor's current ask: without one a person-reason report stays the conductor's.
+  ask: { what: 'Pick one', why: '', options: [], pick: '', pick_why: '', written_at: '2026-10-30T00:06:00Z' }, ...over,
 })
 
 const worker = (key: string, by: string): CrewWorker => ({
@@ -202,9 +204,37 @@ describe('milestoneState', () => {
     expect(milestoneState(item({ status: null, alive: 'closed' }), false)).toBe('next')
   })
 
+  it('an accepted milestone whose session works again reads as running until it stops', () => {
+    // A comment on a doc the milestone made wakes its session after the accept.
+    const accepted = { state: 'accepted' as const, terminal: true, status: 'done' as const }
+    expect(milestoneState(item({ ...accepted, alive: 'running' }), false)).toBe('running')
+    expect(milestoneState(item({ ...accepted, alive: 'idle' }), true)).toBe('needs_you')
+    expect(milestoneState(item({ ...accepted, alive: 'idle' }), false)).toBe('done')
+    expect(milestoneState(item({ ...accepted, alive: 'closed' }), false)).toBe('done')
+  })
+
   it('a rejected or abandoned item is not done, whatever its last report said', () => {
     expect(milestoneState(item({ status: 'question', outstanding: false, terminal: true, state: 'abandoned' }), false)).toBe('not_done')
     expect(milestoneState(item({ status: 'done', terminal: true, state: 'rejected' }), true)).toBe('not_done')
+  })
+
+  it('discussing: an open item whose worker hosts a discussion and is still there', () => {
+    const talk = { status: 'progress' as const, discussion: { phase: 'talking' as const, round: 1 }, ...R }
+    expect(milestoneState(item({ ...talk, alive: 'running' }), false)).toBe('discussing')
+    expect(milestoneState(item({ ...talk, alive: 'idle' }), false)).toBe('discussing')
+    // The person comes first.
+    expect(milestoneState(item(talk), true)).toBe('needs_you')
+  })
+
+  it('discussing ends when the item closes, and a stalled host falls back to its plain state', () => {
+    const talk = { status: 'progress' as const, discussion: { phase: 'talking' as const, round: 3 }, ...R }
+    expect(milestoneState(item({ ...talk, state: 'accepted', terminal: true, alive: 'closed' }), false)).toBe('done')
+    expect(milestoneState(item({ ...talk, state: 'abandoned', terminal: true }), false)).toBe('not_done')
+    expect(milestoneState(item({ ...talk, stale: true }), false)).toBe('quiet')
+    expect(milestoneState(item({ ...talk, alive: 'closed' }), false)).toBe('stuck')
+    expect(milestoneState(item({ ...talk, orphaned: true }), false)).toBe('stuck')
+    // No phase is no discussion.
+    expect(milestoneState(item({ ...talk, discussion: { phase: '' } as never }), false)).toBe('waiting')
   })
 })
 

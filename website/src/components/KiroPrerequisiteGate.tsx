@@ -34,14 +34,17 @@ import SignInCommands, { KiroCliCheckAgain } from './KiroCliSignInCommands'
 import { KIRO_PREREQUISITE_KEY, kiroPrerequisiteIsBlocking, useKiroPrerequisite } from '../hooks/useKiroPrerequisite'
 import {
   AgentDetailActions,
-  AgentInstallDetail,
+  AgentNotReadyDetail,
   AgentPickerRow,
   AgentStatusBadge,
   CopyCommand,
+  WorkloadPodSandboxHint,
+  type AgentNotReadyReason,
 } from './agentHarness'
 
 import { Trans } from 'react-i18next'
 import { i18nT } from '../i18n/t'
+import { signInSentence } from '../api/signInCommand'
 // The shared status read: `hooks/useKiroPrerequisite` owns it, the chat's
 // kiro-cli sign-in row reads the same entry.
 const QUERY_KEY = KIRO_PREREQUISITE_KEY
@@ -100,11 +103,18 @@ function OwnerSetupRequired({
             ? i18nT('components.kiroPrerequisiteGate.sign_in_again_to_continue')
             : i18nT('components.kiroPrerequisiteGate.the_gateway_owner_needs_to_finish_setup')}
         </h1>
-        <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
-          {authRequired
-            ? i18nT('api.client.stale_owner_session_sign_in_again')
-            : i18nT('components.kiroPrerequisiteGate.ask_the_kiro_crew_owner_to_install_kiro_cli_and')}
-        </p>
+        {authRequired ? (
+          <ErrorNotice
+            className="mt-3 max-w-lg text-left"
+            message={signInSentence(i18nT('api.client.stale_owner_session_sign_in_again'))}
+            testId="kiro-gate-stale-owner-sign-in"
+            noHandoffReason="this gate stands between the user and the chat the hand-off would open, and the dashboard sign-in that chat needs is the credential the gateway refused"
+          />
+        ) : (
+          <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
+            {i18nT('components.kiroPrerequisiteGate.ask_the_kiro_crew_owner_to_install_kiro_cli_and')}
+          </p>
+        )}
         {/* "Check again" re-probes readiness, which cannot change for this
             viewer until they sign back in — a retry that cannot succeed is a
             false affordance, so the re-auth state carries no button and the
@@ -343,6 +353,7 @@ function SandboxUnavailable({
   retrying,
   onRetry,
   allowRemoteSetup,
+  workloadPod = false,
 }: {
   failureKind: string
   detail: string
@@ -350,12 +361,15 @@ function SandboxUnavailable({
   retrying: boolean
   onRetry: () => void
   allowRemoteSetup: boolean
+  /** `workloadPodNoSandbox`: a team Crew pod with no sandbox and no opt-in. */
+  workloadPod?: boolean
 }) {
-  // One honest title for every kind — the CLI is installed, verification is
-  // what failed — with the body carrying the mechanism, because the remedies
-  // diverge sharply. A transient failure clears on retry and must NOT push the
-  // user toward disabling their own isolation; a foreign outer sandbox means
-  // this host's sandbox is fine; only 'no_backend' is a host-level verdict.
+  // One honest title for every kind and every engine route — the agent
+  // sandbox could not be started — with the body carrying the mechanism,
+  // because the remedies diverge sharply. A transient failure clears on retry
+  // and must NOT push the user toward disabling their own isolation; a foreign
+  // outer sandbox means this host's sandbox is fine; only 'no_backend' is a
+  // host-level verdict.
   //
   // The generic no_backend sentence ("this host provides no OS-level sandbox")
   // is FALSE under the Ubuntu AppArmor restriction: user namespaces work, the
@@ -398,7 +412,7 @@ function SandboxUnavailable({
           {i18nT('components.kiroPrerequisiteGate.sandbox_unavailable')}
         </p>
         <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
-          {i18nT('components.kiroPrerequisiteGate.kiro_cli_is_installed_but_could_not_be_verified')}
+          {i18nT('components.kiroPrerequisiteGate.the_agent_sandbox_could_not_be_started')}
         </h1>
         <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">{body}</p>
         {/* A foreign outer sandbox means this host is fine, so host remedies
@@ -408,6 +422,11 @@ function SandboxUnavailable({
             between a fixable host and a dead end. */}
         {(failureKind === 'no_backend' || (transient && remedy)) && (
           <SandboxRemedy remedy={remedy} transient={transient} />
+        )}
+        {failureKind === 'no_backend' && workloadPod && (
+          <div className="mt-5 w-full max-w-lg text-left text-[13px] leading-relaxed text-text">
+            <WorkloadPodSandboxHint />
+          </div>
         )}
         {detail ? (
           <div className="mt-5 w-full max-w-lg text-left">
@@ -638,6 +657,43 @@ function sandboxOffFor(
     && (status.sandbox_blocked_backends?.includes(probe.id) ?? false)
 }
 
+/** A workload pod (a team Crew deployment) whose host can build no sandbox and
+ *  whose operator has not opted into unsandboxed exec: the screen names the setting.
+ *  With *backendId*, only for a harness that opt-in unblocks: an enforced one stays in
+ *  `sandbox_blocked_backends` with no backend, opt-in or not. */
+export function workloadPodNoSandbox(status: KiroPrerequisiteStatus | undefined, backendId?: string): boolean {
+  return !!status && status.container_boundary_hint === true
+    && status.sandbox_backend_available !== true && status.unsandboxed_exec_permitted !== true
+    && !(backendId && status.sandbox_blocked_backends?.includes(backendId))
+}
+
+/**
+ * Why the setup check found *probe* unable to start, or null when no cause this
+ * screen can name holds. One explicit branch per cause, in
+ * `configuredBackendCanStart`'s order, and no catch-all: a cause nobody wrote a
+ * branch for shows no reason rather than a wrong one (a spec problem must never
+ * read as a sandbox the host cannot provide). `sandbox_unavailable`, an
+ * outdated Kiro CLI and a failed probe have no branch because each gets its own
+ * screen before this one.
+ */
+function notReadyReason(
+  status: KiroPrerequisiteStatus,
+  probe: AcpBackendProbe,
+): AgentNotReadyReason | null {
+  if (probe.selectable === false) return 'not_offered'
+  if (probe.installed === 'missing') return 'missing'
+  if (probe.restart_required) return 'restart_required'
+  if (probe.installed === 'unknown') return 'unverified'
+  if (sandboxOffFor(status, probe)) return 'sandbox_off'
+  if (!(status.sandbox_backend_available === true || status.unsandboxed_exec_permitted === true)
+    || status.sandbox_blocked_backends?.includes(probe.id)) return 'sandbox_blocked'
+  if (probe.id === ACP_BACKEND_KAS) {
+    if ((status.missing_agent_specs ?? []).length > 0) return 'agent_specs_missing'
+    if ((status.rejected_agent_specs ?? []).length > 0) return 'agent_specs_rejected'
+  }
+  return null
+}
+
 /**
  * When the harness probe re-polls. Only while a setup screen is what the user
  * sees: once the dashboard is open — Kiro ready, a returning user, a usable
@@ -816,6 +872,13 @@ function OtherCodingAgents({
           ? i18nT('components.kiroPrerequisiteGate.could_not_switch_to_kiro')
           : i18nT('components.kiroPrerequisiteGate.could_not_save_agent_choice', { name })))
       : null
+  // Each Check again shows its own failure, keyed on the agent it rechecked:
+  // the notice's for the configured agent, the open row's for that row's.
+  const recheckErrorFor = (backend: string, agentName: string): string | null =>
+    recheckMut.isError && recheckMut.variables === backend
+      ? setupMarkerErrorMessage(recheckMut.error)
+        ?? i18nT('components.kiroPrerequisiteGate.agent_recheck_failed', { name: agentName })
+      : null
   // The yellow notice below says the configured agent is not ready, and it
   // carries the "switch agents later in Settings > Agent Harness" line with
   // its Use Kiro CLI instead button. The list footer says that same line;
@@ -823,8 +886,34 @@ function OtherCodingAgents({
   const configuredNotReady = !!(
     configuredOther && configuredProbe && !configuredBackendCanStart(status, configuredProbe)
   )
+  // The notice says why, unless the configured agent's own row is the one open
+  // below it and already says so. Kiro Agent has no row, so its notice always does.
+  const configuredReason = configuredNotReady && configuredProbe && shown?.id !== configuredProbe.id
+    ? notReadyReason(status, configuredProbe)
+    : null
+  // These reasons' copy says "press Check again", so the notice carries that
+  // button for the configured agent: the open row's rechecks a different agent.
+  const configuredRecheckable = configuredReason === 'missing'
+    || configuredReason === 'restart_required'
+    || configuredReason === 'unverified'
+  // An offered row only ever fails on the causes above; the fallback keeps an
+  // unexpected one reading as blocked, as the row always has.
+  const shownReason = shown
+    ? notReadyReason(status, shown) ?? (configuredBackendCanStart(status, shown) ? null : 'sandbox_blocked')
+    : null
+  // A team Crew pod's operator rarely opens the panel below, so the one setting
+  // that unblocks the configured agent there is shown above it, open or not.
+  const podHint = configuredNotReady && !!configuredProbe
+    && notReadyReason(status, configuredProbe) === 'sandbox_blocked'
+    && workloadPodNoSandbox(status, configuredProbe.id)
 
   return (
+    <>
+    {podHint && (
+      <div className="mb-5 rounded-xl border border-warn/40 bg-warn-subtle px-4 py-3 text-[13px] leading-relaxed text-text" role="status">
+        <WorkloadPodSandboxHint />
+      </div>
+    )}
     <div className="mb-5 rounded-xl border border-border bg-bg-elevated/40" data-testid="other-coding-agents">
       <button
         type="button"
@@ -852,7 +941,38 @@ function OtherCodingAgents({
                   name: acpBackendName(configuredProbe),
                 })}
               </p>
-              <p className="mt-1">{i18nT('components.kiroPrerequisiteGate.switch_agent_later_in_settings')}</p>
+              {configuredReason && (
+                <div className="mt-2 space-y-2" data-testid="configured-agent-not-ready-reason">
+                  <AgentNotReadyDetail
+                    reason={configuredReason}
+                    name={acpBackendName(configuredProbe)}
+                    probe={configuredProbe}
+                  />
+                  {configuredRecheckable && (
+                    <>
+                      <AgentDetailActions
+                        name={acpBackendName(configuredProbe)}
+                        busy={busy}
+                        switching={false}
+                        onRecheck={() => recheckMut.mutate(configuredProbe.id)}
+                        rechecking={recheckMut.isPending && recheckMut.variables === configuredProbe.id}
+                      />
+                      {/* No hand-off: preserve the unsaved agent choice in picked; this
+                          setup gate also hides the chat the hand-off would open. */}
+                      <ErrorNotice
+                        nested
+                        className="text-[12px]"
+                        message={recheckErrorFor(configuredProbe.id, acpBackendName(configuredProbe))}
+                        testId="configured-agent-recheck-error"
+                      />
+                    </>
+                  )}
+                </div>
+              )}
+              {/* The unverified copy above already ends with the switch-later line. */}
+              {configuredReason !== 'unverified' && (
+                <p className="mt-1">{i18nT('components.kiroPrerequisiteGate.switch_agent_later_in_settings')}</p>
+              )}
               <Btn
                 type="button"
                 className="mt-2 min-h-9 rounded-lg border-border-strong bg-card px-3 text-[13px] shadow-sm"
@@ -934,33 +1054,8 @@ function OtherCodingAgents({
                     >
                       {selected && shown && (
                         <>
-                          {shown.installed === 'missing' ? (
-                            <AgentInstallDetail name={name} probe={shown} />
-                          ) : shown.restart_required ? (
-                            <p className="text-[13px] leading-relaxed text-text">
-                              {i18nT('components.kiroPrerequisiteGate.agent_restart_required_detail', { name })}
-                            </p>
-                          ) : shown.installed === 'unknown' ? (
-                            <p className="text-[13px] leading-relaxed text-text">
-                              {i18nT('components.kiroPrerequisiteGate.agent_unverified_detail', { name })}
-                            </p>
-                          ) : sandboxOffFor(status, shown) ? (
-                            // Before the host-verdict branch below: same blocked
-                            // row, different cause. No doctor command and (below)
-                            // no Check again — neither can turn a setting back on.
-                            <p className="text-[13px] leading-relaxed text-text" role="status">
-                              {i18nT('components.kiroPrerequisiteGate.sandbox_off_agent_detail', { name })}
-                            </p>
-                          ) : !configuredBackendCanStart(status, shown) ? (
-                            <div className="space-y-2 text-[13px] leading-relaxed text-text" role="status">
-                              <p>
-                                {i18nT('components.kiroPrerequisiteGate.sandbox_blocked_agent_detail', { name })}
-                              </p>
-                              <p className="text-muted">
-                                {i18nT('components.kiroPrerequisiteGate.run_kirocrew_doctor_on_the_gateway_host_for_a_ful')}
-                              </p>
-                              <CopyCommand><code>kirocrew doctor</code></CopyCommand>
-                            </div>
+                          {shownReason ? (
+                            <AgentNotReadyDetail reason={shownReason} name={name} probe={shown} workloadPodNoSandbox={!podHint && workloadPodNoSandbox(status, shown.id)} />
                           ) : (
                             <p className="text-[13px] leading-relaxed text-text">
                               {i18nT('components.kiroPrerequisiteGate.agent_ready_to_use', { name })}
@@ -988,7 +1083,7 @@ function OtherCodingAgents({
                                 ? undefined
                                 : () => recheckMut.mutate(shown.id)
                             }
-                            rechecking={recheckMut.isPending}
+                            rechecking={recheckMut.isPending && recheckMut.variables === shown.id}
                           />
                           {/* No hand-off: the agent choice failed to save, and this
                               setup gate hides the chat the hand-off would open. The
@@ -1004,12 +1099,7 @@ function OtherCodingAgents({
                               setup gate also hides the chat the hand-off would open. */}
                           <ErrorNotice
                             className="text-xs"
-                            message={
-                              recheckMut.isError && recheckMut.variables === shown.id
-                                ? setupMarkerErrorMessage(recheckMut.error)
-                                  ?? i18nT('components.kiroPrerequisiteGate.agent_recheck_failed', { name })
-                                : null
-                            }
+                            message={recheckErrorFor(shown.id, name)}
                             testId="other-agent-recheck-error"
                           />
                         </>
@@ -1028,6 +1118,7 @@ function OtherCodingAgents({
         </div>
       )}
     </div>
+    </>
   )
 }
 
@@ -1521,6 +1612,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
         retrying={retrying}
         onRetry={retryStatus}
         allowRemoteSetup={!ltsLocked}
+        workloadPod={workloadPodNoSandbox(status, configuredBackend)}
       />
     )
   }

@@ -47,6 +47,8 @@ class Tabs:
     """
 
     channel_id: str = ""
+    #: The Plan canvas tab's view id ("" while the channel has none).
+    plan: str = ""
     #: The Workers tab's view id ("" while it has none).
     workers: str = ""
     #: Whether the Code tab shows the channel's diff (so a link to it lands on something).
@@ -62,7 +64,7 @@ class Tabs:
 
     @property
     def any(self) -> bool:
-        return bool(self.channel_id) and bool(self.workers or self.code or self.prs)
+        return bool(self.channel_id) and bool(self.plan or self.workers or self.code or self.prs)
 
 
 def tab_element(channel_id: str, tab_id: str) -> dict | None:
@@ -73,10 +75,12 @@ def tab_element(channel_id: str, tab_id: str) -> dict | None:
 
 
 def tab_links(tabs: Tabs | None, *, workers: bool = True, code: bool = True) -> list[dict]:
-    """``Workers · Code`` as channel-tab elements (empty when no tab can be linked)."""
+    """``Plan · Workers · Code`` as channel-tab elements (empty when no tab can be linked)."""
     if tabs is None or not tabs.channel_id:
         return []
     links = []
+    if tabs.plan:
+        links.append(tab_element(tabs.channel_id, tabs.plan))
     if workers and tabs.workers:
         links.append(tab_element(tabs.channel_id, tabs.workers))
     if code and tabs.code:
@@ -313,7 +317,7 @@ def _asked_call(row: model.WorkerRow) -> str:
     """The call a pending approval asks for, without its verb (``git push …``), or ``""``."""
     asked = row.step
     for verb in _STEP_VERBS:
-        asked = asked.removeprefix(verb) if asked.startswith(verb) else asked
+        asked = asked.removeprefix(verb)
     return asked
 
 
@@ -388,17 +392,12 @@ def _output(row: model.WorkerRow, tabs: Tabs | None = None) -> list[dict]:
     label = f"PR #{row.pr_number}"
     url = _pr_url(row)
     tab = tab_element(tabs.channel_id, tabs.pr(row.pr_number)) if tabs is not None else None
-    out: list[dict] = [
-        (
-            tab
-            if tab is not None
-            else (
-                {"type": "link", "url": url, "text": label}
-                if url
-                else {"type": "text", "text": label}
-            )
-        )
-    ]
+    if tab is not None:
+        out: list[dict] = [tab]
+    elif url:
+        out = [{"type": "link", "url": url, "text": label}]
+    else:
+        out = [{"type": "text", "text": label}]
     state = PR_WORDS.get(row.pr_state, "") if row.pr_state != "open" else ""
     if state:
         out.append({"type": "text", "text": f" {state}"})
@@ -543,12 +542,8 @@ def _status_elements(row: model.WorkerRow, now: datetime, elapsed: bool = True) 
 
 
 def _dashboard_url(url: str) -> str:
-    """A url button target: http(s), unchanged by the redaction, no markup characters."""
-    if not url or not (url.startswith("https://") or url.startswith("http://")):
-        return ""
-    if redact_via_context(url) != url or any(c in url for c in "<>| \n") or len(url) > 3000:
-        return ""
-    return url
+    """A url button target: :func:`_linkable`, within Slack's 3,000-character url limit."""
+    return url if _linkable(url) and len(url) <= 3000 else ""
 
 
 def _plain(text: str, limit: int) -> str:

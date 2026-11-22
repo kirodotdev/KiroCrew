@@ -24,6 +24,7 @@ from aiohttp import web
 
 from kiro_crew import platform_compat, port_resolution, shutdown_event  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
+from kiro_crew.agent_sdk import kas_bundle as _kas_bundle
 from kiro_crew.apps.backend import (  # noqa: F401
     _RESTART_STEADY_INTERVAL,
     revive_lost_app_backends,
@@ -246,7 +247,6 @@ from kiro_crew.dashboard.server_runtime.app_platform import (  # noqa: F401
     _kick_builtin_adoption_staging,
     _kick_default_app_installs,
     _kick_interrupted_update_sweep,
-    _reconcile_app_resources,
     _start_app_backends,
     _warm_builtin_app_names,
     _warm_materialized_agents,
@@ -348,6 +348,7 @@ from kiro_crew.dashboard.server_runtime.middleware_chain import (  # noqa: F401
     _insert_lts_gate,
     _install_api_middlewares,
     _install_dashboard_middlewares,
+    _relay_origin_middleware,
     _resolve_tailnet_trust,
     _tailnet_origin_enabled,
 )
@@ -964,11 +965,11 @@ async def start_dashboard(
     # dirs, which must not block the event loop during startup.
     await asyncio.get_running_loop().run_in_executor(subprocess_executor(), register_builtin_apps)
 
-    # Warm the gate's builtin app names and the materialized-agent snapshot, then
-    # reconcile every enabled app's resources; each runs its I/O on the executor.
+    # Warm the gate's builtin app names and the materialized-agent snapshot; each
+    # runs its I/O on the executor. Enabled apps' resources are reconciled once,
+    # after each app's vet, by ``start_enabled_app_backends`` below.
     await _warm_builtin_app_names()
     await _warm_materialized_agents()
-    await _reconcile_app_resources()
 
     # One-time migration: disable stale deploy_web builtin installs (now core module).
     # Idempotent — logs once and silently succeeds if already gone.
@@ -1490,6 +1491,11 @@ async def start_dashboard(
     probe_task = asyncio.create_task(handlers._bg_mcp_probe(state.sessions))
     state._background_tasks.add(probe_task)
     probe_task.add_done_callback(state._background_tasks.discard)
+
+    # Engine guarantee: a start with no engine for this pin installs it.
+    _engine_task = asyncio.create_task(asyncio.to_thread(_kas_bundle.ensure_engine_at_startup))
+    state._background_tasks.add(_engine_task)
+    _engine_task.add_done_callback(state._background_tasks.discard)
 
     # Refresh config.json's meta stamp when an upgrade left it naming the
     # previous build. Post-bind and fire-and-forget (never awaited on

@@ -493,6 +493,12 @@ async def start_api_server(
     _kick_local_decision_model(state)
     _kick_owner_only_sweep(state)
     _kick_display_verdicts(state)
+    # Parity with start_dashboard: a start with no engine for this pin installs it.
+    from kiro_crew.agent_sdk import kas_bundle as _kas_bundle
+
+    _engine_task = asyncio.create_task(asyncio.to_thread(_kas_bundle.ensure_engine_at_startup))
+    state._background_tasks.add(_engine_task)
+    _engine_task.add_done_callback(state._background_tasks.discard)
     # Parity with start_dashboard's post-bind restore: build fair admission's
     # service (and probe containment) before any channel turn can arrive, so a
     # headless gateway enforces the configured limits too. Never raises.

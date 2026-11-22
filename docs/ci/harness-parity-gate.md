@@ -77,7 +77,7 @@ A non-standard (X) capability — an underscore method, a `_meta` field, a harne
 
 | Each member must | Fails on |
 |---|---|
-| cite `acp_frames/<dir>/<file>.jsonl` in the `#` block directly above the set, where `<dir>` is the member's own fixture directory (`kiro` for `""`) | a member with no citation in its own directory, as when pi joined `ACP_BACKENDS_STEERING_REQUEST` with no pi capture (#21740) |
+| cite `acp_frames/<dir>/<file>.jsonl` in the `#` block directly above the set, where `<dir>` is the member's own fixture directory (`kiro` for `""`) | a member with no citation in its own directory, as when pi joined `ACP_BACKENDS_STEERING_REQUEST` with no pi capture |
 | for KAS, cite `kas/` | a KAS member citing only `kiro/` — kiro-cli is not KAS |
 | point at a file that exists, whose header says `recorded: live`, the member's `backend`, and an `agent_version` | a missing or synthesized capture |
 | carry an agent name, when it has one (`_meta.agent_name`, else `initialize.agentInfo.name`), listed in `EXPECTED_AGENT_NAMES` | a capture of another package, such as `@openma/pi-acp` for pi |

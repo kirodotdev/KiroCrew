@@ -37,7 +37,7 @@ from kiro_crew.executors import (
     run_in_embed_pool,
 )
 from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_kwargs
-from kiro_crew.llm_helpers import save_conversation_turn_off_loop
+from kiro_crew.llm_helpers import record_interaction_event, save_conversation_turn_off_loop
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, turn_ceiling
 from kiro_crew.messaging.dashboard_live import DashboardLiveRenderer, TeeRenderer
@@ -318,6 +318,7 @@ async def handle_message_transport(
     start_priority: StartPriority = StartPriority.BACKGROUND,
     spool_text: str | None = None,
     spool_attachments: int = 0,
+    spool_attachment_names: tuple[str, ...] = (),
     had_voice_input: bool = False,
 ) -> None:
     """Drive a Slack message through the new transport path end-to-end.
@@ -325,8 +326,9 @@ async def handle_message_transport(
     ``start_priority``: as for ``handler.handle_message`` (rule:
     ``kiro_crew.start_priority``).
 
-    ``spool_text`` / ``spool_attachments``: as for ``handler.handle_message`` --
-    the pre-ingestion message the shutdown spool records instead of *text*.
+    ``spool_text`` / ``spool_attachments`` / ``spool_attachment_names``: as for
+    ``handler.handle_message`` -- the pre-ingestion message the shutdown spool
+    records instead of *text*, and the names of its files.
 
     ``had_voice_input``: as for ``handler.handle_message`` -- the message carried a
     transcribed voice memo, answered in kind under ``voice_reply.auto_reply_to_voice``.
@@ -471,6 +473,7 @@ async def handle_message_transport(
         thread_id=reply_ts,
         message_id=msg_ts,
         attachments_dropped=spool_attachments,
+        attachment_names=spool_attachment_names,
     )
     if not await admit_inbound_callback(
         sessions,
@@ -1236,6 +1239,9 @@ async def handle_message_transport(
         _turn_landed = driver_turn_landed(driver)
         if _turn_landed:
             note_turn_landed(sessions, session_key)
+            # Per-interaction telemetry, on the landed verdict alone: a Stop
+            # or a stream with no completion returns normally but did not land.
+            record_interaction_event(client, session_key, "slack")
         if _unfinished:
             Stats().inc_message_failed()
         else:
@@ -1468,6 +1474,7 @@ async def handle_message_transport(
                     thread_id=reply_ts,
                     message_id=msg_ts,
                     attachments_dropped=spool_attachments,
+                    attachment_names=spool_attachment_names,
                 ),
             )
         with contextlib.suppress(Exception):

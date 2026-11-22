@@ -86,6 +86,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         PromptBusyExhaustedError,
         _is_transient_acp_error,
         acp_error_after_tool_activity,
+        acp_error_is_capacity_or_throttle,
         acp_error_is_connection_failure,
         acp_error_is_pipe_death,
         acp_error_is_server_error,
@@ -104,12 +105,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         transient_retry_delay,
     )
     from kiro_crew.llm_helpers_parts.background_turns import (  # noqa: F401
+        BackgroundAdmissionRefused,
         _background_crew_log_owner,
         _background_spawn_backend,
         _cleanup_memory_consolidation_session,
         _lite_resets_failed,
         _lite_rewrite_tasks,
         _lite_rewrites,
+        _lite_spec_refusal,
         _lite_spec_unconfirmed,
         _raise_if_unfinished,
         _record_background_crew_log,
@@ -117,6 +120,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _rewrite_lite_spec,
         _start_fresh_conversation,
         background_turn,
+        repair_lite_spec,
         run_bg_oneliner,
     )
     from kiro_crew.llm_helpers_parts.model_fallback import (  # noqa: F401
@@ -133,9 +137,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _fallback_wire_spelling,
         _latch_identity,
         _slot_switch_session_locks,
+        advance_fallback_after_activity,
         advance_fallback_candidate,
         annotate_model_fallback,
         append_fallback_story,
+        attach_fallback_story,
         configured_fallback_chain,
         engine_attributed_model,
         fallback_rewound_transient_budget,

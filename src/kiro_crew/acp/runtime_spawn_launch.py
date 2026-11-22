@@ -10,9 +10,9 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``,
-``_can_load_session``, ``_child_pids``, ``_derived_spec_snapshot``, ``_exit_watch_task``,
-``_initialize_result``, ``_initialized``, ``_kas_engine_bundle``, ``_kas_host_auth``,
-``_last_activity``, ``_launch_copy_spec``,
+``_can_load_session``, ``_child_pids``, ``_derived_spec_snapshot``, ``_engine_is_child``,
+``_exit_watch_task``, ``_initialize_result``, ``_initialized``, ``_kas_engine_bundle``,
+``_kas_host_auth``, ``_last_activity``, ``_launch_copy_spec``,
 ``_launch_cwd_roots``, ``_launch_process_cwd``, ``_max_age_secs``,
 ``_max_rss_depth``, ``_max_rss_mb``, ``_native_launch_resources``,
 ``_native_launch_sources``, ``_native_launch_view_alias``, ``_native_skill_projection``,
@@ -595,6 +595,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
     try:
         plan = await self._resolve_spawn_plan()
         self._max_rss_depth = plan.rss_depth
+        self._engine_is_child = plan.engine_is_child
         argv = plan.argv
         if self._launch_agent and "--agent" in argv:
             # The harness built ``--agent <identity>`` and ran its spawn gates
@@ -1340,7 +1341,7 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
     (``kas_never_defer_ids``, expanding whole-server grants from
     :func:`_known_server_tool_names`) and ``enabled`` goes out as an explicit
     false. A spec that grants the loader is sent the spawn agent's declared job
-    tools (``job_tool_ids``), so the calls that agent's prompt makes its
+    tools (``job_tool_ids``, a custom agent's own row), so the calls its prompt makes its
     procedure cost no load round trip, and nothing when it declares none. An
     operator who set their own never-defer list (``operator_mandatory_mcps``)
     has decided what stays direct: Crew adds no job tool beside it.
@@ -1389,10 +1390,10 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
         return base
 
     def spec_and_added() -> tuple[dict[str, Any] | None, tuple[str, ...]]:
-        # Only KAS reads this channel. There the Crew servers a custom agent was
-        # given, not its author's, stay behind KAS's loader (``crew_added_servers``).
+        # Only KAS reads this channel. There the Crew servers a custom agent was given,
+        # not its author's, stay behind KAS's loader, loader or not, bar its job tools.
         spec = self._projected_spawn_spec()
-        if not self._harness.client_meta_settings or spec_grants_tool_search(spec):
+        if not self._harness.client_meta_settings:
             return spec, ()
         return spec, crew_added_servers(self._agent, spec)
 
@@ -1412,7 +1413,7 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
                 kas_never_defer_ids, spec, _known_server_tool_names
             )
     elif operator_mandatory_mcps() is None:
-        never_defer = job_tool_ids(self._agent, spec)
+        never_defer = job_tool_ids(self._agent, spec, custom=bool(added))
     settings = kas_client_meta_settings(
         self._tool_search, loader_granted=loader_granted, never_defer=never_defer
     )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 class TestConfig:
-    def test_defaults_off_and_tunables(self):
+    def test_defaults_on_and_tunables(self):
         from kiro_crew.config.loader import InstancesConfig
         from kiro_crew.instances.constants import (
             DEFAULT_CONNECT_TIMEOUT_SECS,
@@ -14,9 +14,8 @@ class TestConfig:
         )
 
         c = InstancesConfig()
-        assert c.enabled is False
-        # 0 == automatic: the cap follows the REGISTERED crew count (resolved per
-        # request by resolve_warm_set_cap), so no configured crew is ever evicted.
+        assert c.enabled is True
+        # 0 == automatic, resolved per request by resolve_warm_set_cap.
         assert c.warm_set_cap == DEFAULT_WARM_SET_CAP == 0
         assert c.tunnel_base_port == DEFAULT_TUNNEL_BASE_PORT == 7778
         assert DEFAULT_CONNECT_TIMEOUT_SECS == 15.0
@@ -44,7 +43,7 @@ class TestConfig:
 
         d = KiroCrewConfig().to_dict()
         assert d["instances"] == {
-            "enabled": False,
+            "enabled": True,
             "crew_reads_enabled": False,
             "warm_set_cap": 0,
             "tunnel_base_port": 7778,

@@ -21,8 +21,10 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps.registry_pipeline import _FACADE, _facade
+from kiro_crew.apps.registry_pipeline.gh_credential import _github_https_repo
 from kiro_crew.apps.registry_pipeline.git_targets import (
     _FETCH_CAUSE_OTHER,
+    _GH_FETCH_CAUSES,
     _REGISTRY_FETCH_CAUSES,
     _entry_git_url,
     _git_url_host,
@@ -152,20 +154,24 @@ def _manifest_cache_path(entry: dict[str, Any]) -> Path:
     )
 
 
-def _read_manifest_cache(entry: dict[str, Any]) -> dict[str, Any] | None:
+def _read_manifest_cache(
+    entry: dict[str, Any], *, ignore_ttl: bool = False
+) -> dict[str, Any] | None:
     """Read cached app.json for a registry entry's exact source coordinates.
 
     Returns None if missing or stale — and, because the path is derived from
     the entry's full source identity, also None whenever the branch, pinned
     commit, repository, or subdirectory differ from what was cached, so a
     failed fetch can never silently fall back to another source's manifest.
+    *ignore_ttl* returns a stale copy too: the listing serves it for a row whose
+    fetch has not finished within the listing's budget.
     """
     path = _manifest_cache_path(entry)
     if not path.is_file():
         return None
     try:
         age = time.time() - path.stat().st_mtime
-        if age > _MANIFEST_CACHE_TTL:
+        if age > _MANIFEST_CACHE_TTL and not ignore_ttl:
             return None  # stale
         return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError):
@@ -518,11 +524,16 @@ def _installed_manifest_cache_path(entry: dict[str, Any]) -> Path:
     return success_path.with_name(success_path.name[: -len(".json")] + ".installed.json")
 
 
-def _read_installed_manifest_cache(entry: dict[str, Any]) -> dict[str, Any] | None:
-    """The cached installed-checkout app.json for *entry*, or None if missing or stale."""
+def _read_installed_manifest_cache(
+    entry: dict[str, Any], *, ignore_ttl: bool = False
+) -> dict[str, Any] | None:
+    """The cached installed-checkout app.json for *entry*, or None if missing or stale.
+
+    *ignore_ttl* returns a stale copy too, as ``_read_manifest_cache`` does.
+    """
     path = _installed_manifest_cache_path(entry)
     try:
-        if time.time() - path.stat().st_mtime > _MANIFEST_CACHE_TTL:
+        if time.time() - path.stat().st_mtime > _MANIFEST_CACHE_TTL and not ignore_ttl:
             return None
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, RecursionError):
@@ -862,7 +873,8 @@ def _read_external_registry_failure_cause(name: str) -> str | None:
 def _external_registry_fetch_status(reg: Any) -> dict[str, Any] | None:
     """Why *reg*'s latest index fetch failed, as the dashboard shows it, or ``None``.
 
-    ``{"ok": False, "cause", "host", "cached"}`` while the registry's failed-fetch
+    ``{"ok": False, "cause", "host", "cached"}`` (plus ``repo``, ``owner/repo``, for a
+    ``gh_*`` cause) while the registry's failed-fetch
     marker stands (see :func:`_read_external_registry_failure_cause`). ``cached``
     says whether the index cache of an earlier successful fetch still reads as
     one, through the same reader the listing serves its rows from: a cache file
@@ -882,6 +894,11 @@ def _external_registry_fetch_status(reg: Any) -> dict[str, Any] | None:
     host = _git_url_host(reg.repo)
     if host:
         status["host"] = host
+    if cause in _GH_FETCH_CAUSES:
+        # The sentence for a gh cause names the repository the sign-in must read.
+        github_repo = _github_https_repo(reg.repo)
+        if github_repo:
+            status["repo"] = github_repo
     return status
 
 

@@ -35,6 +35,14 @@ it ends, so a tab the daemon opens while an op runs is that op's chat's. The
 contexts live on the connection: Chrome disposes them when it closes (``disposeOnDetach``), and a
 new relay starts with none.
 
+Why popups join the ledger: a page the agent's tab opens itself (``window.open``,
+``target=_blank``, a "Sign in with ..." window) is created by the page, not by the
+daemon, so no create reply names it. The relay turns target discovery on for its
+own connection and records any page whose ``openerId`` is already ledgered, and
+remembers that opener so the op route can return to it when the popup closes. The
+discovery events are the relay's alone: a daemon client that never asked for
+discovery never sees them, so its event buffer is what it was before.
+
 Loopback only, and a secret on every path: the listener binds ``127.0.0.1:0`` and
 every route it serves carries a per-start capability (:attr:`CdpRelay.url` is
 ``http://127.0.0.1:<port>/<secret>``). The sandbox does not fence loopback, so a
@@ -100,6 +108,16 @@ _UNLIMITED_MESSAGE = 0
 
 #: Grace for the websocket close handshake when the relay shuts down.
 _CLOSE_TIMEOUT_SECS = 5.0
+
+#: The events ``Target.setDiscoverTargets`` turns on. The relay enables discovery
+#: for itself, so these reach a daemon client only if that client asked too.
+_DISCOVERY_EVENTS = frozenset(
+    {"Target.targetCreated", "Target.targetInfoChanged", "Target.targetDestroyed"}
+)
+
+#: Most popup -> opener links kept. A link outlives its popup (the route walks it
+#: back when the popup closes), so the map is bounded rather than pruned on close.
+_OPENER_CAP = 1024
 
 EventCallback = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
 
@@ -266,6 +284,11 @@ class CdpRelay:
         #: The browser context a daemon ``Target.createTarget`` opens its tab in;
         #: empty is the default context.
         self.create_context = ""
+
+        #: Popup target -> the agent target that opened it (see the module doc).
+        self._openers: dict[str, str] = {}
+        #: A daemon client turned discovery on itself: discovery events reach clients.
+        self._client_discovers = False
         self._closed = False
         self._torn_down = False
         self.forwarded_up = 0
@@ -304,7 +327,19 @@ class CdpRelay:
         self.url = f"http://{LOOPBACK_HOST}:{port}/{self._secret}"
         self.ws_url = f"ws://{LOOPBACK_HOST}:{port}{RELAY_WS_PREFIX}{self._secret}"
         self._reader = asyncio.create_task(self._read_upstream(), name="cdp-relay-upstream")
+        await self._discover_popups()
         return self.url
+
+    async def _discover_popups(self) -> None:
+        """Turn target discovery on, so a popup an agent tab opens is seen.
+
+        Best effort: a browser that refuses leaves popups unledgered, exactly as
+        before, and every other op still works.
+        """
+        try:
+            await self.send("Target.setDiscoverTargets", {"discover": True})
+        except (CdpError, RelayClosed, asyncio.TimeoutError) as exc:
+            logger.debug("relay: target discovery not enabled; popups stay unseen: %s", exc)
 
     def _authorized(self, request: web.Request) -> bool:
         token = request.match_info.get("token", "")
@@ -439,6 +474,14 @@ class CdpRelay:
         """The browser context a ledgered tab opened in; ``""`` for the default context."""
         return self._target_contexts.get(target_id, "")
 
+    def opener_of(self, target_id: str) -> str:
+        """The agent target that opened popup *target_id*, or ``""`` if none did.
+
+        Still answers after either tab closed, so a chat bound to a popup that
+        closed itself can walk back to the tab it came from.
+        """
+        return self._openers.get(target_id, "")
+
     def forget_target(self, target_id: str) -> None:
         """Drop *target_id* from the ledger (the stream lane saw it destroyed)."""
         if target_id in self._agent_targets:
@@ -548,6 +591,8 @@ class CdpRelay:
             return
         if not isinstance(msg, dict):
             return
+        if msg.get("method") == "Target.setDiscoverTargets":
+            self._client_discovers = bool((msg.get("params") or {}).get("discover"))
         if "id" in msg:
             gid = next(self._down_ids)
             self._routes[gid] = (ws, msg["id"])
@@ -625,7 +670,9 @@ class CdpRelay:
                 if msg.get("method") == "Target.detachedFromTarget" and isinstance(closed, str):
                     self._closing.discard(closed)
                 return
-        self._observe_event(msg)
+        await self._observe_event(msg)
+        if msg.get("method") in _DISCOVERY_EVENTS and not sid and not self._client_discovers:
+            return
         for ws in list(self._clients):
             try:
                 await ws.send_str(raw)
@@ -662,13 +709,32 @@ class CdpRelay:
             except Exception:  # noqa: BLE001 - a listener must not stall the reply
                 logger.debug("relay: on_target_created failed", exc_info=True)
 
-    def _observe_event(self, msg: dict[str, Any]) -> None:
-        """Keep the ledger honest when the browser reports a tab gone."""
-        if msg.get("method") != "Target.targetDestroyed":
+    async def _observe_event(self, msg: dict[str, Any]) -> None:
+        """Keep the ledger honest: drop a tab the browser reports gone, add a popup."""
+        method = msg.get("method")
+        params = msg.get("params") or {}
+        if method == "Target.targetDestroyed":
+            tid = params.get("targetId")
+            if isinstance(tid, str):
+                self.forget_target(tid)
             return
-        tid = (msg.get("params") or {}).get("targetId")
-        if isinstance(tid, str):
-            self.forget_target(tid)
+        if method in ("Target.targetCreated", "Target.targetInfoChanged"):
+            await self._observe_popup(params.get("targetInfo") or {})
+
+    async def _observe_popup(self, info: dict[str, Any]) -> None:
+        """Ledger a page an agent tab opened; the person's own popups stay out."""
+        tid, opener = info.get("targetId"), info.get("openerId")
+        if info.get("type") != "page" or not isinstance(tid, str) or not tid:
+            return
+        if not isinstance(opener, str) or opener not in self._agent_targets:
+            return
+        if tid in self._agent_targets:
+            return
+        if len(self._openers) >= _OPENER_CAP:
+            self._openers.pop(next(iter(self._openers)))
+        self._openers[tid] = opener
+        # A page's window.open stays in its opener's browser context (per-chat isolation).
+        await self._record_agent_target(tid, self._target_contexts.get(opener, ""))
 
     def _fail_pending(self, exc: Exception) -> None:
         for fut in self._pending.values():

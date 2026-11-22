@@ -26,6 +26,12 @@ import kiro_crew.cron as cron_mod
 import kiro_crew.mcp_cron as mcp_cron
 from kiro_crew.cron import CronService
 from kiro_crew.cron_history import CronRunRecord
+
+# ``add_job`` imports this module on first use, and it binds ``sel`` by name at import.
+# Imported here, before the fixture below replaces ``kiro_crew.sel.sel``, so that binding
+# is the real accessor and not a stand-in that outlives the test (see the same import in
+# ``test_cron_auto_pause_limit.py``).
+from kiro_crew.dashboard import chat_folders_paths  # noqa: F401
 from kiro_crew.dashboard.handlers.cron import api_cron_delete
 
 

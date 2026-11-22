@@ -15,15 +15,27 @@ import pytest
 
 from kiro_crew.acp import kas_pin
 
-_SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
+#: An engine release, optionally followed by the Node runtime a republish of that
+#: same engine build bundles (``0.66.117-node22.23.4``).
+_PIN_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:-node\d+\.\d+\.\d+)?$")
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
 
-def test_the_pinned_version_is_a_plain_semver() -> None:
+def test_the_pinned_version_is_a_release_with_an_optional_node_suffix() -> None:
     # The version is a directory name under ``<base>/kas/`` and under the data
-    # home's ``engines/kas/``; a prerelease suffix or a stray character there is a
+    # home's ``engines/kas/``; any other suffix or a stray character there is a
     # path, not a release.
-    assert _SEMVER.match(kas_pin.KAS_PIN_VERSION), kas_pin.KAS_PIN_VERSION
+    assert _PIN_VERSION.match(kas_pin.KAS_PIN_VERSION), kas_pin.KAS_PIN_VERSION
+
+
+@pytest.mark.parametrize("version", ["0.66.117", "0.66.117-node22.23.4"])
+def test_the_pin_version_shape_accepts_a_release_and_a_node_republish(version: str) -> None:
+    assert _PIN_VERSION.match(version)
+
+
+@pytest.mark.parametrize("version", ["0.66.117-rc.1", "0.66.117-node22", "v0.66.117", "0.66"])
+def test_the_pin_version_shape_refuses_anything_else(version: str) -> None:
+    assert not _PIN_VERSION.match(version)
 
 
 def test_the_manifest_digest_is_a_lowercase_sha256() -> None:
@@ -43,8 +55,14 @@ def test_pinned_version_is_the_pin_unless_the_gateway_env_overrides_it(
     assert kas_pin.pinned_version() == "0.70.1"
 
 
+def test_the_engine_release_is_the_pin_without_its_node_suffix() -> None:
+    assert re.fullmatch(r"\d+\.\d+\.\d+", kas_pin.KAS_PIN_ENGINE_RELEASE)
+    assert kas_pin.KAS_PIN_VERSION.startswith(kas_pin.KAS_PIN_ENGINE_RELEASE)
+
+
 def test_the_public_surface_is_exactly_the_pin_and_the_engine_gate() -> None:
     assert sorted(kas_pin.__all__) == [
+        "KAS_PIN_ENGINE_RELEASE",
         "KAS_PIN_MANIFEST_SHA256",
         "KAS_PIN_VERSION",
         "KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION",

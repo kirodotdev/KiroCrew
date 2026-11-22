@@ -47,8 +47,6 @@ const CHROME_ONLY_ROLES: Record<string, string> = {
 const PAGE_ONLY_ENTRY_IDS: Record<string, string> = {
   // -- shared dashboard set (pages/chat/transcriptRenderers.tsx) --
   thinking_block: 'ThinkingBlock with disclosure state; the registry folds reasoning into the group summary',
-  recovery_inject: 'RecoveryCard for gateway-authored inject rows; the registry renders inject as prose (resolveInjectCard decides, shared)',
-  automation_notice_inject: 'a re-routed automation refusal (injectKind=automation_notice) is model-only machinery; drawn nowhere (its notice bar already shows the person), suppressed with render:()=>null',
   workflow_completion: 'WorkflowCompletionCard needs session/folder/panel hand-offs the SDK has no seam for',
   workflow_run_tool: 'launch card refining the tool line; store-connected',
   subagent_run_tool: 'launch card refining the tool line; store-connected',

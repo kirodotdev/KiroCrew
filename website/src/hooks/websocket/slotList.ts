@@ -16,6 +16,9 @@ import { observedPaneSlots } from '../../api/slotMessagesQuery'
 import { autoBatched } from '../../lib/streamBatch'
 import { noteAppSlotRows } from '../../utils/appSlotPush'
 import { createSlotStorageSweep } from '../../utils/slotStorageSweep'
+import { applyServerReads } from './serverReads'
+import { resendKeptReads } from '../../lib/readOutbox'
+import { resendSlotRead } from '../../lib/slotReadRelay'
 
 export interface SlotListSync {
   /** A new connection: forget the last-seen generations and raw frame. */
@@ -24,6 +27,7 @@ export interface SlotListSync {
   onSlotPatch(frame: SlotPatchFrame): void
   /** A `slots_diff` frame; `requestResync` asks the gateway for a full list. */
   onSlotsDiff(frame: SlotsDiffFrame, raw: string, requestResync: () => void): void
+  dispose(): void
 }
 
 /** One changed row of a `slots_diff` frame: the whole row as the full list would carry it. */
@@ -106,6 +110,15 @@ export function useSlotListSync(
         if (warmSlotCache.rejected.match(result)) recordIdleRowRefresh(slot, null)
       })
     }
+    let stopConfigWait = (): void => {}
+    const runServerReads = (rows: readonly ChatSlot[]): void => {
+      stopConfigWait()
+      if (applyServerReads(rows, { dispatch, queryClient })) return
+      // Held app badges get one more pass, on the current rows, once the config first loads.
+      stopConfigWait = queryClient.getQueryCache().subscribe(() => {
+        if (queryClient.getQueryData(['kirocrewConfig']) !== undefined) runServerReads(store.getState().dashboard.slots)
+      })
+    }
     const resetForConnection = (): void => {
       // Forget the last-seen allowlist generation: it is process-local to the
       // gateway, so after a restart an equal number can mean a different
@@ -127,6 +140,7 @@ export function useSlotListSync(
       // A `_done` the old socket never delivered will not arrive on this one.
       clearIdleRowRefreshes()
       clearBehindReads()
+      resendKeptReads(resendSlotRead)
     }
     const onSlots = (msg: FrameData, data: ChatSlot[], raw: string): void => {
       // A numbered list is the base the next `slots_diff` is built on. Reducers
@@ -231,6 +245,7 @@ export function useSlotListSync(
         [slot, store.getState().dashboard.slots.find(s => s.key === slot)?.queue_held_depth ?? 0] as const))
       dispatch(sseSlots(data))
       lastSlotsArrayRef.current = store.getState().dashboard.slots
+      runServerReads(lastSlotsArrayRef.current)
       // localStorage is a side effect, so the orphan sweep runs here, after the
       // reducers have applied this frame's hold fields and rows.
       if (Array.isArray(data)) {
@@ -515,6 +530,6 @@ export function useSlotListSync(
       noteAppSlotRows(frame.slots)
       notifyAppsSlotsChanged()
     }
-    return { resetForConnection, onSlots, onSlotPatch, onSlotsDiff }
+    return { resetForConnection, onSlots, onSlotPatch, onSlotsDiff, dispose: () => stopConfigWait() }
   }, [buffers, dispatch, queryClient])
 }

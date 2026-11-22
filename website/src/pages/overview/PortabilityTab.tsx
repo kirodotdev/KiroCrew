@@ -11,6 +11,7 @@ import { noteStaleOwnerResponse } from '../../api/staleOwnerSignal'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { adoptHostUiPrefsOnNextLoad, pauseUiPrefsSync, resumeUiPrefsSync } from '../../lib/uiPrefs'
 import { downloadBlob } from '../../utils/download'
+import { apiTransport } from '../../api/apiTransport'
 
 /**
  * Where a settings restore leaves its result for the load it triggers.
@@ -403,7 +404,7 @@ export default function PortabilityTab() {
     fd.append('file', file)
     setChecking(true)
     try {
-      const resp = await fetch('/api/portability/preview', { method: 'POST', body: fd })
+      const resp = await apiTransport.request('/api/portability/preview', { method: 'POST', body: fd })
       const data = await resp.json()
       if (data.ok) {
         setPreview(data.manifest)
@@ -461,7 +462,7 @@ export default function PortabilityTab() {
       if (memoryImport && effectiveMode === 'merge') params.set('components', 'memory')
       if (!memoryImport && pickedTemplates.length) params.set('agent_templates', pickedTemplates.join(','))
       if (effectiveMode === 'replace' && includeSettings) params.set('include_settings', '1')
-      const resp = await fetch(`/api/portability/import?${params}`, { method: 'POST', body: fd })
+      const resp = await apiTransport.request(`/api/portability/import?${params}`, { method: 'POST', body: fd })
       const data = await resp.json()
       if (data.ok) {
         const summary = data.summary || {}

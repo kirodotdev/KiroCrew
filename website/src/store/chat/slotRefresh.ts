@@ -518,6 +518,8 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       // page carries.
       const endedTurnHistory = reportedRunning && !running
       if (endedTurnHistory) return
+      // This page loads the pane a failed open left empty (see `slotOpenFailed`).
+      if (state.slotOpenFailed === key) state.slotOpenFailed = null
       // A queue hand-off emits no `chat_done` for the turn it ends, so the guard
       // above cannot see a page captured before a requeued steer's drain. Such a
       // page still shows the steer's old row un-retired and lacks the drained
@@ -799,7 +801,8 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
         const k = isDecidedRow(m) && m.meta?.resolved ? decidedRowKey(m) : undefined
         if (k) localResolved.set(k, { resolved: m.meta!.resolved, ...(m.meta!.answer !== undefined ? { answer: m.meta!.answer } : {}) })
       }
-      const hydrated = messages.map(m => {
+      // The backend never stores `meta.pastes`, so re-collapse the pane's sent pastes first.
+      const hydrated = mergePreservedPastes(warmCache, messages).map(m => {
         const k = isDecidedRow(m) ? decidedRowKey(m) : undefined
         const local = k ? localResolved.get(k) : undefined
         return local ? { ...m, meta: { ...m.meta, ...local } } : m

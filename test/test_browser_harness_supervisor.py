@@ -53,7 +53,7 @@ def test_the_hidden_leaves_are_spelled_the_same_in_every_fence() -> None:
 def test_the_supervisor_allowlist_matches_the_worker_allowlist() -> None:
     worker = {name: accepted for name, (_fn, accepted) in helper_worker._ALLOWLIST.items()}
     assert dict(supervisor.HELPERS) == worker
-    for forbidden in ("http_get", "browser_js", "browser_cdp", "run", "upload_file", "fill_input"):
+    for forbidden in ("browser_js", "browser_cdp", "run", "upload_file"):
         assert forbidden not in supervisor.HELPERS
 
 
@@ -84,7 +84,7 @@ async def test_call_refuses_an_unlisted_helper_or_argument_before_connecting(
 ) -> None:
     sup = HarnessSupervisor(tmp_path, config_reader=lambda: {})
     with pytest.raises(supervisor.HelperError):
-        await sup.call("http_get", url="https://example.invalid")
+        await sup.call("upload_file", path="/etc/hosts")
     with pytest.raises(supervisor.HelperError):
         await sup.call("goto", url="https://example.invalid", referrer="x")
     with pytest.raises(supervisor.HarnessNotInstalled):
@@ -450,7 +450,7 @@ def _fake_helpers() -> types.ModuleType:
         raise RuntimeError("Session with given id not found")
 
     mod.click_at_xy = boom  # type: ignore[attr-defined]
-    mod.http_get = lambda url: "never"  # type: ignore[attr-defined]
+    mod.upload_file = lambda path: "never"  # type: ignore[attr-defined]
     return mod
 
 
@@ -459,7 +459,9 @@ def test_the_worker_runs_only_allowlisted_helpers_with_allowlisted_arguments() -
     ok = helper_worker._handle(helpers, {"id": 1, "helper": "goto", "kwargs": {"url": "https://a"}})
     assert ok == {"id": 1, "ok": True, "result": {"frameId": "f", "url": "https://a"}}
     assert helper_worker._handle(helpers, {"id": 2, "ping": True})["result"] == {"pong": True}
-    denied = helper_worker._handle(helpers, {"id": 3, "helper": "http_get", "kwargs": {"url": "x"}})
+    denied = helper_worker._handle(
+        helpers, {"id": 3, "helper": "upload_file", "kwargs": {"path": "x"}}
+    )
     assert denied["ok"] is False and "not allowed" in denied["error"]
     extra = helper_worker._handle(
         helpers, {"id": 4, "helper": "goto", "kwargs": {"url": "x", "evil": 1}}
@@ -1074,3 +1076,116 @@ def test_a_headless_shell_build_is_chosen_headless_even_with_a_display(tmp_path,
     sup_auto = HarnessSupervisor(tmp_path, config_reader=lambda: {"choice": "auto"})
     user = sup_auto._choose(state(chromium.BUILD_HEADLESS_SHELL))
     assert user is not None and user.kind == "user_chrome" and user.headless is False
+
+
+# ── "Automatic" falls back to Kiro's Chromium when Chrome cannot connect ──
+
+
+def _auto_fallback_sup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, choice: str, chromium_exe: Path | None
+) -> tuple[HarnessSupervisor, list[str], dict[str, str | None]]:
+    """A supervisor on a display host with Chrome found; records which browser each start used."""
+    discover = supervisor.discover
+    chromium = supervisor.install.chromium
+    profile = tmp_path / "chrome-profile"
+    profile.mkdir()
+    facts = discover.HostFacts(chrome=tmp_path / "chrome", chrome_profile=profile)
+    monkeypatch.setattr(discover, "probe_host", lambda *a, **kw: facts)
+    monkeypatch.setattr(
+        supervisor.install,
+        "install_state",
+        lambda home: supervisor.install.InstallState(
+            prefix=home,
+            installed=True,
+            version=HARNESS_VERSION,
+            python=Path(sys.executable),
+            chromium=chromium.ChromiumState(
+                chromium.CHROMIUM_VERSION,
+                "linux64",
+                chromium_exe is not None,
+                chromium_exe,
+                chromium.BUILD_FULL,
+            ),
+        ),
+    )
+    sup = HarnessSupervisor(tmp_path / "h", config_reader=lambda: {"choice": choice})
+    monkeypatch.setattr(sup, "runtime_dir", lambda: tmp_path / "h" / "run")
+    chrome_url: dict[str, str | None] = {"url": None}
+
+    async def devtools(_profile: Path) -> str | None:
+        return chrome_url["url"]
+
+    monkeypatch.setattr(supervisor, "_devtools_ws_url", devtools)
+    used: list[str] = []
+
+    async def launch(choice_: Any, state: Any) -> Any:
+        used.append(f"kiro_chromium headless={choice_.headless}")
+        raise supervisor.BrowserUnavailable("stop after the launch was chosen")
+
+    real_user_url = sup._user_browser_ws_url
+
+    async def user_url(choice_: Any) -> str:
+        used.append(choice_.kind)
+        await real_user_url(choice_)
+        raise supervisor.BrowserUnavailable("stop after the connect was chosen")
+
+    real_launch = sup._launch_chromium
+    if chromium_exe is not None:
+        monkeypatch.setattr(sup, "_launch_chromium", launch)
+    else:
+
+        async def launch_missing(choice_: Any, state: Any) -> Any:
+            used.append(f"kiro_chromium headless={choice_.headless}")
+            return await real_launch(choice_, state)
+
+        monkeypatch.setattr(sup, "_launch_chromium", launch_missing)
+    monkeypatch.setattr(sup, "_user_browser_ws_url", user_url)
+    return sup, used, chrome_url
+
+
+@pytest.mark.asyncio
+async def test_automatic_uses_kiro_chromium_when_chrome_remote_debugging_is_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exe = tmp_path / "kiro-chrome"
+    sup, used, chrome_url = _auto_fallback_sup(
+        tmp_path, monkeypatch, choice="auto", chromium_exe=exe
+    )
+    assert sup.status()["browser"]["kind"] == "user_chrome"
+    with pytest.raises(supervisor.BrowserUnavailable, match="launch was chosen"):
+        await sup.ensure()
+    assert used == ["kiro_chromium headless=False"]
+    assert sup.status()["browser"] == {"kind": "kiro_chromium", "headless": False}
+    # Remote debugging turned on: the next start goes back to the person's Chrome.
+    chrome_url["url"] = "ws://127.0.0.1:1/devtools/browser/x"
+    with pytest.raises(supervisor.BrowserUnavailable, match="connect was chosen"):
+        await sup.ensure()
+    assert used[-1] == "user_chrome"
+    assert sup.status()["browser"]["kind"] == "user_chrome"
+
+
+@pytest.mark.asyncio
+async def test_automatic_fallback_without_a_downloaded_chromium_offers_the_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Status names Kiro's Chromium as missing, which is what puts Install on the card."""
+    sup, used, _ = _auto_fallback_sup(tmp_path, monkeypatch, choice="auto", chromium_exe=None)
+    with pytest.raises(supervisor.BrowserUnavailable, match="switched to its own Chromium"):
+        await sup.ensure()
+    status = sup.status()
+    assert status["browser"]["kind"] == "kiro_chromium"
+    assert status["chromium"]["present"] is False
+    assert "Install" in status["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_hand_picked_chrome_still_fails_with_the_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sup, used, _ = _auto_fallback_sup(
+        tmp_path, monkeypatch, choice="user_chrome", chromium_exe=tmp_path / "kiro-chrome"
+    )
+    with pytest.raises(supervisor.BrowserUnavailable, match="Chrome is not accepting"):
+        await sup.ensure()
+    assert used == ["user_chrome"]
+    assert sup.status()["browser"]["kind"] == "user_chrome"

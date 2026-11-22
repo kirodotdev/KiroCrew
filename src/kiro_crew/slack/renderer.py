@@ -94,6 +94,7 @@ from kiro_crew.slack.handler import (
     build_timing_footer,
     seal_stream,
 )
+from kiro_crew.slack.no_stream_reply import markdown_blocks, post_markdown, seal_placeholder
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.renderer_session_status import ApprovalSessionStatus
 from kiro_crew.slack.renderer_stream_debt import StreamDebtNotice
@@ -726,12 +727,12 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
                 # The placeholder post is best-effort too: on failure leave
                 # ``_stream_ts`` None — there is no placeholder to edit, and
                 # ``on_done`` posts the final answer directly with a fresh
-                # ``post_message`` (mirrors the native semantics; do NOT
+                # ``post_markdown`` (mirrors the native semantics; do NOT
                 # substitute a truthy sentinel).
                 self._use_slack_stream = False
                 try:
-                    self._stream_ts = await self.slack.post_message(
-                        self.channel, _THINKING, self.thread_ts
+                    self._stream_ts = await post_markdown(
+                        self.slack, self.channel, _THINKING, self.thread_ts
                     )
                 except Exception:
                     logger.warning("Failed to post chat.update placeholder", exc_info=True)
@@ -972,12 +973,11 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         splits. Consumes the splitter's contract by sealing chunk 0 into the live
         message and posting the rest as thread replies, in order.
 
-        Chunk 0 is the answer-carrying delivery on this path, so its send is
-        allowed to raise: an ``update_message`` failure here means the reader
-        received no answer, and propagating it leaves ``on_done`` with the turn
-        un-finalized so the dispatcher records a failure and runs its rescue. The
-        overflow continuations are best-effort — a dropped tail is a truncated
-        answer, not a missing one.
+        Chunk 0 is the answer-carrying delivery on this path. A refused edit
+        posts it as its own message (``seal_placeholder``); any other failure
+        raises, leaving ``on_done`` with the turn un-finalized so the dispatcher
+        records a failure and runs its rescue. The overflow continuations are
+        best-effort — a dropped tail is a truncated answer, not a missing one.
         """
         chunks = await self._split_for_slack(text)
         if self._stream_ts is not None:
@@ -985,18 +985,16 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
             first, _ = redact_exfiltration_urls(first)
             if len(first) > SLACK_MSG_LIMIT:
                 first = first[:SLACK_MSG_LIMIT] + TRUNCATION_NOTICE
-            # A tool-only / reasoning-only turn reaches here with empty text
-            # (``clean_text or ""`` at the no-stream call site), which
-            # ``chat.update`` rejects as ``no_text`` and RAISES — propagating past
-            # ``_finalized`` and failing an ordinary completed turn. Substitute the
-            # ``_No response._`` placeholder (mirrors the native path's
-            # ``final_text or _NO_RESPONSE``) so an empty answer still finalizes
-            # cleanly rather than tripping the consecutive-failure breaker.
-            await self.slack.update_message(self.channel, self._stream_ts, first or _NO_RESPONSE)
+            # A tool-only / reasoning-only turn reaches here with empty text, which
+            # Slack refuses as ``no_text``: send the native path's ``_No response._``
+            # so an empty answer finalizes cleanly instead of failing the turn.
+            await seal_placeholder(
+                self.slack, self.channel, self._stream_ts, first or _NO_RESPONSE, self.thread_ts
+            )
             self._delivered += chunks[0]
         for part in chunks[1:]:
             try:
-                await self.slack.post_message(self.channel, part, self.thread_ts)
+                await post_markdown(self.slack, self.channel, part, self.thread_ts)
             except Exception:
                 logger.debug("slack: posting a continuation chunk failed", exc_info=True)
                 continue
@@ -1226,8 +1224,9 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
 
         Best-effort and idempotent, like ``close()``: it runs on an exception
         path, so it must not replace the real error with a bookkeeping one. On
-        the no-stream fallback the placeholder shows the text instead, but that
-        edit cannot be confirmed, so the ledger stays silent about it.
+        the no-stream fallback it only edits the placeholder and never posts a
+        second copy of an answer ``on_done``'s post may have delivered; that edit
+        cannot be confirmed, so the ledger stays silent about it.
         """
         if self._delivered or self._finalized:
             return  # ``on_done`` already delivered (some of) the reply
@@ -1244,7 +1243,9 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
                     await self._append_stream(piece)
             elif self._stream_ts and shown.strip():
                 first = (await self._split_for_slack(shown))[0]
-                await self.slack.update_message(self.channel, self._stream_ts, first)
+                await self.slack.update_message(
+                    self.channel, self._stream_ts, first, markdown_blocks(first)
+                )
         except Exception:
             logger.warning("Slack: releasing the held reply failed", exc_info=True)
 
@@ -1752,9 +1753,9 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
                 # — the best-effort seal would let ``on_done`` fall through to
                 # ``_finalized = True`` and the dispatcher would book success for a
                 # turn the reader never saw. Route the undelivered answer through
-                # ``_render_fallback`` instead: it does a ``chat.update`` on the
-                # live ts that PROPAGATES on failure, so a still-undelivered answer
-                # leaves ``_finalized`` False and the dispatcher records a failure
+                # ``_render_fallback`` instead: its ``chat.update`` on the live ts,
+                # or the post a refused edit makes, PROPAGATES when neither delivers,
+                # so ``_finalized`` stays False and the dispatcher records a failure
                 # and runs its rescue. On success it records into the delivery
                 # ledger, so a transient all-appends-failure the final update
                 # recovers is correctly booked delivered. Falls through to the
@@ -1808,7 +1809,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
             # knows what was already shown. The flag below is the sole ``_finalized``
             # write, so a raise here leaves it False by construction.
             for part in await self._split_for_slack(clean_text):
-                await self.slack.post_message(self.channel, part, self.thread_ts)
+                await post_markdown(self.slack, self.channel, part, self.thread_ts)
                 self._delivered += part
         # The answer is delivered at this point (or there was none to deliver: a
         # tool-only turn with empty ``clean_text`` and no placeholder legitimately

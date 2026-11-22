@@ -25,7 +25,8 @@ up, so it is examined for TWO markers only, each the artifact an ending
 published before the row's own terminal write landed leaves behind when that
 write was lost before the crash: a REFUSAL marker (``REFUSED``, a spawn refused
 before its row was ever claimed), settled ``failed``, and a QUEUED-STOP marker
-(``STOPPED``, a run stopped before it started), settled ``cancelled`` -- rather
+(``STOPPED``, a run stopped before it started or a row whose parent
+conversation ended), settled ``cancelled`` -- rather
 than started as if the ending had never happened. Any
 other ending the artifacts record for a ``queued`` row is NOT acted on: a row
 can come back to ``queued`` after an earlier attempt (a dependency wake of a
@@ -94,9 +95,10 @@ STARTED = "started"
 REFUSED = "refused"
 
 #: A probe verdict that is not a task state: the run was STOPPED before it
-#: started (``write_queued_stop_tombstone``, cause ``queued_stop``) and its row
-#: ends ``cancelled``. Like ``REFUSED`` it can only be this row's own marker, so
-#: the queued pass acts on it too.
+#: started (``write_queued_stop_tombstone``, cause ``queued_stop``), or its parent
+#: conversation ended (cause ``parent_end``), and its row ends ``cancelled``. Like
+#: ``REFUSED`` it can only be this row's own marker, so the queued pass acts on it
+#: too: a parent end ends every attempt of the row, since its conversation is gone.
 STOPPED = "stopped"
 
 #: The two markers the queued pass acts on, each with the state it settles the row in.
@@ -240,8 +242,8 @@ def _settle_queued(
     an ``admitted`` row a lost-owner requeue put back -- and that attempt's
     ``done``/``failed``/``cancelled`` on disk is not this row's ending. A
     refusal marker is written only for a spawn refused before its row was
-    claimed, and a queued-stop marker only for a run stopped before it started,
-    so either can only be this row's own.
+    claimed, and a queued-stop marker only for a run stopped before it started
+    or a row whose parent conversation ended, so either can only be this row's own.
     """
     verdict = _probe_verdict(rec, probe, report)
     if verdict == CANCELLED and rec.state == RETRY_WAIT:
