@@ -88,6 +88,7 @@ if TYPE_CHECKING:
         agent_welcome_message,
         append_and_surface,
         capabilities_of,
+        entries_matching_a_file,
         expire_slack_options,
         logger,
         redact_credentials,
@@ -846,8 +847,11 @@ async def _notice_unread_steering(
     agent = session_agent(client, agent)
     if not agent or is_kirocrew_default_agent(agent):
         return
+    project = spec_project_dir(client)
     try:
-        entries = await asyncio.to_thread(spec_steering_resources, agent, spec_project_dir(client))
+        entries = await asyncio.to_thread(
+            lambda: entries_matching_a_file(spec_steering_resources(agent, project), project)
+        )
     except Exception:  # noqa: BLE001 - an informational row must never fail a turn
         logger.debug("agent spec resources for %r could not be read", agent, exc_info=True)
         return

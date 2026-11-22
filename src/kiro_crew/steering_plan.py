@@ -126,6 +126,29 @@ def declared_steering_targets(agent: str | None, project: str | None) -> frozens
     return frozenset(targets)
 
 
+def entries_matching_a_file(entries: Sequence[str], project: str | None) -> list[str]:
+    """The ``file://`` *entries* that match at least one file, in order.
+
+    Each is anchored as kiro-cli anchors it (``_steering_glob_anchor``). An entry
+    matching nothing loads nothing on any backend, so a row naming it as unread
+    would report a loss that cannot happen. One that cannot be resolved is kept:
+    the plan cannot tell, so it must not hide it.
+    """
+    from kiro_crew.context_assembly.agent_spec import _steering_glob_anchor
+    from kiro_crew.file_uri import file_uri_path_text
+
+    project_root = Path(project).expanduser() if project else None
+    kept: list[str] = []
+    for entry in entries:
+        try:
+            anchor, pattern = _steering_glob_anchor(file_uri_path_text(entry), project_root)
+            if any(p.is_file() for p in anchor.glob(pattern)):
+                kept.append(entry)
+        except (OSError, ValueError, RuntimeError):
+            kept.append(entry)
+    return kept
+
+
 def _loads_through_crew(
     provider_type: str, native_steering: bool, agent: str | None, is_member: bool
 ) -> bool:
