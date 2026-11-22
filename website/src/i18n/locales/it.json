@@ -13013,7 +13013,7 @@
       "save_failed": "Salvataggio non riuscito:",
       "save_overwrite_newer_content": "Salva — sovrascrivi il contenuto più recente",
       "save_overwrite_newer_content_title": "Salva — il contenuto è cambiato da quando l'hai caricato; salvando ora sovrascrivi il contenuto più recente con la tua bozza",
-      "save_to_live_cmd_s_updates_the_live_state_withou": "Salva nello stato attivo (Cmd+S) — aggiorna lo stato attivo senza creare una versione",
+      "save_to_live_cmd_s_updates_the_live_state_withou": "Salva nello stato attivo ({{shortcut}}) — aggiorna lo stato attivo senza creare una versione",
       "saving": "Salvataggio…",
       "session_title": "Artefatto: {{name}}",
       "show_comments": "Mostra commenti",

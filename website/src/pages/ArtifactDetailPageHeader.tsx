@@ -18,6 +18,7 @@ import SimpleSelect from '../components/SimpleSelect'
 import { fmtNumber } from '../i18n/format'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
+import { platformShortcut } from '../utils/platform'
 import HoverTip from '../components/HoverTip'
 import { ArtifactSendToSessionSubmenu, useArtifactSendToSession } from '../components/ArtifactSendToSession'
 import { useArtifactFolders, useMoveArtifactToFolder } from '../hooks/useArtifactFolders'
@@ -584,7 +585,7 @@ export function ArtifactDetailPageHeader({
             <>
               <HoverTip label={saveConflict
                 ? i18nT('pages.artifactDetailPage.save_overwrite_newer_content_title')
-                : i18nT('pages.artifactDetailPage.save_to_live_cmd_s_updates_the_live_state_withou')}>
+                : i18nT('pages.artifactDetailPage.save_to_live_cmd_s_updates_the_live_state_withou', { shortcut: platformShortcut('Cmd+S') })}>
                 <button
                   type="button"
                   onClick={() => handleSave(false, saveConflict)}
