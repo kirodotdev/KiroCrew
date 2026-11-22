@@ -255,6 +255,23 @@ Use `kirocrew config get`, `kirocrew config set <key> <value>`, and
 [troubleshooting guide](src/kiro_crew/docs/troubleshooting.md) for log sources,
 levels, diagnostics bundles, and recovery steps.
 
+### Stopping or removing Kiro Crew
+
+```bash
+kirocrew stop                # stop a running Gateway
+kirocrew service uninstall   # remove the service
+```
+
+A service installed with `kirocrew service install` starts again at the next
+boot or login after `kirocrew stop`, until `kirocrew service uninstall` removes
+it. On Linux the service is a system unit, so both commands ask for sudo there.
+The desktop app runs its own Gateway: quit the app (Quit in its tray icon menu,
+or Cmd+Q / Ctrl+Q) to stop it, because closing its window keeps it running. A
+Docker install stops with `docker stop kirocrew`. To remove the program, follow
+[Uninstalling](docs/guides/install.md#uninstalling) for your install method;
+your data stays in place until you follow
+[Removing user data](docs/guides/install.md#removing-user-data).
+
 ## Anonymous usage telemetry
 
 Kiro Crew sends **one anonymous heartbeat per day** so maintainers can see how

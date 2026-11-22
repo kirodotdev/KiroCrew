@@ -306,6 +306,8 @@ def test_cli_sh_next_steps_name_the_data_home_only_when_it_is_set(
             "  kirocrew gateway            # start the dashboard now (http://localhost:5476)\n"
             "  kirocrew service install    # needs sudo on Linux; run it 24/7 as a service"
             " (survives logout, restarts on crash)\n"
+            "  kirocrew stop               # stop it (a service starts again at the next boot"
+            " or login; kirocrew service uninstall removes it)\n"
             "  kirocrew --help             # everything else\n"
             "\n"
         ), block
