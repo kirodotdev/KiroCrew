@@ -1921,13 +1921,13 @@ def tools_settings_to_permissions(
                 ) and not _write_falls_back_to_deny(settings):
                     lost.append(f"{tool}.fallbackAction")
         elif family == "web_fetch":
-            # KAS matches a host only, so a `blocked` regex is carried here as a host
-            # deny, and `trusted` (an allow) is named. A `blocked` entry with no host
-            # deny is named; with `agent.kas_fail_closed_web_fetch_blocked` on, one
-            # deny over "*" takes the key's place and refuses every fetch. Crew's
-            # gate grants a plain-URL `trusted` entry itself
-            # (`kas_spec_denies.web_fetch_gate`); the session notice drops it then,
-            # and a crewmate's policy check reads only this KAS side.
+            # KAS matches a host only, so a `blocked` regex is carried here as a host deny
+            # and `trusted` (an allow) is named. A `blocked` entry with no host deny is
+            # named unless the gate refuses it (`kas_spec_denies.gate_refused_blocked`);
+            # with `agent.kas_fail_closed_web_fetch_blocked` on, one deny over "*" takes
+            # the key's place and refuses every fetch. Crew's gate grants a plain-URL
+            # `trusted` entry itself (`kas_spec_denies.web_fetch_gate`); the session
+            # notice drops it then, and a crewmate's policy check reads only this side.
             handled.add("blocked")
             blocked = converted(f"{tool}.blocked", settings.get("blocked"), _url_glob)
             if f"{tool}.blocked" in lost and fails_closed_on_uncarried_blocked():
