@@ -106,6 +106,7 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   // the user's next fresh origin. The rule this key is an instance of: a value
   // that GATES a safety confirmation must not be restorable from a file the agent
   // can write, however convenient re-acknowledging is.
+  // The machine owner's ack is also kept on the gateway's owner-only record (/api/chat/yolo-ack).
   'mc-agent-scene',
   'mc-kb-graph-physics',
   // Notification sound settings (enabled/volume/per-category presets, a timed mute) --

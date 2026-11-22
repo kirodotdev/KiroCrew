@@ -6506,6 +6506,8 @@
       "approve_for_me_failed": "„Für mich genehmigen“ konnte nicht eingeschaltet werden. Versuche es noch einmal.",
       "approve_for_me_busy": "Warte, bis die aktuelle Antwort fertig ist, und wähle dann Approve for me erneut.",
       "approve_for_me_not_owners": "Approve for me gibt es nur in einem Chat, den du hier führst, nicht in einem, der mit einem Kanal, einem Zeitplan oder einer App verbunden ist.",
+      "yolo_ack_read_failed": "Es ließ sich nicht prüfen, ob du diese Bestätigung abgeschaltet hast, daher wird sie angezeigt. „Aktivieren“ funktioniert trotzdem.",
+      "yolo_ack_save_failed": "„Nicht mehr anzeigen“ wurde nur in diesem Browser gespeichert, daher fragen andere Browser weiterhin, bevor YOLO eingeschaltet wird. Der Wechsel zu YOLO selbst ist davon nicht betroffen.",
       "approve_for_me_label": "Für mich genehmigen",
       "approve_for_me_desc": "KAS genehmigt in diesem Chat Routineaktionen für dich, auch Shell-Befehle und Dateiänderungen, und fragt dich, wenn es unsicher ist",
       "approve_for_me_details": "So funktioniert Approve for me",

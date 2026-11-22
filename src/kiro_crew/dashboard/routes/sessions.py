@@ -15,7 +15,7 @@ from kiro_crew.dashboard import chat, chat_voice, handlers, openai_compat
 from kiro_crew.dashboard.handlers import chat_elicitation
 from kiro_crew.dashboard.handlers import debug as debug_handlers
 from kiro_crew.dashboard.handlers import session_environments as session_environment_handlers
-from kiro_crew.dashboard.handlers import slot_question
+from kiro_crew.dashboard.handlers import slot_question, yolo_ack
 
 
 def register(app: web.Application) -> None:
@@ -86,6 +86,10 @@ def register(app: web.Application) -> None:
         "/api/chat/slots/{slot}/elicitation", chat_elicitation.api_chat_slot_elicitation
     )
     app.router.add_post("/api/chat/mode", chat.api_chat_mode)
+    # The owner's acknowledgement of the YOLO confirmation, kept on the gateway so a
+    # fresh browser profile still skips it. Machine owner only, on both verbs.
+    app.router.add_get("/api/chat/yolo-ack", yolo_ack.api_yolo_ack_get)
+    app.router.add_put("/api/chat/yolo-ack", yolo_ack.api_yolo_ack_put)
     app.router.add_post("/api/chat/nav/resolve-links", chat.api_chat_nav_resolve_links)
     app.router.add_post("/api/chat/slots/{slot}/generate-title", chat.api_chat_slot_generate_title)
     app.router.add_patch("/api/chat/slots/{slot}/title", chat.api_chat_slot_rename)

@@ -197,6 +197,8 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "_MAX_BODY_BYTES",
         _BOUNDED_BY_DEFAULT,
     ),
+    # The owner's YOLO acknowledgement: one boolean, so 1 KB is far above any body.
+    "handlers/yolo_ack.py::api_yolo_ack_put": ("_MAX_JSON_BYTES", _BOUNDED_BY_DEFAULT),
     "messaging_api/agent_push.py::api_notification_agent_push": (
         "<default>",
         _BOUNDED_BY_DEFAULT,

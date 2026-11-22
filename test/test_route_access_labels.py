@@ -7,7 +7,7 @@ arrived. A route added without a label is in neither, and fails here.
 The live router is the one ``test_dashboard_route_table.py`` reads. A route an installed
 app registers at run time is not in it.
 
-The routes named in the unit tests below are invented: no real route is labelled.
+The routes named in the unit tests below are invented.
 """
 
 from __future__ import annotations

@@ -452,6 +452,7 @@ class TestLeafOnlyNamesHaveNoBetterHold:
         "<crew>/workspace/md-notebook/pat": "standard",
         "<crew>/workspace/md-notebook/settings.json": "standard",
         "<crew>/workspace/md-notebook/vaults.json": "standard",
+        "<crew>/yolo_ack.json": "standard",
         "<isolated>/kiro-agents": "standard",
         "<isolated>/kiro-home/.kiro/crew/run": "standard",
         "~/.aws": "cc",

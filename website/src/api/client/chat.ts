@@ -450,6 +450,10 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     sideClose: closeSide,
     sideStop: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/stop', {}).then(j) as Promise<{ ok: boolean }>,
     chatMode: (mode: string, slot?: string) => post('/api/chat/mode', { mode, slot: slot || '' }).then(j),
+    /** The machine owner's acknowledgement of the YOLO confirmation, kept on the gateway. Owner only (403 for anyone else). */
+    yoloAck: () => fetch('/api/chat/yolo-ack').then(j) as Promise<{ acknowledged: boolean }>,
+    /** Record (or, with `false`, clear) the owner's YOLO confirmation acknowledgement; a browser's own `mc-yolo-ack` is untouched. */
+    setYoloAck: (acknowledged: boolean) => put('/api/chat/yolo-ack', { acknowledged }).then(j) as Promise<{ acknowledged: boolean }>,
     generateTitle: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/generate-title').then(j),
     resolveNavLinks: (links: { url: string; context: string }[]) => post('/api/chat/nav/resolve-links', { links }).then(j) as Promise<{ summaries: string[] }>,
     renameSlot: (slot: string, title: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/title', { title }).then(j),
