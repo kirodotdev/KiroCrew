@@ -1188,27 +1188,35 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   views in `deny_gate.py` and to `shell_normalizer._shell_payload_walk` (the
   self-protection and git-publish floors), which add them to the frame's own payloads, so
   `sh -c 2>/dev/null '<script>'` hides no script and the frame's exemptions still apply.
-  The walk reads the caller's own command line with single quotes as literal
+  The walk reads the caller's own command line through bash's own quote/escape walk
   (`_substitution_bodies(..., raw_source=True)`) only when that line is one simple
-  `git commit`/`git tag` or `gh pr|issue create|edit|comment` command
-  (`_is_message_flag_command`): its first word is literally `git` or `gh`, no global
-  option such as `git -c` comes before the subcommand, it holds no `;`, `&`, `|`,
-  `(`, `)`, `{`, `}` or newline outside quotes, and every word holding a
-  substitution opener (a backtick, `$(`, `<(`, `>(`) is the value of a message flag
-  (`-m`/`--message` for git; `-b`/`--body`/`-t`/`--title` for gh). Every opener must
-  also sit inside one bare single-quoted value: the value starts with `'` and ends
-  at its matching closing `'`, with no prefix, suffix or concatenation (including
-  after `=` or glued flag letters). The whole command text must contain no `$`
-  anywhere, so `$'...'`, `$[...]`, `$((...))`, `$(...)` and `${...}` do not qualify.
-  That text opens no nested frame, as in bash
-  (``gh pr edit 1 --body 'run `ssh x`'`` runs no ssh). Every other command, such as
-  `trap '...'`, `bash -c 'eval "$1"' _ '...'`, `git -c alias.x='!...'` or
-  `gh alias set`, gets the quote-blind openers for the whole text, because a later
-  program may run its single-quoted text as shell. So does a nested or decoded
-  payload (a `-c` script, an `eval` string, a
-  quoted assignment script), any text that holds a `#`, `<<`, `$`, a backslash or a
-  control byte (a newline, or a separator the ssh floor masked), and any text whose
-  quotes do not all close.
+  message-shaped command (`_message_flag_command_shape`): its first word is literally
+  `git` or `gh`, no global option such as `git -c` comes before the subcommand, the
+  subcommand is `commit`/`tag` for git or `pr`/`issue` `create`/`edit`/`comment` for
+  gh, and it holds no `;`, `&`, `|`, `(`, `)`, `{`, `}` or newline outside quotes. That
+  reading applies to a message-shaped line only while it holds no `#`, `<<` or `$`
+  anywhere, so `$'...'`, `$[...]`, `$((...))`, `$(...)` and `${...}` keep the
+  quote-blind openers; a backslash is fine, because the walk models it, which is what
+  lets a single-quoted value with a `` \` `` in it still read as inert. On such a line
+  `shell_normalizer._iter_shell_chars` decides which backtick is a live opener: an
+  escaped backtick (`` \` ``) opens nothing (it is a literal backtick unquoted and
+  inside double quotes), and a bare backtick inside double quotes opens a live
+  substitution bash runs. A backtick inside single quotes opens nothing only when the
+  value is proved inert (`_is_message_flag_command`): every word holding a substitution
+  opener (a backtick, `$(`, `<(`, `>(`) is the value of a message flag (`-m`/`--message`
+  for git; `-b`/`--body`/`-t`/`--title` for gh) and sits inside one bare single-quoted
+  value, which starts with `'` and ends at its matching closing `'`, with no prefix,
+  suffix or concatenation (including after `=` or glued flag letters); a glued or stray
+  single quote that is not proved keeps that backtick as an opener. A proved-inert line
+  opens no nested frame, as in bash (``gh pr edit 1 --body 'run `ssh x`'`` runs no ssh),
+  while the double-quoted ``gh pr edit 1 --body "run `ssh x`"`` opens the body bash runs.
+  Every command that is NOT message-shaped, such as `trap '...'`,
+  `bash -c 'eval "$1"' _ '...'`, `git -c alias.x='!...'` or `gh alias set`, gets the
+  quote-blind openers for the whole text, because a later program may run its
+  single-quoted text as shell. So does a nested or decoded payload (a `-c` script, an
+  `eval` string, a quoted assignment script), a non-message-shaped line that holds a
+  `#`, `<<`, `$`, a backslash or a control byte (a newline, or a separator the ssh
+  floor masked), and any text whose quotes do not all close.
   A catalog row still matches its raw text either way.
   Before the ssh floor walks a line, it masks every quoted separator and paren
   (`argv_floor_ssh._mask_quoted_separators`), so a quoted `;` or `(` does not end its
@@ -2725,7 +2733,7 @@ only the identity-free security floor without counting it. See acp-client.md
 
 **Destructive operation blocks**: `rm -rf`, protected or ambiguous `git push` targets (including force pushes to those targets), `aws * delete-*`, `aws ec2 terminate-instances`, `cdk destroy`, `terraform destroy`, etc. Force-pushing an explicit feature branch remains allowed.
 
-**Self-protection global options**: the `restart`, `update`, `cloud` lifecycle, and `gateway restart` self-management commands are enforced by the argv-structural floor alone (`_matches_self_subcommand`), which reads the CLI's leading operand words after any interposed top-level options and handles shell quoting for both flags and subcommands. The regex rows that once sat beside these floors (`.*kiro.?crew(?:<flag-run>)*\s+restart.*` and siblings) were deleted, not narrowed: each opened with an unbounded any-run before the product name, so the name in a worktree path plus the verb word anywhere later matched (`ls ~/kirocrew-wt/restart.log`), and a row that fires on the product's name appearing anywhere adds nothing to a predicate that requires the product to be the argv's own program. The floor covers the repeatable verbosity spellings (`-v`, `-vv`, `--verbose`) and `--no-jail`; adding or quoting a valid global option or subcommand must not turn a denied self-management command into an allowed one. A redirection glued to an operand word (`kirocrew restart>/tmp/log`) leaves that word in argv, so the floor reads it; it also keeps the reading that skips the whole token, because the dequoted token cannot show whether a separator in its target was live (`kirocrew status>x&&kirocrew restart`). The one self-management subcommand row that KEEPS a regex is `self-protection-cron-adopt`: it has no floor twin, and the ownership grab it refuses is real.
+**Self-protection global options**: the `restart`, `update`, `cloud` lifecycle, and `gateway restart` self-management commands are enforced by the argv-structural floor alone (`_matches_self_subcommand`), which reads the CLI's leading operand words after any interposed top-level options and handles shell quoting for both flags and subcommands. It reads the leading words from each frame of the line's own argv and its nested shell payloads, taken from two frame sets: the line folded with the blunt over-approximating continuation fold (`_shell_join_continuations`, which drops the last `\` before any newline so a split `kiro\<newline>crew restart` in an executable payload still reads as the restart bash runs) and the un-folded line. The un-folded set matters because that fold turns a proved message value's live backtick (``--body "\\<newline>`kirocrew restart`"``) into an escaped `` \` `` and hides it, while `_substitution_bodies` reads that backtick on the un-folded frames; reading both sets only adds denials. The regex rows that once sat beside these floors (`.*kiro.?crew(?:<flag-run>)*\s+restart.*` and siblings) were deleted, not narrowed: each opened with an unbounded any-run before the product name, so the name in a worktree path plus the verb word anywhere later matched (`ls ~/kirocrew-wt/restart.log`), and a row that fires on the product's name appearing anywhere adds nothing to a predicate that requires the product to be the argv's own program. The floor covers the repeatable verbosity spellings (`-v`, `-vv`, `--verbose`) and `--no-jail`; adding or quoting a valid global option or subcommand must not turn a denied self-management command into an allowed one. A redirection glued to an operand word (`kirocrew restart>/tmp/log`) leaves that word in argv, so the floor reads it; it also keeps the reading that skips the whole token, because the dequoted token cannot show whether a separator in its target was live (`kirocrew status>x&&kirocrew restart`). The one self-management subcommand row that KEEPS a regex is `self-protection-cron-adopt`: it has no floor twin, and the ownership grab it refuses is real.
 
 **Command-ending newlines**: `_self_tokens` preserves unquoted newlines as
 separators before `shlex` tokenization, using the shared `_iter_shell_chars`

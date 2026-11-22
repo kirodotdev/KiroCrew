@@ -1440,7 +1440,18 @@ def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> boo
     if not _self_floor_can_fire(text_lower):
         return False
     view = _shell_join_continuations(_heredoc_data_view(text_lower))
-    for tokens in _self_token_frames(view):
+    # The blunt continuation fold above keeps the self views fail-closed, but it
+    # strips the last ``\`` before a newline even in an even run, so a proved
+    # message value such as ``"\\<newline>`kirocrew restart`"`` loses its LIVE
+    # backtick to a ``\```. The quote/escape walk in ``_substitution_bodies`` reads
+    # that backtick as the substitution bash runs, so enumerate the un-folded frames
+    # as well; checking more frames only adds denials.
+    unfolded = _heredoc_data_view(text_lower)
+    frames = _self_token_frames(view)
+    if unfolded != view:
+        seen = {tuple(tokens) for tokens in frames}
+        frames = frames + [t for t in _self_token_frames(unfolded) if tuple(t) not in seen]
+    for tokens in frames:
         programs = _argv_programs(tokens)
         # Once per FRAME, not once per token, to keep the floor linear in token count.
         scan = _self_module_flag_scan(tokens)
