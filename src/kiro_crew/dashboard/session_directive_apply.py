@@ -68,6 +68,7 @@ from kiro_crew.dashboard.session_directive_apply_outcome import (
     REVISION_REFUSAL_NOTICE_PREFIX,
     STOP_OUTCOME_NOTICE_PREFIX,
     STOP_REFUSAL_NOTICE_PREFIX,
+    USER_ORIGIN_REFUSAL_NOTICE_PREFIX,
     DirectiveOutcome,
     _deliver_refusal_to_crewmate,
     _DirectiveDenied,
@@ -292,8 +293,21 @@ async def apply_session_directive_outcome(
         kind, session_key, producer_is_user_facing=producer_is_user_facing
     ):
         # A cron turn can run on a user's slot and a sub-agent can share its
-        # parent's slot, so both inherit a surface they never opened.
-        return DirectiveOutcome(refuse_user_origin_directive(session_key, kind))
+        # parent's slot, so both inherit a surface they never opened. The tool
+        # already answered "requested", so the refusal gets a row of its own,
+        # worded for the person like the arm refusal's.
+        reason = refuse_user_origin_directive(session_key, kind)
+        origin = _TURN_ORIGINS.get(producer_turn_actor, "something other than the user")
+        _surface_arm_refusal(
+            state,
+            slot,
+            kind,
+            f"this turn was started by {origin}, so its {kind} call was refused and "
+            "nothing changed. To do it, send the request yourself in this chat.",
+            prefix=USER_ORIGIN_REFUSAL_NOTICE_PREFIX,
+            session_key=session_key,
+        )
+        return DirectiveOutcome(reason)
     # SELF-ARM PROVENANCE: which turns count as "the session's own" for the
     # crew/member rule. Two producers, each named explicitly: a turn a HUMAN
     # started in this session (the same authenticated-human flag the

@@ -662,8 +662,8 @@ _QUEUE_KIND_ACTORS: dict[str, str] = {
     SUBAGENT_COMPLETION_KIND: "subagent",
     MCP_APP_MESSAGE_KIND: "app",
     RESOURCE_WAKE_KIND: "resource",
-    # A re-routed automation refusal is the monitor subsystem talking, so the
-    # turn it rides is attributed to the autonudge actor, never the person.
+    # A re-routed automation or person-only refusal is the runtime talking, so
+    # the turn it rides is attributed to the autonudge actor, never the person.
     AUTOMATION_NOTICE_KIND: "autonudge",
 }
 
